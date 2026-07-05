@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Callable, Iterable
 from uuid import UUID
 
 from sqlalchemy import select
-
-from openhands.app_server.utils.jsonpatch_compat import deep_merge_with_wholesale_keys
 from storage.api_key import ApiKey
 from storage.api_key_store import ApiKeyStore
 from storage.database import a_session_maker
@@ -16,7 +14,10 @@ from storage.org_service import OrgService
 from storage.org_store import OrgStore
 from storage.role_store import RoleStore
 from storage.stored_custom_secrets import StoredCustomSecrets
+from storage.user import User
 from storage.user_store import UserStore
+
+from openhands.app_server.utils.jsonpatch_compat import deep_merge_with_wholesale_keys
 
 MIGRATION_TYPES = ('secrets', 'keys', 'mcp', 'automations')
 
@@ -66,11 +67,11 @@ async def resolve_org(identifier: str | UUID):
 
 async def resolve_users(
     identifiers: list[str], include_all: bool
-) -> tuple[list[object], list[str]]:
+) -> tuple[list[User], list[str]]:
     if include_all:
         return await UserStore.list_users(), []
 
-    users: list[object] = []
+    users: list[User] = []
     missing: list[str] = []
     seen_ids: set[str] = set()
     for identifier in identifiers:
@@ -93,7 +94,7 @@ async def resolve_users(
 
 async def migrate_users(
     *,
-    users: list[object],
+    users: list[User],
     source_mode: str,
     source_org_id: UUID | None,
     target_org_id: UUID,
@@ -102,6 +103,7 @@ async def migrate_users(
 ) -> list[MigrationResult]:
     results: list[MigrationResult] = []
     for user in users:
+        resolved_source_org: UUID | None
         if source_mode == 'personal':
             resolved_source_org = user.id
         else:
@@ -109,7 +111,7 @@ async def migrate_users(
         if resolved_source_org is None:
             result = MigrationResult(
                 user_id=str(user.id),
-                email=getattr(user, 'email', None),
+                email=user.email,
                 source_org_id=target_org_id,
                 target_org_id=target_org_id,
                 errors=['Source org is required when not using personal mode.'],
@@ -128,7 +130,7 @@ async def migrate_users(
 
 
 async def _migrate_user(
-    user: object,
+    user: User,
     source_org_id: UUID,
     target_org_id: UUID,
     types: set[str],
@@ -192,9 +194,7 @@ async def _migrate_user(
 
         if {'keys', 'mcp', 'automations'} & types:
             source_keys = await _fetch_keys(session, user_id, source_org_id)
-            target_key_names = await _fetch_key_names(
-                session, user_id, target_org_id
-            )
+            target_key_names = await _fetch_key_names(session, user_id, target_org_id)
 
             if 'keys' in types:
                 moved, conflicts = _migrate_api_keys(
@@ -279,7 +279,7 @@ async def _migrate_user(
 
 
 async def _ensure_target_membership(
-    user: object,
+    user: User,
     target_org_id: UUID,
     dry_run: bool,
     result: MigrationResult,
@@ -295,9 +295,7 @@ async def _ensure_target_membership(
         result.errors.append('Role "member" not found; cannot add user to org.')
         return None
 
-    settings = await OrgService.create_litellm_integration(
-        target_org_id, str(user.id)
-    )
+    settings = await OrgService.create_litellm_integration(target_org_id, str(user.id))
     llm_key = ''
     llm_secret = settings.agent_settings.llm.api_key
     if llm_secret:
@@ -357,7 +355,7 @@ async def _fetch_keys(
     session,
     user_id: str,
     org_id: UUID,
-):
+) -> list[ApiKey]:
     result = await session.execute(
         select(ApiKey).filter(
             ApiKey.user_id == user_id,
@@ -383,11 +381,11 @@ async def _fetch_key_names(
 
 
 def _migrate_api_keys(
-    keys: list[object],
+    keys: list[ApiKey],
     target_key_names: set[str],
     source_org_id: UUID,
     target_org_id: UUID,
-    key_filter,
+    key_filter: Callable[[ApiKey], bool],
     dry_run: bool,
 ) -> tuple[int, int]:
     moved = 0
@@ -408,7 +406,7 @@ def _migrate_api_keys(
     return moved, conflicts
 
 
-def _is_user_key(key) -> bool:
+def _is_user_key(key: ApiKey) -> bool:
     if key.name == 'MCP_API_KEY':
         return False
     if ApiKeyStore.is_system_key_name(key.name):
@@ -416,11 +414,11 @@ def _is_user_key(key) -> bool:
     return True
 
 
-def _is_mcp_key(key) -> bool:
+def _is_mcp_key(key: ApiKey) -> bool:
     return key.name == 'MCP_API_KEY'
 
 
-def _is_automation_key(key) -> bool:
+def _is_automation_key(key: ApiKey) -> bool:
     system_name = ApiKeyStore.make_system_key_name('OPENHANDS_API_KEY')
     return key.name == system_name
 

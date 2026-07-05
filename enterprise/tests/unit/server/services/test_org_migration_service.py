@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from server.services import org_migration_service
 from sqlalchemy import select
 from storage.api_key import ApiKey
 from storage.api_key_store import ApiKeyStore
@@ -11,8 +12,6 @@ from storage.org_member import OrgMember
 from storage.role import Role
 from storage.stored_custom_secrets import StoredCustomSecrets
 from storage.user import User
-
-from server.services import org_migration_service
 
 
 def _patch_session_makers(monkeypatch, async_session_maker) -> None:

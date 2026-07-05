@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
-
 from server.services.org_migration_service import MIGRATION_TYPES
 
 MigrationType = Literal['secrets', 'keys', 'mcp', 'automations']
@@ -19,7 +18,9 @@ class OrgMigrationSource(BaseModel):
         if self.mode == 'org' and not self.org_id_or_name:
             raise ValueError('source.org_id_or_name is required when mode is org')
         if self.mode == 'personal' and self.org_id_or_name:
-            raise ValueError('source.org_id_or_name must be omitted when mode is personal')
+            raise ValueError(
+                'source.org_id_or_name must be omitted when mode is personal'
+            )
         return self
 
 
@@ -27,7 +28,9 @@ class OrgMigrationRequest(BaseModel):
     source: OrgMigrationSource
     users: list[str] | None = None
     all: bool = False
-    types: list[MigrationType] = Field(default_factory=lambda: list(MIGRATION_TYPES))
+    types: list[MigrationType] = Field(
+        default_factory=lambda: cast(list[MigrationType], list(MIGRATION_TYPES))
+    )
     dry_run: bool = False
 
     @model_validator(mode='after')

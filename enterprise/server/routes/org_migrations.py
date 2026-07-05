@@ -48,11 +48,13 @@ async def migrate_org_data(
 
     source_org_id = None
     if payload.source.mode == 'org':
-        source_org = await resolve_org(payload.source.org_id_or_name)
+        source_identifier = payload.source.org_id_or_name
+        assert source_identifier is not None
+        source_org = await resolve_org(source_identifier)
         if not source_org:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f'Source org not found: {payload.source.org_id_or_name}',
+                detail=f'Source org not found: {source_identifier}',
             )
         source_org_id = source_org.id
 
