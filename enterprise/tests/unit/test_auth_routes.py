@@ -6,7 +6,7 @@ import pytest
 from fastapi import BackgroundTasks, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import SecretStr
-from server.auth.auth_error import AuthError
+from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.user.user_authorizer import UserAuthorizationResponse, UserAuthorizer
 from server.routes.auth import (
@@ -890,6 +890,23 @@ async def test_authenticate_failure():
         assert result.status_code == status.HTTP_401_UNAUTHORIZED
         assert 'error' in result.body.decode()
         assert 'User is not authenticated' in result.body.decode()
+
+
+@pytest.mark.asyncio
+async def test_authenticate_transient_failure_preserves_cookie():
+    with patch('server.routes.auth.get_access_token') as mock_get_token:
+        mock_get_token.side_effect = TokenRefreshError(
+            'Authentication service temporarily unavailable'
+        )
+        request = MagicMock()
+        request.cookies = {'keycloak_auth': 'some-token'}
+
+        result = await authenticate(request)
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert 'Authentication service temporarily unavailable' in result.body.decode()
+    assert 'set-cookie' not in result.headers
 
 
 @pytest.mark.asyncio

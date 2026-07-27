@@ -19,6 +19,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, SecretStr
+from server.auth.auth_error import TokenRefreshError
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_REALM_NAME,
@@ -721,6 +722,11 @@ async def authenticate(request: Request):
         await get_access_token(request)
         return JSONResponse(
             status_code=status.HTTP_200_OK, content={'message': 'User authenticated'}
+        )
+    except TokenRefreshError as e:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={'error': str(e) or e.__class__.__name__},
         )
     except Exception:
         # For any error during authentication, clear the auth cookie and return 401

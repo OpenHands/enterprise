@@ -5,12 +5,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import jwt
 import pytest
 from fastapi import Request
+from keycloak.exceptions import KeycloakConnectionError
 from pydantic import SecretStr
 from server.auth.auth_error import (
     AuthError,
     BearerTokenError,
     CookieError,
     NoCredentialsError,
+    TokenRefreshError,
 )
 from server.auth.saas_user_auth import (
     SaasUserAuth,
@@ -213,6 +215,34 @@ async def test_get_access_token_with_no_token(mock_token_manager):
     decoded = jwt.decode(result.get_secret_value(), options={'verify_signature': False})
     assert decoded['sub'] == 'test_user_id'
     mock_token_manager.refresh.assert_called_once_with(refresh_token)
+
+
+@pytest.mark.asyncio
+async def test_get_access_token_classifies_keycloak_connection_failure(
+    mock_token_manager,
+):
+    refresh_token = jwt.encode(
+        {
+            'sub': 'test_user_id',
+            'exp': int(time.time()) + 3600,
+        },
+        'secret',
+        algorithm='HS256',
+    )
+    user_auth = SaasUserAuth(
+        user_id='test_user_id',
+        refresh_token=SecretStr(refresh_token),
+    )
+    mock_token_manager.refresh = AsyncMock(
+        side_effect=KeycloakConnectionError('DNS failure')
+    )
+
+    with pytest.raises(
+        TokenRefreshError, match='Authentication service temporarily unavailable'
+    ):
+        await user_auth.get_access_token()
+
+    assert mock_token_manager.refresh.await_count == 3
 
 
 @pytest.mark.asyncio

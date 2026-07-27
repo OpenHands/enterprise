@@ -1,13 +1,14 @@
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 from server.auth.constants import BITBUCKET_DATA_CENTER_HOST
 
 from openhands.app_server.utils.http_session import httpx_verify_option
+from openhands.app_server.utils.logger import openhands_logger as logger
 
 router = APIRouter(prefix='/bitbucket-dc-proxy')
 
-BITBUCKET_DC_TIMEOUT = 10  # seconds
+BITBUCKET_DC_TIMEOUT = 3
 
 
 def _select_user_data(users: list[dict], username: str) -> dict | None:
@@ -38,37 +39,50 @@ async def userinfo(request: Request):
         return JSONResponse({'error': 'missing_token'}, status_code=401)
 
     headers = {'Authorization': auth_header}
-    async with httpx.AsyncClient(verify=httpx_verify_option()) as client:
-        # Step 1: get username
-        whoami_resp = await client.get(
-            f'{bitbucket_base_url}/plugins/servlet/applinks/whoami',
-            headers=headers,
-            timeout=BITBUCKET_DC_TIMEOUT,
-        )
-        if whoami_resp.status_code != 200:
-            return JSONResponse({'error': 'not_authenticated'}, status_code=401)
-        username = whoami_resp.text.strip()
-        if not username:
-            return JSONResponse({'error': 'not_authenticated'}, status_code=401)
+    try:
+        async with httpx.AsyncClient(verify=httpx_verify_option()) as client:
+            # Step 1: get username
+            whoami_resp = await client.get(
+                f'{bitbucket_base_url}/plugins/servlet/applinks/whoami',
+                headers=headers,
+                timeout=BITBUCKET_DC_TIMEOUT,
+            )
+            if whoami_resp.status_code != 200:
+                return JSONResponse({'error': 'not_authenticated'}, status_code=401)
+            username = whoami_resp.text.strip()
+            if not username:
+                return JSONResponse({'error': 'not_authenticated'}, status_code=401)
 
-        # Step 2: get user details
-        user_resp = await client.get(
-            f'{bitbucket_base_url}/rest/api/latest/users',
-            headers=headers,
-            params={'filter': username},
-            timeout=BITBUCKET_DC_TIMEOUT,
+            # Step 2: get user details
+            user_resp = await client.get(
+                f'{bitbucket_base_url}/rest/api/latest/users',
+                headers=headers,
+                params={'filter': username},
+                timeout=BITBUCKET_DC_TIMEOUT,
+            )
+            if user_resp.status_code != 200:
+                return JSONResponse(
+                    {'error': f'bitbucket_error: {user_resp.status_code}'},
+                    status_code=user_resp.status_code,
+                )
+            user_data = _select_user_data(user_resp.json().get('values', []), username)
+            if not user_data:
+                return JSONResponse(
+                    {'error': f'user_not_found: {username}'},
+                    status_code=404,
+                )
+    except httpx.TimeoutException:
+        logger.warning('bitbucket_dc_userinfo_timeout', exc_info=True)
+        return JSONResponse(
+            {'error': 'bitbucket_timeout'},
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
         )
-        if user_resp.status_code != 200:
-            return JSONResponse(
-                {'error': f'bitbucket_error: {user_resp.status_code}'},
-                status_code=user_resp.status_code,
-            )
-        user_data = _select_user_data(user_resp.json().get('values', []), username)
-        if not user_data:
-            return JSONResponse(
-                {'error': f'user_not_found: {username}'},
-                status_code=404,
-            )
+    except httpx.RequestError:
+        logger.warning('bitbucket_dc_userinfo_unavailable', exc_info=True)
+        return JSONResponse(
+            {'error': 'bitbucket_unavailable'},
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
     return JSONResponse(
         {
