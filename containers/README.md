@@ -1,12 +1,16 @@
 # Docker Containers
 
-Each folder here contains a Dockerfile, and a config.sh describing how to build
-the images and where to push them. These images are built and pushed in GitHub Actions
-by the `ghcr.yml` workflow.
+`app/Dockerfile` builds the enterprise-server image — the only image this repo
+publishes, built and pushed in GitHub Actions by the `ghcr-build.yml` workflow.
+Its `openhands-app` stage is the plain app image the enterprise layers sit on.
+`dev/` holds the local development container.
 
 ## Building Manually
 
 ```bash
-docker build -f containers/app/Dockerfile -t openhands .
-docker build -f containers/sandbox/Dockerfile -t sandbox .
+# the enterprise server, as CI builds it
+docker build -f containers/app/Dockerfile -t enterprise-server .
+
+# just the app underneath it
+docker build -f containers/app/Dockerfile --target openhands-app -t openhands .
 ```
