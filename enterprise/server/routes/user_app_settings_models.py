@@ -53,7 +53,6 @@ class UserAppSettingsUpdate(BaseModel):
     """Request model for updating user app settings (partial update)."""
 
     language: str | None = None
-    user_consents_to_analytics: bool | None = None
     enable_sound_notifications: bool | None = None
     git_user_name: str | None = None
     git_user_email: EmailStr | None = None

@@ -4,6 +4,7 @@ Uses SQLite database with standard fixtures.
 """
 
 import uuid
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -465,7 +466,12 @@ async def test_get_user_by_id_existing_user(async_session_maker):
     async with async_session_maker() as session:
         org = Org(id=org_id, name='test-org')
         session.add(org)
-        user = User(id=user_id, current_org_id=org_id)
+        user = User(
+            id=user_id,
+            current_org_id=org_id,
+            accepted_tos=datetime(2025, 1, 1),
+            user_consents_to_analytics=False,
+        )
         session.add(user)
         await session.commit()
 
@@ -476,6 +482,7 @@ async def test_get_user_by_id_existing_user(async_session_maker):
     assert result is not None
     assert result.id == user_id
     assert result.current_org_id == org_id
+    assert result.user_consents_to_analytics is True
 
 
 @pytest.mark.asyncio
