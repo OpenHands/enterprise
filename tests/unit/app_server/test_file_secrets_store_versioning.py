@@ -250,7 +250,9 @@ async def test_local_compare_and_swap_is_cross_process(store, tmp_path):
     for process in processes:
         process.start()
     for process in processes:
-        process.join(timeout=20)
+        # Four spawn processes re-import the app tree and then serialise on the
+        # cross-process lock, against `-n auto --forked --cov` on a 2-CPU runner.
+        process.join(timeout=120)
         assert process.exitcode == 0
 
     received = []
