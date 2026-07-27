@@ -105,6 +105,10 @@ jobs:
     runs-on: ubuntu-22.04
     needs: build
     permissions:
+      # This job checks out the repo for the merge action, so it needs contents
+      # read as well — declaring only `packages` denies it, and checkout of a
+      # private repo then fails with "Repository not found".
+      contents: read
       packages: write
     steps:
       - name: Checkout
