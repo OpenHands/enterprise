@@ -737,6 +737,7 @@ async def test_store_does_not_persist_analytics_consent_override(
         )
         assert user is not None
         user.user_consents_to_analytics = True
+        user.accepted_tos = datetime(2025, 1, 1)
         session.commit()
 
     settings = _make_settings(

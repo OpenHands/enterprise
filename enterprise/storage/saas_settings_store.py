@@ -419,7 +419,7 @@ class SaasSettingsStore(SettingsStore):
         # Apply default if registered_marketplaces is None in the database
         if kwargs.get('registered_marketplaces') is None:
             kwargs.pop('registered_marketplaces', None)
-        kwargs['user_consents_to_analytics'] = user.accepted_tos is not None
+        kwargs['user_consents_to_analytics'] = user.user_consents_to_analytics
 
         # Load personal registered_marketplaces from user_settings table
         user_settings = await self._get_user_settings_by_keycloak_id_async(self.user_id)

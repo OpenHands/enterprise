@@ -108,7 +108,7 @@ async def test_update_user_app_settings_success(
     """
     # Arrange
     mock_user.language = 'es'
-    mock_user.user_consents_to_analytics = False
+    mock_user.user_consents_to_analytics = True
     mock_user.accepted_tos = object()
 
     update_data = UserAppSettingsUpdate(language='es')

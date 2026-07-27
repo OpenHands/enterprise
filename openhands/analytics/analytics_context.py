@@ -18,7 +18,6 @@ from typing import Any
 
 from openhands.analytics.user_base import UserBase
 from openhands.analytics.user_provider import AnalyticsUserProvider
-from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.utils.import_utils import get_impl
 from openhands.app_server.utils.logger import openhands_logger as logger
 
@@ -28,19 +27,6 @@ _SAFE_DEFAULT_KWARGS: dict[str, Any] = {
     'org_id': None,
     'user': None,
 }
-
-
-def user_has_analytics_consent(user: Any) -> bool:
-    """Return whether analytics is allowed for the user.
-
-    In SaaS, accepting the Terms of Service is the consent signal for
-    analytics. OSS keeps using the explicit analytics preference.
-    """
-    from openhands.app_server.shared import server_config
-
-    if server_config.app_mode == AppMode.SAAS:
-        return getattr(user, 'accepted_tos', None) is not None
-    return getattr(user, 'user_consents_to_analytics', None) is True
 
 
 @dataclass
@@ -94,7 +80,7 @@ async def resolve_analytics_context(user_id: str) -> AnalyticsContext:
         if user is None:
             return AnalyticsContext(user_id=user_id, **_SAFE_DEFAULT_KWARGS)
 
-        consented = user_has_analytics_consent(user)
+        consented = user.user_consents_to_analytics is True
         org_id = str(user.current_org_id) if user.current_org_id else None
 
         return AnalyticsContext(

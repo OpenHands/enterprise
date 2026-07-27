@@ -98,6 +98,7 @@ class UserStore:
             )
             existing_user = result.scalars().first()
             if existing_user:
+                existing_user.sync_analytics_consent_with_tos()
                 return existing_user
 
             # First-user → superadmin: if the caller did not specify a
@@ -196,10 +197,12 @@ class UserStore:
                 )
                 existing_user = result.scalars().first()
                 if existing_user:
+                    existing_user.sync_analytics_consent_with_tos()
                     return existing_user
                 raise
             await session.refresh(user)
             await session.refresh(user, ['org_members'])  # load org_members
+            user.sync_analytics_consent_with_tos()
             return user
 
     @staticmethod
@@ -472,6 +475,7 @@ class UserStore:
             await session.commit()
             await session.refresh(user)
             await session.refresh(user, ['org_members'])  # load org_members
+            user.sync_analytics_consent_with_tos()
             logger.debug(
                 'user_store:migrate_user:session_committed',
                 extra={'user_id': user_id},
@@ -741,6 +745,7 @@ class UserStore:
             )
             user = result.scalars().first()
             if user:
+                user.sync_analytics_consent_with_tos()
                 return user
 
             # Check if we need to migrate from user_settings
@@ -761,6 +766,7 @@ class UserStore:
                 )
                 user = result.scalars().first()
                 if user:
+                    user.sync_analytics_consent_with_tos()
                     return user
 
                 result = await session.execute(
@@ -784,6 +790,8 @@ class UserStore:
                         user_settings,
                         user_info,
                     )
+                    if user:
+                        user.sync_analytics_consent_with_tos()
                     return user
                 else:
                     return None
@@ -843,6 +851,7 @@ class UserStore:
             user.current_org_id = org_id
             await session.commit()
             await session.refresh(user)
+            user.sync_analytics_consent_with_tos()
             return user
 
     @staticmethod
@@ -870,6 +879,7 @@ class UserStore:
             user.onboarding_completed = True
             await session.commit()
             await session.refresh(user)
+            user.sync_analytics_consent_with_tos()
             logger.info(
                 'mark_onboarding_completed:success',
                 extra={'user_id': user_id},
@@ -933,10 +943,12 @@ class UserStore:
                 user.role_id = admin_role_id
                 await session.commit()
                 await session.refresh(user)
+                user.sync_analytics_consent_with_tos()
                 logger.info(
                     'user_store:grant_super_admin:granted',
                     extra={'user_id': user_id},
                 )
+            user.sync_analytics_consent_with_tos()
             return user
 
     @staticmethod

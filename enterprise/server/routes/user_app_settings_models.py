@@ -41,7 +41,7 @@ class UserAppSettingsResponse(BaseModel):
         """Create response from User entity."""
         return cls(
             language=user.language,
-            user_consents_to_analytics=user.accepted_tos is not None,
+            user_consents_to_analytics=user.user_consents_to_analytics,
             enable_sound_notifications=user.enable_sound_notifications,
             git_user_name=user.git_user_name,
             git_user_email=user.git_user_email,
