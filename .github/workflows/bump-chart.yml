@@ -11,14 +11,11 @@ on:
 
 jobs:
   bump-chart:
-    # "Tag Docker images" only runs on tag pushes, and workflow_run's
-    # head_branch carries the tag name for tag-triggered runs. Match the
-    # cloud line here rather than with a trigger-level `branches:` glob —
-    # whether that filter applies to tag-named head_branch values is
-    # undocumented, and a non-match would silently skip the chart bump.
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_branch, 'cloud-')
+    # "Tag Docker images" only runs on tag pushes, and the only tags pushed are
+    # release-please's semver release tags — so every successful run is a
+    # release that should bump the chart. workflow_run's head_branch carries
+    # the tag name for tag-triggered runs.
+    if: github.event.workflow_run.conclusion == 'success'
     # secrets: inherit forwards the org secrets RELEASE_APP_ID /
     # RELEASE_APP_PRIVATE_KEY that the reusable workflow needs.
     secrets: inherit

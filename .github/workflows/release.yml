@@ -1,11 +1,11 @@
 name: release
 
-# app (X.Y.Z, excludes enterprise/) and cloud (cloud-X.Y.Z) release lines.
+# Single release line for the whole repo (semver X.Y.Z tags, covers enterprise/).
 #
-# BOOTSTRAP: both configs set a top-level `last-release-sha` to bound the first
-# release's notes (the existing tags aren't reachable from main). Delete those
-# lines once each line's first release PR has merged — they cap every run, not
-# just the first.
+# BOOTSTRAP: the config sets a top-level `last-release-sha` to bound the first
+# release's notes (the existing tags aren't reachable from main). Delete that
+# line once the first release PR has merged — it caps every run, not just the
+# first.
 on:
   push:
     branches:
@@ -13,19 +13,9 @@ on:
       - 'release/**'
 
 jobs:
-  openhands-app:
+  release-please:
     permissions:
       contents: write
       pull-requests: write
     secrets: inherit
     uses: OpenHands/release-actions/.github/workflows/release-please.yml@main
-
-  cloud:
-    permissions:
-      contents: write
-      pull-requests: write
-    secrets: inherit
-    uses: OpenHands/release-actions/.github/workflows/release-please.yml@main
-    with:
-      config-file: release-please-config.cloud.json
-      manifest-file: .release-please-manifest.cloud.json
