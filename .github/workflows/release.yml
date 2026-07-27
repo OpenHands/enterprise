@@ -1,6 +1,6 @@
 name: release
 
-# Single release line for the whole repo (semver X.Y.Z tags, covers enterprise/).
+# Single release line for the whole repo (semver X.Y.Z tags).
 #
 # BOOTSTRAP: the config sets a top-level `last-release-sha` to bound the first
 # release's notes (the existing tags aren't reachable from main). Delete that

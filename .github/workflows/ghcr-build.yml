@@ -6,8 +6,6 @@ on:
   push:
     branches:
       - main
-      - "saas-rel-*"
-      - "oss-rel-*"
   pull_request:
   workflow_dispatch:
     inputs:
@@ -24,7 +22,6 @@ concurrency:
 jobs:
   build_app:
     name: App
-    if: github.event.pull_request.head.repo.fork != true
     uses: ./.github/workflows/_build-image.yml
     with:
       image: ghcr.io/openhands/openhands
@@ -32,7 +29,6 @@ jobs:
 
   build_enterprise:
     name: Enterprise
-    if: github.event.pull_request.head.repo.fork != true
     needs: build_app
     uses: ./.github/workflows/_build-image.yml
     with:

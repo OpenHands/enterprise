@@ -13,8 +13,7 @@ jobs:
   bump-chart:
     # "Tag Docker images" only runs on tag pushes, and the only tags pushed are
     # release-please's semver release tags — so every successful run is a
-    # release that should bump the chart. workflow_run's head_branch carries
-    # the tag name for tag-triggered runs.
+    # release that should bump the chart.
     if: github.event.workflow_run.conclusion == 'success'
     # secrets: inherit forwards the org secrets RELEASE_APP_ID /
     # RELEASE_APP_PRIVATE_KEY that the reusable workflow needs.
