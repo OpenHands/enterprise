@@ -1,12 +1,12 @@
 # Reusable workflow: build a multi-arch Docker image and publish a merged manifest.
-# Called per image from .github/workflows/ghcr-build.yml.
+# Called from .github/workflows/ghcr-build.yml.
 name: Build and push multi-arch image
 
 on:
   workflow_call:
     inputs:
       image:
-        description: Fully-qualified image name (e.g. "ghcr.io/all-hands-ai/openhands").
+        description: Fully-qualified image name (e.g. "ghcr.io/openhands/enterprise-server").
         required: true
         type: string
       context:
@@ -18,6 +18,11 @@ on:
         description: Path to the Dockerfile.
         required: true
         type: string
+      target:
+        description: Dockerfile stage to build. Empty builds the last stage.
+        required: false
+        type: string
+        default: ""
       extra-build-args:
         description: Additional build-args (newline-separated). OPENHANDS_BUILD_VERSION is added automatically.
         required: false
@@ -80,6 +85,7 @@ jobs:
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
+          target: ${{ inputs.target }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -95,7 +101,7 @@ jobs:
           sbom: ${{ inputs.sbom }}
 
   merge:
-    name: Merge ${{ inputs.image }} manifest
+    name: Merge manifest
     runs-on: ubuntu-22.04
     needs: build
     permissions:

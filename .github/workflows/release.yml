@@ -1,11 +1,14 @@
 name: release
 
-# Single release line for the whole repo (semver X.Y.Z tags).
+# Single release line for the whole repo (semver X.Y.Z tags), picking up where
+# the cloud-X.Y.Z line stopped: cloud-1.47.1 is also tagged 1.47.1 here, and the
+# manifest starts from that version.
 #
-# BOOTSTRAP: the config sets a top-level `last-release-sha` to bound the first
-# release's notes (the existing tags aren't reachable from main). Delete that
-# line once the first release PR has merged — it caps every run, not just the
-# first.
+# BOOTSTRAP: the config sets a top-level `last-release-sha` pointing at the
+# 1.47.1 commit, so the first release's notes only cover what landed after it —
+# that tag has no GitHub release for release-please to find on its own. Delete
+# that line once the first release PR has merged; it caps every run, not just
+# the first.
 on:
   push:
     branches:

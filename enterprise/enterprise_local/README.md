@@ -98,23 +98,16 @@ export REDIS_PORT=6379
 
 (see above)
 
-### 2. Build OpenHands
+### 2. Build SAAS Openhands
 
-Develop on [Openhands](https://github.com/OpenHands/OpenHands) locally. When ready, run the following inside Openhands repo (not the Deploy repo)
-
-```
-docker build -f containers/app/Dockerfile -t openhands .
-```
-
-### 3. Build SAAS Openhands
-
-Build the SAAS image locally inside Deploy repo. Note that `openhands` is the name of the image built in Step 2
+The app and the enterprise layers are stages of one Dockerfile, so a single build
+from the repo root produces the image:
 
 ```
-docker build -t openhands-saas ./app/ --build-arg BASE="openhands"
+docker build -f containers/app/Dockerfile -t openhands-saas .
 ```
 
-### 4. Create a tunnel
+### 3. Create a tunnel
 
 Run in a separate terminal
 
@@ -128,13 +121,13 @@ There will be a line
 Forwarding                    https://bc71-2603-7000-5000-1575-e4a6-697b-589e-5801.ngrok-free.app
 ```
 
-Remember this URL as it will be used in Step 5 and 6
+Remember this URL as it will be used in Step 4 and 5
 
-### 5. Setup Staging Github App callback/webhook urls
+### 4. Setup Staging Github App callback/webhook urls
 
-Using the URL found in Step 4, add another callback URL (`https://bc71-2603-7000-5000-1575-e4a6-697b-589e-5801.ngrok-free.app/oauth/github/callback`)
+Using the URL found in Step 3, add another callback URL (`https://bc71-2603-7000-5000-1575-e4a6-697b-589e-5801.ngrok-free.app/oauth/github/callback`)
 
-### 6. Run
+### 5. Run
 
 This is the last step! Run SAAS openhands locally using
 
@@ -144,7 +137,7 @@ docker run --env-file ./app/.env -p 3000:3000 openhands-saas
 
 Note `--env-file` is what injects the `.env` file created in Step 1
 
-Visit the tunnel domain found in Step 4 to run the app (`https://bc71-2603-7000-5000-1575-e4a6-697b-589e-5801.ngrok-free.app`)
+Visit the tunnel domain found in Step 3 to run the app (`https://bc71-2603-7000-5000-1575-e4a6-697b-589e-5801.ngrok-free.app`)
 
 ### Local Debugging with VSCode
 
