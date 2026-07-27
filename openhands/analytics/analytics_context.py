@@ -80,6 +80,7 @@ async def resolve_analytics_context(user_id: str) -> AnalyticsContext:
         if user is None:
             return AnalyticsContext(user_id=user_id, **_SAFE_DEFAULT_KWARGS)
 
+        # None = undecided = not consented (same logic as auth.py)
         consented = user.user_consents_to_analytics is True
         org_id = str(user.current_org_id) if user.current_org_id else None
 
