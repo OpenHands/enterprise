@@ -65,5 +65,4 @@ class UserAppSettingsStore:
         user.sync_analytics_consent_with_tos()
         await self.db_session.flush()
         await self.db_session.refresh(user)
-        user.sync_analytics_consent_with_tos()
         return user
