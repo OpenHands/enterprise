@@ -358,7 +358,10 @@ class TestProcessSandboxServiceInjector:
         """Test default configuration values."""
         injector = ProcessSandboxServiceInjector()
 
-        assert injector.base_working_dir == '/tmp/openhands-sandboxes'
+        # Not hardcoded to /tmp: gettempdir() is /var/folders/... on macOS.
+        assert injector.base_working_dir == os.path.join(
+            tempfile.gettempdir(), 'openhands-sandboxes'
+        )
         assert injector.base_port == 8000
         assert injector.health_check_path == '/alive'
         assert injector.agent_server_module == 'openhands.agent_server'

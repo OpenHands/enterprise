@@ -8,7 +8,7 @@ on:
 
 jobs:
   check-package-versions:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Check for any 'rev' fields in pyproject.toml
+      - name: Check for unreleased (git/URL) dependency pins in pyproject.toml
         run: |
           python - <<'PY'
           import sys, tomllib, pathlib
@@ -35,31 +35,39 @@ jobs:
               print(f"❌ ERROR: Failed to parse pyproject.toml: {e}")
               sys.exit(1)
 
-          poetry = data.get("tool", {}).get("poetry", {})
-          sections = {
-              "dependencies": poetry.get("dependencies", {}),
-          }
+          sections = {"project.dependencies": data.get("project", {}).get("dependencies", [])}
+          for group, deps in data.get("dependency-groups", {}).items():
+              sections[f"dependency-groups.{group}"] = deps
 
           errors = []
 
-          print("🔍 Checking for any dependencies with 'rev' fields...\n")
+          print("🔍 Checking for dependencies pinned to a git ref or URL...\n")
           for section_name, deps in sections.items():
-              if not isinstance(deps, dict):
-                  continue
-
-              for pkg_name, cfg in deps.items():
-                  if isinstance(cfg, dict) and "rev" in cfg:
-                      msg = f"  ✖ {pkg_name} in [{section_name}] uses rev='{cfg['rev']}' (NOT ALLOWED)"
+              for dep in deps:
+                  if not isinstance(dep, str):
+                      continue
+                  # A PEP 508 direct reference ("name @ git+https://...@<rev>") is the
+                  # only way to pin an unreleased commit in a requirement string.
+                  if "@" in dep.split(";")[0] or "://" in dep:
+                      msg = f"  ✖ {dep!r} in [{section_name}] is a direct reference (NOT ALLOWED)"
                       print(msg)
                       errors.append(msg)
                   else:
-                      print(f"  • {pkg_name}: OK")
+                      print(f"  • {dep}: OK")
+
+          # uv can also redirect a released name to a git ref via [tool.uv.sources].
+          for pkg, src in data.get("tool", {}).get("uv", {}).get("sources", {}).items():
+              for entry in (src if isinstance(src, list) else [src]):
+                  if isinstance(entry, dict) and ("git" in entry or "url" in entry):
+                      msg = f"  ✖ {pkg} in [tool.uv.sources] points at {entry} (NOT ALLOWED)"
+                      print(msg)
+                      errors.append(msg)
 
           if errors:
-              print("\n❌ FAILED: Found dependencies using 'rev' fields:\n" + "\n".join(errors))
+              print("\n❌ FAILED: Found dependencies pinned to a git ref or URL:\n" + "\n".join(errors))
               print("\nPlease use versioned releases instead, e.g.:")
-              print('  my-package = "1.0.0"')
+              print('  "my-package==1.0.0"')
               sys.exit(1)
 
-          print("\n✅ SUCCESS: No 'rev' fields found. All dependencies are using proper versioned releases.")
+          print("\n✅ SUCCESS: No git/URL pins found. All dependencies are using proper versioned releases.")
           PY

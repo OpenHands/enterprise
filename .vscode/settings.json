@@ -9,7 +9,9 @@
     "python.analysis.autoImportCompletions": true,
     "python.analysis.autoSearchPaths": true,
     "python.analysis.extraPaths": [
-        "./.venv/lib/python3.12/site-packages"
+        "./.venv/lib/python3.12/site-packages",
+        // enterprise/ code imports its packages unprefixed ("from storage.base import Base")
+        "./enterprise"
     ],
     "python.analysis.packageIndexDepths": [
         {
