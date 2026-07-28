@@ -12,13 +12,6 @@ repos:
         files: ^enterprise/
       - id: debug-statements
         files: ^enterprise/
-  - repo: https://github.com/abravalheri/validate-pyproject
-    rev: v0.24.1
-    hooks:
-      - id: validate-pyproject
-        types: [toml]
-        files: ^enterprise/pyproject\.toml$
-
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
     rev: v0.12.5

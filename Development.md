@@ -27,7 +27,7 @@ You'll need the following installed:
 
 - **Python 3.12** — `brew install python@3.12` (see the [official Homebrew Python docs](https://docs.brew.sh/Homebrew-and-Python) for details). Make sure `python3.12` is available in your PATH (the `make build` step will verify this).
 - **Node.js >= 22** — `brew install node`
-- **Poetry >= 1.8** — `brew install poetry`
+- **uv >= 0.11** — `brew install uv`
 - **Docker Desktop** — `brew install --cask docker`
   - After installing, open Docker Desktop → **Settings → Advanced** → Enable **"Allow the default Docker socket to be used"**
 
@@ -63,7 +63,11 @@ make start-backend  # Backend only on port 3000
 make start-frontend # Frontend only on port 3001
 ```
 
-These targets serve the current OpenHands V1 API by default. In the codebase, `make start-backend` runs `openhands.server.listen:app`, and that app includes the `openhands/app_server` V1 routes unless `ENABLE_V1=0`.
+`make start-backend` runs the enterprise server (`saas_server:app`), which layers the
+enterprise routes on top of `openhands.server.listen:app` and its `openhands/app_server`
+V1 routes. It needs Keycloak, Postgres and a `.env` — see
+[enterprise/enterprise_local/README.md](./enterprise/enterprise_local/README.md) for that setup.
+To run the plain app instead, use `uv run uvicorn openhands.server.listen:app --port 3000`.
 
 ---
 
@@ -92,10 +96,10 @@ sudo apt install -y python3.12 python3.12-dev python3.12-venv
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 
-# Install Poetry
-curl -sSL https://install.python-poetry.org | python3 -
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Add Poetry to your PATH
+# Add uv to your PATH
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 
@@ -158,7 +162,7 @@ After installation, restart your computer and open Ubuntu.
 
 ### 2. Install Prerequisites (in WSL Ubuntu)
 
-Follow [Step 1 from the Linux setup](#1-install-prerequisites-1) to install system dependencies, Python 3.12, Node.js, and Poetry. Skip the Docker installation — Docker is provided through Docker Desktop below.
+Follow [Step 1 from the Linux setup](#1-install-prerequisites-1) to install system dependencies, Python 3.12, Node.js, and uv. Skip the Docker installation — Docker is provided through Docker Desktop below.
 
 ### 3. Configure Docker for WSL2
 
@@ -247,10 +251,10 @@ If you want to develop without system admin/sudo access to upgrade/install `Pyth
 curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
 bash Miniforge3-$(uname)-$(uname -m).sh
 
-# Install Python 3.12, nodejs, and poetry
+# Install Python 3.12, nodejs, and uv
 mamba install python=3.12
 mamba install conda-forge::nodejs
-mamba install conda-forge::poetry
+mamba install conda-forge::uv
 ```
 
 ---
@@ -297,15 +301,25 @@ Logs will be saved to `logs/llm/CURRENT_DATE/` for troubleshooting.
 ### Unit Tests
 
 ```bash
-poetry run pytest ./tests/unit/test_*.py
+# App tests
+uv run pytest ./tests/unit
+
+# Enterprise server tests
+uv run pytest ./enterprise/tests/unit
+
+# Both
+make test-backend
 ```
 
 ---
 
 ## Adding Dependencies
 
-1. Add your dependency in `pyproject.toml` or use `poetry add xxx`
-2. Update the lock file: `poetry lock --no-update`
+The repo root is the only Python project: `pyproject.toml` and `uv.lock` cover both
+the `openhands` package and the enterprise server under `enterprise/`.
+
+1. Add your dependency with `uv add xxx` (or `uv add --group dev xxx` for tooling)
+2. Commit the resulting `pyproject.toml` and `uv.lock` changes together
 
 ---
 

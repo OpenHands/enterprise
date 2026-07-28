@@ -32,16 +32,10 @@ and see the changes in real-time.
 This option works best for most scenarios. The only thing it's missing is
 the GitHub events webhook, which is not necessary for most development.
 
-### 1. OpenHands location
+### 1. Install dependencies
 
-The open source OpenHands repo should be cloned as a sibling directory,
-in `../OpenHands`. This is hard-coded in the pyproject.toml (edit if necessary)
-
-If you're doing this the first time, you may need to run
-
-```
-poetry update openhands-ai
-```
+The enterprise server is part of the repo-root uv project, so a single `make build`
+from the repo root installs everything it needs.
 
 ### 2. Set up env
 
@@ -69,9 +63,13 @@ export LOG_PLAIN_TEXT=1
 
 ### 3. Start the OpenHands frontend
 
-Start the frontend like you normally would in the open source OpenHands repo.
+```
+make start-frontend
+```
 
 ### 4. Start the SaaS backend
+
+From the repo root (`make start-backend` runs `saas_server:app`):
 
 ```
 make build
@@ -152,8 +150,8 @@ A Local redis instance is required for clustered communication between server no
 
 A Local postgres instance is required. I used the official docker image:
 `docker run -p 5432:5432 --name my-postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=openhands -d postgres`
-Run the alembic migrations:
-`poetry run alembic upgrade head`
+Run the alembic migrations from this repo's `enterprise/` directory:
+`cd enterprise && uv run alembic upgrade head`
 
 > **Note:** By default, migrations use the `pg8000` driver (matching production,
 > which connects through the Cloud SQL connector on pg8000). To use psycopg2 instead,

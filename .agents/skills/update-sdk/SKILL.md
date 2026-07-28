@@ -11,24 +11,24 @@ Bump SDK packages (`openhands-sdk`, `openhands-agent-server`, `openhands-tools`)
 
 | Activity | Manual edits | Auto-regenerated | Total |
 |----------|:------------:|:----------------:|:-----:|
-| **SDK bump** (released PyPI version) | 2 | 3 | **5** |
-| **SDK pin** (unreleased git commit) | 3 | 3 | **6** |
+| **SDK bump** (released PyPI version) | 2 | 1 | **3** |
+| **SDK pin** (unreleased git commit) | 3 | 1 | **4** |
 | **Release commit** (version bump) | 3 | 0 | **3** |
 
-The 3 auto-regenerated files are always: `poetry.lock`, `uv.lock`, `enterprise/poetry.lock`.
+The auto-regenerated file is always `uv.lock` — the repo root is the only Python project.
 
-## SDK Package Bump — 2 Files + 3 Lock Files
+## SDK Package Bump — 2 Files + 1 Lock File
 
 Land as a separate PR before the release. Examples: `929dcc3` (SDK 1.11.5), `cd235cc` (SDK 1.11.4).
 
 | File | What to change |
 |------|----------------|
-| `pyproject.toml` | `openhands-sdk`, `openhands-agent-server`, `openhands-tools` in **two** sections: the `dependencies` array (PEP 508) **and** `[tool.poetry.dependencies]` |
+| `pyproject.toml` | `openhands-sdk`, `openhands-agent-server`, `openhands-tools` in the `[project] dependencies` array (PEP 508) |
 | `openhands/app_server/sandbox/sandbox_spec_service.py` | `AGENT_SERVER_IMAGE` constant — set to `ghcr.io/openhands/agent-server:<version>-python` |
 
-Then regenerate lock files:
+Then regenerate the lock file:
 ```bash
-poetry lock && uv lock && cd enterprise && poetry lock && cd ..
+uv lock
 ```
 
 ## Docker Image Locations — All Hardcoded References
@@ -59,7 +59,7 @@ A release commit updates the version string across 3 files. Gold-standard exampl
 
 | File | What to change |
 |------|----------------|
-| `pyproject.toml` | `version = "X.Y.Z"` under `[tool.poetry]` |
+| `pyproject.toml` | `version = "X.Y.Z"` under `[project]` |
 | `frontend/package.json` | `"version": "X.Y.Z"` |
 | `frontend/package-lock.json` | `"version": "X.Y.Z"` in **two** places (root object and `packages[""]`) |
 
@@ -103,17 +103,15 @@ Requires the commit to already be built. If you push the tag too early, the reta
 
 For detailed examples of all pinning formats (commit, branch, uv-only), see `references/sdk-pinning-examples.md`.
 
-### Files to change (3 manual + 3 lock files)
+### Files to change (3 manual + 1 lock file)
 
 | File | What to change |
 |------|----------------|
-| `pyproject.toml` | Pin all 3 SDK packages in **both** `dependencies` and `[tool.poetry.dependencies]` |
+| `pyproject.toml` | Pin all 3 SDK packages in `[project] dependencies` |
 | `openhands/app_server/sandbox/sandbox_spec_service.py` | `AGENT_SERVER_IMAGE` — use the merge-commit SHA tag, NOT the head-commit SHA |
 | `docker-compose.yml` | `AGENT_SERVER_IMAGE_TAG` default (for local development) |
-| `poetry.lock` | Auto-regenerated via `poetry lock` |
 | `uv.lock` | Auto-regenerated via `uv lock` |
-| `enterprise/poetry.lock` | Auto-regenerated via `cd enterprise && poetry lock` |
 
 ### CI guard
 
-The `check-package-versions.yml` workflow blocks merging to `main` if `[tool.poetry.dependencies]` contains any `rev` fields. This ensures unreleased SDK pins do not accidentally ship in a release.
+The `check-package-versions.yml` workflow blocks merging to `main` if `[project] dependencies` (or `[tool.uv.sources]`) pins a package to a git ref or URL. This ensures unreleased SDK pins do not accidentally ship in a release.

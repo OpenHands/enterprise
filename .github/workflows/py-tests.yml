@@ -15,6 +15,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ (github.head_ref && github.ref) || github.run_id }}
   cancel-in-progress: true
 
+env:
+  # `exclude-newer-package = { ... = false }` in pyproject.toml needs uv >= 0.11.
+  UV_VERSION: "0.11.32"
+
 jobs:
   # Run python tests on Linux
   test-on-linux:
@@ -22,6 +26,9 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       INSTALL_DOCKER: "0" # Set to '0' to skip Docker installation
+      # Pin the interpreter the Makefile picks, so `make build` reuses the venv
+      # this job already synced instead of rebuilding it on another version.
+      PYTHON: python${{ matrix.python-version }}
     strategy:
       matrix:
         python-version: ["3.12"]
@@ -42,22 +49,21 @@ jobs:
           node-version: "22.x"
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
-      - name: Install poetry via pipx
-        run: pipx install poetry
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-          cache: "poetry"
-      - name: Install Python dependencies using Poetry
-        run: |
-          poetry install --with dev,test,runtime
-          poetry run pip install pytest-xdist
-          poetry run pip install pytest-rerunfailures
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install Python dependencies
+        run: uv sync --python "$PYTHON" --all-groups
       - name: Build Environment
         run: make build
       - name: Run Unit Tests
-        run: PYTHONPATH=".:$PYTHONPATH" poetry run pytest --forked -n auto -s ./tests/unit --cov=openhands --cov-branch
+        run: uv run pytest --forked -n auto -s ./tests/unit --cov=openhands --cov-branch
         env:
           COVERAGE_FILE: ".coverage.${{ matrix.python_version }}"
       - name: Store coverage file
@@ -77,19 +83,17 @@ jobs:
         python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v6
-      - name: Install poetry via pipx
-        run: pipx install poetry
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: "poetry"
-      - name: Install Python dependencies using Poetry
-        working-directory: ./enterprise
-        run: poetry install --with dev,test
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install Python dependencies
+        run: uv sync --python ${{ matrix.python-version }} --all-groups
       - name: Run Unit Tests
-        # Use base working directory for coverage paths to line up.
-        run: PYTHONPATH=".:$PYTHONPATH" poetry run --project=enterprise pytest --forked -n auto -s -p no:ddtrace -p no:ddtrace.pytest_bdd -p no:ddtrace.pytest_benchmark ./enterprise/tests/unit --cov=enterprise --cov-branch
+        # Run from the repo root so coverage paths line up. pytest.ini puts
+        # enterprise/ on sys.path and disables the ddtrace plugins.
+        run: uv run pytest --forked -n auto -s ./enterprise/tests/unit --cov=enterprise --cov-branch
         env:
           COVERAGE_FILE: ".coverage.enterprise.${{ matrix.python_version }}"
       - name: Store coverage file
@@ -102,7 +106,7 @@ jobs:
   coverage-comment:
     name: Coverage Comment
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [test-on-linux, test-enterprise]
 
     permissions:

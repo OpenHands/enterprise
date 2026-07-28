@@ -32,7 +32,7 @@ These files contain image tags that **must** be updated whenever the SDK version
 ## Updated During Release Commit (version string only)
 
 ### `pyproject.toml`
-- **Line:** `version = "X.Y.Z"` under `[tool.poetry]`
+- **Line:** `version = "X.Y.Z"` under `[project]`
 - The Python version is derived from this at runtime via `openhands/version.py`
 
 ### `frontend/package.json`

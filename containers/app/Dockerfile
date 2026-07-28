@@ -20,20 +20,30 @@ FROM base AS backend-builder
 WORKDIR /app
 ENV PYTHONPATH='/app'
 
-ENV POETRY_NO_INTERACTION=1 \
-    POETRY_VIRTUALENVS_IN_PROJECT=1 \
-    POETRY_VIRTUALENVS_CREATE=1 \
-    POETRY_CACHE_DIR=/tmp/poetry_cache
+# One venv for the whole repo — uv.lock covers the app and the enterprise server,
+# so the enterprise stage below has nothing left to install.
+#
+# UV_PYTHON/UV_PYTHON_DOWNLOADS pin the venv to the base image's interpreter. A
+# uv-managed CPython would live outside the venv and not survive the COPY into
+# the next stage, leaving a venv whose interpreter symlink dangles.
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_PYTHON=/usr/local/bin/python3 \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_NO_CACHE=1
 
-# Pin Poetry version to match the version used to generate poetry.lock
-ARG POETRY_VERSION=2.3.4
+# Pin uv to the version used to generate uv.lock
+ARG UV_VERSION=0.11.32
 RUN apt-get update -y \
     && apt-get install -y curl make git build-essential jq gettext \
-    && python3 -m pip install "poetry==${POETRY_VERSION}" --break-system-packages
+    && python3 -m pip install "uv==${UV_VERSION}" --break-system-packages
 
-COPY pyproject.toml poetry.lock ./
+COPY pyproject.toml uv.lock ./
 RUN touch README.md
-RUN export POETRY_CACHE_DIR && poetry install --no-root && rm -rf $POETRY_CACHE_DIR
+# --no-install-project: the `openhands` package is copied onto PYTHONPATH below
+# rather than installed, so the image serves the source tree it was built from.
+RUN uv sync --frozen --no-default-groups --no-install-project
 
 FROM base AS openhands-app
 
@@ -80,20 +90,18 @@ ENV VIRTUAL_ENV=/app/.venv \
 
 COPY --chown=openhands:openhands --chmod=770 --from=backend-builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
 
-# Pin pip to a known-good version (reproducible builds) and fix CVE-2025-8869
-# Pin both venv pip and system pip (Trivy scans both)
-# - `python -m pip` uses the venv because `PATH` is prefixed with `${VIRTUAL_ENV}/bin`
-# - `/usr/local/bin/python3 -m pip` uses the system interpreter regardless of `PATH`
+# Pin the system pip to a known-good version (reproducible builds) and fix
+# CVE-2025-8869. Trivy scans it even though nothing here uses it: uv installs
+# into the venv directly, so the venv itself has no pip to pin.
+# `/usr/local/bin/python3` is the system interpreter regardless of `PATH`.
 ARG PIP_VERSION=26.0.1
-RUN python -m pip install --no-cache-dir "pip==${PIP_VERSION}"
-
 USER root
 RUN /usr/local/bin/python3 -m pip install --no-cache-dir "pip==${PIP_VERSION}" --break-system-packages
 USER openhands
 
 COPY --chown=openhands:openhands --chmod=770 ./skills ./skills
 COPY --chown=openhands:openhands --chmod=770 ./openhands ./openhands
-COPY --chown=openhands:openhands pyproject.toml poetry.lock README.md MANIFEST.in LICENSE ./
+COPY --chown=openhands:openhands pyproject.toml uv.lock README.md LICENSE ./
 
 # Add this line to set group ownership of all files/directories not already in "app" group
 # openhands:openhands -> openhands:openhands
@@ -136,25 +144,10 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Install poetry and export before importing current code.
-RUN /app/.venv/bin/pip install poetry poetry-plugin-export
-
-# Install Python dependencies from poetry.lock for reproducible builds
-# Copy lock files first for better Docker layer caching
-COPY --chown=openhands:openhands enterprise/pyproject.toml enterprise/poetry.lock /tmp/enterprise/
-RUN cd /tmp/enterprise && \
-    # Export only main dependencies with hashes for supply chain security
-    /app/.venv/bin/poetry export --only main -o requirements.txt && \
-    # Remove the local path dependency (openhands-ai is already installed)
-    sed -i '/^-e /d; /openhands-ai/d' requirements.txt && \
-    # Install pinned dependencies from lock file
-    /app/.venv/bin/pip install -r requirements.txt && \
-    # Cleanup - return to /app before removing /tmp/enterprise
-    cd /app && \
-    rm -rf /tmp/enterprise && \
-    /app/.venv/bin/pip uninstall -y poetry poetry-plugin-export
-
 WORKDIR /app
+# Enterprise dependencies are already in the venv (one uv.lock for the repo), so
+# this only adds source. It lands flattened at /app — /app/server, /app/storage,
+# etc. — which is why enterprise code imports them unprefixed.
 COPY --chown=openhands:openhands --chmod=770 enterprise .
 
 # Default the enterprise service-injector kinds in the image (overridable via env).
