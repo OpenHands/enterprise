@@ -635,6 +635,7 @@ class TestSandboxLifecycle:
         )
         remote_sandbox_service._get_runtime = AsyncMock(return_value=runtime_data)
         remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        remote_sandbox_service._commit_session_api_key_hash = AsyncMock()
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -644,11 +645,14 @@ class TestSandboxLifecycle:
         result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
 
         assert result is True
-        assert stored_sandbox.session_api_key_hash == _hash_session_api_key(
-            'new-session-key-123'
+        expected_hash = _hash_session_api_key('new-session-key-123')
+        assert stored_sandbox.session_api_key_hash == expected_hash
+        # The rotated hash goes to its own transaction so the credential callback
+        # can authenticate it; committing the shared request session here would
+        # flush the caller's own pending work.
+        remote_sandbox_service._commit_session_api_key_hash.assert_awaited_once_with(
+            'test-sandbox-123', expected_hash
         )
-        # The rotated hash is staged for the caller's transaction; committing the
-        # shared request session here would flush the caller's own pending work.
         remote_sandbox_service.db_session.commit.assert_not_awaited()
         remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(9)
         remote_sandbox_service.httpx_client.request.assert_called_once_with(
@@ -3028,3 +3032,121 @@ class TestArchiveRequestParams:
             '/workspace/project', 'git-delta'
         )
         assert params == {'path': '/workspace/project', 'format': 'git-delta'}
+
+
+class TestResumeKeyPersistenceHazards:
+    """Adversarial coverage for the isolated-transaction key persist."""
+
+    @pytest.fixture
+    async def async_engine(self, tmp_path):
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from openhands.app_server.utils.sql_utils import Base
+
+        engine = create_async_engine(
+            f'sqlite+aiosqlite:///{tmp_path / "hazards.db"}',
+            connect_args={'check_same_thread': False},
+            echo=False,
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        yield engine
+        await engine.dispose()
+
+    @pytest.fixture
+    def session_maker(self, async_engine):
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        return async_sessionmaker(
+            async_engine, class_=AsyncSession, expire_on_commit=False
+        )
+
+    @pytest.fixture
+    async def real_session(self, session_maker):
+        async with session_maker() as session:
+            yield session
+
+    @pytest.fixture
+    def service(self, mock_sandbox_spec_service, mock_user_context, real_session):
+        svc = RemoteSandboxService(
+            sandbox_spec_service=mock_sandbox_spec_service,
+            api_url='https://api.example.com',
+            api_key='test-api-key',
+            web_url='https://web.example.com',
+            resource_factor=1,
+            runtime_class='gvisor',
+            start_sandbox_timeout=120,
+            max_num_sandboxes=10,
+            user_context=mock_user_context,
+            httpx_client=AsyncMock(spec=httpx.AsyncClient),
+            db_session=real_session,
+        )
+        svc._has_managed_credential_conversation = AsyncMock(return_value=False)
+        return svc
+
+    def _wire_resume(self, service, key='new-session-key'):
+        runtime_data = create_runtime_data(session_api_key=key, status='running')
+        service._get_runtime = AsyncMock(return_value=runtime_data)
+        service._send_runtime_api_request = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={'session_api_key': key},
+                request=httpx.Request('POST', 'https://api.example.com/resume'),
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_blocked_persist_fails_loudly_instead_of_silently(
+        self, service, real_session
+    ):
+        """A single-writer backend cannot commit the rotated hash while the
+        request session already holds a write. That must surface as a retryable
+        failure, never as a resume that reports success while the callback still
+        sees the old key -- the silent mode that broke managed reactivation."""
+        from openhands.app_server.sandbox.remote_sandbox_service import (
+            _hash_session_api_key,
+        )
+
+        target = create_stored_sandbox('sb-resume')
+        other = create_stored_sandbox(
+            'sb-other', session_api_key_hash=_hash_session_api_key('other-key')
+        )
+        real_session.add_all([target, other])
+        await real_session.commit()
+
+        # Exactly what pause_sandbox leaves staged; flushed so the outer
+        # transaction genuinely holds the write lock.
+        other.session_api_key_hash = None
+        await real_session.flush()
+
+        self._wire_resume(service)
+        service.pause_old_sandboxes = AsyncMock(return_value=['sb-other'])
+
+        with pytest.raises(SandboxError, match='Could not persist rotated session key'):
+            await service.resume_sandbox('sb-resume')
+
+    @pytest.mark.asyncio
+    async def test_persist_survives_outer_rollback(
+        self, service, real_session, session_maker
+    ):
+        """The runtime already rotated the key, so the hash must persist even if
+        the surrounding request rolls back."""
+        target = create_stored_sandbox('sb-rb')
+        real_session.add(target)
+        await real_session.commit()
+
+        self._wire_resume(service, key='rb-key')
+        service.pause_old_sandboxes = AsyncMock(return_value=[])
+        assert await service.resume_sandbox('sb-rb') is True
+
+        await real_session.rollback()
+
+        async with session_maker() as check:
+            svc2 = replace(service, db_session=check)
+            svc2._get_runtime = AsyncMock(
+                return_value=create_runtime_data(
+                    session_api_key='rb-key', status='running'
+                )
+            )
+            found = await svc2.get_sandbox_by_session_api_key('rb-key')
+        assert found is not None and found.id == 'sb-rb'

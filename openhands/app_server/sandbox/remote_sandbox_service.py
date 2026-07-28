@@ -12,8 +12,8 @@ import base62
 import httpx
 from fastapi import Request
 from pydantic import Field
-from sqlalchemy import String, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import String, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
 
 from openhands.agent_server.models import (
@@ -517,6 +517,47 @@ class RemoteSandboxService(SandboxService):
             _logger.exception('Failed to start sandbox', stack_info=True)
             raise SandboxError('Failed to start sandbox') from e
 
+    async def _commit_session_api_key_hash(
+        self, sandbox_id: str, session_api_key_hash: str
+    ) -> None:
+        """Persist a rotated key hash in its own committed transaction.
+
+        The credential callback authenticates on a separate request with its own
+        session, and the Agent Server probes it synchronously during activation.
+        It therefore has to observe the rotated hash while this request is still
+        open. Committing the shared request session instead would flush whatever
+        unrelated lifecycle work the caller has staged on it.
+        """
+        bind = self.db_session.bind
+        if bind is None:
+            raise SandboxError(
+                f'Cannot persist rotated session key for sandbox {sandbox_id}: '
+                'the request session has no engine bound'
+            )
+        session_maker = async_sessionmaker(
+            bind, class_=AsyncSession, expire_on_commit=False
+        )
+        try:
+            async with session_maker() as session:
+                await session.execute(
+                    update(StoredRemoteSandbox)
+                    .where(StoredRemoteSandbox.id == sandbox_id)
+                    .values(session_api_key_hash=session_api_key_hash)
+                )
+                await session.commit()
+        except Exception as e:
+            # Never let this degrade into a silent success: an uncommitted hash
+            # means the callback rejects the rotated key and activation hangs.
+            # A single-writer backend blocks here whenever the request session
+            # already holds a write, so surface it as a retryable failure.
+            _logger.exception(
+                f'Could not persist rotated session key for sandbox {sandbox_id}',
+                stack_info=True,
+            )
+            raise SandboxError(
+                f'Could not persist rotated session key for sandbox {sandbox_id}'
+            ) from e
+
     async def resume_sandbox(self, sandbox_id: str) -> bool:
         """Resume a paused sandbox.
 
@@ -546,9 +587,12 @@ class RemoteSandboxService(SandboxService):
             response_data = response.json()
             new_session_api_key = response_data.get('session_api_key')
             if new_session_api_key:
-                stored_sandbox.session_api_key_hash = _hash_session_api_key(
-                    new_session_api_key
-                )
+                hashed = _hash_session_api_key(new_session_api_key)
+                # Commit before staging it locally: the outer session must not
+                # hold a write lock on this row while the isolated transaction
+                # runs, or the two block each other.
+                await self._commit_session_api_key_hash(sandbox_id, hashed)
+                stored_sandbox.session_api_key_hash = hashed
                 _logger.info(
                     f'Updated session_api_key_hash for sandbox {sandbox_id} after resume'
                 )
