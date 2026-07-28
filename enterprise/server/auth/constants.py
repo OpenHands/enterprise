@@ -70,7 +70,7 @@ BITBUCKET_DATA_CENTER_CLIENT_SECRET = os.getenv(
     'BITBUCKET_DATA_CENTER_CLIENT_SECRET', ''
 ).strip()
 BITBUCKET_DATA_CENTER_HOST = os.getenv('BITBUCKET_DATA_CENTER_HOST', '').strip()
-BITBUCKET_DC_CONNECT_TIMEOUT = float(os.getenv('BITBUCKET_DC_CONNECT_TIMEOUT', '3'))
+BITBUCKET_DC_CONNECT_TIMEOUT = float(os.getenv('BITBUCKET_DC_CONNECT_TIMEOUT', '5'))
 BITBUCKET_DC_USERINFO_TIMEOUT = float(os.getenv('BITBUCKET_DC_USERINFO_TIMEOUT', '10'))
 # Optional HTTP access token for a dedicated bot service account. When set,
 # OpenHands posts all Bitbucket Data Center comments/reactions as this bot
