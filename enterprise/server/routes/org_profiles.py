@@ -389,6 +389,7 @@ async def activate_profile(
         member_diff = dict(member.agent_settings_diff or {})
         member_diff['llm'] = llm_dump
         member.agent_settings_diff = member_diff
+        member.agent_settings = None
 
     return ActivateProfileResponse(
         name=name,

@@ -1212,7 +1212,7 @@ async def test_store_and_load_mcp_config_via_agent_settings(
 async def test_mcp_config_is_encrypted_at_rest(
     async_session_maker, org_with_multiple_members_fixture
 ):
-    """Keep MCP credentials out of raw database values."""
+    """Keep MCP and LLM credentials out of raw database values."""
     import json
 
     from sqlalchemy import select, text
@@ -1241,11 +1241,13 @@ async def test_mcp_config_is_encrypted_at_rest(
 
     async with async_session_maker() as session:
         rows = (
-            await session.execute(text('SELECT user_id, mcp_config FROM org_member'))
+            await session.execute(
+                text('SELECT user_id, mcp_config, agent_settings FROM org_member')
+            )
         ).all()
-        raw = next(
-            value
-            for user_id, value in rows
+        raw_mcp, raw_agent_settings = next(
+            (mcp, agent_settings)
+            for user_id, mcp, agent_settings in rows
             if str(user_id).replace('-', '') == admin_user_id.hex
         )
         member = (
@@ -1254,13 +1256,108 @@ async def test_mcp_config_is_encrypted_at_rest(
             )
         ).scalar_one()
 
-    assert 'database-secret' not in raw
+    assert 'database-secret' not in raw_mcp
     with pytest.raises(json.JSONDecodeError):
-        json.loads(raw)
+        json.loads(raw_mcp)
+
+    snapshot = (
+        json.loads(raw_agent_settings)
+        if isinstance(raw_agent_settings, str)
+        else raw_agent_settings
+    )
+    assert snapshot['schema_version'] == 5
+    assert 'mcpServers' not in snapshot['mcp_config']
+    assert 'database-secret' not in json.dumps(snapshot)
+    assert 'test-api-key' not in json.dumps(snapshot)
+    assert snapshot['mcp_config']['private']['auth']['value'].startswith('gAAAAA.jwt.')
+    assert snapshot['llm']['api_key'].startswith('gAAAAA.jwt.')
+
     assert member.mcp_config is not None
     assert member.mcp_config['private']['auth'] == {
         'strategy': 'bearer',
         'value': 'database-secret',
+    }
+    assert member.effective_mcp_config is not None
+    assert member.effective_mcp_config['private']['auth'] == {
+        'strategy': 'bearer',
+        'value': 'database-secret',
+    }
+
+
+@pytest.mark.asyncio
+async def test_load_migrates_split_v5_settings_with_legacy_v4_mcp(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """Reproduce the revision-137 schema drift seen in staging.
+
+    The parent settings document was migrated to v5 while the separately
+    stored MCP fragment retained the v4 wrapper and scalar bearer auth.
+    """
+    from sqlalchemy import select
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    legacy_mcp_config = {
+        'mcpServers': {
+            'shttp': {
+                'url': 'https://example.com/mcp',
+                'timeout': 60,
+                'auth': 'legacy-bearer-token',
+            }
+        }
+    }
+
+    async with async_session_maker() as session:
+        member = (
+            await session.execute(
+                select(OrgMember)
+                .where(OrgMember.org_id == fixture['org_id'])
+                .where(OrgMember.user_id == admin_user_id)
+            )
+        ).scalar_one()
+        member.agent_settings = None
+        member.mcp_config = legacy_mcp_config
+        await session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await store.load()
+
+    assert loaded is not None
+    server = loaded.agent_settings.mcp_config['shttp']
+    assert server.url == 'https://example.com/mcp'
+    assert server.timeout == 60
+    assert server.auth is not None
+    assert server.auth.to_http_headers() == {
+        'Authorization': 'Bearer legacy-bearer-token'
+    }
+
+    # A normal round-trip writes the current full SDK document while retaining
+    # the old columns for a rollback-safe deployment.
+    with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
+        await store.store(loaded)
+
+    async with async_session_maker() as session:
+        member = (
+            await session.execute(
+                select(OrgMember)
+                .where(OrgMember.org_id == fixture['org_id'])
+                .where(OrgMember.user_id == admin_user_id)
+            )
+        ).scalar_one()
+
+    assert member.agent_settings is not None
+    assert member.agent_settings['schema_version'] == 5
+    assert 'mcpServers' not in member.agent_settings['mcp_config']
+    assert member.effective_mcp_config is not None
+    assert member.effective_mcp_config['shttp']['auth'] == {
+        'strategy': 'bearer',
+        'value': 'legacy-bearer-token',
     }
 
 

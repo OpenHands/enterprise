@@ -24,7 +24,13 @@ from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
 from storage.org import Org
 from storage.org_member import OrgMember
-from storage.org_member_store import OrgMemberStore, serialize_mcp_config
+from storage.org_member_store import (
+    OrgMemberStore,
+    compose_agent_settings,
+    deserialize_agent_settings,
+    serialize_agent_settings,
+    serialize_mcp_config,
+)
 from storage.org_store import OrgStore
 from storage.user import User
 from storage.user_settings import UserSettings
@@ -371,15 +377,44 @@ class SaasSettingsStore(SettingsStore):
         # legacy org-level values (older code paths broadcast mcp_config)
         # can no longer leak one member's private config to another. Each
         # member's own ``agent_settings_diff`` still supplies their values.
-        org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
-        for private_key in MEMBER_PRIVATE_AGENT_KEYS:
-            org_agent_settings_dump.pop(private_key, None)
-        merged_agent_settings = deep_merge(
-            org_agent_settings_dump,
-            member_agent_settings_diff,
-        )
-        if member_mcp_config is not None:
-            merged_agent_settings['mcp_config'] = member_mcp_config
+        merged_agent_settings: dict[str, Any]
+        if org_member.agent_settings is not None:
+            try:
+                member_agent_settings = deserialize_agent_settings(
+                    org_member.agent_settings
+                )
+                merged_agent_settings = member_agent_settings.model_dump(
+                    mode='json',
+                    context={'expose_secrets': 'plaintext'},
+                )
+            except Exception:
+                logger.warning(
+                    'Failed to load canonical agent settings for user %s in org %s; '
+                    'falling back to legacy settings columns',
+                    self.user_id,
+                    org_id,
+                    exc_info=True,
+                )
+                org_member.agent_settings = None
+                merged_agent_settings = {}
+        else:
+            merged_agent_settings = {}
+
+        if not merged_agent_settings:
+            org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
+            for private_key in MEMBER_PRIVATE_AGENT_KEYS:
+                org_agent_settings_dump.pop(private_key, None)
+            legacy_merged_agent_settings = deep_merge(
+                org_agent_settings_dump,
+                member_agent_settings_diff,
+            )
+            merged_agent_settings = compose_agent_settings(
+                legacy_merged_agent_settings,
+                member_mcp_config,
+            ).model_dump(
+                mode='json',
+                context={'expose_secrets': 'plaintext'},
+            )
         effective_llm_api_key = self._get_effective_llm_api_key(org, org_member)
         if effective_llm_api_key is not None:
             merged_agent_settings.setdefault('llm', {})['api_key'] = (
@@ -754,6 +789,14 @@ class SaasSettingsStore(SettingsStore):
                 # No member key, falling back to org default
                 org_member.has_custom_llm_api_key = False
 
+            snapshot_settings = item.agent_settings
+            if not item._mcp_config_updated and member_mcp_config is not None:
+                snapshot_settings = compose_agent_settings(
+                    item.agent_settings,
+                    member_mcp_config,
+                )
+            org_member.agent_settings = serialize_agent_settings(snapshot_settings)
+
             await session.commit()
 
     @classmethod
@@ -1034,6 +1077,7 @@ class SaasSettingsStore(SettingsStore):
             # before exposing the old token for cleanup.
             org_member.llm_api_key = SecretStr(new_key)
             org_member.has_custom_llm_api_key = False
+            org_member.agent_settings = None
             await session.commit()
 
             logger.info(

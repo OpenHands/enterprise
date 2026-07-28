@@ -7,12 +7,155 @@ from sqlalchemy.pool import StaticPool
 from storage.base import Base
 from storage.org import Org
 from storage.org_member import OrgMember
-from storage.org_member_store import OrgMemberStore
+from storage.org_member_store import OrgMemberStore, normalize_persisted_mcp_config
 from storage.role import Role
 from storage.user import User
 from storage.user_settings import UserSettings
 
 from openhands.app_server.settings.settings_models import Settings
+
+
+def test_normalize_persisted_mcp_config_handles_all_sdk_server_varieties():
+    migrated = normalize_persisted_mcp_config(
+        {
+            'mcpServers': {
+                'stdio': {
+                    'transport': 'stdio',
+                    'command': 'uvx',
+                    'args': ['mcp-server'],
+                    'cwd': '/workspace',
+                    'env': {'TOKEN': 'stdio-secret'},
+                },
+                'legacy-shttp-bearer': {
+                    'type': 'shttp',
+                    'url': 'https://bearer.example.com/mcp',
+                    'auth': 'bearer-secret',
+                    'timeout': 60,
+                },
+                'streamable-api-key': {
+                    'type': 'streamable-http',
+                    'url': 'https://api-key.example.com/mcp',
+                    'api_key': 'api-key-secret',
+                },
+                'sse-authorization': {
+                    'transport': 'sse',
+                    'url': 'https://sse.example.com/events',
+                    'headers': {
+                        'Authorization': 'Custom header-secret',
+                        'X-Other': 'other-secret',
+                    },
+                },
+                'typed-none': {
+                    'transport': 'http',
+                    'url': 'https://none.example.com/mcp',
+                    'auth': {'strategy': 'none'},
+                },
+                'typed-basic': {
+                    'url': 'https://basic.example.com/mcp',
+                    'auth': {
+                        'strategy': 'basic',
+                        'username': 'user',
+                        'password': 'basic-secret',
+                    },
+                },
+                'typed-header': {
+                    'url': 'https://header.example.com/mcp',
+                    'auth': {
+                        'strategy': 'header',
+                        'headers': {'X-API-Key': 'header-secret'},
+                    },
+                },
+                'legacy-oauth': {
+                    'url': 'https://oauth.example.com/mcp',
+                    'auth': 'oauth',
+                    'authentication': {
+                        'client_auth_method': 'client_secret_post',
+                        'client_id': 'client-id',
+                        'client_secret': 'client-secret',
+                    },
+                    'oauth_credentials': {
+                        'mcp-oauth-token': {
+                            'https://oauth.example.com/mcp/tokens': {
+                                'value': {
+                                    'access_token': 'access-secret',
+                                    'refresh_token': 'refresh-secret',
+                                }
+                            }
+                        }
+                    },
+                },
+                'typed-oauth': {
+                    'url': 'https://typed-oauth.example.com/mcp',
+                    'auth': {
+                        'strategy': 'oauth2',
+                        'authentication': {
+                            'type': 'oauth',
+                            'client_auth_method': 'none',
+                        },
+                        'state': {'tokens': {'access_token': 'typed-access-secret'}},
+                    },
+                },
+            }
+        }
+    )
+
+    assert migrated['stdio'] == {
+        'transport': 'stdio',
+        'command': 'uvx',
+        'args': ['mcp-server'],
+        'cwd': '/workspace',
+        'env': {'TOKEN': 'stdio-secret'},
+    }
+    assert migrated['legacy-shttp-bearer'] == {
+        'url': 'https://bearer.example.com/mcp',
+        'transport': 'http',
+        'timeout': 60.0,
+        'auth': {'strategy': 'bearer', 'value': 'bearer-secret'},
+    }
+    assert migrated['streamable-api-key'] == {
+        'url': 'https://api-key.example.com/mcp',
+        'transport': 'streamable-http',
+        'auth': {'strategy': 'api_key', 'value': 'api-key-secret'},
+    }
+    assert migrated['sse-authorization'] == {
+        'url': 'https://sse.example.com/events',
+        'transport': 'sse',
+        'headers': {'X-Other': 'other-secret'},
+        'auth': {
+            'strategy': 'header',
+            'headers': {'Authorization': 'Custom header-secret'},
+        },
+    }
+    assert migrated['typed-none']['auth'] == {'strategy': 'none'}
+    assert migrated['typed-basic']['auth'] == {
+        'strategy': 'basic',
+        'username': 'user',
+        'password': 'basic-secret',
+    }
+    assert migrated['typed-header']['auth'] == {
+        'strategy': 'header',
+        'headers': {'X-API-Key': 'header-secret'},
+    }
+    assert migrated['legacy-oauth']['auth'] == {
+        'strategy': 'oauth2',
+        'authentication': {
+            'type': 'oauth',
+            'client_auth_method': 'client_secret_post',
+            'client_id': 'client-id',
+            'client_secret': 'client-secret',
+        },
+        'state': {
+            'tokens': {
+                'access_token': 'access-secret',
+                'refresh_token': 'refresh-secret',
+            }
+        },
+    }
+    assert migrated['typed-oauth']['auth'] == {
+        'strategy': 'oauth2',
+        'authentication': {'type': 'oauth', 'client_auth_method': 'none'},
+        'state': {'tokens': {'access_token': 'typed-access-secret'}},
+    }
 
 
 def test_get_kwargs_from_user_settings_uses_agent_settings_as_source_of_truth():
@@ -1059,6 +1202,7 @@ async def test_update_all_members_settings_async_with_non_encrypted_fields(
                 'llm': {'model': 'old-model'},
                 'max_iterations': 10,
             },
+            agent_settings={'schema_version': 5, 'agent_kind': 'openhands'},
             status='active',
         )
         session.add(org_member)
@@ -1097,6 +1241,7 @@ async def test_update_all_members_settings_async_with_non_encrypted_fields(
             == 'https://new-url.com'
         )
         assert updated_member.agent_settings_diff['max_iterations'] == 50
+        assert updated_member.agent_settings is None
 
 
 @pytest.mark.asyncio

@@ -16,9 +16,10 @@ from server.routes.org_models import (
     OrgAppSettingsUpdate,
     OrgConcurrentModificationError,
 )
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from storage.org import Org
+from storage.org_member import OrgMember
 from storage.user import User
 
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
@@ -88,6 +89,11 @@ class OrgAppSettingsStore:
                         'base_url': get_default_llm_base_url(),
                     },
                 },
+            )
+            await self.db_session.execute(
+                update(OrgMember)
+                .where(OrgMember.org_id == org.id)
+                .values(agent_settings=None)
             )
             await self.db_session.flush()
             await self.db_session.refresh(org)

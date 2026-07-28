@@ -13,24 +13,92 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from storage.database import a_session_maker
+from storage.encrypt_utils import get_agent_settings_cipher
 from storage.org_member import OrgMember
 from storage.user import User
 from storage.user_settings import UserSettings
 
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
-from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
+from openhands.sdk.mcp.config import dump_mcp_config
+from openhands.sdk.settings import AgentSettingsConfig, validate_agent_settings
 
 _MISSING = object()
+_LEGACY_MCP_AGENT_SETTINGS_SCHEMA_VERSION = 4
+
+
+def normalize_persisted_mcp_config(value: object) -> dict[str, Any]:
+    """Migrate a standalone MCP fragment through the SDK's v4-v5 migration.
+
+    Revision 137 separated MCP from its parent settings object, so the SDK
+    could no longer see the schema version that described the fragment. Treat
+    standalone legacy data as v4, the last wrapped/scalar-auth representation,
+    and let the SDK return the current typed representation.
+    """
+    migrated = validate_agent_settings(
+        {
+            'schema_version': _LEGACY_MCP_AGENT_SETTINGS_SCHEMA_VERSION,
+            'mcp_config': {} if value is None else value,
+        }
+    )
+    return dump_mcp_config(
+        migrated.mcp_config,
+        context={'expose_secrets': 'plaintext'},
+    )
 
 
 def serialize_mcp_config(value: object) -> dict[str, Any] | None:
     if value is None:
         return None
-    return dump_mcp_config(
-        coerce_mcp_config(value),
+    return normalize_persisted_mcp_config(value)
+
+
+def serialize_agent_settings(value: AgentSettingsConfig) -> dict[str, Any]:
+    """Serialize one complete SDK settings object with encrypted secret leaves."""
+    return value.model_dump(
+        mode='json',
+        context={
+            'cipher': get_agent_settings_cipher(),
+            'expose_secrets': 'encrypted',
+            'persist_settings': True,
+        },
+    )
+
+
+def deserialize_agent_settings(value: object) -> AgentSettingsConfig:
+    """Load a canonical member snapshot and decrypt its SecretStr leaves."""
+    return validate_agent_settings(
+        value,
+        context={'cipher': get_agent_settings_cipher()},
+    )
+
+
+def compose_agent_settings(
+    shared_and_member_settings: object,
+    mcp_config: object = _MISSING,
+) -> AgentSettingsConfig:
+    """Validate settings while migrating a separately stored MCP fragment."""
+    if isinstance(shared_and_member_settings, dict):
+        base_payload = dict(shared_and_member_settings)
+    else:
+        base_payload = validate_agent_settings(shared_and_member_settings).model_dump(
+            mode='json',
+            context={'expose_secrets': 'plaintext'},
+        )
+
+    nested_mcp_config = _pop_mcp_config(base_payload)
+    settings = validate_agent_settings(base_payload)
+    if mcp_config is _MISSING:
+        mcp_config = nested_mcp_config
+    if mcp_config is _MISSING:
+        return settings
+
+    payload = settings.model_dump(
+        mode='json',
         context={'expose_secrets': 'plaintext'},
     )
+    payload['mcp_config'] = normalize_persisted_mcp_config(mcp_config)
+    return validate_agent_settings(payload)
 
 
 def _pop_mcp_config(settings: dict[str, Any]) -> object:
@@ -178,6 +246,7 @@ class OrgMemberStore:
         return {
             'llm_api_key': settings.agent_settings.llm.api_key,
             'agent_settings_diff': {},
+            'agent_settings': serialize_agent_settings(settings.agent_settings),
             'mcp_config': serialize_mcp_config(settings.agent_settings.mcp_config),
             'conversation_settings_diff': {},
         }
@@ -192,9 +261,14 @@ class OrgMemberStore:
             if nested_mcp_config is not _MISSING
             else user_settings.mcp_config
         )
+        complete_agent_settings = compose_agent_settings(
+            agent_settings_diff,
+            mcp_config,
+        )
         return {
             'llm_api_key': user_settings.llm_api_key,
             'agent_settings_diff': agent_settings_diff,
+            'agent_settings': serialize_agent_settings(complete_agent_settings),
             'mcp_config': serialize_mcp_config(mcp_config),
             'conversation_settings_diff': dict(user_settings.conversation_settings),
         }
@@ -301,7 +375,14 @@ class OrgMemberStore:
             for key in MEMBER_PRIVATE_AGENT_KEYS:
                 agent_settings_diff.pop(key, None)
 
+        invalidates_agent_settings = (
+            raw_key is not None or agent_settings_diff is not None
+        )
+
         for org_member in org_members:
+            if invalidates_agent_settings:
+                org_member.agent_settings = None
+
             if raw_key is not None:
                 org_member.llm_api_key = raw_key
 

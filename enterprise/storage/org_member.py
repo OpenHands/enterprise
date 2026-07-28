@@ -31,6 +31,11 @@ class OrgMember(Base):
     agent_settings_diff: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
+    # Canonical, versioned SDK agent settings for this member. SecretStr leaves
+    # are encrypted by the SDK serializer before this ordinary JSON boundary.
+    # Nullable during the expand/contract rollout; legacy columns remain the
+    # fallback and rollback representation.
+    agent_settings: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     mcp_config: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
     )
@@ -89,6 +94,22 @@ class OrgMember(Base):
 
     @property
     def effective_mcp_config(self) -> dict[str, Any] | None:
+        if self.agent_settings is not None:
+            # Local import avoids a model/store import cycle.
+            from storage.org_member_store import deserialize_agent_settings
+
+            try:
+                settings = deserialize_agent_settings(self.agent_settings)
+                from openhands.sdk.mcp.config import dump_mcp_config
+
+                return dump_mcp_config(
+                    settings.mcp_config,
+                    context={'expose_secrets': 'plaintext'},
+                )
+            except Exception:
+                # A malformed or undecryptable snapshot must not hide the
+                # rollback-safe legacy representation.
+                pass
         if self.mcp_config is not None:
             return self.mcp_config
         value = (self.agent_settings_diff or {}).get('mcp_config')
