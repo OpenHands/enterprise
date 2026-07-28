@@ -4,6 +4,8 @@ services:
     build:
       context: ./
       dockerfile: ./containers/app/Dockerfile
+      # The Dockerfile's last stage is the enterprise server; this runs the app.
+      target: openhands-app
     image: openhands:latest
     container_name: openhands-app-${DATE:-}
     environment:
