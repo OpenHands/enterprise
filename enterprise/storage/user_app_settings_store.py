@@ -29,7 +29,10 @@ class UserAppSettingsStore:
         result = await self.db_session.execute(
             select(User).filter(User.id == uuid.UUID(user_id))
         )
-        return result.scalars().first()
+        user = result.scalars().first()
+        if user:
+            user.sync_analytics_consent_with_tos()
+        return user
 
     async def update_user_app_settings(
         self, user_id: str, update_data: UserAppSettingsUpdate
@@ -59,6 +62,7 @@ class UserAppSettingsStore:
             setattr(user, field, value)
 
         # flush instead of commit - DbSessionInjector auto-commits at request end
+        user.sync_analytics_consent_with_tos()
         await self.db_session.flush()
         await self.db_session.refresh(user)
         return user

@@ -84,22 +84,18 @@ grep -n "AGENT_SERVER_IMAGE" openhands/app_server/sandbox/sandbox_spec_service.p
 grep "AGENT_SERVER_IMAGE_TAG" docker-compose.yml containers/dev/compose.yml
 ```
 
-#### Step 2: Bump version numbers
+#### Step 2: Merge the release PR
 
-```bash
-# Edit pyproject.toml, frontend/package.json, frontend/package-lock.json
-git add pyproject.toml frontend/package.json frontend/package-lock.json
-git commit -m "Release X.Y.Z"
-git tag X.Y.Z
-```
-
-Create a `saas-rel-X.Y.Z` branch from the tagged commit for the SaaS deployment pipeline.
+Don't bump versions or push tags by hand. `release.yml` runs release-please on
+every push to `main`, which keeps a draft release PR open; merging it bumps
+`pyproject.toml`, `frontend/package.json`, and `frontend/package-lock.json` and
+pushes the `X.Y.Z` tag.
 
 #### Step 3: Images get tagged automatically
 
-Every push to `main` / `saas-rel-*` / `oss-rel-*` builds and publishes `ghcr.io/openhands/openhands` and `ghcr.io/openhands/enterprise-server` images for that commit (tagged by SHA, short SHA, and branch name).
+Every push to `main` builds and publishes a `ghcr.io/openhands/enterprise-server` image for that commit (tagged by SHA, short SHA, and branch name). It is the only image this repo publishes.
 
-Pushing a git tag `X.Y.Z` then tags the images for that commit with `X.Y.Z`, `X.Y`, `X`, and `latest`. Non-semver tags just get their literal name applied.
+The `X.Y.Z` tag then aliases that commit's image as `X.Y.Z`, `X.Y`, `X`, and `latest`, and opens a chart PR in `OpenHands/OpenHands-Cloud`. Non-semver tags just get their literal name applied.
 
 Requires the commit to already be built. If you push the tag too early, the retag CI job fails loudly — re-run it from the Actions UI once the build completes.
 

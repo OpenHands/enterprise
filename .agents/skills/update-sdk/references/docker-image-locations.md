@@ -49,13 +49,13 @@ These files contain image tags that **must** be updated whenever the SDK version
 ### `.github/scripts/update_pr_description.sh`
 - Uses `${SHORT_SHA}` variable at CI runtime, not hardcoded
 
-### `enterprise/Dockerfile`
-- `ARG BASE="ghcr.io/openhands/openhands"` — base image, version supplied at build time
+### `containers/app/Dockerfile`
+- Builds the app (`openhands-app` stage) and the enterprise server (`enterprise` stage, the default target) in one pass — no base image reference to update
 
 ## Image Registries
 
 | Registry | Usage |
 |----------|-------|
 | `ghcr.io/openhands/agent-server` | V1 agent-server (sandbox) — built by SDK repo CI |
-| `ghcr.io/openhands/openhands` | Main app image — built by `ghcr-build.yml` |
+| `ghcr.io/openhands/enterprise-server` | The image this repo publishes — built by `ghcr-build.yml` |
 | `docker.openhands.dev/openhands/*` | Mirror/CDN for the above images |
