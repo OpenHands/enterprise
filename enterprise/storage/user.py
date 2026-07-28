@@ -63,3 +63,6 @@ class User(Base):
     stored_conversation_metadata_saas: Mapped[
         list['StoredConversationMetadataSaas']
     ] = relationship('StoredConversationMetadataSaas', back_populates='user')
+
+    def sync_analytics_consent_with_tos(self) -> None:
+        self.user_consents_to_analytics = self.accepted_tos is not None
