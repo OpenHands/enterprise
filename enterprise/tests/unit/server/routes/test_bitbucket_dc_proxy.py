@@ -100,19 +100,24 @@ def test_whoami_timeout_returns_gateway_timeout(client):
 
 def test_two_hops_share_one_total_timeout(client):
     whoami_resp = MagicMock(status_code=200, text='testuser')
-    user_resp = MagicMock(status_code=200)
-    user_resp.json.return_value = {'values': []}
-    responses = iter([whoami_resp, user_resp])
+    call_count = 0
 
     async def slow_get(*args, **kwargs):
-        await asyncio.sleep(0.02)
-        return next(responses)
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return whoami_resp
+        await asyncio.Event().wait()
 
     with (
         patch(
             'server.routes.bitbucket_dc_proxy.BITBUCKET_DC_USERINFO_TIMEOUT',
             0.03,
         ),
+        patch(
+            'server.routes.bitbucket_dc_proxy.asyncio.timeout',
+            wraps=asyncio.timeout,
+        ) as mock_timeout,
         patch('server.routes.bitbucket_dc_proxy.httpx.AsyncClient') as mock_client_cls,
     ):
         mock_client = AsyncMock()
@@ -128,6 +133,7 @@ def test_two_hops_share_one_total_timeout(client):
     assert response.status_code == 504
     assert response.json() == {'error': 'bitbucket_timeout'}
     assert mock_client.get.await_count == 2
+    mock_timeout.assert_called_once_with(0.03)
 
 
 def test_user_details_connection_error_returns_service_unavailable(client):
