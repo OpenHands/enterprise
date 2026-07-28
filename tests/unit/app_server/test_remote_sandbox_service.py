@@ -14,6 +14,7 @@ This module tests the RemoteSandboxService implementation, focusing on:
 import asyncio
 import json
 from contextlib import ExitStack, asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2804,15 +2805,13 @@ class TestDeleteSandboxKeyHandling:
     provable across a rollback."""
 
     @pytest.fixture
-    async def async_engine(self):
+    async def async_engine(self, tmp_path):
         from sqlalchemy.ext.asyncio import create_async_engine
-        from sqlalchemy.pool import StaticPool
 
         from openhands.app_server.utils.sql_utils import Base
 
         engine = create_async_engine(
-            'sqlite+aiosqlite:///:memory:',
-            poolclass=StaticPool,
+            f'sqlite+aiosqlite:///{tmp_path / "remote-sandbox.db"}',
             connect_args={'check_same_thread': False},
             echo=False,
         )
@@ -2822,13 +2821,16 @@ class TestDeleteSandboxKeyHandling:
         await engine.dispose()
 
     @pytest.fixture
-    async def real_session(self, async_engine):
+    def session_maker(self, async_engine):
         from sqlalchemy.ext.asyncio import async_sessionmaker
 
-        maker = async_sessionmaker(
+        return async_sessionmaker(
             async_engine, class_=AsyncSession, expire_on_commit=False
         )
-        async with maker() as session:
+
+    @pytest.fixture
+    async def real_session(self, session_maker):
+        async with session_maker() as session:
             yield session
 
     @pytest.fixture
@@ -2850,6 +2852,55 @@ class TestDeleteSandboxKeyHandling:
         )
         service._has_managed_credential_conversation = AsyncMock(return_value=False)
         return service
+
+    @pytest.mark.asyncio
+    async def test_resumed_key_is_visible_to_callback_session_before_request_commit(
+        self,
+        service_with_real_db,
+        real_session,
+        session_maker,
+    ):
+        """The credential callback is a separate request and must authenticate
+        the rotated key before the resume request's outer transaction exits."""
+        from openhands.app_server.sandbox.remote_sandbox_service import (
+            _hash_session_api_key,
+        )
+
+        row = create_stored_sandbox(
+            session_api_key_hash=_hash_session_api_key('old-session-key')
+        )
+        real_session.add(row)
+        await real_session.commit()
+
+        runtime_data = create_runtime_data(
+            session_api_key='new-session-key',
+            status='running',
+        )
+        service_with_real_db.pause_old_sandboxes = AsyncMock(return_value=[])
+        service_with_real_db._get_runtime = AsyncMock(return_value=runtime_data)
+        resume_response = httpx.Response(
+            200,
+            json={'session_api_key': 'new-session-key'},
+            request=httpx.Request('POST', 'https://api.example.com/resume'),
+        )
+        service_with_real_db._send_runtime_api_request = AsyncMock(
+            return_value=resume_response
+        )
+
+        assert await service_with_real_db.resume_sandbox(row.id) is True
+
+        async with session_maker() as callback_session:
+            callback_service = replace(
+                service_with_real_db,
+                db_session=callback_session,
+            )
+            callback_service._get_runtime = AsyncMock(return_value=runtime_data)
+            matched = await callback_service.get_sandbox_by_session_api_key(
+                'new-session-key'
+            )
+
+        assert matched is not None
+        assert matched.id == row.id
 
     @pytest.mark.asyncio
     async def test_session_key_invalidated_and_survives_rollback(
