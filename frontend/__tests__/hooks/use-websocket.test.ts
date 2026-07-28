@@ -6,7 +6,7 @@
  * to ALL connected clients across all tests, causing cross-test contamination
  * when tests run in parallel with Vitest v4.
  */
-import { renderHook, waitFor } from "@testing-library/react";
+import { configure, renderHook, waitFor } from "@testing-library/react";
 import {
   describe,
   it,
@@ -34,13 +34,20 @@ describe("useWebSocket", () => {
     }),
   );
 
-  beforeAll(() =>
-    mswServer.listen({
-      onUnhandledRequest: "warn",
-    }),
-  );
+  // The msw WebSocket handshake exceeds the 1s waitFor default on a loaded CI
+  // runner, so every `isConnected` wait here is a coin flip at the default.
+  // Restored afterwards so the longer deadline cannot leak into other files
+  // sharing this worker.
+  const defaultAsyncUtilTimeout = 1000;
+  beforeAll(() => {
+    configure({ asyncUtilTimeout: 15000 });
+    mswServer.listen({ onUnhandledRequest: "warn" });
+  });
   afterEach(() => mswServer.resetHandlers());
-  afterAll(() => mswServer.close());
+  afterAll(() => {
+    configure({ asyncUtilTimeout: defaultAsyncUtilTimeout });
+    mswServer.close();
+  });
 
   it("should establish a WebSocket connection", async () => {
     const { result } = renderHook(() => useWebSocket("ws://acme.com/ws"));
