@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import BackgroundTasks, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
+from keycloak.exceptions import KeycloakConnectionError
 from pydantic import SecretStr
 from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.saas_user_auth import SaasUserAuth
@@ -134,6 +135,31 @@ async def test_keycloak_callback_token_retrieval_failure(
         assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
         assert 'Problem retrieving Keycloak tokens' in exc_info.value.detail
         get_keycloak_tokens_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_connection_failure_is_retryable(
+    mock_request, mock_background_tasks
+):
+    get_keycloak_tokens_mock = AsyncMock(
+        side_effect=KeycloakConnectionError('DNS failure')
+    )
+    with patch(
+        'server.routes.auth.token_manager.get_keycloak_tokens',
+        get_keycloak_tokens_mock,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await keycloak_callback(
+                code='test_code',
+                state='test_state',
+                request=mock_request,
+                background_tasks=mock_background_tasks,
+                user_authorizer=create_mock_user_authorizer(),
+            )
+
+    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert exc_info.value.headers == {'Retry-After': '1'}
+    assert 'temporarily unavailable' in exc_info.value.detail
 
 
 # Note: test_keycloak_callback_missing_user_info was removed as part of the

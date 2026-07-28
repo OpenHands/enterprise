@@ -1,10 +1,15 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from server.routes.bitbucket_dc_proxy import BITBUCKET_DC_TIMEOUT, router
+from server.auth.constants import (
+    BITBUCKET_DC_CONNECT_TIMEOUT,
+    BITBUCKET_DC_USERINFO_TIMEOUT,
+)
+from server.routes.bitbucket_dc_proxy import router
 
 
 @pytest.fixture
@@ -15,6 +20,12 @@ def client():
         'server.routes.bitbucket_dc_proxy.BITBUCKET_DATA_CENTER_HOST', 'bitbucket.test'
     ):
         yield TestClient(app)
+
+
+def assert_client_timeout(mock_client_cls):
+    timeout = mock_client_cls.call_args.kwargs['timeout']
+    assert timeout.connect == BITBUCKET_DC_CONNECT_TIMEOUT
+    assert timeout.read == BITBUCKET_DC_USERINFO_TIMEOUT
 
 
 def test_missing_authorization_header(client):
@@ -85,6 +96,38 @@ def test_whoami_timeout_returns_gateway_timeout(client):
 
     assert response.status_code == 504
     assert response.json() == {'error': 'bitbucket_timeout'}
+
+
+def test_two_hops_share_one_total_timeout(client):
+    whoami_resp = MagicMock(status_code=200, text='testuser')
+    user_resp = MagicMock(status_code=200)
+    user_resp.json.return_value = {'values': []}
+    responses = iter([whoami_resp, user_resp])
+
+    async def slow_get(*args, **kwargs):
+        await asyncio.sleep(0.02)
+        return next(responses)
+
+    with (
+        patch(
+            'server.routes.bitbucket_dc_proxy.BITBUCKET_DC_USERINFO_TIMEOUT',
+            0.03,
+        ),
+        patch('server.routes.bitbucket_dc_proxy.httpx.AsyncClient') as mock_client_cls,
+    ):
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=slow_get)
+        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        response = client.get(
+            '/bitbucket-dc-proxy/oauth2/userinfo',
+            headers={'Authorization': 'Bearer some_token'},
+        )
+
+    assert response.status_code == 504
+    assert response.json() == {'error': 'bitbucket_timeout'}
+    assert mock_client.get.await_count == 2
 
 
 def test_user_details_connection_error_returns_service_unavailable(client):
@@ -199,16 +242,15 @@ def test_happy_path_full_user_data(client):
             call(
                 'https://bitbucket.test/plugins/servlet/applinks/whoami',
                 headers={'Authorization': 'Bearer some_token'},
-                timeout=BITBUCKET_DC_TIMEOUT,
             ),
             call(
                 'https://bitbucket.test/rest/api/latest/users',
                 headers={'Authorization': 'Bearer some_token'},
                 params={'filter': 'jsmith'},
-                timeout=BITBUCKET_DC_TIMEOUT,
             ),
         ]
     )
+    assert_client_timeout(mock_client_cls)
 
 
 def test_happy_path_missing_id_falls_back_to_username(client):
@@ -246,16 +288,15 @@ def test_happy_path_missing_id_falls_back_to_username(client):
             call(
                 'https://bitbucket.test/plugins/servlet/applinks/whoami',
                 headers={'Authorization': 'Bearer some_token'},
-                timeout=BITBUCKET_DC_TIMEOUT,
             ),
             call(
                 'https://bitbucket.test/rest/api/latest/users',
                 headers={'Authorization': 'Bearer some_token'},
                 params={'filter': 'jsmith'},
-                timeout=BITBUCKET_DC_TIMEOUT,
             ),
         ]
     )
+    assert_client_timeout(mock_client_cls)
 
 
 def test_happy_path_login_name_can_differ_from_slug(client):
@@ -306,13 +347,12 @@ def test_happy_path_login_name_can_differ_from_slug(client):
             call(
                 'https://bitbucket.test/plugins/servlet/applinks/whoami',
                 headers={'Authorization': 'Bearer some_token'},
-                timeout=BITBUCKET_DC_TIMEOUT,
             ),
             call(
                 'https://bitbucket.test/rest/api/latest/users',
                 headers={'Authorization': 'Bearer some_token'},
                 params={'filter': 'Jane.Doe@example.com'},
-                timeout=BITBUCKET_DC_TIMEOUT,
             ),
         ]
     )
+    assert_client_timeout(mock_client_cls)

@@ -242,7 +242,7 @@ async def test_get_access_token_classifies_keycloak_connection_failure(
     ):
         await user_auth.get_access_token()
 
-    assert mock_token_manager.refresh.await_count == 3
+    assert mock_token_manager.refresh.await_count == 1
 
 
 @pytest.mark.asyncio
