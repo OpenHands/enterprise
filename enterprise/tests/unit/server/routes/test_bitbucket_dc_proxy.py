@@ -83,7 +83,10 @@ def test_whoami_empty_body(client):
 
 
 def test_whoami_timeout_returns_gateway_timeout(client):
-    with patch('server.routes.bitbucket_dc_proxy.httpx.AsyncClient') as mock_client_cls:
+    with (
+        patch('server.routes.bitbucket_dc_proxy.httpx.AsyncClient') as mock_client_cls,
+        patch('server.routes.bitbucket_dc_proxy.logger.warning') as mock_warning,
+    ):
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(side_effect=httpx.ReadTimeout('timed out'))
         mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -96,6 +99,14 @@ def test_whoami_timeout_returns_gateway_timeout(client):
 
     assert response.status_code == 504
     assert response.json() == {'error': 'bitbucket_timeout'}
+    failure = mock_warning.call_args.kwargs['extra']
+    assert failure['hop'] == 'whoami'
+    assert failure['phase'] == 'read'
+    assert failure['error_type'] == 'ReadTimeout'
+    assert failure['connect_timeout_seconds'] == BITBUCKET_DC_CONNECT_TIMEOUT
+    assert failure['timeout_seconds'] == BITBUCKET_DC_USERINFO_TIMEOUT
+    assert failure['hop_elapsed_ms'] >= 0
+    assert failure['total_elapsed_ms'] >= failure['hop_elapsed_ms']
 
 
 def test_two_hops_share_one_total_timeout(client):
@@ -119,6 +130,7 @@ def test_two_hops_share_one_total_timeout(client):
             wraps=asyncio.timeout,
         ) as mock_timeout,
         patch('server.routes.bitbucket_dc_proxy.httpx.AsyncClient') as mock_client_cls,
+        patch('server.routes.bitbucket_dc_proxy.logger.warning') as mock_warning,
     ):
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(side_effect=slow_get)
@@ -134,6 +146,10 @@ def test_two_hops_share_one_total_timeout(client):
     assert response.json() == {'error': 'bitbucket_timeout'}
     assert mock_client.get.await_count == 2
     mock_timeout.assert_called_once_with(0.03)
+    failure = mock_warning.call_args.kwargs['extra']
+    assert failure['hop'] == 'users'
+    assert failure['phase'] == 'overall'
+    assert failure['error_type'] == 'TimeoutError'
 
 
 def test_user_details_connection_error_returns_service_unavailable(client):
@@ -141,7 +157,10 @@ def test_user_details_connection_error_returns_service_unavailable(client):
     whoami_resp.status_code = 200
     whoami_resp.text = 'testuser'
 
-    with patch('server.routes.bitbucket_dc_proxy.httpx.AsyncClient') as mock_client_cls:
+    with (
+        patch('server.routes.bitbucket_dc_proxy.httpx.AsyncClient') as mock_client_cls,
+        patch('server.routes.bitbucket_dc_proxy.logger.warning') as mock_warning,
+    ):
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(
             side_effect=[
@@ -159,6 +178,10 @@ def test_user_details_connection_error_returns_service_unavailable(client):
 
     assert response.status_code == 503
     assert response.json() == {'error': 'bitbucket_unavailable'}
+    failure = mock_warning.call_args.kwargs['extra']
+    assert failure['hop'] == 'users'
+    assert failure['phase'] == 'connect'
+    assert failure['error_type'] == 'ConnectError'
 
 
 def test_user_details_non_200(client):
@@ -226,7 +249,10 @@ def test_happy_path_full_user_data(client):
         ]
     }
 
-    with patch('server.routes.bitbucket_dc_proxy.httpx.AsyncClient') as mock_client_cls:
+    with (
+        patch('server.routes.bitbucket_dc_proxy.httpx.AsyncClient') as mock_client_cls,
+        patch('server.routes.bitbucket_dc_proxy.logger.info') as mock_info,
+    ):
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(side_effect=[whoami_resp, user_resp])
         mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -243,6 +269,13 @@ def test_happy_path_full_user_data(client):
     assert data['preferred_username'] == 'jsmith'
     assert data['name'] == 'John Smith'
     assert data['email'] == 'john@example.com'
+    hop_logs = [log.kwargs['extra'] for log in mock_info.call_args_list]
+    assert [(log['hop'], log['upstream_status_code']) for log in hop_logs] == [
+        ('whoami', 200),
+        ('users', 200),
+    ]
+    assert all(log['hop_elapsed_ms'] >= 0 for log in hop_logs)
+    assert all(log['total_elapsed_ms'] >= log['hop_elapsed_ms'] for log in hop_logs)
     mock_client.get.assert_has_calls(
         [
             call(

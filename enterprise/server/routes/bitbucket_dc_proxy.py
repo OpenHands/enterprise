@@ -27,12 +27,61 @@ def _select_user_data(users: list[dict], username: str) -> dict | None:
     return users[0] if users else None
 
 
-def _log_hop_timing(hop: str, started_at: float) -> None:
+def _failure_phase(exc: BaseException) -> str:
+    if isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError)):
+        return 'connect'
+    if isinstance(exc, httpx.ReadTimeout):
+        return 'read'
+    if isinstance(exc, httpx.WriteTimeout):
+        return 'write'
+    if isinstance(exc, httpx.PoolTimeout):
+        return 'pool'
+    if isinstance(exc, TimeoutError):
+        return 'overall'
+    if isinstance(exc, httpx.RemoteProtocolError):
+        return 'protocol'
+    return 'request'
+
+
+def _failure_log_context(
+    exc: BaseException,
+    hop: str,
+    hop_started_at: float,
+    started_at: float,
+) -> dict[str, str | int | float]:
+    now = time.monotonic()
+    total_elapsed_ms = round((now - started_at) * 1000)
+    return {
+        'elapsed_ms': total_elapsed_ms,
+        'hop_elapsed_ms': round((now - hop_started_at) * 1000),
+        'total_elapsed_ms': total_elapsed_ms,
+        'hop': hop,
+        'phase': _failure_phase(exc),
+        'error_type': type(exc).__name__,
+        'connect_timeout_seconds': min(
+            BITBUCKET_DC_CONNECT_TIMEOUT,
+            BITBUCKET_DC_USERINFO_TIMEOUT,
+        ),
+        'timeout_seconds': BITBUCKET_DC_USERINFO_TIMEOUT,
+    }
+
+
+def _log_hop_timing(
+    hop: str,
+    hop_started_at: float,
+    started_at: float,
+    upstream_status_code: int,
+) -> None:
+    now = time.monotonic()
+    hop_elapsed_ms = round((now - hop_started_at) * 1000)
     logger.info(
         'bitbucket_dc_userinfo_hop',
         extra={
             'hop': hop,
-            'elapsed_ms': round((time.monotonic() - started_at) * 1000),
+            'elapsed_ms': hop_elapsed_ms,
+            'hop_elapsed_ms': hop_elapsed_ms,
+            'total_elapsed_ms': round((now - started_at) * 1000),
+            'upstream_status_code': upstream_status_code,
         },
     )
 
@@ -55,6 +104,8 @@ async def userinfo(request: Request):
 
     headers = {'Authorization': auth_header}
     started_at = time.monotonic()
+    hop_started_at = started_at
+    active_hop = 'whoami'
     try:
         timeout = httpx.Timeout(
             BITBUCKET_DC_USERINFO_TIMEOUT,
@@ -73,7 +124,12 @@ async def userinfo(request: Request):
                     f'{bitbucket_base_url}/plugins/servlet/applinks/whoami',
                     headers=headers,
                 )
-                _log_hop_timing('whoami', hop_started_at)
+                _log_hop_timing(
+                    active_hop,
+                    hop_started_at,
+                    started_at,
+                    whoami_resp.status_code,
+                )
                 if whoami_resp.status_code != 200:
                     return JSONResponse({'error': 'not_authenticated'}, status_code=401)
                 username = whoami_resp.text.strip()
@@ -81,13 +137,19 @@ async def userinfo(request: Request):
                     return JSONResponse({'error': 'not_authenticated'}, status_code=401)
 
                 # Step 2: get user details
+                active_hop = 'users'
                 hop_started_at = time.monotonic()
                 user_resp = await client.get(
                     f'{bitbucket_base_url}/rest/api/latest/users',
                     headers=headers,
                     params={'filter': username},
                 )
-                _log_hop_timing('users', hop_started_at)
+                _log_hop_timing(
+                    active_hop,
+                    hop_started_at,
+                    started_at,
+                    user_resp.status_code,
+                )
                 if user_resp.status_code != 200:
                     return JSONResponse(
                         {'error': f'bitbucket_error: {user_resp.status_code}'},
@@ -101,25 +163,30 @@ async def userinfo(request: Request):
                         {'error': f'user_not_found: {username}'},
                         status_code=404,
                     )
-    except (TimeoutError, httpx.TimeoutException):
+    except (TimeoutError, httpx.TimeoutException) as exc:
         logger.warning(
             'bitbucket_dc_userinfo_timeout',
-            extra={
-                'elapsed_ms': round((time.monotonic() - started_at) * 1000),
-                'timeout_seconds': BITBUCKET_DC_USERINFO_TIMEOUT,
-            },
+            extra=_failure_log_context(
+                exc,
+                active_hop,
+                hop_started_at,
+                started_at,
+            ),
             exc_info=True,
         )
         return JSONResponse(
             {'error': 'bitbucket_timeout'},
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
         )
-    except httpx.RequestError:
+    except httpx.RequestError as exc:
         logger.warning(
             'bitbucket_dc_userinfo_unavailable',
-            extra={
-                'elapsed_ms': round((time.monotonic() - started_at) * 1000),
-            },
+            extra=_failure_log_context(
+                exc,
+                active_hop,
+                hop_started_at,
+                started_at,
+            ),
             exc_info=True,
         )
         return JSONResponse(
