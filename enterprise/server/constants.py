@@ -73,6 +73,7 @@ PERSONAL_WORKSPACE_VERSION_TO_MODEL = {
     4: 'claude-sonnet-4-20250514',
     5: 'minimax-m2.5',
     6: 'minimax-m2.7',
+    7: 'glm-5.2',
 }
 
 LITELLM_DEFAULT_MODEL = os.getenv('LITELLM_DEFAULT_MODEL')
