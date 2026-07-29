@@ -231,9 +231,9 @@ make run  # Full application (backend + frontend)
 - `enterprise/migrations/` - Database migration files
 
 **Database Migrations:**
-Enterprise uses Alembic for database migrations. When making schema changes:
+Enterprise uses Alembic for PostgreSQL-only database migrations. When making schema changes:
 1. Create migration files in `enterprise/migrations/versions/`
-2. Test migrations thoroughly
+2. Test migrations with the PostgreSQL dialect or the PostgreSQL migration workflow
 3. The CI will check for migration conflicts on PRs
 
 **Integration Development:**
@@ -257,7 +257,8 @@ Each integration follows a consistent pattern with service classes, storage mode
 **Enterprise Testing Best Practices:**
 
 **Database Testing:**
-- Use SQLite in-memory databases (`sqlite:///:memory:`) for unit tests instead of real PostgreSQL
+- Use SQLite in-memory databases (`sqlite:///:memory:`) for application unit tests instead of real PostgreSQL
+- Do not add SQLite paths to enterprise Alembic migrations
 - Create module-specific `conftest.py` files with database fixtures
 - Mock external database connections in unit tests to avoid dependency on running services
 - Use real database connections only for integration tests
