@@ -712,6 +712,40 @@ class TestResolveActiveAgentProfile:
         # The resolved LLM came from the referenced org LLM profile.
         assert dump['llm']['model'] == 'gpt-4o'
 
+    def test_resolves_profile_with_legacy_mcp_config(self):
+        store = self._store()
+        org, pid = self._org_with(
+            OpenHandsAgentProfile(
+                name='reviewer',
+                llm_profile_ref='Default',
+                mcp_server_refs=['shttp'],
+            )
+        )
+        member = MagicMock(spec=OrgMember)
+        member.active_agent_profile_id = pid
+        merged_agent_settings = {
+            'mcp_config': {
+                'mcpServers': {
+                    'shttp': {
+                        'url': 'https://example.com/mcp',
+                        'auth': 'legacy-token',
+                    }
+                }
+            }
+        }
+
+        result = store._resolve_active_agent_profile(
+            org, member, merged_agent_settings, None
+        )
+
+        assert result is not None
+        dump, _resolved_id, _revision = result
+        assert set(dump['mcp_config']) == {'shttp'}
+        assert dump['mcp_config']['shttp']['auth'] == {
+            'strategy': 'bearer',
+            'value': 'legacy-token',
+        }
+
     def test_resolve_canonicalizes_legacy_litellm_proxy_llm(self):
         """A profile referencing an org LLM profile with a legacy
         ``litellm_proxy/`` managed name must resolve to the canonical

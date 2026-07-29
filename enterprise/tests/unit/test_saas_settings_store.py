@@ -1308,6 +1308,35 @@ async def test_load_migrates_detached_legacy_mcp_config(
 
 
 @pytest.mark.asyncio
+async def test_load_degrades_malformed_detached_mcp_config(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    from sqlalchemy import select
+    from storage.org_member import OrgMember
+
+    admin_user_id = org_with_multiple_members_fixture['admin_user_id']
+    async with async_session_maker() as session:
+        member = (
+            await session.execute(
+                select(OrgMember).where(OrgMember.user_id == admin_user_id)
+            )
+        ).scalar_one()
+        member.mcp_config = {'broken': {'url': ['not', 'a', 'url']}}
+        await session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.agent_settings.mcp_config == {}
+
+
+@pytest.mark.asyncio
 async def test_load_drops_legacy_org_level_mcp_config(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
@@ -1715,6 +1744,52 @@ async def test_partial_store_migrates_legacy_member_mcp_config(
         ).scalar_one()
 
     assert member.mcp_config == legacy_config
+    assert 'mcp_config' not in member.agent_settings_diff
+
+
+@pytest.mark.asyncio
+async def test_partial_store_preserves_malformed_legacy_member_mcp_config(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from sqlalchemy import select
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    org_id = fixture['org_id']
+    admin_user_id = fixture['admin_user_id']
+    malformed_config = {'broken': {'url': ['not', 'a', 'url']}}
+    async with async_session_maker() as session:
+        member = (
+            await session.execute(
+                select(OrgMember)
+                .where(OrgMember.org_id == org_id)
+                .where(OrgMember.user_id == admin_user_id)
+            )
+        ).scalar_one()
+        member.mcp_config = None
+        member.agent_settings_diff = {
+            **member.agent_settings_diff,
+            'mcp_config': malformed_config,
+        }
+        await session.commit()
+
+    settings = _make_settings(
+        model='updated-model',
+        base_url='http://test-url.com',
+        api_key='updated-key',
+    )
+    store = SaasSettingsStore(str(admin_user_id))
+    with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
+        await store.store(settings)
+
+    with session_maker() as session:
+        member = session.execute(
+            select(OrgMember)
+            .where(OrgMember.org_id == org_id)
+            .where(OrgMember.user_id == admin_user_id)
+        ).scalar_one()
+
+    assert member.mcp_config == malformed_config
     assert 'mcp_config' not in member.agent_settings_diff
 
 

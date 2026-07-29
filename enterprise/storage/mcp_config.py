@@ -1,21 +1,21 @@
 """Compatibility helpers for MCP configuration stored outside agent settings."""
 
+from collections.abc import Mapping
 from typing import Any
 
-from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
 from openhands.sdk.settings import validate_agent_settings
 
 _DETACHED_MCP_AGENT_SETTINGS_SCHEMA_VERSION = 4
 
 
 def coerce_persisted_mcp_config(value: object) -> dict[str, MCPServer]:
-    """Load detached MCP settings through the SDK's v4-v5 migration.
+    """Normalize detached legacy or current MCP configuration."""
+    if not (
+        isinstance(value, Mapping) and isinstance(value.get('mcpServers'), Mapping)
+    ):
+        return coerce_mcp_config(value)
 
-    Database migration 137 separated MCP from its parent settings object, so
-    the SDK can no longer see the schema version that described this fragment.
-    Treat detached data as v4, the last wrapped/scalar-auth representation.
-    The SDK migration also accepts already-flat v5 server maps.
-    """
     settings = validate_agent_settings(
         {
             'schema_version': _DETACHED_MCP_AGENT_SETTINGS_SCHEMA_VERSION,

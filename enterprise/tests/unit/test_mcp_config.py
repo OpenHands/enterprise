@@ -26,18 +26,22 @@ def test_serialize_mcp_config_migrates_legacy_wrapper_and_scalar_auth():
     }
 
 
-def test_coerce_persisted_mcp_config_accepts_already_flat_server_map():
-    migrated = coerce_persisted_mcp_config(
-        {
-            'local': {
-                'command': 'python',
-                'args': ['-m', 'example_server'],
-                'env': {'TOKEN': 'current-token'},
-            }
+def test_coerce_persisted_mcp_config_tolerates_unknown_flat_server_fields():
+    persisted = {
+        'local': {
+            'command': 'python',
+            'args': ['-m', 'example_server'],
+            'env': {'TOKEN': 'current-token'},
+            'future_field': 'ignored',
         }
-    )
+    }
+
+    migrated = coerce_persisted_mcp_config(persisted)
 
     assert migrated['local'].command == 'python'
     assert migrated['local'].args == ['-m', 'example_server']
     assert migrated['local'].env is not None
     assert migrated['local'].env['TOKEN'].get_secret_value() == 'current-token'
+    serialized = serialize_mcp_config(persisted)
+    assert serialized is not None
+    assert 'future_field' not in serialized['local']
