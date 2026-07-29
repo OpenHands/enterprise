@@ -40,7 +40,7 @@ def clear_csp_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for var in (
         'CONTENT_SECURITY_POLICY_REPORT_ONLY',
         'CONTENT_SECURITY_POLICY',
-        'OH_FRAME_SRC_ALLOWLIST',
+        'OH_RUNTIME_HOSTS',
         'CONTENT_SECURITY_POLICY_REPORT_URI',
     ):
         monkeypatch.delenv(var, raising=False)
@@ -90,29 +90,69 @@ class TestSecurityHeadersMiddleware:
         assert response.status_code == 200
         assert 'Content-Security-Policy-Report-Only' in response.headers
 
-    def test_frame_src_allowlist_appended(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    def test_runtime_hosts_appended_to_frame_and_connect(
+        self,
+        client: TestClient,
+        clear_csp_env: None,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv(
-            'OH_FRAME_SRC_ALLOWLIST',
-            'runtime.staging.all-hands.dev, .runtime.example.com',
+            'OH_RUNTIME_HOSTS', 'https://*.staging-runtime.all-hands.dev'
         )
 
         response = client.get('/sample')
 
         csp = _csp(response)
-        assert "frame-src 'self'" in csp
-        assert 'runtime.staging.all-hands.dev' in csp
-        assert '.runtime.example.com' in csp
+        assert "frame-src 'self' https://*.staging-runtime.all-hands.dev;" in csp
+        assert (
+            "connect-src 'self' ws: wss: https://us.i.posthog.com"
+            ' https://us-assets.i.posthog.com'
+            ' https://*.staging-runtime.all-hands.dev;' in csp
+        )
 
-    def test_empty_frame_src_allowlist_omits_extras(
+    def test_runtime_hosts_supports_multiple_wildcards(
+        self,
+        client: TestClient,
+        clear_csp_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(
+            'OH_RUNTIME_HOSTS',
+            (
+                'https://*.staging-runtime.all-hands.dev,'
+                ' https://*.runtime.all-hands.dev,'
+                ' https://vscode-staging.example.com'
+            ),
+        )
+
+        response = client.get('/sample')
+
+        csp = _csp(response)
+        assert 'https://*.staging-runtime.all-hands.dev' in csp
+        assert 'https://*.runtime.all-hands.dev' in csp
+        assert 'https://vscode-staging.example.com' in csp
+        # Both directives carry the whole host set.
+        assert csp.count('https://*.runtime.all-hands.dev') == 2
+
+    def test_posthog_assets_in_default_script_src(
         self, client: TestClient, clear_csp_env: None
     ) -> None:
         response = client.get('/sample')
 
+        csp = _csp(response)
+        assert "script-src 'self' 'unsafe-inline'" in csp
+        assert 'https://us-assets.i.posthog.com' in csp
+        assert 'https://us.i.posthog.com' in csp
+
+    def test_empty_runtime_hosts_omits_extras(
+        self, client: TestClient, clear_csp_env: None
+    ) -> None:
+        response = client.get('/sample')
+
+        csp = _csp(response)
         # No trailing whitespace when no extras are configured.
-        assert "frame-src 'self';" in _csp(response)
-        assert "frame-src 'self' ;" not in _csp(response)
+        assert "frame-src 'self';" in csp
+        assert "frame-src 'self' ;" not in csp
 
     def test_policy_override_takes_precedence(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch

@@ -24,14 +24,19 @@ _RESUME_RE = re.compile(r'^/api/v1/sandboxes/[^/]+/resume/?$')
 # violation reports with the inline scripts that React Router's SPA mode
 # emits and any inline styles Tailwind/Vite generate. Tightening to nonces
 # or static hashes is a follow-up before flipping to enforce mode.
+#
+# PostHog hosts:
+#   - us.i.posthog.com         — event ingest (fetch / xhr)
+#   - us-assets.i.posthog.com  — SDK scripts, exception-autocapture,
+#                                web-vitals, recorder, surveys, tracing-headers
 _DEFAULT_CSP_DIRECTIVES: dict[str, str] = {
     'default-src': "'self'",
-    'script-src': "'self' 'unsafe-inline'",
+    'script-src': "'self' 'unsafe-inline' https://us-assets.i.posthog.com",
     'style-src': "'self' 'unsafe-inline' https://fonts.googleapis.com",
     'font-src': "'self' https://fonts.gstatic.com data:",
     'img-src': "'self' data: blob: https:",
-    'connect-src': "'self' ws: wss: https://us.i.posthog.com",
-    'frame-src': "'self' {frame_src_extras}",
+    'connect-src': "'self' ws: wss: https://us.i.posthog.com https://us-assets.i.posthog.com {runtime_hosts}",
+    'frame-src': "'self' {runtime_hosts}",
     'frame-ancestors': "'self'",
     'object-src': "'none'",
     'base-uri': "'self'",
@@ -76,10 +81,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             os.getenv('CONTENT_SECURITY_POLICY_REPORT_URI', '').strip()
             or '/api/v1/security/csp-report'
         )
-        frame_extras = ' '.join(_split_csv(os.getenv('OH_FRAME_SRC_ALLOWLIST', '')))
+        # Runtime hosts are appended to both frame-src (VS Code iframe on
+        # `vscode-<sandbox>.<runtime-root>`) and connect-src (REST + WS calls
+        # against `<sandbox>.<runtime-root>`). Wildcards are supported: e.g.
+        # `https://*.staging-runtime.all-hands.dev`.
+        runtime_hosts = ' '.join(_split_csv(os.getenv('OH_RUNTIME_HOSTS', '')))
         directives = {
             name: value.format(
-                frame_src_extras=frame_extras, report_uri=report_uri
+                runtime_hosts=runtime_hosts, report_uri=report_uri
             ).strip()
             for name, value in _DEFAULT_CSP_DIRECTIVES.items()
         }
