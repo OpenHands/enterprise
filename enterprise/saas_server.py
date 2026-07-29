@@ -31,6 +31,7 @@ from server.constants import (  # noqa: E402
 from server.logger import logger  # noqa: E402
 from server.middleware import (  # noqa: E402
     ApiKeyAwareCORSMiddleware,
+    SecurityHeadersMiddleware,
     SetAuthCookieMiddleware,
 )
 from server.rate_limit import setup_rate_limit_handler  # noqa: E402
@@ -216,6 +217,7 @@ base_app.add_middleware(
     allow_origins=PERMITTED_CORS_ORIGINS,
 )
 base_app.add_middleware(CacheControlMiddleware)
+base_app.add_middleware(SecurityHeadersMiddleware)
 base_app.middleware('http')(SetAuthCookieMiddleware())
 
 base_app.mount('/', SPAStaticFiles(directory=directory, html=True), name='dist')

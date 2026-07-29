@@ -15,10 +15,30 @@ from server.auth.gitlab_sync import schedule_gitlab_repo_sync
 from server.auth.saas_user_auth import SaasUserAuth, token_manager
 from server.routes.auth import set_response_cookie
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from openhands.app_server.user_auth.user_auth import AuthType, UserAuth, get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Attach anti-clickjacking headers to every response.
+
+    Sets ``X-Frame-Options: DENY`` and ``Content-Security-Policy:
+    frame-ancestors 'none'`` so the app cannot be embedded in a frame,
+    protecting against clickjacking / UI redressing (CWE-1021). Applied as
+    middleware so coverage is uniform across all API routes and the mounted
+    SPA static files.
+    """
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        response = await call_next(request)
+        response.headers['X-Frame-Options'] = 'DENY'
+        response.headers['Content-Security-Policy'] = "frame-ancestors 'none'"
+        return response
 
 
 class SetAuthCookieMiddleware:
