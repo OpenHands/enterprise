@@ -292,6 +292,67 @@ Each integration follows a consistent pattern with service classes, storage mode
 - If tests fail with import errors, verify `PYTHONPATH=".:$PYTHONPATH"` is set
 - **If GitHub CI fails but local linting passes**: Always use `--show-diff-on-failure` flag to match CI behavior exactly
 
+### Feature / Preview Environments for Manual QA
+
+This repo (`enterprise`) does **not** contain any feature/preview-environment
+infrastructure itself — that lives in the separate, private
+**`OpenHands/saas-deploy`** repo (GitOps/ArgoCD). Do not assume a preview env
+is unavailable just because nothing turns up in this repo; check `saas-deploy`
+before telling a user no preview exists.
+
+**How to get a live preview of an `enterprise` PR (as of 2026):**
+1. This repo's `ghcr-build.yml` builds `ghcr.io/openhands/enterprise-server:sha-<sha>`
+   for every PR automatically — no action needed here.
+2. In `saas-deploy`, open a staging-promotion PR targeting `main` that bumps
+   `app/openhands/environments/staging/version.yaml` (`openhands.image.tag`)
+   to that `enterprise`-repo SHA.
+3. Add the `feature` label to that `saas-deploy` PR. ArgoCD's Pull Request
+   generator (`gitops/staging/feature-applicationset.yaml`) then spins up an
+   isolated namespace (`saas-deploy-pr-<number>`) on the **staging** cluster
+   with its own `openhands`, `keycloak`, `automation`, and Integrations Hub —
+   including a real, per-PR Keycloak instance (OAuth actually works, unlike
+   plain local dev) and a bundled per-PR Postgres/Redis/MinIO.
+4. Once ArgoCD shows the `saas-deploy-pr-<number>` apps healthy/synced, the
+   preview is live at `https://pr-<number>.staging.all-hands.dev` (no GitHub
+   comment is posted — search ArgoCD for the `pr-<number>` filter instead).
+5. Closing, merging, or unlabeling the `saas-deploy` PR tears the preview down
+   automatically.
+6. **The preview's database starts empty.** `migrationJob` runs Alembic
+   migrations only — it does not seed data. To see anything in
+   data-driven UI (e.g. the Usage & Monitoring dashboards), either use the
+   preview normally (real OAuth login creates a real org) or seed it directly:
+   `kubectl exec` into the `openhands` pod in `saas-deploy-pr-<number>`
+   (see `saas-deploy`'s `docs/bootstrap.md` for cluster access) and run one of
+   the scripts in `enterprise/scripts/` (see below) against the pod's own
+   `DB_HOST`/`DB_PORT`/etc. env vars — they're already baked into the image.
+7. This mechanism is replacing an older, now-deprecated feature-deploy path in
+   the (different) OpenHands-Cloud "deploy" repo — don't point users at that
+   older repo/flow.
+
+### Keep the Data Seed Scripts in Sync with the Schema
+
+`enterprise/scripts/seed_conversation_data.py` and
+`enterprise/scripts/setup_and_seed.py` generate realistic fake orgs, users,
+and conversations (with token/cost data) directly in Postgres — the only
+scripted way to populate a preview or local Postgres instance without going
+through real OAuth logins and real agent runs. They are the reference data
+source for manually QA-ing any Usage & Monitoring / admin-dashboard feature
+against a feature preview or local Postgres.
+
+**Whenever a PR changes a table these scripts insert into**
+(`org`, `user`, `org_member`, `conversation_metadata`,
+`conversation_metadata_saas`, or anything else these scripts touch) —
+whether by adding/removing/renaming a column in a migration, or changing what
+values a field can take (e.g. new `execution_status` enum values) — **update
+both seed scripts in the same PR** so they keep inserting valid rows and stay
+representative of production data shapes. A stale seed script that silently
+omits a new required column, or still produces now-invalid enum values, makes
+`ON CONFLICT ... DO NOTHING` swallow errors softly or makes manual QA look
+successful against data that no longer resembles what the real app produces.
+If you're an agent asked to add or modify enterprise schema/migrations, check
+these two scripts as part of that change and update them, even if not asked
+explicitly.
+
 ## Template for Github Pull Request
 
 If you are starting a pull request (PR), please follow the template in `.github/pull_request_template.md`.
