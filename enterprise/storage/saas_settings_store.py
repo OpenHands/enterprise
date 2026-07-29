@@ -22,9 +22,13 @@ from storage.agent_profile_resolution import (
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
+from storage.mcp_config import (
+    coerce_persisted_mcp_config,
+    serialize_mcp_config,
+)
 from storage.org import Org
 from storage.org_member import OrgMember
-from storage.org_member_store import OrgMemberStore, serialize_mcp_config
+from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
 from storage.user import User
 from storage.user_settings import UserSettings
@@ -41,7 +45,7 @@ from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
-from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import resolve_agent_profile
 
 
@@ -242,8 +246,12 @@ class SaasSettingsStore(SettingsStore):
         mcp_raw = merged_agent_settings.get('mcp_config')
         if mcp_raw:
             try:
-                mcp_config = coerce_mcp_config(mcp_raw)
+                mcp_config = coerce_persisted_mcp_config(mcp_raw)
             except Exception:
+                logger.warning(
+                    'Failed to parse member MCP config for active profile resolution',
+                    exc_info=True,
+                )
                 mcp_config = {}
 
         llm_store = OrgLLMProfileLoader(load_llm_profiles(org))
@@ -379,7 +387,18 @@ class SaasSettingsStore(SettingsStore):
             member_agent_settings_diff,
         )
         if member_mcp_config is not None:
-            merged_agent_settings['mcp_config'] = member_mcp_config
+            try:
+                merged_agent_settings['mcp_config'] = coerce_persisted_mcp_config(
+                    member_mcp_config
+                )
+            except Exception:
+                logger.warning(
+                    'Failed to parse member MCP config for user %s; '
+                    'continuing without MCP servers',
+                    self.user_id,
+                    exc_info=True,
+                )
+                merged_agent_settings['mcp_config'] = {}
         effective_llm_api_key = self._get_effective_llm_api_key(org, org_member)
         if effective_llm_api_key is not None:
             merged_agent_settings.setdefault('llm', {})['api_key'] = (
@@ -740,7 +759,16 @@ class SaasSettingsStore(SettingsStore):
             if item._mcp_config_updated:
                 org_member.mcp_config = self._get_persisted_mcp_config(item)
             elif org_member.mcp_config is None and member_mcp_config is not None:
-                org_member.mcp_config = serialize_mcp_config(member_mcp_config)
+                try:
+                    org_member.mcp_config = serialize_mcp_config(member_mcp_config)
+                except Exception:
+                    logger.warning(
+                        'Failed to normalize persisted member MCP config for user %s; '
+                        'preserving the encrypted value unchanged',
+                        self.user_id,
+                        exc_info=True,
+                    )
+                    org_member.mcp_config = member_mcp_config
 
             if uses_managed_llm_key and current_member_llm_api_key is not None:
                 # Managed/proxy key — store on this member but mark as org-managed
