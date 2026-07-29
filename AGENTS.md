@@ -320,14 +320,68 @@ before telling a user no preview exists.
 6. **The preview's database starts empty.** `migrationJob` runs Alembic
    migrations only — it does not seed data. To see anything in
    data-driven UI (e.g. the Usage & Monitoring dashboards), either use the
-   preview normally (real OAuth login creates a real org) or seed it directly:
-   `kubectl exec` into the `openhands` pod in `saas-deploy-pr-<number>`
-   (see `saas-deploy`'s `docs/bootstrap.md` for cluster access) and run one of
-   the scripts in `enterprise/scripts/` (see below) against the pod's own
-   `DB_HOST`/`DB_PORT`/etc. env vars — they're already baked into the image.
+   preview normally (real OAuth login creates a real org) or seed it directly
+   after the preview is healthy/synced (see the section below).
 7. This mechanism is replacing an older, now-deprecated feature-deploy path in
    the (different) OpenHands-Cloud "deploy" repo — don't point users at that
    older repo/flow.
+
+### Seeding Data into a Feature Preview
+
+The safest first version is a manual, opt-in seed step after the ArgoCD apps for
+`saas-deploy-pr-<number>` are Healthy/Synced. The enterprise image copies this
+repo into `/app`, so the seed scripts live in the running app container at
+`/app/scripts/seed_conversation_data.py` and `/app/scripts/setup_and_seed.py`.
+Prefer `seed_conversation_data.py` for feature previews because migrations have
+already created the schema; reserve `setup_and_seed.py` for local databases that
+may not have been migrated.
+
+Example flow:
+
+```bash
+PR=395
+NS="saas-deploy-pr-${PR}"
+
+kubectl -n "$NS" get pods
+# Pick the running OpenHands/enterprise-server application pod from the output.
+POD="<openhands-app-pod-name>"
+
+kubectl -n "$NS" exec -it "$POD" -- bash -lc '
+DB_URL="$(
+python - <<'"'"'PY'"'"'
+import os
+from urllib.parse import quote_plus
+
+user = quote_plus(os.environ["DB_USER"])
+password = quote_plus(os.environ["DB_PASS"].strip())
+host = os.environ.get("DB_HOST", "openhands-postgresql")
+port = os.environ.get("DB_PORT", "5432")
+name = os.environ.get("DB_NAME", "openhands")
+print(f"postgresql://{user}:{password}@{host}:{port}/{name}")
+PY
+)"
+/app/.venv/bin/python /app/scripts/seed_conversation_data.py \
+  --db-url "$DB_URL" \
+  --org-count 3 \
+  --users-per-org 10 \
+  --conversations-per-org 30
+'
+```
+
+This seeds synthetic orgs, users, and conversation/token/cost records directly
+into the preview's per-PR Postgres. The data is disposable with the namespace.
+If the active feature-preview test needs a specific login/org to own the seeded
+rows, update the seed script first to accept explicit user/org identifiers rather
+than manually editing SQL in the cluster.
+
+Once this flow is validated end-to-end, it should become a deterministic helper
+(script or Make target) in the preview workflow, not an LLM-driven automation.
+Suggested helper shape: `seed-feature-preview --pr <saas-deploy-pr-number>`
+that waits for the ArgoCD apps to be Healthy/Synced, finds the app pod, builds
+the URL-safe SQLAlchemy `--db-url` from the pod's `DB_*` env vars, runs
+`seed_conversation_data.py`, and prints the seeded org/user identifiers. Keep it
+opt-in; do not seed every feature preview automatically, since not every preview
+needs synthetic Usage & Monitoring data.
 
 ### Keep the Data Seed Scripts in Sync with the Schema
 
