@@ -153,15 +153,35 @@ def test_load_agent_profiles_defaults_empty_and_degrades():
 
 
 def test_member_mcp_config_degrades_on_non_validation_error():
-    """coerce_mcp_config failures beyond ValidationError degrade to {}, not raise."""
+    """MCP compatibility failures beyond ValidationError degrade to {}, not raise."""
     member = MagicMock(spec=OrgMember)
-    member.mcp_config = {'mcpServers': {}}
-    member.agent_settings_diff = {}
+    member.effective_mcp_config = {'mcpServers': {}}
     with patch(
-        'storage.agent_profile_resolution.coerce_mcp_config',
+        'storage.agent_profile_resolution.coerce_persisted_mcp_config',
         side_effect=TypeError('contract drift'),
     ):
         assert member_mcp_config(member) == {}
+
+
+def test_member_mcp_config_migrates_legacy_wrapper_and_scalar_auth():
+    member = MagicMock(spec=OrgMember)
+    member.effective_mcp_config = {
+        'mcpServers': {
+            'shttp': {
+                'url': 'https://example.com/mcp',
+                'timeout': 60,
+                'auth': 'legacy-token',
+            }
+        }
+    }
+
+    migrated = member_mcp_config(member)
+
+    assert migrated['shttp'].url == 'https://example.com/mcp'
+    assert migrated['shttp'].timeout == 60
+    auth = migrated['shttp'].auth
+    assert auth is not None
+    assert auth.to_http_headers() == {'Authorization': 'Bearer legacy-token'}
 
 
 # ── Router integration (real Org row over SQLite) ──────────────────────────

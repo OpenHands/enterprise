@@ -15,11 +15,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
+from storage.mcp_config import coerce_persisted_mcp_config
 
 from openhands.app_server.settings.agent_profiles import AgentProfiles
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.utils.logger import openhands_logger as logger
-from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
+from openhands.sdk.mcp.config import MCPServer
 
 if TYPE_CHECKING:
     from storage.org import Org
@@ -97,11 +98,10 @@ def member_mcp_config(member: OrgMember) -> dict[str, MCPServer]:
     if not raw:
         return {}
     try:
-        return coerce_mcp_config(raw)
+        return coerce_persisted_mcp_config(raw)
     except Exception as exc:
-        # Catch broadly, not just ValidationError: coerce_mcp_config also raises
-        # on fastmcp normalization / contract drift, and a malformed member
-        # config must resolve to "no servers" rather than 500 the materialize
-        # endpoint. Matches _resolve_active_agent_profile's inline coerce.
+        # Catch broadly, not just ValidationError: MCP normalization can also
+        # raise on fastmcp contract drift, and a malformed member config must
+        # resolve to "no servers" rather than 500 the materialize endpoint.
         logger.warning('Failed to parse member MCP config for resolve: %s', exc)
         return {}

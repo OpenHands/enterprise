@@ -1265,6 +1265,49 @@ async def test_mcp_config_is_encrypted_at_rest(
 
 
 @pytest.mark.asyncio
+async def test_load_migrates_detached_legacy_mcp_config(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """A v5 settings row can load a separately stored v4 MCP fragment."""
+    from sqlalchemy import select
+    from storage.org_member import OrgMember
+
+    admin_user_id = org_with_multiple_members_fixture['admin_user_id']
+    async with async_session_maker() as session:
+        member = (
+            await session.execute(
+                select(OrgMember).where(OrgMember.user_id == admin_user_id)
+            )
+        ).scalar_one()
+        member.mcp_config = {
+            'mcpServers': {
+                'shttp': {
+                    'url': 'https://example.com/mcp',
+                    'timeout': 60,
+                    'auth': 'legacy-token',
+                }
+            }
+        }
+        await session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.agent_settings.schema_version == 5
+    server = loaded.agent_settings.mcp_config['shttp']
+    assert server.url == 'https://example.com/mcp'
+    assert server.timeout == 60
+    assert server.auth is not None
+    assert server.auth.to_http_headers() == {'Authorization': 'Bearer legacy-token'}
+
+
+@pytest.mark.asyncio
 async def test_load_drops_legacy_org_level_mcp_config(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):

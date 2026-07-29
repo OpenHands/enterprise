@@ -22,9 +22,10 @@ from storage.agent_profile_resolution import (
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
+from storage.mcp_config import serialize_mcp_config
 from storage.org import Org
 from storage.org_member import OrgMember
-from storage.org_member_store import OrgMemberStore, serialize_mcp_config
+from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
 from storage.user import User
 from storage.user_settings import UserSettings
@@ -379,7 +380,9 @@ class SaasSettingsStore(SettingsStore):
             member_agent_settings_diff,
         )
         if member_mcp_config is not None:
-            merged_agent_settings['mcp_config'] = member_mcp_config
+            merged_agent_settings['mcp_config'] = serialize_mcp_config(
+                member_mcp_config
+            )
         effective_llm_api_key = self._get_effective_llm_api_key(org, org_member)
         if effective_llm_api_key is not None:
             merged_agent_settings.setdefault('llm', {})['api_key'] = (
