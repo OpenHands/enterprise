@@ -153,15 +153,35 @@ def test_load_agent_profiles_defaults_empty_and_degrades():
 
 
 def test_member_mcp_config_degrades_on_non_validation_error():
-    """coerce_mcp_config failures beyond ValidationError degrade to {}, not raise."""
+    """MCP compatibility failures beyond ValidationError degrade to {}, not raise."""
     member = MagicMock(spec=OrgMember)
-    member.mcp_config = {'mcpServers': {}}
-    member.agent_settings_diff = {}
+    member.effective_mcp_config = {'mcpServers': {}}
     with patch(
-        'storage.agent_profile_resolution.coerce_mcp_config',
+        'storage.agent_profile_resolution.coerce_persisted_mcp_config',
         side_effect=TypeError('contract drift'),
     ):
         assert member_mcp_config(member) == {}
+
+
+def test_member_mcp_config_migrates_legacy_wrapper_and_scalar_auth():
+    member = MagicMock(spec=OrgMember)
+    member.effective_mcp_config = {
+        'mcpServers': {
+            'shttp': {
+                'url': 'https://example.com/mcp',
+                'timeout': 60,
+                'auth': 'legacy-token',
+            }
+        }
+    }
+
+    migrated = member_mcp_config(member)
+
+    assert migrated['shttp'].url == 'https://example.com/mcp'
+    assert migrated['shttp'].timeout == 60
+    auth = migrated['shttp'].auth
+    assert auth is not None
+    assert auth.to_http_headers() == {'Authorization': 'Bearer legacy-token'}
 
 
 # ── Router integration (real Org row over SQLite) ──────────────────────────
@@ -691,6 +711,40 @@ class TestResolveActiveAgentProfile:
         assert dump['agent_kind'] == 'openhands'
         # The resolved LLM came from the referenced org LLM profile.
         assert dump['llm']['model'] == 'gpt-4o'
+
+    def test_resolves_profile_with_legacy_mcp_config(self):
+        store = self._store()
+        org, pid = self._org_with(
+            OpenHandsAgentProfile(
+                name='reviewer',
+                llm_profile_ref='Default',
+                mcp_server_refs=['shttp'],
+            )
+        )
+        member = MagicMock(spec=OrgMember)
+        member.active_agent_profile_id = pid
+        merged_agent_settings = {
+            'mcp_config': {
+                'mcpServers': {
+                    'shttp': {
+                        'url': 'https://example.com/mcp',
+                        'auth': 'legacy-token',
+                    }
+                }
+            }
+        }
+
+        result = store._resolve_active_agent_profile(
+            org, member, merged_agent_settings, None
+        )
+
+        assert result is not None
+        dump, _resolved_id, _revision = result
+        assert set(dump['mcp_config']) == {'shttp'}
+        assert dump['mcp_config']['shttp']['auth'] == {
+            'strategy': 'bearer',
+            'value': 'legacy-token',
+        }
 
     def test_resolve_canonicalizes_legacy_litellm_proxy_llm(self):
         """A profile referencing an org LLM profile with a legacy
