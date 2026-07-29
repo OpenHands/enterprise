@@ -570,6 +570,26 @@ async def test_get_instance_from_bearer(mock_request):
 
 
 @pytest.mark.asyncio
+async def test_get_instance_without_rate_limiter(mock_request):
+    """Authentication succeeds without hitting a disabled rate limiter."""
+    mock_request.state.user_rate_limit_processed = False
+    mock_auth = MagicMock()
+    mock_auth.get_user_id = AsyncMock(return_value='test_user_id')
+
+    with (
+        patch(
+            'server.auth.saas_user_auth.saas_user_auth_from_bearer',
+            return_value=mock_auth,
+        ),
+        patch('server.auth.saas_user_auth.rate_limiter', None),
+    ):
+        result = await SaasUserAuth.get_instance(mock_request)
+
+    assert result == mock_auth
+    mock_auth.get_user_id.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_get_instance_from_cookie(mock_request):
     """Test that get_instance returns auth from cookie if bearer fails."""
     with (

@@ -51,7 +51,7 @@ from openhands.app_server.user_auth.user_auth import AuthType, UserAuth
 token_manager = TokenManager()
 
 
-rate_limiter: RateLimiter = create_redis_rate_limiter(RATE_LIMIT_AUTH_WINDOWS)
+rate_limiter: RateLimiter | None = create_redis_rate_limiter(RATE_LIMIT_AUTH_WINDOWS)
 
 
 @dataclass
@@ -744,7 +744,8 @@ class SaasUserAuth(UserAuth):
                 # Ensure requests are only counted once
                 request.state.user_rate_limit_processed = True
                 # Will raise if rate limit is reached.
-                await rate_limiter.hit('auth_uid', user_id)
+                if rate_limiter is not None:
+                    await rate_limiter.hit('auth_uid', user_id)
         return instance
 
     @classmethod

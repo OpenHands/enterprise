@@ -12,6 +12,7 @@ from server.rate_limit import (
     RateLimitException,
     RateLimitResult,
     _rate_limit_exceeded_handler,
+    create_redis_rate_limiter,
     setup_rate_limit_handler,
 )
 from starlette.requests import Request
@@ -24,6 +25,11 @@ def rate_limiter():
     backend = limits.aio.storage.MemoryStorage()
     strategy = limits.aio.strategies.FixedWindowRateLimiter(backend)
     return RateLimiter(strategy, '1/second')
+
+
+def test_create_redis_rate_limiter_disabled():
+    """An empty window configuration disables the Redis rate limiter."""
+    assert create_redis_rate_limiter('') is None
 
 
 @pytest.fixture
