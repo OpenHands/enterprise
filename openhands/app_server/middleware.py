@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -16,6 +17,93 @@ from starlette.types import ASGIApp
 from openhands.app_server.config import get_global_config
 
 _RESUME_RE = re.compile(r'^/api/v1/sandboxes/[^/]+/resume/?$')
+
+
+# OHE-2815: default Content-Security-Policy for report-only mode.
+# `unsafe-inline` is included for script-src/style-src to avoid flooding
+# violation reports with the inline scripts that React Router's SPA mode
+# emits and any inline styles Tailwind/Vite generate. Tightening to nonces
+# or static hashes is a follow-up before flipping to enforce mode.
+_DEFAULT_CSP_DIRECTIVES: dict[str, str] = {
+    'default-src': "'self'",
+    'script-src': "'self' 'unsafe-inline'",
+    'style-src': "'self' 'unsafe-inline' https://fonts.googleapis.com",
+    'font-src': "'self' https://fonts.gstatic.com data:",
+    'img-src': "'self' data: blob: https:",
+    'connect-src': "'self' ws: wss: https://us.i.posthog.com",
+    'frame-src': "'self' {frame_src_extras}",
+    'frame-ancestors': "'self'",
+    'object-src': "'none'",
+    'base-uri': "'self'",
+    'form-action': "'self'",
+    'worker-src': "'self' blob:",
+    'report-uri': '{report_uri}',
+}
+
+
+def _build_csp(directives: dict[str, str]) -> str:
+    """Render a directive map as a CSP header value, dropping empty entries."""
+    parts: list[str] = []
+    for name, value in directives.items():
+        if value == '' or value is None:
+            continue
+        parts.append(f'{name} {value}')
+    return '; '.join(parts)
+
+
+def _split_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(',') if item.strip()]
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Adds browser security headers to every HTTP response.
+
+    OHE-2815: Content-Security-Policy is added in *report-only* mode by
+    default so violations surface without breaking functionality. Switch to
+    enforcement by setting ``CONTENT_SECURITY_POLICY`` and clearing
+    ``CONTENT_SECURITY_POLICY_REPORT_ONLY``.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        super().__init__(app)
+
+    def _policy(self) -> str:
+        override = os.getenv('CONTENT_SECURITY_POLICY_REPORT_ONLY', '').strip()
+        if override:
+            return override
+
+        report_uri = (
+            os.getenv('CONTENT_SECURITY_POLICY_REPORT_URI', '').strip()
+            or '/api/v1/security/csp-report'
+        )
+        frame_extras = ' '.join(_split_csv(os.getenv('OH_FRAME_SRC_ALLOWLIST', '')))
+        directives = {
+            name: value.format(
+                frame_src_extras=frame_extras, report_uri=report_uri
+            ).strip()
+            for name, value in _DEFAULT_CSP_DIRECTIVES.items()
+        }
+        return _build_csp(directives)
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        response = await call_next(request)
+        headers = response.headers
+
+        # OHE-2815: report-only CSP. Replace with `Content-Security-Policy`
+        # (and clear the report-only env var) to enforce.
+        headers['Content-Security-Policy-Report-Only'] = self._policy()
+
+        headers['X-Content-Type-Options'] = 'nosniff'
+        headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+        headers['Permissions-Policy'] = (
+            'camera=(), microphone=(), geolocation=(), interest-cohort=()'
+        )
+        # Defence-in-depth alongside CSP `frame-ancestors 'self'`.
+        headers['X-Frame-Options'] = 'SAMEORIGIN'
+        # HSTS is intentionally left to the edge reverse proxy.
+        return response
 
 
 class LocalhostCORSMiddleware(CORSMiddleware):
