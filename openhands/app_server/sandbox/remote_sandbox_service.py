@@ -15,6 +15,7 @@ from pydantic import Field
 from sqlalchemy import String, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm.attributes import set_committed_value
 
 from openhands.agent_server.models import (
     ConversationInfo,
@@ -588,11 +589,15 @@ class RemoteSandboxService(SandboxService):
             new_session_api_key = response_data.get('session_api_key')
             if new_session_api_key:
                 hashed = _hash_session_api_key(new_session_api_key)
-                # Commit before staging it locally: the outer session must not
-                # hold a write lock on this row while the isolated transaction
+                # Commit before touching the row locally: the outer session must
+                # not hold a write lock on it while the isolated transaction
                 # runs, or the two block each other.
                 await self._commit_session_api_key_hash(sandbox_id, hashed)
-                stored_sandbox.session_api_key_hash = hashed
+                # Record it as already-persisted rather than assigning. A plain
+                # assignment would leave the attribute dirty and re-emit it at
+                # request exit, so an overlapping resume that rotated later
+                # could have its newer hash overwritten by this stale one.
+                set_committed_value(stored_sandbox, 'session_api_key_hash', hashed)
                 _logger.info(
                     f'Updated session_api_key_hash for sandbox {sandbox_id} after resume'
                 )

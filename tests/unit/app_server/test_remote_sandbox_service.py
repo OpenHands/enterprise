@@ -3150,3 +3150,61 @@ class TestResumeKeyPersistenceHazards:
             )
             found = await svc2.get_sandbox_by_session_api_key('rb-key')
         assert found is not None and found.id == 'sb-rb'
+
+    @pytest.mark.asyncio
+    async def test_overlapping_resumes_keep_the_newest_hash(
+        self,
+        service,
+        real_session,
+        session_maker,
+        mock_sandbox_spec_service,
+        mock_user_context,
+    ):
+        """Two requests resume the same sandbox concurrently. The runtime API
+        invalidated A's key when it minted B's, so B's hash must remain canonical
+        even though A's request commits last."""
+        from openhands.app_server.sandbox.remote_sandbox_service import (
+            _hash_session_api_key,
+        )
+
+        row = create_stored_sandbox('sb-race', session_api_key_hash='old')
+        real_session.add(row)
+        await real_session.commit()
+
+        async def _svc(session):
+            s = RemoteSandboxService(
+                sandbox_spec_service=mock_sandbox_spec_service,
+                api_url='https://api.example.com',
+                api_key='test-api-key',
+                web_url='https://web.example.com',
+                resource_factor=1,
+                runtime_class='gvisor',
+                start_sandbox_timeout=120,
+                max_num_sandboxes=10,
+                user_context=mock_user_context,
+                httpx_client=AsyncMock(spec=httpx.AsyncClient),
+                db_session=session,
+            )
+            s._has_managed_credential_conversation = AsyncMock(return_value=False)
+            s.pause_old_sandboxes = AsyncMock(return_value=[])
+            return s
+
+        async with session_maker() as outer_a, session_maker() as outer_b:
+            svc_a = await _svc(outer_a)
+            svc_b = await _svc(outer_b)
+            self._wire_resume(svc_a, key='key-A')
+            self._wire_resume(svc_b, key='key-B')
+
+            # A resumes, then B resumes -- B's rotation invalidates A's key.
+            assert await svc_a.resume_sandbox('sb-race') is True
+            assert await svc_b.resume_sandbox('sb-race') is True
+
+            # B's request finishes first, then A's. A must not resurrect its hash.
+            await outer_b.commit()
+            await outer_a.commit()
+
+        async with session_maker() as check:
+            final = await check.get(StoredRemoteSandbox, 'sb-race')
+            assert final is not None
+            assert final.session_api_key_hash == _hash_session_api_key('key-B')
+            assert final.session_api_key_hash != _hash_session_api_key('key-A')
