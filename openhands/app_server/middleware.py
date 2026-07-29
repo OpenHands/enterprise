@@ -42,7 +42,6 @@ _DEFAULT_CSP_DIRECTIVES: dict[str, str] = {
     'base-uri': "'self'",
     'form-action': "'self'",
     'worker-src': "'self' blob:",
-    'report-uri': '{report_uri}',
 }
 
 
@@ -64,9 +63,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Adds browser security headers to every HTTP response.
 
     OHE-2815: Content-Security-Policy is added in *report-only* mode by
-    default so violations surface without breaking functionality. Switch to
-    enforcement by setting ``CONTENT_SECURITY_POLICY`` and clearing
-    ``CONTENT_SECURITY_POLICY_REPORT_ONLY``.
+    default so violations surface (in DevTools / browser console) without
+    breaking functionality. Switch to enforcement by changing the header
+    name in :meth:`dispatch` from ``Content-Security-Policy-Report-Only``
+    to ``Content-Security-Policy``.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -77,19 +77,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if override:
             return override
 
-        report_uri = (
-            os.getenv('CONTENT_SECURITY_POLICY_REPORT_URI', '').strip()
-            or '/api/v1/security/csp-report'
-        )
         # Runtime hosts are appended to both frame-src (VS Code iframe on
         # `vscode-<sandbox>.<runtime-root>`) and connect-src (REST + WS calls
         # against `<sandbox>.<runtime-root>`). Wildcards are supported: e.g.
         # `https://*.staging-runtime.all-hands.dev`.
         runtime_hosts = ' '.join(_split_csv(os.getenv('OH_RUNTIME_HOSTS', '')))
         directives = {
-            name: value.format(
-                runtime_hosts=runtime_hosts, report_uri=report_uri
-            ).strip()
+            name: value.format(runtime_hosts=runtime_hosts).strip()
             for name, value in _DEFAULT_CSP_DIRECTIVES.items()
         }
         return _build_csp(directives)

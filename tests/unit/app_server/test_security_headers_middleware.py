@@ -1,8 +1,7 @@
-"""Tests for OHE-2815 security headers and CSP report endpoint."""
+"""Tests for OHE-2815 security headers middleware."""
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterator
 
 import pytest
@@ -10,7 +9,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.app_server.middleware import SecurityHeadersMiddleware
-from openhands.app_server.security.security_router import router as security_router
 
 
 @pytest.fixture
@@ -26,7 +24,6 @@ def app() -> FastAPI:
     def asset() -> dict[str, str]:
         return {'ok': 'asset'}
 
-    app.include_router(security_router)
     return app
 
 
@@ -41,7 +38,6 @@ def clear_csp_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         'CONTENT_SECURITY_POLICY_REPORT_ONLY',
         'CONTENT_SECURITY_POLICY',
         'OH_RUNTIME_HOSTS',
-        'CONTENT_SECURITY_POLICY_REPORT_URI',
     ):
         monkeypatch.delenv(var, raising=False)
     yield
@@ -61,7 +57,7 @@ class TestSecurityHeadersMiddleware:
         csp = _csp(response)
         assert "default-src 'self'" in csp
         assert "script-src 'self' 'unsafe-inline'" in csp
-        assert 'report-uri /api/v1/security/csp-report' in csp
+        assert 'report-uri' not in csp
 
     def test_sets_companion_headers(
         self, client: TestClient, clear_csp_env: None
@@ -157,106 +153,9 @@ class TestSecurityHeadersMiddleware:
     def test_policy_override_takes_precedence(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        custom = "default-src 'none'; report-uri /custom"
+        custom = "default-src 'none'"
         monkeypatch.setenv('CONTENT_SECURITY_POLICY_REPORT_ONLY', custom)
 
         response = client.get('/sample')
 
         assert _csp(response) == custom
-
-    def test_report_uri_override(
-        self,
-        client: TestClient,
-        clear_csp_env: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv(
-            'CONTENT_SECURITY_POLICY_REPORT_URI', '/api/v1/custom-report'
-        )
-
-        response = client.get('/sample')
-
-        assert 'report-uri /api/v1/custom-report' in _csp(response)
-
-
-class TestCspReportEndpoint:
-    def test_legacy_report_returns_204(
-        self, client: TestClient, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        body = {
-            'csp-report': {
-                'document-uri': 'https://example.test/page',
-                'violated-directive': "script-src 'self'",
-                'blocked-uri': 'https://evil.test/x.js',
-                'original-policy': "default-src 'self'",
-            }
-        }
-        with caplog.at_level(
-            logging.INFO, logger='openhands.app_server.security.security_router'
-        ):
-            response = client.post(
-                '/api/v1/security/csp-report',
-                json=body,
-                headers={'Content-Type': 'application/csp-report'},
-            )
-
-        assert response.status_code == 204
-        assert any('CSP report:' in rec.message for rec in caplog.records)
-        assert any("script-src 'self'" in rec.message for rec in caplog.records)
-
-    def test_reporting_api_format(
-        self, client: TestClient, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        body = [
-            {
-                'type': 'csp-violation',
-                'age': 0,
-                'url': 'https://example.test/page',
-                'body': {
-                    'violated_directive': "img-src 'self'",
-                    'blockedURL': 'https://tracker.test/pixel.png',
-                },
-            }
-        ]
-        with caplog.at_level(
-            logging.INFO, logger='openhands.app_server.security.security_router'
-        ):
-            response = client.post(
-                '/api/v1/security/csp-report',
-                json=body,
-                headers={'Content-Type': 'application/reports+json'},
-            )
-
-        assert response.status_code == 204
-        assert any('img-src' in rec.message for rec in caplog.records)
-
-    def test_invalid_json_returns_204(self, client: TestClient) -> None:
-        response = client.post(
-            '/api/v1/security/csp-report',
-            content=b'not-json',
-            headers={'Content-Type': 'application/csp-report'},
-        )
-
-        assert response.status_code == 204
-
-    def test_unknown_content_type_still_logged(
-        self, client: TestClient, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        body = {
-            'csp-report': {
-                'document-uri': 'https://example.test/page',
-                'violated-directive': "frame-ancestors 'self'",
-                'blocked-uri': 'https://attacker.test',
-            }
-        }
-        with caplog.at_level(
-            logging.INFO, logger='openhands.app_server.security.security_router'
-        ):
-            response = client.post(
-                '/api/v1/security/csp-report',
-                json=body,
-                headers={'Content-Type': 'application/json'},
-            )
-
-        assert response.status_code == 204
-        assert any('frame-ancestors' in rec.message for rec in caplog.records)

@@ -14,9 +14,6 @@ from openhands.app_server.sandbox import sandbox_router, sandbox_spec_router
 from openhands.app_server.secrets.secrets_router import (
     router as secrets_router,
 )
-from openhands.app_server.security.security_router import (
-    router as security_router,
-)
 from openhands.app_server.settings.settings_router import (
     router as settings_router,
 )
@@ -38,4 +35,3 @@ router.include_router(webhook_router.router)
 router.include_router(web_client_router.router)
 router.include_router(git_router)
 router.include_router(config_router)
-router.include_router(security_router)
