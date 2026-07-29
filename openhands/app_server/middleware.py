@@ -55,8 +55,34 @@ def _build_csp(directives: dict[str, str]) -> str:
     return '; '.join(parts)
 
 
-def _split_csv(value: str) -> list[str]:
-    return [item.strip() for item in value.split(',') if item.strip()]
+def _runtime_hosts_from_web_host() -> str:
+    """Derive the runtime-host wildcard entry from ``WEB_HOST``.
+
+    ``WEB_HOST`` is the deployment's bare apex hostname (see
+    ``get_default_web_url`` and ``web_client_deployment_mode.get_deployment_mode``).
+    In staging it's ``staging-runtime.all-hands.dev``; in prod it's
+    ``app.all-hands.dev`` (the runtime lives on a subdomain pattern under it
+    such as ``<sandbox>.<apex>`` and ``vscode-<sandbox>.<apex>``).
+
+    A CSP3 ``*.host`` source matches the host itself and any number of
+    subdomains, so a single ``https://*.{WEB_HOST}`` entry covers both
+    the API calls (``<sandbox>.<apex>``) and the VS Code iframe
+    (``vscode-<sandbox>.<apex>``).
+
+    Returns an empty string when ``WEB_HOST`` is unset (e.g. local dev,
+    where ``frame-src 'self'`` already covers ``localhost``).
+    """
+    web_host = os.getenv('WEB_HOST', '').strip().rstrip('/')
+    if not web_host:
+        return ''
+    # Tolerate schemes accidentally set in WEB_HOST (some operators set
+    # `https://app.all-hands.dev`); strip them so we don't end up with
+    # `https://https://*.host`.
+    for prefix in ('https://', 'http://'):
+        if web_host.startswith(prefix):
+            web_host = web_host[len(prefix) :]
+            break
+    return f'https://*.{web_host}'
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -77,11 +103,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if override:
             return override
 
-        # Runtime hosts are appended to both frame-src (VS Code iframe on
-        # `vscode-<sandbox>.<runtime-root>`) and connect-src (REST + WS calls
-        # against `<sandbox>.<runtime-root>`). Wildcards are supported: e.g.
-        # `https://*.staging-runtime.all-hands.dev`.
-        runtime_hosts = ' '.join(_split_csv(os.getenv('OH_RUNTIME_HOSTS', '')))
+        runtime_hosts = _runtime_hosts_from_web_host()
         directives = {
             name: value.format(runtime_hosts=runtime_hosts).strip()
             for name, value in _DEFAULT_CSP_DIRECTIVES.items()

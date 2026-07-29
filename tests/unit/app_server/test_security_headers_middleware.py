@@ -37,7 +37,7 @@ def clear_csp_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for var in (
         'CONTENT_SECURITY_POLICY_REPORT_ONLY',
         'CONTENT_SECURITY_POLICY',
-        'OH_RUNTIME_HOSTS',
+        'WEB_HOST',
     ):
         monkeypatch.delenv(var, raising=False)
     yield
@@ -86,15 +86,13 @@ class TestSecurityHeadersMiddleware:
         assert response.status_code == 200
         assert 'Content-Security-Policy-Report-Only' in response.headers
 
-    def test_runtime_hosts_appended_to_frame_and_connect(
+    def test_web_host_wildcard_appended_to_frame_and_connect(
         self,
         client: TestClient,
         clear_csp_env: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv(
-            'OH_RUNTIME_HOSTS', 'https://*.staging-runtime.all-hands.dev'
-        )
+        monkeypatch.setenv('WEB_HOST', 'staging-runtime.all-hands.dev')
 
         response = client.get('/sample')
 
@@ -106,29 +104,33 @@ class TestSecurityHeadersMiddleware:
             ' https://*.staging-runtime.all-hands.dev;' in csp
         )
 
-    def test_runtime_hosts_supports_multiple_wildcards(
+    def test_web_host_with_scheme_prefix_is_stripped(
         self,
         client: TestClient,
         clear_csp_env: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv(
-            'OH_RUNTIME_HOSTS',
-            (
-                'https://*.staging-runtime.all-hands.dev,'
-                ' https://*.runtime.all-hands.dev,'
-                ' https://vscode-staging.example.com'
-            ),
-        )
+        monkeypatch.setenv('WEB_HOST', 'https://staging-runtime.all-hands.dev')
 
         response = client.get('/sample')
 
         csp = _csp(response)
         assert 'https://*.staging-runtime.all-hands.dev' in csp
-        assert 'https://*.runtime.all-hands.dev' in csp
-        assert 'https://vscode-staging.example.com' in csp
-        # Both directives carry the whole host set.
-        assert csp.count('https://*.runtime.all-hands.dev') == 2
+        assert 'https://https://' not in csp
+
+    def test_web_host_with_trailing_slash_is_stripped(
+        self,
+        client: TestClient,
+        clear_csp_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv('WEB_HOST', 'staging-runtime.all-hands.dev/')
+
+        response = client.get('/sample')
+
+        csp = _csp(response)
+        assert 'https://*.staging-runtime.all-hands.dev' in csp
+        assert 'https://*.staging-runtime.all-hands.dev/' not in csp
 
     def test_posthog_assets_in_default_script_src(
         self, client: TestClient, clear_csp_env: None
@@ -140,15 +142,16 @@ class TestSecurityHeadersMiddleware:
         assert 'https://us-assets.i.posthog.com' in csp
         assert 'https://us.i.posthog.com' in csp
 
-    def test_empty_runtime_hosts_omits_extras(
+    def test_empty_web_host_omits_wildcard(
         self, client: TestClient, clear_csp_env: None
     ) -> None:
         response = client.get('/sample')
 
         csp = _csp(response)
-        # No trailing whitespace when no extras are configured.
+        # No trailing whitespace / leftover placeholder when WEB_HOST is unset.
         assert "frame-src 'self';" in csp
         assert "frame-src 'self' ;" not in csp
+        assert 'https://*.' not in csp
 
     def test_policy_override_takes_precedence(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
