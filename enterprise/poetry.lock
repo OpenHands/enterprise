@@ -4511,14 +4511,28 @@ valkey = ["valkey (>=6)"]
 
 [[package]]
 name = "litellm"
-version = "1.84.1"
+version = "1.94.0"
 description = "Library to easily interface with LLM API providers"
 optional = false
-python-versions = "<3.14,>=3.10"
+python-versions = "<3.15,>=3.10"
 groups = ["main"]
 files = [
-    {file = "litellm-1.84.1-py3-none-any.whl", hash = "sha256:1f39e2d2d134bc0570577df846a987547efafd3c70765b00a83c456318fcdbe8"},
-    {file = "litellm-1.84.1.tar.gz", hash = "sha256:2d01b146e5206e49d1bccc224d31afc37b41b275823c27184b81afaba90464c3"},
+    {file = "litellm-1.94.0-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:e00514eb1ca8cd7b4352875ea144b733835b712e764e2b8d8212bda754babf4e"},
+    {file = "litellm-1.94.0-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:5b905506b5cdedf1bcd74651582b79ba4dd6bf020f3eba2edf9e17695ce5277f"},
+    {file = "litellm-1.94.0-cp310-cp310-win_amd64.whl", hash = "sha256:ea03b7f56c4370b3e8387b40806aeb95faa8a6fc255ffad642a8fe25dbc7458b"},
+    {file = "litellm-1.94.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:18dd2f06259f1d1cfb2182fe4de7cfa144ce55773d87808bd2ce7189f0b90616"},
+    {file = "litellm-1.94.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:3271146afe729c95ed83f745de1dff3423a9f28f8c99f666c37b56aed976b336"},
+    {file = "litellm-1.94.0-cp311-cp311-win_amd64.whl", hash = "sha256:9ddc7f1d9193622f47b6e800045926f86f7ebaeca4215a34c86e3a4154eb790d"},
+    {file = "litellm-1.94.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:078b66ab2727dbd5fae013f146a08fe1614421fbd3234a5fb6028e3c263ffa27"},
+    {file = "litellm-1.94.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:205d6ef259391d5b5076e82b2a8a30c63050611e584f7c2d516ff89cf408c6bb"},
+    {file = "litellm-1.94.0-cp312-cp312-win_amd64.whl", hash = "sha256:bf648a12004d183d79461b980402c6c36ba39ca0029c7cd3775d5b6ac20e8947"},
+    {file = "litellm-1.94.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:c7ea7b8a0ae43dab9c099da352bfaf43f7ec64a1c5c2b52b66b2ac75837a8e86"},
+    {file = "litellm-1.94.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:a3fc60884d06607664b9eae39347f3e125744cbca92814a2f33a4d27204eda82"},
+    {file = "litellm-1.94.0-cp313-cp313-win_amd64.whl", hash = "sha256:dd05c0dee67325f5a580e2adc43fbe21c0ab8b2f2641991b33d096f10fe8c665"},
+    {file = "litellm-1.94.0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:cb820276c4ddd0fdc1232bc9ce55165e5baade4854218e36206568e5cf4af24c"},
+    {file = "litellm-1.94.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:3858e8c1a08b7400dcf105030cb84753fee2acfe7d10b01f1a450dd4576eea22"},
+    {file = "litellm-1.94.0-cp314-cp314-win_amd64.whl", hash = "sha256:430127afdb317b98e2f3e4fab1c857fd72117292b5edd7d655e1aae51f213ef6"},
+    {file = "litellm-1.94.0.tar.gz", hash = "sha256:12dc4f39a0d82f91cf30a6bce439b457bdff52e694ce87094878e6d521b6e4f5"},
 ]
 
 [package.dependencies]
@@ -4536,15 +4550,17 @@ tiktoken = ">=0.8.0,<1.0"
 tokenizers = ">=0.21.0,<1.0"
 
 [package.extras]
-caching = ["diskcache (==5.6.3)"]
-extra-proxy = ["a2a-sdk (==0.3.24)", "azure-identity (==1.25.2)", "azure-keyvault-secrets (==4.10.0)", "google-cloud-iam (==2.19.1)", "google-cloud-kms (==2.24.2)", "prisma (==0.11.0)", "redisvl (==0.4.1) ; python_full_version < \"3.14.0\"", "resend (==2.23.0)"]
-google = ["google-cloud-aiplatform (==1.133.0)"]
+caching = ["diskcache (>=5.6.3,<6.0)"]
+cli = ["inquirerpy (>=0.3.4,<1.0)", "pyyaml (>=6.0.3,<7.0)", "requests (>=2.32.0,<3.0)", "rich (>=13.9.4,<14.0)"]
+extra-proxy = ["a2a-sdk (>=1.1.0,<2.0)", "azure-identity (>=1.25.2,<2.0)", "azure-keyvault-secrets (>=4.10.0,<5.0)", "google-cloud-iam (>=2.19.1,<3.0)", "google-cloud-kms (>=2.24.2,<3.0)", "prisma (>=0.11.0,<1.0)", "redisvl (>=0.4.1,<1.0)", "resend (>=2.23.0,<3.0)"]
+google = ["google-cloud-aiplatform (>=1.133.0,<2.0)"]
 grpc = ["grpcio (==1.78.0)"]
-mlflow = ["mlflow (==3.11.1)"]
-proxy = ["apscheduler (==3.11.2)", "azure-identity (==1.25.2)", "azure-storage-blob (==12.28.0)", "backoff (==2.2.1)", "boto3 (==1.43.1)", "cryptography (==46.0.7)", "fastapi (==0.124.4)", "fastapi-sso (==0.19.0)", "gunicorn (==23.0.0)", "litellm-enterprise (==0.1.40)", "litellm-proxy-extras (==0.4.72)", "mcp (==1.26.0)", "orjson (==3.11.6)", "polars (==1.38.1)", "pyjwt (==2.12.0)", "pynacl (==1.6.2)", "pyroscope-io (==0.8.16) ; sys_platform != \"win32\"", "python-multipart (==0.0.27)", "pyyaml (==6.0.3)", "restrictedpython (==8.1)", "rich (==13.9.4)", "rq (==2.7.0)", "soundfile (==0.12.1)", "uvicorn (==0.33.0)", "uvloop (==0.21.0) ; sys_platform != \"win32\"", "websockets (==15.0.1)"]
-proxy-runtime = ["anthropic[vertex] (==0.84.0)", "azure-ai-contentsafety (==1.0.0)", "azure-storage-file-datalake (==12.20.0)", "ddtrace (==2.19.0)", "detect-secrets (==1.5.0)", "google-cloud-aiplatform (==1.133.0)", "google-genai (==1.37.0)", "grpcio (==1.78.0)", "langfuse (==2.59.7)", "llm-sandbox (==0.3.39)", "mangum (==0.17.0)", "opentelemetry-api (==1.28.0)", "opentelemetry-exporter-otlp (==1.28.0)", "opentelemetry-sdk (==1.28.0)", "prometheus-client (==0.20.0)", "pypdf (==6.10.2) ; python_full_version < \"3.14.0\"", "sentry-sdk (==2.21.0)"]
-semantic-router = ["aurelio-sdk (==0.0.19) ; python_full_version < \"3.14.0\"", "semantic-router (==0.1.12) ; python_full_version < \"3.14.0\""]
-utils = ["numpydoc (==1.8.0)"]
+mlflow = ["mlflow (>=3.11.1,<4.0)"]
+proxy = ["apscheduler (>=3.11.2,<4.0)", "azure-identity (>=1.25.2,<2.0)", "azure-storage-blob (>=12.28.0,<13.0)", "backoff (>=2.2.1,<3.0)", "boto3 (>=1.43.1,<2.0)", "cryptography (>=48.0.1,<49.0)", "expression (>=5.6.0,<6.0)", "fastapi (>=0.136.3,<1.0)", "fastapi-sso (>=0.19.0,<1.0)", "granian (>=2.7.4,<3.0)", "gunicorn (>=23.0.0,<24.0)", "inquirerpy (>=0.3.4,<1.0)", "litellm-enterprise (==0.1.51)", "litellm-proxy-extras (==0.4.79.post2)", "mcp (>=1.28.1,<2.0)", "orjson (>=3.11.6,<4.0)", "polars (>=1.38.1,<2.0)", "pydantic-settings (>=2.14.1,<3.0)", "pyjwt (>=2.13.0,<3.0)", "pynacl (>=1.6.2,<2.0)", "pyroscope-io (>=0.8.16,<1.0) ; sys_platform != \"win32\"", "python-multipart (>=0.0.27,<1.0)", "pyyaml (>=6.0.3,<7.0)", "restrictedpython (>=8.1,<9.0)", "rich (>=13.9.4,<14.0)", "rq (>=2.7.0,<3.0)", "soundfile (>=0.12.1,<1.0)", "starlette (>=1.0.1,<2.0)", "uvicorn (>=0.33.0,<1.0)", "uvloop (>=0.21.0,<1.0) ; sys_platform != \"win32\"", "websockets (>=15.0.1,<16.0)"]
+proxy-runtime = ["anthropic[vertex] (>=0.84.0,<1.0)", "azure-ai-contentsafety (>=1.0.0,<2.0)", "azure-storage-file-datalake (>=12.20.0,<13.0)", "ddtrace (>=4.8.2,<5.0)", "detect-secrets (>=1.5.0,<2.0)", "google-cloud-aiplatform (>=1.133.0,<2.0)", "google-genai (>=1.37.0,<2.0)", "grpcio (==1.78.0)", "langfuse (>=2.59.7,<3.0)", "llm-sandbox (>=0.3.39,<1.0)", "mangum (>=0.17.0,<1.0)", "opentelemetry-api (==1.28.0)", "opentelemetry-exporter-otlp (==1.28.0)", "opentelemetry-instrumentation-fastapi (==0.49b0)", "opentelemetry-sdk (==1.28.0)", "prometheus-client (>=0.20.0,<1.0)", "pypdf (>=6.12.0,<7.0)", "sentry-sdk (>=2.21.0,<3.0)"]
+semantic-router = ["aurelio-sdk (>=0.0.19,<1.0) ; python_full_version < \"3.14.0\"", "semantic-router (>=0.1.15,<1.0) ; python_full_version < \"3.14.0\""]
+stt-nvidia-riva = ["audioread (>=3.0.1)", "numpy (>=1.26.0)", "nvidia-riva-client (>=2.15.0)", "soundfile (>=0.12.1)"]
+utils = ["numpydoc (>=1.8.0,<2.0)"]
 
 [[package]]
 name = "llvmlite"
@@ -5877,14 +5893,14 @@ numpy = {version = ">=2", markers = "python_version >= \"3.9\""}
 
 [[package]]
 name = "openhands-agent-server"
-version = "1.37.1"
+version = "1.39.1"
 description = "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "openhands_agent_server-1.37.1-py3-none-any.whl", hash = "sha256:dd08c5c359d783a07b79b779da3fb2979a0efa572aa5bfd3dd881a6a9fe9e075"},
-    {file = "openhands_agent_server-1.37.1.tar.gz", hash = "sha256:47f099e50e0262d1155e6dcec61fd2bd7bd36f4443f604edccf4fb1b522abd5d"},
+    {file = "openhands_agent_server-1.39.1-py3-none-any.whl", hash = "sha256:0e012457ab0240a4939d99237c71f9255bc830824d9004c8d85a0046767382e7"},
+    {file = "openhands_agent_server-1.39.1.tar.gz", hash = "sha256:941922d78431c4e28cf625c7fe57d40458ff4ef93d670f4df505e475e0ec829f"},
 ]
 
 [package.dependencies]
@@ -5905,7 +5921,7 @@ posthog = ["posthog (>=6,<7)"]
 
 [[package]]
 name = "openhands-ai"
-version = "1.11.0"
+version = "1.48.0"
 description = "OpenHands: Code Less, Make More"
 optional = false
 python-versions = "^3.12,<3.14"
@@ -5945,15 +5961,15 @@ json-repair = "*"
 jupyter-kernel-gateway = "3.0.1"
 kubernetes = ">=33.1"
 libtmux = ">=0.46.2"
-litellm = "1.84.1"
+litellm = "1.94.0"
 lmnr = ">=0.7.20"
 mcp = ">=1.25"
 memory-profiler = "0.61.0"
 numpy = "2.4.4"
 openai = "2.33.0"
-openhands-agent-server = "1.37.1"
-openhands-sdk = "1.37.1"
-openhands-tools = "1.37.1"
+openhands-agent-server = "1.39.1"
+openhands-sdk = "1.39.1"
+openhands-tools = "1.39.1"
 opentelemetry-api = "1.39.1"
 opentelemetry-exporter-otlp-proto-grpc = "1.39.1"
 orjson = "3.11.8"
@@ -6006,14 +6022,14 @@ url = ".."
 
 [[package]]
 name = "openhands-sdk"
-version = "1.37.1"
+version = "1.39.1"
 description = "OpenHands SDK - Core functionality for building AI agents"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "openhands_sdk-1.37.1-py3-none-any.whl", hash = "sha256:d7d7723e7d44fbf0bed734875668cb7dba1fd441346fcc295b37513ff32130da"},
-    {file = "openhands_sdk-1.37.1.tar.gz", hash = "sha256:c123a9fc86d289d1e5a92fae5d3f5fc4d4b615b1d8f40ed33028b784e5289c36"},
+    {file = "openhands_sdk-1.39.1-py3-none-any.whl", hash = "sha256:2f3f8c0e490ca5449860dc84f0aef5d90d48646615e7106571a6014ef0612138"},
+    {file = "openhands_sdk-1.39.1.tar.gz", hash = "sha256:1647c1549d8926d0c3b8ae5043892dc33906aceab842dc6a4549944fdfc2075a"},
 ]
 
 [package.dependencies]
@@ -6024,7 +6040,7 @@ fastmcp = ">=3.0.0"
 filelock = ">=3.20.1"
 httpx = {version = ">=0.27.0", extras = ["socks"]}
 joserfc = ">=1.0.0"
-litellm = ">=1.84.1"
+litellm = ">=1.93.0"
 lmnr = ">=0.7.56,<0.8.0"
 pillow = ">=12.1.1"
 pydantic = ">=2.12.5"
@@ -6042,14 +6058,14 @@ vertex = ["google-cloud-aiplatform (>=1.38)"]
 
 [[package]]
 name = "openhands-tools"
-version = "1.37.1"
+version = "1.39.1"
 description = "OpenHands Tools - Runtime tools for AI agents"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "openhands_tools-1.37.1-py3-none-any.whl", hash = "sha256:ebe9fb7c8fe98bcc010f1ed2ace2e6d1efaaf325c5fd781a65c5fffd8e45ea0d"},
-    {file = "openhands_tools-1.37.1.tar.gz", hash = "sha256:5123ee1cbd0bc2cc9accfbd2f1ff3ccb0e8544083611e6277f57d95a56b53869"},
+    {file = "openhands_tools-1.39.1-py3-none-any.whl", hash = "sha256:f127b47dca585d8098316e4333ebeca8fc4fc0d66bbcffd2a5d26980674206d4"},
+    {file = "openhands_tools-1.39.1.tar.gz", hash = "sha256:0618b2776d0e63b1fe6eb1c95228820357cecf8ee97f53ee0a9c8aa94cfb80e6"},
 ]
 
 [package.dependencies]
