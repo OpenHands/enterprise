@@ -56,8 +56,8 @@ def store(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_store_creates_persistent_opaque_generation(store):
-    await store.store(_secrets(_ORIGINAL))
+async def test_protected_write_creates_persistent_opaque_generation(store):
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
 
     value, version = await store.load_versioned(_NAME)
     second = FileSecretsStore(store.file_store)
@@ -65,6 +65,58 @@ async def test_store_creates_persistent_opaque_generation(store):
     assert value == _ORIGINAL
     assert version != _ORIGINAL
     assert await second.load_versioned(_NAME) == (_ORIGINAL, version)
+
+
+@pytest.mark.asyncio
+async def test_store_cannot_create_a_protected_credential(store):
+    await store.store(_secrets(_ORIGINAL, 'other'))
+
+    loaded = await store.load()
+    assert loaded is not None
+    assert _NAME not in loaded.custom_secrets
+    assert loaded.custom_secrets['OTHER'].secret.get_secret_value() == 'other'
+
+
+@pytest.mark.asyncio
+async def test_store_cannot_overwrite_a_rotation_without_a_prior_load(store):
+    """The guard must not depend on this instance having called ``load`` first.
+
+    The baseline-tracking mechanism this replaces failed exactly here.
+    """
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
+    _, version = await store.load_versioned(_NAME)
+    successor = await store.replace_versioned(_NAME, version, _ROTATED)
+
+    blind = FileSecretsStore(store.file_store)
+    await blind.store(_secrets(_ORIGINAL, 'other'))
+
+    assert await store.load_versioned(_NAME) == (_ROTATED, successor)
+
+
+@pytest.mark.asyncio
+async def test_whole_document_save_without_custom_secrets_keeps_the_credential(store):
+    """Regression: ``invalidate_legacy_secrets_store`` saves exactly this shape."""
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
+    await store.store(_secrets(None, 'other'))
+    _, version = await store.load_versioned(_NAME)
+
+    await FileSecretsStore(store.file_store).store(Secrets())
+
+    assert await store.load_versioned(_NAME) == (_ORIGINAL, version)
+
+
+@pytest.mark.asyncio
+async def test_protected_delete_removes_value_and_generation(store):
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
+    await store.delete_protected_credential(_NAME)
+
+    loaded = await store.load()
+    assert loaded is not None
+    assert _NAME not in loaded.custom_secrets
+    with pytest.raises(KeyError):
+        await store.load_versioned(_NAME)
+    raw = json.loads(store.file_store.read('secrets.json'))
+    assert _NAME not in raw.get('_credential_versions', {})
 
 
 @pytest.mark.asyncio
@@ -121,11 +173,11 @@ async def test_replace_is_compare_and_swap_and_preserves_raw_fields():
 
 @pytest.mark.asyncio
 async def test_delete_and_identical_recreate_rejects_old_generation(store):
-    await store.store(_secrets(_ORIGINAL))
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
     _, original_version = await store.load_versioned(_NAME)
 
-    await store.store(_secrets(None))
-    await store.store(_secrets(_ORIGINAL))
+    await store.delete_protected_credential(_NAME)
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
     _, recreated_version = await store.load_versioned(_NAME)
 
     assert recreated_version != original_version
@@ -135,7 +187,8 @@ async def test_delete_and_identical_recreate_rejects_old_generation(store):
 
 @pytest.mark.asyncio
 async def test_stale_whole_save_preserves_rotation_and_unrelated_edits(store):
-    await store.store(_secrets(_ORIGINAL, 'old'))
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
+    await store.store(_secrets(None, 'old'))
     raw = json.loads(store.file_store.read('secrets.json'))
     raw['custom_secrets'][_NAME]['future'] = 'keep'
     raw['future_top_level'] = {'keep': True}
@@ -158,7 +211,9 @@ async def test_stale_whole_save_preserves_rotation_and_unrelated_edits(store):
     saved_raw = json.loads(store.file_store.read('secrets.json'))
     assert loaded is not None
     assert loaded.custom_secrets[_NAME].secret.get_secret_value() == _ROTATED
-    assert loaded.custom_secrets[_NAME].description == 'Updated description'
+    # The whole-document save carries no authority over a protected entry, so
+    # its description edit is dropped along with its value.
+    assert loaded.custom_secrets[_NAME].description == 'Managed login'
     assert loaded.custom_secrets['OTHER'].secret.get_secret_value() == 'new'
     assert await store.load_versioned(_NAME) == (_ROTATED, successor)
     assert saved_raw['custom_secrets'][_NAME]['future'] == 'keep'
@@ -167,16 +222,13 @@ async def test_stale_whole_save_preserves_rotation_and_unrelated_edits(store):
 
 @pytest.mark.asyncio
 async def test_stale_whole_save_preserves_concurrent_deletion(store):
-    await store.store(_secrets(_ORIGINAL, 'old'))
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
+    await store.store(_secrets(None, 'old'))
     stale_store = FileSecretsStore(store.file_store)
-    deleting_store = FileSecretsStore(store.file_store)
     stale = await stale_store.load()
-    deleting = await deleting_store.load()
-    assert stale is not None and deleting is not None
+    assert stale is not None
 
-    deleted = dict(deleting.custom_secrets)
-    deleted.pop(_NAME)
-    await deleting_store.store(deleting.model_copy(update={'custom_secrets': deleted}))
+    await FileSecretsStore(store.file_store).delete_protected_credential(_NAME)
 
     updated = dict(stale.custom_secrets)
     updated['OTHER'] = CustomSecret.from_value({'secret': 'new', 'description': ''})
@@ -190,19 +242,28 @@ async def test_stale_whole_save_preserves_concurrent_deletion(store):
 
 @pytest.mark.asyncio
 async def test_explicit_edit_after_rotation_mints_generation(store):
-    await store.store(_secrets(_ORIGINAL))
-    editing_store = FileSecretsStore(store.file_store)
-    editing = await editing_store.load()
-    assert editing is not None
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
     _, version = await store.load_versioned(_NAME)
     rotated_version = await store.replace_versioned(_NAME, version, _ROTATED)
 
-    changed = _secrets('{"tokens":{"refresh_token":"r2"}}')
-    await editing_store.store(changed)
+    editing_store = FileSecretsStore(store.file_store)
+    await editing_store.replace_protected_credential(
+        _NAME, '{"tokens":{"refresh_token":"r2"}}'
+    )
     value, changed_version = await store.load_versioned(_NAME)
 
     assert value == '{"tokens":{"refresh_token":"r2"}}'
     assert changed_version != rotated_version
+
+
+@pytest.mark.asyncio
+async def test_protected_edit_keeps_the_existing_description_when_omitted(store):
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
+    await store.replace_protected_credential(_NAME, _ROTATED)
+
+    loaded = await store.load()
+    assert loaded is not None
+    assert loaded.custom_secrets[_NAME].description == 'Managed login'
 
 
 @pytest.mark.asyncio
@@ -214,7 +275,7 @@ async def test_concurrent_replacements_have_one_winner(kind, tmp_path):
     else:
         file_store = InMemoryFileStore()
     store = FileSecretsStore(file_store)
-    await store.store(_secrets(_ORIGINAL))
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
     _, version = await store.load_versioned(_NAME)
 
     results = await asyncio.gather(
@@ -235,7 +296,7 @@ async def test_concurrent_replacements_have_one_winner(kind, tmp_path):
 
 @pytest.mark.asyncio
 async def test_local_compare_and_swap_is_cross_process(store, tmp_path):
-    await store.store(_secrets(_ORIGINAL))
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
     _, version = await store.load_versioned(_NAME)
     context = multiprocessing.get_context('spawn')
     results = context.Queue()
@@ -270,7 +331,7 @@ async def test_local_compare_and_swap_is_cross_process(store, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_unsupported_file_store_retains_legacy_path():
+async def test_unsupported_file_store_has_no_compare_and_swap():
     file_store = MagicMock(spec=FileStore)
     file_store.supports_locked_update = False
     file_store.read.return_value = _secrets(_ORIGINAL).model_dump_json(
@@ -284,10 +345,19 @@ async def test_unsupported_file_store_retains_legacy_path():
     with pytest.raises(NotImplementedError):
         await store.replace_versioned(_NAME, 'version', _ROTATED)
 
-    file_store.reset_mock()
-    updated = _secrets(_ROTATED, 'new')
-    await store.store(updated)
-    file_store.write.assert_called_once_with(
-        'secrets.json',
-        updated.model_dump_json(context={'expose_secrets': True}),
+
+@pytest.mark.asyncio
+async def test_unsupported_file_store_still_protects_the_credential():
+    """No lock to take, but ``store`` must still not write a protected name."""
+    file_store = MagicMock(spec=FileStore)
+    file_store.supports_locked_update = False
+    file_store.read.return_value = _secrets(_ORIGINAL).model_dump_json(
+        context={'expose_secrets': True}
     )
+    store = FileSecretsStore(file_store)
+
+    await store.store(_secrets(_ROTATED, 'new'))
+    written = json.loads(file_store.write.call_args.args[1])
+
+    assert written['custom_secrets'][_NAME]['secret'] == _ORIGINAL
+    assert written['custom_secrets']['OTHER']['secret'] == 'new'

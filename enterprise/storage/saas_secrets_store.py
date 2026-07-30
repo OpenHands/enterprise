@@ -13,13 +13,12 @@ from storage.user_store import UserStore
 
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import (
+    PROTECTED_CREDENTIAL_NAMES,
     CredentialVersionConflict,
     SecretsStore,
 )
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.logger import openhands_logger as logger
-
-_CODEX_AUTH_SECRET_NAME = 'CODEX_AUTH_JSON'
 
 
 def _credential_version(row: StoredCustomSecrets) -> str:
@@ -37,11 +36,6 @@ class SaasSecretsStore(SecretsStore):
     # (user_id, org_id), so the effective org must flow through here for
     # the right rows to be read/written.
     effective_org_id: UUID | None = None
-    _loaded_codex_auth: dict[UUID | None, str | None] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
-    )
 
     async def load(self) -> Secrets | None:
         if not self.user_id:
@@ -59,7 +53,6 @@ class SaasSecretsStore(SecretsStore):
             settings = result.scalars().all()
 
             if not settings:
-                self._loaded_codex_auth[org_id] = None
                 return Secrets()
 
             kwargs = {}
@@ -70,13 +63,6 @@ class SaasSecretsStore(SecretsStore):
                 }
 
             self._decrypt_kwargs(kwargs)
-            codex_info = kwargs.get(_CODEX_AUTH_SECRET_NAME)
-            codex_value = (
-                codex_info.get('secret') if isinstance(codex_info, dict) else None
-            )
-            self._loaded_codex_auth[org_id] = (
-                codex_value if isinstance(codex_value, str) else None
-            )
 
             return Secrets(custom_secrets=kwargs)  # type: ignore[arg-type]
 
@@ -88,80 +74,99 @@ class SaasSecretsStore(SecretsStore):
 
         kwargs = item.model_dump(context={'expose_secrets': True})
         del kwargs['provider_tokens']
-        secrets_json = kwargs.get('custom_secrets', {})
-        codex_info = secrets_json.get(_CODEX_AUTH_SECRET_NAME)
-        submitted_codex = (
-            codex_info.get('secret') if isinstance(codex_info, dict) else None
-        )
-        if not isinstance(submitted_codex, str):
-            submitted_codex = None
-
-        has_baseline = org_id in self._loaded_codex_auth
-        preserve_codex = not has_baseline and codex_info is None
-        if has_baseline and submitted_codex == self._loaded_codex_auth[org_id]:
-            preserve_codex = True
+        # Structural, not conditional: protected names are dropped from the
+        # submitted document and their rows excluded from the delete, so no
+        # read-modify-write can restore a value a runtime has rotated.
+        kwargs['custom_secrets'] = {
+            name: info
+            for name, info in kwargs.get('custom_secrets', {}).items()
+            if name not in PROTECTED_CREDENTIAL_NAMES
+        }
+        secrets_json = kwargs['custom_secrets']
 
         async with a_session_maker() as session:
-            result = await session.execute(
-                select(StoredCustomSecrets)
-                .filter(
+            await session.execute(
+                delete(StoredCustomSecrets).filter(
                     StoredCustomSecrets.keycloak_user_id == self.user_id,
                     StoredCustomSecrets.org_id == org_id,
+                    StoredCustomSecrets.secret_name.not_in(PROTECTED_CREDENTIAL_NAMES),
                 )
-                # Lock in the same order as _versioned_query so a concurrent
-                # replace_versioned over the duplicate Codex rows cannot deadlock.
-                .order_by(StoredCustomSecrets.id.desc())
-                .with_for_update()
             )
-            codex_rows = [
-                row
-                for row in result.scalars().all()
-                if row.secret_name == _CODEX_AUTH_SECRET_NAME
-            ]
-            if preserve_codex:
-                secrets_json.pop(_CODEX_AUTH_SECRET_NAME, None)
-                if codex_rows and isinstance(codex_info, dict):
-                    description = codex_info.get('description')
-                    encrypted_description = (
-                        self._jwt_svc.encrypt_value(description)
-                        if description is not None
-                        else None
-                    )
-                    for row in codex_rows:
-                        row.description = encrypted_description
-
-            delete_query = delete(StoredCustomSecrets).filter(
-                StoredCustomSecrets.keycloak_user_id == self.user_id,
-                StoredCustomSecrets.org_id == org_id,
-            )
-            if preserve_codex:
-                delete_query = delete_query.filter(
-                    StoredCustomSecrets.secret_name != _CODEX_AUTH_SECRET_NAME
-                )
-            await session.execute(delete_query)
 
             self._encrypt_kwargs(kwargs)
 
-            secret_tuples = []
             for secret_name, secret_info in secrets_json.items():
-                secret_value = secret_info.get('secret')
-                description = secret_info.get('description')
-
-                secret_tuples.append((secret_name, secret_value, description))
-
-            for secret_name, secret_value, description in secret_tuples:
-                new_secret = StoredCustomSecrets(
-                    keycloak_user_id=self.user_id,
-                    org_id=org_id,
-                    secret_name=secret_name,
-                    secret_value=secret_value,
-                    description=description,
+                session.add(
+                    StoredCustomSecrets(
+                        keycloak_user_id=self.user_id,
+                        org_id=org_id,
+                        secret_name=secret_name,
+                        secret_value=secret_info.get('secret'),
+                        description=secret_info.get('description'),
+                    )
                 )
-                session.add(new_secret)
 
             await session.commit()
-            if not preserve_codex:
-                self._loaded_codex_auth[org_id] = submitted_codex
+
+    async def replace_protected_credential(
+        self,
+        name: str,
+        value: str,
+        description: str | None = None,
+    ) -> None:
+        org_id = await self._writable_organization_id()
+        encrypted = self._jwt_svc.encrypt_value(value)
+        encrypted_description = (
+            self._jwt_svc.encrypt_value(description)
+            if description is not None
+            else None
+        )
+        async with a_session_maker() as session:
+            result = await session.execute(
+                self._versioned_query(name, org_id).with_for_update()
+            )
+            rows = result.scalars().all()
+            if rows:
+                for row in rows:
+                    row.secret_value = encrypted
+                    if description is not None:
+                        row.description = encrypted_description
+            else:
+                session.add(
+                    StoredCustomSecrets(
+                        keycloak_user_id=self.user_id,
+                        org_id=org_id,
+                        secret_name=name,
+                        secret_value=encrypted,
+                        description=encrypted_description,
+                    )
+                )
+            await session.commit()
+
+    async def delete_protected_credential(self, name: str) -> None:
+        org_id = await self._writable_organization_id()
+        async with a_session_maker() as session:
+            await session.execute(
+                delete(StoredCustomSecrets).filter(
+                    StoredCustomSecrets.keycloak_user_id == self.user_id,
+                    StoredCustomSecrets.org_id == org_id,
+                    StoredCustomSecrets.secret_name == name,
+                )
+            )
+            await session.commit()
+
+    async def _writable_organization_id(self) -> UUID:
+        """Resolve the org exactly as ``store`` does, not as the callback does.
+
+        The callback rechecks membership because it is authorized by a runtime
+        token; these paths are already inside an authenticated user request.
+        """
+        if self.effective_org_id is not None:
+            return self.effective_org_id
+        user = await UserStore.get_user_by_id(self.user_id)
+        if user is None:
+            raise ValueError(f'User not found: {self.user_id}')
+        return user.current_org_id
 
     async def load_versioned(
         self,

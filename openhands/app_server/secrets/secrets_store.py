@@ -10,6 +10,16 @@ class CredentialVersionConflict(Exception):
     pass
 
 
+# Names whose value a whole-document ``store`` must never write. A runtime can
+# rotate these behind the app's back, so a request that echoes back the document
+# it read would otherwise restore a consumed credential.
+PROTECTED_CREDENTIAL_NAMES = frozenset({'CODEX_AUTH_JSON'})
+
+
+def is_protected_credential(name: str) -> bool:
+    return name in PROTECTED_CREDENTIAL_NAMES
+
+
 class SecretsStore(ABC):
     """Abstract base class for storing user secrets.
 
@@ -30,7 +40,19 @@ class SecretsStore(ABC):
 
     @abstractmethod
     async def store(self, secrets: Secrets) -> None:
-        """Store secrets."""
+        """Store secrets, carrying ``PROTECTED_CREDENTIAL_NAMES`` forward untouched."""
+
+    async def replace_protected_credential(
+        self,
+        name: str,
+        value: str,
+        description: str | None = None,
+    ) -> None:
+        """Write a protected credential, the only user-facing way to change one."""
+        raise NotImplementedError
+
+    async def delete_protected_credential(self, name: str) -> None:
+        raise NotImplementedError
 
     async def load_versioned(
         self,

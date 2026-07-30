@@ -20,7 +20,10 @@ from openhands.app_server.secrets.secrets_models import (
     CustomSecretWithoutValue,
     Secrets,
 )
-from openhands.app_server.secrets.secrets_store import SecretsStore
+from openhands.app_server.secrets.secrets_store import (
+    SecretsStore,
+    is_protected_credential,
+)
 from openhands.app_server.settings.settings_models import POSTProviderModel
 from openhands.app_server.user_auth import (
     get_provider_tokens,
@@ -269,6 +272,18 @@ async def create_custom_secret(
     existing_description = (
         custom_secrets[secret_name].description if secret_name in custom_secrets else ''
     )
+    if is_protected_credential(secret_name):
+        # ``store`` cannot write these, so an explicit edit has to go through the
+        # per-key writer or it would be silently dropped.
+        await secrets_store.replace_protected_credential(
+            secret_name,
+            secret_value.get_secret_value(),
+            secret_description
+            if secret_description is not None
+            else existing_description,
+        )
+        return EditResponse(message='Secret created successfully')
+
     custom_secrets[secret_name] = CustomSecret(
         secret=secret_value,
         description=secret_description
@@ -324,6 +339,22 @@ async def update_custom_secret(
             detail=f'Secret {secret_name} already exists',
         )
 
+    if secret_name != secret_id and (
+        is_protected_credential(secret_id) or is_protected_credential(secret_name)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Secret {secret_id} is a managed credential and cannot be renamed',
+        )
+
+    if is_protected_credential(secret_id):
+        await secrets_store.replace_protected_credential(
+            secret_id,
+            existing_secret.secret.get_secret_value(),
+            secret_description or '',
+        )
+        return EditResponse(message='Secret updated successfully')
+
     custom_secrets[secret_name] = CustomSecret(
         secret=existing_secret.secret,
         description=secret_description or '',
@@ -369,6 +400,10 @@ async def delete_custom_secret(
 
         # Remove the secret
         custom_secrets.pop(secret_id)
+
+        if is_protected_credential(secret_id):
+            await secrets_store.delete_protected_credential(secret_id)
+            return EditResponse(message='Secret deleted successfully')
 
         # Create a new Secrets that preserves provider tokens and remaining secrets
         updated_secrets = Secrets(

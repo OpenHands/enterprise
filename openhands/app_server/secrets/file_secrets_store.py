@@ -2,36 +2,40 @@ from __future__ import annotations
 
 import json
 import secrets as secrets_module
-from dataclasses import dataclass, field
-from typing import Any
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, TypeVar
 from uuid import UUID
 
 from openhands.app_server.file_store.files import FileStore
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import (
+    PROTECTED_CREDENTIAL_NAMES,
     CredentialVersionConflict,
     SecretsStore,
+    is_protected_credential,
 )
 from openhands.app_server.utils.async_utils import call_sync_from_async
 
-_CODEX_AUTH_SECRET_NAME = 'CODEX_AUTH_JSON'
 _CREDENTIAL_VERSIONS_KEY = '_credential_versions'
 
-
-@dataclass(frozen=True)
-class _LoadedCredential:
-    value: str | None
+_T = TypeVar('_T')
 
 
 @dataclass
 class FileSecretsStore(SecretsStore):
     file_store: FileStore
     path: str = 'secrets.json'
-    _loaded_codex_auth: _LoadedCredential | None = field(
-        default=None,
-        init=False,
-        repr=False,
-    )
+
+    async def _update(self, update: Callable[[], _T]) -> _T:
+        """Run ``update`` under the cross-process lock when the store has one."""
+        if not self.file_store.supports_locked_update:
+            return await call_sync_from_async(update)
+        return await call_sync_from_async(
+            self.file_store.locked_update,
+            self.path,
+            update,
+        )
 
     def _read_data(self) -> dict[str, Any] | None:
         try:
@@ -111,33 +115,13 @@ class FileSecretsStore(SecretsStore):
         self.file_store.write(self.path, json.dumps(data))
 
     async def load(self) -> Secrets | None:
-        if not self.file_store.supports_locked_update:
-            data = await call_sync_from_async(self._read_data)
-            return self._secrets(data) if data is not None else None
-
         def load_locked() -> Secrets | None:
             data = self._read_data()
-            if data is None:
-                self._loaded_codex_auth = _LoadedCredential(None)
-                return None
-            loaded = self._secrets(data)
-            current = loaded.custom_secrets.get(_CODEX_AUTH_SECRET_NAME)
-            value = current.secret.get_secret_value() if current is not None else None
-            self._loaded_codex_auth = _LoadedCredential(value)
-            return loaded
+            return self._secrets(data) if data is not None else None
 
-        return await call_sync_from_async(
-            self.file_store.locked_update,
-            self.path,
-            load_locked,
-        )
+        return await self._update(load_locked)
 
     async def store(self, secrets: Secrets) -> None:
-        if not self.file_store.supports_locked_update:
-            json_str = secrets.model_dump_json(context={'expose_secrets': True})
-            await call_sync_from_async(self.file_store.write, self.path, json_str)
-            return
-
         serialized = secrets.model_dump(
             mode='json',
             context={'expose_secrets': True},
@@ -145,74 +129,83 @@ class FileSecretsStore(SecretsStore):
 
         def store_locked() -> None:
             data = self._read_data() or {}
-            original_provider_tokens = self._entries(data, 'provider_tokens')
             original_custom_secrets = self._entries(data, 'custom_secrets')
-            incoming_provider_tokens = serialized['provider_tokens']
-            incoming_custom_secrets = serialized['custom_secrets']
-            versions = self._versions(data)
-
-            submitted_info = incoming_custom_secrets.get(_CODEX_AUTH_SECRET_NAME)
-            submitted_value = (
-                submitted_info.get('secret')
-                if isinstance(submitted_info, dict)
-                else None
-            )
-            if not isinstance(submitted_value, str):
-                submitted_value = None
-
-            baseline = self._loaded_codex_auth
-            preserve = baseline is None and submitted_info is None
-            if baseline is not None and submitted_value == baseline.value:
-                preserve = True
-
             updated_custom_secrets = self._merge_entries(
                 original_custom_secrets,
-                incoming_custom_secrets,
+                {
+                    name: value
+                    for name, value in serialized['custom_secrets'].items()
+                    if not is_protected_credential(name)
+                },
             )
-            if preserve:
-                try:
-                    current_info, current_value = self._raw_secret(
-                        data,
-                        _CODEX_AUTH_SECRET_NAME,
-                    )
-                except KeyError:
-                    updated_custom_secrets.pop(_CODEX_AUTH_SECRET_NAME, None)
+            # Structural, not conditional: whatever the caller submitted for a
+            # protected name is discarded and the persisted entry carried over,
+            # so no read-modify-write can restore a value a runtime has rotated.
+            for name in PROTECTED_CREDENTIAL_NAMES:
+                current = original_custom_secrets.get(name)
+                if current is None:
+                    updated_custom_secrets.pop(name, None)
                 else:
-                    if isinstance(submitted_info, dict):
-                        current_info = {**current_info, **submitted_info}
-                    updated_custom_secrets[_CODEX_AUTH_SECRET_NAME] = {
-                        **current_info,
-                        'secret': current_value,
-                    }
-            elif submitted_value is None:
-                versions.pop(_CODEX_AUTH_SECRET_NAME, None)
-            else:
-                versions[_CODEX_AUTH_SECRET_NAME] = self._new_version(
-                    versions.get(_CODEX_AUTH_SECRET_NAME)
-                    if isinstance(versions.get(_CODEX_AUTH_SECRET_NAME), str)
-                    else None
-                )
+                    updated_custom_secrets[name] = current
 
             updated = dict(data)
             updated['provider_tokens'] = self._merge_entries(
-                original_provider_tokens,
-                incoming_provider_tokens,
+                self._entries(data, 'provider_tokens'),
+                serialized['provider_tokens'],
             )
             updated['custom_secrets'] = updated_custom_secrets
+            self._write_data(updated)
+
+        await self._update(store_locked)
+
+    async def replace_protected_credential(
+        self,
+        name: str,
+        value: str,
+        description: str | None = None,
+    ) -> None:
+        def replace_locked() -> None:
+            data = self._read_data() or {}
+            custom_secrets = dict(self._entries(data, 'custom_secrets'))
+            current = custom_secrets.get(name)
+            entry = dict(current) if isinstance(current, dict) else {}
+            entry['secret'] = value
+            if description is not None:
+                entry['description'] = description
+            custom_secrets[name] = entry
+
+            versions = self._versions(data)
+            previous = versions.get(name)
+            versions[name] = self._new_version(
+                previous if isinstance(previous, str) else None
+            )
+
+            updated = dict(data)
+            updated['custom_secrets'] = custom_secrets
+            updated[_CREDENTIAL_VERSIONS_KEY] = versions
+            self._write_data(updated)
+
+        await self._update(replace_locked)
+
+    async def delete_protected_credential(self, name: str) -> None:
+        def delete_locked() -> None:
+            data = self._read_data()
+            if data is None:
+                return
+            custom_secrets = dict(self._entries(data, 'custom_secrets'))
+            custom_secrets.pop(name, None)
+            versions = self._versions(data)
+            versions.pop(name, None)
+
+            updated = dict(data)
+            updated['custom_secrets'] = custom_secrets
             if versions or _CREDENTIAL_VERSIONS_KEY in data:
                 updated[_CREDENTIAL_VERSIONS_KEY] = versions
             else:
                 updated.pop(_CREDENTIAL_VERSIONS_KEY, None)
             self._write_data(updated)
 
-            if not preserve:
-                self._loaded_codex_auth = _LoadedCredential(submitted_value)
-
-        await call_sync_from_async(
-            self.file_store.locked_update,
-            self.path,
-            store_locked,
-        )
+        await self._update(delete_locked)
 
     async def load_versioned(
         self,

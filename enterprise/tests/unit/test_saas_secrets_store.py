@@ -205,15 +205,9 @@ async def test_versioned_delete_and_identical_recreate_rejects_old_generation(
             _MANAGED_NAME,
             _VERSION_ORG_ID,
         )
-        await version_store.store(Secrets())
-        await version_store.store(
-            Secrets(
-                custom_secrets={
-                    _MANAGED_NAME: CustomSecret.from_value(
-                        {'secret': 'same', 'description': 'Managed login'}
-                    )
-                }
-            )
+        await version_store.delete_protected_credential(_MANAGED_NAME)
+        await version_store.replace_protected_credential(
+            _MANAGED_NAME, 'same', 'Managed login'
         )
 
     _, recreated_version = await version_store.load_versioned(
@@ -279,12 +273,12 @@ async def test_stale_whole_save_preserves_rotation_and_unrelated_edits(
     mock_get_user.return_value = user
     original = '{"tokens":{"refresh_token":"r0"}}'
     rotated = '{"tokens":{"refresh_token":"r1"}}'
+    await version_store.replace_protected_credential(
+        _MANAGED_NAME, original, 'Old description'
+    )
     await version_store.store(
         Secrets(
             custom_secrets={
-                _MANAGED_NAME: CustomSecret.from_value(
-                    {'secret': original, 'description': 'Old description'}
-                ),
                 'OTHER': CustomSecret.from_value({'secret': 'old', 'description': ''}),
             }
         )
@@ -316,8 +310,71 @@ async def test_stale_whole_save_preserves_rotation_and_unrelated_edits(
     ) == (rotated, successor)
     loaded = await stale_store.load()
     assert loaded is not None
-    assert loaded.custom_secrets[_MANAGED_NAME].description == 'New description'
+    # The whole-document save carries no authority over a protected entry, so
+    # its description edit is dropped along with its value.
+    assert loaded.custom_secrets[_MANAGED_NAME].description == 'Old description'
     assert loaded.custom_secrets['OTHER'].secret.get_secret_value() == 'new'
+
+
+@pytest.mark.asyncio
+@patch('storage.saas_secrets_store.UserStore.get_user_by_id', new_callable=AsyncMock)
+async def test_store_cannot_write_a_protected_credential_without_a_prior_load(
+    mock_get_user,
+    async_session_maker,
+    jwt_svc,
+    version_store,
+    version_membership,
+):
+    """The guard must not depend on this instance having called ``load`` first."""
+    mock_get_user.return_value = MagicMock(current_org_id=_VERSION_ORG_ID)
+    original = '{"tokens":{"refresh_token":"r0"}}'
+    rotated = '{"tokens":{"refresh_token":"r1"}}'
+    await _insert_versioned(async_session_maker, jwt_svc, original)
+    _, version = await version_store.load_versioned(_MANAGED_NAME, _VERSION_ORG_ID)
+    successor = await version_store.replace_versioned(
+        _MANAGED_NAME, version, rotated, _VERSION_ORG_ID
+    )
+
+    blind = SaasSecretsStore(str(_VERSION_USER_ID), jwt_svc)
+    await blind.store(
+        Secrets(
+            custom_secrets={
+                _MANAGED_NAME: CustomSecret.from_value(
+                    {'secret': original, 'description': 'Managed login'}
+                )
+            }
+        )
+    )
+
+    assert await version_store.load_versioned(_MANAGED_NAME, _VERSION_ORG_ID) == (
+        rotated,
+        successor,
+    )
+
+
+@pytest.mark.asyncio
+@patch('storage.saas_secrets_store.UserStore.get_user_by_id', new_callable=AsyncMock)
+async def test_whole_document_save_without_custom_secrets_keeps_the_credential(
+    mock_get_user,
+    async_session_maker,
+    jwt_svc,
+    version_store,
+    version_membership,
+):
+    """Regression: ``invalidate_legacy_secrets_store`` saves exactly this shape."""
+    mock_get_user.return_value = MagicMock(current_org_id=_VERSION_ORG_ID)
+    original = '{"tokens":{"refresh_token":"r0"}}'
+    await _insert_versioned(async_session_maker, jwt_svc, original)
+    _, version = await version_store.load_versioned(_MANAGED_NAME, _VERSION_ORG_ID)
+
+    legacy = SaasSecretsStore(str(_VERSION_USER_ID), jwt_svc)
+    await legacy.load()
+    await legacy.store(Secrets())
+
+    assert await version_store.load_versioned(_MANAGED_NAME, _VERSION_ORG_ID) == (
+        original,
+        version,
+    )
 
 
 @pytest.mark.asyncio
