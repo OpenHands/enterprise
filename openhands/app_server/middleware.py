@@ -58,19 +58,33 @@ def _build_csp(directives: dict[str, str]) -> str:
 def _runtime_hosts_from_web_host() -> str:
     """Derive the runtime-host wildcard entry from ``WEB_HOST``.
 
-    ``WEB_HOST`` is the deployment's bare apex hostname (see
+    ``WEB_HOST`` is the deployment's bare hostname for the public app (see
     ``get_default_web_url`` and ``web_client_deployment_mode.get_deployment_mode``).
-    In staging it's ``staging-runtime.all-hands.dev``; in prod it's
-    ``app.all-hands.dev`` (the runtime lives on a subdomain pattern under it
-    such as ``<sandbox>.<apex>`` and ``vscode-<sandbox>.<apex>``).
+    In staging it's ``staging.all-hands.dev``; in prod it's
+    ``app.all-hands.dev``; in self-hosted it's the customer apex such as
+    ``openhands.example.com``.
+
+    The runtime, however, lives on a *sibling* subdomain tree: in staging
+    that's ``<sandbox>.staging-runtime.all-hands.dev`` and
+    ``vscode-<sandbox>.staging-runtime.all-hands.dev``. A wildcard built
+    directly off ``WEB_HOST`` (e.g. ``*.staging.all-hands.dev``) misses
+    those siblings, so we instead drop the leftmost DNS label and wildcard
+    the registrable domain (eTLD+1):
+
+        ``staging.all-hands.dev``  -> ``https://*.all-hands.dev``
+        ``app.all-hands.dev``      -> ``https://*.all-hands.dev``
+        ``openhands.example.com``  -> ``https://*.example.com``
+        ``app.example.co.uk``      -> ``https://*.example.co.uk``
 
     A CSP3 ``*.host`` source matches the host itself and any number of
-    subdomains, so a single ``https://*.{WEB_HOST}`` entry covers both
-    the API calls (``<sandbox>.<apex>``) and the VS Code iframe
-    (``vscode-<sandbox>.<apex>``).
+    subdomains, so one entry covers both the API calls
+    (``<sandbox>.<sibling>.<registrable>``) and the VS Code iframe
+    (``vscode-<sandbox>.<sibling>.<registrable>``).
 
-    Returns an empty string when ``WEB_HOST`` is unset (e.g. local dev,
-    where ``frame-src 'self'`` already covers ``localhost``).
+    Returns an empty string when ``WEB_HOST`` is unset or single-label
+    (e.g. ``localhost``), where the wildcard would either be invalid or
+    too broad — ``frame-src 'self'`` already covers ``localhost`` in that
+    case.
     """
     web_host = os.getenv('WEB_HOST', '').strip().rstrip('/')
     if not web_host:
@@ -82,7 +96,16 @@ def _runtime_hosts_from_web_host() -> str:
         if web_host.startswith(prefix):
             web_host = web_host[len(prefix) :]
             break
-    return f'https://*.{web_host}'
+    # Strip port (e.g. `localhost:3000`) so the dot-split below is sane.
+    if ':' in web_host:
+        web_host = web_host.split(':', 1)[0]
+    parts = web_host.split('.')
+    if len(parts) < 2:
+        # Single-label host (`localhost`, `nginx`, ...); no registrable
+        # domain we can wildcard without becoming `*` itself.
+        return ''
+    registrable = '.'.join(parts[1:])
+    return f'https://*.{registrable}'
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

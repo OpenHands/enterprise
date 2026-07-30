@@ -92,17 +92,50 @@ class TestSecurityHeadersMiddleware:
         clear_csp_env: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv('WEB_HOST', 'staging-runtime.all-hands.dev')
+        monkeypatch.setenv('WEB_HOST', 'app.all-hands.dev')
 
         response = client.get('/sample')
 
         csp = _csp(response)
-        assert "frame-src 'self' https://*.staging-runtime.all-hands.dev;" in csp
+        assert "frame-src 'self' https://*.all-hands.dev;" in csp
         assert (
             "connect-src 'self' ws: wss: https://us.i.posthog.com"
             ' https://us-assets.i.posthog.com'
-            ' https://*.staging-runtime.all-hands.dev;' in csp
+            ' https://*.all-hands.dev;' in csp
         )
+
+    def test_web_host_wildcard_reaches_runtime_subdomain_tree(
+        self,
+        client: TestClient,
+        clear_csp_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Staging: WEB_HOST=staging.all-hands.dev but the runtime lives at
+        ``<sandbox>.staging-runtime.all-hands.dev`` — a sibling subdomain
+        tree under the registrable domain. The wildcard must reach it.
+        """
+        monkeypatch.setenv('WEB_HOST', 'staging.all-hands.dev')
+
+        response = client.get('/sample')
+
+        csp = _csp(response)
+        assert 'https://*.all-hands.dev' in csp
+        # ``*.staging.all-hands.dev`` would NOT have matched the runtime.
+        assert 'https://*.staging.all-hands.dev' not in csp
+
+    def test_web_host_self_hosted_apex(
+        self,
+        client: TestClient,
+        clear_csp_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv('WEB_HOST', 'openhands.example.com')
+
+        response = client.get('/sample')
+
+        csp = _csp(response)
+        assert 'https://*.example.com' in csp
+        assert 'https://*.openhands.example.com' not in csp
 
     def test_web_host_with_scheme_prefix_is_stripped(
         self,
@@ -110,12 +143,12 @@ class TestSecurityHeadersMiddleware:
         clear_csp_env: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv('WEB_HOST', 'https://staging-runtime.all-hands.dev')
+        monkeypatch.setenv('WEB_HOST', 'https://app.all-hands.dev')
 
         response = client.get('/sample')
 
         csp = _csp(response)
-        assert 'https://*.staging-runtime.all-hands.dev' in csp
+        assert 'https://*.all-hands.dev' in csp
         assert 'https://https://' not in csp
 
     def test_web_host_with_trailing_slash_is_stripped(
@@ -124,13 +157,27 @@ class TestSecurityHeadersMiddleware:
         clear_csp_env: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv('WEB_HOST', 'staging-runtime.all-hands.dev/')
+        monkeypatch.setenv('WEB_HOST', 'app.all-hands.dev/')
 
         response = client.get('/sample')
 
         csp = _csp(response)
-        assert 'https://*.staging-runtime.all-hands.dev' in csp
-        assert 'https://*.staging-runtime.all-hands.dev/' not in csp
+        assert 'https://*.all-hands.dev' in csp
+        assert 'https://*.all-hands.dev/' not in csp
+
+    def test_web_host_with_port_strips_port(
+        self,
+        client: TestClient,
+        clear_csp_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv('WEB_HOST', 'app.example.com:8443')
+
+        response = client.get('/sample')
+
+        csp = _csp(response)
+        assert 'https://*.example.com' in csp
+        assert ':8443' not in csp
 
     def test_posthog_assets_in_default_script_src(
         self, client: TestClient, clear_csp_env: None
@@ -152,6 +199,21 @@ class TestSecurityHeadersMiddleware:
         assert "frame-src 'self';" in csp
         assert "frame-src 'self' ;" not in csp
         assert 'https://*.' not in csp
+
+    def test_single_label_web_host_omits_wildcard(
+        self,
+        client: TestClient,
+        clear_csp_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``localhost`` has no registrable domain to wildcard."""
+        monkeypatch.setenv('WEB_HOST', 'localhost')
+
+        response = client.get('/sample')
+
+        csp = _csp(response)
+        assert 'https://*.' not in csp
+        assert "frame-src 'self';" in csp
 
     def test_policy_override_takes_precedence(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
