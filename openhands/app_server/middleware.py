@@ -144,7 +144,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         # OHE-2815: enforce-mode CSP. Override at runtime via the
         # CONTENT_SECURITY_POLICY env var (e.g. "" to disable).
-        headers['Content-Security-Policy'] = self._policy()
+        policy = self._policy()
+        if policy:
+            headers['Content-Security-Policy'] = policy
 
         headers['X-Content-Type-Options'] = 'nosniff'
         headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
