@@ -1229,10 +1229,8 @@ class LiteLlmManager:
         team_info = team_response.get('team_info') or {}
         members_with_roles = team_info.get('members_with_roles') or []
         return [
-            LiteLlmManager._member_dict(membership)
-            for membership in members_with_roles
+            LiteLlmManager._member_dict(membership) for membership in members_with_roles
         ]
-
 
     @staticmethod
     async def _get_user_team_info(

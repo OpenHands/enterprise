@@ -3097,7 +3097,6 @@ class TestGetTeamMembersFinancialData:
             'uses_shared_budget': False,
         }
 
-
     @pytest.mark.asyncio
     async def test_reads_current_litellm_members_with_roles_shape(
         self, mock_http_client
