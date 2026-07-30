@@ -13,9 +13,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 # Per-user request limiter for authenticated API requests (see
 # server.auth.saas_user_auth). Value is a `limits`-style window string, where
 # multiple windows are separated by ';', e.g. "10/second; 100/minute".
-RATE_LIMIT_AUTH_WINDOWS = os.environ.get(
-    'RATE_LIMIT_AUTH_WINDOWS', '10/second; 100/minute'
-)
+RATE_LIMIT_AUTH_WINDOWS = os.environ.get('RATE_LIMIT_AUTH_WINDOWS', '')
 
 # Generic fallback windows used by check_rate_limit_by_user_id when a caller does
 # not pass its own values.

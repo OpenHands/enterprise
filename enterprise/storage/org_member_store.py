@@ -13,24 +13,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from storage.database import a_session_maker
+from storage.mcp_config import serialize_mcp_config
 from storage.org_member import OrgMember
 from storage.user import User
 from storage.user_settings import UserSettings
 
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
-from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
 
 _MISSING = object()
-
-
-def serialize_mcp_config(value: object) -> dict[str, Any] | None:
-    if value is None:
-        return None
-    return dump_mcp_config(
-        coerce_mcp_config(value),
-        context={'expose_secrets': 'plaintext'},
-    )
 
 
 def _pop_mcp_config(settings: dict[str, Any]) -> object:
