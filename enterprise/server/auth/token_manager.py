@@ -129,6 +129,13 @@ class TokenManager:
                 return None, None
 
             return token_response['access_token'], token_response['refresh_token']
+        except KeycloakConnectionError:
+            logger.warning(
+                'Keycloak unavailable when getting tokens',
+                exc_info=True,
+                stack_info=True,
+            )
+            raise
         except Exception:
             logger.exception('Exception when getting Keycloak tokens', stack_info=True)
             return None, None

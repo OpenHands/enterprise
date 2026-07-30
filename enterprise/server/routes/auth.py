@@ -18,7 +18,9 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse, RedirectResponse
+from keycloak.exceptions import KeycloakConnectionError
 from pydantic import BaseModel, SecretStr
+from server.auth.auth_error import TokenRefreshError
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_REALM_NAME,
@@ -81,6 +83,19 @@ api_router = APIRouter(prefix='/api')
 oauth_router = APIRouter(prefix='/oauth')
 
 token_manager = TokenManager()
+
+
+async def _get_keycloak_tokens_or_unavailable(
+    code: str, redirect_uri: str
+) -> tuple[str | None, str | None]:
+    try:
+        return await token_manager.get_keycloak_tokens(code, redirect_uri)
+    except KeycloakConnectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Authentication service temporarily unavailable',
+            headers={'Retry-After': '1'},
+        ) from exc
 
 
 def create_provider_tokens_object(
@@ -291,14 +306,21 @@ async def keycloak_callback(
     (
         keycloak_access_token,
         keycloak_refresh_token,
-    ) = await token_manager.get_keycloak_tokens(code, redirect_uri)
+    ) = await _get_keycloak_tokens_or_unavailable(code, redirect_uri)
     if not keycloak_access_token or not keycloak_refresh_token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Problem retrieving Keycloak tokens',
         )
 
-    user_info = await token_manager.get_user_info(keycloak_access_token)
+    try:
+        user_info = await token_manager.get_user_info(keycloak_access_token)
+    except KeycloakConnectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Authentication service temporarily unavailable',
+            headers={'Retry-After': '1'},
+        ) from exc
     logger.debug(f'user_info: {user_info}')
     if ROLE_CHECK_ENABLED and user_info.roles is None:
         raise HTTPException(
@@ -681,14 +703,21 @@ async def keycloak_offline_callback(code: str, state: str, request: Request):
     (
         keycloak_access_token,
         keycloak_refresh_token,
-    ) = await token_manager.get_keycloak_tokens(code, redirect_uri)
+    ) = await _get_keycloak_tokens_or_unavailable(code, redirect_uri)
     if not keycloak_access_token or not keycloak_refresh_token:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={'error': 'Problem retrieving Keycloak tokens'},
         )
 
-    user_info = await token_manager.get_user_info(keycloak_access_token)
+    try:
+        user_info = await token_manager.get_user_info(keycloak_access_token)
+    except KeycloakConnectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Authentication service temporarily unavailable',
+            headers={'Retry-After': '1'},
+        ) from exc
     logger.debug(f'user_info: {user_info}')
     # sub is a required field in KeycloakUserInfo, validation happens in get_user_info
 
@@ -721,6 +750,11 @@ async def authenticate(request: Request):
         await get_access_token(request)
         return JSONResponse(
             status_code=status.HTTP_200_OK, content={'message': 'User authenticated'}
+        )
+    except TokenRefreshError as e:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={'error': str(e) or e.__class__.__name__},
         )
     except Exception:
         # For any error during authentication, clear the auth cookie and return 401

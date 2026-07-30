@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from keycloak.exceptions import KeycloakConnectionError
 from pydantic import SecretStr
 from server.auth.token_manager import TokenManager
 
@@ -78,6 +79,19 @@ async def test_get_keycloak_tokens_exception(token_manager):
 
         assert access_token is None
         assert refresh_token is None
+
+
+@pytest.mark.asyncio
+async def test_get_keycloak_tokens_preserves_connection_error(token_manager):
+    with patch('server.auth.token_manager.get_keycloak_openid') as mock_keycloak:
+        mock_keycloak.return_value.a_token = AsyncMock(
+            side_effect=KeycloakConnectionError('DNS failure')
+        )
+
+        with pytest.raises(KeycloakConnectionError, match='DNS failure'):
+            await token_manager.get_keycloak_tokens(
+                'test_code', 'http://test.com/callback'
+            )
 
 
 @pytest.mark.asyncio
