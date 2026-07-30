@@ -51,7 +51,7 @@ def enqueue_budget_tasks(batch_size: int = BATCH_SIZE) -> int:
 
         for batch in _chunked(org_ids, batch_size):
             processor = OrgBudgetMaintenanceProcessor(org_ids=batch)
-            task = MaintenanceTask(status=MaintenanceTaskStatus.PENDING)
+            task = MaintenanceTask(status=MaintenanceTaskStatus.PENDING, delay=0)
             task.set_processor(processor)
             session.add(task)
 

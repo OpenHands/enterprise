@@ -3097,6 +3097,63 @@ class TestGetTeamMembersFinancialData:
             'uses_shared_budget': False,
         }
 
+
+    @pytest.mark.asyncio
+    async def test_reads_current_litellm_members_with_roles_shape(
+        self, mock_http_client
+    ):
+        mock_response = MagicMock()
+        mock_response.is_success = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'team_info': {
+                'team_id': 'test-team',
+                'max_budget': 500.0,
+                'spend': 125.5,
+                'members_with_roles': [
+                    {
+                        'user_id': 'default_user_id',
+                        'user_email': None,
+                        'role': 'admin',
+                    },
+                    {
+                        'user_id': 'user-1',
+                        'user_email': 'user-1@example.com',
+                        'role': 'user',
+                    },
+                    {
+                        'user_id': 'user-2',
+                        'user_email': 'user-2@example.com',
+                        'role': 'user',
+                    },
+                ],
+            },
+            'team_memberships': [],
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_http_client.get.return_value = mock_response
+
+        with patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'):
+            with patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'):
+                result = await LiteLlmManager._get_team_members_financial_data(
+                    mock_http_client, 'test-team'
+                )
+
+        assert result['team_max_budget'] == 500.0
+        assert result['team_spend'] == 125.5
+        assert result['members'] == {
+            'user-1': {
+                'spend': 0,
+                'max_budget': 500.0,
+                'uses_shared_budget': True,
+            },
+            'user-2': {
+                'spend': 0,
+                'max_budget': 500.0,
+                'uses_shared_budget': True,
+            },
+        }
+
     @pytest.mark.asyncio
     async def test_returns_empty_dict_when_litellm_not_configured(
         self, mock_http_client

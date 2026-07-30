@@ -1193,6 +1193,48 @@ class LiteLlmManager:
         response.raise_for_status()
 
     @staticmethod
+    def _member_dict(member: Any) -> dict[str, Any]:
+        if isinstance(member, dict):
+            return dict(member)
+
+        model_dump = getattr(member, 'model_dump', None)
+        if callable(model_dump):
+            return model_dump()
+
+        if isinstance(member, str):
+            return {'user_id': member}
+
+        values: dict[str, Any] = {}
+        for field in (
+            'user_id',
+            'user_email',
+            'role',
+            'team_id',
+            'spend',
+            'max_budget_in_team',
+        ):
+            if hasattr(member, field):
+                values[field] = getattr(member, field)
+        return values
+
+    @staticmethod
+    def _team_member_rows(team_response: dict[str, Any]) -> list[dict[str, Any]]:
+        team_memberships = team_response.get('team_memberships') or []
+        if team_memberships:
+            return [
+                LiteLlmManager._member_dict(membership)
+                for membership in team_memberships
+            ]
+
+        team_info = team_response.get('team_info') or {}
+        members_with_roles = team_info.get('members_with_roles') or []
+        return [
+            LiteLlmManager._member_dict(membership)
+            for membership in members_with_roles
+        ]
+
+
+    @staticmethod
     async def _get_user_team_info(
         client: httpx.AsyncClient,
         keycloak_user_id: str,
@@ -1205,13 +1247,12 @@ class LiteLlmManager:
         if not team_response:
             return None
 
-        # Filter team_memberships based on team_id and keycloak_user_id
         user_membership = next(
             (
                 membership
-                for membership in team_response.get('team_memberships', [])
+                for membership in LiteLlmManager._team_member_rows(team_response)
                 if membership.get('user_id') == keycloak_user_id
-                and membership.get('team_id') == team_id
+                and membership.get('team_id', team_id) == team_id
             ),
             None,
         )
@@ -1219,8 +1260,6 @@ class LiteLlmManager:
         if not user_membership:
             return None
 
-        # For team orgs (user_id != team_id), include team-level budget info
-        # The team's max_budget and spend are shared across all members
         if keycloak_user_id != team_id:
             team_info = team_response.get('team_info', {})
             user_membership['max_budget_in_team'] = team_info.get('max_budget')
@@ -1754,7 +1793,7 @@ class LiteLlmManager:
             return {}
 
         members: dict[str, dict] = {}
-        team_memberships = team_info.get('team_memberships', [])
+        team_memberships = LiteLlmManager._team_member_rows(team_info)
 
         # Get team-level budget info (shared across all members in team orgs)
         team_data = team_info.get('team_info', {})
@@ -1763,7 +1802,7 @@ class LiteLlmManager:
 
         for membership in team_memberships:
             user_id = membership.get('user_id')
-            if not user_id:
+            if not user_id or user_id == 'default_user_id':
                 continue
 
             # Use individual max_budget_in_team if set, otherwise fall back to team budget
