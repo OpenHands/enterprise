@@ -396,12 +396,16 @@ class SandboxService(ABC):
         """
         return True
 
-    async def pause_old_sandboxes(self, max_num_sandboxes: int) -> list[str]:
+    async def pause_old_sandboxes(
+        self, max_num_sandboxes: int, exclude_sandbox_id: str | None = None
+    ) -> list[str]:
         """Pause the oldest sandboxes if there are more than max_num_sandboxes running.
         In a multi user environment, this will pause sandboxes only for the current user.
 
         Args:
             max_num_sandboxes: Maximum number of sandboxes to keep running
+            exclude_sandbox_id: Sandbox to leave running, used by resume so it
+                never pauses the sandbox it is about to bring back
 
         Returns:
             List of sandbox IDs that were paused
@@ -413,6 +417,8 @@ class SandboxService(ABC):
         running_sandboxes = []
         async for sandbox in page_iterator(self.search_sandboxes, limit=100):
             if sandbox.status == SandboxStatus.RUNNING:
+                if sandbox.id == exclude_sandbox_id:
+                    continue
                 running_sandboxes.append(sandbox)
 
         # If we're within the limit, no cleanup needed

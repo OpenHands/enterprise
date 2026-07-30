@@ -567,7 +567,9 @@ class RemoteSandboxService(SandboxService):
         keys and ensures that only the new key can be used to access secrets.
         """
         # Enforce sandbox limits by cleaning up old sandboxes
-        await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
+        await self.pause_old_sandboxes(
+            self.max_num_sandboxes - 1, exclude_sandbox_id=sandbox_id
+        )
 
         try:
             stored_sandbox = await self._get_stored_sandbox(sandbox_id)
@@ -851,16 +853,27 @@ class RemoteSandboxService(SandboxService):
             )
         return archived
 
-    async def pause_old_sandboxes(self, max_num_sandboxes: int) -> list[str]:
+    async def pause_old_sandboxes(
+        self, max_num_sandboxes: int, exclude_sandbox_id: str | None = None
+    ) -> list[str]:
         """Pause the oldest running sandboxes until at most max_num_sandboxes remain.
 
         Uses _get_user_running_sandboxes (runtime /list + DB cross-reference) so
         only sandboxes that are actually running are considered.
+
+        ``exclude_sandbox_id`` keeps resume from pausing the sandbox it is about to
+        bring back: that stages a write on the very row the rotation then commits
+        from a sibling transaction, which would block behind this request's own
+        row lock.
         """
         if max_num_sandboxes <= 0:
             raise ValueError('max_num_sandboxes must be greater than 0')
 
-        running = await self._get_user_running_sandboxes()
+        running = [
+            sandbox
+            for sandbox in await self._get_user_running_sandboxes()
+            if sandbox.id != exclude_sandbox_id
+        ]
 
         if len(running) <= max_num_sandboxes:
             return []

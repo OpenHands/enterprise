@@ -654,7 +654,9 @@ class TestSandboxLifecycle:
             'test-sandbox-123', expected_hash
         )
         remote_sandbox_service.db_session.commit.assert_not_awaited()
-        remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(9)
+        remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(
+            9, exclude_sandbox_id='test-sandbox-123'
+        )
         remote_sandbox_service.httpx_client.request.assert_called_once_with(
             'POST',
             'https://api.example.com/resume',
@@ -3208,3 +3210,55 @@ class TestResumeKeyPersistenceHazards:
             assert final is not None
             assert final.session_api_key_hash == _hash_session_api_key('key-B')
             assert final.session_api_key_hash != _hash_session_api_key('key-A')
+
+    @pytest.mark.asyncio
+    async def test_resume_does_not_pause_its_own_sandbox(
+        self, service, real_session, session_maker
+    ):
+        """Resuming an already-running sandbox while over the cap must not select
+        that sandbox for pausing. Doing so stages a write on the very row the
+        rotation then commits from a sibling transaction, which blocks the sibling
+        behind the request's own row lock and hangs the resume."""
+        from openhands.app_server.sandbox.remote_sandbox_service import (
+            _hash_session_api_key,
+        )
+
+        target = create_stored_sandbox('sb-self', session_api_key_hash='old')
+        real_session.add(target)
+        await real_session.commit()
+
+        # cap of 2 -> pause_old_sandboxes(1); two running sandboxes is over it
+        service.max_num_sandboxes = 2
+
+        def _info(sid, day):
+            return SandboxInfo(
+                id=sid,
+                created_by_user_id='test-user-123',
+                sandbox_spec_id='test-image:latest',
+                status=SandboxStatus.RUNNING,
+                session_api_key='old-key',
+                created_at=datetime(2020, 1, day, tzinfo=timezone.utc),
+            )
+
+        # target is the OLDEST, so an unfiltered pass would select it first
+        service._get_user_running_sandboxes = AsyncMock(
+            return_value=[_info('sb-self', 1), _info('sb-other', 2)]
+        )
+        paused: list[str] = []
+
+        async def _record(sandbox_id):
+            paused.append(sandbox_id)
+            return True
+
+        service.pause_sandbox = AsyncMock(side_effect=_record)
+        self._wire_resume(service, key='fresh-key')
+
+        assert await service.resume_sandbox('sb-self') is True
+        assert 'sb-self' not in paused, (
+            f'resume paused the sandbox it was resuming: {paused}'
+        )
+
+        async with session_maker() as check:
+            row = await check.get(StoredRemoteSandbox, 'sb-self')
+            assert row is not None
+            assert row.session_api_key_hash == _hash_session_api_key('fresh-key')
