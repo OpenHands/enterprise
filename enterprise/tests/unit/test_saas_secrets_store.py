@@ -1,3 +1,4 @@
+import hashlib
 from types import MappingProxyType
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -5,13 +6,20 @@ from uuid import UUID
 
 import pytest
 from pydantic import SecretStr
+from sqlalchemy import select
 from storage.saas_secrets_store import SaasSecretsStore
 from storage.stored_custom_secrets import StoredCustomSecrets
 
 from openhands.app_server.integrations.provider import CustomSecret
 from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.secrets.secrets_store import CredentialVersionConflict
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
+
+_MANAGED_NAME = 'CODEX_AUTH_JSON'
+_VERSION_USER_ID = UUID('c3333333-3333-3333-3333-333333333333')
+_VERSION_ORG_ID = UUID('a1111111-1111-1111-1111-111111111111')
+_OTHER_ORG_ID = UUID('b2222222-2222-2222-2222-222222222222')
 
 
 def _make_jwt_service() -> JwtService:
@@ -43,6 +51,304 @@ def secrets_store(async_session_maker, jwt_svc):
     # Also add it as an attribute for tests that need direct access
     store.a_session_maker = async_session_maker
     return store
+
+
+@pytest.fixture
+def version_store(async_session_maker, jwt_svc):
+    import storage.saas_secrets_store as store_module
+
+    store_module.a_session_maker = async_session_maker
+    return SaasSecretsStore(str(_VERSION_USER_ID), jwt_svc)
+
+
+@pytest.fixture
+def version_membership():
+    with patch(
+        'storage.saas_secrets_store.OrgMemberStore.get_org_member',
+        new_callable=AsyncMock,
+        return_value=MagicMock(),
+    ) as get_org_member:
+        yield get_org_member
+
+
+async def _insert_versioned(
+    async_session_maker,
+    jwt_svc: JwtService,
+    value: str,
+    org_id: UUID = _VERSION_ORG_ID,
+    description: str = 'Managed login',
+) -> None:
+    async with async_session_maker() as session:
+        session.add(
+            StoredCustomSecrets(
+                keycloak_user_id=str(_VERSION_USER_ID),
+                org_id=org_id,
+                secret_name=_MANAGED_NAME,
+                secret_value=jwt_svc.encrypt_value(value),
+                description=jwt_svc.encrypt_value(description),
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_versioned_compare_and_swap(
+    async_session_maker,
+    jwt_svc,
+    version_store,
+    version_membership,
+):
+    original = '{"tokens":{"refresh_token":"r0"}}'
+    rotated = '{"tokens":{"refresh_token":"r1"}}'
+    await _insert_versioned(async_session_maker, jwt_svc, original)
+
+    value, version = await version_store.load_versioned(
+        _MANAGED_NAME,
+        _VERSION_ORG_ID,
+    )
+    assert value == original
+    assert version != hashlib.sha256(original.encode()).hexdigest()
+
+    with pytest.raises(CredentialVersionConflict):
+        await version_store.replace_versioned(
+            _MANAGED_NAME,
+            'stale',
+            rotated,
+            _VERSION_ORG_ID,
+        )
+    successor = await version_store.replace_versioned(
+        _MANAGED_NAME,
+        version,
+        rotated,
+        _VERSION_ORG_ID,
+    )
+
+    assert successor != version
+    assert await version_store.load_versioned(
+        _MANAGED_NAME,
+        _VERSION_ORG_ID,
+    ) == (rotated, successor)
+
+
+@pytest.mark.asyncio
+async def test_versioned_newest_duplicate_wins_and_replace_converges_rows(
+    async_session_maker,
+    jwt_svc,
+    version_store,
+    version_membership,
+):
+    await _insert_versioned(
+        async_session_maker,
+        jwt_svc,
+        'stale',
+        description='First',
+    )
+    await _insert_versioned(
+        async_session_maker,
+        jwt_svc,
+        'current',
+        description='Newest',
+    )
+
+    value, version = await version_store.load_versioned(
+        _MANAGED_NAME,
+        _VERSION_ORG_ID,
+    )
+    assert value == 'current'
+    successor = await version_store.replace_versioned(
+        _MANAGED_NAME,
+        version,
+        'rotated',
+        _VERSION_ORG_ID,
+    )
+
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(StoredCustomSecrets)
+            .filter(
+                StoredCustomSecrets.keycloak_user_id == str(_VERSION_USER_ID),
+                StoredCustomSecrets.org_id == _VERSION_ORG_ID,
+                StoredCustomSecrets.secret_name == _MANAGED_NAME,
+            )
+            .order_by(StoredCustomSecrets.id)
+        )
+        rows = result.scalars().all()
+
+    assert len(rows) == 2
+    assert {jwt_svc.decrypt_value(row.secret_value) for row in rows} == {'rotated'}
+    assert {jwt_svc.decrypt_value(row.description) for row in rows} == {
+        'First',
+        'Newest',
+    }
+    assert await version_store.load_versioned(
+        _MANAGED_NAME,
+        _VERSION_ORG_ID,
+    ) == ('rotated', successor)
+
+
+@pytest.mark.asyncio
+async def test_versioned_delete_and_identical_recreate_rejects_old_generation(
+    async_session_maker,
+    jwt_svc,
+    version_store,
+    version_membership,
+):
+    await _insert_versioned(async_session_maker, jwt_svc, 'same')
+    user = MagicMock(current_org_id=_VERSION_ORG_ID)
+    with patch(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        new_callable=AsyncMock,
+        return_value=user,
+    ):
+        assert await version_store.load() is not None
+        _, original_version = await version_store.load_versioned(
+            _MANAGED_NAME,
+            _VERSION_ORG_ID,
+        )
+        await version_store.store(Secrets())
+        await version_store.store(
+            Secrets(
+                custom_secrets={
+                    _MANAGED_NAME: CustomSecret.from_value(
+                        {'secret': 'same', 'description': 'Managed login'}
+                    )
+                }
+            )
+        )
+
+    _, recreated_version = await version_store.load_versioned(
+        _MANAGED_NAME,
+        _VERSION_ORG_ID,
+    )
+    assert recreated_version != original_version
+    with pytest.raises(CredentialVersionConflict):
+        await version_store.replace_versioned(
+            _MANAGED_NAME,
+            original_version,
+            'rotated',
+            _VERSION_ORG_ID,
+        )
+
+
+@pytest.mark.asyncio
+async def test_versioned_access_uses_pinned_org_after_current_org_drift(
+    async_session_maker,
+    version_store,
+    version_membership,
+):
+    await _insert_versioned(
+        async_session_maker,
+        version_store._jwt_svc,
+        'value',
+    )
+    version_store.effective_org_id = _OTHER_ORG_ID
+
+    value, _ = await version_store.load_versioned(
+        _MANAGED_NAME,
+        _VERSION_ORG_ID,
+    )
+    assert value == 'value'
+    version_membership.assert_awaited_once_with(
+        _VERSION_ORG_ID,
+        _VERSION_USER_ID,
+    )
+
+    version_membership.reset_mock()
+    version_membership.return_value = None
+    with pytest.raises(KeyError, match=_MANAGED_NAME):
+        await version_store.load_versioned(_MANAGED_NAME, _VERSION_ORG_ID)
+    version_membership.assert_awaited_once_with(
+        _VERSION_ORG_ID,
+        _VERSION_USER_ID,
+    )
+
+
+@pytest.mark.asyncio
+@patch(
+    'storage.saas_secrets_store.UserStore.get_user_by_id',
+    new_callable=AsyncMock,
+)
+async def test_stale_whole_save_preserves_rotation_and_unrelated_edits(
+    mock_get_user,
+    async_session_maker,
+    jwt_svc,
+    version_store,
+    version_membership,
+):
+    user = MagicMock(current_org_id=_VERSION_ORG_ID)
+    mock_get_user.return_value = user
+    original = '{"tokens":{"refresh_token":"r0"}}'
+    rotated = '{"tokens":{"refresh_token":"r1"}}'
+    await version_store.store(
+        Secrets(
+            custom_secrets={
+                _MANAGED_NAME: CustomSecret.from_value(
+                    {'secret': original, 'description': 'Old description'}
+                ),
+                'OTHER': CustomSecret.from_value({'secret': 'old', 'description': ''}),
+            }
+        )
+    )
+    stale_store = SaasSecretsStore(str(_VERSION_USER_ID), jwt_svc)
+    stale = await stale_store.load()
+    assert stale is not None
+    _, version = await version_store.load_versioned(
+        _MANAGED_NAME,
+        _VERSION_ORG_ID,
+    )
+    successor = await version_store.replace_versioned(
+        _MANAGED_NAME,
+        version,
+        rotated,
+        _VERSION_ORG_ID,
+    )
+
+    updated = dict(stale.custom_secrets)
+    updated[_MANAGED_NAME] = CustomSecret.from_value(
+        {'secret': original, 'description': 'New description'}
+    )
+    updated['OTHER'] = CustomSecret.from_value({'secret': 'new', 'description': ''})
+    await stale_store.store(stale.model_copy(update={'custom_secrets': updated}))
+
+    assert await version_store.load_versioned(
+        _MANAGED_NAME,
+        _VERSION_ORG_ID,
+    ) == (rotated, successor)
+    loaded = await stale_store.load()
+    assert loaded is not None
+    assert loaded.custom_secrets[_MANAGED_NAME].description == 'New description'
+    assert loaded.custom_secrets['OTHER'].secret.get_secret_value() == 'new'
+
+
+@pytest.mark.asyncio
+async def test_versioned_replace_reports_concurrent_recreate(
+    jwt_svc,
+    version_membership,
+):
+    first_result = MagicMock()
+    first_result.scalars.return_value.all.return_value = []
+    second_result = MagicMock()
+    second_result.scalars.return_value.first.return_value = MagicMock()
+    session = AsyncMock()
+    session.execute.side_effect = [first_result, second_result]
+    session_maker = MagicMock()
+    session_maker.return_value.__aenter__ = AsyncMock(return_value=session)
+    session_maker.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch('storage.saas_secrets_store.a_session_maker', session_maker):
+        with pytest.raises(CredentialVersionConflict):
+            await SaasSecretsStore(
+                str(_VERSION_USER_ID),
+                jwt_svc,
+            ).replace_versioned(
+                _MANAGED_NAME,
+                'stale',
+                'rotated',
+                _VERSION_ORG_ID,
+            )
+
+    assert session.execute.await_count == 2
+    assert session.execute.await_args_list[0].args[0]._for_update_arg is not None
 
 
 class TestSaasSecretsStore:
@@ -260,10 +566,6 @@ class TestSaasSecretsStore:
     async def test_secrets_isolation_between_organizations(
         self, mock_get_user, secrets_store, mock_user
     ):
-        """Test that secrets from one organization are not deleted when storing
-        secrets in another organization. This reproduces a bug where switching
-        organizations and creating a secret would delete all secrets from the
-        user's personal workspace."""
         org1_id = UUID('a1111111-1111-1111-1111-111111111111')
         org2_id = UUID('b2222222-2222-2222-2222-222222222222')
 
