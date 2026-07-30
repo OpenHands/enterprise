@@ -267,6 +267,40 @@ async def test_protected_edit_keeps_the_existing_description_when_omitted(store)
 
 
 @pytest.mark.asyncio
+async def test_description_edit_does_not_touch_the_value_or_generation(store):
+    """A metadata edit must not invalidate the runtime's compare-and-swap token."""
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
+    _, version = await store.load_versioned(_NAME)
+
+    await store.set_protected_credential_description(_NAME, 'New description')
+
+    loaded = await store.load()
+    assert loaded is not None
+    assert loaded.custom_secrets[_NAME].description == 'New description'
+    assert await store.load_versioned(_NAME) == (_ORIGINAL, version)
+
+
+@pytest.mark.asyncio
+async def test_description_edit_cannot_clobber_a_concurrent_rotation(store):
+    """The description path must not read-modify-write the value.
+
+    Rewriting the loaded value to change a description reintroduced exactly the
+    clobber this guard exists to prevent.
+    """
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
+    editing = FileSecretsStore(store.file_store)
+    loaded = await editing.load()
+    assert loaded is not None
+
+    _, version = await store.load_versioned(_NAME)
+    successor = await store.replace_versioned(_NAME, version, _ROTATED)
+
+    await editing.set_protected_credential_description(_NAME, 'New description')
+
+    assert await store.load_versioned(_NAME) == (_ROTATED, successor)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('kind', ['local', 'memory'])
 async def test_concurrent_replacements_have_one_winner(kind, tmp_path):
     file_store: FileStore

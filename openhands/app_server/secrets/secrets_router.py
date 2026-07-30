@@ -348,10 +348,8 @@ async def update_custom_secret(
         )
 
     if is_protected_credential(secret_id):
-        await secrets_store.replace_protected_credential(
-            secret_id,
-            existing_secret.secret.get_secret_value(),
-            secret_description or '',
+        await secrets_store.set_protected_credential_description(
+            secret_id, secret_description or ''
         )
         return EditResponse(message='Secret updated successfully')
 

@@ -143,6 +143,21 @@ class SaasSecretsStore(SecretsStore):
                 )
             await session.commit()
 
+    async def set_protected_credential_description(
+        self,
+        name: str,
+        description: str,
+    ) -> None:
+        org_id = await self._writable_organization_id()
+        encrypted_description = self._jwt_svc.encrypt_value(description)
+        async with a_session_maker() as session:
+            result = await session.execute(
+                self._versioned_query(name, org_id).with_for_update()
+            )
+            for row in result.scalars().all():
+                row.description = encrypted_description
+            await session.commit()
+
     async def delete_protected_credential(self, name: str) -> None:
         org_id = await self._writable_organization_id()
         async with a_session_maker() as session:

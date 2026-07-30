@@ -51,6 +51,19 @@ class SecretsStore(ABC):
         """Write a protected credential, the only user-facing way to change one."""
         raise NotImplementedError
 
+    async def set_protected_credential_description(
+        self,
+        name: str,
+        description: str,
+    ) -> None:
+        """Edit only the metadata, leaving the value and its generation alone.
+
+        Rewriting the value to change a description would both reintroduce a
+        read-modify-write over a rotating credential and invalidate the
+        runtime's compare-and-swap token.
+        """
+        raise NotImplementedError
+
     async def delete_protected_credential(self, name: str) -> None:
         raise NotImplementedError
 

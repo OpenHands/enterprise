@@ -354,6 +354,34 @@ async def test_store_cannot_write_a_protected_credential_without_a_prior_load(
 
 @pytest.mark.asyncio
 @patch('storage.saas_secrets_store.UserStore.get_user_by_id', new_callable=AsyncMock)
+async def test_description_edit_does_not_touch_the_value_or_generation(
+    mock_get_user,
+    async_session_maker,
+    jwt_svc,
+    version_store,
+    version_membership,
+):
+    """A metadata edit must not invalidate the runtime's compare-and-swap token."""
+    mock_get_user.return_value = MagicMock(current_org_id=_VERSION_ORG_ID)
+    original = '{"tokens":{"refresh_token":"r0"}}'
+    await _insert_versioned(async_session_maker, jwt_svc, original)
+    _, version = await version_store.load_versioned(_MANAGED_NAME, _VERSION_ORG_ID)
+
+    await version_store.set_protected_credential_description(
+        _MANAGED_NAME, 'New description'
+    )
+
+    assert await version_store.load_versioned(_MANAGED_NAME, _VERSION_ORG_ID) == (
+        original,
+        version,
+    )
+    loaded = await version_store.load()
+    assert loaded is not None
+    assert loaded.custom_secrets[_MANAGED_NAME].description == 'New description'
+
+
+@pytest.mark.asyncio
+@patch('storage.saas_secrets_store.UserStore.get_user_by_id', new_callable=AsyncMock)
 async def test_whole_document_save_without_custom_secrets_keeps_the_credential(
     mock_get_user,
     async_session_maker,

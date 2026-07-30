@@ -187,6 +187,27 @@ class FileSecretsStore(SecretsStore):
 
         await self._update(replace_locked)
 
+    async def set_protected_credential_description(
+        self,
+        name: str,
+        description: str,
+    ) -> None:
+        def describe_locked() -> None:
+            data = self._read_data()
+            if data is None:
+                return
+            custom_secrets = dict(self._entries(data, 'custom_secrets'))
+            current = custom_secrets.get(name)
+            if not isinstance(current, dict):
+                return
+            custom_secrets[name] = {**current, 'description': description}
+
+            updated = dict(data)
+            updated['custom_secrets'] = custom_secrets
+            self._write_data(updated)
+
+        await self._update(describe_locked)
+
     async def delete_protected_credential(self, name: str) -> None:
         def delete_locked() -> None:
             data = self._read_data()

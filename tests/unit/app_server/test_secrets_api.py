@@ -681,3 +681,111 @@ async def test_list_secrets_tolerates_legacy_invalid_names(
     assert response.status_code == 200
     data = response.json()
     assert any(item['name'] == 'MY-LEGACY-SECRET' for item in data['items'])
+
+
+_MANAGED = 'CODEX_AUTH_JSON'
+_R0 = '{"tokens":{"refresh_token":"r0"}}'
+_R1 = '{"tokens":{"refresh_token":"r1"}}'
+
+
+@pytest.mark.asyncio
+async def test_create_managed_credential_is_not_dropped(
+    test_client, file_secrets_store
+):
+    """``store`` cannot write this name, so the endpoint must dispatch instead."""
+    response = test_client.post(
+        '/secrets',
+        json={'name': _MANAGED, 'value': _R0, 'description': 'Managed login'},
+    )
+    assert response.status_code == 201
+
+    stored = await file_secrets_store.load()
+    assert stored.custom_secrets[_MANAGED].secret.get_secret_value() == _R0
+    value, version = await file_secrets_store.load_versioned(_MANAGED)
+    assert (value, bool(version)) == (_R0, True)
+
+
+@pytest.mark.asyncio
+async def test_creating_another_secret_keeps_a_rotated_credential(
+    test_client, file_secrets_store
+):
+    await file_secrets_store.replace_protected_credential(
+        _MANAGED, _R0, 'Managed login'
+    )
+    _, version = await file_secrets_store.load_versioned(_MANAGED)
+    successor = await file_secrets_store.replace_versioned(_MANAGED, version, _R1)
+
+    response = test_client.post(
+        '/secrets', json={'name': 'API_KEY', 'value': 'v', 'description': None}
+    )
+    assert response.status_code == 201
+
+    assert await file_secrets_store.load_versioned(_MANAGED) == (_R1, successor)
+
+
+@pytest.mark.asyncio
+async def test_managed_description_edit_keeps_value_and_generation(
+    test_client, file_secrets_store
+):
+    await file_secrets_store.replace_protected_credential(
+        _MANAGED, _R0, 'Managed login'
+    )
+    _, version = await file_secrets_store.load_versioned(_MANAGED)
+
+    response = test_client.put(
+        f'/secrets/{_MANAGED}', json={'name': _MANAGED, 'description': 'Renamed desc'}
+    )
+    assert response.status_code == 200
+
+    stored = await file_secrets_store.load()
+    assert stored.custom_secrets[_MANAGED].description == 'Renamed desc'
+    assert await file_secrets_store.load_versioned(_MANAGED) == (_R0, version)
+
+
+@pytest.mark.asyncio
+async def test_managed_credential_cannot_be_renamed(test_client, file_secrets_store):
+    await file_secrets_store.replace_protected_credential(
+        _MANAGED, _R0, 'Managed login'
+    )
+
+    response = test_client.put(
+        f'/secrets/{_MANAGED}', json={'name': 'SOMETHING_ELSE', 'description': None}
+    )
+    assert response.status_code == 400
+
+    stored = await file_secrets_store.load()
+    assert stored.custom_secrets[_MANAGED].secret.get_secret_value() == _R0
+
+
+@pytest.mark.asyncio
+async def test_another_secret_cannot_be_renamed_onto_a_managed_name(
+    test_client, file_secrets_store
+):
+    await file_secrets_store.store(
+        Secrets(custom_secrets={'API_KEY': CustomSecret(secret=SecretStr('v'))})  # type: ignore[arg-type]
+    )
+
+    response = test_client.put(
+        '/secrets/API_KEY', json={'name': _MANAGED, 'description': None}
+    )
+    assert response.status_code == 400
+
+    stored = await file_secrets_store.load()
+    assert _MANAGED not in stored.custom_secrets
+
+
+@pytest.mark.asyncio
+async def test_delete_managed_credential_removes_its_generation(
+    test_client, file_secrets_store
+):
+    await file_secrets_store.replace_protected_credential(
+        _MANAGED, _R0, 'Managed login'
+    )
+
+    response = test_client.delete(f'/secrets/{_MANAGED}')
+    assert response.status_code == 200
+
+    stored = await file_secrets_store.load()
+    assert _MANAGED not in stored.custom_secrets
+    with pytest.raises(KeyError):
+        await file_secrets_store.load_versioned(_MANAGED)
