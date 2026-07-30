@@ -19,13 +19,10 @@ from openhands.app_server.config import get_global_config
 _RESUME_RE = re.compile(r'^/api/v1/sandboxes/[^/]+/resume/?$')
 
 
-# OHE-2815: default Content-Security-Policy for report-only mode.
-# `unsafe-inline` is included for script-src/style-src to avoid flooding
-# violation reports with the inline scripts that React Router's SPA mode
-# emits and any inline styles Tailwind/Vite generate. Tightening to nonces
-# or static hashes is a follow-up before flipping to enforce mode.
-#
-# PostHog hosts:
+# OHE-2815: default Content-Security-Policy. Enforced by the browser.
+# `unsafe-inline` is kept on script-src/style-src because React Router's
+# SPA bootstrap emits inline <script>/<style> blocks; tightening to
+# nonces or static hashes is a follow-up. PostHog hosts:
 #   - us.i.posthog.com         — event ingest (fetch / xhr)
 #   - us-assets.i.posthog.com  — SDK scripts, exception-autocapture,
 #                                web-vitals, recorder, surveys, tracing-headers
@@ -111,20 +108,26 @@ def _runtime_hosts_from_web_host() -> str:
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Adds browser security headers to every HTTP response.
 
-    OHE-2815: Content-Security-Policy is added in *report-only* mode by
-    default so violations surface (in DevTools / browser console) without
-    breaking functionality. Switch to enforcement by changing the header
-    name in :meth:`dispatch` from ``Content-Security-Policy-Report-Only``
-    to ``Content-Security-Policy``.
+    OHE-2815: emits ``Content-Security-Policy`` (enforce mode) plus the
+    companion headers ``X-Content-Type-Options``, ``Referrer-Policy``,
+    ``Permissions-Policy`` and ``X-Frame-Options`` on every response.
+    HSTS is intentionally left to the edge proxy.
+
+    Set ``CONTENT_SECURITY_POLICY`` to override the default policy string
+    wholesale (use to relax directives in an emergency without a code
+    change). Set it to an empty string to disable CSP entirely.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
     def _policy(self) -> str:
-        override = os.getenv('CONTENT_SECURITY_POLICY_REPORT_ONLY', '').strip()
-        if override:
-            return override
+        # Only honour the override when the env var is actually set so we
+        # don't get an empty-string header when an operator forgets to
+        # unset the variable. An explicit empty value disables CSP.
+        override = os.getenv('CONTENT_SECURITY_POLICY')
+        if override is not None:
+            return override.strip()
 
         runtime_hosts = _runtime_hosts_from_web_host()
         directives = {
@@ -139,9 +142,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         headers = response.headers
 
-        # OHE-2815: report-only CSP. Replace with `Content-Security-Policy`
-        # (and clear the report-only env var) to enforce.
-        headers['Content-Security-Policy-Report-Only'] = self._policy()
+        # OHE-2815: enforce-mode CSP. Override at runtime via the
+        # CONTENT_SECURITY_POLICY env var (e.g. "" to disable).
+        headers['Content-Security-Policy'] = self._policy()
 
         headers['X-Content-Type-Options'] = 'nosniff'
         headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'

@@ -35,7 +35,6 @@ def client(app: FastAPI) -> TestClient:
 @pytest.fixture
 def clear_csp_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for var in (
-        'CONTENT_SECURITY_POLICY_REPORT_ONLY',
         'CONTENT_SECURITY_POLICY',
         'WEB_HOST',
     ):
@@ -44,13 +43,11 @@ def clear_csp_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 def _csp(response) -> str:
-    return response.headers['Content-Security-Policy-Report-Only']
+    return response.headers['Content-Security-Policy']
 
 
 class TestSecurityHeadersMiddleware:
-    def test_sets_report_only_header(
-        self, client: TestClient, clear_csp_env: None
-    ) -> None:
+    def test_sets_csp_header(self, client: TestClient, clear_csp_env: None) -> None:
         response = client.get('/sample')
 
         assert response.status_code == 200
@@ -70,13 +67,14 @@ class TestSecurityHeadersMiddleware:
         assert 'interest-cohort=()' in response.headers['Permissions-Policy']
         assert response.headers['X-Frame-Options'] == 'SAMEORIGIN'
 
-    def test_no_enforced_csp_header(
+    def test_no_report_only_header(
         self, client: TestClient, clear_csp_env: None
     ) -> None:
         response = client.get('/sample')
 
-        assert 'Content-Security-Policy' not in response.headers
-        assert 'Content-Security-Policy-Report-Only' in response.headers
+        # Enforce mode: the report-only header must NOT be present.
+        assert 'Content-Security-Policy-Report-Only' not in response.headers
+        assert 'Content-Security-Policy' in response.headers
 
     def test_header_applied_to_static_paths(
         self, client: TestClient, clear_csp_env: None
@@ -84,7 +82,7 @@ class TestSecurityHeadersMiddleware:
         response = client.get('/assets/sample.js')
 
         assert response.status_code == 200
-        assert 'Content-Security-Policy-Report-Only' in response.headers
+        assert 'Content-Security-Policy' in response.headers
 
     def test_web_host_wildcard_appended_to_frame_and_connect(
         self,
@@ -219,8 +217,20 @@ class TestSecurityHeadersMiddleware:
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         custom = "default-src 'none'"
-        monkeypatch.setenv('CONTENT_SECURITY_POLICY_REPORT_ONLY', custom)
+        monkeypatch.setenv('CONTENT_SECURITY_POLICY', custom)
 
         response = client.get('/sample')
 
         assert _csp(response) == custom
+
+    def test_explicit_empty_override_disables_csp(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Operators can set CONTENT_SECURITY_POLICY="" to disable CSP
+        entirely in an emergency without redeploying.
+        """
+        monkeypatch.setenv('CONTENT_SECURITY_POLICY', '')
+
+        response = client.get('/sample')
+
+        assert 'Content-Security-Policy' not in response.headers
