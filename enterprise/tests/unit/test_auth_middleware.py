@@ -11,6 +11,7 @@ from server.auth.auth_error import (
     CookieError,
     ExpiredError,
     NoCredentialsError,
+    TokenRefreshError,
 )
 from server.auth.saas_user_auth import SaasUserAuth
 from server.middleware import SetAuthCookieMiddleware
@@ -221,6 +222,27 @@ async def test_middleware_with_cookie_error(middleware, mock_request):
         assert decode_body(result.body).find('Invalid cookie') > 0
         # Cookie should be deleted for CookieError
         assert 'set-cookie' in result.headers
+
+
+@pytest.mark.asyncio
+async def test_middleware_transient_refresh_error_preserves_cookie(
+    middleware, mock_request
+):
+    with _mock_jwt_decode():
+        mock_request.cookies = {'keycloak_auth': 'test_cookie'}
+        mock_call_next = AsyncMock(
+            side_effect=TokenRefreshError(
+                'Authentication service temporarily unavailable'
+            )
+        )
+
+        with patch.object(middleware, '_logout', new=AsyncMock()) as mock_logout:
+            result = await middleware(mock_request, mock_call_next)
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert 'set-cookie' not in result.headers
+    mock_logout.assert_not_called()
 
 
 @pytest.mark.asyncio
