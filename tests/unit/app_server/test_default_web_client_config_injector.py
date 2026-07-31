@@ -803,3 +803,44 @@ class TestGetEmailEnabled:
             ),
         ):
             assert _get_email_enabled() is False
+
+
+class TestEmailChangeEnabled:
+    def test_defaults_to_true(self):
+        from openhands.app_server.web_client.email_change_config import (
+            is_email_change_enabled,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert is_email_change_enabled() is True
+
+    def test_returns_false_when_disabled(self):
+        from openhands.app_server.web_client.email_change_config import (
+            is_email_change_enabled,
+        )
+
+        with patch.dict(os.environ, {'EMAIL_CHANGE_ENABLED': 'false'}):
+            assert is_email_change_enabled() is False
+
+    def test_accepts_one_as_enabled(self):
+        from openhands.app_server.web_client.email_change_config import (
+            is_email_change_enabled,
+        )
+
+        with patch.dict(os.environ, {'EMAIL_CHANGE_ENABLED': '1'}):
+            assert is_email_change_enabled() is True
+
+    def test_structured_web_client_env_disables_ui(self):
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        with patch.dict(
+            os.environ,
+            {'OH_WEB_CLIENT_EMAIL_CHANGE_ENABLED': 'false'},
+            clear=True,
+        ):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        assert config.email_change_enabled is False
