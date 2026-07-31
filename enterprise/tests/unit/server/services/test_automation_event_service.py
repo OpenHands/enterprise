@@ -1039,7 +1039,7 @@ class TestSendToAutomationService:
     async def test_send_timeout_logs_error(self, mock_token_manager):
         """
         GIVEN: AUTOMATION_SERVICE_URL is configured
-        WHEN: _send_to_automation_service times out
+        WHEN: _send_to_automation_service times out on every retry attempt
         THEN: Error is logged (not warning) since the event was never delivered
         """
         import asyncio
@@ -1050,10 +1050,6 @@ class TestSendToAutomationService:
         mock_response = MagicMock()
         mock_response.status = 200
         mock_response.json = AsyncMock(return_value={'matched': 2})
-
-        # Create a mock post that raises TimeoutError within the async context
-        async def raise_timeout(*args, **kwargs):
-            raise asyncio.TimeoutError('Connection timed out')
 
         mock_post_context = MagicMock()
         mock_post_context.__aenter__ = AsyncMock(
@@ -1074,6 +1070,14 @@ class TestSendToAutomationService:
                 'https://automation.example.com',
             ),
             patch(
+                'server.services.automation_event_service.AUTOMATION_SERVICE_SEND_ATTEMPTS',
+                3,
+            ),
+            patch(
+                'server.services.automation_event_service.AUTOMATION_SERVICE_RETRY_BACKOFF_SECONDS',
+                0,
+            ),
+            patch(
                 'server.services.automation_event_service.aiohttp.ClientSession',
                 return_value=mock_session_context,
             ),
@@ -1084,12 +1088,148 @@ class TestSendToAutomationService:
                 ProviderType.GITHUB, org_id, payload
             )
 
-            mock_logger.exception.assert_called()
+            # All attempts should have been used before giving up
+            assert mock_session_instance.post.call_count == 3
+            mock_logger.exception.assert_called_once()
             assert 'Timeout' in str(mock_logger.exception.call_args)
             assert (
                 'never delivered' in str(mock_logger.exception.call_args).lower()
                 or 'timeout' in str(mock_logger.exception.call_args).lower()
             )
+
+    @pytest.mark.asyncio
+    async def test_send_timeout_retries_then_succeeds(self, mock_token_manager):
+        """
+        GIVEN: The automation service times out transiently
+        WHEN: _send_to_automation_service is called and a retry succeeds
+        THEN: The event is delivered and no error is logged
+
+        Regression test for the Datadog error spike:
+        '[AutomationEventService] Timeout (30s) forwarding github event to
+        automation service' - transient timeouts previously dropped the event
+        immediately instead of retrying.
+        """
+        import asyncio
+
+        org_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+        payload = {'test': 'data'}
+
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={'matched': 1})
+
+        # First two attempts time out, third succeeds
+        mock_post_context = MagicMock()
+        mock_post_context.__aenter__ = AsyncMock(
+            side_effect=[
+                asyncio.TimeoutError('Connection timed out'),
+                asyncio.TimeoutError('Connection timed out'),
+                mock_response,
+            ]
+        )
+        mock_post_context.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_instance = MagicMock()
+        mock_session_instance.post = MagicMock(return_value=mock_post_context)
+
+        mock_session_context = MagicMock()
+        mock_session_context.__aenter__ = AsyncMock(return_value=mock_session_instance)
+        mock_session_context.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                'server.services.automation_event_service.AUTOMATION_SERVICE_URL',
+                'https://automation.example.com',
+            ),
+            patch(
+                'server.services.automation_event_service.AUTOMATION_SERVICE_SEND_ATTEMPTS',
+                3,
+            ),
+            patch(
+                'server.services.automation_event_service.AUTOMATION_SERVICE_RETRY_BACKOFF_SECONDS',
+                0,
+            ),
+            patch(
+                'server.services.automation_event_service.aiohttp.ClientSession',
+                return_value=mock_session_context,
+            ),
+            patch('server.services.automation_event_service.logger') as mock_logger,
+        ):
+            service = create_service(mock_token_manager)
+            await service._send_to_automation_service(
+                ProviderType.GITHUB, org_id, payload
+            )
+
+            assert mock_session_instance.post.call_count == 3
+            # Retries are logged as warnings, not errors
+            assert mock_logger.warning.call_count == 2
+            mock_logger.exception.assert_not_called()
+            mock_logger.error.assert_not_called()
+            # Successful delivery is logged
+            mock_logger.info.assert_called_once()
+            assert 'Forwarded' in str(mock_logger.info.call_args)
+
+    @pytest.mark.asyncio
+    async def test_send_connection_error_retries_then_succeeds(
+        self, mock_token_manager
+    ):
+        """
+        GIVEN: The automation service connection fails transiently
+        WHEN: _send_to_automation_service is called and a retry succeeds
+        THEN: The event is delivered and no error is logged
+        """
+        import aiohttp
+
+        org_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+        payload = {'test': 'data'}
+
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={'matched': 0})
+
+        mock_post_context = MagicMock()
+        mock_post_context.__aenter__ = AsyncMock(
+            side_effect=[
+                aiohttp.ClientConnectionError('Connection reset'),
+                mock_response,
+            ]
+        )
+        mock_post_context.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session_instance = MagicMock()
+        mock_session_instance.post = MagicMock(return_value=mock_post_context)
+
+        mock_session_context = MagicMock()
+        mock_session_context.__aenter__ = AsyncMock(return_value=mock_session_instance)
+        mock_session_context.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                'server.services.automation_event_service.AUTOMATION_SERVICE_URL',
+                'https://automation.example.com',
+            ),
+            patch(
+                'server.services.automation_event_service.AUTOMATION_SERVICE_SEND_ATTEMPTS',
+                3,
+            ),
+            patch(
+                'server.services.automation_event_service.AUTOMATION_SERVICE_RETRY_BACKOFF_SECONDS',
+                0,
+            ),
+            patch(
+                'server.services.automation_event_service.aiohttp.ClientSession',
+                return_value=mock_session_context,
+            ),
+            patch('server.services.automation_event_service.logger') as mock_logger,
+        ):
+            service = create_service(mock_token_manager)
+            await service._send_to_automation_service(
+                ProviderType.GITHUB, org_id, payload
+            )
+
+            assert mock_session_instance.post.call_count == 2
+            mock_logger.exception.assert_not_called()
+            mock_logger.error.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_5xx_logs_error(self, mock_token_manager):

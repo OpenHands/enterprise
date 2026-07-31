@@ -56,6 +56,15 @@ REQUESTED_EVENT_TYPES_CACHE_TTL_SECONDS = int(
 REQUESTED_EVENT_TYPES_REFRESH_EVENT_COUNT = int(
     os.environ.get('AUTOMATION_REQUESTED_EVENT_TYPES_REFRESH_EVENT_COUNT', '1000')
 )
+# Retry policy for forwarding events to the automation service. Transient
+# timeouts/connection errors are retried so events aren't dropped (and error
+# logs aren't emitted) for momentary network blips or slow downstream restarts.
+AUTOMATION_SERVICE_SEND_ATTEMPTS = int(
+    os.environ.get('AUTOMATION_SERVICE_SEND_ATTEMPTS', '3')
+)
+AUTOMATION_SERVICE_RETRY_BACKOFF_SECONDS = float(
+    os.environ.get('AUTOMATION_SERVICE_RETRY_BACKOFF_SECONDS', '1')
+)
 # Cache key prefixes (provider is appended dynamically)
 ORG_CLAIM_CACHE_PREFIX = 'automation:org_claim'
 USER_ID_CACHE_PREFIX = 'automation:idp_to_kc_user'
@@ -821,44 +830,71 @@ class AutomationEventService:
             'X-Hub-Signature-256': signature,
         }
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url,
-                    data=payload_bytes,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=AUTOMATION_SERVICE_TIMEOUT),
-                ) as resp:
-                    if resp.status >= 500:
-                        # 5xx = downstream failure, event dropped, user impact
-                        body = await self._read_response_body(resp)
-                        logger.error(
-                            f'[AutomationEventService] Automation service returned '
-                            f'{resp.status} for {source} org {org_id}: {body}'
-                        )
-                    elif resp.status >= 400:
-                        # 4xx = contract/auth problem; the event was not delivered.
-                        body = await self._read_response_body(resp)
-                        logger.error(
-                            f'[AutomationEventService] Automation service returned '
-                            f'{resp.status} for {source} org {org_id}: {body}'
-                        )
-                    else:
-                        data = await resp.json()
-                        matched = data.get('matched', 0)
-                        logger.info(
-                            f'[AutomationEventService] Forwarded {source} '
-                            f'event to org {org_id}: {matched} automations matched'
-                        )
-        except asyncio.TimeoutError:
-            logger.exception(
-                f'[AutomationEventService] Timeout ({AUTOMATION_SERVICE_TIMEOUT}s) '
-                f'forwarding {source} event to automation service',
-                stack_info=True,
-            )
-        except aiohttp.ClientError:
-            logger.exception(
-                f'[AutomationEventService] HTTP error forwarding '
-                f'{source} event to automation service',
-                stack_info=True,
-            )
+        # Timeouts and connection errors are frequently transient (downstream
+        # pod restarts, brief network blips), so retry with backoff before
+        # giving up and logging an error. Each attempt gets its own timeout.
+        max_attempts = max(1, AUTOMATION_SERVICE_SEND_ATTEMPTS)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        url,
+                        data=payload_bytes,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=AUTOMATION_SERVICE_TIMEOUT),
+                    ) as resp:
+                        if resp.status >= 500:
+                            # 5xx = downstream failure, event dropped, user impact
+                            body = await self._read_response_body(resp)
+                            logger.error(
+                                f'[AutomationEventService] Automation service returned '
+                                f'{resp.status} for {source} org {org_id}: {body}'
+                            )
+                        elif resp.status >= 400:
+                            # 4xx = contract/auth problem; the event was not delivered.
+                            body = await self._read_response_body(resp)
+                            logger.error(
+                                f'[AutomationEventService] Automation service returned '
+                                f'{resp.status} for {source} org {org_id}: {body}'
+                            )
+                        else:
+                            data = await resp.json()
+                            matched = data.get('matched', 0)
+                            logger.info(
+                                f'[AutomationEventService] Forwarded {source} '
+                                f'event to org {org_id}: {matched} automations matched'
+                            )
+                return
+            except (asyncio.TimeoutError, aiohttp.ClientConnectionError) as e:
+                if attempt < max_attempts:
+                    logger.warning(
+                        f'[AutomationEventService] {type(e).__name__} forwarding '
+                        f'{source} event to automation service '
+                        f'(attempt {attempt}/{max_attempts}), retrying'
+                    )
+                    await asyncio.sleep(
+                        AUTOMATION_SERVICE_RETRY_BACKOFF_SECONDS * attempt
+                    )
+                    continue
+                if isinstance(e, asyncio.TimeoutError):
+                    logger.exception(
+                        f'[AutomationEventService] Timeout ({AUTOMATION_SERVICE_TIMEOUT}s) '
+                        f'forwarding {source} event to automation service '
+                        f'after {max_attempts} attempts',
+                        stack_info=True,
+                    )
+                else:
+                    logger.exception(
+                        f'[AutomationEventService] HTTP error forwarding '
+                        f'{source} event to automation service '
+                        f'after {max_attempts} attempts',
+                        stack_info=True,
+                    )
+                return
+            except aiohttp.ClientError:
+                logger.exception(
+                    f'[AutomationEventService] HTTP error forwarding '
+                    f'{source} event to automation service',
+                    stack_info=True,
+                )
+                return
