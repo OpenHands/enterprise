@@ -24,12 +24,25 @@ production repositories:
 6. `OpenHands/OpenHands-Cloud`
 7. `All-Hands-AI/infra`
 
-The central copy will live at
-`OpenHands/OpenHands:.github/landing-checklist/repos.yml`. Each production repo
-gets a small caller workflow that invokes the reusable required check from
-`OpenHands/OpenHands`. GitHub webhook filters cannot fetch configuration, so
-onboarding also requires adding the repo to the explicit filters in
-Automations 1 and 2; both prompts still validate against `repos.yml`.
+The central copy lives at
+`OpenHands/enterprise:.github/landing-checklist/repos.yml` — see "Central
+artifact location" below for why this moved off `OpenHands/OpenHands`. Each
+production repo gets a small caller workflow that invokes the reusable
+required check. For `OpenHands/enterprise` itself this is a same-repo
+relative reference; any other repo onboarding today would need to either
+vendor its own copy of the reusable workflow or be granted cross-repo
+Actions access to the private `OpenHands/enterprise` repo. GitHub webhook
+filters cannot fetch configuration, so onboarding also requires adding the
+repo to the explicit filters in Automations 1 and 2; both prompts still
+validate against `repos.yml`.
+
+Note: `OpenHands/OpenHands` itself remains in the `production_repos` list
+below — i.e. its own `(feat)` PRs are still subject to the checklist. What
+changed is only where the *shared artifacts* (`repos.yml`, the reusable
+workflow) are hosted, not whether `OpenHands/OpenHands` is a production repo.
+Whether it should stay on this list at all, now that the team is moving away
+from treating it as the main/shared repo, is a separate, bigger decision this
+plan does not make — flag it with the team before onboarding it for real.
 
 `OpenHands/docs` is a supporting integration repository. It is not part of the
 production allowlist, but the automation needs access to verify and later
@@ -120,6 +133,47 @@ Enterprise feature merge
 ```
 
 A release tag, image, or chart PR by itself is not sufficient.
+
+## Central artifact location — scoped to enterprise for now
+
+The original design put the reusable presubmit workflow and `repos.yml` in
+`OpenHands/OpenHands`, on the reasoning that it's the one repo every
+production repo already depends on. The team is moving away from treating
+`OpenHands/OpenHands` as the shared/main repo, so both artifacts instead
+live directly in `OpenHands/enterprise` — the only production repo with a
+caller installed so far — rather than in `OpenHands/OpenHands` or a new
+dedicated repo:
+
+- `.github/workflows/landing-checklist.yml` (caller) and
+  `.github/workflows/landing-checklist-reusable.yml` (the real logic) both
+  live in `OpenHands/enterprise`. The caller invokes the reusable workflow
+  via a same-repo relative path (`./.github/workflows/landing-checklist-
+  reusable.yml`), so there is no cross-repo Actions reference to maintain
+  for the pilot.
+- `.github/landing-checklist/repos.yml` also lives in `OpenHands/enterprise`.
+- Because `OpenHands/enterprise` is **private** (unlike the public
+  `OpenHands/OpenHands` the original design assumed), every automation that
+  reads `repos.yml` or `tracker-format.md` must fetch them via the
+  authenticated GitHub Contents API with `GITHUB_TOKEN` (e.g. `gh api
+  repos/OpenHands/enterprise/contents/<path>` with `Accept:
+  application/vnd.github.raw`) rather than a public
+  `raw.githubusercontent.com` URL, which will not work against a private
+  repo. Automations 1, 2, 3, 4, 5, and 7 have all been updated accordingly.
+
+This is deliberately scoped to the pilot, not a permanent home. If/when a
+second production repo needs the reusable workflow, there are two options,
+neither decided yet:
+
+1. That repo vendors its own copy of `landing-checklist-reusable.yml` (no
+   cross-repo dependency, but logic drifts across copies over time), or
+2. `OpenHands/enterprise` grants that repo's Actions cross-repo access under
+   Settings → Actions → Access (keeps one shared implementation, but means a
+   private repo is now serving reusable workflows to other repos, which is
+   worth a deliberate decision rather than defaulting into).
+
+`OpenHands/OpenHands` remains in the `production_repos` allowlist — this
+change does not remove its own `(feat)` PRs from the checklist. It only
+stops it being the *host* for the shared artifacts.
 
 ## Self-hosted install testing during the bug bash
 
@@ -229,7 +283,10 @@ The reconciler must fail closed when evidence is missing or ambiguous.
 
 ## Pilot rollout
 
-1. Add the central artifacts to `OpenHands/OpenHands`.
+1. ~~Add the central artifacts to `OpenHands/OpenHands`~~ — superseded: the
+   central artifacts (both workflow files, `repos.yml`) already live directly
+   in `OpenHands/enterprise`, so there is no separate central-repo step for
+   the pilot. See "Central artifact location" above.
 2. Install only the Enterprise caller and required check first.
 3. Create a synthetic or low-risk Enterprise `(feat)` PR with a hidden docs
    page and an E2E test.

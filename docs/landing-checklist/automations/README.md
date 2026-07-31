@@ -78,8 +78,12 @@ and feature flags currently live in `frontend/src/utils/feature-flags.ts`.
 - Docs remain `hidden: true` through council approval and are revealed only
   after independent production verification moves the ticket to
   `stage:flag-on`.
-- Central artifacts live in `OpenHands/OpenHands` under
-  `.github/landing-checklist/` and `.github/workflows/`.
+- Central artifacts live in `OpenHands/enterprise` (private, pilot-scoped —
+  the team is moving away from `OpenHands/OpenHands` as the shared home for
+  this kind of artifact; see PLAN.md's "Central artifact location" section)
+  under `.github/landing-checklist/` and `.github/workflows/`. Because the
+  repo is private, automations fetch these files via the authenticated
+  GitHub Contents API, not a public raw URL.
 - The bug bash must include a real Helm install test of the feature with the
   flag ON (`helm-test:` field in the bug-bash report, always required). A
   Replicated/embedded-cluster install test is also required once

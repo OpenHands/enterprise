@@ -10,19 +10,31 @@ Start with [`PLAN.md`](PLAN.md) for the overall architecture and rollout plan.
 
 ## What's live in this repo vs. reference-only
 
-Per the plan, the reusable checklist logic and the canonical `repos.yml`
-allowlist are meant to live in a single shared location
+Originally the plan was to host the reusable checklist logic and the
+canonical `repos.yml` allowlist in a single shared location
 (`OpenHands/OpenHands`) so all production repos consume the same
-implementation. In this repo, the following pieces are wired up and active:
+implementation. The team is moving away from treating `OpenHands/OpenHands`
+as that shared home, so for now — scoped to this pilot — **everything is
+live directly in this repo**, `OpenHands/enterprise`. See `PLAN.md`'s
+"Central artifact location" section for the reasoning and the deferred
+decision about what happens when a second production repo needs this.
+
+Wired up and active:
 
 - `.github/workflows/landing-checklist.yml` — the caller workflow, invoking
-  the reusable required check from `OpenHands/OpenHands`.
+  `.github/workflows/landing-checklist-reusable.yml` via a same-repo
+  relative reference (no cross-repo Actions dependency).
+- `.github/workflows/landing-checklist-reusable.yml` — the actual presubmit
+  check logic.
+- `.github/landing-checklist/repos.yml` — the canonical production repo
+  allowlist. Because this repo is private, automations that read this file
+  fetch it via the authenticated GitHub Contents API (`GITHUB_TOKEN` +
+  `Accept: application/vnd.github.raw`), not a public raw URL.
 - `.github/pull_request_template.md` — updated with the
   `<!-- landing-checklist:v1 -->` checklist block.
 
-Everything else in this directory (`workflows/landing-checklist-reusable.yml`,
-`repos.yml`, the Linear templates, and the automation specs under
-`automations/`) is the design reference copied here for visibility and
-review. The reusable workflow and `repos.yml` still need to be deployed to
-`OpenHands/OpenHands` as the single source of truth; see `PLAN.md` for the
-deployment sequence.
+Everything else in this directory (`repos.yml`, the Linear templates, and
+the automation specs under `automations/`) is a design-reference copy kept
+in sync with what's live under `.github/`, for visibility and review — it is
+not deployed anywhere else. Nothing here needs to be deployed to
+`OpenHands/OpenHands` or any other repo for the pilot to work.

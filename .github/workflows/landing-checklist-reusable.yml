@@ -1,10 +1,15 @@
-# Reusable workflow — lives once in OpenHands/OpenHands
-# at .github/workflows/landing-checklist-reusable.yml
+# Reusable workflow — lives in OpenHands/enterprise (the pilot repo) at
+# .github/workflows/landing-checklist-reusable.yml.
 #
-# Each production repo calls this via a small caller workflow
-# (see landing-checklist-caller.yml). Editing checklist copy, item order, or
-# validation logic here updates every repo simultaneously — no per-repo
-# workflow changes needed for anything except onboarding.
+# We're moving away from using OpenHands/OpenHands as the shared home for
+# cross-repo eng-process artifacts, so for now this workflow is scoped to
+# the enterprise pilot only: the caller (landing-checklist.yml) references
+# it via a same-repo relative path, not a cross-repo `owner/repo@ref`
+# reference. If/when a second production repo onboards, either (a) that
+# repo vendors its own copy of this file, or (b) OpenHands/enterprise grants
+# that repo's Actions cross-repo access under Settings → Actions → Access
+# (required because this repo is private) so it can call this workflow
+# remotely. Neither is decided yet — see PLAN.md.
 #
 # This workflow owns ONE sticky comment only: the pre-merge gate, marked
 # <!-- landing-checklist:v1 -->. Once the PR merges, a second, separate

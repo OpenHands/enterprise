@@ -1,12 +1,12 @@
-# Copy this file into each production repo at:
-#   .github/workflows/landing-checklist.yml
+# This is intentionally tiny — all real logic lives in
+# landing-checklist-reusable.yml, called here via a same-repo relative path.
 #
-# This is intentionally tiny — all real logic lives in the reusable workflow
-# hosted in OpenHands/OpenHands (per team decision, no separate eng-process
-# repo) so it can be updated in one place for all seven production repos.
-#
-# Note: OpenHands/OpenHands itself also needs this caller (pointing at its
-# own @main reusable workflow) so it enforces the checklist on itself too.
+# Scoped to OpenHands/enterprise only for now (the pilot repo): we're moving
+# away from using OpenHands/OpenHands as the shared home for this kind of
+# cross-repo eng-process artifact, so there is currently no cross-repo
+# `owner/repo@ref` reference to maintain. If a second production repo
+# onboards later, see the note at the top of landing-checklist-reusable.yml
+# for the two ways it could consume this workflow.
 name: Landing Checklist
 
 on:
@@ -15,7 +15,7 @@ on:
 
 jobs:
   landing-checklist:
-    uses: OpenHands/OpenHands/.github/workflows/landing-checklist-reusable.yml@main
+    uses: ./.github/workflows/landing-checklist-reusable.yml
     permissions:
       pull-requests: write
       contents: read
