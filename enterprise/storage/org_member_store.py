@@ -14,45 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from storage.database import a_session_maker
 from storage.encrypt_utils import get_agent_settings_cipher
+from storage.mcp_config import coerce_persisted_mcp_config, serialize_mcp_config
 from storage.org_member import OrgMember
 from storage.user import User
 from storage.user_settings import UserSettings
 
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
-from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.settings import AgentSettingsConfig, validate_agent_settings
 
 _MISSING = object()
-_LEGACY_MCP_AGENT_SETTINGS_SCHEMA_VERSION = 4
-
-
-def normalize_persisted_mcp_config(value: object) -> dict[str, Any]:
-    """Migrate a standalone MCP fragment through the SDK's v4-v5 migration.
-
-    Revision 137 separated MCP from its parent settings object, so the SDK
-    could no longer see the schema version that described the fragment. Treat
-    standalone legacy data as v4, the last wrapped/scalar-auth representation,
-    and let the SDK return the current typed representation.
-    """
-    migrated = validate_agent_settings(
-        {
-            'schema_version': _LEGACY_MCP_AGENT_SETTINGS_SCHEMA_VERSION,
-            'mcp_config': {} if value is None else value,
-        }
-    )
-    return dump_mcp_config(
-        migrated.mcp_config,
-        context={'expose_secrets': 'plaintext'},
-    )
-
-
-def serialize_mcp_config(value: object) -> dict[str, Any] | None:
-    if value is None:
-        return None
-    return normalize_persisted_mcp_config(value)
-
-
 def serialize_agent_settings(value: AgentSettingsConfig) -> dict[str, Any]:
     """Serialize one complete SDK settings object with encrypted secret leaves."""
     return value.model_dump(
@@ -97,7 +68,7 @@ def compose_agent_settings(
         mode='json',
         context={'expose_secrets': 'plaintext'},
     )
-    payload['mcp_config'] = normalize_persisted_mcp_config(mcp_config)
+    payload['mcp_config'] = coerce_persisted_mcp_config(mcp_config)
     return validate_agent_settings(payload)
 
 

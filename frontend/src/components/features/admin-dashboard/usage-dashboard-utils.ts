@@ -117,3 +117,34 @@ export const formatMergedStatus = (merged?: boolean | null) => {
   if (merged === false) return "No";
   return "-";
 };
+
+const escapeCsvField = (value: string | number) => {
+  const stringValue = String(value);
+  if (/[",\n]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
+};
+
+/**
+ * Convert tabular data into a CSV string, escaping fields that contain
+ * commas, quotes, or newlines per RFC 4180.
+ */
+export const rowsToCsv = (
+  headers: string[],
+  rows: (string | number)[][],
+): string => {
+  const lines = [headers, ...rows].map((row) =>
+    row.map(escapeCsvField).join(","),
+  );
+  return lines.join("\n");
+};
+
+export const buildExportFilename = (prefix: string) => {
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\..+/, "")
+    .replace("T", "_");
+  return `${prefix}_${timestamp}.csv`;
+};

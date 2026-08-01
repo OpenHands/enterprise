@@ -16557,6 +16557,23 @@
     "uk": "Завантаження...",
     "ca": "Carregant..."
   },
+  "SETTINGS$EMAIL_CHANGE_DISABLED": {
+    "en": "Email changes are disabled for this deployment.",
+    "ja": "このデプロイではメールアドレスの変更が無効になっています。",
+    "zh-CN": "此部署已禁用邮箱更改。",
+    "zh-TW": "此部署已停用電子郵件變更。",
+    "ko-KR": "이 배포에서는 이메일 변경이 비활성화되어 있습니다.",
+    "no": "E-postendringer er deaktivert for denne distribusjonen.",
+    "it": "Le modifiche all'email sono disabilitate per questa distribuzione.",
+    "pt": "As alterações de email estão desativadas para esta implantação.",
+    "es": "Los cambios de correo electrónico están deshabilitados para este despliegue.",
+    "ar": "تم تعطيل تغييرات البريد الإلكتروني لهذا النشر.",
+    "fr": "Les modifications d’adresse e-mail sont désactivées pour ce déploiement.",
+    "tr": "Bu dağıtımda e-posta değişiklikleri devre dışı bırakılmıştır.",
+    "de": "E-Mail-Änderungen sind für diese Bereitstellung deaktiviert.",
+    "uk": "Зміну електронної пошти вимкнено для цього розгортання.",
+    "ca": "Els canvis de correu electrònic estan desactivats per a aquest desplegament."
+  },
   "SETTINGS$SAVE": {
     "en": "Save",
     "ja": "保存",

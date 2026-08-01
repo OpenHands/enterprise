@@ -43,7 +43,12 @@ from openhands.app_server.sandbox.sandbox_service import (
     SandboxService,
     SandboxServiceInjector,
 )
-from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.sandbox.sandbox_spec_models import (
+    DEFAULT_FS_GROUP,
+    DEFAULT_RUN_AS_GROUP,
+    DEFAULT_RUN_AS_USER,
+    SandboxSpecInfo,
+)
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     resolve_sandbox_spec,
@@ -475,21 +480,9 @@ class RemoteSandboxService(SandboxService):
             environment = await self._init_environment(sandbox_spec, sandbox_id)
 
             # Prepare start request
-            start_request: dict[str, Any] = {
-                'image': sandbox_spec.id,  # Use sandbox_spec.id as the container image
-                'command': sandbox_spec.command,
-                'working_dir': '/workspace',
-                'environment': environment,
-                'session_id': sandbox_id,  # Use sandbox_id as session_id
-                'resource_factor': self.resource_factor,
-                'run_as_user': 10001,
-                'run_as_group': 10001,
-                'fs_group': 10001,
-            }
-
-            # Add runtime class if specified
-            if self.runtime_class == 'sysbox':
-                start_request['runtime_class'] = 'sysbox-runc'
+            start_request = await self.build_sandbox_start_request(
+                sandbox_spec, sandbox_id, environment
+            )
 
             # Start the runtime
             response = await self._send_runtime_api_request(
@@ -516,6 +509,40 @@ class RemoteSandboxService(SandboxService):
         except httpx.HTTPError as e:
             _logger.exception('Failed to start sandbox', stack_info=True)
             raise SandboxError('Failed to start sandbox') from e
+
+    async def build_sandbox_start_request(
+        self,
+        sandbox_spec: SandboxSpecInfo,
+        sandbox_id: str,
+        environment: dict[str, str],
+    ) -> dict[str, Any]:
+        """Build the JSON payload sent to runtime-api's /start endpoint.
+
+        Honours the pod security context fields on the spec when present
+        (RemoteSandboxSpecInfo from runtime-api may include them); otherwise
+        falls back to the legacy hardcoded default that the image was built for.
+        """
+        run_as_user = getattr(sandbox_spec, 'run_as_user', DEFAULT_RUN_AS_USER)
+        run_as_group = getattr(sandbox_spec, 'run_as_group', DEFAULT_RUN_AS_GROUP)
+        fs_group = getattr(sandbox_spec, 'fs_group', DEFAULT_FS_GROUP)
+
+        start_request: dict[str, Any] = {
+            'image': sandbox_spec.id,  # Use sandbox_spec.id as the container image
+            'command': sandbox_spec.command,
+            'working_dir': '/workspace',
+            'environment': environment,
+            'session_id': sandbox_id,  # Use sandbox_id as session_id
+            'resource_factor': self.resource_factor,
+            'run_as_user': run_as_user,
+            'run_as_group': run_as_group,
+            'fs_group': fs_group,
+        }
+
+        # Add runtime class if specified
+        if self.runtime_class == 'sysbox':
+            start_request['runtime_class'] = 'sysbox-runc'
+
+        return start_request
 
     async def resume_sandbox(self, sandbox_id: str) -> bool:
         """Resume a paused sandbox.

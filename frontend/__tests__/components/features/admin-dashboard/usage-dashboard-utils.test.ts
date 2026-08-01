@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { formatShortDate } from "#/components/features/admin-dashboard/usage-dashboard-utils";
+import {
+  buildExportFilename,
+  formatShortDate,
+  rowsToCsv,
+} from "#/components/features/admin-dashboard/usage-dashboard-utils";
 
 describe("formatShortDate", () => {
   // Date-only API strings parse as UTC midnight; labels must not shift
@@ -14,5 +18,39 @@ describe("formatShortDate", () => {
 
   it("renders UTC-midnight timestamps on their UTC day", () => {
     expect(formatShortDate("2026-07-01T00:00:00Z")).toBe("Jul 1");
+  });
+});
+
+describe("rowsToCsv", () => {
+  it("joins headers and rows with commas and newlines", () => {
+    const csv = rowsToCsv(
+      ["date", "value"],
+      [
+        ["2026-07-01", 3],
+        ["2026-07-02", 5],
+      ],
+    );
+    expect(csv).toBe("date,value\n2026-07-01,3\n2026-07-02,5");
+  });
+
+  it("quotes and escapes fields containing commas, quotes, or newlines", () => {
+    const csv = rowsToCsv(
+      ["model_name", "note"],
+      [["gpt-4, turbo", 'has "quotes"\nand newline']],
+    );
+    expect(csv).toBe(
+      'model_name,note\n"gpt-4, turbo","has ""quotes""\nand newline"',
+    );
+  });
+
+  it("returns just the header row when there are no data rows", () => {
+    expect(rowsToCsv(["a", "b"], [])).toBe("a,b");
+  });
+});
+
+describe("buildExportFilename", () => {
+  it("builds a timestamped csv filename with the given prefix", () => {
+    const filename = buildExportFilename("model_usage");
+    expect(filename).toMatch(/^model_usage_\d{8}_\d{6}\.csv$/);
   });
 });

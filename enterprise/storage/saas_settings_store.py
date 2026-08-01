@@ -22,6 +22,7 @@ from storage.agent_profile_resolution import (
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
+from storage.mcp_config import coerce_persisted_mcp_config, serialize_mcp_config
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.org_member_store import (
@@ -29,7 +30,6 @@ from storage.org_member_store import (
     compose_agent_settings,
     deserialize_agent_settings,
     serialize_agent_settings,
-    serialize_mcp_config,
 )
 from storage.org_store import OrgStore
 from storage.user import User

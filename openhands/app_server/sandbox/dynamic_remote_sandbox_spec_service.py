@@ -13,6 +13,10 @@ from openhands.app_server.sandbox.remote_sandbox_spec_service import (
     get_default_sandbox_specs,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import (
+    DEFAULT_FS_GROUP,
+    DEFAULT_RUN_AS_GROUP,
+    DEFAULT_RUN_AS_USER,
+    RemoteSandboxSpecInfo,
     SandboxSpecInfo,
     SandboxSpecInfoPage,
 )
@@ -28,9 +32,11 @@ class DynamicRemoteSandboxSpecService(SandboxSpecService):
     """Sandbox spec service backed by the runtime-api warm runtime configs endpoint.
 
     Fetches the list of available warm runtime configurations and exposes each
-    as a SandboxSpecInfo. SandboxSpecInfo.id is the container image URL so that
+    as a RemoteSandboxSpecInfo. SandboxSpecInfo.id is the container image URL so that
     it flows correctly through RemoteSandboxService to runtime-api for pod creation
-    and warm-runtime matching.
+    and warm-runtime matching. The pod security context fields (run_as_user /
+    run_as_group / fs_group) are also captured when present so RemoteSandboxService
+    can pass them through to runtime-api instead of hard-coding values.
 
     Results are cached for `cache_ttl_seconds` to avoid hammering the endpoint on
     every conversation start.
@@ -61,11 +67,14 @@ class DynamicRemoteSandboxSpecService(SandboxSpecService):
         name_to_spec: dict[str, SandboxSpecInfo] = {}
         specs: list[SandboxSpecInfo] = []
         for config in response.json().get('configs', []):
-            spec = SandboxSpecInfo(
+            spec = RemoteSandboxSpecInfo(
                 id=config['image'],
                 command=config['command'],
                 initial_env=config['environment'],
                 working_dir=config['working_dir'],
+                run_as_user=config.get('run_as_user', DEFAULT_RUN_AS_USER),
+                run_as_group=config.get('run_as_group', DEFAULT_RUN_AS_GROUP),
+                fs_group=config.get('fs_group', DEFAULT_FS_GROUP),
             )
             specs.append(spec)
             name_to_spec[config['name']] = spec

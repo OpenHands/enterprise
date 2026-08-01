@@ -80,6 +80,7 @@ class WebClientConfig(DiscriminatedUnionMixin):
     provider_default_hosts: dict[str, str] = Field(default_factory=dict)
     slack_enabled: bool = False
     email_enabled: bool = False
+    email_change_enabled: bool = True
     acp_providers: list[ACPProviderConfig] = Field(default_factory=list)
     # Hostname of the Jira Data Center server when DC OAuth is configured, so the
     # configure form can pre-fill and lock the host field (the OAuth callback only

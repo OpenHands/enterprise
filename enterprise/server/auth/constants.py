@@ -14,6 +14,7 @@ KEYCLOAK_SERVER_URL_EXT = os.getenv(
     'KEYCLOAK_SERVER_URL_EXT', f'https://{os.getenv("AUTH_WEB_HOST", "")}'
 ).rstrip('/')
 KEYCLOAK_ADMIN_PASSWORD = os.getenv('KEYCLOAK_ADMIN_PASSWORD', '')
+KEYCLOAK_REQUEST_TIMEOUT = int(os.getenv('KEYCLOAK_REQUEST_TIMEOUT', '10'))
 GITLAB_APP_CLIENT_ID = os.getenv('GITLAB_APP_CLIENT_ID', '').strip()
 GITLAB_APP_CLIENT_SECRET = os.getenv('GITLAB_APP_CLIENT_SECRET', '').strip()
 GITLAB_TOKEN_URL = f'https://{GITLAB_HOST}/oauth/token'
@@ -69,6 +70,8 @@ BITBUCKET_DATA_CENTER_CLIENT_SECRET = os.getenv(
     'BITBUCKET_DATA_CENTER_CLIENT_SECRET', ''
 ).strip()
 BITBUCKET_DATA_CENTER_HOST = os.getenv('BITBUCKET_DATA_CENTER_HOST', '').strip()
+BITBUCKET_DC_CONNECT_TIMEOUT = float(os.getenv('BITBUCKET_DC_CONNECT_TIMEOUT', '5'))
+BITBUCKET_DC_USERINFO_TIMEOUT = float(os.getenv('BITBUCKET_DC_USERINFO_TIMEOUT', '10'))
 # Optional HTTP access token for a dedicated bot service account. When set,
 # OpenHands posts all Bitbucket Data Center comments/reactions as this bot
 # (mirroring the GitHub App's openhands[bot] identity) instead of as the
