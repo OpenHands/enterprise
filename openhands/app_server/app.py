@@ -22,6 +22,7 @@ from openhands.app_server.middleware import (
     InMemoryRateLimiter,
     LocalhostCORSMiddleware,
     RateLimitMiddleware,
+    SecurityHeadersMiddleware,
 )
 from openhands.app_server.static import SPAStaticFiles
 from openhands.app_server.status.status_router import router as health_router
@@ -84,3 +85,6 @@ app.add_middleware(
     RateLimitMiddleware,
     rate_limiter=InMemoryRateLimiter(requests=10, seconds=1),
 )
+# OHE-2815: must be added last so the header is applied to every response,
+# including the SPA static mount and the CSP report endpoint itself.
+app.add_middleware(SecurityHeadersMiddleware)
