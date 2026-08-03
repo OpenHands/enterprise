@@ -7,6 +7,7 @@ import { openHands } from "#/api/open-hands-axios";
 import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import { useEmailVerification } from "#/hooks/use-email-verification";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
+import { useConfig } from "#/hooks/query/use-config";
 
 // Email validation regex pattern
 const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
@@ -21,6 +22,7 @@ function EmailInputSection({
   isEmailChanged,
   emailVerified,
   isEmailValid,
+  emailChangeEnabled,
   children,
 }: {
   email: string;
@@ -32,6 +34,7 @@ function EmailInputSection({
   isEmailChanged: boolean;
   emailVerified?: boolean;
   isEmailValid: boolean;
+  emailChangeEnabled: boolean;
   children: React.ReactNode;
 }) {
   const { t } = useTranslation();
@@ -44,11 +47,12 @@ function EmailInputSection({
             type="email"
             value={email}
             onChange={onEmailChange}
+            readOnly={!emailChangeEnabled}
             className={`text-base text-white p-2 bg-base-tertiary rounded-sm border ${
               isEmailChanged && !isEmailValid
                 ? "border-red-500"
                 : "border-tertiary"
-            } flex-grow`}
+            } flex-grow ${!emailChangeEnabled ? "cursor-not-allowed opacity-70" : ""}`}
             placeholder={t("SETTINGS$USER_EMAIL_LOADING")}
             data-testid="email-input"
           />
@@ -64,15 +68,17 @@ function EmailInputSection({
         )}
 
         <div className="flex items-center gap-3 mt-2">
-          <button
-            type="button"
-            onClick={onSaveEmail}
-            disabled={!isEmailChanged || isSaving || !isEmailValid}
-            className="px-4 py-2 rounded-sm bg-primary text-white hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed disabled:text-[#0D0F11]"
-            data-testid="save-email-button"
-          >
-            {isSaving ? t("SETTINGS$SAVING") : t("SETTINGS$SAVE")}
-          </button>
+          {emailChangeEnabled && (
+            <button
+              type="button"
+              onClick={onSaveEmail}
+              disabled={!isEmailChanged || isSaving || !isEmailValid}
+              className="px-4 py-2 rounded-sm bg-primary text-white hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed disabled:text-[#0D0F11]"
+              data-testid="save-email-button"
+            >
+              {isSaving ? t("SETTINGS$SAVING") : t("SETTINGS$SAVE")}
+            </button>
+          )}
 
           {emailVerified === false && (
             <button
@@ -88,6 +94,15 @@ function EmailInputSection({
             </button>
           )}
         </div>
+
+        {!emailChangeEnabled && (
+          <p
+            className="text-sm text-tertiary"
+            data-testid="email-change-disabled"
+          >
+            {t("SETTINGS$EMAIL_CHANGE_DISABLED")}
+          </p>
+        )}
 
         {children}
       </div>
@@ -115,6 +130,7 @@ function VerificationAlert() {
 function UserSettingsScreen() {
   const { t } = useTranslation();
   const { data: settings, isLoading, refetch } = useSettings();
+  const { data: config } = useConfig();
   const { organizationId } = useSelectedOrganizationId();
   const [email, setEmail] = useState("");
   const [originalEmail, setOriginalEmail] = useState("");
@@ -199,6 +215,7 @@ function UserSettingsScreen() {
   };
 
   const isEmailChanged = email !== originalEmail;
+  const emailChangeEnabled = config?.email_change_enabled ?? true;
 
   return (
     <div data-testid="user-settings-screen" className="flex flex-col h-full">
@@ -216,6 +233,7 @@ function UserSettingsScreen() {
             isEmailChanged={isEmailChanged}
             emailVerified={settings?.email_verified}
             isEmailValid={isEmailValid}
+            emailChangeEnabled={emailChangeEnabled}
           >
             {settings?.email_verified === false && <VerificationAlert />}
           </EmailInputSection>

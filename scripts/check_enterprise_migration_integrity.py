@@ -12,6 +12,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VERSIONS_DIR = ROOT / 'enterprise' / 'migrations' / 'versions'
 MIGRATION_FILENAME_RE = re.compile(r'^(?P<prefix>\d+)_.+\.py$')
+SQLITE_REFERENCE_RE = re.compile(r'\bsqlite\b|sqlite_', re.IGNORECASE)
 MISSING = object()
 
 
@@ -77,8 +78,15 @@ def check_migration_integrity(versions_dir: Path = DEFAULT_VERSIONS_DIR) -> list
         else:
             prefixes[prefix].append(path)
 
+        source = path.read_text(encoding='utf-8')
+        if SQLITE_REFERENCE_RE.search(source):
+            errors.append(
+                f'{path.name}: enterprise migrations are PostgreSQL-only; '
+                'SQLite references are not allowed'
+            )
+
         try:
-            module = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+            module = ast.parse(source, filename=str(path))
         except SyntaxError as exc:
             errors.append(f'{path.name}: cannot parse migration: {exc}')
             continue

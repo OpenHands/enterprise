@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -16,6 +17,178 @@ from starlette.types import ASGIApp
 from openhands.app_server.config import get_global_config
 
 _RESUME_RE = re.compile(r'^/api/v1/sandboxes/[^/]+/resume/?$')
+
+
+# OHE-2815: default Content-Security-Policy. Enforced by the browser.
+# `unsafe-inline` is kept on script-src/style-src because React Router's
+# SPA bootstrap emits inline <script>/<style> blocks; tightening to
+# nonces or static hashes is a follow-up. PostHog hosts:
+#   - us.i.posthog.com         — event ingest (fetch / xhr)
+#   - us-assets.i.posthog.com  — SDK scripts, exception-autocapture,
+#                                web-vitals, recorder, surveys, tracing-headers
+_DEFAULT_CSP_DIRECTIVES: dict[str, str] = {
+    'default-src': "'self'",
+    'script-src': "'self' 'unsafe-inline' https://us-assets.i.posthog.com",
+    'style-src': "'self' 'unsafe-inline' https://fonts.googleapis.com",
+    'font-src': "'self' https://fonts.gstatic.com data:",
+    'img-src': "'self' data: blob: https:",
+    'connect-src': "'self' ws: wss: https://us.i.posthog.com https://us-assets.i.posthog.com {runtime_hosts}",
+    'frame-src': "'self' {runtime_hosts}",
+    'frame-ancestors': "'self'",
+    'object-src': "'none'",
+    'base-uri': "'self'",
+    'form-action': "'self'",
+    'worker-src': "'self' blob:",
+}
+
+# Path prefixes that are exempt from the *default* CSP. FastAPI's
+# /docs (Swagger UI) and /redoc (ReDoc) serve HTML that pulls its
+# CSS and JS from cdn.jsdelivr.net, which the default policy does
+# not allowlist — the browser would block the docs page entirely.
+# The override (``CONTENT_SECURITY_POLICY`` env var) still applies
+# to these paths, so operators can opt back in to a strict policy
+# if they want to lock the docs down.
+_DEFAULT_CSP_SKIP_PATH_PREFIXES: tuple[str, ...] = ('/docs', '/redoc')
+
+
+def _build_csp(directives: dict[str, str]) -> str:
+    """Render a directive map as a CSP header value, dropping empty entries."""
+    parts: list[str] = []
+    for name, value in directives.items():
+        if value == '' or value is None:
+            continue
+        parts.append(f'{name} {value}')
+    return '; '.join(parts)
+
+
+def _runtime_hosts_from_web_host() -> str:
+    """Derive the runtime-host wildcard entry from ``WEB_HOST``.
+
+    ``WEB_HOST`` is the deployment's bare hostname for the public app (see
+    ``get_default_web_url`` and ``web_client_deployment_mode.get_deployment_mode``).
+    In staging it's ``staging.all-hands.dev``; in prod it's
+    ``app.all-hands.dev``; in self-hosted it's the customer apex such as
+    ``openhands.example.com``.
+
+    The runtime, however, lives on a *sibling* subdomain tree: in staging
+    that's ``<sandbox>.staging-runtime.all-hands.dev`` and
+    ``vscode-<sandbox>.staging-runtime.all-hands.dev``. A wildcard built
+    directly off ``WEB_HOST`` (e.g. ``*.staging.all-hands.dev``) misses
+    those siblings, so we instead drop the leftmost DNS label and wildcard
+    the registrable domain (eTLD+1):
+
+        ``staging.all-hands.dev``  -> ``https://*.all-hands.dev``
+        ``app.all-hands.dev``      -> ``https://*.all-hands.dev``
+        ``openhands.example.com``  -> ``https://*.example.com``
+        ``app.example.co.uk``      -> ``https://*.example.co.uk``
+
+    A CSP3 ``*.host`` source matches the host itself and any number of
+    subdomains, so one entry covers both the API calls
+    (``<sandbox>.<sibling>.<registrable>``) and the VS Code iframe
+    (``vscode-<sandbox>.<sibling>.<registrable>``).
+
+    Returns an empty string when ``WEB_HOST`` is unset or single-label
+    (e.g. ``localhost``), where the wildcard would either be invalid or
+    too broad — ``frame-src 'self'`` already covers ``localhost`` in that
+    case.
+    """
+    web_host = os.getenv('WEB_HOST', '').strip().rstrip('/')
+    if not web_host:
+        return ''
+    # Tolerate schemes accidentally set in WEB_HOST (some operators set
+    # `https://app.all-hands.dev`); strip them so we don't end up with
+    # `https://https://*.host`.
+    for prefix in ('https://', 'http://'):
+        if web_host.startswith(prefix):
+            web_host = web_host[len(prefix) :]
+            break
+    # Strip port (e.g. `localhost:3000`) so the dot-split below is sane.
+    if ':' in web_host:
+        web_host = web_host.split(':', 1)[0]
+    parts = web_host.split('.')
+    if len(parts) < 2:
+        # Single-label host (`localhost`, `nginx`, ...); no registrable
+        # domain we can wildcard without becoming `*` itself.
+        return ''
+    registrable = '.'.join(parts[1:])
+    return f'https://*.{registrable}'
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Adds browser security headers to every HTTP response.
+
+    OHE-2815: emits ``Content-Security-Policy`` (enforce mode) plus the
+    companion headers ``X-Content-Type-Options``, ``Referrer-Policy``,
+    ``Permissions-Policy`` and ``X-Frame-Options`` on every response.
+    HSTS is intentionally left to the edge proxy.
+
+    The default CSP is **skipped** for paths under ``/docs`` (Swagger UI)
+    and ``/redoc`` (ReDoc): FastAPI serves HTML there that loads its CSS
+    and JS from ``cdn.jsdelivr.net``, which the default policy does not
+    allowlist. The companion security headers are still set on those
+    paths — only the CSP itself is omitted.
+
+    Set ``CONTENT_SECURITY_POLICY`` to override the default policy string
+    wholesale (use to relax directives in an emergency without a code
+    change, or to opt back in to a strict policy on the docs paths). Set
+    it to an empty string to disable CSP entirely.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        super().__init__(app)
+
+    def _policy(self) -> tuple[str, bool]:
+        """Return ``(policy, is_override)``.
+
+        ``is_override`` is ``True`` when the policy came from the
+        ``CONTENT_SECURITY_POLICY`` env var (including an explicit empty
+        value, which signals "disable CSP"). ``False`` means the policy
+        was built from ``_DEFAULT_CSP_DIRECTIVES`` and is subject to the
+        docs-path skip.
+        """
+        override = os.getenv('CONTENT_SECURITY_POLICY')
+        if override is not None:
+            return override.strip(), True
+
+        runtime_hosts = _runtime_hosts_from_web_host()
+        directives = {
+            name: value.format(runtime_hosts=runtime_hosts).strip()
+            for name, value in _DEFAULT_CSP_DIRECTIVES.items()
+        }
+        return _build_csp(directives), False
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        response = await call_next(request)
+        headers = response.headers
+
+        # OHE-2815: enforce-mode CSP. Override at runtime via the
+        # CONTENT_SECURITY_POLICY env var (e.g. "" to disable). The
+        # default policy is also skipped on the FastAPI docs paths
+        # because their bundled HTML loads assets from cdn.jsdelivr.net;
+        # an operator-set policy still applies there.
+        policy, is_override = self._policy()
+        if policy and (is_override or not _is_docs_path(request.url.path)):
+            headers['Content-Security-Policy'] = policy
+
+        headers['X-Content-Type-Options'] = 'nosniff'
+        headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+        headers['Permissions-Policy'] = (
+            'camera=(), microphone=(), geolocation=(), interest-cohort=()'
+        )
+        # Defence-in-depth alongside CSP `frame-ancestors 'self'`.
+        headers['X-Frame-Options'] = 'SAMEORIGIN'
+        # HSTS is intentionally left to the edge reverse proxy.
+        return response
+
+
+def _is_docs_path(path: str) -> bool:
+    """Return True if *path* is under a default-CSP-exempt docs prefix."""
+    return any(
+        path == prefix or path.startswith(f'{prefix}/')
+        for prefix in _DEFAULT_CSP_SKIP_PATH_PREFIXES
+    )
 
 
 class LocalhostCORSMiddleware(CORSMiddleware):

@@ -10,7 +10,10 @@ from openhands.app_server.sandbox.dynamic_remote_sandbox_spec_service import (
     DynamicRemoteSandboxSpecService,
     DynamicRemoteSandboxSpecServiceInjector,
 )
-from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.sandbox.sandbox_spec_models import (
+    RemoteSandboxSpecInfo,
+    SandboxSpecInfo,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -24,6 +27,9 @@ _CONFIGS_RESPONSE = {
             'command': ['--port', '8000'],
             'environment': {'FOO': 'bar'},
             'working_dir': '/workspace',
+            'run_as_user': 10001,
+            'run_as_group': 10001,
+            'fs_group': 10001,
         },
         {
             'name': 'v1_legacy',
@@ -31,6 +37,9 @@ _CONFIGS_RESPONSE = {
             'command': ['--port', '9000'],
             'environment': {},
             'working_dir': '/home/user',
+            'run_as_user': 5000,
+            'run_as_group': 5000,
+            'fs_group': 5000,
         },
         {
             'name': 'nightly',
@@ -121,6 +130,59 @@ class TestFetchSpecs:
         assert first.command == ['--port', '8000']
         assert first.initial_env == {'FOO': 'bar'}
         assert first.working_dir == '/workspace'
+
+    async def test_returns_remote_sandbox_spec_info_instances(self):
+        """_fetch_specs must yield RemoteSandboxSpecInfo so the security context
+        fields flow through to RemoteSandboxService.start_sandbox."""
+        ctx, _ = _make_async_client_mock(_make_http_response(_CONFIGS_RESPONSE))
+        service = _make_service()
+
+        with patch('httpx.AsyncClient', return_value=ctx):
+            specs = await service._fetch_specs()
+
+        assert all(isinstance(s, RemoteSandboxSpecInfo) for s in specs)
+
+    async def test_maps_security_context_fields_when_present(self):
+        """When run_as_user / run_as_group / fs_group are present in the config
+        they must be populated on the spec so they can be passed to runtime-api."""
+        ctx, _ = _make_async_client_mock(_make_http_response(_CONFIGS_RESPONSE))
+        service = _make_service()
+
+        with patch('httpx.AsyncClient', return_value=ctx):
+            specs = await service._fetch_specs()
+
+        # v1_legacy explicitly sets 5000 for all three security context fields.
+        legacy = next(
+            s for s in specs if s.id == 'ghcr.io/openhands/agent-server:0.9.0'
+        )
+        assert legacy.run_as_user == 5000
+        assert legacy.run_as_group == 5000
+        assert legacy.fs_group == 5000
+
+        # v1_current sets 10001 for all three.
+        current = next(
+            s for s in specs if s.id == 'ghcr.io/openhands/agent-server:1.0.0'
+        )
+        assert current.run_as_user == 10001
+        assert current.run_as_group == 10001
+        assert current.fs_group == 10001
+
+    async def test_security_context_defaults_when_absent(self):
+        """When a config omits run_as_user / run_as_group / fs_group, the spec
+        fields fall back to the legacy default values (10001) rather than None
+        or 0."""
+        ctx, _ = _make_async_client_mock(_make_http_response(_CONFIGS_RESPONSE))
+        service = _make_service()
+
+        with patch('httpx.AsyncClient', return_value=ctx):
+            specs = await service._fetch_specs()
+
+        nightly = next(
+            s for s in specs if s.id == 'ghcr.io/openhands/agent-server:nightly'
+        )
+        assert nightly.run_as_user == 10001
+        assert nightly.run_as_group == 10001
+        assert nightly.fs_group == 10001
 
     async def test_populates_name_to_spec_mapping(self):
         """The name→spec dict must be keyed by the config 'name', not the image URL."""

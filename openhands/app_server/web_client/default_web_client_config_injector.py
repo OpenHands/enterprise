@@ -9,6 +9,9 @@ from openhands.app_server.integrations.jira_dc.config import (
 )
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.web_client.email_change_config import (
+    is_email_change_enabled,
+)
 from openhands.app_server.web_client.web_client_config_injector import (
     WebClientConfigInjector,
 )
@@ -241,6 +244,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
     )
     slack_enabled: bool = Field(default_factory=_get_slack_enabled)
     email_enabled: bool = Field(default_factory=_get_email_enabled)
+    email_change_enabled: bool = Field(default_factory=is_email_change_enabled)
     jira_dc_oauth_host: str | None = Field(default_factory=_get_jira_dc_oauth_host)
     jira_dc_service_account_managed: bool = Field(
         default_factory=_is_jira_dc_service_account_managed
@@ -289,6 +293,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             provider_default_hosts=self.provider_default_hosts,
             slack_enabled=self.slack_enabled,
             email_enabled=self.email_enabled,
+            email_change_enabled=self.email_change_enabled,
             jira_dc_oauth_host=self.jira_dc_oauth_host,
             jira_dc_service_account_managed=self.jira_dc_service_account_managed,
             jira_dc_service_account_email=self.jira_dc_service_account_email,
