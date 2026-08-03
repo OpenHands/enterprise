@@ -5,8 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import BackgroundTasks, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
+from keycloak.exceptions import KeycloakConnectionError
 from pydantic import SecretStr
-from server.auth.auth_error import AuthError
+from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.user.user_authorizer import UserAuthorizationResponse, UserAuthorizer
 from server.routes.auth import (
@@ -134,6 +135,31 @@ async def test_keycloak_callback_token_retrieval_failure(
         assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
         assert 'Problem retrieving Keycloak tokens' in exc_info.value.detail
         get_keycloak_tokens_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_connection_failure_is_retryable(
+    mock_request, mock_background_tasks
+):
+    get_keycloak_tokens_mock = AsyncMock(
+        side_effect=KeycloakConnectionError('DNS failure')
+    )
+    with patch(
+        'server.routes.auth.token_manager.get_keycloak_tokens',
+        get_keycloak_tokens_mock,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await keycloak_callback(
+                code='test_code',
+                state='test_state',
+                request=mock_request,
+                background_tasks=mock_background_tasks,
+                user_authorizer=create_mock_user_authorizer(),
+            )
+
+    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert exc_info.value.headers == {'Retry-After': '1'}
+    assert 'temporarily unavailable' in exc_info.value.detail
 
 
 # Note: test_keycloak_callback_missing_user_info was removed as part of the
@@ -890,6 +916,23 @@ async def test_authenticate_failure():
         assert result.status_code == status.HTTP_401_UNAUTHORIZED
         assert 'error' in result.body.decode()
         assert 'User is not authenticated' in result.body.decode()
+
+
+@pytest.mark.asyncio
+async def test_authenticate_transient_failure_preserves_cookie():
+    with patch('server.routes.auth.get_access_token') as mock_get_token:
+        mock_get_token.side_effect = TokenRefreshError(
+            'Authentication service temporarily unavailable'
+        )
+        request = MagicMock()
+        request.cookies = {'keycloak_auth': 'some-token'}
+
+        result = await authenticate(request)
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert 'Authentication service temporarily unavailable' in result.body.decode()
+    assert 'set-cookie' not in result.headers
 
 
 @pytest.mark.asyncio

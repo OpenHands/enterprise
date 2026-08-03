@@ -8,6 +8,7 @@ from server.auth.auth_error import (
     AuthError,
     EmailNotVerifiedError,
     NoCredentialsError,
+    TokenRefreshError,
     TosNotAcceptedError,
 )
 from server.auth.cookie_chunking import delete_chunked_cookie, read_chunked_cookie
@@ -76,6 +77,12 @@ class SetAuthCookieMiddleware:
             # The user is trying to use an expired token or has not logged in. No special event handling is required
             return JSONResponse(
                 {'error': str(e) or e.__class__.__name__}, status.HTTP_401_UNAUTHORIZED
+            )
+        except TokenRefreshError as e:
+            logger.warning('auth_service_unavailable', exc_info=True)
+            return JSONResponse(
+                {'error': str(e) or e.__class__.__name__},
+                status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         except AuthError as e:
             logger.warning('auth_error', exc_info=True)

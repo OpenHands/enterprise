@@ -13,6 +13,7 @@ from server.auth.auth_error import (
     CookieError,
     ExpiredError,
     NoCredentialsError,
+    TokenRefreshError,
 )
 from server.auth.authorization import (
     get_role_permissions,
@@ -35,7 +36,9 @@ from storage.saas_settings_store import SaasSettingsStore
 from storage.user_authorization import UserAuthorizationType
 from storage.user_authorization_store import UserAuthorizationStore
 from storage.user_store import UserStore
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
+from tenacity import (
+    RetryError,
+)
 
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
@@ -52,6 +55,15 @@ token_manager = TokenManager()
 
 
 rate_limiter: RateLimiter | None = create_redis_rate_limiter(RATE_LIMIT_AUTH_WINDOWS)
+
+
+def _is_transient_keycloak_error(exc: BaseException) -> bool:
+    while isinstance(exc, RetryError):
+        retry_exc = exc.last_attempt.exception()
+        if retry_exc is None:
+            return False
+        exc = retry_exc
+    return isinstance(exc, KeycloakConnectionError)
 
 
 @dataclass
@@ -367,14 +379,6 @@ class SaasUserAuth(UserAuth):
                 self.email_verified = user.email_verified
         return self.email
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_fixed(1),
-        # Only retry transient connection failures. A deterministic
-        # ``invalid_grant`` (revoked/expired offline session) is a
-        # ``KeycloakPostError`` and must not be retried 3x.
-        retry=retry_if_exception_type(KeycloakConnectionError),
-    )
     async def refresh(self):
         # API-key (bearer) auth does not carry an offline token. Load it lazily
         # here, and only when a Keycloak access token is genuinely needed, so
@@ -521,6 +525,10 @@ class SaasUserAuth(UserAuth):
             if self.auth_type == AuthType.BEARER:
                 logger.warning('bearer_get_access_token_failed', exc_info=True)
                 return None
+            if _is_transient_keycloak_error(e):
+                raise TokenRefreshError(
+                    'Authentication service temporarily unavailable'
+                ) from e
             raise AuthError() from e
 
     async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
