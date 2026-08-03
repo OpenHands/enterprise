@@ -22,7 +22,7 @@ from server.auth.constants import (
     GITLAB_APP_CLIENT_ID,
     RECAPTCHA_SITE_KEY,
 )
-from server.constants import DEPLOYMENT_MODE
+from server.constants import AGENT_CANVAS_POSTHOG_CLIENT_KEY, DEPLOYMENT_MODE
 
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.server_config.server_config import ServerConfig
@@ -56,7 +56,9 @@ def verify_signature(payload: bytes, signature: str):
 class SaaSServerConfig(ServerConfig):
     config_cls: str = os.environ.get('OPENHANDS_CONFIG_CLS', '')
     app_mode: AppMode = AppMode.SAAS
-    posthog_client_key: str = os.environ.get('POSTHOG_CLIENT_KEY', '')
+    posthog_client_key: str = os.environ.get(
+        'POSTHOG_CLIENT_KEY', AGENT_CANVAS_POSTHOG_CLIENT_KEY
+    )
     github_client_id: str = os.environ.get('GITHUB_APP_CLIENT_ID', '')
     enable_billing = os.environ.get('ENABLE_BILLING', 'false') == 'true'
     hide_llm_settings = os.environ.get('HIDE_LLM_SETTINGS', 'false') == 'true'

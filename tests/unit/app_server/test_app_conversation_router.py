@@ -12,11 +12,14 @@ import httpx
 import pytest
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
+from starlette.requests import Request
 
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversation,
     AppConversationInfo,
     AppConversationPage,
+    AppConversationStartRequest,
+    AppConversationStartTask,
     SwitchProfileRequest,
 )
 from openhands.app_server.app_conversation.app_conversation_router import (
@@ -27,6 +30,7 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     get_conversation_git_changes,
     get_conversation_git_diff,
     search_app_conversations,
+    start_app_conversation,
     switch_conversation_profile,
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
@@ -67,6 +71,51 @@ def _make_mock_service(
     )
     service.count_app_conversations = AsyncMock(return_value=count_return)
     return service
+
+
+async def _single_start_task(request: AppConversationStartRequest):
+    yield AppConversationStartTask(created_by_user_id='user-1', request=request)
+
+
+@pytest.mark.asyncio
+async def test_start_app_conversation_stamps_analytics_headers_on_internal_request():
+    service = MagicMock()
+    captured: dict[str, AppConversationStartRequest] = {}
+
+    def start(request: AppConversationStartRequest):
+        captured['request'] = request
+        return _single_start_task(request)
+
+    service.start_app_conversation.side_effect = start
+    request = Request(
+        {
+            'type': 'http',
+            'method': 'POST',
+            'path': '/api/v1/app-conversations',
+            'headers': [
+                (b'x-openhands-client', b'agent_canvas'),
+                (b'x-openhands-client-version', b'1.8.0'),
+                (b'x-posthog-session-id', b'session-123'),
+            ],
+        }
+    )
+    db_session = AsyncMock()
+    httpx_client = AsyncMock()
+
+    result = await start_app_conversation(
+        request=request,
+        start_request=AppConversationStartRequest(),
+        user_context=MagicMock(),
+        db_session=db_session,
+        httpx_client=httpx_client,
+        app_conversation_service=service,
+    )
+
+    assert result.created_by_user_id == 'user-1'
+    stamped = captured['request']
+    assert stamped.analytics_client_source == 'agent_canvas'
+    assert stamped.analytics_client_version == '1.8.0'
+    assert stamped.analytics_session_id == 'session-123'
 
 
 @pytest.mark.asyncio

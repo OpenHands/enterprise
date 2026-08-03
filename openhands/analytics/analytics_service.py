@@ -203,22 +203,34 @@ class AnalyticsService:
         llm_model: str | None = None,
         agent_type: str = 'default',
         has_repository: bool = False,
+        start_task_id: str | None = None,
+        client_source: str | None = None,
+        client_version: str | None = None,
         session_id: str | None = None,
     ) -> None:
         """Track 'conversation created' event.
 
-        Fired when a new conversation is started.
+        Fired once a new conversation is successfully created.
         """
+        properties: dict[str, Any] = {
+            '$insert_id': f'conversation_created:{conversation_id}',
+            'conversation_id': conversation_id,
+            'trigger': trigger,
+            'llm_model': llm_model,
+            'agent_type': agent_type,
+            'has_repository': has_repository,
+        }
+        if start_task_id:
+            properties['start_task_id'] = start_task_id
+        if client_source:
+            properties['client_source'] = client_source
+        if client_version:
+            properties['client_version'] = client_version
+
         self.capture(
             ctx=ctx,
             event=CONVERSATION_CREATED,
-            properties={
-                'conversation_id': conversation_id,
-                'trigger': trigger,
-                'llm_model': llm_model,
-                'agent_type': agent_type,
-                'has_repository': has_repository,
-            },
+            properties=properties,
             session_id=session_id,
         )
 
