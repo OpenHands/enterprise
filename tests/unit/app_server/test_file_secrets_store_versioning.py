@@ -365,6 +365,29 @@ async def test_local_compare_and_swap_is_cross_process(store, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ordinary_load_needs_no_write_access(store, tmp_path):
+    """``load`` must not take the update lock: it would need write access to
+    create the lock sidecar, and would serialise every read."""
+    await store.replace_protected_credential(_NAME, _ORIGINAL, 'Managed login')
+    for lock in tmp_path.glob('*.lock'):
+        lock.unlink()
+
+    secrets_file = tmp_path / 'secrets.json'
+    secrets_file.chmod(0o444)
+    tmp_path.chmod(0o555)
+    try:
+        loaded = await FileSecretsStore(store.file_store).load()
+    finally:
+        tmp_path.chmod(0o755)
+        secrets_file.chmod(0o644)
+
+    assert loaded is not None
+    assert loaded.custom_secrets[_NAME].secret.get_secret_value() == _ORIGINAL
+    # Also holds when the test runs as root, where the chmod above is advisory.
+    assert not list(tmp_path.glob('*.lock'))
+
+
+@pytest.mark.asyncio
 async def test_unsupported_file_store_has_no_compare_and_swap():
     file_store = MagicMock(spec=FileStore)
     file_store.supports_locked_update = False

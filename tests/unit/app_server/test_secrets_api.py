@@ -20,6 +20,7 @@ from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_router import (
     router as secrets_router,
 )
+from openhands.app_server.secrets.secrets_store import SecretsStore
 
 
 @pytest.fixture
@@ -772,6 +773,42 @@ async def test_another_secret_cannot_be_renamed_onto_a_managed_name(
 
     stored = await file_secrets_store.load()
     assert _MANAGED not in stored.custom_secrets
+
+
+class _LegacyCustomStore(SecretsStore):
+    """A third-party store predating the protected-credential contract.
+
+    The documented extension point only requires load / store / get_instance.
+    """
+
+    saved: Secrets = Secrets()
+
+    async def load(self):
+        return type(self).saved
+
+    async def store(self, secrets):
+        type(self).saved = secrets
+
+    @classmethod
+    async def get_instance(cls, user_id):
+        return cls()
+
+
+@pytest.mark.asyncio
+async def test_legacy_custom_store_keeps_the_whole_document_path(test_client):
+    """A store without the capability must not be dispatched away from ``store``."""
+    _LegacyCustomStore.saved = Secrets()
+    with patch('openhands.app_server.shared.SecretsStoreImpl', _LegacyCustomStore):
+        ordinary = test_client.post(
+            '/secrets', json={'name': 'API_KEY', 'value': 'v', 'description': None}
+        )
+        managed = test_client.post(
+            '/secrets', json={'name': _MANAGED, 'value': _R0, 'description': None}
+        )
+
+    assert (ordinary.status_code, managed.status_code) == (201, 201)
+    stored = _LegacyCustomStore.saved.custom_secrets
+    assert stored[_MANAGED].secret.get_secret_value() == _R0
 
 
 @pytest.mark.asyncio

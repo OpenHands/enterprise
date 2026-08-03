@@ -47,6 +47,17 @@ router = APIRouter(
 # =================================================
 
 
+def _uses_protected_path(secrets_store: SecretsStore, name: str) -> bool:
+    """Whether this name must bypass the whole-document ``store`` for this store.
+
+    A store without the capability still writes protected names through
+    ``store``, so dispatching away from it would only 500.
+    """
+    return (
+        is_protected_credential(name) and secrets_store.supports_protected_credentials
+    )
+
+
 def _check_token_type(
     confirmed_token_type: ProviderType | None, token_type: ProviderType
 ) -> None:
@@ -272,7 +283,7 @@ async def create_custom_secret(
     existing_description = (
         custom_secrets[secret_name].description if secret_name in custom_secrets else ''
     )
-    if is_protected_credential(secret_name):
+    if _uses_protected_path(secrets_store, secret_name):
         # ``store`` cannot write these, so an explicit edit has to go through the
         # per-key writer or it would be silently dropped.
         await secrets_store.replace_protected_credential(
@@ -340,14 +351,15 @@ async def update_custom_secret(
         )
 
     if secret_name != secret_id and (
-        is_protected_credential(secret_id) or is_protected_credential(secret_name)
+        _uses_protected_path(secrets_store, secret_id)
+        or _uses_protected_path(secrets_store, secret_name)
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f'Secret {secret_id} is a managed credential and cannot be renamed',
         )
 
-    if is_protected_credential(secret_id):
+    if _uses_protected_path(secrets_store, secret_id):
         await secrets_store.set_protected_credential_description(
             secret_id, secret_description or ''
         )
@@ -399,7 +411,7 @@ async def delete_custom_secret(
         # Remove the secret
         custom_secrets.pop(secret_id)
 
-        if is_protected_credential(secret_id):
+        if _uses_protected_path(secrets_store, secret_id):
             await secrets_store.delete_protected_credential(secret_id)
             return EditResponse(message='Secret deleted successfully')
 

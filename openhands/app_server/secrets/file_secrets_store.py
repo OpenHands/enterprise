@@ -114,12 +114,16 @@ class FileSecretsStore(SecretsStore):
     def _write_data(self, data: dict[str, Any]) -> None:
         self.file_store.write(self.path, json.dumps(data))
 
-    async def load(self) -> Secrets | None:
-        def load_locked() -> Secrets | None:
-            data = self._read_data()
-            return self._secrets(data) if data is not None else None
+    @property
+    def supports_protected_credentials(self) -> bool:
+        return True
 
-        return await self._update(load_locked)
+    async def load(self) -> Secrets | None:
+        # Deliberately unlocked. Taking the update lock would make an ordinary
+        # read need write access to create the lock sidecar, and would serialise
+        # every read behind an exclusive lock.
+        data = await call_sync_from_async(self._read_data)
+        return self._secrets(data) if data is not None else None
 
     async def store(self, secrets: Secrets) -> None:
         serialized = secrets.model_dump(

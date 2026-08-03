@@ -37,6 +37,10 @@ class SaasSecretsStore(SecretsStore):
     # the right rows to be read/written.
     effective_org_id: UUID | None = None
 
+    @property
+    def supports_protected_credentials(self) -> bool:
+        return True
+
     async def load(self) -> Secrets | None:
         if not self.user_id:
             return None

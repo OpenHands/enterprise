@@ -38,9 +38,23 @@ class SecretsStore(ABC):
     async def load(self) -> Secrets | None:
         """Load secrets."""
 
+    @property
+    def supports_protected_credentials(self) -> bool:
+        """Whether ``store`` withholds protected names and the per-key writers work.
+
+        Those are two halves of one feature: a store that cannot write a
+        protected credential per-key also does not withhold it from ``store``,
+        so callers must keep using the whole-document path for it. Defaults to
+        False so a third-party store predating this contract keeps working.
+        """
+        return False
+
     @abstractmethod
     async def store(self, secrets: Secrets) -> None:
-        """Store secrets, carrying ``PROTECTED_CREDENTIAL_NAMES`` forward untouched."""
+        """Store secrets, carrying ``PROTECTED_CREDENTIAL_NAMES`` forward untouched.
+
+        Only when ``supports_protected_credentials``.
+        """
 
     async def replace_protected_credential(
         self,
