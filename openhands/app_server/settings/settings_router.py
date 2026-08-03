@@ -388,7 +388,11 @@ async def invalidate_legacy_secrets_store(
     While this function in called multiple times, the migration only ever happens once
     """
     if len(settings.secrets_store.provider_tokens.items()) > 0:
-        user_secrets = Secrets(provider_tokens=settings.secrets_store.provider_tokens)
+        existing = await secrets_store.load()
+        user_secrets = Secrets(
+            provider_tokens=settings.secrets_store.provider_tokens,
+            custom_secrets=(existing.custom_secrets if existing else {}),
+        )
         await secrets_store.store(user_secrets)
 
         # Invalidate old tokens via settings store serializer
