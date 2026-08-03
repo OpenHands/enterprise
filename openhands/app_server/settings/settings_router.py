@@ -389,11 +389,33 @@ async def invalidate_legacy_secrets_store(
     """
     if len(settings.secrets_store.provider_tokens.items()) > 0:
         existing = await secrets_store.load()
+        # Legacy tokens fill gaps only; anything already in the dedicated
+        # store (e.g. reconnected/rotated since) takes precedence.
+        merged_provider_tokens = {
+            **settings.secrets_store.provider_tokens,
+            **(existing.provider_tokens if existing else {}),
+        }
         user_secrets = Secrets(
-            provider_tokens=settings.secrets_store.provider_tokens,
+            provider_tokens=merged_provider_tokens,
             custom_secrets=(existing.custom_secrets if existing else {}),
         )
         await secrets_store.store(user_secrets)
+
+        # This is a one-shot, unrecoverable migration off of settings.secrets_store,
+        # and some SecretsStore impls (e.g. SaasSecretsStore) silently drop
+        # provider_tokens on store(); log counts to see if that's happening.
+        persisted = await secrets_store.load()
+        persisted_provider_token_count = (
+            len(persisted.provider_tokens) if persisted else 0
+        )
+        logger.info(
+            'invalidate_legacy_secrets_store.migrated',
+            extra={
+                'custom_secret_count': len(existing.custom_secrets) if existing else 0,
+                'legacy_provider_token_count': len(merged_provider_tokens),
+                'persisted_provider_token_count': persisted_provider_token_count,
+            },
+        )
 
         # Invalidate old tokens via settings store serializer
         invalidated_secrets_settings = settings.model_copy(

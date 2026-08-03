@@ -54,3 +54,48 @@ async def test_invalidate_legacy_secrets_store_preserves_custom_secrets():
     assert (
         stored.custom_secrets['MY_API_KEY'].secret.get_secret_value() == 'super-secret'
     )
+
+
+@pytest.mark.asyncio
+async def test_invalidate_legacy_secrets_store_prefers_already_stored_provider_token():
+    secrets_store = FileSecretsStore(InMemoryFileStore())
+
+    # A provider token was already migrated/reconnected directly in the
+    # dedicated store since the legacy field was last read.
+    await secrets_store.store(
+        Secrets(
+            provider_tokens={
+                ProviderType.GITHUB: ProviderToken(token=SecretStr('fresh-token'))
+            }
+        )
+    )
+
+    settings_store = AsyncMock()
+    settings = Settings(
+        secrets_store=Secrets(
+            provider_tokens={
+                ProviderType.GITHUB: ProviderToken(
+                    token=SecretStr('stale-legacy-token')
+                ),
+                ProviderType.GITLAB: ProviderToken(
+                    token=SecretStr('legacy-gitlab-token')
+                ),
+            }
+        )
+    )
+
+    result = await invalidate_legacy_secrets_store(
+        settings, settings_store, secrets_store
+    )
+
+    assert result is not None
+    # Already-stored token wins over the stale legacy one for the same provider...
+    assert (
+        result.provider_tokens[ProviderType.GITHUB].token.get_secret_value()
+        == 'fresh-token'
+    )
+    # ...but legacy still fills in providers not already present.
+    assert (
+        result.provider_tokens[ProviderType.GITLAB].token.get_secret_value()
+        == 'legacy-gitlab-token'
+    )
