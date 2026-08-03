@@ -1,6 +1,6 @@
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
-import type { ComponentProps } from "react";
+import React, { type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { HomeHeader } from "#/components/features/home/home-header/home-header";
 
@@ -12,11 +12,8 @@ vi.mock("react-i18next", async () => {
       t: (key: string) => {
         const translations: Record<string, string> = {
           COMMON$CLICK_HERE: "Click here",
-          HOME$AGENT_CANVAS_BANNER_LINK: "app.all-hands.dev/canvas",
-          HOME$AGENT_CANVAS_BANNER_PREFIX:
-            "New User Experience! Please visit",
-          HOME$AGENT_CANVAS_BANNER_SUFFIX:
-            "to try out OpenHands Cloud with Agent Canvas.",
+          HOME$AGENT_CANVAS_BANNER:
+            "New User Experience! Please visit <link>app.all-hands.dev/canvas</link> to try out OpenHands Cloud with Agent Canvas.",
           HOME$GUIDE_MESSAGE_TITLE:
             "New around here? Not sure where to start?",
           HOME$LETS_START_BUILDING: "Let's start building",
@@ -25,6 +22,17 @@ vi.mock("react-i18next", async () => {
       },
       i18n: { language: "en" },
     }),
+    Trans: ({
+      components,
+    }: {
+      components: { link: React.ReactElement };
+    }) => (
+      <>
+        New User Experience! Please visit{" "}
+        {React.cloneElement(components.link, {}, "app.all-hands.dev/canvas")} to
+        try out OpenHands Cloud with Agent Canvas.
+      </>
+    ),
   };
 });
 
