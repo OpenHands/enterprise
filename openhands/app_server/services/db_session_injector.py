@@ -34,7 +34,8 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
     user: str | None = None
     password: SecretStr | None = None
     echo: bool = False
-    # can be overriden with DB_POOL_SIZE / DB_MAX_OVERFLOW (see fill_empty_fields).
+    # can be overridden with DB_POOL_SIZE / DB_MAX_OVERFLOW / DB_POOL_USE_LIFO
+    # (see fill_empty_fields).
     pool_size: int = 25
     max_overflow: int = 10
     pool_recycle: int = 1800
@@ -78,6 +79,9 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
         max_overflow = os.getenv('DB_MAX_OVERFLOW')
         if max_overflow:
             self.max_overflow = int(max_overflow)
+        pool_use_lifo = os.getenv('DB_POOL_USE_LIFO')
+        if pool_use_lifo:
+            self.pool_use_lifo = pool_use_lifo.lower() in ('true', '1')
         return self
 
     def _create_gcp_db_connection(self):
