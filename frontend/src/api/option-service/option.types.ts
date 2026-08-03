@@ -45,6 +45,7 @@ export interface WebClientFeatureFlags {
   deployment_mode?: DeploymentMode;
   enable_onboarding: boolean;
   enable_automations?: boolean;
+  enable_agent_canvas_banner?: boolean;
 }
 
 export interface ACPModelOption {
