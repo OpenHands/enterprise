@@ -635,9 +635,24 @@ async def provision_user(
                 offline_token = await token_manager.request_offline_token(
                     username=email, password=password
                 )
+                # ``kc_user_id`` is non-None here: the Keycloak create
+                # above set it on success, or the recover branch
+                # copied it from ``existing_kc_user_id``. The create
+                # path raises ``HTTPException`` on failure, which
+                # propagates to the outer ``except`` and bypasses this
+                # line. Bind a strictly-typed local so the rest of
+                # this block reads ``str`` rather than ``str | None``.
+                assert kc_user_id is not None
+                block_kc_user_id: str = kc_user_id
                 await token_manager.store_offline_token(
-                    user_id=kc_user_id, offline_token=offline_token
+                    user_id=block_kc_user_id, offline_token=offline_token
                 )
+            else:
+                # ``case == 'recover'`` — Keycloak user existed
+                # before this call, so ``kc_user_id`` was set in the
+                # recover branch above.
+                assert kc_user_id is not None
+                block_kc_user_id = kc_user_id
 
             # 3. Create the OpenHands user. ``UserStore.create_user``
             # is idempotent on the Keycloak ``sub`` (returns the
@@ -645,12 +660,12 @@ async def provision_user(
             # to attach the freshly-discovered Keycloak identity to
             # the OpenHands DB.
             user_info_dict = {
-                'sub': kc_user_id,
+                'sub': block_kc_user_id,
                 'email': email,
                 'email_verified': True,
                 'preferred_username': email,
             }
-            new_user = await UserStore.create_user(kc_user_id, user_info_dict)
+            new_user = await UserStore.create_user(block_kc_user_id, user_info_dict)
             if new_user is None:
                 raise RuntimeError('UserStore.create_user returned None')
             personal_org_created = new_user.id != (
@@ -661,11 +676,7 @@ async def provision_user(
             # 4. Stamp TOS / verification / consent flags so the
             # provisioned user does not get bounced to the
             # email-verification or TOS interstitials on first login.
-            # ``kc_user_id`` is guaranteed non-None here: the create
-            # path set it on success, and the recover path set it
-            # from the pre-check.
-            assert kc_user_id is not None
-            await _set_user_provisioned_flags(kc_user_id)
+            await _set_user_provisioned_flags(block_kc_user_id)
 
         # 5. Add the user to the *target* org if they are not already a
         # member. Skipped when the caller-selected org happens to be
@@ -674,9 +685,20 @@ async def provision_user(
         # and re-adding it would violate the ``(org_id, user_id)``
         # uniqueness constraint. Skipped on the idempotent path when
         # ``OrgMemberStore.get_org_member`` confirms an existing row.
-        if target_org_id != openhands_user_id:
+        #
+        # Reaching this block requires both ``kc_user_id`` and
+        # ``openhands_user_id`` to be populated — any failure above
+        # would have raised an ``HTTPException`` and been caught by
+        # the outer ``except`` below, bypassing this section. The
+        # ``resolved_*`` locals narrow the ``Optional`` types so
+        # downstream call sites do not need to re-assert.
+        assert kc_user_id is not None
+        assert openhands_user_id is not None
+        resolved_kc_user_id: str = kc_user_id
+        resolved_oh_user_id: UUID = openhands_user_id
+        if target_org_id != resolved_oh_user_id:
             existing_member = await OrgMemberStore.get_org_member(
-                org_id=target_org_id, user_id=openhands_user_id
+                org_id=target_org_id, user_id=resolved_oh_user_id
             )
             if existing_member is not None:
                 logger.info(
@@ -684,13 +706,13 @@ async def provision_user(
                     extra={
                         'caller_user_id': caller_user_id,
                         'target_org_id': str(target_org_id),
-                        'openhands_user_id': str(openhands_user_id),
-                        'kc_user_id': kc_user_id,
+                        'openhands_user_id': str(resolved_oh_user_id),
+                        'kc_user_id': resolved_kc_user_id,
                     },
                 )
             else:
                 settings = await OrgService.create_litellm_integration(
-                    target_org_id, kc_user_id
+                    target_org_id, resolved_kc_user_id
                 )
                 llm_api_key_secret = settings.agent_settings.llm.api_key
                 # ``api_key`` is typed ``str | SecretStr | None`` on
@@ -713,7 +735,7 @@ async def provision_user(
 
                 await OrgMemberStore.add_user_to_org(
                     org_id=target_org_id,
-                    user_id=openhands_user_id,
+                    user_id=resolved_oh_user_id,
                     role_id=role.id,
                     llm_api_key=llm_api_key,
                     status='active',
@@ -728,12 +750,12 @@ async def provision_user(
         # which deletes the old key first.
         api_key_store = ApiKeyStore.get_instance()
         existing_api_key = await api_key_store.retrieve_api_key_by_name(
-            user_id=kc_user_id, name=api_key_name
+            user_id=resolved_kc_user_id, name=api_key_name
         )
         if existing_api_key is not None:
             if reissue_api_key:
                 deleted = await api_key_store.delete_api_key_by_name(
-                    user_id=kc_user_id,
+                    user_id=resolved_kc_user_id,
                     name=api_key_name,
                     org_id=target_org_id,
                 )
@@ -742,13 +764,13 @@ async def provision_user(
                         'provision_user:reissue_delete_failed',
                         extra={
                             'caller_user_id': caller_user_id,
-                            'kc_user_id': kc_user_id,
+                            'kc_user_id': resolved_kc_user_id,
                             'api_key_name': api_key_name,
                             'target_org_id': str(target_org_id),
                         },
                     )
                 api_key = await api_key_store.create_api_key(
-                    user_id=kc_user_id,
+                    user_id=resolved_kc_user_id,
                     name=api_key_name,
                     org_id=target_org_id,
                 )
@@ -756,7 +778,7 @@ async def provision_user(
                 api_key = existing_api_key
         else:
             api_key = await api_key_store.create_api_key(
-                user_id=kc_user_id,
+                user_id=resolved_kc_user_id,
                 name=api_key_name,
                 org_id=target_org_id,
             )
