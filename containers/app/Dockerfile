@@ -4,7 +4,7 @@
 # the one CI pushes. `openhands-app` is the plain app image the enterprise
 # layers sit on; build it on its own with `--target openhands-app`.
 ARG OPENHANDS_BUILD_VERSION=dev
-FROM node:25.9-trixie-slim AS frontend-builder
+FROM node:26.4-trixie-slim AS frontend-builder
 
 WORKDIR /app
 
