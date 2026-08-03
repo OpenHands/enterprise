@@ -27,7 +27,7 @@ function HomeScreen() {
       data-testid="home-screen"
       className="px-0 pt-4 bg-transparent h-full flex flex-col pt-[35px] overflow-y-auto rounded-xl lg:px-[42px] lg:pt-[42px] custom-scrollbar-always"
     >
-      <HomeHeader />
+      <HomeHeader showAgentCanvasBanner={isEnterpriseCloud} />
 
       <div className="pt-[25px] flex justify-center">
         <div
