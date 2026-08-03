@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-from server.constants import IS_FEATURE_ENV
+from server.constants import AGENT_CANVAS_POSTHOG_CLIENT_KEY, IS_FEATURE_ENV
 
 from openhands.analytics import get_analytics_service, init_analytics_service
 from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanService
@@ -24,7 +24,9 @@ class SaasAppLifespanService(AppLifespanService):
     """
 
     async def __aenter__(self):
-        api_key = os.environ.get('POSTHOG_CLIENT_KEY', '')
+        api_key = os.environ.get(
+            'POSTHOG_CLIENT_KEY', AGENT_CANVAS_POSTHOG_CLIENT_KEY
+        )
         host = os.environ.get('POSTHOG_HOST', 'https://us.i.posthog.com')
 
         init_analytics_service(

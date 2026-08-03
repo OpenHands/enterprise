@@ -23,6 +23,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AgentType,
     AppConversationInfo,
     AppConversationStartRequest,
+    AppConversationStartTask,
     ConversationTrigger,
 )
 from openhands.app_server.app_conversation.app_conversation_service import (
@@ -156,6 +157,60 @@ class _TestUserInfo(SimpleNamespace):
 
     def to_agent_settings(self) -> OpenHandsAgentSettings:
         return self.agent_settings
+
+
+@pytest.mark.asyncio
+async def test_track_conversation_created_forwards_final_id_and_client_attribution():
+    service = LiveStatusAppConversationService.__new__(LiveStatusAppConversationService)
+    conversation_id = uuid4()
+    task_id = uuid4()
+    request = AppConversationStartRequest(
+        selected_repository='OpenHands/enterprise',
+        trigger=ConversationTrigger.SUGGESTED_TASK,
+        analytics_client_source='agent_canvas',
+        analytics_client_version='1.8.0',
+        analytics_session_id='session-123',
+    )
+    task = AppConversationStartTask(
+        id=task_id,
+        created_by_user_id='user-1',
+        request=request,
+    )
+    analytics = Mock()
+    ctx = Mock()
+
+    with (
+        patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.get_analytics_service',
+            return_value=analytics,
+        ),
+        patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.resolve_analytics_context',
+            new_callable=AsyncMock,
+            return_value=ctx,
+        ) as resolve_ctx,
+    ):
+        await service._track_conversation_created(
+            task=task,
+            request=request,
+            conversation_id=conversation_id,
+            llm_model='openhands/minimax-m2.7',
+            agent_kind='openhands',
+        )
+
+    resolve_ctx.assert_awaited_once_with('user-1')
+    analytics.track_conversation_created.assert_called_once_with(
+        ctx=ctx,
+        conversation_id=str(conversation_id),
+        trigger='suggested_task',
+        llm_model='openhands/minimax-m2.7',
+        agent_type='openhands',
+        has_repository=True,
+        start_task_id=str(task_id),
+        client_source='agent_canvas',
+        client_version='1.8.0',
+        session_id='session-123',
+    )
 
 
 class TestEffectiveDisabledSkills:

@@ -108,6 +108,17 @@ router = APIRouter(
     prefix='/app-conversations', tags=['Conversations'], dependencies=get_dependencies()
 )
 logger = logging.getLogger(__name__)
+
+OPENHANDS_CLIENT_HEADER = 'X-OpenHands-Client'
+OPENHANDS_CLIENT_VERSION_HEADER = 'X-OpenHands-Client-Version'
+POSTHOG_SESSION_ID_HEADER = 'X-POSTHOG-SESSION-ID'
+
+
+def _optional_header(request: Request, name: str) -> str | None:
+    value = request.headers.get(name)
+    return value.strip() if value and value.strip() else None
+
+
 app_conversation_service_dependency = depends_app_conversation_service()
 app_conversation_info_service_dependency = depends_app_conversation_info_service()
 app_conversation_start_task_service_dependency = (
@@ -378,30 +389,18 @@ async def start_app_conversation(
 
     try:
         """Start an app conversation start task and return it."""
+        start_request.analytics_client_source = _optional_header(
+            request, OPENHANDS_CLIENT_HEADER
+        )
+        start_request.analytics_client_version = _optional_header(
+            request, OPENHANDS_CLIENT_VERSION_HEADER
+        )
+        start_request.analytics_session_id = _optional_header(
+            request, POSTHOG_SESSION_ID_HEADER
+        )
+
         async_iter = app_conversation_service.start_app_conversation(start_request)
         result = await anext(async_iter)
-
-        # Analytics: conversation created (V1)
-        try:
-            analytics = get_analytics_service()
-            if analytics:
-                user_id = await user_context.get_user_id()
-                if user_id:
-                    ctx = await resolve_analytics_context(user_id)
-                    analytics.track_conversation_created(
-                        ctx=ctx,
-                        conversation_id=str(result.app_conversation_id)
-                        if result.app_conversation_id
-                        else result.id,
-                        trigger=start_request.trigger.value
-                        if start_request.trigger
-                        else None,
-                        llm_model=None,  # Not available at start time
-                        agent_type='default',
-                        has_repository=start_request.selected_repository is not None,
-                    )
-        except Exception:
-            logger.exception('analytics:conversation_created:failed', stack_info=True)
 
         asyncio.create_task(_consume_remaining(async_iter, db_session, httpx_client))
         return result

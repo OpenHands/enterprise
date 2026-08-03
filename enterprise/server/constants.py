@@ -21,6 +21,8 @@ IS_FEATURE_ENV = (
 )  # Does not include the staging deployment
 IS_LOCAL_ENV = bool(HOST == 'localhost')
 
+AGENT_CANVAS_POSTHOG_CLIENT_KEY = 'phc_BgzfxKdgsYMLFTmJqt424ZoyVHvKFfrwttLimzdYTKFK'
+
 # Pattern for byor keys. Making this an environment variable allows different patterns so multiple environments can use
 # the same litellm instance in development
 BYOR_KEY_ALIAS_PATTERN = os.getenv(

@@ -655,16 +655,23 @@ class TestTypedEventMethods:
             llm_model='gpt-4',
             agent_type='CodeActAgent',
             has_repository=True,
+            start_task_id='task-abc',
+            client_source='agent_canvas',
+            client_version='1.8.0',
         )
         mock_client.capture.assert_called_once()
         _, kwargs = mock_client.capture.call_args
         assert kwargs['event'] == CONVERSATION_CREATED
         props = kwargs['properties']
+        assert props['$insert_id'] == 'conversation_created:conv-abc'
         assert props['conversation_id'] == 'conv-abc'
         assert props['trigger'] == 'ui'
         assert props['llm_model'] == 'gpt-4'
         assert props['agent_type'] == 'CodeActAgent'
         assert props['has_repository'] is True
+        assert props['start_task_id'] == 'task-abc'
+        assert props['client_source'] == 'agent_canvas'
+        assert props['client_version'] == '1.8.0'
 
     def test_track_conversation_finished(self, saas_service):
         """track_conversation_finished calls capture with CONVERSATION_FINISHED and correct properties."""

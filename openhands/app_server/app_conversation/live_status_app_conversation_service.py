@@ -21,6 +21,7 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     TextContent,
 )
+from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
 )
@@ -611,6 +612,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             await self.app_conversation_info_service.save_app_conversation_info(
                 app_conversation_info
             )
+            await self._track_conversation_created(
+                task=task,
+                request=request,
+                conversation_id=info.id,
+                llm_model=llm_model,
+                agent_kind=agent_kind,
+            )
 
             # Setup default processors
             processors = request.processors or []
@@ -654,6 +662,36 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 redact_api_key_literals(_exception_detail(exc))
             )
             yield task
+
+    async def _track_conversation_created(
+        self,
+        *,
+        task: AppConversationStartTask,
+        request: AppConversationStartRequest,
+        conversation_id: UUID,
+        llm_model: str | None,
+        agent_kind: str,
+    ) -> None:
+        analytics = get_analytics_service()
+        if not analytics or not task.created_by_user_id:
+            return
+
+        try:
+            ctx = await resolve_analytics_context(task.created_by_user_id)
+            analytics.track_conversation_created(
+                ctx=ctx,
+                conversation_id=str(conversation_id),
+                trigger=request.trigger.value if request.trigger else None,
+                llm_model=llm_model,
+                agent_type=agent_kind,
+                has_repository=request.selected_repository is not None,
+                start_task_id=str(task.id),
+                client_source=request.analytics_client_source,
+                client_version=request.analytics_client_version,
+                session_id=request.analytics_session_id,
+            )
+        except Exception:
+            _logger.exception('analytics:conversation_created:failed', stack_info=True)
 
     async def _build_app_conversations(
         self, app_conversation_infos: Sequence[AppConversationInfo | None]

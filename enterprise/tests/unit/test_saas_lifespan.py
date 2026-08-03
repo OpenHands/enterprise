@@ -52,6 +52,23 @@ async def test_aenter_passes_env_vars_to_init():
 
 
 @pytest.mark.asyncio
+async def test_aenter_defaults_to_agent_canvas_posthog_key():
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+    from server.constants import AGENT_CANVAS_POSTHOG_CLIENT_KEY
+
+    with (
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.init_analytics_service'
+        ) as mock_init,
+        patch.dict('os.environ', {}, clear=True),
+    ):
+        svc = SaasAppLifespanService()
+        await svc.__aenter__()
+
+    assert mock_init.call_args.kwargs['api_key'] == AGENT_CANVAS_POSTHOG_CLIENT_KEY
+
+
+@pytest.mark.asyncio
 async def test_aexit_calls_shutdown_when_service_exists(mock_analytics_service):
     """SaasAppLifespanService.__aexit__ calls shutdown on the analytics service."""
     from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
