@@ -84,6 +84,22 @@ def test_valid_linear_migrations_pass(versions_dir: Path):
     assert module.check_migration_integrity(versions_dir) == []
 
 
+def test_sqlite_reference_fails(versions_dir: Path):
+    module = load_module()
+    write_migration(
+        versions_dir,
+        '001_create_users.py',
+        revision='001',
+        down_revision=None,
+    )
+    path = versions_dir / '001_create_users.py'
+    path.write_text(path.read_text().replace('    pass', '    sqlite_where = None', 1))
+
+    errors = module.check_migration_integrity(versions_dir)
+
+    assert any('enterprise migrations are PostgreSQL-only' in error for error in errors)
+
+
 def test_duplicate_filename_prefix_fails(versions_dir: Path):
     module = load_module()
     write_migration(
