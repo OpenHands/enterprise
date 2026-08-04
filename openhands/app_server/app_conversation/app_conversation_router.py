@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -112,11 +113,24 @@ logger = logging.getLogger(__name__)
 OPENHANDS_CLIENT_HEADER = 'X-OpenHands-Client'
 OPENHANDS_CLIENT_VERSION_HEADER = 'X-OpenHands-Client-Version'
 POSTHOG_SESSION_ID_HEADER = 'X-POSTHOG-SESSION-ID'
+CLOUDFLARE_CLIENT_IP_HEADER = 'CF-Connecting-IP'
 
 
 def _optional_header(request: Request, name: str) -> str | None:
     value = request.headers.get(name)
     return value.strip() if value and value.strip() else None
+
+
+def _cloudflare_client_ip(request: Request) -> str | None:
+    """Return the normalized public client IP supplied by the trusted edge."""
+    value = _optional_header(request, CLOUDFLARE_CLIENT_IP_HEADER)
+    if not value:
+        return None
+    try:
+        client_ip = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    return str(client_ip) if client_ip.is_global else None
 
 
 app_conversation_service_dependency = depends_app_conversation_service()
@@ -398,6 +412,7 @@ async def start_app_conversation(
         start_request.analytics_session_id = _optional_header(
             request, POSTHOG_SESSION_ID_HEADER
         )
+        start_request.analytics_client_ip = _cloudflare_client_ip(request)
 
         async_iter = app_conversation_service.start_app_conversation(start_request)
         result = await anext(async_iter)

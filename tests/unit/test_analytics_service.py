@@ -658,6 +658,7 @@ class TestTypedEventMethods:
             start_task_id='task-abc',
             client_source='agent_canvas',
             client_version='1.8.0',
+            client_ip='8.8.8.8',
         )
         mock_client.capture.assert_called_once()
         _, kwargs = mock_client.capture.call_args
@@ -673,6 +674,8 @@ class TestTypedEventMethods:
         assert props['start_task_id'] == 'task-abc'
         assert props['client_source'] == 'agent_canvas'
         assert props['client_version'] == '1.8.0'
+        assert props['$ip'] == '8.8.8.8'
+        assert kwargs['disable_geoip'] is False
 
     def test_track_conversation_finished(self, saas_service):
         """track_conversation_finished calls capture with CONVERSATION_FINISHED and correct properties."""

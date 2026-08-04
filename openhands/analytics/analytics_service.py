@@ -72,6 +72,7 @@ class AnalyticsService:
         event: str,
         properties: dict[str, Any] | None = None,
         session_id: str | None = None,
+        disable_geoip: bool | None = None,
     ) -> None:
         """Capture a server-side event.
 
@@ -88,10 +89,15 @@ class AnalyticsService:
             merged.update(properties)
 
         try:
+            capture_kwargs: dict[str, Any] = {
+                'distinct_id': self._distinct_id(ctx.user_id),
+                'event': event,
+                'properties': merged,
+            }
+            if disable_geoip is not None:
+                capture_kwargs['disable_geoip'] = disable_geoip
             self._client.capture(
-                distinct_id=self._distinct_id(ctx.user_id),
-                event=event,
-                properties=merged,
+                **capture_kwargs,
             )
         except Exception:
             logger.exception(
@@ -206,6 +212,7 @@ class AnalyticsService:
         start_task_id: str | None = None,
         client_source: str | None = None,
         client_version: str | None = None,
+        client_ip: str | None = None,
         session_id: str | None = None,
     ) -> None:
         """Track 'conversation created' event.
@@ -227,12 +234,15 @@ class AnalyticsService:
             properties['client_source'] = client_source
         if client_version:
             properties['client_version'] = client_version
+        if client_ip:
+            properties['$ip'] = client_ip
 
         self.capture(
             ctx=ctx,
             event=CONVERSATION_CREATED,
             properties=properties,
             session_id=session_id,
+            disable_geoip=False if client_ip else None,
         )
 
     def track_conversation_finished(
