@@ -214,6 +214,7 @@ class AnalyticsService:
         """
         properties: dict[str, Any] = {
             '$insert_id': f'conversation_created:{conversation_id}',
+            'backend_kind': 'cloud',
             'conversation_id': conversation_id,
             'trigger': trigger,
             'llm_model': llm_model,
