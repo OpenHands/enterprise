@@ -9,12 +9,12 @@ MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
     / 'migrations'
     / 'versions'
-    / '141_add_member_agent_settings.py'
+    / '142_add_member_agent_settings.py'
 )
-spec = spec_from_file_location('migration_141', MIGRATION_PATH)
+spec = spec_from_file_location('migration_142', MIGRATION_PATH)
 assert spec is not None and spec.loader is not None
-migration_141 = module_from_spec(spec)
-spec.loader.exec_module(migration_141)
+migration_142 = module_from_spec(spec)
+spec.loader.exec_module(migration_142)
 
 
 def test_upgrade_and_downgrade_preserve_legacy_member_settings(monkeypatch):
@@ -38,9 +38,9 @@ def test_upgrade_and_downgrade_preserve_legacy_member_settings(monkeypatch):
             )
         )
         context = MigrationContext.configure(connection)
-        monkeypatch.setattr(migration_141, 'op', Operations(context))
+        monkeypatch.setattr(migration_142, 'op', Operations(context))
 
-        migration_141.upgrade()
+        migration_142.upgrade()
 
         columns = {
             column['name']
@@ -57,7 +57,7 @@ def test_upgrade_and_downgrade_preserve_legacy_member_settings(monkeypatch):
         assert upgraded.agent_settings is None
         assert 'legacy-model' in upgraded.agent_settings_diff
 
-        migration_141.downgrade()
+        migration_142.downgrade()
 
         columns = {
             column['name']

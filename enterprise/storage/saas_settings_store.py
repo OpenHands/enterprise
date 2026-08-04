@@ -47,7 +47,7 @@ from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
-from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import resolve_agent_profile
 
 
@@ -248,7 +248,7 @@ class SaasSettingsStore(SettingsStore):
         mcp_raw = merged_agent_settings.get('mcp_config')
         if mcp_raw:
             try:
-                mcp_config = coerce_mcp_config(mcp_raw)
+                mcp_config = coerce_persisted_mcp_config(mcp_raw)
             except Exception:
                 mcp_config = {}
 
@@ -775,7 +775,16 @@ class SaasSettingsStore(SettingsStore):
             if item._mcp_config_updated:
                 org_member.mcp_config = self._get_persisted_mcp_config(item)
             elif org_member.mcp_config is None and member_mcp_config is not None:
-                org_member.mcp_config = serialize_mcp_config(member_mcp_config)
+                try:
+                    org_member.mcp_config = serialize_mcp_config(member_mcp_config)
+                except Exception:
+                    logger.warning(
+                        'Failed to normalize persisted member MCP config for user %s; '
+                        'preserving the encrypted value unchanged',
+                        self.user_id,
+                        exc_info=True,
+                    )
+                    org_member.mcp_config = member_mcp_config
 
             if uses_managed_llm_key and current_member_llm_api_key is not None:
                 # Managed/proxy key — store on this member but mark as org-managed

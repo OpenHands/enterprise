@@ -24,6 +24,14 @@ from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.sdk.settings import AgentSettingsConfig, validate_agent_settings
 
 _MISSING = object()
+
+# Backwards-compatible alias: the merge with main extracted MCP helpers into
+# storage.mcp_config, but callers (and tests) still import this name from
+# org_member_store. serialize_mcp_config handles both legacy wrapped
+# ({"mcpServers": ...}) and raw MCP fragments.
+normalize_persisted_mcp_config = serialize_mcp_config
+
+
 def serialize_agent_settings(value: AgentSettingsConfig) -> dict[str, Any]:
     """Serialize one complete SDK settings object with encrypted secret leaves."""
     return value.model_dump(
@@ -68,7 +76,10 @@ def compose_agent_settings(
         mode='json',
         context={'expose_secrets': 'plaintext'},
     )
-    payload['mcp_config'] = coerce_persisted_mcp_config(mcp_config)
+    try:
+        payload['mcp_config'] = coerce_persisted_mcp_config(mcp_config)
+    except Exception:
+        payload['mcp_config'] = {}
     return validate_agent_settings(payload)
 
 
