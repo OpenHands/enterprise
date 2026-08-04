@@ -3514,6 +3514,56 @@ class TestPluginHandling:
         return_value=[],
     )
     @pytest.mark.asyncio
+    async def test_build_request_includes_registered_marketplaces_in_agent_context(
+        self, _mock_tools
+    ):
+        """Registered marketplaces are available to runtime plugin loading."""
+        from openhands.app_server.settings.settings_models import (
+            MarketplaceRegistration,
+        )
+
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._resolve_registered_marketplaces = AsyncMock(
+            return_value=[
+                MarketplaceRegistration(
+                    name='team',
+                    source='github:owner/plugins',
+                    auto_load=True,
+                )
+            ]
+        )
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+
+        result = await self.service._build_start_conversation_request_for_user(
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/workspace',
+        )
+
+        assert result.agent.agent_context is not None
+        assert [
+            marketplace.name
+            for marketplace in result.agent.agent_context.registered_marketplaces
+        ] == ['team']
+        assert result.agent.agent_context.registered_marketplaces[0].source == (
+            'github:owner/plugins'
+        )
+        serialized = result.model_dump(mode='json', context={'expose_secrets': True})
+        assert (
+            serialized['agent']['agent_context']['registered_marketplaces'][0]['name']
+            == 'team'
+        )
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
     async def test_build_request_without_plugins(self, _mock_tools):
         """Without plugins, result.plugins is None."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
@@ -4300,6 +4350,7 @@ class TestBuildAcpStartConversationRequestSecrets:
         selected_repository=None,
         selected_branch=None,
         remote_workspace=None,
+        registered_marketplaces=None,
     ):
         """Wire user_context and call _build_acp_start_conversation_request."""
         service.user_context.get_user_info = AsyncMock(return_value=user)
@@ -4316,6 +4367,7 @@ class TestBuildAcpStartConversationRequestSecrets:
             selected_repository=selected_repository,
             selected_branch=selected_branch,
             remote_workspace=remote_workspace,
+            registered_marketplaces=registered_marketplaces,
             plugins=None,
         )
 
@@ -4349,6 +4401,40 @@ class TestBuildAcpStartConversationRequestSecrets:
         request = await self._call_build(service, user, tmp_path)
 
         assert request.title_llm_profile == 'Titles'
+
+    @pytest.mark.asyncio
+    async def test_acp_request_includes_registered_marketplaces(
+        self, service, tmp_path
+    ):
+        """ACP agents retain registered marketplaces for runtime plugin loading."""
+        from openhands.app_server.settings.settings_models import (
+            MarketplaceRegistration,
+        )
+
+        user = self._make_acp_user()
+        marketplaces = [
+            MarketplaceRegistration(
+                name='team',
+                source='github:owner/plugins',
+                auto_load=True,
+            )
+        ]
+
+        request = await self._call_build(
+            service,
+            user,
+            tmp_path,
+            registered_marketplaces=marketplaces,
+        )
+
+        assert request.agent.agent_context is not None
+        assert [
+            marketplace.name
+            for marketplace in request.agent.agent_context.registered_marketplaces
+        ] == ['team']
+        assert request.agent.agent_context.registered_marketplaces[0].source == (
+            'github:owner/plugins'
+        )
 
     @pytest.mark.asyncio
     async def test_lookup_secret_forwarded_as_source(self, service, tmp_path):
