@@ -75,6 +75,9 @@ describe("HomeHeader", () => {
       name: "app.all-hands.dev/canvas",
     });
     expect(link).toHaveAttribute("href", "https://app.all-hands.dev/canvas");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(link).toHaveClass("cursor-pointer", "underline", "underline-offset-4");
   });
 
   it("should have the correct CSS classes for layout", () => {
