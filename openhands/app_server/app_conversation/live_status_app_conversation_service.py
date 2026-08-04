@@ -688,6 +688,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 start_task_id=str(task.id),
                 client_source=request.analytics_client_source,
                 client_version=request.analytics_client_version,
+                client_ip=request.analytics_client_ip,
                 session_id=request.analytics_session_id,
             )
         except Exception:

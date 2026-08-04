@@ -170,6 +170,7 @@ async def test_track_conversation_created_forwards_final_id_and_client_attributi
         analytics_client_source='agent_canvas',
         analytics_client_version='1.8.0',
         analytics_session_id='session-123',
+        analytics_client_ip='8.8.8.8',
     )
     task = AppConversationStartTask(
         id=task_id,
@@ -209,6 +210,7 @@ async def test_track_conversation_created_forwards_final_id_and_client_attributi
         start_task_id=str(task_id),
         client_source='agent_canvas',
         client_version='1.8.0',
+        client_ip='8.8.8.8',
         session_id='session-123',
     )
 

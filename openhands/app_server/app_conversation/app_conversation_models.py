@@ -262,6 +262,7 @@ class AppConversationStartRequest(OpenHandsModel):
     analytics_client_source: str | None = Field(default=None, exclude=True)
     analytics_client_version: str | None = Field(default=None, exclude=True)
     analytics_session_id: str | None = Field(default=None, exclude=True)
+    analytics_client_ip: str | None = Field(default=None, exclude=True)
 
     # Secrets passed directly via API at conversation start time
     secrets: dict[str, SecretStr] | None = Field(

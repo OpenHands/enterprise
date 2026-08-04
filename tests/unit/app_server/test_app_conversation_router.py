@@ -96,6 +96,7 @@ async def test_start_app_conversation_stamps_analytics_headers_on_internal_reque
                 (b'x-openhands-client', b'agent_canvas'),
                 (b'x-openhands-client-version', b'1.8.0'),
                 (b'x-posthog-session-id', b'session-123'),
+                (b'cf-connecting-ip', b'8.8.8.8'),
             ],
         }
     )
@@ -116,6 +117,41 @@ async def test_start_app_conversation_stamps_analytics_headers_on_internal_reque
     assert stamped.analytics_client_source == 'agent_canvas'
     assert stamped.analytics_client_version == '1.8.0'
     assert stamped.analytics_session_id == 'session-123'
+    assert stamped.analytics_client_ip == '8.8.8.8'
+
+
+@pytest.mark.parametrize(
+    'value', [b'', b'not-an-ip', b'127.0.0.1', b'10.0.0.1', b'192.0.2.1']
+)
+@pytest.mark.asyncio
+async def test_start_app_conversation_rejects_invalid_edge_client_ip(value: bytes):
+    service = MagicMock()
+    captured: dict[str, AppConversationStartRequest] = {}
+
+    def start(request: AppConversationStartRequest):
+        captured['request'] = request
+        return _single_start_task(request)
+
+    service.start_app_conversation.side_effect = start
+    request = Request(
+        {
+            'type': 'http',
+            'method': 'POST',
+            'path': '/api/v1/app-conversations',
+            'headers': [(b'cf-connecting-ip', value)],
+        }
+    )
+
+    await start_app_conversation(
+        request=request,
+        start_request=AppConversationStartRequest(),
+        user_context=MagicMock(),
+        db_session=AsyncMock(),
+        httpx_client=AsyncMock(),
+        app_conversation_service=service,
+    )
+
+    assert captured['request'].analytics_client_ip is None
 
 
 @pytest.mark.asyncio
