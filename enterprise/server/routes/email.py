@@ -20,6 +20,9 @@ from storage.user_store import UserStore
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.app_server.web_client.email_change_config import (
+    is_email_change_enabled,
+)
 
 # Email validation regex pattern
 EMAIL_REGEX = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
@@ -46,6 +49,12 @@ class ResendEmailVerificationRequest(BaseModel):
 async def update_email(
     email_data: EmailUpdate, request: Request, user_id: str = Depends(get_user_id)
 ):
+    if not is_email_change_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Email changes are disabled for this deployment',
+        )
+
     # Email validation is now handled by the Pydantic model
     # If we get here, the email has already passed validation
 

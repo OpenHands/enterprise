@@ -78,6 +78,7 @@ export interface WebClientConfig {
   provider_default_hosts?: Partial<Record<Provider, string>>;
   slack_enabled?: boolean;
   email_enabled?: boolean;
+  email_change_enabled?: boolean;
   acp_providers?: ACPProviderConfig[];
   /** Jira DC host when DC OAuth is configured; used to pre-fill + lock the
    *  configure form's host field. Null/absent in email-match mode. */

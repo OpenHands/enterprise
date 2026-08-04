@@ -39,7 +39,10 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxStatus,
 )
-from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.sandbox.sandbox_spec_models import (
+    RemoteSandboxSpecInfo,
+    SandboxSpecInfo,
+)
 from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
 from openhands.app_server.user.user_context import UserContext
 
@@ -899,6 +902,178 @@ class TestSandboxLifecycle:
         remote_sandbox_service.db_session.delete.assert_not_called()
         assert stored_sandbox.session_api_key_hash is None
         remote_sandbox_service.db_session.commit.assert_awaited_once()
+
+
+class TestBuildSandboxStartRequest:
+    """Tests for RemoteSandboxService.build_sandbox_start_request."""
+
+    @pytest.mark.asyncio
+    async def test_uses_default_security_context_for_plain_spec(self):
+        """A plain SandboxSpecInfo (no security context fields) must produce
+        the legacy hardcoded values so behaviour is unchanged for the static
+        preset service and other SandboxSpecInfo producers."""
+        service = RemoteSandboxService(
+            sandbox_spec_service=AsyncMock(),
+            api_url='https://api.example.com',
+            api_key='test-api-key',
+            web_url='https://web.example.com',
+            resource_factor=1,
+            runtime_class='gvisor',
+            start_sandbox_timeout=120,
+            max_num_sandboxes=10,
+            user_context=AsyncMock(spec=UserContext),
+            httpx_client=AsyncMock(spec=httpx.AsyncClient),
+            db_session=AsyncMock(spec=AsyncSession),
+        )
+        spec = SandboxSpecInfo(
+            id='test-image:latest',
+            command=['/usr/local/bin/openhands-agent-server', '--port', '60000'],
+            initial_env={'FOO': 'bar'},
+            working_dir='/workspace',
+        )
+
+        request = await service.build_sandbox_start_request(
+            spec, 'sandbox-id', environment={'FOO': 'bar'}
+        )
+
+        assert request['run_as_user'] == 10001
+        assert request['run_as_group'] == 10001
+        assert request['fs_group'] == 10001
+
+    @pytest.mark.asyncio
+    async def test_uses_security_context_from_remote_spec(self):
+        """A RemoteSandboxSpecInfo with run_as_user / run_as_group / fs_group
+        must pass those values through to runtime-api instead of the defaults."""
+        service = RemoteSandboxService(
+            sandbox_spec_service=AsyncMock(),
+            api_url='https://api.example.com',
+            api_key='test-api-key',
+            web_url='https://web.example.com',
+            resource_factor=1,
+            runtime_class='gvisor',
+            start_sandbox_timeout=120,
+            max_num_sandboxes=10,
+            user_context=AsyncMock(spec=UserContext),
+            httpx_client=AsyncMock(spec=httpx.AsyncClient),
+            db_session=AsyncMock(spec=AsyncSession),
+        )
+        spec = RemoteSandboxSpecInfo(
+            id='test-image:latest',
+            command=['/usr/local/bin/openhands-agent-server', '--port', '60000'],
+            initial_env={},
+            working_dir='/workspace',
+            run_as_user=5000,
+            run_as_group=6000,
+            fs_group=7000,
+        )
+
+        request = await service.build_sandbox_start_request(
+            spec, 'sandbox-id', environment={}
+        )
+
+        assert request['run_as_user'] == 5000
+        assert request['run_as_group'] == 6000
+        assert request['fs_group'] == 7000
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_default_when_spec_lacks_security_context(self):
+        """A plain SandboxSpecInfo (no security context attributes, e.g. from
+        DockerSandboxService / ProcessSandboxService / static
+        RemoteSandboxSpecService) must still get the legacy hardcoded values
+        rather than 0 or AttributeError."""
+        service = RemoteSandboxService(
+            sandbox_spec_service=AsyncMock(),
+            api_url='https://api.example.com',
+            api_key='test-api-key',
+            web_url='https://web.example.com',
+            resource_factor=1,
+            runtime_class='gvisor',
+            start_sandbox_timeout=120,
+            max_num_sandboxes=10,
+            user_context=AsyncMock(spec=UserContext),
+            httpx_client=AsyncMock(spec=httpx.AsyncClient),
+            db_session=AsyncMock(spec=AsyncSession),
+        )
+        spec = SandboxSpecInfo(
+            id='test-image:latest',
+            command=['/usr/local/bin/openhands-agent-server', '--port', '60000'],
+            initial_env={},
+            working_dir='/workspace',
+        )
+
+        request = await service.build_sandbox_start_request(
+            spec, 'sandbox-id', environment={}
+        )
+
+        assert request['run_as_user'] == 10001
+        assert request['run_as_group'] == 10001
+        assert request['fs_group'] == 10001
+
+    @pytest.mark.asyncio
+    async def test_includes_runtime_class_for_sysbox(self, remote_sandbox_service):
+        """The sysbox runtime class must still be added when configured."""
+        remote_sandbox_service.runtime_class = 'sysbox'
+        spec = SandboxSpecInfo(
+            id='test-image:latest',
+            command=['/usr/local/bin/openhands-agent-server'],
+            initial_env={},
+            working_dir='/workspace',
+        )
+
+        request = await remote_sandbox_service.build_sandbox_start_request(
+            spec, 'sandbox-id', environment={}
+        )
+
+        assert request['runtime_class'] == 'sysbox-runc'
+
+    @pytest.mark.asyncio
+    async def test_omits_runtime_class_for_gvisor(self, remote_sandbox_service):
+        """The runtime_class key must be omitted when not configured to
+        gvisor, so the default GVisor path is not affected."""
+        remote_sandbox_service.runtime_class = 'gvisor'
+        spec = SandboxSpecInfo(
+            id='test-image:latest',
+            command=['/usr/local/bin/openhands-agent-server'],
+            initial_env={},
+            working_dir='/workspace',
+        )
+
+        request = await remote_sandbox_service.build_sandbox_start_request(
+            spec, 'sandbox-id', environment={}
+        )
+
+        assert 'runtime_class' not in request
+
+    @pytest.mark.asyncio
+    async def test_passes_through_image_command_and_working_dir(
+        self, remote_sandbox_service
+    ):
+        """identity, command, working_dir, session_id, resource_factor, and
+        environment must be sourced from the spec, sandbox_id, and service."""
+        spec = RemoteSandboxSpecInfo(
+            id='ghcr.io/openhands/agent-server:1.0.0',
+            command=['/usr/local/bin/openhands-agent-server', '--port', '60000'],
+            initial_env={'FROM_SPEC': '1'},
+            working_dir='/workspace',
+            run_as_user=5000,
+        )
+
+        request = await remote_sandbox_service.build_sandbox_start_request(
+            spec,
+            'sandbox-id-1',
+            environment={'EXTRA': '2'},
+        )
+
+        assert request['image'] == 'ghcr.io/openhands/agent-server:1.0.0'
+        assert request['command'] == [
+            '/usr/local/bin/openhands-agent-server',
+            '--port',
+            '60000',
+        ]
+        assert request['working_dir'] == '/workspace'
+        assert request['session_id'] == 'sandbox-id-1'
+        assert request['resource_factor'] == remote_sandbox_service.resource_factor
+        assert request['environment'] == {'EXTRA': '2'}
 
 
 class TestSandboxSearch:
