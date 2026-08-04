@@ -53,6 +53,14 @@ export interface V1SendMessageRequest {
   content: V1MessageContent[];
 }
 
+type ObservabilityMetadataValue =
+  | string
+  | number
+  | boolean
+  | string[]
+  | number[]
+  | boolean[];
+
 export interface V1AppConversationStartRequest {
   sandbox_id?: string | null;
   initial_message?: V1SendMessageRequest | null;
@@ -67,6 +75,9 @@ export interface V1AppConversationStartRequest {
   pr_number?: number[];
   parent_conversation_id?: string | null;
   agent_type?: "default" | "plan";
+  observability_metadata?: Record<string, ObservabilityMetadataValue> | null;
+  observability_tags?: string[] | null;
+  observability_span_name?: string | null;
   plugins?: PluginSpec[] | null; // Plugins to load when starting the conversation
 }
 
