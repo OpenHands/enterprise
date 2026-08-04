@@ -664,6 +664,7 @@ class TestTypedEventMethods:
         assert kwargs['event'] == CONVERSATION_CREATED
         props = kwargs['properties']
         assert props['$insert_id'] == 'conversation_created:conv-abc'
+        assert props['backend_kind'] == 'cloud'
         assert props['conversation_id'] == 'conv-abc'
         assert props['trigger'] == 'ui'
         assert props['llm_model'] == 'gpt-4'
