@@ -960,8 +960,8 @@ def test_update_ignores_llm_profiles_payload():
     assert settings.llm_profiles.active is None
 
 
-def test_update_clears_active_when_llm_diverges():
-    """Editing agent_settings.llm via ``update`` must drop a now-stale active profile."""
+def test_update_synchronizes_active_profile_when_llm_diverges():
+    """Editing agent_settings.llm must update the active profile atomically."""
     settings = Settings(
         agent_settings=OpenHandsAgentSettings(
             llm=LLM(model='openai/gpt-4o', api_key=SecretStr('sk-a'))
@@ -977,7 +977,10 @@ def test_update_clears_active_when_llm_diverges():
         {'agent_settings_diff': {'llm': {'model': 'anthropic/claude-opus-4'}}}
     )
 
-    assert settings.llm_profiles.active is None
+    assert settings.llm_profiles.active == 'p'
+    active = settings.llm_profiles.require('p')
+    assert active.model == 'anthropic/claude-opus-4'
+    assert active.api_key.get_secret_value() == 'sk-a'
 
 
 def test_update_keeps_active_when_llm_unchanged():
