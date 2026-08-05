@@ -26,6 +26,7 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     count_app_conversations,
     get_conversation_git_changes,
     get_conversation_git_diff,
+    list_conversation_files,
     search_app_conversations,
     switch_conversation_profile,
 )
@@ -1084,6 +1085,155 @@ class TestGitProxyEndpoints:
 
         assert exc_info.value.status_code == status.HTTP_409_CONFLICT
         assert 'paused' in exc_info.value.detail.lower()
+
+
+@pytest.mark.asyncio
+class TestListConversationFiles:
+    """Test suite for the /files runtime proxy endpoint.
+
+    Like the git-proxy endpoints, it resolves the conversation's runtime via
+    ``_get_agent_server_context`` and forwards a bash ``find`` server-side using
+    the sandbox's session API key, returning the full workspace file tree.
+    """
+
+    def _bash_response(self, exit_code=0, stdout='', stderr=''):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json = MagicMock(
+            return_value={
+                'exit_code': exit_code,
+                'stdout': stdout,
+                'stderr': stderr,
+            }
+        )
+        return response
+
+    async def test_forwards_find_command_and_normalizes_paths(self):
+        """Happy path: POSTs the bash `find` to the runtime with the working
+        dir as cwd and the session key, then returns relative, de-duped,
+        `./`-stripped paths."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_return=self._bash_response(
+                stdout='./src/index.ts\n./hello.txt\n./src/index.ts\n',
+            )
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        assert result == ['src/index.ts', 'hello.txt']
+        call = client.post.await_args
+        assert call.args[0] == 'http://agent.test/api/bash/execute_bash_command'
+        assert call.kwargs['json']['cwd'] == '/workspace/project'
+        assert 'find .' in call.kwargs['json']['command']
+        assert call.kwargs['headers'] == {'X-Session-API-Key': 'sess-key'}
+
+    async def test_returns_empty_list_on_nonzero_exit(self):
+        """A non-zero exit (e.g. missing directory) yields [] rather than an
+        error the UI would surface."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_return=self._bash_response(exit_code=1, stderr='no such dir')
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        assert result == []
+
+    async def test_returns_404_when_conversation_not_reachable(self):
+        """A JSONResponse from the context helper is mirrored as an
+        HTTPException with the same status."""
+        helper_response = JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={'error': 'Conversation not found'},
+        )
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=helper_response),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await list_conversation_files(
+                    conversation_id=uuid4(),
+                    path='/workspace/project',
+                    app_conversation_service=MagicMock(),
+                    sandbox_service=MagicMock(),
+                    sandbox_spec_service=MagicMock(),
+                    httpx_client=_make_httpx_client(),
+                )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_returns_409_when_sandbox_paused(self):
+        """A paused sandbox (context helper None) surfaces as 409 Conflict."""
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=None),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await list_conversation_files(
+                    conversation_id=uuid4(),
+                    path='/workspace/project',
+                    app_conversation_service=MagicMock(),
+                    sandbox_service=MagicMock(),
+                    sandbox_spec_service=MagicMock(),
+                    httpx_client=_make_httpx_client(),
+                )
+
+        assert exc_info.value.status_code == status.HTTP_409_CONFLICT
+        assert 'paused' in exc_info.value.detail.lower()
+
+    async def test_returns_502_when_runtime_unreachable(self):
+        """A network-level RequestError is folded into a 502."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_side_effect=httpx.RequestError('connection refused'),
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await list_conversation_files(
+                    conversation_id=conv_id,
+                    path='/workspace/project',
+                    app_conversation_service=MagicMock(),
+                    sandbox_service=MagicMock(),
+                    sandbox_spec_service=MagicMock(),
+                    httpx_client=client,
+                )
+
+        assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
 
 
 class TestFinalizeSandboxDelete:

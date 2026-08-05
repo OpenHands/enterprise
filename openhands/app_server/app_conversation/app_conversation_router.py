@@ -1366,6 +1366,151 @@ async def get_conversation_git_diff(
     )
 
 
+# Directory names we never descend into when listing workspace files — kept in
+# sync with the Agent Canvas frontend's local `find` listing so cloud and local
+# backends exclude the same heavy/build dirs.
+_WORKSPACE_LIST_EXCLUDED_DIRS = (
+    '.git',
+    'node_modules',
+    '.venv',
+    'venv',
+    '__pycache__',
+    'dist',
+    'build',
+    '.next',
+    '.cache',
+    '.pytest_cache',
+    '.mypy_cache',
+    '.turbo',
+    '.parcel-cache',
+    'target',
+)
+
+# Cap the number of files returned so a giant repo doesn't overwhelm the UI.
+_WORKSPACE_LIST_MAX_FILES = 2000
+
+
+def _build_workspace_list_command() -> str:
+    """`find` invocation that lists regular files relative to the cwd,
+    pruning heavy/build directories and bounding the result."""
+    prune_expr = ' -o '.join(
+        f"-name '{name}' -prune" for name in _WORKSPACE_LIST_EXCLUDED_DIRS
+    )
+    return (
+        f'find . \\( {prune_expr} \\) -o -type f -print 2>/dev/null '
+        f'| sort | head -n {_WORKSPACE_LIST_MAX_FILES}'
+    )
+
+
+@router.get('/{conversation_id}/files')
+async def list_conversation_files(
+    conversation_id: UUID,
+    path: Annotated[
+        str,
+        Query(
+            description=(
+                'Absolute path to the workspace directory to list '
+                '(e.g. /workspace/project)'
+            ),
+        ),
+    ],
+    app_conversation_service: AppConversationService = (
+        app_conversation_service_dependency
+    ),
+    sandbox_service: SandboxService = sandbox_service_dependency,
+    sandbox_spec_service: SandboxSpecService = sandbox_spec_service_dependency,
+    httpx_client: httpx.AsyncClient = httpx_client_dependency,
+) -> list[str]:
+    """List every regular file under a conversation workspace directory.
+
+    Mirrors the git-proxy endpoints: browsers can't reach runtime sandboxes
+    directly (no CORS for non-localhost origins), so the frontend hits this on
+    the cloud API host and we make the runtime hop server-side using the
+    sandbox's session API key. Unlike `/git/changes` (which only reports
+    modified/untracked files), this enumerates the full tree so the Files tab
+    matches the local-backend experience. Paths are returned relative to
+    ``path`` (e.g. ``src/index.html``).
+    """
+    ctx = await _get_agent_server_context(
+        conversation_id,
+        app_conversation_service,
+        sandbox_service,
+        sandbox_spec_service,
+    )
+    if isinstance(ctx, JSONResponse):
+        raise HTTPException(
+            status_code=ctx.status_code,
+            detail=f'Conversation {conversation_id} is not reachable',
+        )
+    if ctx is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Sandbox is paused; resume it before listing files.',
+        )
+
+    headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
+    try:
+        upstream = await httpx_client.post(
+            f'{ctx.agent_server_url}/api/bash/execute_bash_command',
+            json={
+                'command': _build_workspace_list_command(),
+                'cwd': path,
+                'timeout': 30,
+            },
+            headers=headers,
+            timeout=40.0,
+        )
+        upstream.raise_for_status()
+        data = upstream.json()
+    except httpx.HTTPStatusError as e:
+        logger.exception(
+            'Agent server returned error listing files: %s - %s',
+            e.response.status_code,
+            e.response.text,
+            stack_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f'Agent server error: {e.response.status_code}',
+        ) from e
+    except (json.JSONDecodeError, httpx.DecodingError) as e:
+        logger.exception(
+            'Agent server returned non-JSON listing files: %s', e, stack_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Agent server returned unexpected response.',
+        ) from e
+    except httpx.RequestError as e:
+        logger.exception(
+            'Failed to reach agent server listing files: %s', e, stack_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Failed to reach agent server.',
+        ) from e
+
+    if not isinstance(data, dict) or data.get('exit_code') != 0:
+        # A non-zero exit (e.g. the directory doesn't exist yet) means there is
+        # nothing to list rather than an error worth surfacing to the UI.
+        return []
+
+    stdout = data.get('stdout') or ''
+    seen: set[str] = set()
+    files: list[str] = []
+    for line in stdout.splitlines():
+        rel = line.strip()
+        if rel.startswith('./'):
+            rel = rel[2:]
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        files.append(rel)
+        if len(files) >= _WORKSPACE_LIST_MAX_FILES:
+            break
+    return files
+
+
 @router.get('/{conversation_id}/skills')
 async def get_conversation_skills(
     conversation_id: UUID,
