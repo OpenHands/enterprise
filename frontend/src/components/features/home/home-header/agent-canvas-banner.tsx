@@ -4,10 +4,20 @@ import { I18nKey } from "#/i18n/declaration";
 import { Typography } from "#/ui/typography";
 import { cn } from "#/utils/utils";
 
-const AGENT_CANVAS_LABEL = "app.all-hands.dev/canvas";
-const AGENT_CANVAS_URL = `https://${AGENT_CANVAS_LABEL}`;
+const AGENT_CANVAS_PATH = "/canvas";
+
+export function getAgentCanvasBannerLink(
+  location: Pick<Location, "host" | "origin">,
+) {
+  return {
+    label: `${location.host}${AGENT_CANVAS_PATH}`,
+    url: new URL(AGENT_CANVAS_PATH, location.origin).toString(),
+  };
+}
 
 export function AgentCanvasBanner() {
+  const agentCanvasLink = getAgentCanvasBannerLink(window.location);
+
   return (
     <div
       data-testid="agent-canvas-banner"
@@ -27,15 +37,16 @@ export function AgentCanvasBanner() {
       <Typography.Paragraph className="text-base font-semibold leading-6 text-white sm:text-xl md:text-[22px] md:leading-8">
         <Trans
           i18nKey={I18nKey.HOME$AGENT_CANVAS_BANNER}
+          values={{ agentCanvasLabel: agentCanvasLink.label }}
           components={{
             canvasLink: (
               <a
-                href={AGENT_CANVAS_URL}
+                href={agentCanvasLink.url}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="cursor-pointer text-white underline decoration-white decoration-2 underline-offset-4 transition-colors hover:text-white/80 hover:decoration-white/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white"
               >
-                {AGENT_CANVAS_LABEL}
+                {agentCanvasLink.label}
               </a>
             ),
           }}

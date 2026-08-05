@@ -13,7 +13,7 @@ vi.mock("react-i18next", async () => {
         const translations: Record<string, string> = {
           COMMON$CLICK_HERE: "Click here",
           HOME$AGENT_CANVAS_BANNER:
-            "New User Experience! Please visit <canvasLink>app.all-hands.dev/canvas</canvasLink> to try out OpenHands Cloud with Agent Canvas.",
+            "New User Experience! Please visit <canvasLink>{{agentCanvasLabel}}</canvasLink> to try out OpenHands Cloud with Agent Canvas.",
           HOME$GUIDE_MESSAGE_TITLE:
             "New around here? Not sure where to start?",
           HOME$LETS_START_BUILDING: "Let's start building",
@@ -24,15 +24,17 @@ vi.mock("react-i18next", async () => {
     }),
     Trans: ({
       components,
+      values,
     }: {
       components: { canvasLink: React.ReactElement };
+      values: { agentCanvasLabel: string };
     }) => (
       <>
         New User Experience! Please visit{" "}
         {React.cloneElement(
           components.canvasLink,
           {},
-          "app.all-hands.dev/canvas",
+          values.agentCanvasLabel,
         )} to try out OpenHands Cloud with Agent Canvas.
       </>
     ),
@@ -74,10 +76,12 @@ describe("HomeHeader", () => {
       screen.queryByText("New around here? Not sure where to start?"),
     ).not.toBeInTheDocument();
 
+    const expectedHref = `${window.location.origin}/canvas`;
+    const expectedLabel = `${window.location.host}/canvas`;
     const link = screen.getByRole("link", {
-      name: "app.all-hands.dev/canvas",
+      name: expectedLabel,
     });
-    expect(link).toHaveAttribute("href", "https://app.all-hands.dev/canvas");
+    expect(link).toHaveAttribute("href", expectedHref);
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(link).toHaveClass(
