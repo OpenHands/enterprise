@@ -223,46 +223,57 @@ class UserStore:
         return get_redis_client_async()
 
     @staticmethod
-    async def _acquire_user_creation_lock(user_id: str) -> bool:
-        """Attempt to acquire a distributed lock for user creation.
+    async def acquire_user_creation_lock(resource_id: str) -> bool:
+        """Acquire a distributed lock keyed on ``resource_id``.
 
-        Returns True if the lock was acquired or if Redis is unavailable (fallback to no locking).
-        Returns False if another process holds the lock.
+        Used to serialize user-creation flows that span multiple
+        services (Keycloak, the OpenHands DB, LiteLLM) where concurrent
+        callers can race on identity establishment. ``resource_id`` is
+        the natural business key for the operation — typically a
+        Keycloak ``sub`` for migration-style flows and the target
+        user's ``email`` for admin-driven provisioning flows.
+
+        Returns True if the lock was acquired, or if Redis is
+        unavailable (graceful degradation: the caller proceeds without
+        serialization rather than failing the request). Returns False
+        if another caller currently holds the lock; the caller is
+        expected to sleep + retry.
         """
         from storage.redis import redis_exceptions
 
         redis_client = UserStore._get_redis_client()
         try:
-            user_key = f'{_REDIS_USER_CREATION_KEY_PREFIX}{user_id}'
+            user_key = f'{_REDIS_USER_CREATION_KEY_PREFIX}{resource_id}'
             lock_acquired = await redis_client.set(
                 user_key, 1, nx=True, ex=_REDIS_CREATE_TIMEOUT_SECONDS
             )
             return bool(lock_acquired)
         except redis_exceptions.RedisError:
             logger.warning(
-                'user_store:_acquire_user_creation_lock:redis_error',
-                extra={'user_id': user_id},
+                'user_store:acquire_user_creation_lock:redis_error',
+                extra={'resource_id': resource_id},
             )
             return True  # Proceed without locking on error
 
     @staticmethod
-    async def _release_user_creation_lock(user_id: str) -> bool:
-        """Release the distributed lock for user creation.
+    async def release_user_creation_lock(resource_id: str) -> bool:
+        """Release the distributed lock keyed on ``resource_id``.
 
-        Returns True if the lock was released or if Redis is unavailable.
-        Returns False if the lock could not be released.
+        Counterpart to :meth:`acquire_user_creation_lock`. Returns True
+        if the lock was released, or if Redis is unavailable. Returns
+        False if the key was not present (e.g. it had already expired).
         """
         from storage.redis import redis_exceptions
 
         redis_client = UserStore._get_redis_client()
         try:
-            user_key = f'{_REDIS_USER_CREATION_KEY_PREFIX}{user_id}'
+            user_key = f'{_REDIS_USER_CREATION_KEY_PREFIX}{resource_id}'
             deleted = await redis_client.delete(user_key)
             return bool(deleted)
         except redis_exceptions.RedisError:
             logger.warning(
-                'user_store:_release_user_creation_lock:redis_error',
-                extra={'user_id': user_id},
+                'user_store:release_user_creation_lock:redis_error',
+                extra={'resource_id': resource_id},
             )
             return True  # Proceed without locking on error
 
@@ -745,7 +756,7 @@ class UserStore:
                 return user
 
             # Check if we need to migrate from user_settings
-            while not await UserStore._acquire_user_creation_lock(user_id):
+            while not await UserStore.acquire_user_creation_lock(user_id):
                 # The user is already being created in another thread / process
                 logger.info(
                     'user_store:create_default_settings:waiting_for_lock',
@@ -792,7 +803,7 @@ class UserStore:
                 else:
                     return None
             finally:
-                await UserStore._release_user_creation_lock(user_id)
+                await UserStore.release_user_creation_lock(user_id)
 
     @staticmethod
     async def get_user_by_email(email: str) -> Optional[User]:
@@ -800,6 +811,24 @@ class UserStore:
 
         This method looks up a user by their email address. Note that email
         addresses may not be unique across all users in rare cases.
+
+        **Identity-resolution caveat (OHE-2980).** ``User.email`` is not
+        unique in the schema, so this lookup can return an arbitrary
+        user when more than one row matches. Callers that use this
+        method to short-circuit an existing identity (notably
+        ``POST /api/organizations/provision-user``) MUST verify that
+        the returned ``User.id`` matches the Keycloak ``sub`` they
+        resolved separately before mutating state — otherwise a
+        mismatch can add one user to an org and mint credentials for
+        a different one.
+
+        The current ``provision-user`` implementation inherits this
+        ambiguity from the existing call paths and does not enforce
+        the check. That is a known design constraint negotiated with
+        specific OEM deployments and is out of scope for the
+        provision-user idempotency work (PR #117). A future refactor
+        should either add a unique constraint on ``User.email`` or
+        resolve identity by Keycloak ``sub`` exclusively.
 
         Args:
             email: The email address to search for

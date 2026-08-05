@@ -131,6 +131,7 @@ path so the caller knows they cannot extract a credential from it.
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import string
 from datetime import datetime, timezone
@@ -174,6 +175,13 @@ DEFAULT_PROVISIONED_ROLE: ProvisionedRoleName = 'member'
 # realm password-policy minimums while staying short enough to display
 # in API responses.
 _GENERATED_PASSWORD_LENGTH = 24
+
+# Delay between retries while waiting to acquire the per-email
+# ``acquire_user_creation_lock``. Mirrors the cadence used by
+# ``UserStore.get_user_by_id`` for the legacy migration path so the
+# two callers behave consistently if the lock is held by another
+# in-flight request.
+_USER_CREATION_LOCK_RETRY_SECONDS = 0.5
 
 
 def _utc_now_naive() -> datetime:
@@ -272,6 +280,18 @@ class ProvisionUserRequest(BaseModel):
             '(e.g. it has been leaked).'
         ),
     )
+    # SECURITY: The reissue path returns a freshly-minted API key for the
+    # target member, and the idempotent path returns the member's existing
+    # key. API-key authentication is bound to the key's ``user_id`` and
+    # does not re-check the caller's role, so an org admin who knows an
+    # owner's email and submits ``reissue_api_key=True`` can effectively
+    # rotate that owner's credentials. Tightening this — for example by
+    # scoping the lookup to ``target_org_id``, rejecting role escalation
+    # across member boundaries, or returning credentials only when the
+    # call created the user — is intentionally deferred: per discussion
+    # on PR #117, the security model is already negotiated with customers
+    # and out of scope for OHE-2980. This note exists so the risk is
+    # visible to future reviewers.
 
 
 # Outcome of the route. ``created`` is True only on a true first-time
@@ -446,99 +466,142 @@ async def provision_user(
             detail='Cannot provision users into a personal workspace',
         )
 
-    token_manager = TokenManager()
-
-    # Pre-flight: look up the user in Keycloak and in the OpenHands DB
-    # so we can decide which branch to take. Both lookups are
-    # best-effort and read-only; failures here are not fatal and we
-    # fall through to the create path.
-    existing_kc_user_id = await token_manager.get_user_id_from_user_email(email)
-    existing_oh_user = await UserStore.get_user_by_email(email)
-
-    if existing_oh_user is not None and existing_kc_user_id is None:
-        # OpenHands DB row exists but no Keycloak user — split state
-        # that we cannot safely auto-repair. Manually re-creating the
-        # Keycloak account would orphan the existing User row, and
-        # silently failing would leave the OEM partner stuck. Surface
-        # the conflict with enough detail for an operator to repair.
-        logger.error(
-            'provision_user:split_state_db_only',
+    # Serialize concurrent provision-user calls for the same email.
+    #
+    # The cross-service flow (Keycloak + OpenHands DB + LiteLLM) does not
+    # share a transaction, so two callers can observe the same
+    # pre-check state and race through identity establishment. The
+    # existing TOCTOU fallthroughs (Keycloak 409 re-query, ``OrgMember``
+    # PK as a defense-in-depth backstop) still apply, but this Redis
+    # lock keyed on email is the primary guarantee: the second caller
+    # sleeps until the first releases the lock, then re-runs the
+    # pre-check and lands in the idempotent branch.
+    #
+    # The lock is acquired *after* the personal-workspace rejection
+    # above because that check is independent of the email and should
+    # not be serialized behind another in-flight provision.
+    while not await UserStore.acquire_user_creation_lock(email):
+        logger.info(
+            'provision_user:waiting_for_email_lock',
             extra={
                 'caller_user_id': caller_user_id,
                 'target_org_id': str(target_org_id),
                 'email': email,
-                'openhands_user_id': str(existing_oh_user.id),
             },
         )
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                'User exists in the OpenHands database but has no '
-                'corresponding Keycloak account. Manual Keycloak '
-                'intervention is required to repair the split state.'
-            ),
-        )
+        await asyncio.sleep(_USER_CREATION_LOCK_RETRY_SECONDS)
 
-    # Map the existence states to the case branches described in the
-    # module docstring.
-    if existing_kc_user_id is None and existing_oh_user is None:
-        case = 'create'
-    elif existing_kc_user_id is not None and existing_oh_user is None:
-        case = 'recover'
-    else:
-        case = 'idempotent'
+    try:
+        token_manager = TokenManager()
 
-    # ---------------------------------------------------------------------------
-    # Identity-establishment branch: actually create the Keycloak user,
-    # the offline token, and the OpenHands User row. ``UserStore.create_user``
-    # is idempotent on the Keycloak sub, so the recover case reuses it
-    # to attach a freshly-discovered Keycloak ``sub`` to the OpenHands DB.
-    # ---------------------------------------------------------------------------
-    openhands_user_id: UUID | None = None
-    keycloak_user_created = False
-    personal_org_created = False
-    # Always declared so the rollback path can reference it even when
-    # the failure happens before the membership-add step runs (e.g.
-    # failure during ``_set_user_provisioned_flags`` on the create
-    # path, or any failure on the idempotent path).
-    target_membership_added = False
-    kc_user_id: str | None = None
+        # Pre-flight: look up the user in Keycloak and in the OpenHands DB
+        # so we can decide which branch to take. Both lookups are
+        # best-effort and read-only; failures here are not fatal and we
+        # fall through to the create path.
+        existing_kc_user_id = await token_manager.get_user_id_from_user_email(email)
+        existing_oh_user = await UserStore.get_user_by_email(email)
 
-    if case in ('create', 'recover'):
-        if case == 'recover':
-            kc_user_id = existing_kc_user_id
+        if existing_oh_user is not None and existing_kc_user_id is None:
+            # OpenHands DB row exists but no Keycloak user — split state
+            # that we cannot safely auto-repair. Manually re-creating the
+            # Keycloak account would orphan the existing User row, and
+            # silently failing would leave the OEM partner stuck. Surface
+            # the conflict with enough detail for an operator to repair.
+            logger.error(
+                'provision_user:split_state_db_only',
+                extra={
+                    'caller_user_id': caller_user_id,
+                    'target_org_id': str(target_org_id),
+                    'email': email,
+                    'openhands_user_id': str(existing_oh_user.id),
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    'User exists in the OpenHands database but has no '
+                    'corresponding Keycloak account. Manual Keycloak '
+                    'intervention is required to repair the split state.'
+                ),
+            )
+
+        # Map the existence states to the case branches described in the
+        # module docstring.
+        if existing_kc_user_id is None and existing_oh_user is None:
+            case = 'create'
+        elif existing_kc_user_id is not None and existing_oh_user is None:
+            case = 'recover'
         else:
-            try:
-                kc_user_id = await token_manager.create_keycloak_user(
-                    email=email,
-                    password=password,
-                    email_verified=True,
-                )
-                keycloak_user_created = True
-            except KeycloakError as e:
-                # TOCTOU: the pre-check raced with a concurrent
-                # provision-user for the same email. Re-query
-                # Keycloak; if the user is now there, fall through to
-                # the idempotent branch instead of failing.
-                if _is_keycloak_user_exists_error(e):
-                    recovered_kc_id = await token_manager.get_user_id_from_user_email(
-                        email
+            case = 'idempotent'
+
+        # ---------------------------------------------------------------------------
+        # Identity-establishment branch: actually create the Keycloak user,
+        # the offline token, and the OpenHands User row. ``UserStore.create_user``
+        # is idempotent on the Keycloak sub, so the recover case reuses it
+        # to attach a freshly-discovered Keycloak ``sub`` to the OpenHands DB.
+        # ---------------------------------------------------------------------------
+        openhands_user_id: UUID | None = None
+        keycloak_user_created = False
+        personal_org_created = False
+        # Always declared so the rollback path can reference it even when
+        # the failure happens before the membership-add step runs (e.g.
+        # failure during ``_set_user_provisioned_flags`` on the create
+        # path, or any failure on the idempotent path).
+        target_membership_added = False
+        kc_user_id: str | None = None
+
+        if case in ('create', 'recover'):
+            if case == 'recover':
+                kc_user_id = existing_kc_user_id
+            else:
+                try:
+                    kc_user_id = await token_manager.create_keycloak_user(
+                        email=email,
+                        password=password,
+                        email_verified=True,
                     )
-                    if recovered_kc_id is not None:
-                        logger.info(
-                            'provision_user:toctou_fallthrough',
-                            extra={
-                                'caller_user_id': caller_user_id,
-                                'target_org_id': str(target_org_id),
-                                'email': email,
-                                'recovered_kc_user_id': recovered_kc_id,
-                            },
+                    keycloak_user_created = True
+                except KeycloakError as e:
+                    # TOCTOU: the pre-check raced with a concurrent
+                    # provision-user for the same email. Re-query
+                    # Keycloak; if the user is now there, fall through to
+                    # the idempotent branch instead of failing.
+                    if _is_keycloak_user_exists_error(e):
+                        recovered_kc_id = (
+                            await token_manager.get_user_id_from_user_email(email)
                         )
-                        kc_user_id = recovered_kc_id
-                        case = 'idempotent'
+                        if recovered_kc_id is not None:
+                            logger.info(
+                                'provision_user:toctou_fallthrough',
+                                extra={
+                                    'caller_user_id': caller_user_id,
+                                    'target_org_id': str(target_org_id),
+                                    'email': email,
+                                    'recovered_kc_user_id': recovered_kc_id,
+                                },
+                            )
+                            kc_user_id = recovered_kc_id
+                            case = 'idempotent'
+                        else:
+                            logger.warning(
+                                'provision_user:keycloak_create_failed_no_recovery',
+                                extra={
+                                    'caller_user_id': caller_user_id,
+                                    'target_org_id': str(target_org_id),
+                                    'email': email,
+                                    'error': str(e),
+                                },
+                            )
+                            raise HTTPException(
+                                status_code=status.HTTP_409_CONFLICT,
+                                detail=(
+                                    'Failed to create Keycloak user (it may '
+                                    'already exist) and could not be recovered'
+                                ),
+                            ) from e
                     else:
                         logger.warning(
-                            'provision_user:keycloak_create_failed_no_recovery',
+                            'provision_user:keycloak_create_failed',
                             extra={
                                 'caller_user_id': caller_user_id,
                                 'target_org_id': str(target_org_id),
@@ -548,332 +611,324 @@ async def provision_user(
                         )
                         raise HTTPException(
                             status_code=status.HTTP_409_CONFLICT,
-                            detail=(
-                                'Failed to create Keycloak user (it may '
-                                'already exist) and could not be recovered'
-                            ),
+                            detail='Failed to create Keycloak user',
                         ) from e
-                else:
-                    logger.warning(
-                        'provision_user:keycloak_create_failed',
+                except Exception:
+                    logger.exception(
+                        'provision_user:keycloak_create_unexpected',
                         extra={
                             'caller_user_id': caller_user_id,
                             'target_org_id': str(target_org_id),
                             'email': email,
-                            'error': str(e),
+                        },
+                        stack_info=True,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail='Failed to create Keycloak user',
+                    )
+
+        if case == 'idempotent':
+            # TOCTOU recovery already populated ``kc_user_id`` with the
+            # freshly-discovered Keycloak id; only refresh ``kc_user_id``
+            # from the stale pre-check if we did *not* take the recovery
+            # branch.
+            if kc_user_id is None:
+                kc_user_id = existing_kc_user_id
+            # TOCTOU recovery can also land in the idempotent case via
+            # ``case = 'idempotent'`` assignment inside the recovery
+            # branch above. Re-read the OpenHands ``User`` row once now so
+            # subsequent steps (``OrgMemberStore.get_org_member``,
+            # ``api_key`` retrieval) have an up-to-date view.
+            if openhands_user_id is None:
+                existing_oh_user = await UserStore.get_user_by_email(email)
+                if existing_oh_user is None:
+                    # The Keycloak user exists but the OpenHands DB has
+                    # not yet caught up (the concurrent winner is still
+                    # running). Treat this as split state to surface to
+                    # the operator rather than silently creating a new
+                    # personal org for an existing Keycloak identity.
+                    logger.error(
+                        'provision_user:toctou_partial_state',
+                        extra={
+                            'caller_user_id': caller_user_id,
+                            'target_org_id': str(target_org_id),
+                            'email': email,
+                            'kc_user_id': kc_user_id,
                         },
                     )
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
-                        detail='Failed to create Keycloak user',
-                    ) from e
-            except Exception:
-                logger.exception(
-                    'provision_user:keycloak_create_unexpected',
-                    extra={
-                        'caller_user_id': caller_user_id,
-                        'target_org_id': str(target_org_id),
-                        'email': email,
-                    },
-                    stack_info=True,
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail='Failed to create Keycloak user',
-                )
-
-    if case == 'idempotent':
-        # TOCTOU recovery already populated ``kc_user_id`` with the
-        # freshly-discovered Keycloak id; only refresh ``kc_user_id``
-        # from the stale pre-check if we did *not* take the recovery
-        # branch.
-        if kc_user_id is None:
-            kc_user_id = existing_kc_user_id
-        # TOCTOU recovery can also land in the idempotent case via
-        # ``case = 'idempotent'`` assignment inside the recovery
-        # branch above. Re-read the OpenHands ``User`` row once now so
-        # subsequent steps (``OrgMemberStore.get_org_member``,
-        # ``api_key`` retrieval) have an up-to-date view.
-        if openhands_user_id is None:
-            existing_oh_user = await UserStore.get_user_by_email(email)
-            if existing_oh_user is None:
-                # The Keycloak user exists but the OpenHands DB has
-                # not yet caught up (the concurrent winner is still
-                # running). Treat this as split state to surface to
-                # the operator rather than silently creating a new
-                # personal org for an existing Keycloak identity.
-                logger.error(
-                    'provision_user:toctou_partial_state',
-                    extra={
-                        'caller_user_id': caller_user_id,
-                        'target_org_id': str(target_org_id),
-                        'email': email,
-                        'kc_user_id': kc_user_id,
-                    },
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=(
-                        'Concurrent provision detected: Keycloak user '
-                        'exists but the OpenHands database row has '
-                        'not yet been written. Retry the request.'
-                    ),
-                )
-            openhands_user_id = existing_oh_user.id
-
-    try:
-        if case in ('create', 'recover'):
-            # 2. Get an offline token for the new user and store it.
-            # This mirrors what ``keycloak_offline_callback`` does at
-            # the end of the interactive flow so the user is
-            # immediately usable for backend operations. Skipped on
-            # the idempotent path: the existing user already has an
-            # offline token, and we cannot ROPC-authenticate without
-            # the plaintext password (which we deliberately do not
-            # store on re-provision).
-            if case == 'create':
-                offline_token = await token_manager.request_offline_token(
-                    username=email, password=password
-                )
-                # ``kc_user_id`` is non-None here: the Keycloak create
-                # above set it on success, or the recover branch
-                # copied it from ``existing_kc_user_id``. The create
-                # path raises ``HTTPException`` on failure, which
-                # propagates to the outer ``except`` and bypasses this
-                # line. Bind a strictly-typed local so the rest of
-                # this block reads ``str`` rather than ``str | None``.
-                assert kc_user_id is not None
-                block_kc_user_id: str = kc_user_id
-                await token_manager.store_offline_token(
-                    user_id=block_kc_user_id, offline_token=offline_token
-                )
-            else:
-                # ``case == 'recover'`` — Keycloak user existed
-                # before this call, so ``kc_user_id`` was set in the
-                # recover branch above.
-                assert kc_user_id is not None
-                block_kc_user_id = kc_user_id
-
-            # 3. Create the OpenHands user. ``UserStore.create_user``
-            # is idempotent on the Keycloak ``sub`` (returns the
-            # existing row if found), so the recover case reuses it
-            # to attach the freshly-discovered Keycloak identity to
-            # the OpenHands DB.
-            user_info_dict = {
-                'sub': block_kc_user_id,
-                'email': email,
-                'email_verified': True,
-                'preferred_username': email,
-            }
-            new_user = await UserStore.create_user(block_kc_user_id, user_info_dict)
-            if new_user is None:
-                raise RuntimeError('UserStore.create_user returned None')
-            personal_org_created = new_user.id != (
-                existing_oh_user.id if existing_oh_user else None
-            )
-            openhands_user_id = new_user.id
-
-            # 4. Stamp TOS / verification / consent flags so the
-            # provisioned user does not get bounced to the
-            # email-verification or TOS interstitials on first login.
-            await _set_user_provisioned_flags(block_kc_user_id)
-
-        # 5. Add the user to the *target* org if they are not already a
-        # member. Skipped when the caller-selected org happens to be
-        # the user's personal org (id == sub) — the personal-org
-        # owner membership was just created by ``UserStore.create_user``
-        # and re-adding it would violate the ``(org_id, user_id)``
-        # uniqueness constraint. Skipped on the idempotent path when
-        # ``OrgMemberStore.get_org_member`` confirms an existing row.
-        #
-        # Reaching this block requires both ``kc_user_id`` and
-        # ``openhands_user_id`` to be populated — any failure above
-        # would have raised an ``HTTPException`` and been caught by
-        # the outer ``except`` below, bypassing this section. The
-        # ``resolved_*`` locals narrow the ``Optional`` types so
-        # downstream call sites do not need to re-assert.
-        assert kc_user_id is not None
-        assert openhands_user_id is not None
-        resolved_kc_user_id: str = kc_user_id
-        resolved_oh_user_id: UUID = openhands_user_id
-        if target_org_id != resolved_oh_user_id:
-            existing_member = await OrgMemberStore.get_org_member(
-                org_id=target_org_id, user_id=resolved_oh_user_id
-            )
-            if existing_member is not None:
-                logger.info(
-                    'provision_user:already_member',
-                    extra={
-                        'caller_user_id': caller_user_id,
-                        'target_org_id': str(target_org_id),
-                        'openhands_user_id': str(resolved_oh_user_id),
-                        'kc_user_id': resolved_kc_user_id,
-                    },
-                )
-            else:
-                settings = await OrgService.create_litellm_integration(
-                    target_org_id, resolved_kc_user_id
-                )
-                llm_api_key_secret = settings.agent_settings.llm.api_key
-                # ``api_key`` is typed ``str | SecretStr | None`` on
-                # the SDK side; org_invitation_service.py handles it
-                # the same way. Defaulting to empty string lets
-                # LiteLLM-disabled deployments still create
-                # memberships.
-                if llm_api_key_secret is None:
-                    llm_api_key = ''
-                elif isinstance(llm_api_key_secret, SecretStr):
-                    llm_api_key = llm_api_key_secret.get_secret_value()
-                else:
-                    llm_api_key = llm_api_key_secret
-
-                role = await RoleStore.get_role_by_name(provisioned_role)
-                if role is None:
-                    raise RuntimeError(
-                        f'Role {provisioned_role!r} not found in database'
+                        detail=(
+                            'Concurrent provision detected: Keycloak user '
+                            'exists but the OpenHands database row has '
+                            'not yet been written. Retry the request.'
+                        ),
                     )
+                openhands_user_id = existing_oh_user.id
 
-                await OrgMemberStore.add_user_to_org(
-                    org_id=target_org_id,
-                    user_id=resolved_oh_user_id,
-                    role_id=role.id,
-                    llm_api_key=llm_api_key,
-                    status='active',
-                    agent_settings_diff={},
-                    conversation_settings_diff={},
-                )
-                target_membership_added = True
+        try:
+            if case in ('create', 'recover'):
+                # 2. Get an offline token for the new user and store it.
+                # This mirrors what ``keycloak_offline_callback`` does at
+                # the end of the interactive flow so the user is
+                # immediately usable for backend operations. Skipped on
+                # the idempotent path: the existing user already has an
+                # offline token, and we cannot ROPC-authenticate without
+                # the plaintext password (which we deliberately do not
+                # store on re-provision).
+                if case == 'create':
+                    offline_token = await token_manager.request_offline_token(
+                        username=email, password=password
+                    )
+                    # ``kc_user_id`` is non-None here: the Keycloak create
+                    # above set it on success, or the recover branch
+                    # copied it from ``existing_kc_user_id``. The create
+                    # path raises ``HTTPException`` on failure, which
+                    # propagates to the outer ``except`` and bypasses this
+                    # line. Bind a strictly-typed local so the rest of
+                    # this block reads ``str`` rather than ``str | None``.
+                    assert kc_user_id is not None
+                    block_kc_user_id: str = kc_user_id
+                    await token_manager.store_offline_token(
+                        user_id=block_kc_user_id, offline_token=offline_token
+                    )
+                else:
+                    # ``case == 'recover'`` — Keycloak user existed
+                    # before this call, so ``kc_user_id`` was set in the
+                    # recover branch above.
+                    assert kc_user_id is not None
+                    block_kc_user_id = kc_user_id
 
-        # 6. Resolve the API key. Default is idempotent (return the
-        # existing key if one with the same name exists); the caller
-        # opts into a fresh key by setting ``reissue_api_key=True``,
-        # which deletes the old key first.
-        api_key_store = ApiKeyStore.get_instance()
-        existing_api_key = await api_key_store.retrieve_api_key_by_name(
-            user_id=resolved_kc_user_id, name=api_key_name
-        )
-        if existing_api_key is not None:
-            if reissue_api_key:
-                deleted = await api_key_store.delete_api_key_by_name(
-                    user_id=resolved_kc_user_id,
-                    name=api_key_name,
-                    org_id=target_org_id,
+                # 3. Create the OpenHands user. ``UserStore.create_user``
+                # is idempotent on the Keycloak ``sub`` (returns the
+                # existing row if found), so the recover case reuses it
+                # to attach the freshly-discovered Keycloak identity to
+                # the OpenHands DB.
+                user_info_dict = {
+                    'sub': block_kc_user_id,
+                    'email': email,
+                    'email_verified': True,
+                    'preferred_username': email,
+                }
+                new_user = await UserStore.create_user(block_kc_user_id, user_info_dict)
+                if new_user is None:
+                    raise RuntimeError('UserStore.create_user returned None')
+                personal_org_created = new_user.id != (
+                    existing_oh_user.id if existing_oh_user else None
                 )
-                if not deleted:
-                    logger.warning(
-                        'provision_user:reissue_delete_failed',
+                openhands_user_id = new_user.id
+
+                # 4. Stamp TOS / verification / consent flags so the
+                # provisioned user does not get bounced to the
+                # email-verification or TOS interstitials on first login.
+                await _set_user_provisioned_flags(block_kc_user_id)
+
+            # 5. Add the user to the *target* org if they are not already a
+            # member. Skipped when the caller-selected org happens to be
+            # the user's personal org (id == sub) — the personal-org
+            # owner membership was just created by ``UserStore.create_user``
+            # and re-adding it would violate the ``(org_id, user_id)``
+            # uniqueness constraint. Skipped on the idempotent path when
+            # ``OrgMemberStore.get_org_member`` confirms an existing row.
+            #
+            # Reaching this block requires both ``kc_user_id`` and
+            # ``openhands_user_id`` to be populated — any failure above
+            # would have raised an ``HTTPException`` and been caught by
+            # the outer ``except`` below, bypassing this section. The
+            # ``resolved_*`` locals narrow the ``Optional`` types so
+            # downstream call sites do not need to re-assert.
+            assert kc_user_id is not None
+            assert openhands_user_id is not None
+            resolved_kc_user_id: str = kc_user_id
+            resolved_oh_user_id: UUID = openhands_user_id
+            if target_org_id != resolved_oh_user_id:
+                existing_member = await OrgMemberStore.get_org_member(
+                    org_id=target_org_id, user_id=resolved_oh_user_id
+                )
+                if existing_member is not None:
+                    logger.info(
+                        'provision_user:already_member',
                         extra={
                             'caller_user_id': caller_user_id,
-                            'kc_user_id': resolved_kc_user_id,
-                            'api_key_name': api_key_name,
                             'target_org_id': str(target_org_id),
+                            'openhands_user_id': str(resolved_oh_user_id),
+                            'kc_user_id': resolved_kc_user_id,
                         },
                     )
+                else:
+                    settings = await OrgService.create_litellm_integration(
+                        target_org_id, resolved_kc_user_id
+                    )
+                    llm_api_key_secret = settings.agent_settings.llm.api_key
+                    # ``api_key`` is typed ``str | SecretStr | None`` on
+                    # the SDK side; org_invitation_service.py handles it
+                    # the same way. Defaulting to empty string lets
+                    # LiteLLM-disabled deployments still create
+                    # memberships.
+                    if llm_api_key_secret is None:
+                        llm_api_key = ''
+                    elif isinstance(llm_api_key_secret, SecretStr):
+                        llm_api_key = llm_api_key_secret.get_secret_value()
+                    else:
+                        llm_api_key = llm_api_key_secret
+
+                    role = await RoleStore.get_role_by_name(provisioned_role)
+                    if role is None:
+                        raise RuntimeError(
+                            f'Role {provisioned_role!r} not found in database'
+                        )
+
+                    await OrgMemberStore.add_user_to_org(
+                        org_id=target_org_id,
+                        user_id=resolved_oh_user_id,
+                        role_id=role.id,
+                        llm_api_key=llm_api_key,
+                        status='active',
+                        agent_settings_diff={},
+                        conversation_settings_diff={},
+                    )
+                    target_membership_added = True
+
+            # 6. Resolve the API key. Default is idempotent (return the
+            # existing key if one with the same name exists); the caller
+            # opts into a fresh key by setting ``reissue_api_key=True``,
+            # which deletes the old key first.
+            api_key_store = ApiKeyStore.get_instance()
+            existing_api_key = await api_key_store.retrieve_api_key_by_name(
+                user_id=resolved_kc_user_id, name=api_key_name
+            )
+            if existing_api_key is not None:
+                if reissue_api_key:
+                    deleted = await api_key_store.delete_api_key_by_name(
+                        user_id=resolved_kc_user_id,
+                        name=api_key_name,
+                        org_id=target_org_id,
+                    )
+                    if not deleted:
+                        logger.warning(
+                            'provision_user:reissue_delete_failed',
+                            extra={
+                                'caller_user_id': caller_user_id,
+                                'kc_user_id': resolved_kc_user_id,
+                                'api_key_name': api_key_name,
+                                'target_org_id': str(target_org_id),
+                            },
+                        )
+                    api_key = await api_key_store.create_api_key(
+                        user_id=resolved_kc_user_id,
+                        name=api_key_name,
+                        org_id=target_org_id,
+                    )
+                else:
+                    api_key = existing_api_key
+            else:
                 api_key = await api_key_store.create_api_key(
                     user_id=resolved_kc_user_id,
                     name=api_key_name,
                     org_id=target_org_id,
                 )
-            else:
-                api_key = existing_api_key
-        else:
-            api_key = await api_key_store.create_api_key(
-                user_id=resolved_kc_user_id,
-                name=api_key_name,
-                org_id=target_org_id,
+        except HTTPException:
+            # FastAPI HTTPException is intentional — surface as-is, but
+            # still attempt to clean up whatever post-Keycloak state we
+            # created so we do not orphan a half-created identity.
+            await _rollback_partial_provision(
+                token_manager=token_manager,
+                kc_user_id=kc_user_id,
+                openhands_user_id=openhands_user_id,
+                target_org_id=target_org_id,
+                target_membership_added=target_membership_added,
+                keycloak_user_created=keycloak_user_created,
+                personal_org_created=personal_org_created,
             )
-    except HTTPException:
-        # FastAPI HTTPException is intentional — surface as-is, but
-        # still attempt to clean up whatever post-Keycloak state we
-        # created so we do not orphan a half-created identity.
-        await _rollback_partial_provision(
-            token_manager=token_manager,
-            kc_user_id=kc_user_id,
-            openhands_user_id=openhands_user_id,
-            target_org_id=target_org_id,
-            target_membership_added=target_membership_added,
-            keycloak_user_created=keycloak_user_created,
-            personal_org_created=personal_org_created,
-        )
-        raise
-    except Exception as e:
-        logger.exception(
-            'provision_user:post_keycloak_failure',
+            raise
+        except Exception as e:
+            logger.exception(
+                'provision_user:post_keycloak_failure',
+                extra={
+                    'caller_user_id': caller_user_id,
+                    'target_org_id': str(target_org_id),
+                    'kc_user_id': kc_user_id,
+                    'email': email,
+                    'case': case,
+                },
+                stack_info=True,
+            )
+            await _rollback_partial_provision(
+                token_manager=token_manager,
+                kc_user_id=kc_user_id,
+                openhands_user_id=openhands_user_id,
+                target_org_id=target_org_id,
+                target_membership_added=target_membership_added,
+                keycloak_user_created=keycloak_user_created,
+                personal_org_created=personal_org_created,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail='Failed to finish provisioning user',
+            ) from e
+
+        # Map (case, target_membership_added) to the response action.
+        # - create + membership_added (or implicitly added because target
+        #   is the personal org) -> "created"
+        # - any other case + membership_added -> "added_to_org"
+        # - any case + membership_already_existed -> "reprovisioned"
+        if case == 'create':
+            action: ProvisionAction = 'created'
+        elif target_membership_added:
+            action = 'added_to_org'
+        else:
+            action = 'reprovisioned'
+
+        if action == 'created':
+            response.status_code = status.HTTP_201_CREATED
+        else:
+            response.status_code = status.HTTP_200_OK
+
+        logger.info(
+            f'provision_user:{action}',
             extra={
                 'caller_user_id': caller_user_id,
-                'target_org_id': str(target_org_id),
                 'kc_user_id': kc_user_id,
-                'email': email,
+                'openhands_user_id': str(openhands_user_id)
+                if openhands_user_id
+                else None,
+                'target_org_id': str(target_org_id),
+                'provisioned_role': provisioned_role,
                 'case': case,
+                'reissue_api_key': reissue_api_key,
+                # Intentionally omit email/password from the log line; the
+                # full audit trail of who provisioned whom is captured by
+                # caller_user_id + kc_user_id.
             },
-            stack_info=True,
         )
-        await _rollback_partial_provision(
-            token_manager=token_manager,
-            kc_user_id=kc_user_id,
-            openhands_user_id=openhands_user_id,
-            target_org_id=target_org_id,
-            target_membership_added=target_membership_added,
-            keycloak_user_created=keycloak_user_created,
-            personal_org_created=personal_org_created,
+
+        # Narrow for the response builder: every code path that reaches this
+        # point has either set ``kc_user_id`` (create / TOCTOU recovery)
+        # or copied it from the pre-check (recover / idempotent). Reaching
+        # the response with ``kc_user_id is None`` would be a logic bug.
+        assert kc_user_id is not None
+        final_kc_user_id: str = kc_user_id
+        return ProvisionUserResponse(
+            email=email,
+            # Only set on a true first-time create — the existing
+            # Keycloak user's password is intentionally never rotated on
+            # the idempotent path.
+            password=password if action == 'created' else None,
+            api_key=api_key,
+            user_id=final_kc_user_id,
+            org_id=str(target_org_id),
+            role=provisioned_role,
+            created=action == 'created',
+            action=action,
         )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail='Failed to finish provisioning user',
-        ) from e
-
-    # Map (case, target_membership_added) to the response action.
-    # - create + membership_added (or implicitly added because target
-    #   is the personal org) -> "created"
-    # - any other case + membership_added -> "added_to_org"
-    # - any case + membership_already_existed -> "reprovisioned"
-    if case == 'create':
-        action: ProvisionAction = 'created'
-    elif target_membership_added:
-        action = 'added_to_org'
-    else:
-        action = 'reprovisioned'
-
-    if action == 'created':
-        response.status_code = status.HTTP_201_CREATED
-    else:
-        response.status_code = status.HTTP_200_OK
-
-    logger.info(
-        f'provision_user:{action}',
-        extra={
-            'caller_user_id': caller_user_id,
-            'kc_user_id': kc_user_id,
-            'openhands_user_id': str(openhands_user_id) if openhands_user_id else None,
-            'target_org_id': str(target_org_id),
-            'provisioned_role': provisioned_role,
-            'case': case,
-            'reissue_api_key': reissue_api_key,
-            # Intentionally omit email/password from the log line; the
-            # full audit trail of who provisioned whom is captured by
-            # caller_user_id + kc_user_id.
-        },
-    )
-
-    # Narrow for the response builder: every code path that reaches this
-    # point has either set ``kc_user_id`` (create / TOCTOU recovery)
-    # or copied it from the pre-check (recover / idempotent). Reaching
-    # the response with ``kc_user_id is None`` would be a logic bug.
-    assert kc_user_id is not None
-    final_kc_user_id: str = kc_user_id
-    return ProvisionUserResponse(
-        email=email,
-        # Only set on a true first-time create — the existing
-        # Keycloak user's password is intentionally never rotated on
-        # the idempotent path.
-        password=password if action == 'created' else None,
-        api_key=api_key,
-        user_id=final_kc_user_id,
-        org_id=str(target_org_id),
-        role=provisioned_role,
-        created=action == 'created',
-        action=action,
-    )
+    finally:
+        # Always release the per-email lock, whether the work
+        # succeeded, raised an ``HTTPException`` that the rollback
+        # path handled, or raised an unexpected exception. The
+        # ``finally`` clause on the outer ``try`` ensures the lock is
+        # never leaked regardless of which code path we took.
+        await UserStore.release_user_creation_lock(email)
 
 
 async def _rollback_partial_provision(

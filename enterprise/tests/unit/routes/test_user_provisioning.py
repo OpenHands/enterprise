@@ -29,6 +29,7 @@ from server.routes.user_provisioning import (
     _generate_password,
     provision_user,
 )
+from storage.user_store import UserStore
 
 
 class TestGeneratePassword:
@@ -259,6 +260,22 @@ class TestProvisionUserHandler:
             patch(
                 'server.routes.user_provisioning.OrgStore.delete_org_cascade',
                 delete_org_cascade_mock,
+            ),
+            # OHE-2980: provision-user serializes concurrent callers
+            # via the per-email ``UserStore.acquire_user_creation_lock``
+            # helper. The default mock returns ``True`` immediately so
+            # every existing test continues to take the fast path;
+            # concurrency-specific tests override this with a
+            # contention-aware mock (see ``test_concurrent_*``).
+            patch.object(
+                UserStore,
+                'acquire_user_creation_lock',
+                AsyncMock(return_value=True),
+            ),
+            patch.object(
+                UserStore,
+                'release_user_creation_lock',
+                AsyncMock(return_value=True),
             ),
         ]
         return patches, {
@@ -1232,3 +1249,255 @@ class TestProvisionUserHandler:
     def test_default_role_is_member(self):
         # Document the policy: provisioned users are not auto-promoted.
         assert DEFAULT_PROVISIONED_ROLE == 'member'
+
+    # --- OHE-2980: per-email locking for concurrent provision-user ---
+    #
+    # ``provision_user`` now wraps its body in
+    # ``UserStore.acquire_user_creation_lock(email)`` /
+    # ``release_user_creation_lock(email)`` so two callers hitting
+    # the endpoint with the same email cannot race past the
+    # pre-check and produce two identities (or two API keys) for
+    # one logical user. These tests cover (a) the lock is acquired
+    # and released under the happy path, and (b) a concurrent
+    # caller is serialized through the same lock and observes the
+    # idempotent branch.
+
+    @pytest.mark.asyncio
+    async def test_lock_acquired_and_released_on_happy_path(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """Verify the lock is taken with the email as the resource id
+        and released after a successful create."""
+        patches, handles = self._patch_dependencies(new_user_id, target_org_id)
+        with self._enter_all(patches):
+            # Capture the patched-in mocks *before* calling the route
+            # so we can assert on them after the request finishes.
+            acquire_mock = UserStore.acquire_user_creation_lock
+            release_mock = UserStore.release_user_creation_lock
+            _, resp = await self._call(
+                body=ProvisionUserRequest(
+                    email='Alice@Example.com',
+                    password='SuperSecret-1234',
+                ),
+                caller_user_id=caller_user_id,
+                target_org_id=target_org_id,
+            )
+            assert resp.action == 'created'
+            # Exactly one acquire / release round per request.
+            acquire_mock.assert_awaited_once()
+            release_mock.assert_awaited_once()
+            # Both helpers see the normalized email so two callers with
+            # different casings share the same lock key.
+            assert acquire_mock.await_args.args == ('alice@example.com',)
+            assert release_mock.await_args.args == ('alice@example.com',)
+
+    @pytest.mark.asyncio
+    async def test_lock_released_even_on_failure(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """A failure in Keycloak create must still release the lock."""
+        patches, handles = self._patch_dependencies(
+            new_user_id,
+            target_org_id,
+            keycloak_raises=KeycloakError('boom'),
+        )
+        with self._enter_all(patches):
+            release_mock = UserStore.release_user_creation_lock
+            with pytest.raises(HTTPException):
+                await self._call(
+                    body=ProvisionUserRequest(email='fail@example.com'),
+                    caller_user_id=caller_user_id,
+                    target_org_id=target_org_id,
+                )
+            release_mock.assert_awaited_once_with('fail@example.com')
+
+    @pytest.mark.asyncio
+    async def test_concurrent_provision_user_calls_share_lock_and_return_same_api_key(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """Two simultaneous callers for the same email must be
+        serialized: the first runs the create path, the second waits
+        for the lock, re-runs the pre-check, and lands in the
+        idempotent branch — both return the same API key.
+
+        The test injects a contention-aware ``acquire_user_creation_lock``
+        mock that returns ``False`` once (forces the second caller to
+        sleep) before granting the lock, then asserts both callers see
+        the same final API key and one of them went through the create
+        branch while the other took the idempotent branch.
+        """
+        # State shared between the two in-flight callers:
+        # - ``create_already_observed``: flips to True after the first
+        #   caller's ``create_keycloak_user`` so the second caller's
+        #   ``get_user_id_from_user_email`` returns the existing id.
+        # - ``acquire_calls``: tracks how many times the lock was
+        #   acquired so we can drive the contention path.
+        create_already_observed = False
+        acquire_calls = 0
+
+        async def acquire_side_effect(resource_id):
+            nonlocal acquire_calls
+            acquire_calls += 1
+            # Caller A's first acquire is granted immediately so it
+            # can do the create work. The second acquire — the one
+            # issued by caller B — is rejected once to simulate the
+            # contention that the Redis lock is supposed to catch,
+            # forcing B through the while-loop retry path. B's retry
+            # (third acquire overall) is granted because by then A
+            # has released the lock.
+            return acquire_calls != 2
+
+        async def get_user_id_side_effect(_email):
+            # Once caller A's Keycloak create has finished, caller B
+            # observes the same Keycloak user, so the pre-check
+            # resolves to the idempotent branch.
+            return new_user_id if create_already_observed else None
+
+        async def create_keycloak_user_side_effect(*args, **kwargs):
+            nonlocal create_already_observed
+            create_already_observed = True
+            return new_user_id
+
+        token_manager_mock = MagicMock()
+        token_manager_mock.create_keycloak_user = AsyncMock(
+            side_effect=create_keycloak_user_side_effect,
+        )
+        token_manager_mock.request_offline_token = AsyncMock(
+            return_value='offline-refresh-token'
+        )
+        token_manager_mock.store_offline_token = AsyncMock()
+        token_manager_mock.delete_keycloak_user = AsyncMock(return_value=True)
+        token_manager_mock.get_user_id_from_user_email = AsyncMock(
+            side_effect=get_user_id_side_effect,
+        )
+
+        new_user = MagicMock()
+        new_user.id = uuid.UUID(new_user_id)
+
+        api_key_store_mock = MagicMock()
+        api_key_store_mock.create_api_key = AsyncMock(
+            return_value='sk-oh-generated-api-key'
+        )
+        api_key_store_mock.retrieve_api_key_by_name = AsyncMock(return_value=None)
+        api_key_store_mock.delete_api_key_by_name = AsyncMock(return_value=True)
+
+        role_mock = MagicMock()
+        role_mock.id = 42
+
+        # Stub the time.sleep inside the lock-retry loop so the test
+        # does not actually wait. We patch asyncio.sleep *only* within
+        # the user_provisioning module to avoid clobbering other
+        # sleeps in the test runner.
+        sleep_mock = AsyncMock()
+
+        patches = [
+            patch(
+                'server.routes.user_provisioning.TokenManager',
+                return_value=token_manager_mock,
+            ),
+            patch(
+                'server.routes.user_provisioning.OrgStore.get_org_by_id',
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
+            patch(
+                'server.routes.user_provisioning.UserStore.create_user',
+                new_callable=AsyncMock,
+                return_value=new_user,
+            ),
+            patch(
+                'server.routes.user_provisioning.UserStore.get_user_by_email',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.routes.user_provisioning._set_user_provisioned_flags',
+                new_callable=AsyncMock,
+            ),
+            patch(
+                'server.routes.user_provisioning.OrgService.create_litellm_integration',
+                new_callable=AsyncMock,
+                return_value=MagicMock(
+                    agent_settings=MagicMock(llm=MagicMock(api_key=SecretStr('k')))
+                ),
+            ),
+            patch(
+                'server.routes.user_provisioning.RoleStore.get_role_by_name',
+                new_callable=AsyncMock,
+                return_value=role_mock,
+            ),
+            patch(
+                'server.routes.user_provisioning.OrgMemberStore.add_user_to_org',
+                new_callable=AsyncMock,
+            ),
+            patch(
+                'server.routes.user_provisioning.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.routes.user_provisioning.ApiKeyStore.get_instance',
+                return_value=api_key_store_mock,
+            ),
+            patch(
+                'server.routes.user_provisioning.OrgMemberStore.remove_user_from_org',
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                'server.routes.user_provisioning.OrgStore.delete_org_cascade',
+                new_callable=AsyncMock,
+            ),
+            patch.object(
+                UserStore,
+                'acquire_user_creation_lock',
+                side_effect=acquire_side_effect,
+            ),
+            patch.object(
+                UserStore,
+                'release_user_creation_lock',
+                new_callable=AsyncMock,
+            ),
+            patch(
+                'server.routes.user_provisioning.asyncio.sleep',
+                sleep_mock,
+            ),
+        ]
+        with self._enter_all(patches):
+            acquire_mock = UserStore.acquire_user_creation_lock
+            release_mock = UserStore.release_user_creation_lock
+            body = ProvisionUserRequest(
+                email='race@example.com',
+                password='SuperSecret-1234',
+            )
+            response_a, resp_a = await self._call(
+                body=body,
+                caller_user_id=caller_user_id,
+                target_org_id=target_org_id,
+            )
+            response_b, resp_b = await self._call(
+                body=body,
+                caller_user_id=caller_user_id,
+                target_org_id=target_org_id,
+            )
+
+            # Same email -> same lock key -> same API key returned for
+            # both callers, regardless of who created and who re-provisioned.
+            assert resp_a.api_key == resp_b.api_key == 'sk-oh-generated-api-key'
+            assert resp_a.user_id == resp_b.user_id == new_user_id
+            # Exactly one caller went through the create branch (201);
+            # the other landed in the idempotent branch (200).
+            statuses = sorted([response_a.status_code, response_b.status_code])
+            assert statuses == [200, 201]
+            actions = sorted([resp_a.action, resp_b.action])
+            # The second caller is technically an ``added_to_org`` (or
+            # ``reprovisioned``) action — accept either since the test
+            # only exercises that one of them created.
+            assert 'created' in actions
+            # Lock helpers: caller A acquired once, caller B
+            # acquired twice (initial fail + retry). Releases match
+            # acquires per-request (one each).
+            assert acquire_mock.await_count == 3
+            assert release_mock.await_count == 2
+            # The retry path went through asyncio.sleep at least once.
+            sleep_mock.assert_awaited()
