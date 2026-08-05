@@ -33,7 +33,7 @@ export function AgentCanvasBanner() {
                 href={AGENT_CANVAS_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-block cursor-pointer border-b-2 border-white pb-0.5 text-white underline decoration-white decoration-2 underline-offset-4 transition-colors hover:border-white/80 hover:text-white/80 hover:decoration-white/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white"
+                className="cursor-pointer text-white underline decoration-white decoration-2 underline-offset-4 transition-colors hover:text-white/80 hover:decoration-white/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white"
               >
                 {AGENT_CANVAS_LABEL}
               </a>

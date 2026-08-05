@@ -37,11 +37,6 @@ describe("AgentCanvasBanner", () => {
     });
 
     expect(link).toHaveAttribute("href", "https://app.all-hands.dev/canvas");
-    expect(link).toHaveClass(
-      "border-b-2",
-      "border-white",
-      "underline",
-      "decoration-2",
-    );
+    expect(link).toHaveClass("underline", "decoration-2", "underline-offset-4");
   });
 });

@@ -81,10 +81,7 @@ describe("HomeHeader", () => {
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(link).toHaveClass(
-      "inline-block",
       "cursor-pointer",
-      "border-b-2",
-      "border-white",
       "underline",
       "decoration-2",
       "underline-offset-4",
