@@ -338,6 +338,52 @@ class TestGetFeatureFlags:
             result = _get_feature_flags()
             assert result.enable_acp is True
 
+    def test_enable_agent_canvas_banner_false_by_default(self):
+        """When ENABLE_AGENT_CANVAS_BANNER is unset, the banner flag is False."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_feature_flags()
+            assert result.enable_agent_canvas_banner is False
+
+    def test_enable_agent_canvas_banner_true_when_env_var_true(self):
+        """When ENABLE_AGENT_CANVAS_BANNER is 'true', the banner flag is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_AGENT_CANVAS_BANNER': 'true'}):
+            result = _get_feature_flags()
+            assert result.enable_agent_canvas_banner is True
+
+    def test_enable_agent_canvas_banner_true_when_env_var_one(self):
+        """When ENABLE_AGENT_CANVAS_BANNER is '1', the banner flag is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_AGENT_CANVAS_BANNER': '1'}):
+            result = _get_feature_flags()
+            assert result.enable_agent_canvas_banner is True
+
+    def test_enable_agent_canvas_banner_true_from_structured_env(self):
+        """Structured web-client env can enable the Agent Canvas banner flag."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        with patch.dict(
+            os.environ,
+            {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_AGENT_CANVAS_BANNER': 'true'},
+            clear=True,
+        ):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        assert config.feature_flags.enable_agent_canvas_banner is True
+
 
 class TestGetJiraDcServiceAccountConfig:
     """Test cases for Jira DC service-account web-client config helpers."""
