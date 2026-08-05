@@ -28,7 +28,7 @@ export function AgentCanvasBanner() {
         <Trans
           i18nKey={I18nKey.HOME$AGENT_CANVAS_BANNER}
           components={{
-            link: (
+            canvasLink: (
               <a
                 href={AGENT_CANVAS_URL}
                 target="_blank"

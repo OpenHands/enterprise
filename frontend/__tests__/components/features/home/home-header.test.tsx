@@ -13,7 +13,7 @@ vi.mock("react-i18next", async () => {
         const translations: Record<string, string> = {
           COMMON$CLICK_HERE: "Click here",
           HOME$AGENT_CANVAS_BANNER:
-            "New User Experience! Please visit <link>app.all-hands.dev/canvas</link> to try out OpenHands Cloud with Agent Canvas.",
+            "New User Experience! Please visit <canvasLink>app.all-hands.dev/canvas</canvasLink> to try out OpenHands Cloud with Agent Canvas.",
           HOME$GUIDE_MESSAGE_TITLE:
             "New around here? Not sure where to start?",
           HOME$LETS_START_BUILDING: "Let's start building",
@@ -25,12 +25,15 @@ vi.mock("react-i18next", async () => {
     Trans: ({
       components,
     }: {
-      components: { link: React.ReactElement };
+      components: { canvasLink: React.ReactElement };
     }) => (
       <>
         New User Experience! Please visit{" "}
-        {React.cloneElement(components.link, {}, "app.all-hands.dev/canvas")} to
-        try out OpenHands Cloud with Agent Canvas.
+        {React.cloneElement(
+          components.canvasLink,
+          {},
+          "app.all-hands.dev/canvas",
+        )} to try out OpenHands Cloud with Agent Canvas.
       </>
     ),
   };
