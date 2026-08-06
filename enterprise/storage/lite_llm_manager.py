@@ -65,6 +65,36 @@ def _get_default_initial_budget() -> float | None:
 DEFAULT_INITIAL_BUDGET: float | None = _get_default_initial_budget()
 
 
+# Models offered at $0 cost in the LiteLLM proxy (see saas-deploy litellm
+# model_info: input_cost_per_token/output_cost_per_token == 0). A team with no
+# purchased credits (max_budget == 0) is restricted to this set with budget
+# enforcement disabled, so free users can run free models without credits while
+# still being blocked from paid models. Override per environment via
+# FREE_LLM_MODELS (comma-separated).
+_DEFAULT_FREE_LLM_MODELS = ['glm-5.2', 'minimax-m2.5', 'minimax-m2.7']
+
+
+def _get_free_llm_models() -> list[str]:
+    raw = os.environ.get('FREE_LLM_MODELS')
+    if not raw:
+        return list(_DEFAULT_FREE_LLM_MODELS)
+    models = [m.strip() for m in raw.split(',') if m.strip()]
+    return models or list(_DEFAULT_FREE_LLM_MODELS)
+
+
+FREE_LLM_MODELS: list[str] = _get_free_llm_models()
+
+
+def _is_free_budget(max_budget: float | None) -> bool:
+    """A team is on the free tier when it has a non-null budget of zero.
+
+    ``None`` means budget enforcement is already disabled (billing off or an
+    unlimited team) and is left untouched; only an explicit ``0.0`` budget
+    triggers the free-model restriction.
+    """
+    return max_budget is not None and max_budget <= 0.0
+
+
 def get_openhands_cloud_key_alias(keycloak_user_id: str, org_id: str) -> str:
     """Generate the key alias for OpenHands Cloud managed keys."""
     return f'OpenHands Cloud - user {keycloak_user_id} - org {org_id}'
@@ -175,6 +205,18 @@ class LiteLlmManager:
                         team_info = existing_team.get('team_info', {})
                         # Preserve None from existing team (no budget enforcement)
                         existing_budget = team_info.get('max_budget')
+                        # A free-tier team has its model list restricted to
+                        # FREE_LLM_MODELS with max_budget cleared (None). Re-deriving
+                        # the budget as None would otherwise drop the restriction on
+                        # the next provisioning, so recognize the free tier by its
+                        # non-empty ``models`` allowlist and restore budget 0.0.
+                        existing_models = team_info.get('models') or []
+                        if (
+                            existing_budget is None
+                            and existing_models
+                            and set(existing_models).issubset(set(FREE_LLM_MODELS))
+                        ):
+                            existing_budget = 0.0
                         team_budget = existing_budget
                         logger.info(
                             'LiteLlmManager:create_entries:existing_team_budget',
@@ -706,7 +748,12 @@ class LiteLlmManager:
             },
         }
 
-        if max_budget is not None:
+        if _is_free_budget(max_budget):
+            # Free tier: disable budget enforcement and restrict to $0-cost
+            # models so a no-credit team can still run free models (their
+            # calls accrue no spend) while remaining blocked from paid ones.
+            json_data['models'] = list(FREE_LLM_MODELS)
+        elif max_budget is not None:
             json_data['max_budget'] = max_budget
 
         response = await client.post(
@@ -767,8 +814,17 @@ class LiteLlmManager:
             },
         }
 
-        if max_budget is not None or clear_budget:
+        if _is_free_budget(max_budget):
+            # Free tier: clear budget enforcement and restrict to $0-cost
+            # models. Clears any previously-purchased budget + paid-model
+            # access when a team transitions back to the free tier.
+            json_data['max_budget'] = None
+            json_data['models'] = list(FREE_LLM_MODELS)
+        elif max_budget is not None or clear_budget:
+            # Paid tier (or explicit clear): (re)open the full model list and
+            # set the budget. ``models: []`` is LiteLLM's "all models" sentinel.
             json_data['max_budget'] = max_budget
+            json_data['models'] = []
 
         if team_alias is not None:
             json_data['team_alias'] = team_alias
@@ -1158,7 +1214,12 @@ class LiteLlmManager:
             'member': {'user_id': keycloak_user_id, 'role': 'user'},
         }
 
-        if max_budget is not None:
+        if _is_free_budget(max_budget):
+            # Free tier: the team's model restriction already limits the member
+            # to $0-cost models, so leave the member budget unset (no
+            # enforcement) rather than gating them at 0.0.
+            pass
+        elif max_budget is not None:
             json_data['max_budget_in_team'] = max_budget
 
         response = await client.post(
@@ -1291,7 +1352,11 @@ class LiteLlmManager:
             'user_id': keycloak_user_id,
         }
 
-        if max_budget is not None or clear_budget:
+        if _is_free_budget(max_budget):
+            # Free tier: clear any stale member budget so it can't gate the
+            # team's already-restricted $0-cost model set.
+            json_data['max_budget_in_team'] = None
+        elif max_budget is not None or clear_budget:
             json_data['max_budget_in_team'] = max_budget
 
         response = await client.post(
