@@ -505,6 +505,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     plugins=request.plugins,
                     api_secrets=request.secrets,
                     agent_profile_id=request.agent_profile_id,
+                    system_prompt=request.system_prompt,
+                    disabled_skills=request.disabled_skills,
                 )
             )
 
@@ -1903,6 +1905,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         plugins: list[PluginSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         agent_profile_id: str | None = None,
+        system_prompt: str | None = None,
+        disabled_skills: list[str] | None = None,
     ) -> StartConversationRequest:
         """Build a complete StartConversationRequest for a user.
 
@@ -1935,6 +1939,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             agent_profile_id: One-off Agent Profile override for this
                 conversation only (cloud-only; does not change the member's
                 active pointer). ``None`` uses the ambient active profile.
+            system_prompt: Optional custom system prompt that replaces the
+                default system prompt entirely. Cannot be used with
+                system_message_suffix.
+            disabled_skills: Optional list of skill names to disable for
+                this conversation. Merged with user/profile disabled skills.
         """
         # Conversation start builds the agent, so it consumes the RESOLVED
         # (effective launch) view; plain settings reads/round-trips elsewhere
@@ -1988,7 +1997,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 registered_marketplaces=registered_marketplaces,
                 api_secrets=api_secrets,
                 agent_profile_id=agent_profile_id,
+                system_prompt=system_prompt,
             )
+            # Merge user/profile disabled_skills with API-provided disabled_skills
+            user_disabled_skills = effective_disabled_skills(user)
+            if disabled_skills:
+                seen = set(user_disabled_skills)
+                for skill in disabled_skills:
+                    if skill not in seen:
+                        user_disabled_skills.append(skill)
+                        seen.add(skill)
+
             if remote_workspace:
                 acp_request = await self._load_skills_onto_request(
                     acp_request,
@@ -1996,7 +2015,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     remote_workspace,
                     selected_repository,
                     get_project_dir(working_dir, selected_repository),
-                    effective_disabled_skills(user),
+                    user_disabled_skills,
                     registered_marketplaces,
                 )
             return acp_request
@@ -2215,6 +2234,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         )
 
         # --- skills (require remote workspace) ------------------------------
+        # Merge user/profile disabled_skills with API-provided disabled_skills
+        # API-provided skills are added to the deny-list (union)
+        user_disabled_skills = effective_disabled_skills(user)
+        if disabled_skills:
+            # Combine lists, preserving order and removing duplicates
+            seen = set(user_disabled_skills)
+            for skill in disabled_skills:
+                if skill not in seen:
+                    user_disabled_skills.append(skill)
+                    seen.add(skill)
+
         if remote_workspace:
             request = await self._load_skills_onto_request(
                 request,
@@ -2222,7 +2252,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 remote_workspace,
                 selected_repository,
                 project_dir,
-                effective_disabled_skills(user),
+                user_disabled_skills,
                 registered_marketplaces,
             )
 
@@ -2302,6 +2332,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         registered_marketplaces: list[MarketplaceRegistration] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         agent_profile_id: str | None = None,
+        system_prompt: str | None = None,
     ) -> StartConversationRequest:
         """Build a StartConversationRequest for ACP agent conversations.
 
@@ -2334,6 +2365,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             agent_profile_id: One-off Agent Profile override for this
                 conversation only (cloud-only; does not change the member's
                 active pointer). ``None`` uses the ambient active profile.
+            system_prompt: Optional custom system prompt that replaces the
+                default system prompt entirely.
         """
         user = await self.user_context.get_user_info(
             resolve_agent_profile=True,

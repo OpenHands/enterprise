@@ -230,6 +230,10 @@ class AppConversationStartRequest(OpenHandsModel):
     conversation_id: UUID | None = Field(default=None)
     initial_message: SendMessageRequest | None = None
     system_message_suffix: str | None = None
+    # Custom system prompt that replaces the default system prompt entirely.
+    # When set, the agent will use this prompt instead of the default prompt
+    # template. Cannot be used together with system_message_suffix.
+    system_prompt: str | None = None
     processors: list[EventCallbackProcessor] | None = Field(default=None)
     llm_model: str | None = None
     # One-off launch override: run THIS conversation from a specific Agent
@@ -268,6 +272,19 @@ class AppConversationStartRequest(OpenHandsModel):
             'secrets taking precedence (overriding any existing secret with the same name). '
             'Keys are secret names (e.g., "MY_API_KEY"), values are the secret values. '
             'Warning: Providing a secret that already exists will silently override it.'
+        ),
+    )
+
+    # Skills to disable for this conversation. These are merged with any
+    # existing disabled skills (from user settings or agent profile), with
+    # API-provided disabled skills taking precedence (adding to the list).
+    disabled_skills: list[str] | None = Field(
+        default=None,
+        description=(
+            'List of skill names to disable for this conversation. Skills '
+            'listed here will not be loaded, reducing context window overhead. '
+            'This is merged with any existing disabled skills from user settings '
+            'or agent profile.'
         ),
     )
 
