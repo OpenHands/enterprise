@@ -126,6 +126,9 @@ from openhands.sdk import Agent, AgentContext, LocalWorkspace
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
+from openhands.sdk.marketplace.registration import (
+    MarketplaceRegistration as SDKMarketplaceRegistration,
+)
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
@@ -255,6 +258,23 @@ def effective_disabled_skills(user: UserInfo) -> list[str]:
     agent_context = getattr(agent_settings, 'agent_context', None)
     profile = list(getattr(agent_context, 'disabled_skills', None) or [])
     return list(dict.fromkeys([*member, *profile]))
+
+
+def _to_sdk_marketplace_registrations(
+    registrations: list[MarketplaceRegistration] | None,
+) -> list[SDKMarketplaceRegistration]:
+    if not registrations:
+        return []
+    return [
+        SDKMarketplaceRegistration(
+            name=registration.name,
+            source=registration.source,
+            ref=registration.ref,
+            repo_path=registration.repo_path,
+            auto_load=registration.auto_load,
+        )
+        for registration in registrations
+    ]
 
 
 @dataclass
@@ -1965,6 +1985,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 selected_branch=selected_branch,
                 remote_workspace=remote_workspace,
                 plugins=plugins,
+                registered_marketplaces=registered_marketplaces,
                 api_secrets=api_secrets,
                 agent_profile_id=agent_profile_id,
             )
@@ -2063,6 +2084,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'agent_context': AgentContext(
                     system_message_suffix=effective_suffix,
                     secrets=secrets,
+                    registered_marketplaces=_to_sdk_marketplace_registrations(
+                        registered_marketplaces
+                    ),
                 ),
             }
         )
@@ -2275,6 +2299,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         selected_branch: str | None = None,
         remote_workspace: AsyncRemoteWorkspace | None = None,
         plugins: list[PluginSpec] | None = None,
+        registered_marketplaces: list[MarketplaceRegistration] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         agent_profile_id: str | None = None,
     ) -> StartConversationRequest:
@@ -2303,6 +2328,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             remote_workspace: Optional remote workspace instance, used to
                 resolve the HEAD commit for the Laminar trace metadata.
             plugins: Optional list of plugins to load
+            registered_marketplaces: Optional marketplace registrations for
+                plugin resolution and runtime loading.
             api_secrets: Optional secrets passed directly via the API.
             agent_profile_id: One-off Agent Profile override for this
                 conversation only (cloud-only; does not change the member's
@@ -2399,9 +2426,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         self._merge_custom_mcp_config(acp_mcp_servers, user)
         if acp_mcp_servers:
             settings_update['mcp_config'] = acp_mcp_servers
+        context_updates: dict[str, Any] = {}
         if system_message_suffix:
-            settings_update['agent_context'] = AgentContext(
-                system_message_suffix=system_message_suffix
+            context_updates['system_message_suffix'] = system_message_suffix
+        if registered_marketplaces is not None:
+            context_updates['registered_marketplaces'] = (
+                _to_sdk_marketplace_registrations(registered_marketplaces)
+            )
+        if context_updates:
+            existing_context = acp_settings.agent_context or AgentContext()
+            settings_update['agent_context'] = existing_context.model_copy(
+                update=context_updates
             )
         acp_settings_for_agent = acp_settings.model_copy(update=settings_update)
         acp_agent = acp_settings_for_agent.create_agent()
