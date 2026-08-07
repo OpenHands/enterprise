@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import logging
 import os
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, AsyncGenerator
@@ -13,7 +14,7 @@ import httpx
 from fastapi import Request
 from pydantic import Field
 from sqlalchemy import String, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from openhands.agent_server.models import (
@@ -240,10 +241,39 @@ class RemoteSandboxService(SandboxService):
             query = query.where(StoredRemoteSandbox.created_by_user_id == user_id)
         return query
 
-    async def _get_stored_sandbox(self, sandbox_id: str) -> StoredRemoteSandbox | None:
+    @asynccontextmanager
+    async def _isolated_read_session(self) -> AsyncGenerator[AsyncSession, None]:
+        """Yield a short-lived session on its own connection for reads that
+        precede runtime API I/O.
+
+        Reads performed here never touch the shared, request-scoped session, so
+        making a (slow) runtime API call afterwards does not leave that session
+        "idle in transaction" (holding a pooled connection and blocking
+        autovacuum on the tables it read), and it never commits sibling
+        services' still-pending writes (e.g. the raw DELETEs queued by
+        app-conversation deletion). This session is read-only: it is never
+        committed or flushed, only closed.
+
+        NOTE: the async engine is recovered from the shared session's sync bind.
+        A cleaner approach is to inject an ``async_sessionmaker`` (available from
+        ``DbSessionInjector.get_async_session_maker()``); this keeps the change
+        self-contained for now.
+        """
+        async_engine = AsyncEngine._retrieve_proxy_for_target(
+            self.db_session.get_bind()
+        )
+        session = AsyncSession(bind=async_engine, expire_on_commit=False)
+        try:
+            yield session
+        finally:
+            await session.close()
+
+    async def _get_stored_sandbox(
+        self, sandbox_id: str, session: AsyncSession | None = None
+    ) -> StoredRemoteSandbox | None:
         stmt = await self._secure_select()
         stmt = stmt.where(StoredRemoteSandbox.id == sandbox_id)
-        result = await self.db_session.execute(stmt)
+        result = await (session or self.db_session).execute(stmt)
         stored_sandbox = result.scalar_one_or_none()
         return stored_sandbox
 
@@ -360,7 +390,14 @@ class RemoteSandboxService(SandboxService):
 
     async def get_sandbox(self, sandbox_id: str) -> SandboxInfo | None:
         """Get a single sandbox by checking its corresponding runtime."""
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        # Read on an isolated session so the runtime API call below never spans
+        # (or commits) the shared request-scoped transaction. This keeps the
+        # request session out of "idle in transaction" AND preserves atomicity
+        # of any sibling writes pending on it (e.g. app-conversation deletes).
+        async with self._isolated_read_session() as read_session:
+            stored_sandbox = await self._get_stored_sandbox(
+                sandbox_id, session=read_session
+            )
         if stored_sandbox is None:
             return None
 

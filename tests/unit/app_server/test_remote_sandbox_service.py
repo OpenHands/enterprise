@@ -16,12 +16,17 @@ import json
 from contextlib import ExitStack, asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.remote_sandbox_service import (
@@ -1279,8 +1284,9 @@ class TestSandboxSearch:
         # Verify
         assert result is not None
         assert result.id == 'test-sandbox-123'
+        # get_sandbox reads via an isolated session, passed through as a kwarg.
         remote_sandbox_service._get_stored_sandbox.assert_called_once_with(
-            'test-sandbox-123'
+            'test-sandbox-123', session=ANY
         )
 
     @pytest.mark.asyncio
@@ -3020,3 +3026,100 @@ class TestArchiveRequestParams:
             '/workspace/project', 'git-delta'
         )
         assert params == {'path': '/workspace/project', 'format': 'git-delta'}
+
+
+class TestSharedSessionAtomicityDuringDelete:
+    """Regression test: get_sandbox must not commit the shared request session.
+
+    ``RemoteSandboxService.get_sandbox()`` runs against the *request-scoped*
+    ``AsyncSession`` that is shared by every service in a request. During
+    ``delete_app_conversation`` the delete loop interleaves, per conversation::
+
+        _delete_from_agent_server(...)  ->  sandbox_service.get_sandbox(...)
+        _delete_from_database(...)      ->  raw DELETEs, no internal commit
+
+    If ``get_sandbox`` were to commit the shared session (e.g. to release an
+    idle-in-transaction connection before its runtime API call), it would also
+    flush the sibling ``_delete_from_database`` DELETEs that are still pending,
+    one iteration at a time -- making the multi-step delete no longer
+    all-or-nothing. ``get_sandbox`` therefore reads via an isolated session and
+    must leave the shared session untouched.
+
+    Uses a real SQLAlchemy session (SQLite); only the runtime-API network
+    boundary is mocked.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_sandbox_does_not_commit_sibling_pending_writes(self, tmp_path):
+        # File-based SQLite so a second, independent connection observes only
+        # committed state (mirrors verifying persistence from a fresh session).
+        engine = create_async_engine(f'sqlite+aiosqlite:///{tmp_path / "atomicity.db"}')
+        session_maker = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as conn:
+                # Only the one table we need (avoids configuring custom column
+                # types registered on the shared Base metadata).
+                await conn.run_sync(StoredRemoteSandbox.__table__.create)
+                # Stand-in for another service's rows (e.g. conversation info /
+                # start tasks) that _delete_from_database DELETEs on the shared
+                # session without committing.
+                await conn.execute(
+                    text('CREATE TABLE sibling_rows (id INTEGER PRIMARY KEY)')
+                )
+                await conn.execute(
+                    text('INSERT INTO sibling_rows (id) VALUES (1), (2)')
+                )
+
+            # Seed the sandbox get_sandbox() will look up (its own transaction).
+            async with session_maker() as seed:
+                seed.add(create_stored_sandbox(sandbox_id='sbx-A', user_id='user-1'))
+                await seed.commit()
+
+            # Runtime API disabled: get_sandbox falls back to runtime=None after
+            # the DB read, which is all this test needs.
+            httpx_client = AsyncMock(spec=httpx.AsyncClient)
+            httpx_client.request = AsyncMock(
+                side_effect=httpx.ConnectError('network disabled in test')
+            )
+            user_context = AsyncMock(spec=UserContext)
+            user_context.get_user_id.return_value = 'user-1'
+
+            # The shared, request-scoped session used across the delete request.
+            async with session_maker() as shared:
+                # Sibling service queues a DELETE and does NOT commit.
+                await shared.execute(text('DELETE FROM sibling_rows WHERE id = 1'))
+                assert shared.in_transaction(), 'sanity: DELETE opened a transaction'
+
+                service = RemoteSandboxService(
+                    sandbox_spec_service=AsyncMock(),
+                    api_url='https://api.example.com',
+                    api_key='test-api-key',
+                    web_url='https://web.example.com',
+                    resource_factor=1,
+                    runtime_class='gvisor',
+                    start_sandbox_timeout=120,
+                    max_num_sandboxes=10,
+                    user_context=user_context,
+                    httpx_client=httpx_client,
+                    db_session=shared,
+                )
+
+                # Interleaved runtime-API step of the delete loop.
+                assert await service.get_sandbox('sbx-A') is not None
+
+                # A separate connection sees only committed data.
+                async with session_maker() as observer:
+                    remaining = (
+                        await observer.execute(
+                            text('SELECT count(*) FROM sibling_rows')
+                        )
+                    ).scalar_one()
+
+            assert remaining == 2, (
+                "get_sandbox() committed a sibling service's pending DELETE "
+                f'(rows left={remaining}, expected 2). The shared request '
+                'session was committed mid-delete, so delete_app_conversation '
+                'is no longer atomic.'
+            )
+        finally:
+            await engine.dispose()
