@@ -132,10 +132,18 @@ def _custom_secret_value(secrets: Secrets | None, name: str) -> str | None:
     return custom_secret.secret.get_secret_value()
 
 
-def _has_api_key(value: str | SecretStr | None) -> bool:
-    if isinstance(value, SecretStr):
-        value = value.get_secret_value()
+def _has_api_key(value: str | None) -> bool:
     return bool(value and value.strip())
+
+
+def _request_or_stored_secret_value(
+    secrets: Secrets | None,
+    request_secrets: dict[str, SecretStr],
+    name: str,
+) -> str | None:
+    if name in request_secrets:
+        return request_secrets[name].get_secret_value()
+    return _custom_secret_value(secrets, name)
 
 
 async def _validate_codex_credentials(
@@ -155,13 +163,13 @@ async def _validate_codex_credentials(
         return
 
     secrets = await secrets_store.load()
-    codex_auth = _custom_secret_value(secrets, 'CODEX_AUTH_JSON')
     api_secrets = request.secrets or {}
+    codex_auth = _request_or_stored_secret_value(
+        secrets, api_secrets, 'CODEX_AUTH_JSON'
+    )
     api_keys = (
-        _custom_secret_value(secrets, 'OPENAI_API_KEY'),
-        _custom_secret_value(secrets, 'CODEX_API_KEY'),
-        api_secrets.get('OPENAI_API_KEY'),
-        api_secrets.get('CODEX_API_KEY'),
+        _request_or_stored_secret_value(secrets, api_secrets, 'OPENAI_API_KEY'),
+        _request_or_stored_secret_value(secrets, api_secrets, 'CODEX_API_KEY'),
     )
     if is_valid_codex_auth(codex_auth) or any(map(_has_api_key, api_keys)):
         return

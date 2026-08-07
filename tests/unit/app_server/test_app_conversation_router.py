@@ -149,6 +149,21 @@ async def test_codex_preflight_allows_stored_credentials(
 
 
 @pytest.mark.asyncio
+async def test_codex_preflight_allows_request_scoped_auth(file_secrets_store):
+    await _validate_codex_credentials(
+        AppConversationStartRequest(
+            secrets={
+                'CODEX_AUTH_JSON': SecretStr(
+                    '{"auth_mode":"chatgpt","tokens":{"refresh_token":"refresh"}}'
+                )
+            }
+        ),
+        _codex_user_context(),
+        file_secrets_store,
+    )
+
+
+@pytest.mark.asyncio
 class TestBatchGetAppConversations:
     """Test suite for batch_get_app_conversations endpoint."""
 
