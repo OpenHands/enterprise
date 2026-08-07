@@ -11,10 +11,13 @@ down_revision: Union[str, None] = '142'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+# Only prefixed values are rewritten. A bare ``minimax-m2.7`` is never produced
+# by the managed default path (``build_litellm_proxy_model_path`` always emits a
+# ``litellm_proxy/`` prefix), so such rows are BYOK configs pointed at a
+# third-party base_url; rewriting them would aim a MiniMax key at a GLM model.
 MODEL_REPLACEMENTS = {
     'openhands/minimax-m2.7': 'openhands/glm-5.2',
     'litellm_proxy/minimax-m2.7': 'litellm_proxy/glm-5.2',
-    'minimax-m2.7': 'glm-5.2',
 }
 
 JSON_MODEL_COLUMNS = (

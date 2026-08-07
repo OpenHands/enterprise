@@ -20,10 +20,11 @@ def test_replacement_set_is_exact_and_managed_only():
     assert migration_143.MODEL_REPLACEMENTS == {
         'openhands/minimax-m2.7': 'openhands/glm-5.2',
         'litellm_proxy/minimax-m2.7': 'litellm_proxy/glm-5.2',
-        'minimax-m2.7': 'glm-5.2',
     }
     assert 'anthropic/minimax-m2.7' not in migration_143.MODEL_REPLACEMENTS
     assert 'custom/minimax-m2.7' not in migration_143.MODEL_REPLACEMENTS
+    # A bare name carries no provenance, so it is treated as BYOK, not managed.
+    assert 'minimax-m2.7' not in migration_143.MODEL_REPLACEMENTS
 
 
 def test_statement_updates_nested_llm_model_by_exact_match():
@@ -66,13 +67,12 @@ def test_upgrade_updates_each_settings_column_for_each_replacement(monkeypatch):
     assert len(calls) == (
         len(migration_143.JSON_MODEL_COLUMNS) * len(migration_143.MODEL_REPLACEMENTS)
     )
-    assert [params for _, params in calls[:3]] == [
+    assert [params for _, params in calls[:2]] == [
         {'old_model': 'openhands/minimax-m2.7', 'new_model': 'openhands/glm-5.2'},
         {
             'old_model': 'litellm_proxy/minimax-m2.7',
             'new_model': 'litellm_proxy/glm-5.2',
         },
-        {'old_model': 'minimax-m2.7', 'new_model': 'glm-5.2'},
     ]
 
     updated_tables = [
@@ -82,11 +82,8 @@ def test_upgrade_updates_each_settings_column_for_each_replacement(monkeypatch):
     assert updated_tables == [
         'UPDATE user_settings',
         'UPDATE user_settings',
-        'UPDATE user_settings',
         'UPDATE org',
         'UPDATE org',
-        'UPDATE org',
-        'UPDATE org_member',
         'UPDATE org_member',
         'UPDATE org_member',
     ]
@@ -110,7 +107,7 @@ def test_replace_model_values_updates_nested_profile_models_only_on_exact_match(
         'profiles': {
             'managed': {'model': 'openhands/glm-5.2'},
             'legacy_proxy': {'model': 'litellm_proxy/glm-5.2'},
-            'bare': {'model': 'glm-5.2'},
+            'bare': {'model': 'minimax-m2.7'},
             'custom': {'model': 'anthropic/minimax-m2.7'},
         },
         'active': 'managed',
