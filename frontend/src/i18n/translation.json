@@ -1597,6 +1597,23 @@
     "uk": "Почнімо будувати!",
     "ca": "Comencem a construir!"
   },
+  "HOME$AGENT_CANVAS_BANNER": {
+    "en": "New User Experience! Please visit <canvasLink>{{agentCanvasLabel}}</canvasLink> to try out OpenHands Cloud with Agent Canvas.",
+    "ja": "新しいユーザー体験です！<canvasLink>{{agentCanvasLabel}}</canvasLink> で Agent Canvas を備えた OpenHands Cloud をお試しください。",
+    "zh-CN": "全新用户体验！请访问 <canvasLink>{{agentCanvasLabel}}</canvasLink> 试用带有 Agent Canvas 的 OpenHands Cloud。",
+    "zh-TW": "全新使用者體驗！請造訪 <canvasLink>{{agentCanvasLabel}}</canvasLink> 試用搭配 Agent Canvas 的 OpenHands Cloud。",
+    "ko-KR": "새로운 사용자 경험! <canvasLink>{{agentCanvasLabel}}</canvasLink>에서 Agent Canvas가 포함된 OpenHands Cloud를 사용해 보세요.",
+    "no": "Ny brukeropplevelse! Besøk <canvasLink>{{agentCanvasLabel}}</canvasLink> for å prøve OpenHands Cloud med Agent Canvas.",
+    "it": "Nuova esperienza utente! Visita <canvasLink>{{agentCanvasLabel}}</canvasLink> per provare OpenHands Cloud con Agent Canvas.",
+    "pt": "Nova experiência de usuário! Visite <canvasLink>{{agentCanvasLabel}}</canvasLink> para experimentar o OpenHands Cloud com o Agent Canvas.",
+    "es": "¡Nueva experiencia de usuario! Visita <canvasLink>{{agentCanvasLabel}}</canvasLink> para probar OpenHands Cloud con Agent Canvas.",
+    "ar": "تجربة مستخدم جديدة! يُرجى زيارة <canvasLink>{{agentCanvasLabel}}</canvasLink> لتجربة OpenHands Cloud مع Agent Canvas.",
+    "fr": "Nouvelle expérience utilisateur ! Rendez-vous sur <canvasLink>{{agentCanvasLabel}}</canvasLink> pour essayer OpenHands Cloud avec Agent Canvas.",
+    "tr": "Yeni Kullanıcı Deneyimi! Agent Canvas ile OpenHands Cloud’u denemek için lütfen <canvasLink>{{agentCanvasLabel}}</canvasLink> adresini ziyaret edin.",
+    "de": "Neue Benutzererfahrung! Bitte besuchen Sie <canvasLink>{{agentCanvasLabel}}</canvasLink>, um OpenHands Cloud mit Agent Canvas auszuprobieren.",
+    "uk": "Новий користувацький досвід! Відвідайте <canvasLink>{{agentCanvasLabel}}</canvasLink>, щоб спробувати OpenHands Cloud з Agent Canvas.",
+    "ca": "Nova experiència d'usuari! Visiteu <canvasLink>{{agentCanvasLabel}}</canvasLink> per provar OpenHands Cloud amb Agent Canvas."
+  },
   "HOME$OPENHANDS_DESCRIPTION": {
     "en": "OpenHands makes it easy to build and maintain software using AI-driven development.",
     "ja": "OpenHandsはAI駆動の開発を使用してソフトウェアの開発と維持を容易にします。",

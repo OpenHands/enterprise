@@ -126,6 +126,9 @@ from openhands.sdk import Agent, AgentContext, LocalWorkspace
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
+from openhands.sdk.marketplace.registration import (
+    MarketplaceRegistration as SDKMarketplaceRegistration,
+)
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
@@ -255,6 +258,23 @@ def effective_disabled_skills(user: UserInfo) -> list[str]:
     agent_context = getattr(agent_settings, 'agent_context', None)
     profile = list(getattr(agent_context, 'disabled_skills', None) or [])
     return list(dict.fromkeys([*member, *profile]))
+
+
+def _to_sdk_marketplace_registrations(
+    registrations: list[MarketplaceRegistration] | None,
+) -> list[SDKMarketplaceRegistration]:
+    if not registrations:
+        return []
+    return [
+        SDKMarketplaceRegistration(
+            name=registration.name,
+            source=registration.source,
+            ref=registration.ref,
+            repo_path=registration.repo_path,
+            auto_load=registration.auto_load,
+        )
+        for registration in registrations
+    ]
 
 
 @dataclass
@@ -485,6 +505,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     plugins=request.plugins,
                     api_secrets=request.secrets,
                     agent_profile_id=request.agent_profile_id,
+                    request_observability_metadata=request.observability_metadata,
+                    request_observability_tags=request.observability_tags,
+                    request_observability_span_name=request.observability_span_name,
                 )
             )
 
@@ -1639,6 +1662,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             target[key] = value
 
     @staticmethod
+    def _extend_observability_tags(target: list[str], tags: Sequence[str]) -> None:
+        seen = set(target)
+        for tag in tags:
+            if tag in seen:
+                continue
+            target.append(tag)
+            seen.add(tag)
+
+    @staticmethod
     def _apply_server_agent_overrides(
         agent: Agent,
         agent_type: AgentType,
@@ -1883,6 +1915,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         plugins: list[PluginSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         agent_profile_id: str | None = None,
+        request_observability_metadata: Mapping[str, Any] | None = None,
+        request_observability_tags: Sequence[str] | None = None,
+        request_observability_span_name: str | None = None,
     ) -> StartConversationRequest:
         """Build a complete StartConversationRequest for a user.
 
@@ -1915,6 +1950,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             agent_profile_id: One-off Agent Profile override for this
                 conversation only (cloud-only; does not change the member's
                 active pointer). ``None`` uses the ambient active profile.
+            request_observability_metadata: Optional caller-provided trace metadata to
+                merge with app-server conversation metadata.
+            request_observability_tags: Optional caller-provided tags to append to the
+                conversation root observability span.
+            request_observability_span_name: Optional named child span to emit
+                under the conversation root.
         """
         # Conversation start builds the agent, so it consumes the RESOLVED
         # (effective launch) view; plain settings reads/round-trips elsewhere
@@ -1965,8 +2006,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 selected_branch=selected_branch,
                 remote_workspace=remote_workspace,
                 plugins=plugins,
+                registered_marketplaces=registered_marketplaces,
                 api_secrets=api_secrets,
                 agent_profile_id=agent_profile_id,
+                request_observability_metadata=request_observability_metadata,
+                request_observability_tags=request_observability_tags,
+                request_observability_span_name=request_observability_span_name,
             )
             if remote_workspace:
                 acp_request = await self._load_skills_onto_request(
@@ -2063,6 +2108,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'agent_context': AgentContext(
                     system_message_suffix=effective_suffix,
                     secrets=secrets,
+                    registered_marketplaces=_to_sdk_marketplace_registrations(
+                        registered_marketplaces
+                    ),
                 ),
             }
         )
@@ -2178,6 +2226,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         self._extend_observability_metadata(
             observability_metadata, resolved_observability_metadata
         )
+        if request_observability_metadata:
+            self._extend_observability_metadata(
+                observability_metadata, request_observability_metadata
+            )
+        if request_observability_tags:
+            self._extend_observability_tags(
+                observability_tags, request_observability_tags
+            )
         create_kwargs: dict[str, Any] = {'agent': agent, 'user_id': laminar_user_id}
         title_llm_profile = _resolve_title_llm_profile(user)
         if title_llm_profile:
@@ -2186,6 +2242,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             create_kwargs['observability_metadata'] = observability_metadata
         if observability_tags:
             create_kwargs['observability_tags'] = observability_tags
+        if request_observability_span_name:
+            create_kwargs['observability_span_name'] = request_observability_span_name
         request = conv_settings.create_request(
             StartConversationRequest, **create_kwargs
         )
@@ -2275,8 +2333,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         selected_branch: str | None = None,
         remote_workspace: AsyncRemoteWorkspace | None = None,
         plugins: list[PluginSpec] | None = None,
+        registered_marketplaces: list[MarketplaceRegistration] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         agent_profile_id: str | None = None,
+        request_observability_metadata: Mapping[str, Any] | None = None,
+        request_observability_tags: Sequence[str] | None = None,
+        request_observability_span_name: str | None = None,
     ) -> StartConversationRequest:
         """Build a StartConversationRequest for ACP agent conversations.
 
@@ -2303,10 +2365,18 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             remote_workspace: Optional remote workspace instance, used to
                 resolve the HEAD commit for the Laminar trace metadata.
             plugins: Optional list of plugins to load
+            registered_marketplaces: Optional marketplace registrations for
+                plugin resolution and runtime loading.
             api_secrets: Optional secrets passed directly via the API.
             agent_profile_id: One-off Agent Profile override for this
                 conversation only (cloud-only; does not change the member's
                 active pointer). ``None`` uses the ambient active profile.
+            request_observability_metadata: Optional caller-provided trace metadata to
+                merge with app-server conversation metadata.
+            request_observability_tags: Optional caller-provided tags to append to the
+                conversation root observability span.
+            request_observability_span_name: Optional named child span to emit
+                under the conversation root.
         """
         user = await self.user_context.get_user_info(
             resolve_agent_profile=True,
@@ -2399,9 +2469,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         self._merge_custom_mcp_config(acp_mcp_servers, user)
         if acp_mcp_servers:
             settings_update['mcp_config'] = acp_mcp_servers
+        context_updates: dict[str, Any] = {}
         if system_message_suffix:
-            settings_update['agent_context'] = AgentContext(
-                system_message_suffix=system_message_suffix
+            context_updates['system_message_suffix'] = system_message_suffix
+        if registered_marketplaces is not None:
+            context_updates['registered_marketplaces'] = (
+                _to_sdk_marketplace_registrations(registered_marketplaces)
+            )
+        if context_updates:
+            existing_context = acp_settings.agent_context or AgentContext()
+            settings_update['agent_context'] = existing_context.model_copy(
+                update=context_updates
             )
         acp_settings_for_agent = acp_settings.model_copy(update=settings_update)
         acp_agent = acp_settings_for_agent.create_agent()
@@ -2449,6 +2527,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         self._extend_observability_metadata(
             observability_metadata, resolved_observability_metadata
         )
+        if request_observability_metadata:
+            self._extend_observability_metadata(
+                observability_metadata, request_observability_metadata
+            )
+        if request_observability_tags:
+            self._extend_observability_tags(
+                observability_tags, request_observability_tags
+            )
         create_kwargs: dict[str, Any] = {
             'agent': acp_agent,
             'user_id': laminar_user_id,
@@ -2461,6 +2547,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             create_kwargs['observability_metadata'] = observability_metadata
         if observability_tags:
             create_kwargs['observability_tags'] = observability_tags
+        if request_observability_span_name:
+            create_kwargs['observability_span_name'] = request_observability_span_name
         return conv_settings.create_request(StartConversationRequest, **create_kwargs)
 
     async def _process_pending_messages(
