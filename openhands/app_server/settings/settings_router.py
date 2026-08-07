@@ -194,7 +194,9 @@ async def load_settings(
 
         llm = settings.agent_settings.llm
         settings_with_token_data = GETSettingsModel(
-            **settings.model_dump(exclude={'secrets_store'}),
+            **settings.model_dump(
+                exclude={'secrets_store'}, context={'expose_secrets': True}
+            ),
             llm_api_key_set=settings.llm_api_key_is_set,
             search_api_key_set=settings.search_api_key is not None
             and bool(settings.search_api_key),
