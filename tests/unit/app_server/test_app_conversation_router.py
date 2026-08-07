@@ -92,6 +92,31 @@ def file_secrets_store(tmp_path):
     return FileSecretsStore(get_file_store('local', str(tmp_path)))
 
 
+@pytest.mark.parametrize(
+    'agent_settings',
+    [
+        OpenHandsAgentSettings(),
+        ACPAgentSettings(acp_server='claude-code'),
+        None,
+    ],
+)
+@pytest.mark.asyncio
+async def test_codex_preflight_skips_non_codex_agents(
+    file_secrets_store,
+    agent_settings,
+):
+    user_context = MagicMock()
+    user_context.get_user_info = AsyncMock(
+        return_value=SimpleNamespace(agent_settings=agent_settings)
+    )
+
+    await _validate_codex_credentials(
+        AppConversationStartRequest(),
+        user_context,
+        file_secrets_store,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     'custom_secrets',
