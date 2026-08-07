@@ -27658,6 +27658,23 @@
     "tr": "{{file}} dosyasının tüm içeriğini yapıştırın. Almak için `cat {{file}}` çalıştırın. Bir secret olarak kaydedilir ve çalışma zamanında ajan için diske yazılır.",
     "uk": "Вставте повний вміст {{file}}. Виконайте `cat {{file}}`, щоб отримати його. Зберігається як секрет і записується на диск для агента під час виконання."
   },
+  "SETTINGS$ACP_SECRET_CODEX_AUTH_HINT": {
+    "en": "Paste ~/.codex/auth.json only for ChatGPT subscription credentials (auth_mode is chatgpt and tokens.refresh_token is set). If Codex uses API-key mode, leave this blank and use OPENAI_API_KEY instead.",
+    "ja": "ChatGPT サブスクリプション認証情報（auth_mode が chatgpt で tokens.refresh_token が設定済み）の場合のみ ~/.codex/auth.json を貼り付けてください。Codex が API キーモードの場合は空欄のままにし、代わりに OPENAI_API_KEY を使用してください。",
+    "zh-CN": "仅当 ~/.codex/auth.json 包含 ChatGPT 订阅凭据（auth_mode 为 chatgpt 且已设置 tokens.refresh_token）时粘贴它。如果 Codex 使用 API 密钥模式，请将此处留空并改用 OPENAI_API_KEY。",
+    "zh-TW": "僅當 ~/.codex/auth.json 包含 ChatGPT 訂閱憑證（auth_mode 為 chatgpt 且已設定 tokens.refresh_token）時貼上它。如果 Codex 使用 API 金鑰模式，請將此處留空並改用 OPENAI_API_KEY。",
+    "ko-KR": "ChatGPT 구독 자격 증명(auth_mode가 chatgpt이고 tokens.refresh_token이 설정된 경우)에만 ~/.codex/auth.json을 붙여넣으세요. Codex가 API 키 모드를 사용하면 이 필드를 비우고 대신 OPENAI_API_KEY를 사용하세요.",
+    "no": "Lim bare inn ~/.codex/auth.json for ChatGPT-abonnementslegitimasjon (auth_mode er chatgpt og tokens.refresh_token er satt). Hvis Codex bruker API-nøkkelmodus, lar du feltet stå tomt og bruker OPENAI_API_KEY i stedet.",
+    "ar": "الصق ~/.codex/auth.json فقط لبيانات اعتماد اشتراك ChatGPT (حيث auth_mode هو chatgpt وتم تعيين tokens.refresh_token). إذا كان Codex يستخدم وضع مفتاح API، فاترك هذا الحقل فارغاً واستخدم OPENAI_API_KEY بدلاً منه.",
+    "de": "Füge ~/.codex/auth.json nur für ChatGPT-Abonnement-Anmeldedaten ein (auth_mode ist chatgpt und tokens.refresh_token ist gesetzt). Wenn Codex den API-Schlüsselmodus verwendet, lass dieses Feld leer und verwende stattdessen OPENAI_API_KEY.",
+    "fr": "Collez ~/.codex/auth.json uniquement pour les identifiants d'abonnement ChatGPT (auth_mode vaut chatgpt et tokens.refresh_token est défini). Si Codex utilise le mode clé API, laissez ce champ vide et utilisez plutôt OPENAI_API_KEY.",
+    "it": "Incolla ~/.codex/auth.json solo per le credenziali di abbonamento ChatGPT (auth_mode è chatgpt e tokens.refresh_token è impostato). Se Codex usa la modalità con chiave API, lascia vuoto questo campo e usa invece OPENAI_API_KEY.",
+    "pt": "Cole ~/.codex/auth.json apenas para credenciais de assinatura do ChatGPT (auth_mode é chatgpt e tokens.refresh_token está definido). Se o Codex usa o modo de chave de API, deixe este campo em branco e use OPENAI_API_KEY.",
+    "es": "Pega ~/.codex/auth.json solo para credenciales de suscripción de ChatGPT (auth_mode es chatgpt y tokens.refresh_token está configurado). Si Codex usa el modo de clave de API, deja este campo en blanco y usa OPENAI_API_KEY.",
+    "ca": "Enganxa ~/.codex/auth.json només per a credencials de subscripció de ChatGPT (auth_mode és chatgpt i tokens.refresh_token està definit). Si Codex utilitza el mode de clau d'API, deixa aquest camp en blanc i utilitza OPENAI_API_KEY.",
+    "tr": "~/.codex/auth.json dosyasını yalnızca ChatGPT abonelik kimlik bilgileri için yapıştırın (auth_mode chatgpt olmalı ve tokens.refresh_token ayarlanmalıdır). Codex API anahtarı modunu kullanıyorsa bu alanı boş bırakın ve OPENAI_API_KEY kullanın.",
+    "uk": "Вставляйте ~/.codex/auth.json лише для облікових даних підписки ChatGPT (auth_mode має значення chatgpt, а tokens.refresh_token задано). Якщо Codex використовує режим API-ключа, залиште це поле порожнім і використайте OPENAI_API_KEY."
+  },
   "SETTINGS$ACP_SECRET_GCP_PROJECT_HINT": {
     "en": "Google Cloud project ID for Vertex AI (e.g. the output of `gcloud config get-value project`).",
     "ja": "Vertex AI 用の Google Cloud プロジェクト ID（例: `gcloud config get-value project` の出力）。",
