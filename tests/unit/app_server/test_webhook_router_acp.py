@@ -19,6 +19,7 @@ from openhands.agent_server.models import ConversationInfo, Success
 from openhands.app_server.app_conversation.app_conversation_models import (
     ACP_SERVER_TAG_KEY,
     AppConversationInfo,
+    ConversationTrigger,
 )
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
     SQLAppConversationInfoService,
@@ -364,6 +365,89 @@ async def test_conversation_analytics_uses_trigger_detected_from_tags(
 ):
     conversation_info = _make_llm_conversation_info().model_copy(
         update={'tags': {'automationrunid': 'run-123'}}
+    )
+    existing = AppConversationInfo(
+        id=conversation_info.id,
+        title='Test',
+        sandbox_id=sandbox_record.id,
+        created_by_user_id=sandbox_record.created_by_user_id,
+        trigger=None,
+    )
+    analytics = MagicMock()
+
+    with (
+        patch(
+            'openhands.app_server.event_callback.webhook_router.valid_conversation',
+            return_value=existing,
+        ),
+        patch(
+            'openhands.app_server.event_callback.webhook_router.get_analytics_service',
+            return_value=analytics,
+        ),
+        patch(
+            'openhands.app_server.event_callback.webhook_router.resolve_analytics_context',
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+    ):
+        await on_conversation_update(
+            conversation_info=conversation_info,
+            sandbox_record=sandbox_record,
+            app_conversation_info_service=service,
+        )
+
+    kwargs = analytics.track_conversation_created.call_args.kwargs
+    assert kwargs['trigger'] == 'automation'
+
+
+@pytest.mark.asyncio
+async def test_gui_trigger_stamps_clientsource_tag(
+    async_session, service, sandbox_record
+):
+    """Conversations with trigger=GUI get a clientsource=agentcanvas tag."""
+    conversation_info = _make_llm_conversation_info()
+    existing = AppConversationInfo(
+        id=conversation_info.id,
+        title='Test',
+        sandbox_id=sandbox_record.id,
+        created_by_user_id=sandbox_record.created_by_user_id,
+        trigger=ConversationTrigger.GUI,
+    )
+    analytics = MagicMock()
+
+    with (
+        patch(
+            'openhands.app_server.event_callback.webhook_router.valid_conversation',
+            return_value=existing,
+        ),
+        patch(
+            'openhands.app_server.event_callback.webhook_router.get_analytics_service',
+            return_value=analytics,
+        ),
+        patch(
+            'openhands.app_server.event_callback.webhook_router.resolve_analytics_context',
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+    ):
+        await on_conversation_update(
+            conversation_info=conversation_info,
+            sandbox_record=sandbox_record,
+            app_conversation_info_service=service,
+        )
+
+    saved = await service.get_app_conversation_info(conversation_info.id)
+    assert saved.tags.get('clientsource') == 'agentcanvas'
+    # Analytics should report conversation_source = "canvas"
+    kwargs = analytics.track_conversation_created.call_args.kwargs
+    assert kwargs['trigger'] == 'gui'
+
+
+@pytest.mark.asyncio
+async def test_automation_conversation_source_in_analytics(
+    async_session, service, sandbox_record
+):
+    """Automation-triggered conversations report conversation_source = 'automation'."""
+    conversation_info = _make_llm_conversation_info().model_copy(
+        update={'tags': {'automationtrigger': 'cron'}}
     )
     existing = AppConversationInfo(
         id=conversation_info.id,
