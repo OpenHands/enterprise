@@ -1,6 +1,8 @@
 """Migrate OpenHands MiniMax M2.7 settings to GLM 5.2."""
 
 import json
+import os
+import re
 from typing import Any, Sequence, Union
 
 import sqlalchemy as sa
@@ -11,14 +13,34 @@ down_revision: Union[str, None] = '142'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-# Only prefixed values are rewritten. A bare ``minimax-m2.7`` is never produced
-# by the managed default path (``build_litellm_proxy_model_path`` always emits a
-# ``litellm_proxy/`` prefix), so such rows are BYOK configs pointed at a
+# Only prefixed values are rewritten. A bare ``minimax-m2.7`` is not written by
+# the managed default path, so such rows are BYOK configs pointed at a
 # third-party base_url; rewriting them would aim a MiniMax key at a GLM model.
 MODEL_REPLACEMENTS = {
     'openhands/minimax-m2.7': 'openhands/glm-5.2',
     'litellm_proxy/minimax-m2.7': 'litellm_proxy/glm-5.2',
 }
+
+# Hosts of the All-Hands-managed deployments. The rewrite is only correct where
+# the managed LiteLLM proxy actually serves ``glm-5.2``; a self-hosted install
+# runs the same image and chart against its own proxy, and neither the model
+# string nor ``base_url`` distinguishes it (``LITE_LLM_API_URL`` defaults to the
+# managed URL). ``WEB_HOST`` is the one value that differs per deployment.
+SAAS_WEB_HOSTS = frozenset(
+    {
+        'app.all-hands.dev',
+        'staging.all-hands.dev',
+        'dev.all-hands.dev',
+    }
+)
+
+# Feature previews get a per-PR host injected by the ApplicationSet.
+SAAS_FEATURE_PREVIEW_HOST = re.compile(r'pr-\d+\.staging\.all-hands\.dev')
+
+
+def _is_saas_web_host(host: str) -> bool:
+    return host in SAAS_WEB_HOSTS or bool(SAAS_FEATURE_PREVIEW_HOST.fullmatch(host))
+
 
 JSON_MODEL_COLUMNS = (
     ('user_settings', 'agent_settings'),
@@ -134,6 +156,16 @@ def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != 'postgresql':
         raise RuntimeError(f'Unsupported database dialect: {bind.dialect.name}')
+
+    # Unlike server.constants.WEB_HOST this does not default to a managed host:
+    # an unset value must not be read as "this is SaaS".
+    web_host = os.environ.get('WEB_HOST', '').strip()
+    if not _is_saas_web_host(web_host):
+        print(
+            f'Skipping migration 143: WEB_HOST {web_host!r} is not an '
+            'All-Hands-managed deployment.'
+        )
+        return
 
     for table_name, column_name in JSON_MODEL_COLUMNS:
         statement = _replace_llm_model_statement(table_name, column_name)

@@ -56,6 +56,7 @@ def test_upgrade_updates_each_settings_column_for_each_replacement(monkeypatch):
             calls.append((statement, params))
             return None
 
+    monkeypatch.setenv('WEB_HOST', 'app.all-hands.dev')
     monkeypatch.setattr(
         migration_143,
         'op',
@@ -198,3 +199,78 @@ def test_upgrade_rejects_non_postgresql(monkeypatch):
 
     with pytest.raises(RuntimeError, match='Unsupported database dialect: sqlite'):
         migration_143.upgrade()
+
+
+@pytest.mark.parametrize(
+    'web_host',
+    [
+        'app.all-hands.dev',
+        'staging.all-hands.dev',
+        'dev.all-hands.dev',
+        'pr-1.staging.all-hands.dev',
+        'pr-12345.staging.all-hands.dev',
+    ],
+)
+def test_is_saas_web_host_accepts_managed_deployments(web_host):
+    assert migration_143._is_saas_web_host(web_host)
+
+
+@pytest.mark.parametrize(
+    'web_host',
+    [
+        '',
+        'openhands.example.com',
+        'app.all-hands.dev.attacker.com',
+        'evil-app.all-hands.dev',
+        'pr-abc.staging.all-hands.dev',
+        'app.openhands.ai',
+        'pr-1.staging.all-hands.dev.attacker.com',
+        'notpr-1.staging.all-hands.dev',
+    ],
+)
+def test_is_saas_web_host_rejects_other_deployments(web_host):
+    assert not migration_143._is_saas_web_host(web_host)
+
+
+def test_upgrade_skips_when_web_host_is_self_hosted(monkeypatch):
+    calls = []
+
+    class Bind:
+        dialect = SimpleNamespace(name='postgresql')
+
+        def execute(self, statement, params=None):
+            calls.append((statement, params))
+            return None
+
+    monkeypatch.setenv('WEB_HOST', 'openhands.example.com')
+    monkeypatch.setattr(
+        migration_143,
+        'op',
+        SimpleNamespace(get_bind=lambda: Bind()),
+    )
+
+    migration_143.upgrade()
+
+    assert calls == []
+
+
+def test_upgrade_skips_when_web_host_is_unset(monkeypatch):
+    calls = []
+
+    class Bind:
+        dialect = SimpleNamespace(name='postgresql')
+
+        def execute(self, statement, params=None):
+            calls.append((statement, params))
+            return None
+
+    monkeypatch.delenv('WEB_HOST', raising=False)
+    monkeypatch.setattr(
+        migration_143,
+        'op',
+        SimpleNamespace(get_bind=lambda: Bind()),
+    )
+
+    migration_143.upgrade()
+
+    assert calls == []
