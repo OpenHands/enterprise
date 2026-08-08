@@ -209,6 +209,8 @@ def test_upgrade_rejects_non_postgresql(monkeypatch):
         'dev.all-hands.dev',
         'pr-1.staging.all-hands.dev',
         'pr-12345.staging.all-hands.dev',
+        # branchSanitized is a generic host prefix, not only pr-<number>.
+        'my-feature-branch.staging.all-hands.dev',
     ],
 )
 def test_is_saas_web_host_accepts_managed_deployments(web_host):
@@ -222,10 +224,11 @@ def test_is_saas_web_host_accepts_managed_deployments(web_host):
         'openhands.example.com',
         'app.all-hands.dev.attacker.com',
         'evil-app.all-hands.dev',
-        'pr-abc.staging.all-hands.dev',
         'app.openhands.ai',
         'pr-1.staging.all-hands.dev.attacker.com',
-        'notpr-1.staging.all-hands.dev',
+        # Only one label is delegated; deeper nesting is not a preview host.
+        'a.b.staging.all-hands.dev',
+        'staging.all-hands.dev.attacker.com',
     ],
 )
 def test_is_saas_web_host_rejects_other_deployments(web_host):

@@ -34,12 +34,15 @@ SAAS_WEB_HOSTS = frozenset(
     }
 )
 
-# Feature previews get a per-PR host injected by the ApplicationSet.
-SAAS_FEATURE_PREVIEW_HOST = re.compile(r'pr-\d+\.staging\.all-hands\.dev')
+# Preview deployments render WEB_HOST as ``{branchSanitized}.{ingress.host}``, so
+# they are always a single extra label under staging. ``branchSanitized`` is a
+# generic host prefix (the feature ApplicationSet passes ``pr-<number>``, but the
+# name and the chart both allow any sanitized branch), so match the whole label.
+SAAS_PREVIEW_HOST = re.compile(r'[a-z0-9][a-z0-9-]*\.staging\.all-hands\.dev')
 
 
 def _is_saas_web_host(host: str) -> bool:
-    return host in SAAS_WEB_HOSTS or bool(SAAS_FEATURE_PREVIEW_HOST.fullmatch(host))
+    return host in SAAS_WEB_HOSTS or bool(SAAS_PREVIEW_HOST.fullmatch(host))
 
 
 JSON_MODEL_COLUMNS = (
