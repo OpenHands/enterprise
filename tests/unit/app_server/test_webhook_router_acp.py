@@ -358,6 +358,46 @@ async def test_acp_conversation_analytics_llm_model_is_null(
     assert kwargs['llm_model'] is None
 
 
+@pytest.mark.asyncio
+async def test_conversation_analytics_uses_trigger_detected_from_tags(
+    async_session, service, sandbox_record
+):
+    conversation_info = _make_llm_conversation_info().model_copy(
+        update={'tags': {'automationrunid': 'run-123'}}
+    )
+    existing = AppConversationInfo(
+        id=conversation_info.id,
+        title='Test',
+        sandbox_id=sandbox_record.id,
+        created_by_user_id=sandbox_record.created_by_user_id,
+        trigger=None,
+    )
+    analytics = MagicMock()
+
+    with (
+        patch(
+            'openhands.app_server.event_callback.webhook_router.valid_conversation',
+            return_value=existing,
+        ),
+        patch(
+            'openhands.app_server.event_callback.webhook_router.get_analytics_service',
+            return_value=analytics,
+        ),
+        patch(
+            'openhands.app_server.event_callback.webhook_router.resolve_analytics_context',
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+    ):
+        await on_conversation_update(
+            conversation_info=conversation_info,
+            sandbox_record=sandbox_record,
+            app_conversation_info_service=service,
+        )
+
+    kwargs = analytics.track_conversation_created.call_args.kwargs
+    assert kwargs['trigger'] == 'automation'
+
+
 # ---------------------------------------------------------------------------
 # Backward compatibility — discriminated union deserialisation
 # ---------------------------------------------------------------------------
