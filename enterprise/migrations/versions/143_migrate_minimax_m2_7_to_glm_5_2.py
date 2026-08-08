@@ -178,7 +178,11 @@ def upgrade() -> None:
                 {'old_model': old_model, 'new_model': new_model},
             )
 
-    for table_name, id_column_name, profile_column_name in ENCRYPTED_LLM_PROFILE_COLUMNS:
+    for (
+        table_name,
+        id_column_name,
+        profile_column_name,
+    ) in ENCRYPTED_LLM_PROFILE_COLUMNS:
         _upgrade_encrypted_llm_profile_column(
             bind,
             table_name,

@@ -77,8 +77,7 @@ def test_upgrade_updates_each_settings_column_for_each_replacement(monkeypatch):
     ]
 
     updated_tables = [
-        ' '.join(str(statement).split()).partition(' SET ')[0]
-        for statement, _ in calls
+        ' '.join(str(statement).split()).partition(' SET ')[0] for statement, _ in calls
     ]
     assert updated_tables == [
         'UPDATE user_settings',
