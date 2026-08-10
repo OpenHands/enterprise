@@ -5,6 +5,7 @@ focusing on UUID string parsing, validation, and error handling.
 """
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -12,13 +13,13 @@ import httpx
 import pytest
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
-from openhands.sdk.llm import LLM
-from openhands.sdk.settings import OpenHandsAgentSettings
+from pydantic import SecretStr
 
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversation,
     AppConversationInfo,
     AppConversationPage,
+    AppConversationStartRequest,
     SwitchProfileRequest,
 )
 from openhands.app_server.app_conversation.app_conversation_router import (
@@ -26,6 +27,7 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     AgentServerContext,
     _finalize_sandbox_delete,
     _resolve_file_path,
+    _validate_codex_credentials,
     batch_get_app_conversations,
     count_app_conversations,
     get_conversation_git_changes,
@@ -35,9 +37,15 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     search_app_conversations,
     switch_conversation_profile,
 )
+from openhands.app_server.file_store import get_file_store
+from openhands.app_server.integrations.provider import CustomSecret
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
+from openhands.app_server.secrets.file_secrets_store import FileSecretsStore
+from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.settings.settings_models import Settings
+from openhands.sdk.llm import LLM
+from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
 
 
 def _make_mock_app_conversation(
@@ -71,6 +79,117 @@ def _make_mock_service(
     )
     service.count_app_conversations = AsyncMock(return_value=count_return)
     return service
+
+
+def _codex_user_context():
+    user_context = MagicMock()
+    user_context.get_user_info = AsyncMock(
+        return_value=SimpleNamespace(
+            agent_settings=ACPAgentSettings(acp_server='codex')
+        )
+    )
+    return user_context
+
+
+@pytest.fixture
+def file_secrets_store(tmp_path):
+    return FileSecretsStore(get_file_store('local', str(tmp_path)))
+
+
+@pytest.mark.parametrize(
+    'agent_settings',
+    [
+        OpenHandsAgentSettings(),
+        ACPAgentSettings(acp_server='claude-code'),
+        None,
+    ],
+)
+@pytest.mark.asyncio
+async def test_codex_preflight_skips_non_codex_agents(
+    file_secrets_store,
+    agent_settings,
+):
+    user_context = MagicMock()
+    user_context.get_user_info = AsyncMock(
+        return_value=SimpleNamespace(agent_settings=agent_settings)
+    )
+
+    await _validate_codex_credentials(
+        AppConversationStartRequest(),
+        user_context,
+        file_secrets_store,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'custom_secrets',
+    [
+        {},
+        {'CODEX_AUTH_JSON': CustomSecret(secret=SecretStr('{"tokens": {}}'))},
+    ],
+)
+async def test_codex_preflight_rejects_missing_or_invalid_credentials(
+    file_secrets_store,
+    custom_secrets,
+):
+    await file_secrets_store.store(Secrets(custom_secrets=custom_secrets))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _validate_codex_credentials(
+            AppConversationStartRequest(),
+            _codex_user_context(),
+            file_secrets_store,
+        )
+
+    assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert exc_info.value.detail == (
+        'Connect your Codex account or set an API key before starting a '
+        'Codex conversation.'
+    )
+
+
+@pytest.mark.parametrize(
+    'custom_secrets',
+    [
+        {
+            'CODEX_AUTH_JSON': CustomSecret(
+                secret=SecretStr(
+                    '{"auth_mode":"chatgpt","tokens":{"refresh_token":"refresh"}}'
+                )
+            )
+        },
+        {'OPENAI_API_KEY': CustomSecret(secret=SecretStr('openai-key'))},
+        {'CODEX_API_KEY': CustomSecret(secret=SecretStr('codex-key'))},
+    ],
+)
+@pytest.mark.asyncio
+async def test_codex_preflight_allows_stored_credentials(
+    file_secrets_store,
+    custom_secrets,
+):
+    await file_secrets_store.store(Secrets(custom_secrets=custom_secrets))
+
+    await _validate_codex_credentials(
+        AppConversationStartRequest(),
+        _codex_user_context(),
+        file_secrets_store,
+    )
+
+
+@pytest.mark.asyncio
+async def test_codex_preflight_allows_request_scoped_auth(file_secrets_store):
+    await _validate_codex_credentials(
+        AppConversationStartRequest(
+            secrets={
+                'CODEX_AUTH_JSON': SecretStr(
+                    '{"auth_mode":"chatgpt","tokens":{"refresh_token":"refresh"}}'
+                )
+            }
+        ),
+        _codex_user_context(),
+        file_secrets_store,
+    )
 
 
 @pytest.mark.asyncio

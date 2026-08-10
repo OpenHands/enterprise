@@ -15,6 +15,7 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.models import Success
@@ -74,6 +75,8 @@ from openhands.app_server.sandbox.sandbox_models import (
 from openhands.app_server.sandbox.sandbox_service import SandboxService
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.sandbox.sandbox_spec_service import SandboxSpecService
+from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.services.db_session_injector import set_db_session_keep_open
 from openhands.app_server.services.httpx_client_injector import (
     set_httpx_client_keep_open,
@@ -84,11 +87,13 @@ from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
-from openhands.app_server.user_auth import get_user_settings
+from openhands.app_server.user_auth import get_secrets_store, get_user_settings
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
+from openhands.sdk.agent.acp_file_credentials import is_valid_codex_auth
+from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.skills import KeywordTrigger, TaskTrigger
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
@@ -118,6 +123,64 @@ db_session_dependency = depends_db_session()
 httpx_client_dependency = depends_httpx_client()
 sandbox_service_dependency = depends_sandbox_service()
 sandbox_spec_service_dependency = depends_sandbox_spec_service()
+
+
+def _custom_secret_value(secrets: Secrets | None, name: str) -> str | None:
+    custom_secret = secrets.custom_secrets.get(name) if secrets else None
+    if custom_secret is None:
+        return None
+    return custom_secret.secret.get_secret_value()
+
+
+def _has_api_key(value: str | None) -> bool:
+    return bool(value and value.strip())
+
+
+def _request_or_stored_secret_value(
+    secrets: Secrets | None,
+    request_secrets: dict[str, SecretStr],
+    name: str,
+) -> str | None:
+    if name in request_secrets:
+        return request_secrets[name].get_secret_value()
+    return _custom_secret_value(secrets, name)
+
+
+async def _validate_codex_credentials(
+    request: AppConversationStartRequest,
+    user_context: UserContext,
+    secrets_store: SecretsStore,
+) -> None:
+    user = await user_context.get_user_info(
+        resolve_agent_profile=True,
+        override_agent_profile_id=request.agent_profile_id,
+    )
+    agent_settings = user.agent_settings
+    if not (
+        isinstance(agent_settings, ACPAgentSettings)
+        and agent_settings.acp_server == 'codex'
+    ):
+        return
+
+    secrets = await secrets_store.load()
+    api_secrets = request.secrets or {}
+    codex_auth = _request_or_stored_secret_value(
+        secrets, api_secrets, 'CODEX_AUTH_JSON'
+    )
+    api_keys = (
+        _request_or_stored_secret_value(secrets, api_secrets, 'OPENAI_API_KEY'),
+        _request_or_stored_secret_value(secrets, api_secrets, 'CODEX_API_KEY'),
+    )
+    if is_valid_codex_auth(codex_auth) or any(map(_has_api_key, api_keys)):
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            'Connect your Codex account or set an API key before starting a '
+            'Codex conversation.'
+        ),
+    )
 
 
 @dataclass
@@ -366,12 +429,15 @@ async def start_app_conversation(
     request: Request,
     start_request: AppConversationStartRequest,
     user_context: UserContext = user_context_dependency,
+    secrets_store: SecretsStore = Depends(get_secrets_store),
     db_session: AsyncSession = db_session_dependency,
     httpx_client: httpx.AsyncClient = httpx_client_dependency,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
 ) -> AppConversationStartTask:
+    await _validate_codex_credentials(start_request, user_context, secrets_store)
+
     # Because we are processing after the request finishes, keep the db connection open
     set_db_session_keep_open(request.state, True)
     set_httpx_client_keep_open(request.state, True)
@@ -1033,10 +1099,12 @@ async def delete_app_conversation(
 async def stream_app_conversation_start(
     request: AppConversationStartRequest,
     user_context: UserContext = user_context_dependency,
+    secrets_store: SecretsStore = Depends(get_secrets_store),
 ) -> list[AppConversationStartTask]:
     """Start an app conversation start task and stream updates from it.
     Leaves the connection open until either the conversation starts or there was an error
     """
+    await _validate_codex_credentials(request, user_context, secrets_store)
     response = StreamingResponse(
         _stream_app_conversation_start(request, user_context),
         media_type='application/json',
