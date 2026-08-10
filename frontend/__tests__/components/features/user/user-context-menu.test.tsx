@@ -39,6 +39,8 @@ function UserContextMenuWithRootOutlet({
   type,
   onClose,
   onOpenInviteModal,
+  onOpenCreateOrganizationModal,
+  onOpenOrganizationPreviewModal,
 }: UserContextMenuProps) {
   return (
     <div>
@@ -47,6 +49,8 @@ function UserContextMenuWithRootOutlet({
         type={type}
         onClose={onClose}
         onOpenInviteModal={onOpenInviteModal}
+        onOpenCreateOrganizationModal={onOpenCreateOrganizationModal}
+        onOpenOrganizationPreviewModal={onOpenOrganizationPreviewModal}
       />
     </div>
   );
@@ -56,12 +60,16 @@ const renderUserContextMenu = ({
   type,
   onClose,
   onOpenInviteModal,
+  onOpenCreateOrganizationModal,
+  onOpenOrganizationPreviewModal,
 }: UserContextMenuProps) =>
   render(
     <UserContextMenuWithRootOutlet
       type={type}
       onClose={onClose}
       onOpenInviteModal={onOpenInviteModal}
+      onOpenCreateOrganizationModal={onOpenCreateOrganizationModal}
+      onOpenOrganizationPreviewModal={onOpenOrganizationPreviewModal}
     />,
     {
     wrapper: ({ children }) => (
@@ -715,6 +723,82 @@ describe("UserContextMenu", () => {
     await userEvent.click(inviteButton);
 
     expect(onOpenInviteModalMock).toHaveBeenCalledOnce();
+    expect(onCloseMock).toHaveBeenCalledOnce();
+  });
+
+  it("opens the organization preview modal callback for users without create permission", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+      items: [MOCK_PERSONAL_ORG],
+      currentOrgId: MOCK_PERSONAL_ORG.id,
+    });
+    useSelectedOrganizationStore.setState({
+      organizationId: MOCK_PERSONAL_ORG.id,
+    });
+    seedActiveUser({
+      role: "member",
+      org_id: MOCK_PERSONAL_ORG.id,
+      permissions: [],
+    });
+
+    const onCloseMock = vi.fn();
+    const onOpenPreviewModalMock = vi.fn();
+    const onOpenCreateOrganizationModalMock = vi.fn();
+    renderUserContextMenu({
+      type: "member",
+      onClose: onCloseMock,
+      onOpenInviteModal: vi.fn(),
+      onOpenCreateOrganizationModal: onOpenCreateOrganizationModalMock,
+      onOpenOrganizationPreviewModal: onOpenPreviewModalMock,
+    });
+
+    const createOrganizationButton = await screen.findByText(
+      "ORG$CREATE_ORGANIZATION",
+    );
+    await userEvent.click(createOrganizationButton);
+
+    expect(onOpenPreviewModalMock).toHaveBeenCalledOnce();
+    expect(onOpenCreateOrganizationModalMock).not.toHaveBeenCalled();
+    expect(onCloseMock).toHaveBeenCalledOnce();
+  });
+
+  it("opens the create organization modal callback for users with create permission", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+      items: [MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_TEAM_ORG_ACME.id,
+    });
+    useSelectedOrganizationStore.setState({
+      organizationId: MOCK_TEAM_ORG_ACME.id,
+    });
+    seedActiveUser({
+      role: "admin",
+      org_id: MOCK_TEAM_ORG_ACME.id,
+      permissions: ["create_organization"],
+    });
+
+    const onCloseMock = vi.fn();
+    const onOpenPreviewModalMock = vi.fn();
+    const onOpenCreateOrganizationModalMock = vi.fn();
+    renderUserContextMenu({
+      type: "admin",
+      onClose: onCloseMock,
+      onOpenInviteModal: vi.fn(),
+      onOpenCreateOrganizationModal: onOpenCreateOrganizationModalMock,
+      onOpenOrganizationPreviewModal: onOpenPreviewModalMock,
+    });
+
+    const createOrganizationButton = await screen.findByText(
+      "ORG$CREATE_ORGANIZATION",
+    );
+    await userEvent.click(createOrganizationButton);
+
+    expect(onOpenCreateOrganizationModalMock).toHaveBeenCalledOnce();
+    expect(onOpenPreviewModalMock).not.toHaveBeenCalled();
     expect(onCloseMock).toHaveBeenCalledOnce();
   });
 

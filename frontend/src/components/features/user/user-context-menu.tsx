@@ -1,7 +1,12 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { IoLogOutOutline, IoPersonAddOutline } from "react-icons/io5";
+import {
+  IoAddCircleOutline,
+  IoLogOutOutline,
+  IoPersonAddOutline,
+} from "react-icons/io5";
 import { useLogout } from "#/hooks/mutation/use-logout";
+import { useMe } from "#/hooks/query/use-me";
 import { OrganizationUserRole } from "#/types/org";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { cn } from "#/utils/utils";
@@ -28,15 +33,20 @@ interface UserContextMenuProps {
   type: OrganizationUserRole;
   onClose: () => void;
   onOpenInviteModal: () => void;
+  onOpenCreateOrganizationModal?: () => void;
+  onOpenOrganizationPreviewModal?: () => void;
 }
 
 export function UserContextMenu({
   type,
   onClose,
   onOpenInviteModal,
+  onOpenCreateOrganizationModal,
+  onOpenOrganizationPreviewModal,
 }: UserContextMenuProps) {
   const { t } = useTranslation();
   const { mutate: logout } = useLogout();
+  const { data: me } = useMe();
   const { isPersonalOrg } = useOrgTypeAndAccess();
   const settingsNavItems = useSettingsNavItems();
   const shouldHideSelector = useShouldHideOrgSelector();
@@ -47,6 +57,8 @@ export function UserContextMenu({
   const navItems = settingsNavItems;
 
   const isMember = type === "member";
+  const canCreateOrganization =
+    me?.permissions?.includes("create_organization") === true;
 
   // Check if the ORG SETTINGS header exists in nav items
   const hasOrgHeader = navItems.some(
@@ -71,6 +83,15 @@ export function UserContextMenu({
     onClose();
   };
 
+  const handleCreateOrganizationClick = () => {
+    if (canCreateOrganization) {
+      onOpenCreateOrganizationModal?.();
+    } else {
+      onOpenOrganizationPreviewModal?.();
+    }
+    onClose();
+  };
+
   return (
     <ContextMenuContainer testId="user-context-menu" onClose={onClose}>
       <div className="flex flex-col gap-3 w-[248px]">
@@ -86,6 +107,16 @@ export function UserContextMenu({
           )}
 
           <div className="flex flex-col items-start gap-0 w-full">
+            {isSaas && (
+              <ContextMenuListItem
+                onClick={handleCreateOrganizationClick}
+                className={contextMenuListItemClassName}
+              >
+                <IoAddCircleOutline className="text-white" size={16} />
+                {t(I18nKey.ORG$CREATE_ORGANIZATION)}
+              </ContextMenuListItem>
+            )}
+
             {/* Show Invite button at top if no ORG SETTINGS header exists */}
             {showInviteButton && !hasOrgHeader && (
               <ContextMenuListItem

@@ -3,6 +3,7 @@ import {
   BatchInvitationResult,
   GitOrgClaim,
   Organization,
+  CreateOrganizationRequest,
   OrganizationMember,
   OrganizationMembersPage,
   OrganizationUserRole,
@@ -52,6 +53,14 @@ export const organizationService = {
       items: data?.items || [],
       currentOrgId: data?.current_org_id || null,
     };
+  },
+
+  createOrganization: async (payload: CreateOrganizationRequest) => {
+    const { data } = await openHands.post<Organization>(
+      "/api/organizations",
+      payload,
+    );
+    return data;
   },
 
   updateOrganization: async ({
