@@ -427,7 +427,10 @@ def _make_settings_for_switch(
 
 
 def _make_agent_server_context(
-    conversation_id, llm_model: str | None = 'openai/old-model'
+    conversation_id,
+    llm_model: str | None = 'openai/old-model',
+    working_dir: str = '/workspace/project',
+    selected_repository: str | None = None,
 ) -> AgentServerContext:
     """Build a minimal AgentServerContext for the success path tests."""
     info = AppConversationInfo(
@@ -435,11 +438,14 @@ def _make_agent_server_context(
         created_by_user_id='test-user',
         sandbox_id=str(uuid4()),
         llm_model=llm_model,
+        selected_repository=selected_repository,
     )
+    sandbox_spec = MagicMock()
+    sandbox_spec.working_dir = working_dir
     return AgentServerContext(
         conversation=info,
         sandbox=MagicMock(status=SandboxStatus.RUNNING),
-        sandbox_spec=MagicMock(),
+        sandbox_spec=sandbox_spec,
         agent_server_url='http://agent.test',
         session_api_key='sess-key',
     )
@@ -1234,6 +1240,124 @@ class TestListConversationFiles:
                 )
 
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
+
+    async def test_resolves_workspace_dir_when_path_omitted(self):
+        """With no ``path``, the cwd is derived from the sandbox spec's
+        ``working_dir`` and the conversation's selected repository."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(
+            conv_id,
+            working_dir='/workspace',
+            selected_repository='OpenHands/enterprise',
+        )
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await list_conversation_files(
+                conversation_id=conv_id,
+                path=None,
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        call = client.post.await_args
+        assert call.kwargs['json']['cwd'] == '/workspace/enterprise'
+
+    async def test_falls_back_to_resolved_dir_when_path_does_not_exist(self):
+        """The regression case: the frontend passes a ``path`` rooted in its
+        ``/workspace/project`` convention, but the runtime cloned the repo
+        under a different working dir (``/workspace/enterprise`` here). The
+        endpoint must ignore the stale path and list the resolved project dir
+        instead of returning ``[]`` from a missing-directory error."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(
+            conv_id,
+            working_dir='/workspace',
+            selected_repository='OpenHands/enterprise',
+        )
+        client = _make_httpx_client(
+            post_return=self._bash_response(stdout='./README.md\n'),
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        # The stale /workspace/project was NOT used as cwd; the resolved
+        # /workspace/enterprise was.
+        call = client.post.await_args
+        assert call.kwargs['json']['cwd'] == '/workspace/enterprise'
+        assert result == ['README.md']
+
+    async def test_honors_subdir_of_resolved_workspace(self):
+        """A ``path`` that descends into the resolved project dir is used
+        as-is, so listing a subdirectory of the workspace still works."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(
+            conv_id,
+            working_dir='/workspace',
+            selected_repository='OpenHands/enterprise',
+        )
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/enterprise/frontend/src',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        call = client.post.await_args
+        assert call.kwargs['json']['cwd'] == '/workspace/enterprise/frontend/src'
+
+    async def test_resolves_dir_without_selected_repository(self):
+        """With no selected repository the project dir is the bare working
+        dir, and a stale caller path is replaced with it."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(
+            conv_id, working_dir='/workspace/project', selected_repository=None
+        )
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await list_conversation_files(
+                conversation_id=conv_id,
+                path='/some/other/place',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        call = client.post.await_args
+        assert call.kwargs['json']['cwd'] == '/workspace/project'
 
 
 class TestFinalizeSandboxDelete:

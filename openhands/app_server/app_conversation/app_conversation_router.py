@@ -1402,18 +1402,54 @@ def _build_workspace_list_command() -> str:
     )
 
 
+def _resolve_workspace_dir(path: str | None, ctx: AgentServerContext) -> str:
+    """Resolve the directory to list files in.
+
+    The caller may pass ``path`` (e.g. the value the frontend computed from its
+    working-dir convention), but that convention does not always match the
+    runtime's actual working directory — different deployments clone the repo
+    at ``{working_dir}/{repo_name}``, ``{working_dir}/{conversation_id}``, or
+    plain ``working_dir``. The authoritative project root is derived from the
+    sandbox spec's ``working_dir`` and the conversation's
+    ``selected_repository`` (the same resolution the skills/hooks endpoints
+    use), so prefer it. ``path`` is only honored when it points at a real
+    subdirectory the runtime exposes — i.e. it is the resolved project dir or a
+    descendant of it — which keeps "list a subdirectory of the workspace"
+    working without ever listing outside the workspace.
+    """
+    project_dir = get_project_dir(
+        ctx.sandbox_spec.working_dir, ctx.conversation.selected_repository
+    )
+    if not path:
+        return project_dir
+    # Accept the caller's path only when it is the resolved project dir or a
+    # descendant of it, so "list a subdirectory of the workspace" still works
+    # without ever listing outside the conversation's project. The bare
+    # ``working_dir`` is deliberately NOT a candidate when a repository is
+    # selected: it is a *parent* of the clone, so treating it as an anchor
+    # would accept any sibling path (e.g. ``/workspace/project`` under
+    # ``/workspace``) and list the wrong — often nonexistent — directory.
+    base = project_dir.rstrip('/')
+    normalized = path.rstrip('/')
+    if normalized == base or normalized.startswith(base.rstrip('/') + '/'):
+        return path
+    return project_dir
+
+
 @router.get('/{conversation_id}/files')
 async def list_conversation_files(
     conversation_id: UUID,
     path: Annotated[
-        str,
+        str | None,
         Query(
             description=(
-                'Absolute path to the workspace directory to list '
-                '(e.g. /workspace/project)'
+                'Optional absolute path to the workspace directory to list. '
+                'When omitted, or when it does not match the conversation '
+                'workspace, the directory is resolved from the sandbox spec '
+                "and the conversation's selected repository."
             ),
         ),
-    ],
+    ] = None,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
@@ -1428,8 +1464,8 @@ async def list_conversation_files(
     the cloud API host and we make the runtime hop server-side using the
     sandbox's session API key. Unlike `/git/changes` (which only reports
     modified/untracked files), this enumerates the full tree so the Files tab
-    matches the local-backend experience. Paths are returned relative to
-    ``path`` (e.g. ``src/index.html``).
+    matches the local-backend experience. Paths are returned relative to the
+    listed directory (e.g. ``src/index.html``).
     """
     ctx = await _get_agent_server_context(
         conversation_id,
@@ -1448,13 +1484,14 @@ async def list_conversation_files(
             detail='Sandbox is paused; resume it before listing files.',
         )
 
+    cwd = _resolve_workspace_dir(path, ctx)
     headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
     try:
         upstream = await httpx_client.post(
             f'{ctx.agent_server_url}/api/bash/execute_bash_command',
             json={
                 'command': _build_workspace_list_command(),
-                'cwd': path,
+                'cwd': cwd,
                 'timeout': 30,
             },
             headers=headers,
