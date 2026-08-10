@@ -51,7 +51,7 @@ export function UserContextMenu({
   const settingsNavItems = useSettingsNavItems();
   const shouldHideSelector = useShouldHideOrgSelector();
   const isMobile = useBreakpoint(768);
-  const { isSaas, isEnterpriseCloud } = useAppMode();
+  const { isSaas, isEnterpriseCloud, isEnterpriseSelfHosted } = useAppMode();
 
   // Keep all nav items including headers and dividers for proper section grouping
   const navItems = settingsNavItems;
@@ -59,6 +59,10 @@ export function UserContextMenu({
   const isMember = type === "member";
   const canCreateOrganization =
     me?.permissions?.includes("create_organization") === true;
+  const shouldShowOrganizationPreview =
+    isSaas && !isEnterpriseSelfHosted && !canCreateOrganization;
+  const shouldShowCreateOrganizationButton =
+    isSaas && (canCreateOrganization || shouldShowOrganizationPreview);
 
   // Check if the ORG SETTINGS header exists in nav items
   const hasOrgHeader = navItems.some(
@@ -86,7 +90,7 @@ export function UserContextMenu({
   const handleCreateOrganizationClick = () => {
     if (canCreateOrganization) {
       onOpenCreateOrganizationModal?.();
-    } else {
+    } else if (shouldShowOrganizationPreview) {
       onOpenOrganizationPreviewModal?.();
     }
     onClose();
@@ -107,7 +111,7 @@ export function UserContextMenu({
           )}
 
           <div className="flex flex-col items-start gap-0 w-full">
-            {isSaas && (
+            {shouldShowCreateOrganizationButton && (
               <ContextMenuListItem
                 onClick={handleCreateOrganizationClick}
                 className={contextMenuListItemClassName}
