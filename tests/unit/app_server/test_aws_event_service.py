@@ -170,6 +170,45 @@ class TestAwsEventServiceSearchPaths:
             ContinuationToken='continuation_token',
         )
 
+    def test_search_paths_follows_pagination_beyond_1000_keys(
+        self, service: AwsEventService, mock_s3_client
+    ):
+        """_search_paths must return ALL keys, not just S3's first 1000.
+
+        S3 ``list_objects_v2`` returns at most 1000 keys per call and signals
+        more results via ``IsTruncated``/``NextContinuationToken``. A single,
+        unpaginated call therefore silently truncates any conversation with
+        more than 1000 event objects, which is what makes every conversation
+        report exactly 1000 events regardless of how long it actually ran.
+        """
+        total = 1500
+        keys = [
+            f'users/test_user/v1_conversations/abc123/event{i:04d}.json'
+            for i in range(total)
+        ]
+
+        def fake_list_objects_v2(**kwargs):
+            token = kwargs.get('ContinuationToken')
+            start = int(token) if token else 0
+            page = keys[start : start + 1000]
+            end = start + len(page)
+            response = {'Contents': [{'Key': k} for k in page]}
+            if end < len(keys):
+                response['IsTruncated'] = True
+                response['NextContinuationToken'] = str(end)
+            else:
+                response['IsTruncated'] = False
+            return response
+
+        mock_s3_client.list_objects_v2.side_effect = fake_list_objects_v2
+
+        result = service._search_paths(Path('users/test_user/v1_conversations/abc123'))
+
+        assert len(result) == total
+        assert result[0] == Path(keys[0])
+        assert result[-1] == Path(keys[-1])
+        assert mock_s3_client.list_objects_v2.call_count == 2
+
 
 class TestAwsEventServiceIntegration:
     """Integration tests for AwsEventService."""

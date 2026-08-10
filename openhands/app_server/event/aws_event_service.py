@@ -62,17 +62,33 @@ class AwsEventService(EventServiceBase):
         )
 
     def _search_paths(self, prefix: Path, page_id: str | None = None) -> list[Path]:
-        """Search paths."""
-        kwargs: dict[str, Any] = {
-            'Bucket': self.bucket_name,
-            'Prefix': str(prefix),
-        }
-        if page_id:
-            kwargs['ContinuationToken'] = page_id
+        """Search paths.
 
-        response = self.s3_client.list_objects_v2(**kwargs)
-        contents = response.get('Contents', [])
-        paths = [Path(obj['Key']) for obj in contents]
+        ``list_objects_v2`` returns at most 1000 keys per call and signals more
+        results via ``IsTruncated``/``NextContinuationToken``. We must follow the
+        continuation tokens to return every key; otherwise conversations with
+        more than 1000 event objects are silently truncated to their first 1000.
+        """
+        paths: list[Path] = []
+        continuation_token = page_id
+        while True:
+            kwargs: dict[str, Any] = {
+                'Bucket': self.bucket_name,
+                'Prefix': str(prefix),
+            }
+            if continuation_token:
+                kwargs['ContinuationToken'] = continuation_token
+
+            response = self.s3_client.list_objects_v2(**kwargs)
+            contents = response.get('Contents', [])
+            paths.extend(Path(obj['Key']) for obj in contents)
+
+            if not response.get('IsTruncated'):
+                break
+            continuation_token = response.get('NextContinuationToken')
+            if not continuation_token:
+                break
+
         return paths
 
 
