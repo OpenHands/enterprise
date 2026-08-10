@@ -3,10 +3,12 @@ import { useTranslation } from "react-i18next";
 import budgetsPreview from "#/assets/org-preview/budgets.png";
 import usageMonitoringPreview from "#/assets/org-preview/usage-monitoring.png";
 import { OrgModal } from "#/components/shared/modals/org-modal";
+import { useClientAnalytics } from "#/hooks/use-client-analytics";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 
-const ORG_CONTACT_FORM_URL = "https://www.openhands.dev/contact";
+const ENTERPRISE_QUICK_START_URL =
+  "https://docs.openhands.dev/enterprise/quick-start";
 const CAROUSEL_INTERVAL_MS = 3500;
 
 const screenshotSlides = [
@@ -28,6 +30,7 @@ export function OrganizationFeaturePreviewModal({
   onClose,
 }: OrganizationFeaturePreviewModalProps) {
   const { t } = useTranslation();
+  const { trackEnterpriseCTAClicked } = useClientAnalytics();
   const [activeSlide, setActiveSlide] = React.useState(0);
   const hasMultipleSlides = screenshotSlides.length > 1;
 
@@ -48,10 +51,13 @@ export function OrganizationFeaturePreviewModal({
       testId="organization-feature-preview-modal"
       title={t(I18nKey.ORG$FEATURE_PREVIEW_TITLE)}
       description={t(I18nKey.ORG$FEATURE_PREVIEW_DESCRIPTION)}
-      primaryButtonText={t(I18nKey.ORG$CONTACT_US)}
-      onPrimaryClick={() =>
-        window.open(ORG_CONTACT_FORM_URL, "_blank", "noopener")
-      }
+      primaryButtonText={t(I18nKey.ORG$TRY_IT_OUT)}
+      onPrimaryClick={() => {
+        trackEnterpriseCTAClicked({
+          location: "organization_feature_preview_modal_try_it_out",
+        });
+        window.open(ENTERPRISE_QUICK_START_URL, "_blank", "noopener");
+      }}
       onClose={onClose}
       ariaLabel={t(I18nKey.ORG$FEATURE_PREVIEW_TITLE)}
       className="w-[92vw] max-w-[900px]"
