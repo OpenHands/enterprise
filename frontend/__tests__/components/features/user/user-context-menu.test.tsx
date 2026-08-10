@@ -768,7 +768,10 @@ describe("UserContextMenu", () => {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig({
         app_mode: "saas",
-        feature_flags: { deployment_mode: "self_hosted" },
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          deployment_mode: "self_hosted",
+        },
       }),
     );
     vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
@@ -809,7 +812,10 @@ describe("UserContextMenu", () => {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig({
         app_mode: "saas",
-        feature_flags: { deployment_mode: "self_hosted" },
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          deployment_mode: "self_hosted",
+        },
       }),
     );
     vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
