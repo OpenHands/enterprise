@@ -1187,6 +1187,21 @@ async def read_conversation_file(
         working_dir=sandbox_spec.working_dir,
     )
 
+    # The runtime's file_download requires an absolute path that already points
+    # at the file. The frontend may have rooted ``file_path`` at its own
+    # working-dir convention (e.g. ``/workspace/project/enterprise/...``)
+    # rather than the runtime's actual clone location
+    # (``{working_dir}/{repo_name}/...``); remap it onto the resolved project
+    # dir so the download resolves the right file instead of 404-ing into "".
+    ctx = AgentServerContext(
+        conversation=conversation,
+        sandbox=sandbox,
+        sandbox_spec=sandbox_spec,
+        agent_server_url=agent_server_url,
+        session_api_key=sandbox.session_api_key,
+    )
+    resolved_path = _resolve_file_path(file_path, ctx)
+
     # Read the file at the specified path
     temp_file_path = None
     try:
@@ -1196,7 +1211,7 @@ async def read_conversation_file(
 
         # Download the file from remote system
         result = await remote_workspace.file_download(
-            source_path=file_path,
+            source_path=resolved_path,
             destination_path=temp_file_path,
         )
 
@@ -1434,6 +1449,75 @@ def _resolve_workspace_dir(path: str | None, ctx: AgentServerContext) -> str:
     if normalized == base or normalized.startswith(base.rstrip('/') + '/'):
         return path
     return project_dir
+
+
+def _resolve_file_path(file_path: str, ctx: AgentServerContext) -> str:
+    """Resolve a file path to an absolute path inside the conversation's project.
+
+    The runtime's ``/api/file/download`` requires an **absolute** path and does
+    not join it with the workspace's ``working_dir``, so the path we hand it
+    must already point at the right place. The frontend builds its request path
+    as ``{workspaceRoot}/{relativePath}``, where ``relativePath`` is correct
+    (it comes from the ``/files`` tree, which is relative to the real project
+    dir) but ``workspaceRoot`` is the frontend's working-dir convention. When
+    the cloud conversation response does not expose ``workspace.working_dir``
+    that convention falls back to ``{DEFAULT_WORKING_DIR}[/{repoName}]`` (e.g.
+    ``/workspace/project/enterprise``), which does not match the runtime's
+    actual clone location (``{working_dir}/{repo_name}``, e.g.
+    ``/workspace/enterprise``). The download then 404s and the endpoint
+    silently returns ``""``.
+
+    This remaps the path onto the authoritative project dir derived from the
+    sandbox spec (the same ``get_project_dir`` resolution used by
+    ``_resolve_workspace_dir`` and the skills/hooks endpoints):
+
+    * an absolute path already inside the project dir is used as-is;
+    * an absolute path rooted at a stale frontend default is re-anchored by
+      stripping the stale root prefix (longest match first, so
+      ``/workspace/project/enterprise`` is preferred over ``/workspace``) and
+      re-joining under the project dir;
+    * a relative path is joined under the project dir (the runtime rejects
+      relative paths, so this also fixes that case).
+    """
+    working_dir = ctx.sandbox_spec.working_dir
+    repo_name = (
+        ctx.conversation.selected_repository.split('/')[-1]
+        if ctx.conversation.selected_repository
+        else None
+    )
+    project_dir = get_project_dir(working_dir, ctx.conversation.selected_repository)
+
+    if not file_path:
+        return project_dir
+
+    normalized = file_path.rstrip('/')
+    if not normalized.startswith('/'):
+        # Relative path: anchor under the project dir.
+        return f'{project_dir}/{normalized}'
+
+    project_base = project_dir.rstrip('/')
+    if normalized == project_base or normalized.startswith(project_base + '/'):
+        # Already inside the real project dir.
+        return file_path
+
+    # The path is absolute but not under the project dir. It is likely rooted
+    # at one of the frontend's stale defaults; strip the longest matching
+    # stale root and re-anchor under the project dir. Ordered longest-first so
+    # a more specific root (``/workspace/project/enterprise``) wins over its
+    # parent (``/workspace/project``), and the bare ``working_dir`` (which is
+    # a parent of the clone) is only a last resort.
+    stale_roots: list[str] = []
+    if repo_name:
+        stale_roots.append(f'{working_dir}/project/{repo_name}')
+    stale_roots.append(f'{working_dir}/project')
+    stale_roots.append(working_dir)
+    for root in sorted({r.rstrip('/') for r in stale_roots}, key=len, reverse=True):
+        if normalized == root or normalized.startswith(root + '/'):
+            remainder = normalized[len(root) :].lstrip('/')
+            return f'{project_dir}/{remainder}' if remainder else project_dir
+
+    # No recognizable root; let the runtime reject it (returns "").
+    return file_path
 
 
 @router.get('/{conversation_id}/files')
