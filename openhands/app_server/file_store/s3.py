@@ -8,16 +8,8 @@ from pydantic import Field, PrivateAttr
 from openhands.app_server.file_store.files import FileStore
 
 
-class S3ObjectDict(TypedDict):
-    Key: str
-
-
 class GetObjectOutputDict(TypedDict):
     Body: Any
-
-
-class ListObjectsV2OutputDict(TypedDict):
-    Contents: list[S3ObjectDict] | None
 
 
 class S3FileStore(FileStore):
@@ -131,24 +123,29 @@ class S3FileStore(FileStore):
         #   ping.txt
         # prefix=None, delimiter="/"   yields  ["ping.txt"]  # :(
         # prefix="foo", delimiter="/"  yields  []  # :(
+        # Use a paginator to iterate over all pages of results; list_objects_v2
+        # returns at most 1,000 keys per response, so a single call silently
+        # truncates large prefixes (see OHE-3079).
         results: set[str] = set()
         prefix_len = len(path)
-        response: ListObjectsV2OutputDict = self.client.list_objects_v2(
+        paginator = self.client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(
             Bucket=self._get_bucket_name(), Prefix=path
         )
-        contents = response.get('Contents')
-        if not contents:
-            return []
-        paths = [obj['Key'] for obj in contents]
-        for sub_path in paths:
-            if sub_path == path:
+        for page in pages:
+            contents = page.get('Contents')
+            if not contents:
                 continue
-            try:
-                index = sub_path.index('/', prefix_len + 1)
-                if index != prefix_len:
-                    results.add(sub_path[: index + 1])
-            except ValueError:
-                results.add(sub_path)
+            for obj in contents:
+                sub_path = obj['Key']
+                if sub_path == path:
+                    continue
+                try:
+                    index = sub_path.index('/', prefix_len + 1)
+                    if index != prefix_len:
+                        results.add(sub_path[: index + 1])
+                except ValueError:
+                    results.add(sub_path)
         return list(results)
 
     def delete(self, path: str) -> None:
@@ -160,13 +157,17 @@ class S3FileStore(FileStore):
                 path = path[:-1]
 
             # Try to delete any child resources (Assume the path is a directory)
-            response = self.client.list_objects_v2(
+            # Use a paginator so all child objects are deleted, not just the first
+            # 1,000 keys returned by a single list_objects_v2 call.
+            paginator = self.client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(
                 Bucket=self._get_bucket_name(), Prefix=f'{path}/'
             )
-            for content in response.get('Contents') or []:
-                self.client.delete_object(
-                    Bucket=self._get_bucket_name(), Key=content['Key']
-                )
+            for page in pages:
+                for content in page.get('Contents') or []:
+                    self.client.delete_object(
+                        Bucket=self._get_bucket_name(), Key=content['Key']
+                    )
 
             # Next try to delete item as a file
             self.client.delete_object(Bucket=self._get_bucket_name(), Key=path)
