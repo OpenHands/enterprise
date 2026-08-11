@@ -129,9 +129,7 @@ class S3FileStore(FileStore):
         results: set[str] = set()
         prefix_len = len(path)
         paginator = self.client.get_paginator('list_objects_v2')
-        pages = paginator.paginate(
-            Bucket=self._get_bucket_name(), Prefix=path
-        )
+        pages = paginator.paginate(Bucket=self._get_bucket_name(), Prefix=path)
         for page in pages:
             contents = page.get('Contents')
             if not contents:
