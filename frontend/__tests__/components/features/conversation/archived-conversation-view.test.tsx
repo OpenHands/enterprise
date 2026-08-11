@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
@@ -226,6 +226,69 @@ describe("ArchivedConversationView", () => {
 
       expect(screen.getByTestId("v1-messages")).toBeInTheDocument();
       expect(screen.getAllByTestId("v1-message-item")).toHaveLength(3);
+    });
+  });
+
+  describe("history load failures", () => {
+    it("shows an error state with a retry action when the history load fails with no events", () => {
+      const retryHistoryLoad = vi.fn();
+      vi.mocked(useConversationWebSocket).mockReturnValue({
+        isLoadingHistory: false,
+        connectionState: "OPEN",
+        sendMessage: vi.fn(),
+        historyLoadFailed: true,
+        retryHistoryLoad,
+      });
+
+      renderWithProviders(<ArchivedConversationView />);
+
+      expect(screen.getByText(/HISTORY_LOAD_FAILED/i)).toBeInTheDocument();
+      expect(
+        screen.queryByText(/NO_HISTORY_AVAILABLE|No history available/i),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByText("CONVERSATION$RETRY"));
+
+      expect(retryHistoryLoad).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps rendered messages and shows an incomplete-history notice when pagination fails midway", () => {
+      vi.mocked(useConversationWebSocket).mockReturnValue({
+        isLoadingHistory: false,
+        connectionState: "OPEN",
+        sendMessage: vi.fn(),
+        historyLoadFailed: true,
+        retryHistoryLoad: vi.fn(),
+      });
+
+      const userEvent = createUserMessageEvent("evt-1");
+      useEventStore.setState({
+        events: [userEvent],
+        uiEvents: [userEvent],
+      });
+
+      renderWithProviders(<ArchivedConversationView />);
+
+      expect(screen.getByTestId("v1-messages")).toBeInTheDocument();
+      expect(screen.getByText(/HISTORY_LOAD_INCOMPLETE/i)).toBeInTheDocument();
+    });
+
+    it("shows a loading-more indicator while additional history pages load", () => {
+      vi.mocked(useConversationWebSocket).mockReturnValue({
+        isLoadingHistory: true,
+        connectionState: "OPEN",
+        sendMessage: vi.fn(),
+      });
+
+      const userEvent = createUserMessageEvent("evt-1");
+      useEventStore.setState({
+        events: [userEvent],
+        uiEvents: [userEvent],
+      });
+
+      renderWithProviders(<ArchivedConversationView />);
+
+      expect(screen.getByTestId("history-loading-more")).toBeInTheDocument();
     });
   });
 

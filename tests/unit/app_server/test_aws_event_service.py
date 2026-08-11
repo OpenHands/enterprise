@@ -7,7 +7,7 @@ focusing on search functionality and S3 operations.
 import importlib
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import botocore.exceptions
@@ -170,6 +170,51 @@ class TestAwsEventServiceSearchPaths:
             ContinuationToken='continuation_token',
         )
 
+    def test_search_paths_follows_continuation_tokens(
+        self, service: AwsEventService, mock_s3_client
+    ):
+        """Test that truncated list responses (>1000 keys) are followed to the end."""
+        mock_s3_client.list_objects_v2.side_effect = [
+            {
+                'Contents': [{'Key': 'event1.json'}],
+                'IsTruncated': True,
+                'NextContinuationToken': 'token-2',
+            },
+            {
+                'Contents': [{'Key': 'event2.json'}],
+                'IsTruncated': True,
+                'NextContinuationToken': 'token-3',
+            },
+            {'Contents': [{'Key': 'event3.json'}]},
+        ]
+
+        result = service._search_paths(Path('prefix'))
+
+        assert result == [
+            Path('event1.json'),
+            Path('event2.json'),
+            Path('event3.json'),
+        ]
+        assert mock_s3_client.list_objects_v2.call_count == 3
+        calls = mock_s3_client.list_objects_v2.call_args_list
+        assert 'ContinuationToken' not in calls[0].kwargs
+        assert calls[1].kwargs['ContinuationToken'] == 'token-2'
+        assert calls[2].kwargs['ContinuationToken'] == 'token-3'
+
+    def test_search_paths_stops_when_truncated_without_token(
+        self, service: AwsEventService, mock_s3_client
+    ):
+        """Test that a truncated response with no continuation token terminates."""
+        mock_s3_client.list_objects_v2.return_value = {
+            'Contents': [{'Key': 'event1.json'}],
+            'IsTruncated': True,
+        }
+
+        result = service._search_paths(Path('prefix'))
+
+        assert result == [Path('event1.json')]
+        mock_s3_client.list_objects_v2.assert_called_once()
+
 
 class TestAwsEventServiceIntegration:
     """Integration tests for AwsEventService."""
@@ -213,6 +258,41 @@ class TestAwsEventServiceInjector:
         """Test that injector has default prefix."""
         injector = AwsEventServiceInjector(bucket_name='my-bucket')
         assert injector.prefix == Path('users')
+
+
+class TestGetSharedS3Client:
+    """Test cases for the process-wide shared S3 client factory."""
+
+    def setup_method(self):
+        aws_event_service._get_shared_s3_client.cache_clear()
+
+    def teardown_method(self):
+        aws_event_service._get_shared_s3_client.cache_clear()
+
+    def test_reuses_client_for_same_endpoint(self):
+        """Test that repeated calls share one client per endpoint."""
+        with patch(
+            'openhands.app_server.event.aws_event_service.boto3.client'
+        ) as mock_boto3_client:
+            mock_boto3_client.side_effect = [MagicMock(), MagicMock()]
+
+            first = aws_event_service._get_shared_s3_client('https://s3.example.com')
+            second = aws_event_service._get_shared_s3_client('https://s3.example.com')
+            other = aws_event_service._get_shared_s3_client(None)
+
+        assert first is second
+        assert first is not other
+        assert mock_boto3_client.call_count == 2
+
+    def test_creates_client_with_expanded_connection_pool(self):
+        """Test that the shared client is configured with a larger urllib3 pool."""
+        with patch(
+            'openhands.app_server.event.aws_event_service.boto3.client'
+        ) as mock_boto3_client:
+            aws_event_service._get_shared_s3_client('https://s3.example.com')
+
+        config = mock_boto3_client.call_args.kwargs['config']
+        assert config.max_pool_connections == aws_event_service._S3_MAX_POOL_CONNECTIONS
 
 
 class TestGetDefaultAwsEndpointUrl:
