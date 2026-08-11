@@ -72,7 +72,10 @@ describe("useConversationHistory", () => {
       refetch: vi.fn(),
     } as any);
 
-    v1SearchEventsSpy.mockResolvedValue([makeEvent()]);
+    v1SearchEventsSpy.mockResolvedValue({
+      items: [makeEvent()],
+      next_page_id: null,
+    });
 
     const { result } = renderHook(() => useConversationHistory("conv-123"), {
       wrapper,
@@ -117,7 +120,7 @@ describe("useConversationHistory cache key stability", () => {
 
   it("does not refetch when conversation object changes but version stays the same", async () => {
     const v1Spy = vi.spyOn(EventService, "searchEventsV1");
-    v1Spy.mockResolvedValue([makeEvent()]);
+    v1Spy.mockResolvedValue({ items: [makeEvent()], next_page_id: null });
 
     const conv1 = makeConversation("V1");
     vi.mocked(useUserConversation).mockReturnValue({
@@ -174,7 +177,7 @@ describe("useConversationHistory cache key stability", () => {
 
   it("treats cached history as never stale (staleTime is Infinity)", async () => {
     const v1Spy = vi.spyOn(EventService, "searchEventsV1");
-    v1Spy.mockResolvedValue([makeEvent()]);
+    v1Spy.mockResolvedValue({ items: [makeEvent()], next_page_id: null });
 
     vi.mocked(useUserConversation).mockReturnValue({
       data: makeConversation("V1"),
@@ -206,7 +209,7 @@ describe("useConversationHistory cache key stability", () => {
 
   it("has gcTime of at least 30 minutes for navigation resilience", async () => {
     const v1Spy = vi.spyOn(EventService, "searchEventsV1");
-    v1Spy.mockResolvedValue([makeEvent()]);
+    v1Spy.mockResolvedValue({ items: [makeEvent()], next_page_id: null });
 
     vi.mocked(useUserConversation).mockReturnValue({
       data: makeConversation("V1"),
@@ -231,5 +234,115 @@ describe("useConversationHistory cache key stability", () => {
     });
     expect(queries).toHaveLength(1);
     expect(queries[0].options.gcTime).toBeGreaterThanOrEqual(30 * 60 * 1000);
+  });
+});
+
+describe("useConversationHistory archived pagination", () => {
+  let localQueryClient: QueryClient;
+  let localWrapper: ({
+    children,
+  }: {
+    children: React.ReactNode;
+  }) => React.ReactElement;
+
+  const mockConversation = (sandboxStatus: "MISSING" | "RUNNING") => {
+    vi.mocked(useUserConversation).mockReturnValue({
+      data: { ...makeConversation("V1"), sandbox_status: sandboxStatus },
+      isLoading: false,
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+  };
+
+  beforeEach(() => {
+    localQueryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    });
+    localWrapper = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(
+        QueryClientProvider,
+        { client: localQueryClient },
+        children,
+      );
+  });
+
+  afterEach(() => {
+    localQueryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  it("fetches every page for archived conversations", async () => {
+    const v1Spy = vi.spyOn(EventService, "searchEventsV1");
+    v1Spy.mockImplementation(async (_conversationId: string, pageId?: string) =>
+      pageId
+        ? { items: [{ id: "evt-2" } as OpenHandsEvent], next_page_id: null }
+        : { items: [{ id: "evt-1" } as OpenHandsEvent], next_page_id: "100" },
+    );
+    mockConversation("MISSING");
+
+    const { result } = renderHook(
+      () => useConversationHistory("conv-archived"),
+      { wrapper: localWrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.data).toHaveLength(2);
+    });
+
+    expect(v1Spy).toHaveBeenCalledWith("conv-archived");
+    expect(v1Spy).toHaveBeenCalledWith("conv-archived", "100");
+    expect(result.current.isFetchingMore).toBe(false);
+  });
+
+  it("does not fetch additional pages for live conversations", async () => {
+    const v1Spy = vi.spyOn(EventService, "searchEventsV1");
+    v1Spy.mockResolvedValue({
+      items: [{ id: "evt-1" } as OpenHandsEvent],
+      next_page_id: "100",
+    });
+    mockConversation("RUNNING");
+
+    const { result } = renderHook(() => useConversationHistory("conv-live"), {
+      wrapper: localWrapper,
+    });
+
+    await waitFor(() => {
+      expect(result.current.data).toHaveLength(1);
+    });
+
+    expect(v1Spy).toHaveBeenCalledTimes(1);
+    expect(result.current.isFetchingMore).toBe(false);
+  });
+
+  it("keeps loaded pages and reports an error when a later page fails", async () => {
+    const v1Spy = vi.spyOn(EventService, "searchEventsV1");
+    v1Spy.mockImplementation(
+      async (_conversationId: string, pageId?: string) => {
+        if (pageId) throw new Error("gateway timeout");
+        return {
+          items: [{ id: "evt-1" } as OpenHandsEvent],
+          next_page_id: "100",
+        };
+      },
+    );
+    mockConversation("MISSING");
+
+    const { result } = renderHook(
+      () => useConversationHistory("conv-archived-fail"),
+      { wrapper: localWrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+
+    expect(result.current.data).toHaveLength(1);
+    expect(result.current.isFetchingMore).toBe(false);
   });
 });
