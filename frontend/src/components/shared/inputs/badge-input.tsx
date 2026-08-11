@@ -62,7 +62,7 @@ export function BadgeInput({
     >
       {value.map((badge, index) => (
         <div key={index}>
-          <BrandBadge className="flex items-center gap-0.5 py-1 px-2.5 text-sm text-[#0D0F11] font-semibold leading-[16px]">
+          <BrandBadge className="flex items-center gap-0.5 py-1 px-2.5 text-sm text-[var(--oh-color-base)] font-semibold leading-[16px]">
             {badge}
             <button
               data-testid="remove-button"

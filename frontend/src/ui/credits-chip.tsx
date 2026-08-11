@@ -1,4 +1,8 @@
 import { cn } from "#/utils/utils";
+import {
+  formControlHeightClassName,
+  formControlTransitionClassName,
+} from "#/utils/form-control-classes";
 
 interface CreditsChipProps {
   testId?: string;
@@ -6,8 +10,8 @@ interface CreditsChipProps {
 }
 
 /**
- * Chip component for displaying credits amount
- * Uses yellow background with black text for visibility
+ * Chip component for displaying credits amount.
+ * Uses the logo accent token so it stays themeable under neo.
  */
 export function CreditsChip({
   children,
@@ -18,9 +22,10 @@ export function CreditsChip({
     <div
       data-testid={testId}
       data-openhands-chip
-      style={{ minWidth: "100px" }}
       className={cn(
-        "bg-[#FFE165] px-4 rounded-[100px] text-black text-lg text-center font-semibold",
+        formControlHeightClassName,
+        formControlTransitionClassName,
+        "inline-flex min-w-[100px] items-center justify-center rounded-lg bg-logo px-4 text-center text-sm font-semibold text-[var(--oh-color-base)]",
         className,
       )}
     >

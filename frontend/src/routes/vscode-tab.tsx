@@ -83,7 +83,7 @@ function VSCodeTab() {
         <button
           type="button"
           onClick={handleOpenInNewTab}
-          className="px-4 py-2 bg-primary text-white rounded-sm hover:bg-primary-dark transition-colors"
+          className="px-4 py-2 bg-primary text-[var(--oh-color-base)] rounded-sm hover:opacity-80 transition-colors"
         >
           {t("VSCODE$OPEN_IN_NEW_TAB")}
         </button>

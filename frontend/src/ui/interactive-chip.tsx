@@ -1,4 +1,5 @@
 import { cn } from "#/utils/utils";
+import { formControlButtonClassName } from "#/utils/form-control-classes";
 
 interface InteractiveChipProps {
   onClick: () => void;
@@ -7,8 +8,8 @@ interface InteractiveChipProps {
 }
 
 /**
- * Small clickable chip component for actions like "Add"
- * Uses gray background with black text
+ * Small clickable chip for secondary actions like "Add".
+ * Matches agent-canvas secondary brand-button chrome.
  */
 export function InteractiveChip({
   children,
@@ -22,8 +23,8 @@ export function InteractiveChip({
       data-testid={testId}
       onClick={onClick}
       className={cn(
-        "bg-[#E4E4E4] px-2 rounded-[100px] text-black text-sm text-center font-semibold cursor-pointer",
-        "hover:bg-[#D4D4D4] transition-colors",
+        formControlButtonClassName,
+        "border border-[var(--oh-border)] bg-base-secondary text-white hover:bg-surface-raised",
         className,
       )}
     >
