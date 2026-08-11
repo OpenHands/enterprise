@@ -365,8 +365,11 @@ export const ORG_HANDLERS = [
 
   http.get("/api/organizations", () => {
     const organizations = Array.from(orgs.values());
-    // Return the first org as the current org for mock purposes
-    const currentOrgId = organizations.length > 0 ? organizations[0].id : null;
+    // Prefer a team org so admin settings (budgets, usage, org defaults) are
+    // visible in SaaS mock mode. Personal Workspace (id "1") hides those pages.
+    const teamOrg =
+      organizations.find((org) => !org.is_personal) ?? organizations[0];
+    const currentOrgId = teamOrg?.id ?? null;
     return HttpResponse.json({
       items: organizations,
       current_org_id: currentOrgId,
@@ -585,5 +588,114 @@ export const ORG_HANDLERS = [
 
   http.get("/api/organizations/:orgId/members/invite", () =>
     HttpResponse.json({ items: [], email_delivery_configured: true }),
+  ),
+
+  http.get("/api/organizations/:orgId/budgets", ({ params }) => {
+    const orgId = params.orgId?.toString();
+    if (!orgId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+
+    const members = ORGS_AND_MEMBERS[orgId] ?? [];
+    return HttpResponse.json({
+      enabled: true,
+      monthly_limit: 1000,
+      reset_day: 1,
+      slack_channel: "budget-alerts",
+      slack_team_id: "T123",
+      default_user_monthly_limit: 250,
+      cycle_start_at: "2026-08-01T00:00:00Z",
+      cycle_end_at: "2026-08-31T23:59:59Z",
+      current_spend: 420.5,
+      current_spend_percentage: 42.05,
+      thresholds: [
+        {
+          id: 1,
+          percentage: 75,
+          email_enabled: true,
+          slack_enabled: false,
+        },
+        {
+          id: 2,
+          percentage: 90,
+          email_enabled: true,
+          slack_enabled: true,
+        },
+      ],
+      users: members.slice(0, 5).map((member, index) => ({
+        user_id: member.user_id,
+        user_email: member.email,
+        user_name: member.email.split("@")[0],
+        current_spend: 25 + index * 40,
+        monthly_limit: index === 0 ? 100 : null,
+        effective_monthly_limit: index === 0 ? 100 : 250,
+        is_disabled: false,
+        is_override: index === 0,
+      })),
+      users_total: members.length,
+      users_page: 1,
+      users_per_page: 50,
+    });
+  }),
+
+  http.patch(
+    "/api/organizations/:orgId/budgets",
+    async ({ params, request }) => {
+      const orgId = params.orgId?.toString();
+      if (!orgId || !orgs.has(orgId)) {
+        return HttpResponse.json(
+          { error: "Organization not found" },
+          { status: 404 },
+        );
+      }
+      const body = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({
+        enabled: body.enabled ?? true,
+        monthly_limit: body.monthly_limit ?? 1000,
+        reset_day: body.reset_day ?? 1,
+        slack_channel: body.slack_channel ?? "budget-alerts",
+        slack_team_id: "T123",
+        default_user_monthly_limit: body.default_user_monthly_limit ?? 250,
+        cycle_start_at: "2026-08-01T00:00:00Z",
+        cycle_end_at: "2026-08-31T23:59:59Z",
+        current_spend: 420.5,
+        current_spend_percentage: 42.05,
+        thresholds: body.thresholds ?? [],
+        users: [],
+        users_total: 0,
+        users_page: 1,
+        users_per_page: 50,
+      });
+    },
+  ),
+
+  http.put(
+    "/api/organizations/:orgId/budgets/overrides/:userId",
+    async ({ params, request }) => {
+      const body = (await request.json()) as {
+        monthly_limit?: number | null;
+        is_disabled: boolean;
+      };
+      return HttpResponse.json({
+        user_id: String(params.userId),
+        user_email: "user@example.com",
+        user_name: "User",
+        current_spend: 25,
+        monthly_limit: body.monthly_limit ?? null,
+        effective_monthly_limit: body.is_disabled
+          ? null
+          : (body.monthly_limit ?? 250),
+        is_disabled: body.is_disabled,
+        is_override: true,
+      });
+    },
+  ),
+
+  http.delete(
+    "/api/organizations/:orgId/budgets/overrides/:userId",
+    () => new HttpResponse(null, { status: 204 }),
   ),
 ];

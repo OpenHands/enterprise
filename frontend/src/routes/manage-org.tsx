@@ -13,9 +13,16 @@ import { DeleteOrgConfirmationModal } from "#/components/features/org/delete-org
 import { GitConversationRouting } from "#/components/features/org/git-conversation-routing";
 import { ChangeOrgNameModal } from "#/components/features/org/change-org-name-modal";
 import { AddCreditsModal } from "#/components/features/org/add-credits-modal";
+import { BrandButton } from "#/components/features/settings/brand-button";
 import { useBalance } from "#/hooks/query/use-balance";
 import { useOrganizations } from "#/hooks/query/use-organizations";
 import { cn } from "#/utils/utils";
+import {
+  formControlHeightClassName,
+  formControlRadiusClassName,
+  formControlBorderClassName,
+  formControlSurfaceClassName,
+} from "#/utils/form-control-classes";
 
 export const clientLoader = createPermissionGuard("view_billing");
 
@@ -58,7 +65,7 @@ function ManageOrg() {
   return (
     <div
       data-testid="manage-org-screen"
-      className="flex flex-col items-start gap-6"
+      className="flex w-full flex-col items-start gap-6"
     >
       {changeOrgNameFormVisible && (
         <ChangeOrgNameModal
@@ -72,10 +79,8 @@ function ManageOrg() {
       )}
 
       {!shouldHideBilling && (
-        <div className="flex flex-col gap-2">
-          <span className="text-white text-xs font-semibold">
-            {t(I18nKey.ORG$CREDITS)}
-          </span>
+        <div className="flex flex-col gap-2.5">
+          <span className="text-sm">{t(I18nKey.ORG$CREDITS)}</span>
           <div className="flex items-center gap-2">
             <CreditsChip testId="available-credits">
               ${Number(balance ?? 0).toFixed(2)}
@@ -93,23 +98,26 @@ function ManageOrg() {
         <AddCreditsModal onClose={() => setAddCreditsFormVisible(false)} />
       )}
 
-      <div data-testid="org-name" className="flex flex-col gap-2 w-sm">
-        <span className="text-white text-xs font-semibold">
-          {t(I18nKey.ORG$ORGANIZATION_NAME)}
-        </span>
+      <div data-testid="org-name" className="flex w-sm flex-col gap-2.5">
+        <span className="text-sm">{t(I18nKey.ORG$ORGANIZATION_NAME)}</span>
 
         <div
           className={cn(
-            "text-sm p-3 bg-modal-input rounded",
-            "flex items-center justify-between",
+            formControlHeightClassName,
+            formControlRadiusClassName,
+            formControlBorderClassName,
+            formControlSurfaceClassName,
+            "flex w-full items-center justify-between px-3 text-sm text-white",
           )}
         >
-          <span className="text-white">{organization?.name}</span>
+          <span className="min-w-0 truncate text-white">
+            {organization?.name}
+          </span>
           {canChangeOrgName && (
             <button
               type="button"
               onClick={() => setChangeOrgNameFormVisible(true)}
-              className="text-sm text-org-text font-normal leading-5 hover:text-white transition-colors cursor-pointer"
+              className="shrink-0 text-sm font-normal leading-5 text-[var(--oh-muted)] transition-colors hover:text-white cursor-pointer"
             >
               {t(I18nKey.ORG$CHANGE)}
             </button>
@@ -118,17 +126,19 @@ function ManageOrg() {
       </div>
 
       {canDeleteOrg && (
-        <button
+        <BrandButton
           type="button"
+          variant="ghost-danger"
           onClick={() => setDeleteOrgConfirmationVisible(true)}
-          className="text-xs text-[#FF3B30] cursor-pointer font-semibold hover:underline"
         >
           {t(I18nKey.ORG$DELETE_ORGANIZATION)}
-        </button>
+        </BrandButton>
       )}
 
       {canManageOrgClaims && !hideGitConversationRouting && (
-        <GitConversationRouting />
+        <div className="mt-2 w-full border-t border-[var(--oh-border)] pt-6">
+          <GitConversationRouting />
+        </div>
       )}
     </div>
   );

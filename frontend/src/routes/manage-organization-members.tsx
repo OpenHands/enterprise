@@ -24,6 +24,17 @@ import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { Typography } from "#/ui/typography";
 import { Pagination } from "#/ui/pagination";
 import { useDebounce } from "#/hooks/use-debounce";
+import { cn } from "#/utils/utils";
+import {
+  formControlInlineInputClassName,
+  formControlShellClassName,
+} from "#/utils/form-control-classes";
+import {
+  settingsListContainerClassName,
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+  settingsListTableRowClassName,
+} from "#/utils/settings-list-classes";
 
 export const clientLoader = createPermissionGuard(
   "invite_user_to_organization",
@@ -163,20 +174,27 @@ function ManageOrganizationMembers() {
       </div>
 
       {/* Email Search Input */}
-      <div className="rounded-sm w-80 h-10 p-2 bg-tertiary border border-[#717888] flex items-center gap-2 mb-4">
-        <Search size={16} className="text-tertiary-alt" />
+      <div className={cn(formControlShellClassName, "mb-4 w-80")}>
+        <Search
+          size={16}
+          className="ml-3 shrink-0 text-tertiary-alt"
+          aria-hidden
+        />
         <input
           data-testid="email-filter-input"
           type="text"
           value={emailFilter}
           placeholder={t(I18nKey.ORG$SEARCH_BY_EMAIL)}
           onChange={(e) => setEmailFilter(e.target.value)}
-          className="w-full leading-4 font-normal bg-transparent placeholder:italic placeholder:text-tertiary-alt outline-none"
+          className={cn(
+            formControlInlineInputClassName,
+            "placeholder:italic text-white",
+          )}
         />
         {isFetching && debouncedEmailFilter && (
           <LoaderCircle
             size={16}
-            className="text-tertiary-alt animate-spin"
+            className="mr-3 shrink-0 animate-spin text-tertiary-alt"
             data-testid="search-loading-indicator"
           />
         )}
@@ -190,38 +208,52 @@ function ManageOrganizationMembers() {
           document.getElementById("portal-root") || document.body,
         )}
 
-      <div className="rounded-xl border border-org-border bg-org-background table-box-shadow flex-1 overflow-y-auto custom-scrollbar">
-        <div className="flex items-center justify-between pl-6 pr-6 text-[11px] text-white font-medium leading-4 border-b border-org-divider w-full h-9">
-          <span>{t(I18nKey.ORG$ALL_ORGANIZATION_MEMBERS)}</span>
+      <div
+        className={cn(
+          settingsListContainerClassName,
+          "custom-scrollbar flex-1 overflow-y-auto",
+        )}
+      >
+        <div
+          className={cn(
+            settingsListTableHeadClassName,
+            "flex w-full items-center justify-between",
+          )}
+        >
+          <span className={settingsListTableHeaderCellClassName}>
+            {t(I18nKey.ORG$ALL_ORGANIZATION_MEMBERS)}
+          </span>
           {totalCount !== undefined && (
-            <span className="text-tertiary-alt">
+            <span
+              className={cn(settingsListTableHeaderCellClassName, "text-muted")}
+            >
               {totalCount} {totalCount === 1 ? "member" : "members"}
             </span>
           )}
         </div>
 
         {isLoading && (
-          <div className="flex items-center justify-center p-8 text-tertiary-alt">
+          <div className="flex items-center justify-center p-8 text-muted">
             Loading...
           </div>
         )}
 
         {!isLoading && hasError && (
-          <div className="flex items-center justify-center p-8 text-tertiary-alt">
+          <div className="flex items-center justify-center p-8 text-muted">
             {t(I18nKey.ORG$FAILED_TO_LOAD_MEMBERS)}
           </div>
         )}
 
         {!isLoading &&
           !hasError &&
-          membersData?.items &&
-          membersData.items.length > 0 && (
-            <ul>
-              {membersData.items.map((member) => (
+          ((membersData?.items && membersData.items.length > 0) ||
+            pendingInvitations.length > 0) && (
+            <ul data-testid="organization-members-list">
+              {membersData?.items?.map((member) => (
                 <li
                   key={member.user_id}
                   data-testid="member-item"
-                  className="border-b border-org-divider last:border-none px-6"
+                  className={settingsListTableRowClassName}
                 >
                   <OrganizationMemberListItem
                     email={member.email}
@@ -236,33 +268,28 @@ function ManageOrganizationMembers() {
                   />
                 </li>
               ))}
+              {pendingInvitations.map((invitation) => (
+                <li
+                  key={`invitation-${invitation.id}`}
+                  className={settingsListTableRowClassName}
+                >
+                  <PendingInvitationListItem
+                    invitation={invitation}
+                    isRevoking={isRevokingInvitation}
+                    onRevoke={() =>
+                      revokeInvitation({ invitationId: invitation.id })
+                    }
+                  />
+                </li>
+              ))}
             </ul>
           )}
-
-        {!isLoading && !hasError && pendingInvitations.length > 0 && (
-          <ul data-testid="pending-invitations-rows">
-            {pendingInvitations.map((invitation) => (
-              <li
-                key={`invitation-${invitation.id}`}
-                className="border-b border-org-divider last:border-none px-6"
-              >
-                <PendingInvitationListItem
-                  invitation={invitation}
-                  isRevoking={isRevokingInvitation}
-                  onRevoke={() =>
-                    revokeInvitation({ invitationId: invitation.id })
-                  }
-                />
-              </li>
-            ))}
-          </ul>
-        )}
 
         {!isLoading &&
           !hasError &&
           pendingInvitations.length === 0 &&
           (!membersData?.items || membersData.items.length === 0) && (
-            <div className="flex items-center justify-center p-8 text-tertiary-alt">
+            <div className="flex items-center justify-center p-8 text-muted">
               {debouncedEmailFilter
                 ? t(I18nKey.ORG$NO_MEMBERS_MATCHING_FILTER)
                 : t(I18nKey.ORG$NO_MEMBERS_FOUND)}
