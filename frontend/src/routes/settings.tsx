@@ -205,20 +205,27 @@ function SettingsScreen() {
   const orgWideBadgeVariant =
     me?.role === "member" ? "managed-by-admin" : "org-wide";
 
-  // Current section title for the main content area
-  const currentSectionTitle = useMemo(() => {
-    // Find the current item from rendered items
+  const { currentSectionTitle, currentSectionSubtitle } = useMemo(() => {
     const currentRenderedItem = navItems.find(
       (item) => item.type === "item" && item.item.to === location.pathname,
     );
-    if (currentRenderedItem && currentRenderedItem.type === "item") {
-      return currentRenderedItem.item.text;
+    if (currentRenderedItem?.type === "item") {
+      return {
+        currentSectionTitle: currentRenderedItem.item.text,
+        currentSectionSubtitle: currentRenderedItem.item.subtitle ?? null,
+      };
     }
-    // Default to the first available navigation item if current page is not found
     const firstItem = navItems.find((item) => item.type === "item");
-    return firstItem && firstItem.type === "item"
-      ? firstItem.item.text
-      : "SETTINGS$TITLE";
+    if (firstItem?.type === "item") {
+      return {
+        currentSectionTitle: firstItem.item.text,
+        currentSectionSubtitle: firstItem.item.subtitle ?? null,
+      };
+    }
+    return {
+      currentSectionTitle: "SETTINGS$TITLE",
+      currentSectionSubtitle: null as string | null,
+    };
   }, [navItems, location.pathname]);
 
   const routeHandle = matches.find((m) => m.pathname === location.pathname)
@@ -226,20 +233,28 @@ function SettingsScreen() {
   const shouldHideTitle = routeHandle?.hideTitle === true;
 
   return (
-    <main data-testid="settings-screen" className="h-full">
+    <main data-testid="settings-screen" className="min-h-0 h-full">
       <SettingsLayout navigationItems={navItems}>
-        <div className="flex flex-col gap-6 h-full min-h-0">
+        <div className="flex flex-col gap-6 pb-8">
           {!shouldHideTitle && (
-            <div className="flex items-center gap-3 flex-wrap">
-              <Typography.H2>{t(currentSectionTitle)}</Typography.H2>
-              {shouldShowOrgWideBadge && (
-                <OrgWideSettingsBadge variant={orgWideBadgeVariant} />
-              )}
-            </div>
+            <header className="space-y-1">
+              <div className="flex items-center gap-3 flex-wrap">
+                <Typography.H2>{t(currentSectionTitle)}</Typography.H2>
+                {shouldShowOrgWideBadge && (
+                  <OrgWideSettingsBadge variant={orgWideBadgeVariant} />
+                )}
+              </div>
+              {currentSectionSubtitle ? (
+                <p
+                  data-testid="settings-page-subtitle"
+                  className="text-sm leading-5 text-muted"
+                >
+                  {t(currentSectionSubtitle)}
+                </p>
+              ) : null}
+            </header>
           )}
-          <div className="flex-1 min-h-0 overflow-auto custom-scrollbar-always">
-            <Outlet />
-          </div>
+          <Outlet />
         </div>
       </SettingsLayout>
     </main>

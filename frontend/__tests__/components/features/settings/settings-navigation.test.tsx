@@ -13,6 +13,31 @@ vi.mock("react-router", async () => ({
   useRevalidator: () => ({ revalidate: vi.fn() }),
 }));
 
+vi.mock("#/hooks/query/use-git-user", () => ({
+  useGitUser: () => ({
+    data: { avatar_url: "https://example.com/avatar.png", login: "neo-user" },
+    isFetching: false,
+  }),
+}));
+
+vi.mock("#/hooks/query/use-settings", () => ({
+  useSettings: () => ({
+    data: { email: "neo@example.com" },
+  }),
+}));
+
+vi.mock("#/hooks/mutation/use-logout", () => ({
+  useLogout: () => ({ mutate: vi.fn() }),
+}));
+
+vi.mock("#/hooks/use-app-mode", () => ({
+  useAppMode: () => ({ isSaas: true, isEnterpriseCloud: true }),
+}));
+
+vi.mock("#/components/shared/buttons/styled-tooltip", () => ({
+  StyledTooltip: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 const mockConfig = () => {
   vi.spyOn(OptionService, "getConfig").mockResolvedValue({
     app_mode: "saas",
@@ -109,6 +134,19 @@ describe("SettingsNavigation", () => {
 
       expect(orgMembersLink).not.toBeInTheDocument();
       expect(orgLink).not.toBeInTheDocument();
+    });
+
+    it("should render the white OpenHands logo with text and user menu chrome", async () => {
+      renderSettingsNavigation(toRenderedItems(SAAS_NAV_ITEMS));
+
+      await screen.findByTestId("settings-navbar");
+
+      expect(
+        screen.getByLabelText("BRANDING$OPENHANDS_LOGO"),
+      ).toBeInTheDocument();
+      expect(screen.getByText("BRANDING$OPENHANDS")).toBeInTheDocument();
+      expect(screen.getByTestId("settings-nav-user-menu")).toBeInTheDocument();
+      expect(screen.getByText("neo@example.com")).toBeInTheDocument();
     });
   });
 

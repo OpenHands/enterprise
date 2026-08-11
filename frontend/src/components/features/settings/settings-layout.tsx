@@ -2,12 +2,17 @@ import { useState } from "react";
 import { MobileHeader } from "./mobile-header";
 import { SettingsNavigation } from "./settings-navigation";
 import { SettingsNavRenderedItem } from "#/hooks/use-settings-nav-items";
+import { settingsLayoutMainScrollClassName } from "#/utils/settings-like-page-layout-classes";
 
 interface SettingsLayoutProps {
   children: React.ReactNode;
   navigationItems: SettingsNavRenderedItem[];
 }
 
+/**
+ * Mirrors agent-canvas settings layout: sticky aside + scrolling main with
+ * max-width content column and right gutter.
+ */
 export function SettingsLayout({
   children,
   navigationItems,
@@ -18,23 +23,19 @@ export function SettingsLayout({
   const closeMobileMenu = () => setIsMobileMenuOpen(false);
 
   return (
-    <div className="flex flex-col h-full px-[14px] pt-8">
-      {/* Mobile header */}
+    <div className="flex h-full flex-col md:pt-8">
       <MobileHeader
         isMobileMenuOpen={isMobileMenuOpen}
         onToggleMenu={toggleMobileMenu}
       />
-      {/* Desktop layout with navigation and main content */}
-      <div className="flex flex-1 overflow-hidden gap-10">
-        {/* Navigation */}
+      <div className="flex min-h-0 flex-1 gap-10 md:items-start">
         <SettingsNavigation
           isMobileMenuOpen={isMobileMenuOpen}
           onCloseMobileMenu={closeMobileMenu}
           navigationItems={navigationItems}
         />
-        {/* Main content */}
-        <main className="flex-1 min-w-0 overflow-auto custom-scrollbar-always">
-          {children}
+        <main className={settingsLayoutMainScrollClassName}>
+          <div className="mx-auto w-full min-w-0 max-w-[800px]">{children}</div>
         </main>
       </div>
     </div>

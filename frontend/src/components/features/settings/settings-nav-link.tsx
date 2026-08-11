@@ -2,9 +2,14 @@ import { useTranslation } from "react-i18next";
 import { NavLink } from "react-router";
 import { Tooltip } from "@heroui/react";
 import { cn } from "#/utils/utils";
-import { Typography } from "#/ui/typography";
 import { I18nKey } from "#/i18n/declaration";
 import { SettingsNavItem } from "#/constants/settings-nav";
+import {
+  SIDEBAR_ICON_SLOT_CLASS,
+  SIDEBAR_ROW_INTERACTIVE_CLASS,
+  sidebarNavLabelClassName,
+  sidebarNavRowClassName,
+} from "#/components/features/sidebar/sidebar-layout";
 
 interface SettingsNavLinkProps {
   item: SettingsNavItem;
@@ -21,6 +26,7 @@ export function SettingsNavLink({
 }: SettingsNavLinkProps) {
   const { t } = useTranslation();
   const { to, icon, text } = item;
+  const label = t(text as I18nKey);
 
   if (disabled) {
     const tooltip = disabledAgentName
@@ -33,16 +39,14 @@ export function SettingsNavLink({
         <div
           aria-disabled="true"
           data-testid={`settings-nav-disabled-${to}`}
-          className="group flex items-center gap-3 p-1 sm:px-3.5 sm:py-2 rounded opacity-40 cursor-not-allowed"
+          className={cn(
+            sidebarNavRowClassName(),
+            SIDEBAR_ROW_INTERACTIVE_CLASS.idle,
+            "opacity-50 pointer-events-none cursor-not-allowed",
+          )}
         >
-          <Typography.Text className="flex h-5 w-5 shrink-0 items-center justify-center text-[#8C8C8C]">
-            {icon}
-          </Typography.Text>
-          <div className="min-w-0 flex-1 overflow-hidden">
-            <Typography.Text className="block truncate whitespace-nowrap text-[#8C8C8C]">
-              {t(text as I18nKey)}
-            </Typography.Text>
-          </div>
+          <span className={SIDEBAR_ICON_SLOT_CLASS}>{icon}</span>
+          <span className={sidebarNavLabelClassName()}>{label}</span>
         </div>
       </Tooltip>
     );
@@ -53,27 +57,18 @@ export function SettingsNavLink({
       end
       to={to}
       onClick={onClick}
+      data-testid={`sidebar-settings-${to}`}
       className={({ isActive }) =>
         cn(
-          "group flex items-center gap-3 p-1 sm:px-3.5 sm:py-2 rounded transition-all duration-200",
-          isActive ? "bg-[#1f1f1f99]" : "hover:bg-[#1f1f1f99]",
-          isActive ? "[&_*]:text-white" : "",
+          sidebarNavRowClassName(),
+          isActive
+            ? SIDEBAR_ROW_INTERACTIVE_CLASS.active
+            : SIDEBAR_ROW_INTERACTIVE_CLASS.idle,
         )
       }
     >
-      <Typography.Text className="flex h-5 w-5 shrink-0 items-center justify-center text-[#8C8C8C] group-hover:text-white transition-colors duration-200">
-        {icon}
-      </Typography.Text>
-      <div className="min-w-0 flex-1 overflow-hidden">
-        <Typography.Text
-          className={cn(
-            "block truncate whitespace-nowrap text-[#8C8C8C] transition-all duration-300",
-            "group-hover:translate-x-1 group-hover:text-white",
-          )}
-        >
-          {t(text as I18nKey)}
-        </Typography.Text>
-      </div>
+      <span className={SIDEBAR_ICON_SLOT_CLASS}>{icon}</span>
+      <span className={sidebarNavLabelClassName()}>{label}</span>
     </NavLink>
   );
 }

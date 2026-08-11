@@ -1,5 +1,4 @@
 import { useTranslation } from "react-i18next";
-import { Typography } from "#/ui/typography";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 
@@ -12,10 +11,10 @@ export function SettingsNavHeader({ text, className }: SettingsNavHeaderProps) {
   const { t } = useTranslation();
 
   return (
-    <div className={cn("px-3.5", className)}>
-      <Typography.Text className="text-[11px] font-medium text-[#8c8c8c] uppercase tracking-wide leading-5">
+    <div className={cn("px-2.5 pt-3 first:pt-0.5", className)}>
+      <p className="text-[11px] font-medium uppercase tracking-wide leading-5 text-[var(--oh-muted)]">
         {t(text)}
-      </Typography.Text>
+      </p>
     </div>
   );
 }

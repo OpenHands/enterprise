@@ -27,6 +27,8 @@ export interface SettingsNavItem {
   icon: React.ReactElement;
   to: string;
   text: string;
+  /** Short grey subline under the page title (`settings.tsx`). */
+  subtitle?: string;
   section?: SettingsNavSection;
   // When true, this item is greyed out (and its route redirects to
   // ``/settings/agent``) while the personal-scope active agent is ACP.
@@ -56,12 +58,14 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     icon: <FiBarChart2 size={22} />,
     to: "/settings/usage-monitoring",
     text: "SETTINGS$NAV_ADMIN_DASHBOARD",
+    subtitle: "SETTINGS$PAGE_USAGE_MONITORING_SUBLINE",
     section: "org",
   },
   {
     icon: <FiDollarSign size={22} />,
     to: "/settings/budgets",
     text: "SETTINGS$NAV_BUDGETS",
+    subtitle: "SETTINGS$PAGE_BUDGETS_SUBLINE",
     section: "org",
   },
   {
