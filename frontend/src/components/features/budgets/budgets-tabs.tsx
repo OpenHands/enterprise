@@ -91,19 +91,19 @@ export function OrganizationBudgetTab({
   isMonthlyLimitValid,
 }: OrganizationBudgetTabProps) {
   return (
-    <div className="bg-[#151D2A] border border-[#262626] rounded-lg p-6">
+    <div className="bg-base-secondary border border-border-subtle rounded-lg p-6">
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h2 className="text-lg font-medium text-white mb-1">
+          <h2 className="text-lg font-medium text-foreground mb-1">
             Organization monthly budget
           </h2>
-          <p className="text-sm text-[#8C8C8C]">
+          <p className="text-sm text-muted">
             Track total spend across your org and get alerted before you hit
             your cap.
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-[#8C8C8C]">Enable budget</span>
+          <span className="text-sm text-muted">Enable budget</span>
           <Toggle
             enabled={orgBudgetEnabled}
             onChange={onToggleOrgBudget}
@@ -115,19 +115,19 @@ export function OrganizationBudgetTab({
       <div className="mb-6">
         <div className="flex items-baseline justify-between mb-3">
           <div>
-            <span className="text-3xl font-bold text-white">
+            <span className="text-3xl font-bold text-foreground">
               {`$${currentSpend.toLocaleString("en-US", {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 2,
               })}`}
             </span>
-            <span className="text-[#8C8C8C] ml-2">
+            <span className="text-muted ml-2">
               {monthlyLimitValue
                 ? `of $${monthlyLimitValue.toLocaleString()} spent in ${cycleLabel}`
                 : `spent in ${cycleLabel}`}
             </span>
           </div>
-          <span className="text-xl font-semibold text-yellow-400">
+          <span className="text-xl font-semibold text-logo">
             {monthlyLimitValue ? `${percentage.toFixed(1)}%` : "—"}
           </span>
         </div>
@@ -138,12 +138,12 @@ export function OrganizationBudgetTab({
         <div>
           <label
             htmlFor="org-monthly-limit"
-            className="block text-sm text-[#8C8C8C] mb-2"
+            className="block text-sm text-muted mb-2"
           >
             Monthly limit
           </label>
           <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6B6B6B]">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim">
               $
             </span>
             <input
@@ -151,14 +151,14 @@ export function OrganizationBudgetTab({
               type="number"
               value={monthlyLimit}
               onChange={(event) => onMonthlyLimitChange(event.target.value)}
-              className="w-full pl-7 pr-4 py-2 bg-[#0B0F17] border border-[#262626] rounded-lg text-white focus:outline-none focus:border-blue-500"
+              className="w-full pl-7 pr-4 py-2 bg-surface-deep border border-border-input rounded-lg text-foreground focus:outline-none focus:border-primary"
             />
           </div>
         </div>
         <div>
           <label
             htmlFor="org-billing-cycle"
-            className="block text-sm text-[#8C8C8C] mb-2"
+            className="block text-sm text-muted mb-2"
           >
             Billing cycle resets
           </label>
@@ -166,7 +166,7 @@ export function OrganizationBudgetTab({
             id="org-billing-cycle"
             value={billingCycle}
             onChange={(event) => onBillingCycleChange(event.target.value)}
-            className="w-full px-4 py-2 bg-[#0B0F17] border border-[#262626] rounded-lg text-white focus:outline-none focus:border-blue-500"
+            className="w-full px-4 py-2 bg-surface-deep border border-border-input rounded-lg text-foreground focus:outline-none focus:border-primary"
           >
             <option value="1st">1st of each month</option>
             <option value="15th">15th of each month</option>
@@ -177,15 +177,15 @@ export function OrganizationBudgetTab({
       <div className="mb-6">
         <div className="flex items-center justify-between mb-3">
           <div>
-            <h3 className="text-sm font-medium text-white mb-1">
+            <h3 className="text-sm font-medium text-foreground mb-1">
               Alert thresholds
             </h3>
-            <p className="text-xs text-[#6B6B6B]">
+            <p className="text-xs text-text-dim">
               Add one or more thresholds. Each can email admins, post to Slack,
               or both.
             </p>
             {(!emailIntegrationEnabled || !slackIntegrationEnabled) && (
-              <div className="mt-2 space-y-1 text-xs text-amber-400">
+              <div className="mt-2 space-y-1 text-xs text-logo">
                 {!emailIntegrationEnabled && (
                   <p>
                     Email alerts require RESEND_API_KEY or SMTP_* env vars set
@@ -212,7 +212,7 @@ export function OrganizationBudgetTab({
           <button
             type="button"
             onClick={onAddThreshold}
-            className="px-3 py-1.5 text-sm text-blue-400 border border-blue-400/30 rounded-lg hover:bg-blue-500/10 transition-colors"
+            className="px-3 py-1.5 text-sm text-primary border border-primary/30 rounded-lg hover:bg-primary/10 transition-colors"
           >
             + Add threshold
           </button>
@@ -226,15 +226,15 @@ export function OrganizationBudgetTab({
             return (
               <div
                 key={threshold.percentage}
-                className="flex items-center gap-4 p-3 bg-[#0B0F17] rounded-lg border border-[#262626]"
+                className="flex items-center gap-4 p-3 bg-surface-deep rounded-lg border border-border-subtle"
               >
                 <div className="w-16">
-                  <span className="text-white font-medium">
+                  <span className="text-foreground font-medium">
                     {threshold.percentage}%
                   </span>
                 </div>
                 <div className="w-28">
-                  <span className="text-[#8C8C8C] text-sm">
+                  <span className="text-muted text-sm">
                     {thresholdAmount !== null
                       ? `Triggers at $${thresholdAmount.toLocaleString()}`
                       : "Set a monthly limit to calculate"}
@@ -286,7 +286,7 @@ export function OrganizationBudgetTab({
                   type="button"
                   onClick={() => onDeleteThreshold(index)}
                   aria-label={`Delete ${threshold.percentage}% threshold`}
-                  className="p-1.5 text-[#6B6B6B] hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                  className="p-1.5 text-text-dim hover:text-danger hover:bg-danger/10 rounded transition-colors"
                 >
                   <TrashIcon />
                 </button>
@@ -296,15 +296,15 @@ export function OrganizationBudgetTab({
         </div>
       </div>
 
-      <div className="mb-6 p-4 bg-[#0B0F17] rounded-lg border border-[#262626]">
+      <div className="mb-6 p-4 bg-surface-deep rounded-lg border border-border-subtle">
         <label
           htmlFor="slack-channel"
-          className="block text-sm text-[#8C8C8C] mb-2"
+          className="block text-sm text-muted mb-2"
         >
           Slack channel
         </label>
         <div className="relative">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6B6B6B]">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim">
             <HashIcon />
           </span>
           <input
@@ -321,15 +321,15 @@ export function OrganizationBudgetTab({
                 ? "#budget-alerts"
                 : "Connect Slack to set a channel"
             }
-            className="w-full pl-9 pr-4 py-2 bg-[#151D2A] border border-[#262626] rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-60 disabled:cursor-not-allowed"
+            className="w-full pl-9 pr-4 py-2 bg-tertiary border border-border-input rounded-lg text-foreground focus:outline-none focus:border-primary disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </div>
         {slackIntegrationEnabled ? (
-          <p className="text-xs text-[#6B6B6B] mt-2">
+          <p className="text-xs text-text-dim mt-2">
             Used by any threshold with &apos;Post to Slack&apos; enabled.
           </p>
         ) : (
-          <p className="text-xs text-amber-400 mt-2">
+          <p className="text-xs text-logo mt-2">
             Slack alerts are disabled. Please integrate Slack to select a
             channel.
           </p>
@@ -340,7 +340,7 @@ export function OrganizationBudgetTab({
         <button
           type="button"
           onClick={onReset}
-          className="px-4 py-2 text-sm text-[#8C8C8C] bg-[#0B0F17] border border-[#262626] rounded-lg hover:bg-[#1E1E1E] transition-colors"
+          className="px-4 py-2 text-sm text-muted border border-[var(--oh-border)] bg-base-secondary rounded-lg hover:bg-surface-raised transition-colors"
         >
           Reset
         </button>
@@ -348,7 +348,7 @@ export function OrganizationBudgetTab({
           type="button"
           onClick={onSave}
           disabled={isSaving || !isMonthlyLimitValid}
-          className="px-4 py-2 text-sm text-white bg-blue-500 rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-60"
+          className="px-4 py-2 text-sm text-[var(--oh-color-base)] bg-primary rounded-lg hover:opacity-80 transition-colors disabled:opacity-60"
         >
           Save changes
         </button>
@@ -373,12 +373,12 @@ export function DefaultBudgetsTab({
   isSaving,
 }: DefaultBudgetsTabProps) {
   return (
-    <div className="bg-[#151D2A] border border-[#262626] rounded-lg p-6">
+    <div className="bg-base-secondary border border-border-subtle rounded-lg p-6">
       <div className="mb-6">
-        <h2 className="text-lg font-medium text-white mb-1">
+        <h2 className="text-lg font-medium text-foreground mb-1">
           Default budget for new users
         </h2>
-        <p className="text-sm text-[#8C8C8C]">
+        <p className="text-sm text-muted">
           Applied automatically when a user joins your organization. Existing
           users keep their current budgets.
         </p>
@@ -386,22 +386,20 @@ export function DefaultBudgetsTab({
 
       <div className="grid grid-cols-2 gap-6">
         <div>
-          <div className="block text-sm text-[#8C8C8C] mb-2">
-            Budget cadence
-          </div>
-          <div className="px-4 py-2 bg-[#0B0F17] border border-[#262626] rounded-lg text-sm text-white">
+          <div className="block text-sm text-muted mb-2">Budget cadence</div>
+          <div className="px-4 py-2 bg-surface-deep border border-border-input rounded-lg text-sm text-foreground">
             Monthly
           </div>
         </div>
         <div>
           <label
             htmlFor="default-budget-amount"
-            className="block text-sm text-[#8C8C8C] mb-2"
+            className="block text-sm text-muted mb-2"
           >
             Default amount
           </label>
           <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6B6B6B]">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim">
               $
             </span>
             <input
@@ -409,16 +407,16 @@ export function DefaultBudgetsTab({
               type="number"
               value={defaultAmount}
               onChange={(event) => onDefaultAmountChange(event.target.value)}
-              className="w-full pl-7 pr-4 py-2 bg-[#0B0F17] border border-[#262626] rounded-lg text-white focus:outline-none focus:border-blue-500"
+              className="w-full pl-7 pr-4 py-2 bg-surface-deep border border-border-input rounded-lg text-foreground focus:outline-none focus:border-primary"
             />
           </div>
         </div>
       </div>
 
       <div className="mt-6">
-        <div className="block text-sm text-[#8C8C8C] mb-2">Preview</div>
-        <div className="p-4 bg-[#0B0F17] rounded-lg border border-[#262626]">
-          <p className="text-sm text-[#8C8C8C]">
+        <div className="block text-sm text-muted mb-2">Preview</div>
+        <div className="p-4 bg-surface-deep rounded-lg border border-border-subtle">
+          <p className="text-sm text-muted">
             {`New users get up to $${defaultAmountLabel} per month before requiring an increase.`}
           </p>
         </div>
@@ -429,7 +427,7 @@ export function DefaultBudgetsTab({
           type="button"
           onClick={onSave}
           disabled={isSaving}
-          className="px-4 py-2 text-sm text-white bg-blue-500 rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-60"
+          className="px-4 py-2 text-sm text-[var(--oh-color-base)] bg-primary rounded-lg hover:opacity-80 transition-colors disabled:opacity-60"
         >
           Save default
         </button>
@@ -490,13 +488,13 @@ export function UserOverridesTab({
   onPageChange,
 }: UserOverridesTabProps) {
   return (
-    <div className="bg-[#151D2A] border border-[#262626] rounded-lg p-6">
+    <div className="bg-base-secondary border border-border-subtle rounded-lg p-6">
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h2 className="text-lg font-medium text-white mb-1">
+          <h2 className="text-lg font-medium text-foreground mb-1">
             User budget overrides
           </h2>
-          <p className="text-sm text-[#8C8C8C]">
+          <p className="text-sm text-muted">
             Override the default for individual users — increase, decrease, or
             disable.
           </p>
@@ -505,7 +503,7 @@ export function UserOverridesTab({
 
       <div className="flex gap-4 mb-6">
         <div className="relative flex-1">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6B6B6B]">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim">
             <SearchIcon />
           </span>
           <input
@@ -513,13 +511,13 @@ export function UserOverridesTab({
             placeholder="Search users by name or email..."
             value={searchQuery}
             onChange={(event) => onSearchChange(event.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-[#0B0F17] border border-[#262626] rounded-lg text-white placeholder-[#6B6B6B] focus:outline-none focus:border-blue-500"
+            className="w-full pl-10 pr-4 py-2 bg-surface-deep border border-border-input rounded-lg text-foreground placeholder:text-text-dim focus:outline-none focus:border-primary"
           />
         </div>
         <select
           value={statusFilter}
           onChange={(event) => onStatusFilterChange(event.target.value)}
-          className="px-4 py-2 bg-[#0B0F17] border border-[#262626] rounded-lg text-white focus:outline-none focus:border-blue-500"
+          className="px-4 py-2 bg-surface-deep border border-border-input rounded-lg text-foreground focus:outline-none focus:border-primary"
         >
           <option value="all">All statuses</option>
           <option value="over80">Over 80%</option>
@@ -534,20 +532,20 @@ export function UserOverridesTab({
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
-            <tr className="border-b border-[#262626]">
-              <th className="px-4 py-3 text-left text-xs font-medium text-[#6B6B6B] uppercase tracking-wider">
+            <tr className="border-b border-border-subtle">
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
                 User
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-[#6B6B6B] uppercase tracking-wider">
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
                 Budget
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-[#6B6B6B] uppercase tracking-wider">
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
                 Usage
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-[#6B6B6B] uppercase tracking-wider">
+              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
                 Status
               </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-[#6B6B6B] uppercase tracking-wider">
+              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
                 Actions
               </th>
             </tr>
@@ -565,16 +563,16 @@ export function UserOverridesTab({
               return (
                 <tr
                   key={user.user_id}
-                  className="border-b border-[#262626] hover:bg-[#1E1E1E]/50 transition-colors"
+                  className="border-b border-border-subtle hover:bg-interactive-hover-low/50 transition-colors"
                 >
                   <td className="px-4 py-4">
                     <div className="flex items-center gap-3">
                       <Avatar name={user.name} />
                       <div>
-                        <div className="text-white font-medium">
+                        <div className="text-foreground font-medium">
                           {user.name}
                         </div>
-                        <div className="text-sm text-[#6B6B6B]">
+                        <div className="text-sm text-text-dim">
                           {user.email || "-"}
                         </div>
                       </div>
@@ -584,7 +582,7 @@ export function UserOverridesTab({
                     {isEditing ? (
                       <div className="space-y-2">
                         <div className="flex items-center gap-2">
-                          <span className="text-[#6B6B6B]">$</span>
+                          <span className="text-text-dim">$</span>
                           <input
                             type="number"
                             min="0"
@@ -594,30 +592,30 @@ export function UserOverridesTab({
                               onOverrideAmountChange(event.target.value)
                             }
                             disabled={overrideDisabled}
-                            className="w-28 px-2 py-1 bg-[#0B0F17] border border-[#262626] rounded text-white focus:outline-none focus:border-blue-500 disabled:opacity-60"
+                            className="w-28 px-2 py-1 bg-surface-deep border border-border-input rounded text-foreground focus:outline-none focus:border-primary disabled:opacity-60"
                           />
-                          <span className="text-xs text-[#6B6B6B]">
-                            / month
-                          </span>
+                          <span className="text-xs text-text-dim">/ month</span>
                         </div>
-                        <label className="flex items-center gap-2 text-xs text-[#8C8C8C]">
+                        <label className="flex items-center gap-2 text-xs text-muted">
                           <input
                             type="checkbox"
                             checked={overrideDisabled}
                             onChange={(event) =>
                               onOverrideDisabledChange(event.target.checked)
                             }
-                            className="accent-blue-500"
+                            className="accent-primary"
                           />
                           Disable budget for this user
                         </label>
                       </div>
                     ) : (
                       <>
-                        <div className="text-white">{user.budgetLabel}</div>
-                        <div className="flex items-center gap-1.5 text-xs text-[#6B6B6B]">
+                        <div className="text-foreground">
+                          {user.budgetLabel}
+                        </div>
+                        <div className="flex items-center gap-1.5 text-xs text-text-dim">
                           {user.is_override && (
-                            <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                           )}
                           {user.budgetNote}
                         </div>
@@ -632,7 +630,7 @@ export function UserOverridesTab({
                           max={user.maxUsage}
                           status={user.statusColor}
                         />
-                        <div className="mt-1 text-xs text-[#6B6B6B]">
+                        <div className="mt-1 text-xs text-text-dim">
                           {`$${user.usage.toLocaleString("en-US", {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,
@@ -643,7 +641,7 @@ export function UserOverridesTab({
                         </div>
                       </div>
                     ) : (
-                      <div className="text-sm text-[#8C8C8C]">
+                      <div className="text-sm text-muted">
                         {`$${user.usage.toLocaleString("en-US", {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2,
@@ -661,14 +659,14 @@ export function UserOverridesTab({
                           type="button"
                           onClick={() => onSaveOverride(user.user_id)}
                           disabled={!canSaveOverride || isSavingOverride}
-                          className="px-3 py-1.5 text-sm text-white bg-blue-500 rounded hover:bg-blue-600 transition-colors disabled:opacity-60"
+                          className="px-3 py-1.5 text-sm text-[var(--oh-color-base)] bg-primary rounded hover:opacity-80 transition-colors disabled:opacity-60"
                         >
                           Save
                         </button>
                         <button
                           type="button"
                           onClick={onCancelEditing}
-                          className="px-3 py-1.5 text-sm text-[#8C8C8C] hover:text-white hover:bg-[#262626] rounded transition-colors"
+                          className="px-3 py-1.5 text-sm text-muted hover:text-foreground hover:bg-interactive-hover rounded transition-colors"
                         >
                           Cancel
                         </button>
@@ -678,7 +676,7 @@ export function UserOverridesTab({
                         <button
                           type="button"
                           onClick={() => onStartEditing(user)}
-                          className="px-3 py-1.5 text-sm text-[#8C8C8C] hover:text-white hover:bg-[#262626] rounded transition-colors"
+                          className="px-3 py-1.5 text-sm text-muted hover:text-foreground hover:bg-interactive-hover rounded transition-colors"
                         >
                           Edit
                         </button>
@@ -688,7 +686,7 @@ export function UserOverridesTab({
                             onClick={() => onRemoveOverride(user.user_id)}
                             disabled={isDeletingOverride}
                             aria-label={`Remove override for ${user.name}`}
-                            className="p-1.5 text-[#6B6B6B] hover:text-red-400 hover:bg-red-500/10 rounded transition-colors disabled:opacity-60"
+                            className="p-1.5 text-text-dim hover:text-danger hover:bg-danger/10 rounded transition-colors disabled:opacity-60"
                           >
                             <TrashIcon />
                           </button>
@@ -704,25 +702,25 @@ export function UserOverridesTab({
       </div>
 
       {usersTotal > 0 && (
-        <div className="mt-4 flex flex-col gap-3 text-sm text-[#6B6B6B] sm:flex-row sm:items-center sm:justify-between">
+        <div className="mt-4 flex flex-col gap-3 text-sm text-text-dim sm:flex-row sm:items-center sm:justify-between">
           <span>{`Showing ${usersStart}-${usersEnd} of ${usersTotal}`}</span>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => onPageChange(Math.max(1, usersPage - 1))}
               disabled={usersPage <= 1 || isLoading}
-              className="px-3 py-1.5 text-sm text-[#8C8C8C] hover:text-white hover:bg-[#262626] rounded transition-colors disabled:opacity-60"
+              className="px-3 py-1.5 text-sm text-muted hover:text-foreground hover:bg-interactive-hover rounded transition-colors disabled:opacity-60"
             >
               Previous
             </button>
-            <span className="text-xs text-[#6B6B6B]">
+            <span className="text-xs text-text-dim">
               {`${usersPage} / ${totalPages}`}
             </span>
             <button
               type="button"
               onClick={() => onPageChange(Math.min(totalPages, usersPage + 1))}
               disabled={usersPage >= totalPages || isLoading}
-              className="px-3 py-1.5 text-sm text-[#8C8C8C] hover:text-white hover:bg-[#262626] rounded transition-colors disabled:opacity-60"
+              className="px-3 py-1.5 text-sm text-muted hover:text-foreground hover:bg-interactive-hover rounded transition-colors disabled:opacity-60"
             >
               Next
             </button>
@@ -731,7 +729,7 @@ export function UserOverridesTab({
       )}
 
       {userRows.length === 0 && (
-        <div className="py-12 text-center text-[#6B6B6B]">
+        <div className="py-12 text-center text-text-dim">
           No users found matching your criteria.
         </div>
       )}

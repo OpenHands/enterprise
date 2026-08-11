@@ -6,7 +6,6 @@ import { useOrgConversationStats } from "#/hooks/query/use-org-conversation-stat
 import { useOrgConversations } from "#/hooks/query/use-org-conversations";
 import { useOrgUsageStats } from "#/hooks/query/use-org-usage-stats";
 import { useOrgUserUsage } from "#/hooks/query/use-org-user-usage";
-import { useOrganizations } from "#/hooks/query/use-organizations";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import {
   ConversationsTab,
@@ -40,7 +39,6 @@ export function UsageDashboard() {
   const [conversationPerPage, setConversationPerPage] = useState(20);
 
   const { organizationId } = useSelectedOrganizationId();
-  const { data: orgData } = useOrganizations();
 
   const { data: stats } = useOrgConversationStats();
   const { data: usageStats } = useOrgUsageStats({ timeWindow });
@@ -98,10 +96,6 @@ export function UsageDashboard() {
   const cancelStop = () => {
     setPendingStop(null);
   };
-
-  const currentOrg = orgData?.organizations?.find(
-    (org) => org.id === organizationId,
-  );
 
   const usageConversations = usageStats?.usage_conversation_count ?? 0;
   const activeConversations = stats?.active_conversations ?? 0;
@@ -203,21 +197,10 @@ export function UsageDashboard() {
   ]);
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
-      {/* Header */}
-      <div className="px-8 py-6 border-b border-zinc-800">
-        <div className="flex items-start justify-between mb-6">
-          <div>
-            <h1 className="text-2xl font-bold text-white mb-1">
-              Usage & Monitoring
-            </h1>
-            <p className="text-zinc-400">
-              Monitor adoption, spend, and ROI across{" "}
-              {currentOrg?.name || "your organization"}.
-            </p>
-          </div>
-          {/* Time window selector */}
-          <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-lg p-1">
+    <div className="space-y-6">
+      <div className="space-y-6">
+        <div className="flex justify-end">
+          <div className="flex items-center gap-1 bg-base-secondary border border-border-subtle rounded-lg p-1">
             {TIME_WINDOWS.map((tw) => (
               <button
                 key={tw.value}
@@ -228,8 +211,8 @@ export function UsageDashboard() {
                 }}
                 className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
                   timeWindow === tw.value
-                    ? "bg-zinc-800 text-white"
-                    : "text-zinc-400 hover:text-white"
+                    ? "bg-surface-deep text-foreground"
+                    : "text-muted hover:text-foreground"
                 }`}
               >
                 {tw.label}
@@ -238,8 +221,7 @@ export function UsageDashboard() {
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-6 border-b border-zinc-800 -mb-6">
+        <div className="flex gap-6 border-b border-border-subtle">
           {TABS.map((tab) => (
             <button
               key={tab}
@@ -247,13 +229,13 @@ export function UsageDashboard() {
               onClick={() => setActiveTab(tab)}
               className={`flex items-center gap-2 px-1 py-3 text-sm font-medium transition-colors border-b-2 ${
                 activeTab === tab
-                  ? "border-blue-500 text-white"
-                  : "border-transparent text-zinc-400 hover:text-white"
+                  ? "border-primary text-foreground"
+                  : "border-transparent text-muted hover:text-foreground"
               }`}
             >
               {tab.charAt(0).toUpperCase() + tab.slice(1)}
               {typeof tabCounts[tab] === "number" && (
-                <span className="px-2 py-0.5 text-xs bg-zinc-800 text-zinc-400 rounded-full">
+                <span className="px-2 py-0.5 text-xs bg-surface-deep text-muted rounded-full">
                   {tabCounts[tab].toLocaleString()}
                 </span>
               )}
@@ -262,85 +244,78 @@ export function UsageDashboard() {
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="p-8">
-        {/* Overview Tab */}
-        {activeTab === "overview" && (
-          <OverviewTab
-            usageConversations={usageConversations}
-            activeConversations={activeConversations}
-            avgCostPerConversation={avgCostPerConversation}
-            totalSpend={totalSpend}
-            timeWindowLabel={timeWindowLabel}
-            chartData={chartData}
-            agentSpendRows={agentSpendRows}
-            agentSpendTotal={agentSpendTotal}
-          />
-        )}
+      {activeTab === "overview" && (
+        <OverviewTab
+          usageConversations={usageConversations}
+          activeConversations={activeConversations}
+          avgCostPerConversation={avgCostPerConversation}
+          totalSpend={totalSpend}
+          timeWindowLabel={timeWindowLabel}
+          chartData={chartData}
+          agentSpendRows={agentSpendRows}
+          agentSpendTotal={agentSpendTotal}
+        />
+      )}
 
-        {/* Conversations Tab */}
-        {activeTab === "conversations" && (
-          <ConversationsTab
-            conversationSearch={conversationSearch}
-            conversationStatus={conversationStatus}
-            conversationSortBy={conversationSortBy}
-            conversationSortOrder={conversationSortOrder}
-            conversationSandboxStatus={conversationSandboxStatus}
-            exportUrl={exportUrl}
-            conversationPage={conversationPage}
-            conversationPerPage={conversationPerPage}
-            conversationTotalPages={conversationTotalPages}
-            conversationTotalItems={conversationTotalItems}
-            conversationsLoading={conversationsLoading}
-            conversationsData={conversationsData}
-            stoppingIds={stoppingIds}
-            onSearchChange={(value) => {
-              setConversationSearch(value);
-              setConversationPage(1);
-            }}
-            onStatusChange={(value) => {
-              setConversationStatus(value);
-              setConversationPage(1);
-            }}
-            onSortByChange={(value) => {
-              setConversationSortBy(value);
-              setConversationPage(1);
-            }}
-            onSortOrderChange={(value) => {
-              setConversationSortOrder(value);
-              setConversationPage(1);
-            }}
-            onSandboxStatusChange={(value) => {
-              setConversationSandboxStatus(value);
-              setConversationPage(1);
-            }}
-            onPageChange={setConversationPage}
-            onPerPageChange={(value) => {
-              setConversationPerPage(value);
-              setConversationPage(1);
-            }}
-            onStopConversation={handleStop}
-            pendingStop={pendingStop}
-            stopConfirmationText={stopConfirmationText}
-            onConfirmStop={confirmStop}
-            onCancelStop={cancelStop}
-          />
-        )}
+      {activeTab === "conversations" && (
+        <ConversationsTab
+          conversationSearch={conversationSearch}
+          conversationStatus={conversationStatus}
+          conversationSortBy={conversationSortBy}
+          conversationSortOrder={conversationSortOrder}
+          conversationSandboxStatus={conversationSandboxStatus}
+          exportUrl={exportUrl}
+          conversationPage={conversationPage}
+          conversationPerPage={conversationPerPage}
+          conversationTotalPages={conversationTotalPages}
+          conversationTotalItems={conversationTotalItems}
+          conversationsLoading={conversationsLoading}
+          conversationsData={conversationsData}
+          stoppingIds={stoppingIds}
+          onSearchChange={(value) => {
+            setConversationSearch(value);
+            setConversationPage(1);
+          }}
+          onStatusChange={(value) => {
+            setConversationStatus(value);
+            setConversationPage(1);
+          }}
+          onSortByChange={(value) => {
+            setConversationSortBy(value);
+            setConversationPage(1);
+          }}
+          onSortOrderChange={(value) => {
+            setConversationSortOrder(value);
+            setConversationPage(1);
+          }}
+          onSandboxStatusChange={(value) => {
+            setConversationSandboxStatus(value);
+            setConversationPage(1);
+          }}
+          onPageChange={setConversationPage}
+          onPerPageChange={(value) => {
+            setConversationPerPage(value);
+            setConversationPage(1);
+          }}
+          onStopConversation={handleStop}
+          pendingStop={pendingStop}
+          stopConfirmationText={stopConfirmationText}
+          onConfirmStop={confirmStop}
+          onCancelStop={cancelStop}
+        />
+      )}
 
-        {/* Users Tab */}
-        {activeTab === "users" && (
-          <UsersTab userUsage={userUsage} userUsageLoading={userUsageLoading} />
-        )}
+      {activeTab === "users" && (
+        <UsersTab userUsage={userUsage} userUsageLoading={userUsageLoading} />
+      )}
 
-        {/* Models Tab */}
-        {activeTab === "models" && (
-          <ModelsTab
-            modelSearch={modelSearch}
-            onModelSearchChange={setModelSearch}
-            filteredModels={filteredModels}
-          />
-        )}
-      </div>
+      {activeTab === "models" && (
+        <ModelsTab
+          modelSearch={modelSearch}
+          onModelSearchChange={setModelSearch}
+          filteredModels={filteredModels}
+        />
+      )}
     </div>
   );
 }

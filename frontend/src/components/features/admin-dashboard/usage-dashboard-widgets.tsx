@@ -18,11 +18,11 @@ export function KPICard({
   trendUp?: boolean;
 }) {
   return (
-    <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-5">
-      <span className="text-zinc-500 text-xs font-medium uppercase tracking-wide">
+    <div className="bg-base-secondary border border-border-subtle rounded-lg p-5">
+      <span className="text-text-dim text-xs font-medium uppercase tracking-wide">
         {label}
       </span>
-      <div className="text-white text-2xl font-bold mt-2">{value}</div>
+      <div className="text-foreground text-2xl font-bold mt-2">{value}</div>
       {trend && (
         <div
           className={`flex items-center gap-1 mt-2 text-xs ${trendUp ? "text-green-400" : "text-red-400"}`}
@@ -69,25 +69,44 @@ export function AreaChart({
             y1={`${pct}%`}
             x2="100%"
             y2={`${pct}%`}
-            stroke="rgba(255,255,255,0.05)"
+            stroke="var(--oh-border-subtle)"
             strokeWidth="0.5"
           />
         ))}
-        <path d={areaD} fill="url(#blueGradient)" opacity="0.3" />
-        <path d={pathD} fill="none" stroke="#3B82F6" strokeWidth="2" />
+        <path d={areaD} fill="url(#usageAreaGradient)" opacity="0.3" />
+        <path
+          d={pathD}
+          fill="none"
+          stroke="var(--oh-color-primary)"
+          strokeWidth="2"
+        />
         <defs>
-          <linearGradient id="blueGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.5" />
-            <stop offset="100%" stopColor="#3B82F6" stopOpacity="0" />
+          <linearGradient
+            id="usageAreaGradient"
+            x1="0%"
+            y1="0%"
+            x2="0%"
+            y2="100%"
+          >
+            <stop
+              offset="0%"
+              stopColor="var(--oh-color-primary)"
+              stopOpacity="0.5"
+            />
+            <stop
+              offset="100%"
+              stopColor="var(--oh-color-primary)"
+              stopOpacity="0"
+            />
           </linearGradient>
         </defs>
       </svg>
-      <div className="absolute left-0 top-0 bottom-0 flex flex-col justify-between text-xs text-zinc-600 -ml-2">
+      <div className="absolute left-0 top-0 bottom-0 flex flex-col justify-between text-xs text-text-dim -ml-2">
         <span>{maxValue.toLocaleString()}</span>
         <span>{Math.round((maxValue + minValue) / 2).toLocaleString()}</span>
         <span>{minValue.toLocaleString()}</span>
       </div>
-      <div className="absolute bottom-0 left-0 right-0 flex justify-between text-xs text-zinc-600 mt-2">
+      <div className="absolute bottom-0 left-0 right-0 flex justify-between text-xs text-text-dim mt-2">
         {data
           .filter((_, i) => i % Math.ceil(data.length / 7) === 0)
           .map((d) => (
@@ -120,7 +139,7 @@ export function PieChart({
             cy={size / 2}
             r={radius}
             fill="transparent"
-            stroke="rgba(255,255,255,0.08)"
+            stroke="var(--oh-border-subtle)"
             strokeWidth={strokeWidth}
           />
           {data.map((segment, index) => {
