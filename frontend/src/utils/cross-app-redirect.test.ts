@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { isCrossAppPath } from "./cross-app-redirect";
+import {
+  isCrossAppPath,
+  normalizeLegacyAutomationsPath,
+} from "./cross-app-redirect";
 
 describe("isCrossAppPath", () => {
   it("detects automation app routes", () => {
@@ -38,5 +41,44 @@ describe("isCrossAppPath", () => {
     expect(isCrossAppPath("https://evil.com/automations")).toBe(false);
     expect(isCrossAppPath("//evil.com/canvas")).toBe(false);
     expect(isCrossAppPath("https://evil.com/canvas")).toBe(false);
+  });
+});
+
+describe("normalizeLegacyAutomationsPath", () => {
+  it("rewrites a bare /automations path", () => {
+    expect(normalizeLegacyAutomationsPath("/automations")).toBe(
+      "/canvas/automations",
+    );
+  });
+
+  it("rewrites an automations deep link", () => {
+    expect(normalizeLegacyAutomationsPath("/automations/abc")).toBe(
+      "/canvas/automations/abc",
+    );
+  });
+
+  it("preserves a query string", () => {
+    expect(normalizeLegacyAutomationsPath("/automations?tab=runs")).toBe(
+      "/canvas/automations?tab=runs",
+    );
+  });
+
+  it("preserves a query string on a deep link", () => {
+    expect(normalizeLegacyAutomationsPath("/automations/abc?tab=runs")).toBe(
+      "/canvas/automations/abc?tab=runs",
+    );
+  });
+
+  it("leaves the canonical /canvas/automations path unchanged", () => {
+    expect(normalizeLegacyAutomationsPath("/canvas/automations")).toBe(
+      "/canvas/automations",
+    );
+  });
+
+  it("leaves non-automations paths unchanged", () => {
+    expect(normalizeLegacyAutomationsPath("/settings")).toBe("/settings");
+    expect(normalizeLegacyAutomationsPath("/canvas/conversations/abc")).toBe(
+      "/canvas/conversations/abc",
+    );
   });
 });

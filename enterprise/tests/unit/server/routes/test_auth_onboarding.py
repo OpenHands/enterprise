@@ -20,6 +20,7 @@ from server.routes.auth import (
     _build_cross_app_redirect_url,
     _build_onboarding_redirect,
     _get_post_auth_redirect,
+    _normalize_legacy_automations_path,
     _should_redirect_to_onboarding,
     complete_onboarding,
     onboarding_status,
@@ -220,7 +221,7 @@ class TestGetPostAuthRedirect:
                 'https://example.com',
             )
 
-        assert result == 'https://example.com/automations?login_method=github'
+        assert result == 'https://example.com/canvas/automations?login_method=github'
 
     @pytest.mark.asyncio
     async def test_returns_default_url_when_user_not_found(self):
@@ -322,6 +323,44 @@ class TestGetPostAuthRedirect:
         )
 
 
+class TestNormalizeLegacyAutomationsPath:
+    """Tests for the ``/automations`` → ``/canvas/automations`` rewrite."""
+
+    def test_rewrites_bare_automations_path(self):
+        assert _normalize_legacy_automations_path('/automations') == '/canvas/automations'
+
+    def test_rewrites_automations_deep_link(self):
+        assert (
+            _normalize_legacy_automations_path('/automations/abc')
+            == '/canvas/automations/abc'
+        )
+
+    def test_preserves_query_string(self):
+        assert (
+            _normalize_legacy_automations_path('/automations?tab=runs')
+            == '/canvas/automations?tab=runs'
+        )
+
+    def test_preserves_query_string_on_deep_link(self):
+        assert (
+            _normalize_legacy_automations_path('/automations/abc?tab=runs')
+            == '/canvas/automations/abc?tab=runs'
+        )
+
+    def test_canonical_canvas_automations_path_is_unchanged(self):
+        assert (
+            _normalize_legacy_automations_path('/canvas/automations')
+            == '/canvas/automations'
+        )
+
+    def test_non_automations_path_is_unchanged(self):
+        assert _normalize_legacy_automations_path('/settings') == '/settings'
+        assert (
+            _normalize_legacy_automations_path('/canvas/conversations/abc')
+            == '/canvas/conversations/abc'
+        )
+
+
 class TestBuildCrossAppRedirectUrl:
     def test_unwraps_legacy_login_redirect_to_automations(self):
         result = _build_cross_app_redirect_url(
@@ -329,7 +368,7 @@ class TestBuildCrossAppRedirectUrl:
             'https://example.com',
         )
 
-        assert result == 'https://example.com/automations?login_method=github'
+        assert result == 'https://example.com/canvas/automations?login_method=github'
 
     def test_unwraps_login_return_to_automation_deep_link(self):
         result = _build_cross_app_redirect_url(
@@ -340,13 +379,20 @@ class TestBuildCrossAppRedirectUrl:
         )
 
         assert result == (
-            'https://example.com/automations/abc?tab=runs&login_method=gitlab'
+            'https://example.com/canvas/automations/abc?tab=runs&login_method=gitlab'
         )
 
     def test_direct_automation_path_becomes_same_origin_absolute_url(self):
         result = _build_cross_app_redirect_url('/automations', 'https://example.com')
 
-        assert result == 'https://example.com/automations'
+        assert result == 'https://example.com/canvas/automations'
+
+    def test_canonical_canvas_automations_path_is_unchanged(self):
+        result = _build_cross_app_redirect_url(
+            '/canvas/automations', 'https://example.com'
+        )
+
+        assert result == 'https://example.com/canvas/automations'
 
     def test_unwraps_login_return_to_canvas_deep_link(self):
         result = _build_cross_app_redirect_url(
@@ -468,7 +514,9 @@ class TestBuildOnboardingRedirect:
             'https://example.com/login?redirect=%2Fautomations&login_method=github',
             'https://example.com',
         )
-        assert result == 'https://example.com/onboarding?returnTo=%2Fautomations'
+        assert result == (
+            'https://example.com/onboarding?returnTo=%2Fcanvas%2Fautomations'
+        )
 
     def test_unwraps_login_returnTo_to_inner_destination(self):
         """Regression: login-wrapped destinations are unwrapped.

@@ -821,6 +821,23 @@ def _is_cross_app_relative_path(value: str) -> bool:
     )
 
 
+def _normalize_legacy_automations_path(relative: str) -> str:
+    """Rewrite legacy ``/automations`` routes to ``/canvas/automations``.
+
+    The automations frontend moved from ``/automations`` to
+    ``/canvas/automations``. Old OAuth ``state`` values and deep links may
+    still carry the legacy path, so any cross-app redirect is normalized before
+    being turned into an absolute URL. Non-automations paths (including the
+    already-correct ``/canvas/automations``) are returned unchanged.
+    """
+    parsed = urlparse(relative)
+    path = parsed.path
+    if path == '/automations' or path.startswith('/automations/'):
+        new_path = '/canvas/automations' + path[len('/automations'):]
+        return urlunparse(parsed._replace(path=new_path))
+    return relative
+
+
 def _merge_login_wrapper_query(inner_destination: str, outer_query: str) -> str:
     """Move non-routing login-wrapper query params onto an unwrapped destination."""
     extra_params = [
@@ -841,14 +858,17 @@ def _build_cross_app_redirect_url(redirect_url: str, web_url: str) -> str:
 
     OAuth state often points back at the main app's ``/login`` page with the
     real destination nested inside ``returnTo`` or the legacy ``redirect`` query
-    parameter. For paths owned by another frontend, such as ``/automations`` or
-    ``/canvas``, sending the browser through the main app SPA first is brittle:
-    any old or already-loaded bundle can client-navigate and show the main app
-    404 before ingress sees the route.
+    parameter. For paths owned by another frontend, such as
+    ``/canvas/automations`` or ``/canvas``, sending the browser through the main
+    app SPA first is brittle: any old or already-loaded bundle can
+    client-navigate and show the main app 404 before ingress sees the route.
 
     Returning a direct ``Location: <web_url>/<cross-app>...`` from the backend
     makes the browser issue a real document request, so ingress routes it to the
     owning service.
+
+    Legacy ``/automations`` paths are rewritten to ``/canvas/automations`` so
+    old OAuth ``state`` values and deep links keep working after the route move.
     """
     if not redirect_url:
         return redirect_url
@@ -863,10 +883,10 @@ def _build_cross_app_redirect_url(redirect_url: str, web_url: str) -> str:
         inner = query.get('returnTo') or query.get('redirect')
         if inner and _is_cross_app_relative_path(inner[0]):
             destination = _merge_login_wrapper_query(inner[0], parsed.query)
-            return f'{web_url}{destination}'
+            return f'{web_url}{_normalize_legacy_automations_path(destination)}'
 
     if _is_cross_app_relative_path(relative):
-        return f'{web_url}{relative}'
+        return f'{web_url}{_normalize_legacy_automations_path(relative)}'
 
     return redirect_url
 
@@ -922,6 +942,10 @@ def _build_onboarding_redirect(original_url: str, web_url: str) -> str:
     inner_return_to = _extract_login_inner_return_to(relative)
     if inner_return_to is not None:
         relative = inner_return_to
+
+    # Normalize legacy automations paths so post-onboarding navigation
+    # lands on the current ``/canvas/automations`` route.
+    relative = _normalize_legacy_automations_path(relative)
 
     # Skip the trivial home-page case to keep the URL clean.
     if relative in ('', '/'):

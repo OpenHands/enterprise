@@ -1,6 +1,7 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
+import { normalizeLegacyAutomationsPath } from "#/utils/cross-app-redirect";
 
 const RELOAD_SENTINEL_KEY = "openhands:cross-app-reload";
 
@@ -21,12 +22,20 @@ export default function CrossAppRedirect() {
       return;
     }
 
+    // The automations frontend moved from `/automations` to
+    // `/canvas/automations`. Stale bookmarks and saved links that still
+    // point at the old path are rewritten before the reload so ingress
+    // routes the request to the correct service.
+    const target = normalizeLegacyAutomationsPath(
+      window.location.pathname + window.location.search + window.location.hash,
+    );
+
     try {
       sessionStorage.setItem(RELOAD_SENTINEL_KEY, window.location.href);
     } catch {
       // Ignore storage failures; the browser should still try the document load.
     }
-    window.location.replace(window.location.href);
+    window.location.replace(target);
   }, [alreadyReloaded]);
 
   if (alreadyReloaded) {
