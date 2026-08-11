@@ -9,6 +9,7 @@ USER_LOGGED_IN = 'user logged in'
 # Phase 2 events
 USER_SIGNED_UP = 'user signed up'
 CONVERSATION_CREATED = 'conversation created'
+CONVERSATION_REQUESTED = 'conversation requested'
 CONVERSATION_FINISHED = 'conversation finished'
 CONVERSATION_ERRORED = 'conversation errored'
 CONVERSATION_DELETED = 'conversation deleted'

@@ -447,27 +447,24 @@ async def start_app_conversation(
         async_iter = app_conversation_service.start_app_conversation(start_request)
         result = await anext(async_iter)
 
-        # Analytics: conversation created (V1)
+        # Analytics: conversation requested (V1)
         try:
             analytics = get_analytics_service()
             if analytics:
                 user_id = await user_context.get_user_id()
                 if user_id:
                     ctx = await resolve_analytics_context(user_id)
-                    analytics.track_conversation_created(
+                    analytics.track_conversation_requested(
                         ctx=ctx,
-                        conversation_id=str(result.app_conversation_id)
-                        if result.app_conversation_id
-                        else result.id,
+                        request_id=result.id,
                         trigger=start_request.trigger.value
                         if start_request.trigger
                         else None,
-                        llm_model=None,  # Not available at start time
                         agent_type='default',
                         has_repository=start_request.selected_repository is not None,
                     )
         except Exception:
-            logger.exception('analytics:conversation_created:failed', stack_info=True)
+            logger.exception('analytics:conversation_requested:failed', stack_info=True)
 
         asyncio.create_task(_consume_remaining(async_iter, db_session, httpx_client))
         return result
