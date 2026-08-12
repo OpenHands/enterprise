@@ -343,6 +343,140 @@ class TestSdkCompatFields:
         assert data['llm_base_url'] == 'https://test.com'
 
     @pytest.mark.asyncio
+    async def test_expose_secrets_resolves_keyless_profile_with_effective_key(
+        self, mock_user_context
+    ):
+        """Expose-secrets response should overlay a keyless managed profile with
+        the effective settings key and the managed proxy base_url."""
+        from unittest.mock import patch
+
+        from server.constants import LITE_LLM_API_URL
+        from server.routes.users_v1 import get_current_user_saas
+
+        from openhands.app_server.settings.llm_profiles import LLMProfiles
+        from openhands.app_server.user.user_models import UserInfo
+        from openhands.sdk.llm import LLM
+        from openhands.sdk.settings import OpenHandsAgentSettings
+
+        # Managed profiles persist a masked placeholder key, which the LLM
+        # validator nulls at load — so the masked literal is the faithful
+        # arrangement of a stored managed profile.
+        base_user_info = UserInfo(
+            id='user-123',
+            agent_settings=OpenHandsAgentSettings(
+                llm=LLM(model='openhands/test-model', api_key='sk-effective-key')
+            ),
+            llm_profiles=LLMProfiles(
+                profiles={
+                    'opus8': LLM(model='openhands/test-model', api_key='**********')
+                }
+            ),
+        )
+        mock_user_context.get_user_info = AsyncMock(return_value=base_user_info)
+
+        with (
+            patch(
+                'server.routes.users_v1._get_org_info_from_context',
+                return_value=None,
+            ),
+            patch(
+                'server.routes.users_v1.validate_session_key_ownership',
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await get_current_user_saas(
+                user_context=mock_user_context,
+                expose_secrets=True,
+                x_session_api_key='session-key',
+            )
+
+        profile = json.loads(result.body)['llm_profiles']['profiles']['opus8']
+        assert profile['api_key'] == 'sk-effective-key'
+        assert profile['base_url'] == LITE_LLM_API_URL
+
+    @pytest.mark.asyncio
+    async def test_expose_secrets_keeps_byor_profile_own_key(self, mock_user_context):
+        """Expose-secrets response should not overwrite a BYOR profile's own key."""
+        from unittest.mock import patch
+
+        from server.routes.users_v1 import get_current_user_saas
+
+        from openhands.app_server.settings.llm_profiles import LLMProfiles
+        from openhands.app_server.user.user_models import UserInfo
+        from openhands.sdk.llm import LLM
+        from openhands.sdk.settings import OpenHandsAgentSettings
+
+        base_user_info = UserInfo(
+            id='user-123',
+            agent_settings=OpenHandsAgentSettings(
+                llm=LLM(model='openhands/test-model', api_key='sk-effective-key')
+            ),
+            llm_profiles=LLMProfiles(
+                profiles={
+                    'byor': LLM(model='anthropic/test-model', api_key='sk-byor-key')
+                }
+            ),
+        )
+        mock_user_context.get_user_info = AsyncMock(return_value=base_user_info)
+
+        with (
+            patch(
+                'server.routes.users_v1._get_org_info_from_context',
+                return_value=None,
+            ),
+            patch(
+                'server.routes.users_v1.validate_session_key_ownership',
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await get_current_user_saas(
+                user_context=mock_user_context,
+                expose_secrets=True,
+                x_session_api_key='session-key',
+            )
+
+        profile = json.loads(result.body)['llm_profiles']['profiles']['byor']
+        assert profile['api_key'] == 'sk-byor-key'
+
+    @pytest.mark.asyncio
+    async def test_non_expose_response_does_not_resolve_profile_keys(
+        self, mock_user_context
+    ):
+        """Non-expose response should leave profile keys unresolved."""
+        from unittest.mock import patch
+
+        from server.routes.users_v1 import get_current_user_saas
+
+        from openhands.app_server.settings.llm_profiles import LLMProfiles
+        from openhands.app_server.user.user_models import UserInfo
+        from openhands.sdk.llm import LLM
+        from openhands.sdk.settings import OpenHandsAgentSettings
+
+        base_user_info = UserInfo(
+            id='user-123',
+            agent_settings=OpenHandsAgentSettings(
+                llm=LLM(model='openhands/test-model', api_key='sk-effective-key')
+            ),
+            llm_profiles=LLMProfiles(
+                profiles={
+                    'opus8': LLM(model='openhands/test-model', api_key='**********')
+                }
+            ),
+        )
+        mock_user_context.get_user_info = AsyncMock(return_value=base_user_info)
+
+        with patch(
+            'server.routes.users_v1._get_org_info_from_context',
+            return_value=None,
+        ):
+            result = await get_current_user_saas(
+                user_context=mock_user_context, expose_secrets=False
+            )
+
+        profile = json.loads(result.body)['llm_profiles']['profiles']['opus8']
+        assert profile.get('api_key') is None
+
+    @pytest.mark.asyncio
     async def test_response_contains_mcp_config_at_top_level(self, mock_user_context):
         """Response should include mcp_config at top level."""
         from unittest.mock import patch
