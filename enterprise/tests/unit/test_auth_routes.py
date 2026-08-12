@@ -333,6 +333,108 @@ async def test_keycloak_callback_success_with_valid_offline_token(
 
 
 @pytest.mark.asyncio
+async def test_keycloak_callback_direct_login_no_idp_skips_token_storage(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """Direct username/password logins have identity_provider=None.
+
+    Token storage and offline-token validation must be skipped, and the
+    redirect should proceed normally.
+    """
+    mock_analytics = MagicMock()
+    mock_org = MagicMock()
+    mock_org.id = 'test_org_id'
+    mock_org.name = 'Test Org'
+
+    with (
+        patch('server.routes.auth.token_manager') as mock_token_manager,
+        patch('server.routes.auth.set_response_cookie') as mock_set_cookie,
+        patch('server.routes.auth.UserStore') as mock_user_store,
+        patch('server.routes.auth.get_analytics_service', return_value=mock_analytics),
+        patch(
+            'storage.org_store.OrgStore.get_org_by_id',
+            new_callable=AsyncMock,
+            return_value=mock_org,
+        ),
+        patch(
+            'storage.org_store.OrgStore.get_orgs_by_ids',
+            new_callable=AsyncMock,
+            return_value=[mock_org],
+        ),
+        patch(
+            'storage.org_member_store.OrgMemberStore.get_org_members_count',
+            new_callable=AsyncMock,
+            return_value=1,
+        ),
+        patch(
+            'server.routes.auth._should_redirect_to_onboarding',
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+    ):
+        mock_user = MagicMock()
+        mock_user.id = 'test_user_id'
+        mock_user.current_org_id = 'test_org_id'
+        mock_user.accepted_tos = '2025-01-01'
+        mock_user.user_consents_to_analytics = True
+        mock_user.org_members = []
+
+        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+        mock_user_store.create_user = AsyncMock(return_value=mock_user)
+        mock_user_store.migrate_user = AsyncMock(return_value=mock_user)
+        mock_user_store.backfill_contact_name = AsyncMock()
+        mock_user_store.backfill_user_email = AsyncMock()
+        mock_user_store.record_login = AsyncMock()
+
+        mock_token_manager.get_keycloak_tokens = AsyncMock(
+            return_value=('test_access_token', 'test_refresh_token')
+        )
+        # Direct login: no identity_provider
+        mock_token_manager.get_user_info = AsyncMock(
+            return_value=create_keycloak_user_info(
+                sub='test_user_id',
+                preferred_username='test_user',
+                identity_provider=None,
+                email_verified=True,
+            )
+        )
+        mock_token_manager.store_idp_tokens = AsyncMock()
+        mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
+
+        result = await keycloak_callback(
+            code='test_code',
+            state='test_state',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=create_mock_user_authorizer(),
+        )
+
+        assert isinstance(result, RedirectResponse)
+        assert result.status_code == 302
+        assert result.headers['location'] == 'test_state'
+
+        # IdP token storage and offline-token validation must NOT run for direct logins
+        mock_token_manager.store_idp_tokens.assert_not_called()
+        mock_token_manager.validate_offline_token.assert_not_called()
+
+        mock_set_cookie.assert_called_once_with(
+            request=mock_request,
+            response=result,
+            keycloak_access_token='test_access_token',
+            keycloak_refresh_token='test_refresh_token',
+            secure=False,
+            accepted_tos=True,
+        )
+
+        # Background analytics task still runs with idp=None
+        mock_background_tasks.add_task.assert_called_once()
+        background_fn = mock_background_tasks.add_task.call_args[0][0]
+        background_kwargs = mock_background_tasks.add_task.call_args[1]
+        await background_fn(**background_kwargs)
+        assert background_kwargs['idp'] is None
+
+
+@pytest.mark.asyncio
 async def test_keycloak_callback_email_not_verified(
     mock_request, mock_background_tasks, create_keycloak_user_info
 ):

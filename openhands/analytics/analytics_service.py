@@ -178,7 +178,7 @@ class AnalyticsService:
         self,
         ctx: AnalyticsContext,
         *,
-        idp: str,
+        idp: str | None,
         session_id: str | None = None,
     ) -> None:
         """Track 'user logged in' event.
