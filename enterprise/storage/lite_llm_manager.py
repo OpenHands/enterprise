@@ -93,30 +93,24 @@ class LiteLlmManager:
     @staticmethod
     def get_budget_from_team_info(
         user_team_info: dict | None, user_id: str, org_id: str
-    ) -> tuple[float | None, float]:
-        """Extract max_budget and spend from user team info.
+    ) -> tuple[float | None, float] | None:
+        """Extract known budget data, preserving an explicit unlimited cap."""
+        if not user_team_info or 'spend' not in user_team_info:
+            return None
 
-        For personal orgs (user_id == org_id), uses litellm_budget_table.max_budget.
-        For team orgs, uses max_budget_in_team (populated by get_user_team_info).
-        A null max_budget is preserved because LiteLLM treats it as unlimited.
-
-        Args:
-            user_team_info: The response from get_user_team_info
-            user_id: The user's ID
-            org_id: The organization's ID
-
-        Returns:
-            Tuple of (max_budget, spend)
-        """
-        if not user_team_info:
-            return None, 0
-        spend = user_team_info.get('spend') or 0
+        spend = user_team_info['spend'] or 0
         if user_id == org_id:
-            max_budget = (user_team_info.get('litellm_budget_table') or {}).get(
-                'max_budget'
+            if 'litellm_budget_table' not in user_team_info:
+                return None
+            budget_table = user_team_info['litellm_budget_table']
+            max_budget = (
+                budget_table.get('max_budget') if budget_table is not None else None
             )
         else:
-            max_budget = user_team_info.get('max_budget_in_team')
+            if 'max_budget_in_team' not in user_team_info:
+                return None
+            max_budget = user_team_info['max_budget_in_team']
+
         return max_budget, spend
 
     @staticmethod
@@ -1261,8 +1255,10 @@ class LiteLlmManager:
 
         if keycloak_user_id != team_id:
             team_info = team_response.get('team_info', {})
-            user_membership['max_budget_in_team'] = team_info.get('max_budget')
-            user_membership['spend'] = team_info.get('spend', 0)
+            if 'max_budget' not in team_info or 'spend' not in team_info:
+                return None
+            user_membership['max_budget_in_team'] = team_info['max_budget']
+            user_membership['spend'] = team_info['spend']
 
         return user_membership
 

@@ -12,6 +12,7 @@ import pytest
 from server.routes.org_models import (
     LiteLLMIntegrationError,
     OrgAuthorizationError,
+    OrgCreditsResult,
     OrgDatabaseError,
     OrgNameExistsError,
     OrgNotFoundError,
@@ -568,10 +569,27 @@ async def test_get_org_credits_success(mock_litellm_api):
         AsyncMock(return_value=mock_team_info),
     ):
         # Act
-        credits = await OrgService.get_org_credits(user_id, org_id)
+        result = await OrgService.get_org_credits(user_id, org_id)
 
         # Assert
-        assert credits == 75.0  # 100 - 25
+        assert result.available is True
+        assert result.credits == 75.0  # 100 - 25
+
+
+@pytest.mark.asyncio
+async def test_get_org_credits_explicit_unlimited_is_available(mock_litellm_api):
+    user_id = 'test-user-123'
+    org_id = uuid.uuid4()
+    mock_team_info = {'max_budget_in_team': None, 'spend': 25.0}
+
+    with patch(
+        'storage.org_service.LiteLlmManager.get_user_team_info',
+        AsyncMock(return_value=mock_team_info),
+    ):
+        result = await OrgService.get_org_credits(user_id, org_id)
+
+    assert result.available is True
+    assert result.credits is None
 
 
 @pytest.mark.asyncio
@@ -590,10 +608,11 @@ async def test_get_org_credits_no_team_info(mock_litellm_api):
         AsyncMock(return_value=None),
     ):
         # Act
-        credits = await OrgService.get_org_credits(user_id, org_id)
+        result = await OrgService.get_org_credits(user_id, org_id)
 
         # Assert
-        assert credits is None
+        assert result.available is False
+        assert result.credits is None
 
 
 @pytest.mark.asyncio
@@ -619,10 +638,11 @@ async def test_get_org_credits_negative_credits_returns_zero(mock_litellm_api):
         AsyncMock(return_value=mock_team_info),
     ):
         # Act
-        credits = await OrgService.get_org_credits(user_id, org_id)
+        result = await OrgService.get_org_credits(user_id, org_id)
 
         # Assert
-        assert credits == 0.0
+        assert result.available is True
+        assert result.credits == 0.0
 
 
 @pytest.mark.asyncio
@@ -641,10 +661,11 @@ async def test_get_org_credits_api_failure_returns_none(mock_litellm_api):
         AsyncMock(side_effect=Exception('API error')),
     ):
         # Act
-        credits = await OrgService.get_org_credits(user_id, org_id)
+        result = await OrgService.get_org_credits(user_id, org_id)
 
         # Assert
-        assert credits is None
+        assert result.available is False
+        assert result.credits is None
 
 
 @pytest.mark.asyncio
@@ -2018,7 +2039,7 @@ async def test_check_byor_export_enabled_returns_false_when_disabled_without_cre
         ),
         patch(
             'storage.org_service.OrgService.get_org_credits',
-            AsyncMock(return_value=0),
+            AsyncMock(return_value=OrgCreditsResult(credits=0, available=True)),
         ) as mock_get_credits,
         patch(
             'storage.org_service.OrgStore.enable_byor_export',
@@ -2065,7 +2086,7 @@ async def test_check_byor_export_enabled_sets_flag_when_disabled_with_credits():
         ),
         patch(
             'storage.org_service.OrgService.get_org_credits',
-            AsyncMock(return_value=25.0),
+            AsyncMock(return_value=OrgCreditsResult(credits=25.0, available=True)),
         ) as mock_get_credits,
         patch(
             'storage.org_service.OrgStore.enable_byor_export',

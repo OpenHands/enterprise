@@ -51,7 +51,7 @@ export function PaymentForm({ isDisabled }: { isDisabled?: boolean }) {
           <MoneyIcon width={22} height={14} />
           <span>{t(I18nKey.PAYMENT$MANAGE_CREDITS)}</span>
         </div>
-        {!isLoading && (
+        {!isLoading && balance !== undefined && (
           <span data-testid="user-balance">
             {balance === null
               ? t(I18nKey.CONVERSATION$NO_BUDGET_LIMIT)

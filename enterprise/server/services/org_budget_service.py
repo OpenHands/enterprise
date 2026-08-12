@@ -235,7 +235,12 @@ class OrgBudgetService:
         await self.store.flush()
         await self.store.refresh(settings)
 
-        await self._sync_litellm_budgets(org_id, settings, overrides)
+        await self._sync_litellm_budgets(
+            org_id,
+            settings,
+            overrides,
+            clear_disabled=previous_enabled and not settings.enabled,
+        )
 
         cycle = self._current_cycle(settings)
         current_spend = await self._get_cycle_spend(org_id, cycle.start_at)
@@ -591,7 +596,12 @@ class OrgBudgetService:
         org_id: UUID,
         settings: OrgBudgetSettings,
         overrides: list[OrgUserBudgetOverride],
+        clear_disabled: bool = False,
     ) -> None:
+        if not settings.enabled and not clear_disabled:
+            await self._record_litellm_sync(settings, 'skipped')
+            return
+
         sync_errors: list[str] = []
         try:
             financial_data = await LiteLlmManager.get_team_members_financial_data(

@@ -53,8 +53,11 @@ async def personal_org(async_session_maker):
     return org
 
 
-def test_budget_maintenance_scheduler_excludes_personal_orgs(session_maker):
+def test_budget_maintenance_scheduler_excludes_personal_and_disabled_orgs(
+    session_maker,
+):
     personal_id = uuid4()
+    disabled_team_id = uuid4()
     team_id = uuid4()
     now = datetime.now(UTC)
 
@@ -64,6 +67,12 @@ def test_budget_maintenance_scheduler_excludes_personal_orgs(session_maker):
                 Org(
                     id=personal_id,
                     name=f'user_{personal_id}_org',
+                    org_version=ORG_SETTINGS_VERSION,
+                    enable_proactive_conversation_starters=True,
+                ),
+                Org(
+                    id=disabled_team_id,
+                    name=f'test-org-{disabled_team_id}',
                     org_version=ORG_SETTINGS_VERSION,
                     enable_proactive_conversation_starters=True,
                 ),
@@ -81,6 +90,13 @@ def test_budget_maintenance_scheduler_excludes_personal_orgs(session_maker):
             [
                 OrgBudgetSettings(
                     org_id=personal_id,
+                    enabled=False,
+                    reset_day=1,
+                    cycle_start_at=now,
+                    cycle_start_spend=0.0,
+                ),
+                OrgBudgetSettings(
+                    org_id=disabled_team_id,
                     enabled=False,
                     reset_day=1,
                     cycle_start_at=now,
@@ -181,6 +197,45 @@ async def test_budget_operations_reject_personal_org_without_creating_settings(
     assert read_error.value.status_code == status.HTTP_400_BAD_REQUEST
     assert update_error.value.status_code == status.HTTP_400_BAD_REQUEST
     assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_update_budget_settings_marks_explicit_disable_for_cap_clear(
+    async_session_maker, budget_org
+):
+    async with async_session_maker() as session:
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            monthly_limit=100.0,
+            reset_day=1,
+            cycle_start_at=datetime.now(UTC),
+            cycle_start_spend=0.0,
+        )
+        session.add(settings)
+        await session.commit()
+        service = OrgBudgetService(session)
+
+        with (
+            patch.object(service, '_get_thresholds', AsyncMock(return_value=[])),
+            patch.object(service, '_get_overrides', AsyncMock(return_value=[])),
+            patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock,
+            patch.object(service, '_get_cycle_spend', AsyncMock(return_value=0.0)),
+            patch.object(
+                service, '_build_user_budget_rows', AsyncMock(return_value=([], 0))
+            ),
+        ):
+            await service.update_budget_settings(
+                budget_org.id,
+                OrgBudgetSettingsUpdate(enabled=False),
+            )
+
+    sync_mock.assert_awaited_once_with(
+        budget_org.id,
+        settings,
+        [],
+        clear_disabled=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -451,7 +506,31 @@ async def test_sync_litellm_budgets_updates_team_and_members(
 
 
 @pytest.mark.asyncio
-async def test_sync_litellm_budgets_clears_disabled_team_org_cap(
+async def test_sync_litellm_budgets_skips_passive_disabled_team_org(
+    async_session_maker, budget_org
+):
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=False,
+            reset_day=1,
+            cycle_start_at=datetime.now(UTC),
+            cycle_start_spend=0.0,
+        )
+
+        with patch(
+            'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+            AsyncMock(),
+        ) as get_financial_data:
+            await service._sync_litellm_budgets(budget_org.id, settings, [])
+
+    get_financial_data.assert_not_awaited()
+    assert settings.litellm_last_sync_status == 'skipped'
+
+
+@pytest.mark.asyncio
+async def test_sync_litellm_budgets_clears_explicitly_disabled_team_org_cap(
     async_session_maker, budget_org
 ):
     async with async_session_maker() as session:
@@ -474,7 +553,9 @@ async def test_sync_litellm_budgets_clears_disabled_team_org_cap(
                 AsyncMock(),
             ) as update_team,
         ):
-            await service._sync_litellm_budgets(budget_org.id, settings, [])
+            await service._sync_litellm_budgets(
+                budget_org.id, settings, [], clear_disabled=True
+            )
 
     update_team.assert_awaited_once_with(
         str(budget_org.id),

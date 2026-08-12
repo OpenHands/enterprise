@@ -94,13 +94,22 @@ async def get_credits(
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
 ) -> GetCreditsResponse:
     if not stripe_service.STRIPE_API_KEY:
-        return GetCreditsResponse()
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Billing is not configured',
+        )
     user_team_info = await LiteLlmManager.get_user_team_info(
         user_id, str(effective_org_id)
     )
-    max_budget, spend = LiteLlmManager.get_budget_from_team_info(
+    budget_info = LiteLlmManager.get_budget_from_team_info(
         user_team_info, user_id, str(effective_org_id)
     )
+    if budget_info is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Credit balance is temporarily unavailable',
+        )
+    max_budget, spend = budget_info
     credits = calculate_credits({'max_budget': max_budget, 'spend': spend})
     if credits is None:
         return GetCreditsResponse()
@@ -282,13 +291,19 @@ async def success_callback(session_id: str, request: Request):
         )
         amount_subtotal = stripe_session.amount_subtotal or 0
         add_credits = amount_subtotal / 100
-        max_budget, spend = LiteLlmManager.get_budget_from_team_info(
+        budget_info = LiteLlmManager.get_budget_from_team_info(
             user_team_info, billing_session.user_id, str(user.current_org_id)
         )
+        if budget_info is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='Credit balance is temporarily unavailable',
+            )
+        max_budget, spend = budget_info
 
         result = await session.execute(select(Org).where(Org.id == user.current_org_id))
         org = result.scalar_one_or_none()
-        budget_baseline = max_budget if max_budget is not None else spend
+        budget_baseline = max(spend, max_budget if max_budget is not None else spend)
         new_max_budget = budget_baseline + add_credits
 
         await LiteLlmManager.update_team_and_users_budget(

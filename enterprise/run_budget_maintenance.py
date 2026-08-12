@@ -28,7 +28,7 @@ def _eligible_budget_org_ids(session) -> list[str]:
         str(row.org_id)
         for row in session.query(OrgBudgetSettings.org_id)
         .outerjoin(User, User.id == OrgBudgetSettings.org_id)
-        .filter(User.id.is_(None))
+        .filter(User.id.is_(None), OrgBudgetSettings.enabled.is_(True))
     ]
 
 

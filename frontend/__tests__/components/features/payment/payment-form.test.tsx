@@ -81,6 +81,14 @@ describe("PaymentForm", () => {
     });
   });
 
+  it("should not render a balance before the query is enabled", () => {
+    getConfigSpy.mockReturnValue(new Promise(() => {}));
+    renderPaymentForm();
+
+    expect(screen.queryByTestId("user-balance")).not.toBeInTheDocument();
+    expect(screen.queryByText("$NaN")).not.toBeInTheDocument();
+  });
+
   test("the user can top-up a specific amount", async () => {
     const user = userEvent.setup();
     renderPaymentForm();
