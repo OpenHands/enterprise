@@ -55,11 +55,16 @@ class OrgMemberService:
         if role is None:
             raise RoleNotFoundError(org_member.role_id)
 
-        # Get user email
+        # Get user email and any instance-level super role.
         user = await UserStore.get_user_by_id(str(user_id))
         email = user.email if user and user.email else ''
+        super_role = (
+            await RoleStore.get_role_by_id(user.role_id)
+            if user and user.role_id is not None
+            else None
+        )
 
-        return MeResponse.from_org_member(org_member, role, email)
+        return MeResponse.from_org_member(org_member, role, email, super_role)
 
     @staticmethod
     async def get_org_members(
