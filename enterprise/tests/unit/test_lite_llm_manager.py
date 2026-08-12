@@ -2965,9 +2965,9 @@ class TestBudgetPayloadHandling:
 
         # Verify that max_budget IS in the JSON payload with the correct value
         json_payload = call_args[1]['json']
-        assert (
-            'max_budget' in json_payload
-        ), 'max_budget should be in payload when set to a value'
+        assert 'max_budget' in json_payload, (
+            'max_budget should be in payload when set to a value'
+        )
         assert json_payload['max_budget'] == 100.0
 
     @pytest.mark.asyncio
@@ -3026,9 +3026,9 @@ class TestBudgetPayloadHandling:
 
         # Verify that max_budget_in_team IS in the JSON payload
         json_payload = call_args[1]['json']
-        assert (
-            'max_budget_in_team' in json_payload
-        ), 'max_budget_in_team should be in payload when set to a value'
+        assert 'max_budget_in_team' in json_payload, (
+            'max_budget_in_team should be in payload when set to a value'
+        )
         assert json_payload['max_budget_in_team'] == 50.0
 
     @pytest.mark.asyncio
@@ -3087,9 +3087,9 @@ class TestBudgetPayloadHandling:
 
         # Verify that max_budget_in_team IS in the JSON payload
         json_payload = call_args[1]['json']
-        assert (
-            'max_budget_in_team' in json_payload
-        ), 'max_budget_in_team should be in payload when set to a value'
+        assert 'max_budget_in_team' in json_payload, (
+            'max_budget_in_team should be in payload when set to a value'
+        )
         assert json_payload['max_budget_in_team'] == 75.0
 
 
