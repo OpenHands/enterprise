@@ -472,7 +472,7 @@ async def keycloak_callback(
 
     await UserStore.record_login(user_id)
 
-    idp: str = user_info.identity_provider
+    idp: str | None = user_info.identity_provider
     logger.info(f'Full IDP is {idp}')
     idp_type = 'oidc'
     if idp and ':' in idp:
