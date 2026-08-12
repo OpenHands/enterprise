@@ -101,9 +101,7 @@ class OrgBudgetService:
         self.db_session = store.db_session
 
     async def _is_personal_org(self, org_id: UUID) -> bool:
-        result = await self.db_session.execute(
-            select(User.id).where(User.id == org_id)
-        )
+        result = await self.db_session.execute(select(User.id).where(User.id == org_id))
         return result.scalar_one_or_none() is not None
 
     async def _reject_personal_org(self, org_id: UUID) -> None:

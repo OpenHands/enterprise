@@ -175,9 +175,7 @@ async def test_budget_operations_reject_personal_org_without_creating_settings(
             )
 
         result = await session.execute(
-            select(OrgBudgetSettings).where(
-                OrgBudgetSettings.org_id == personal_org.id
-            )
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == personal_org.id)
         )
 
     assert read_error.value.status_code == status.HTTP_400_BAD_REQUEST
@@ -204,9 +202,7 @@ async def test_run_budget_maintenance_skips_legacy_personal_org_settings(
         await session.commit()
         service = OrgBudgetService(session)
 
-        with patch.object(
-            service, '_sync_litellm_budgets', AsyncMock()
-        ) as sync_mock:
+        with patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock:
             result = await service.run_budget_maintenance(personal_org.id)
 
     assert result['skipped'] == 'personal_org'
