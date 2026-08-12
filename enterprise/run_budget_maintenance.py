@@ -14,12 +14,22 @@ from server.maintenance_task_processor.org_budget_maintenance_processor import (
 from storage.database import session_maker
 from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
 from storage.org_budget_settings import OrgBudgetSettings
+from storage.user import User
 
 BATCH_SIZE = 25
 
 
 def _chunked(values: list[str], size: int) -> list[list[str]]:
     return [values[i : i + size] for i in range(0, len(values), size)]
+
+
+def _eligible_budget_org_ids(session) -> list[str]:
+    return [
+        str(row.org_id)
+        for row in session.query(OrgBudgetSettings.org_id)
+        .outerjoin(User, User.id == OrgBudgetSettings.org_id)
+        .filter(User.id.is_(None))
+    ]
 
 
 def enqueue_budget_tasks(batch_size: int = BATCH_SIZE) -> int:
@@ -45,7 +55,7 @@ def enqueue_budget_tasks(batch_size: int = BATCH_SIZE) -> int:
             )
             return 0
 
-        org_ids = [str(row.org_id) for row in session.query(OrgBudgetSettings.org_id)]
+        org_ids = _eligible_budget_org_ids(session)
         if not org_ids:
             return 0
 

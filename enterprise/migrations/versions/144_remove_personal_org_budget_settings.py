@@ -1,0 +1,33 @@
+"""Remove budget settings accidentally created for personal workspaces.
+
+Revision ID: 144
+Revises: 143
+Create Date: 2026-06-16 00:00:00.000000
+"""
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = '144'
+down_revision: Union[str, None] = '143'
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    user = sa.table('user', sa.column('id', sa.Uuid()))
+    personal_org_ids = sa.select(user.c.id)
+
+    for table_name in (
+        'org_user_budget_override',
+        'org_budget_threshold',
+        'org_budget_settings',
+    ):
+        table = sa.table(table_name, sa.column('org_id', sa.Uuid()))
+        op.execute(table.delete().where(table.c.org_id.in_(personal_org_ids)))
+
+
+def downgrade() -> None:
+    pass

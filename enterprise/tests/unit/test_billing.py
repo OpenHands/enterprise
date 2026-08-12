@@ -206,6 +206,40 @@ async def test_get_credits_success():
 
 
 @pytest.mark.asyncio
+async def test_get_credits_returns_unconfigured_for_unlimited_personal_org():
+    user_id = str(uuid.uuid4())
+    with (
+        patch('integrations.stripe_service.STRIPE_API_KEY', 'mock_key'),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.get_user_team_info',
+            return_value={
+                'spend': 2843.24,
+                'litellm_budget_table': None,
+            },
+        ),
+    ):
+        result = await get_credits(user_id, uuid.UUID(user_id))
+
+    assert result.credits is None
+
+
+@pytest.mark.asyncio
+async def test_get_credits_returns_unconfigured_for_unlimited_team_org():
+    user_id = str(uuid.uuid4())
+    org_id = uuid.uuid4()
+    with (
+        patch('integrations.stripe_service.STRIPE_API_KEY', 'mock_key'),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.get_user_team_info',
+            return_value={'spend': 2843.24, 'max_budget_in_team': None},
+        ),
+    ):
+        result = await get_credits(user_id, org_id)
+
+    assert result.credits is None
+
+
+@pytest.mark.asyncio
 async def test_create_checkout_session_stripe_error(
     mock_checkout_request, test_org, patched_checkout_session_makers
 ):
@@ -364,6 +398,9 @@ async def test_success_callback_stripe_incomplete(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('max_budget', 'expected_budget'), [(100.0, 125.0), (None, 50.5)]
+)
 async def test_success_callback_success(
     async_session_maker,
     test_org,
@@ -371,6 +408,8 @@ async def test_success_callback_success(
     patched_billing_session_maker,
     mock_callback_request,
     mock_stripe_session_retrieve,
+    max_budget,
+    expected_budget,
 ):
     """Test successful payment completion and credit update."""
     session_id = 'test_success_session'
@@ -400,7 +439,7 @@ async def test_success_callback_success(
             'storage.lite_llm_manager.LiteLlmManager.get_user_team_info',
             return_value={
                 'spend': 25.50,
-                'max_budget_in_team': 100.00,
+                'max_budget_in_team': max_budget,
             },
         ),
         patch(
@@ -417,7 +456,7 @@ async def test_success_callback_success(
 
         mock_update_budget.assert_called_once_with(
             str(test_org.id),
-            125.0,  # 100 + 25.00
+            expected_budget,
         )
 
     # Verify database updates

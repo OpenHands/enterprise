@@ -630,6 +630,8 @@ class OrgService:
             max_budget, spend = LiteLlmManager.get_budget_from_team_info(
                 user_team_info, user_id, str(org_id)
             )
+            if max_budget is None:
+                return None
             credits = max(max_budget - spend, 0)
 
             logger.debug(

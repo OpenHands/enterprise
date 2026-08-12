@@ -93,11 +93,12 @@ class LiteLlmManager:
     @staticmethod
     def get_budget_from_team_info(
         user_team_info: dict | None, user_id: str, org_id: str
-    ) -> tuple[float, float]:
+    ) -> tuple[float | None, float]:
         """Extract max_budget and spend from user team info.
 
         For personal orgs (user_id == org_id), uses litellm_budget_table.max_budget.
         For team orgs, uses max_budget_in_team (populated by get_user_team_info).
+        A null max_budget is preserved because LiteLLM treats it as unlimited.
 
         Args:
             user_team_info: The response from get_user_team_info
@@ -108,14 +109,14 @@ class LiteLlmManager:
             Tuple of (max_budget, spend)
         """
         if not user_team_info:
-            return 0, 0
-        spend = user_team_info.get('spend', 0)
+            return None, 0
+        spend = user_team_info.get('spend') or 0
         if user_id == org_id:
             max_budget = (user_team_info.get('litellm_budget_table') or {}).get(
-                'max_budget', 0
+                'max_budget'
             )
         else:
-            max_budget = user_team_info.get('max_budget_in_team') or 0
+            max_budget = user_team_info.get('max_budget_in_team')
         return max_budget, spend
 
     @staticmethod
