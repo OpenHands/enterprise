@@ -11,12 +11,12 @@ import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
 import DocumentIcon from "#/icons/document.svg?react";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
+import {
+  dropdownMenuListClassName,
+  dropdownMenuRowClassName,
+} from "#/utils/dropdown-classes";
 
-const menuItemClassName = cn(
-  "flex items-center gap-2 px-2.5 h-9 rounded-md text-sm",
-  "text-[var(--oh-muted)] hover:text-white hover:bg-[var(--oh-surface-raised)]",
-  "transition-none",
-);
+const menuItemClassName = cn(dropdownMenuRowClassName, "h-9 px-2.5");
 
 /**
  * Settings-nav footer: avatar + label with a popover for docs / logout.
@@ -48,7 +48,7 @@ export function SettingsNavUserMenu() {
     <div
       ref={menuRef}
       data-testid="settings-nav-user-menu"
-      className="relative shrink-0 border-t border-[var(--oh-border-subtle)] pt-3"
+      className="relative shrink-0"
     >
       <button
         type="button"
@@ -66,6 +66,7 @@ export function SettingsNavUserMenu() {
         <UserAvatar
           avatarUrl={user.data?.avatar_url}
           isLoading={user.isFetching}
+          interactive={false}
         />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm text-white">{displayName}</p>
@@ -80,9 +81,9 @@ export function SettingsNavUserMenu() {
           role="menu"
           data-testid="settings-nav-user-popover"
           className={cn(
-            "absolute bottom-full left-0 right-0 mb-2 z-[9999]",
-            "rounded-xl border border-[var(--oh-border-subtle)] bg-surface-deep p-2",
-            "context-menu-box-shadow",
+            "absolute bottom-full left-0 right-0 z-[9999] mb-2",
+            "rounded-[6px] bg-tertiary p-1 context-menu-box-shadow",
+            dropdownMenuListClassName,
           )}
         >
           <a

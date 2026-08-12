@@ -601,7 +601,7 @@ function SkillsSettingsScreen() {
       </div>
 
       {/* Sticky action bar — keeps Save reachable without scrolling to the end */}
-      <div className="sticky bottom-0 z-10 mt-auto flex items-center justify-end gap-4 border-t border-tertiary bg-base/95 py-4 backdrop-blur-sm">
+      <div className="sticky bottom-0 z-10 mt-auto flex items-center justify-end gap-4 border-t border-[var(--oh-border)] bg-base/95 py-4 backdrop-blur-sm">
         {hasUnsavedChanges && (
           <span className="text-sm text-tertiary-alt">
             {t(I18nKey.SETTINGS$UNSAVED_CHANGES)}

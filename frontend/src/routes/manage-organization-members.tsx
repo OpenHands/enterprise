@@ -31,8 +31,7 @@ import {
 } from "#/utils/form-control-classes";
 import {
   settingsListContainerClassName,
-  settingsListTableHeadClassName,
-  settingsListTableHeaderCellClassName,
+  settingsListSectionHeaderClassName,
   settingsListTableRowClassName,
 } from "#/utils/settings-list-classes";
 
@@ -159,8 +158,16 @@ function ManageOrganizationMembers() {
       data-testid="manage-organization-members-settings"
       className="flex flex-col gap-2 h-full"
     >
-      <div className="flex items-center justify-between pb-6">
-        <Typography.H2>{t(I18nKey.ORG$ORGANIZATION_MEMBERS)}</Typography.H2>
+      <div className="flex items-start justify-between gap-4 pb-6">
+        <header className="space-y-1">
+          <Typography.H2>{t(I18nKey.ORG$ORGANIZATION_MEMBERS)}</Typography.H2>
+          <p
+            data-testid="settings-page-subtitle"
+            className="text-sm leading-5 text-muted"
+          >
+            {t(I18nKey.SETTINGS$PAGE_ORG_MEMBERS_SUBLINE)}
+          </p>
+        </header>
         {hasPermissionToInvite && (
           <BrandButton
             type="button"
@@ -174,7 +181,7 @@ function ManageOrganizationMembers() {
       </div>
 
       {/* Email Search Input */}
-      <div className={cn(formControlShellClassName, "mb-4 w-80")}>
+      <div className={cn(formControlShellClassName, "mb-4 w-full")}>
         <Search
           size={16}
           className="ml-3 shrink-0 text-tertiary-alt"
@@ -186,10 +193,7 @@ function ManageOrganizationMembers() {
           value={emailFilter}
           placeholder={t(I18nKey.ORG$SEARCH_BY_EMAIL)}
           onChange={(e) => setEmailFilter(e.target.value)}
-          className={cn(
-            formControlInlineInputClassName,
-            "placeholder:italic text-white",
-          )}
+          className={cn(formControlInlineInputClassName, "text-white")}
         />
         {isFetching && debouncedEmailFilter && (
           <LoaderCircle
@@ -214,19 +218,10 @@ function ManageOrganizationMembers() {
           "custom-scrollbar flex-1 overflow-y-auto",
         )}
       >
-        <div
-          className={cn(
-            settingsListTableHeadClassName,
-            "flex w-full items-center justify-between",
-          )}
-        >
-          <span className={settingsListTableHeaderCellClassName}>
-            {t(I18nKey.ORG$ALL_ORGANIZATION_MEMBERS)}
-          </span>
+        <div className={settingsListSectionHeaderClassName}>
+          <span>{t(I18nKey.ORG$ALL_ORGANIZATION_MEMBERS)}</span>
           {totalCount !== undefined && (
-            <span
-              className={cn(settingsListTableHeaderCellClassName, "text-muted")}
-            >
+            <span className="text-muted">
               {totalCount} {totalCount === 1 ? "member" : "members"}
             </span>
           )}

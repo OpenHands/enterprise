@@ -56,8 +56,34 @@ export const createMockOrganization = (
       max_size: 240,
     },
     mcp_config: {
-      tools: [],
-      settings: {},
+      sse_servers: [
+        {
+          name: "linear",
+          url: "https://mcp.linear.app/sse",
+          api_key: "lin_mock_api_key",
+        },
+      ],
+      stdio_servers: [
+        {
+          name: "filesystem",
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+        },
+        {
+          name: "github",
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-github"],
+          env: { GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_mock_token" },
+        },
+      ],
+      shttp_servers: [
+        {
+          name: "notion",
+          url: "https://mcp.notion.com/mcp",
+          api_key: "ntn_mock_api_key",
+          timeout: 30,
+        },
+      ],
     },
   },
   search_api_key: null,
@@ -247,12 +273,60 @@ export const ORGS_AND_MEMBERS: Record<string, OrganizationMember[]> = {
 
 const orgs = new Map(INITIAL_MOCK_ORGS.map((org) => [org.id, org]));
 
+type MockOrgLlmProfile = {
+  name: string;
+  model: string | null;
+  base_url: string | null;
+  api_key_set: boolean;
+};
+
+type MockOrgProfilesState = {
+  profiles: Map<string, MockOrgLlmProfile>;
+  active: string | null;
+};
+
+const createDefaultOrgProfiles = (): MockOrgProfilesState => ({
+  profiles: new Map([
+    [
+      "default",
+      {
+        name: "default",
+        model: "gpt-4o",
+        base_url: null,
+        api_key_set: true,
+      },
+    ],
+    [
+      "claude",
+      {
+        name: "claude",
+        model: "anthropic/claude-sonnet-4-20250514",
+        base_url: null,
+        api_key_set: true,
+      },
+    ],
+  ]),
+  active: "default",
+});
+
+const orgProfilesByOrgId = new Map<string, MockOrgProfilesState>();
+
+const getOrgProfiles = (orgId: string): MockOrgProfilesState => {
+  let state = orgProfilesByOrgId.get(orgId);
+  if (!state) {
+    state = createDefaultOrgProfiles();
+    orgProfilesByOrgId.set(orgId, state);
+  }
+  return state;
+};
+
 export const resetOrgMockData = () => {
   // Reset organizations to initial state
   orgs.clear();
   INITIAL_MOCK_ORGS.forEach((org) => {
     orgs.set(org.id, { ...org });
   });
+  orgProfilesByOrgId.clear();
 };
 
 export const resetOrgsAndMembersMockData = () => {
@@ -460,6 +534,62 @@ export const ORG_HANDLERS = [
     );
   }),
 
+  http.get("/api/organizations/:orgId/settings", ({ params }) => {
+    const orgId = params.orgId?.toString();
+    if (!orgId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+
+    const org = orgs.get(orgId)!;
+    return HttpResponse.json({
+      agent_settings: org.agent_settings ?? {},
+      conversation_settings: {},
+      search_api_key: org.search_api_key,
+      llm_api_key_set: true,
+    });
+  }),
+
+  http.patch(
+    "/api/organizations/:orgId/settings",
+    async ({ request, params }) => {
+      const orgId = params.orgId?.toString();
+      if (!orgId || !orgs.has(orgId)) {
+        return HttpResponse.json(
+          { error: "Organization not found" },
+          { status: 404 },
+        );
+      }
+
+      const body = (await request.json()) as Record<string, unknown>;
+      const org = orgs.get(orgId)!;
+      if (body.agent_settings && typeof body.agent_settings === "object") {
+        org.agent_settings = {
+          ...(org.agent_settings ?? {}),
+          ...(body.agent_settings as Record<string, unknown>),
+        };
+        orgs.set(orgId, org);
+      }
+      if (
+        typeof body.search_api_key === "string" ||
+        body.search_api_key === null
+      ) {
+        org.search_api_key = body.search_api_key as string | null;
+        orgs.set(orgId, org);
+      }
+
+      return HttpResponse.json({
+        agent_settings: org.agent_settings ?? {},
+        conversation_settings:
+          (body.conversation_settings as Record<string, unknown>) ?? {},
+        search_api_key: org.search_api_key,
+        llm_api_key_set: true,
+      });
+    },
+  ),
+
   http.patch(
     "/api/organizations/:orgId/members/:userId",
     async ({ request, params }) => {
@@ -590,6 +720,310 @@ export const ORG_HANDLERS = [
     HttpResponse.json({ items: [], email_delivery_configured: true }),
   ),
 
+  http.get("/api/organizations/:orgId/conversations/stats", ({ params }) => {
+    const orgId = params.orgId?.toString();
+    if (!orgId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+    return HttpResponse.json({
+      active_conversations: 7,
+      running_runtimes: 4,
+      completed_24h: 12,
+      completed_7d: 48,
+      completed_30d: 186,
+      total_cost: 842.35,
+      total_prompt_tokens: 4_820_000,
+      total_completion_tokens: 1_240_000,
+      total_tokens: 6_060_000,
+    });
+  }),
+
+  http.get(
+    "/api/organizations/:orgId/conversations/usage-stats",
+    ({ params }) => {
+      const orgId = params.orgId?.toString();
+      if (!orgId || !orgs.has(orgId)) {
+        return HttpResponse.json(
+          { error: "Organization not found" },
+          { status: 404 },
+        );
+      }
+
+      const members = ORGS_AND_MEMBERS[orgId] ?? [];
+      const dailyUsage = Array.from({ length: 30 }, (_, index) => {
+        const date = new Date("2026-08-12T12:00:00Z");
+        date.setUTCDate(date.getUTCDate() - (29 - index));
+        return {
+          date: date.toISOString().slice(0, 10),
+          tokens: 80_000 + index * 12_000,
+          conversations: 3 + (index % 7),
+        };
+      });
+
+      return HttpResponse.json({
+        active_users: Math.max(members.length, 3),
+        agent_runs: 214,
+        usage_conversation_count: 186,
+        total_tokens: 6_060_000,
+        estimated_spend: 842.35,
+        daily_usage: dailyUsage,
+        team_usage: members.slice(0, 5).map((member, index) => ({
+          user_id: member.user_id,
+          user_email: member.email,
+          user_name: member.email.split("@")[0],
+          conversation_count: 40 - index * 8,
+          total_tokens: 1_200_000 - index * 180_000,
+          percentage: 35 - index * 6,
+        })),
+        model_usage: [
+          {
+            model_name: "anthropic/claude-sonnet-4-20250514",
+            conversation_count: 92,
+            total_tokens: 3_100_000,
+            total_cost: 412.5,
+          },
+          {
+            model_name: "openai/gpt-5.1",
+            conversation_count: 54,
+            total_tokens: 1_850_000,
+            total_cost: 268.2,
+          },
+          {
+            model_name: "openhands/claude-sonnet-4-5-20250929",
+            conversation_count: 28,
+            total_tokens: 780_000,
+            total_cost: 118.4,
+          },
+          {
+            model_name: "google/gemini-2.5-pro",
+            conversation_count: 12,
+            total_tokens: 330_000,
+            total_cost: 43.25,
+          },
+        ],
+        agent_usage: [
+          {
+            agent_name: "CodeActAgent",
+            conversation_count: 140,
+            total_cost: 520.1,
+          },
+          {
+            agent_name: "BrowsingAgent",
+            conversation_count: 28,
+            total_cost: 182.4,
+          },
+          {
+            agent_name: "PlannerAgent",
+            conversation_count: 18,
+            total_cost: 139.85,
+          },
+        ],
+      });
+    },
+  ),
+
+  http.get(
+    "/api/organizations/:orgId/conversations/user-usage",
+    ({ params }) => {
+      const orgId = params.orgId?.toString();
+      if (!orgId || !orgs.has(orgId)) {
+        return HttpResponse.json(
+          { error: "Organization not found" },
+          { status: 404 },
+        );
+      }
+
+      const members = ORGS_AND_MEMBERS[orgId] ?? [];
+      const fallbackUsers = [
+        {
+          user_id: "u-1",
+          email: "alice@acme.org",
+          name: "alice",
+        },
+        {
+          user_id: "u-2",
+          email: "bob@acme.org",
+          name: "bob",
+        },
+        {
+          user_id: "u-3",
+          email: "charlie@acme.org",
+          name: "charlie",
+        },
+        {
+          user_id: "u-4",
+          email: "dana@acme.org",
+          name: "dana",
+        },
+        {
+          user_id: "u-5",
+          email: "erin@acme.org",
+          name: "erin",
+        },
+      ];
+      const source =
+        members.length > 0
+          ? members.map((member) => ({
+              user_id: member.user_id,
+              email: member.email,
+              name: member.email.split("@")[0],
+            }))
+          : fallbackUsers;
+
+      return HttpResponse.json({
+        items: source.map((user, index) => ({
+          user_id: user.user_id,
+          user_email: user.email,
+          user_name: user.name,
+          conversation_count: 48 - index * 7,
+          first_conversation_at: `2026-01-${String(5 + index).padStart(2, "0")}T10:00:00Z`,
+          last_conversation_at: `2026-08-${String(10 - index).padStart(2, "0")}T16:30:00Z`,
+          first_login_at: `2025-11-${String(2 + index).padStart(2, "0")}T09:00:00Z`,
+          last_login_at: `2026-08-${String(11 - (index % 3)).padStart(2, "0")}T14:15:00Z`,
+          spend_mtd: 42.5 + index * 18.25,
+          spend_ytd: 310.0 + index * 95.5,
+          spend_lifetime: 890.0 + index * 210.75,
+          budget_monthly_limit: index === 0 ? 100 : 250,
+          budget_is_disabled: false,
+          prs_merged: 12 - index * 2,
+        })),
+        has_more: false,
+      });
+    },
+  ),
+
+  http.get("/api/organizations/:orgId/conversations", ({ params, request }) => {
+    const orgId = params.orgId?.toString();
+    if (!orgId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+
+    const url = new URL(request.url);
+    const page = Number(url.searchParams.get("page") ?? "1");
+    const perPage = Number(url.searchParams.get("per_page") ?? "20");
+    const search = (url.searchParams.get("search") ?? "").toLowerCase();
+    const executionStatus = url.searchParams.get("execution_status") ?? "";
+    const sandboxStatus = url.searchParams.get("sandbox_status") ?? "";
+
+    const members = ORGS_AND_MEMBERS[orgId] ?? [];
+    const titles = [
+      "Fix flaky auth tests",
+      "Refactor settings sidebar",
+      "Investigate budget alerts",
+      "Upgrade SDK pin",
+      "Polish usage dashboard",
+      "Add MCP marketplace entry",
+      "Debug sandbox timeouts",
+      "Ship org defaults UX",
+    ];
+    const statuses = [
+      "running",
+      "running",
+      "idle",
+      "finished",
+      "running",
+      "paused",
+      "error",
+      "finished",
+    ];
+    const sandboxStatusByExecution: Record<string, string> = {
+      running: "RUNNING",
+      paused: "PAUSED",
+      error: "ERROR",
+    };
+    const models = [
+      "anthropic/claude-sonnet-4-20250514",
+      "openai/gpt-5.1",
+      "openhands/claude-sonnet-4-5-20250929",
+      "google/gemini-2.5-pro",
+    ];
+    const agents = ["CodeActAgent", "BrowsingAgent", "PlannerAgent"];
+    const triggers = ["gui", "resolver", "suggested_task", "slack"];
+
+    let items = titles.map((title, index) => {
+      const member = members[index % Math.max(members.length, 1)];
+      const created = new Date("2026-08-01T09:00:00Z");
+      created.setUTCHours(created.getUTCHours() + index * 5);
+      const updated = new Date(created);
+      updated.setUTCMinutes(updated.getUTCMinutes() + 35 + index * 12);
+      return {
+        id: `conv-${orgId}-${index + 1}`,
+        title,
+        llm_model: models[index % models.length],
+        agent_kind: agents[index % agents.length],
+        user_id: member?.user_id ?? `user-${index + 1}`,
+        user_email: member?.email ?? `user${index + 1}@acme.org`,
+        created_at: created.toISOString(),
+        updated_at: updated.toISOString(),
+        sandbox_id: `sbx-${index + 1}`,
+        sandbox_status: sandboxStatusByExecution[statuses[index]] ?? "MISSING",
+        runtime_url: null,
+        execution_status: statuses[index],
+        selected_repository: "OpenHands/OpenHands",
+        selected_branch: "main",
+        git_provider: "github",
+        trigger: triggers[index % triggers.length],
+        pr_number: index % 2 === 0 ? [16000 + index] : [],
+        pr_merged: index % 3 === 0,
+        tags: {},
+        accumulated_cost: 4.25 + index * 3.1,
+        prompt_tokens: 40_000 + index * 8_500,
+        completion_tokens: 12_000 + index * 2_200,
+        total_tokens: 52_000 + index * 10_700,
+        cache_read_tokens: 2_000,
+        cache_write_tokens: 500,
+      };
+    });
+
+    if (search) {
+      items = items.filter(
+        (item) =>
+          item.title.toLowerCase().includes(search) ||
+          (item.user_email ?? "").toLowerCase().includes(search),
+      );
+    }
+    if (executionStatus) {
+      items = items.filter(
+        (item) =>
+          item.execution_status?.toLowerCase() ===
+          executionStatus.toLowerCase(),
+      );
+    }
+    if (sandboxStatus) {
+      items = items.filter((item) => item.sandbox_status === sandboxStatus);
+    }
+
+    const totalItems = items.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / perPage));
+    const start = (page - 1) * perPage;
+    const pageItems = items.slice(start, start + perPage);
+
+    return HttpResponse.json({
+      items: pageItems,
+      total_items: totalItems,
+      page,
+      per_page: perPage,
+      total_pages: totalPages,
+    });
+  }),
+
+  http.post(
+    "/api/organizations/:orgId/conversations/:conversationId/stop",
+    ({ params }) =>
+      HttpResponse.json({
+        success: true,
+        message: "Conversation stop requested",
+        conversation_id: String(params.conversationId),
+        sandbox_id: "sbx-1",
+      }),
+  ),
+
   http.get("/api/organizations/:orgId/budgets", ({ params }) => {
     const orgId = params.orgId?.toString();
     if (!orgId || !orgs.has(orgId)) {
@@ -697,5 +1131,159 @@ export const ORG_HANDLERS = [
   http.delete(
     "/api/organizations/:orgId/budgets/overrides/:userId",
     () => new HttpResponse(null, { status: 204 }),
+  ),
+
+  // Org LLM profiles (org-defaults settings page)
+  http.get("/api/organizations/:orgId/profiles", ({ params }) => {
+    const orgId = params.orgId?.toString();
+    if (!orgId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+    const state = getOrgProfiles(orgId);
+    return HttpResponse.json({
+      profiles: Array.from(state.profiles.values()).map(
+        ({ name, model, base_url, api_key_set }) => ({
+          name,
+          model,
+          base_url,
+          api_key_set,
+        }),
+      ),
+      active_profile: state.active,
+    });
+  }),
+
+  http.get("/api/organizations/:orgId/profiles/:name", ({ params }) => {
+    const orgId = params.orgId?.toString();
+    const name = decodeURIComponent(params.name?.toString() ?? "");
+    if (!orgId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+    const profile = getOrgProfiles(orgId).profiles.get(name);
+    if (!profile) {
+      return HttpResponse.json({ error: "Profile not found" }, { status: 404 });
+    }
+    return HttpResponse.json({
+      name: profile.name,
+      llm: {
+        model: profile.model,
+        base_url: profile.base_url,
+        api_key: profile.api_key_set ? "**********" : null,
+      },
+    });
+  }),
+
+  http.post(
+    "/api/organizations/:orgId/profiles/:name",
+    async ({ params, request }) => {
+      const orgId = params.orgId?.toString();
+      const name = decodeURIComponent(params.name?.toString() ?? "");
+      if (!orgId || !orgs.has(orgId) || !name) {
+        return HttpResponse.json(
+          { error: "Organization not found" },
+          { status: 404 },
+        );
+      }
+      const body = (await request.json()) as {
+        preserve_existing_api_key?: boolean;
+        llm?: {
+          model?: string;
+          base_url?: string | null;
+          api_key?: string | null;
+        };
+      };
+      const state = getOrgProfiles(orgId);
+      const existing = state.profiles.get(name);
+      const apiKeyProvided =
+        typeof body.llm?.api_key === "string" && body.llm.api_key.length > 0;
+      state.profiles.set(name, {
+        name,
+        model: body.llm?.model ?? existing?.model ?? null,
+        base_url:
+          body.llm?.base_url !== undefined
+            ? body.llm.base_url
+            : (existing?.base_url ?? null),
+        api_key_set: apiKeyProvided ? true : (existing?.api_key_set ?? false),
+      });
+      return new HttpResponse(null, { status: 204 });
+    },
+  ),
+
+  http.delete("/api/organizations/:orgId/profiles/:name", ({ params }) => {
+    const orgId = params.orgId?.toString();
+    const name = decodeURIComponent(params.name?.toString() ?? "");
+    if (!orgId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+    const state = getOrgProfiles(orgId);
+    if (!state.profiles.delete(name)) {
+      return HttpResponse.json({ error: "Profile not found" }, { status: 404 });
+    }
+    if (state.active === name) {
+      state.active = null;
+    }
+    return new HttpResponse(null, { status: 204 });
+  }),
+
+  http.post(
+    "/api/organizations/:orgId/profiles/:name/activate",
+    ({ params }) => {
+      const orgId = params.orgId?.toString();
+      const name = decodeURIComponent(params.name?.toString() ?? "");
+      if (!orgId || !orgs.has(orgId)) {
+        return HttpResponse.json(
+          { error: "Organization not found" },
+          { status: 404 },
+        );
+      }
+      const state = getOrgProfiles(orgId);
+      if (!state.profiles.has(name)) {
+        return HttpResponse.json(
+          { error: "Profile not found" },
+          { status: 404 },
+        );
+      }
+      state.active = name;
+      return new HttpResponse(null, { status: 204 });
+    },
+  ),
+
+  http.post(
+    "/api/organizations/:orgId/profiles/:name/rename",
+    async ({ params, request }) => {
+      const orgId = params.orgId?.toString();
+      const name = decodeURIComponent(params.name?.toString() ?? "");
+      if (!orgId || !orgs.has(orgId)) {
+        return HttpResponse.json(
+          { error: "Organization not found" },
+          { status: 404 },
+        );
+      }
+      const body = (await request.json()) as { new_name?: string };
+      const newName = body.new_name?.trim();
+      const state = getOrgProfiles(orgId);
+      const existing = state.profiles.get(name);
+      if (!existing || !newName) {
+        return HttpResponse.json(
+          { error: "Profile not found" },
+          { status: 404 },
+        );
+      }
+      state.profiles.delete(name);
+      state.profiles.set(newName, { ...existing, name: newName });
+      if (state.active === name) {
+        state.active = newName;
+      }
+      return new HttpResponse(null, { status: 204 });
+    },
   ),
 ];

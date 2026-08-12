@@ -81,6 +81,21 @@ export const formControlFieldClassName = cn(
   "w-full min-w-0 px-3 text-sm text-white placeholder:text-tertiary-alt",
 );
 
+/**
+ * Native `<select>` fields hide the OS caret and draw a chevron with
+ * explicit right inset so padding matches custom combobox triggers.
+ * Use arbitrary background-* properties (not `bg-*`) so tailwind-merge
+ * does not drop {@link formControlSurfaceClassName}.
+ */
+export const formControlNativeSelectClassName = cn(
+  formControlFieldClassName,
+  "appearance-none pl-3 pr-10",
+  "[background-image:url('data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%2716%27%20height%3D%2716%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27none%27%20stroke%3D%27%23979797%27%20stroke-width%3D%271.5%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27m6%209%206%206%206-6%27%2F%3E%3C%2Fsvg%3E')]",
+  "[background-size:1rem]",
+  "[background-position:right_1rem_center]",
+  "[background-repeat:no-repeat]",
+);
+
 /** Settings screens keep italic placeholders on form controls. */
 export const formControlSettingsFieldClassName = cn(
   formControlFieldClassName,

@@ -39,6 +39,7 @@ export function OrgSelector() {
     <Dropdown
       testId="org-selector"
       key={`${selectedOrg?.id}-${selectedOrg?.name}`}
+      searchable={false}
       defaultValue={{
         label: selectedOrg ? getOrgDisplayName(selectedOrg) : "",
         value: selectedOrg?.id || "",
@@ -61,7 +62,6 @@ export function OrgSelector() {
           label: getOrgDisplayName(org),
         })) || []
       }
-      className="bg-[#1F1F1F66] border-[#242424]"
     />
   );
 }

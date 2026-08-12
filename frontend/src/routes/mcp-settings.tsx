@@ -74,6 +74,7 @@ function MCPSettingsScreen() {
     ...mcpConfig.sse_servers.map((server, index) => ({
       id: `sse-${index}`,
       type: "sse" as const,
+      name: typeof server === "object" ? server.name : undefined,
       url: typeof server === "string" ? server : server.url,
       api_key: typeof server === "object" ? server.api_key : undefined,
     })),
@@ -88,6 +89,7 @@ function MCPSettingsScreen() {
     ...mcpConfig.shttp_servers.map((server, index) => ({
       id: `shttp-${index}`,
       type: "shttp" as const,
+      name: typeof server === "object" ? server.name : undefined,
       url: typeof server === "string" ? server : server.url,
       api_key: typeof server === "object" ? server.api_key : undefined,
       timeout: typeof server === "object" ? server.timeout : undefined,
@@ -203,7 +205,7 @@ function MCPSettingsScreen() {
           <Typography.H2 className="mb-2">
             {t(I18nKey.SETTINGS$MCP_TITLE)}
           </Typography.H2>
-          <Typography.Paragraph className="text-sm text-[#A3A3A3]">
+          <Typography.Paragraph className="text-sm text-[var(--oh-muted)]">
             {t(I18nKey.SETTINGS$MCP_DESCRIPTION)}
           </Typography.Paragraph>
         </div>
@@ -225,13 +227,13 @@ function MCPSettingsScreen() {
       {!isSaasMode ? (
         <section
           data-testid="mcp-search-settings-section"
-          className="flex flex-col gap-4 rounded-2xl border border-tertiary p-5"
+          className="flex flex-col gap-4 rounded-xl border border-[var(--oh-border)] bg-base-secondary p-5"
         >
           <div className="flex flex-col gap-2">
             <Typography.H3>
               {t(I18nKey.SETTINGS$MCP_SEARCH_TITLE)}
             </Typography.H3>
-            <Typography.Paragraph className="text-sm text-[#A3A3A3]">
+            <Typography.Paragraph className="text-sm text-[var(--oh-muted)]">
               {t(I18nKey.SETTINGS$MCP_SEARCH_DESCRIPTION)}
             </Typography.Paragraph>
           </div>

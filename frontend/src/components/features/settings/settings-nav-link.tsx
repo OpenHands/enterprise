@@ -13,7 +13,7 @@ import {
 
 interface SettingsNavLinkProps {
   item: SettingsNavItem;
-  onClick: () => void;
+  onClick?: () => void;
   disabled?: boolean;
   disabledAgentName?: string;
 }

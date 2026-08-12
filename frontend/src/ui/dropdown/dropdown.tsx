@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useCombobox } from "downshift";
 import { cn } from "#/utils/utils";
 import { DropdownOption } from "./types";
+import { dropdownTriggerShellClassName } from "#/utils/dropdown-classes";
 import { LoadingSpinner } from "./loading-spinner";
 import { ClearButton } from "./clear-button";
 import { ToggleButton } from "./toggle-button";
@@ -19,6 +20,8 @@ interface DropdownProps {
   onChange?: (item: DropdownOption | null) => void;
   testId?: string;
   className?: string;
+  /** When false, the trigger is a select (no typeahead filter). */
+  searchable?: boolean;
 }
 
 export function Dropdown({
@@ -32,13 +35,16 @@ export function Dropdown({
   onChange,
   testId,
   className,
+  searchable = true,
 }: DropdownProps) {
   const [inputValue, setInputValue] = useState(defaultValue?.label ?? "");
   const [searchTerm, setSearchTerm] = useState("");
 
-  const filteredOptions = options.filter((option) =>
-    option.label.toLowerCase().includes(searchTerm.toLowerCase()),
-  );
+  const filteredOptions = searchable
+    ? options.filter((option) =>
+        option.label.toLowerCase().includes(searchTerm.toLowerCase()),
+      )
+    : options;
 
   const {
     isOpen,
@@ -58,6 +64,9 @@ export function Dropdown({
         ? { ...actionAndChanges.changes, isOpen: true }
         : actionAndChanges.changes,
     onInputValueChange: ({ inputValue: newValue }) => {
+      if (!searchable) {
+        return;
+      }
       setInputValue(newValue ?? "");
       setSearchTerm(newValue ?? "");
     },
@@ -70,7 +79,9 @@ export function Dropdown({
       selectedItem: currentSelectedItem,
     }) => {
       if (newIsOpen) {
-        setSearchTerm("");
+        if (searchable) {
+          setSearchTerm("");
+        }
       } else {
         setInputValue(currentSelectedItem?.label ?? "");
         setSearchTerm("");
@@ -87,18 +98,19 @@ export function Dropdown({
   const getInputPropsWithCursorFix = (props?: object) =>
     getInputProps({
       ...props,
-      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
-        setInputValue(e.target.value);
-        setSearchTerm(e.target.value);
-      },
+      onChange: searchable
+        ? (e: React.ChangeEvent<HTMLInputElement>) => {
+            setInputValue(e.target.value);
+            setSearchTerm(e.target.value);
+          }
+        : undefined,
     });
 
   return (
     <div className="relative w-full" data-testid={testId}>
       <div
         className={cn(
-          "bg-tertiary border border-[#717888] rounded w-full p-2",
-          "flex items-center gap-2",
+          dropdownTriggerShellClassName,
           isDisabled && "cursor-not-allowed opacity-60",
           className,
         )}
@@ -107,6 +119,7 @@ export function Dropdown({
           placeholder={placeholder}
           isDisabled={isDisabled}
           getInputProps={getInputPropsWithCursorFix}
+          searchable={searchable}
         />
         {loading && <LoadingSpinner />}
         {clearable && selectedItem && (

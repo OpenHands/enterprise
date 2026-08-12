@@ -199,8 +199,29 @@ export function UsageDashboard() {
   return (
     <div className="space-y-6">
       <div className="space-y-6">
-        <div className="flex justify-end">
-          <div className="flex items-center gap-1 bg-base-secondary border border-border-subtle rounded-lg p-1">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex min-w-0 gap-6">
+            {TABS.map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setActiveTab(tab)}
+                className={`flex items-center gap-2 px-1 py-3 text-sm font-medium transition-colors border-b-2 ${
+                  activeTab === tab
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted hover:text-foreground"
+                }`}
+              >
+                {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                {typeof tabCounts[tab] === "number" && (
+                  <span className="inline-flex items-center justify-center rounded-full border border-[var(--oh-border)] bg-base-secondary px-2 py-0.5 text-xs text-[var(--oh-muted)]">
+                    {tabCounts[tab].toLocaleString()}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          <div className="flex shrink-0 items-center gap-1 rounded-lg border border-border-subtle bg-base-secondary p-1">
             {TIME_WINDOWS.map((tw) => (
               <button
                 key={tw.value}
@@ -219,28 +240,6 @@ export function UsageDashboard() {
               </button>
             ))}
           </div>
-        </div>
-
-        <div className="flex gap-6 border-b border-border-subtle">
-          {TABS.map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setActiveTab(tab)}
-              className={`flex items-center gap-2 px-1 py-3 text-sm font-medium transition-colors border-b-2 ${
-                activeTab === tab
-                  ? "border-primary text-foreground"
-                  : "border-transparent text-muted hover:text-foreground"
-              }`}
-            >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
-              {typeof tabCounts[tab] === "number" && (
-                <span className="px-2 py-0.5 text-xs bg-surface-deep text-muted rounded-full">
-                  {tabCounts[tab].toLocaleString()}
-                </span>
-              )}
-            </button>
-          ))}
         </div>
       </div>
 

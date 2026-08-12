@@ -370,7 +370,7 @@ export function Budgets() {
 
   return (
     <div className="space-y-8">
-      <div className="flex gap-6 border-b border-border-subtle">
+      <div className="flex gap-6">
         {BUDGET_TABS.map((tab) => (
           <button
             key={tab.value}

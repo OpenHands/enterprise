@@ -50,18 +50,31 @@ const ORG_WIDE_BADGE_PATHS = new Set<string>([
   "/settings/org-defaults/verification",
 ]);
 
+/**
+ * Empty loader data for successful permission checks.
+ * React Router's dataStrategy treats a missing/`null` route result as an error
+ * during revalidation/HMR, so always return a concrete object on the allow path.
+ */
+const SETTINGS_LOADER_OK = {} as const;
+
 export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   const url = new URL(request.url);
   const { pathname } = url;
 
   const isAdminOnlyPath = ADMIN_ONLY_SETTINGS_PATHS.has(pathname);
 
-  // Step 1: Get config first (needed for all checks, no user data required)
-  const config = await queryClient.fetchQuery<WebClientConfig>({
-    queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
-    queryFn: OptionService.getConfig,
-    ...CONFIG_CACHE_OPTIONS,
-  });
+  // Step 1: Get config first (needed for all checks, no user data required).
+  // Network/proxy failures must not crash the settings shell into ErrorBoundary.
+  let config: WebClientConfig | undefined;
+  try {
+    config = await queryClient.fetchQuery<WebClientConfig>({
+      queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
+      queryFn: OptionService.getConfig,
+      ...CONFIG_CACHE_OPTIONS,
+    });
+  } catch {
+    return SETTINGS_LOADER_OK;
+  }
 
   const isSaas = config?.app_mode === "saas";
   const featureFlags = config?.feature_flags;
@@ -185,7 +198,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     }
   }
 
-  return null;
+  return SETTINGS_LOADER_OK;
 };
 
 function SettingsScreen() {
@@ -212,14 +225,14 @@ function SettingsScreen() {
     if (currentRenderedItem?.type === "item") {
       return {
         currentSectionTitle: currentRenderedItem.item.text,
-        currentSectionSubtitle: currentRenderedItem.item.subtitle ?? null,
+        currentSectionSubtitle: currentRenderedItem.item.subtitle,
       };
     }
     const firstItem = navItems.find((item) => item.type === "item");
     if (firstItem?.type === "item") {
       return {
         currentSectionTitle: firstItem.item.text,
-        currentSectionSubtitle: firstItem.item.subtitle ?? null,
+        currentSectionSubtitle: firstItem.item.subtitle,
       };
     }
     return {

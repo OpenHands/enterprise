@@ -5,6 +5,8 @@ import { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
 import { I18nKey } from "#/i18n/declaration";
 import { Typography } from "#/ui/typography";
 import ThreeDotsVerticalIcon from "#/icons/three-dots-vertical.svg?react";
+import { settingsListIconActionButtonClassName } from "#/utils/settings-list-classes";
+import { cn } from "#/utils/utils";
 
 interface ProfileRowProps {
   profile: LlmProfileSummary;
@@ -44,7 +46,7 @@ export function ProfileRow({
         </Typography.Text>
         {profile.model ? (
           <Typography.Text
-            className="text-sm text-gray-400 truncate min-w-0 max-w-full"
+            className="text-sm text-[var(--oh-muted)] truncate min-w-0 max-w-full"
             title={profile.model}
           >
             {profile.model}
@@ -65,7 +67,7 @@ export function ProfileRow({
             type="button"
             onClick={() => setMenuOpen((open) => !open)}
             aria-label={t(I18nKey.SETTINGS$PROFILE_MENU)}
-            className="cursor-pointer text-gray-300 hover:text-white p-2 border border-tertiary rounded-md"
+            className={cn(settingsListIconActionButtonClassName, "p-2")}
             data-testid="profile-menu-trigger"
           >
             <ThreeDotsVerticalIcon width={16} height={16} />

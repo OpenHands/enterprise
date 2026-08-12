@@ -32,6 +32,8 @@ import {
   normalizeFieldValue,
 } from "#/utils/sdk-settings-schema";
 import { formatCommand, tokenizeCommand } from "#/utils/shell-tokenize";
+import { formControlMultilineFieldClassName } from "#/utils/form-control-classes";
+import { cn } from "#/utils/utils";
 import type { ACPProviderConfig } from "#/api/option-service/option.types";
 
 const ENABLE_SUB_AGENTS_FIELD_KEY = "enable_sub_agents";
@@ -414,7 +416,10 @@ export default function AgentSettingsScreen() {
               </Typography.Text>
               <textarea
                 data-testid="agent-command-input"
-                className="bg-tertiary border border-[#717888] rounded-sm p-2 text-sm font-mono text-white placeholder:italic placeholder:text-[#717888] min-h-[60px] resize-y focus:outline-none focus:border-white"
+                className={cn(
+                  formControlMultilineFieldClassName,
+                  "font-mono min-h-[60px] resize-y",
+                )}
                 value={commandText}
                 placeholder={commandPlaceholder}
                 onChange={(e) => {
@@ -432,7 +437,7 @@ export default function AgentSettingsScreen() {
                   setIsDirty(true);
                 }}
               />
-              <Typography.Text className="text-xs text-[#717888]">
+              <Typography.Text className="text-xs text-[var(--oh-muted)]">
                 {t(I18nKey.SETTINGS$AGENT_COMMAND_HINT)}
               </Typography.Text>
             </div>
@@ -485,7 +490,7 @@ export default function AgentSettingsScreen() {
                   }}
                 />
               )}
-              <Typography.Text className="text-xs text-[#717888]">
+              <Typography.Text className="text-xs text-[var(--oh-muted)]">
                 {t(I18nKey.SETTINGS$AGENT_MODEL_HINT)}
               </Typography.Text>
             </div>
@@ -493,7 +498,7 @@ export default function AgentSettingsScreen() {
             {/* Credentials section for built-in providers */}
             {credentialForm.fields.length > 0 && (
               <>
-                <hr className="border-[#3D4046]" />
+                <hr className="border-[var(--oh-border)]" />
                 <AcpCredentialsSection form={credentialForm} />
               </>
             )}

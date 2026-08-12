@@ -28,7 +28,7 @@ export interface SettingsNavItem {
   to: string;
   text: string;
   /** Short grey subline under the page title (`settings.tsx`). */
-  subtitle?: string;
+  subtitle: string;
   section?: SettingsNavSection;
   // When true, this item is greyed out (and its route redirects to
   // ``/settings/agent``) while the personal-scope active agent is ACP.
@@ -46,12 +46,14 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     icon: <FiBriefcase size={22} />,
     to: "/settings/org",
     text: "SETTINGS$NAV_ORGANIZATION",
+    subtitle: "SETTINGS$PAGE_ORGANIZATION_SUBLINE",
     section: "org",
   },
   {
     icon: <FiUsers size={22} />,
     to: "/settings/org-members",
     text: "SETTINGS$NAV_ORG_MEMBERS",
+    subtitle: "SETTINGS$PAGE_ORG_MEMBERS_SUBLINE",
     section: "org",
   },
   {
@@ -72,30 +74,35 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     icon: <CircuitIcon width={22} height={22} />,
     to: "/settings/org-defaults",
     text: "COMMON$LANGUAGE_MODEL_LLM",
+    subtitle: "SETTINGS$PAGE_LLM_SUBLINE",
     section: "org",
   },
   {
     icon: <MemoryIcon width={22} height={22} />,
     to: "/settings/org-defaults/condenser",
     text: "SETTINGS$NAV_CONDENSER",
+    subtitle: "SETTINGS$PAGE_CONDENSER_SUBLINE",
     section: "org",
   },
   {
     icon: <LockIcon width={22} height={22} />,
     to: "/settings/org-defaults/verification",
     text: "SETTINGS$NAV_VERIFICATION",
+    subtitle: "SETTINGS$PAGE_VERIFICATION_SUBLINE",
     section: "org",
   },
   {
     icon: <RobotIcon width={22} height={22} />,
     to: "/settings/agent",
     text: "SETTINGS$AGENT",
+    subtitle: "SETTINGS$PAGE_AGENT_SUBLINE",
     section: "personal",
   },
   {
     icon: <CircuitIcon width={22} height={22} />,
     to: "/settings",
     text: "COMMON$LANGUAGE_MODEL_LLM",
+    subtitle: "SETTINGS$PAGE_LLM_SUBLINE",
     section: "personal",
     disabledByAcp: true,
   },
@@ -103,6 +110,7 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     icon: <MemoryIcon width={22} height={22} />,
     to: "/settings/condenser",
     text: "SETTINGS$NAV_CONDENSER",
+    subtitle: "SETTINGS$PAGE_CONDENSER_SUBLINE",
     section: "personal",
     disabledByAcp: true,
   },
@@ -110,54 +118,63 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     icon: <LockIcon width={22} height={22} />,
     to: "/settings/verification",
     text: "SETTINGS$NAV_VERIFICATION",
+    subtitle: "SETTINGS$PAGE_VERIFICATION_SUBLINE",
     section: "personal",
   },
   {
     icon: <KeyIcon width={22} height={22} />,
     to: "/settings/api-keys",
     text: "SETTINGS$NAV_API_KEYS",
+    subtitle: "SETTINGS$PAGE_API_KEYS_SUBLINE",
     section: "personal",
   },
   {
     icon: <KeyIcon width={22} height={22} />,
     to: "/settings/secrets",
     text: "SETTINGS$NAV_SECRETS",
+    subtitle: "SETTINGS$PAGE_SECRETS_SUBLINE",
     section: "personal",
   },
   {
     icon: <ServerProcessIcon width={22} height={22} />,
     to: "/settings/mcp",
     text: "SETTINGS$NAV_MCP",
+    subtitle: "SETTINGS$PAGE_MCP_SUBLINE",
     section: "personal",
   },
   {
     icon: <UserIcon width={22} height={22} />,
     to: "/settings/user",
     text: "SETTINGS$NAV_USER",
+    subtitle: "SETTINGS$PAGE_USER_SUBLINE",
     section: "user",
   },
   {
     icon: <SettingsGearIcon width={22} height={22} />,
     to: "/settings/app",
     text: "SETTINGS$NAV_APPLICATION",
+    subtitle: "SETTINGS$PAGE_APPLICATION_SUBLINE",
     section: "user",
   },
   {
     icon: <CreditCardIcon width={22} height={22} />,
     to: "/settings/billing",
     text: "SETTINGS$NAV_BILLING",
+    subtitle: "SETTINGS$PAGE_BILLING_SUBLINE",
     section: "billing",
   },
   {
     icon: <PuzzlePieceIcon width={22} height={22} />,
     to: "/settings/integrations",
     text: "SETTINGS$NAV_INTEGRATIONS",
+    subtitle: "SETTINGS$PAGE_INTEGRATIONS_SUBLINE",
     section: "other",
   },
   {
     icon: <LightbulbIcon width={22} height={22} />,
     to: "/settings/skills",
     text: "SETTINGS$NAV_SKILLS",
+    subtitle: "SETTINGS$PAGE_SKILLS_SUBLINE",
     section: "other",
   },
 ];
@@ -167,47 +184,56 @@ export const OSS_NAV_ITEMS: SettingsNavItem[] = [
     icon: <RobotIcon width={22} height={22} />,
     to: "/settings/agent",
     text: "SETTINGS$AGENT",
+    subtitle: "SETTINGS$PAGE_AGENT_SUBLINE",
   },
   {
     icon: <CircuitIcon width={22} height={22} />,
     to: "/settings",
     text: "SETTINGS$NAV_LLM",
+    subtitle: "SETTINGS$PAGE_LLM_SUBLINE",
     disabledByAcp: true,
   },
   {
     icon: <MemoryIcon width={22} height={22} />,
     to: "/settings/condenser",
     text: "SETTINGS$NAV_CONDENSER",
+    subtitle: "SETTINGS$PAGE_CONDENSER_SUBLINE",
     disabledByAcp: true,
   },
   {
     icon: <LockIcon width={22} height={22} />,
     to: "/settings/verification",
     text: "SETTINGS$NAV_VERIFICATION",
+    subtitle: "SETTINGS$PAGE_VERIFICATION_SUBLINE",
   },
   {
     icon: <ServerProcessIcon width={22} height={22} />,
     to: "/settings/mcp",
     text: "SETTINGS$NAV_MCP",
+    subtitle: "SETTINGS$PAGE_MCP_SUBLINE",
   },
   {
     icon: <LightbulbIcon width={22} height={22} />,
     to: "/settings/skills",
     text: "SETTINGS$NAV_SKILLS",
+    subtitle: "SETTINGS$PAGE_SKILLS_SUBLINE",
   },
   {
     icon: <PuzzlePieceIcon width={22} height={22} />,
     to: "/settings/integrations",
     text: "SETTINGS$NAV_INTEGRATIONS",
+    subtitle: "SETTINGS$PAGE_INTEGRATIONS_SUBLINE",
   },
   {
     icon: <SettingsGearIcon width={22} height={22} />,
     to: "/settings/app",
     text: "SETTINGS$NAV_APPLICATION",
+    subtitle: "SETTINGS$PAGE_APPLICATION_SUBLINE",
   },
   {
     icon: <KeyIcon width={22} height={22} />,
     to: "/settings/secrets",
     text: "SETTINGS$NAV_SECRETS",
+    subtitle: "SETTINGS$PAGE_SECRETS_SUBLINE",
   },
 ];

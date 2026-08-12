@@ -1,6 +1,6 @@
 /* eslint-disable i18next/no-literal-string */
 import React from "react";
-import { StyledSwitchComponent } from "#/components/features/settings/styled-switch-component";
+import { ToggleSwitch } from "#/ui/toggle-switch";
 import { cn } from "#/utils/utils";
 
 export function Toggle({
@@ -13,15 +13,11 @@ export function Toggle({
   label: string;
 }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={enabled}
-      aria-label={label}
-      onClick={() => onChange(!enabled)}
-    >
-      <StyledSwitchComponent isToggled={enabled} />
-    </button>
+    <ToggleSwitch
+      enabled={enabled}
+      label={label}
+      onToggle={() => onChange(!enabled)}
+    />
   );
 }
 
@@ -42,7 +38,7 @@ export function PillBadge({
         "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors",
         active
           ? "bg-primary/10 text-primary border-primary/30"
-          : "bg-surface-deep text-text-dim border-border-subtle",
+          : "bg-base-secondary text-[var(--oh-muted)] border-[var(--oh-border)]",
         disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
       )}
     >
@@ -70,7 +66,7 @@ export function SpendMeter({
 
   return (
     <div className="w-full">
-      <div className="relative w-full h-3 bg-surface-deep rounded-full overflow-hidden">
+      <div className="relative w-full h-3 bg-tertiary rounded-full overflow-hidden">
         <div
           className={`absolute inset-y-0 left-0 rounded-full ${getBarColor()}`}
           style={{ width: `${Math.min(percentage, 100)}%` }}
@@ -78,15 +74,15 @@ export function SpendMeter({
       </div>
       {showTicks && (
         <div className="relative mt-1">
-          <div className="flex justify-between text-[10px] text-text-dim">
+          <div className="flex justify-between text-[10px] text-[var(--oh-muted)]">
             <span>0%</span>
             <span>80%</span>
             <span>90%</span>
             <span>100%</span>
           </div>
-          <div className="absolute top-0 left-[80%] w-px h-2 bg-text-dim" />
-          <div className="absolute top-0 left-[90%] w-px h-2 bg-text-dim" />
-          <div className="absolute top-0 left-[100%] w-px h-2 bg-text-dim" />
+          <div className="absolute top-0 left-[80%] w-px h-2 bg-[var(--oh-muted)]" />
+          <div className="absolute top-0 left-[90%] w-px h-2 bg-[var(--oh-muted)]" />
+          <div className="absolute top-0 left-[100%] w-px h-2 bg-[var(--oh-muted)]" />
         </div>
       )}
     </div>
@@ -111,7 +107,7 @@ export function UserProgressBar({
 
   return (
     <div className="w-full">
-      <div className="relative w-full h-1.5 bg-surface-deep rounded-full overflow-hidden">
+      <div className="relative w-full h-1.5 bg-tertiary rounded-full overflow-hidden">
         <div
           className={`absolute inset-y-0 left-0 rounded-full ${colorClass}`}
           style={{ width: `${Math.min(percentage, 100)}%` }}
@@ -163,7 +159,7 @@ export function StatusPill({ status }: { status: string }) {
     if (status.includes("On track")) {
       return "bg-success/10 text-success border-success/30";
     }
-    return "bg-surface-deep text-text-dim border-border-subtle";
+    return "bg-base-secondary text-[var(--oh-muted)] border-[var(--oh-border)]";
   };
 
   return (

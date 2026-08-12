@@ -1,7 +1,7 @@
 import { http, delay, HttpResponse } from "msw";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import { DEFAULT_SETTINGS } from "#/services/settings";
-import { Provider, Settings, SettingsValue } from "#/types/settings";
+import { Provider, Settings, SettingsValue, MCPConfig } from "#/types/settings";
 
 /** Simple recursive merge — objects merge, scalars overwrite. */
 function deepMerge(
@@ -379,9 +379,52 @@ const MOCK_CONVERSATION_SETTINGS_SCHEMA: NonNullable<
   ],
 };
 
+/** Seed MCP servers for mock/design review of /settings/mcp. */
+const MOCK_MCP_CONFIG: MCPConfig = {
+  sse_servers: [
+    {
+      name: "linear",
+      url: "https://mcp.linear.app/sse",
+      api_key: "lin_mock_api_key",
+    },
+  ],
+  stdio_servers: [
+    {
+      name: "filesystem",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+    },
+    {
+      name: "github",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-github"],
+      env: { GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_mock_token" },
+    },
+    {
+      name: "brave-search",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-brave-search"],
+      env: { BRAVE_API_KEY: "BSA_mock_key" },
+    },
+  ],
+  shttp_servers: [
+    {
+      name: "notion",
+      url: "https://mcp.notion.com/mcp",
+      api_key: "ntn_mock_api_key",
+      timeout: 30,
+    },
+    {
+      name: "sentry",
+      url: "https://mcp.sentry.dev/mcp",
+    },
+  ],
+};
+
 export const MOCK_DEFAULT_USER_SETTINGS: Settings = {
   ...DEFAULT_SETTINGS,
   provider_tokens_set: {},
+  mcp_config: MOCK_MCP_CONFIG,
   agent_settings_schema: MOCK_AGENT_SETTINGS_SCHEMA,
   agent_settings: {
     ...DEFAULT_AGENT_SETTINGS,
@@ -396,6 +439,7 @@ export const MOCK_DEFAULT_USER_SETTINGS: Settings = {
     },
     enable_sub_agents: false,
     tool_concurrency_limit: 1,
+    mcp_config: MOCK_MCP_CONFIG,
   },
   conversation_settings_schema: MOCK_CONVERSATION_SETTINGS_SCHEMA,
   conversation_settings: {
@@ -406,7 +450,8 @@ export const MOCK_DEFAULT_USER_SETTINGS: Settings = {
 const MOCK_USER_PREFERENCES: {
   settings: Settings | null;
 } = {
-  settings: null,
+  // Seed so mock SaaS/OSS browsers show settings without a prior POST.
+  settings: structuredClone(MOCK_DEFAULT_USER_SETTINGS),
 };
 
 export const resetTestHandlersMockSettings = () => {
@@ -449,6 +494,28 @@ const MOCK_VERIFIED_PROVIDERS = [
   "moonshot",
   "minimax",
 ];
+
+type MockPersonalLlmProfile = {
+  name: string;
+  model: string | null;
+  base_url: string | null;
+  api_key_set: boolean;
+};
+
+const personalProfiles = {
+  profiles: new Map<string, MockPersonalLlmProfile>([
+    [
+      "default",
+      {
+        name: "default",
+        model: DEFAULT_MODEL,
+        base_url: null,
+        api_key_set: true,
+      },
+    ],
+  ]),
+  active: "default" as string | null,
+};
 
 // --- Handlers for options/config/settings ---
 
@@ -559,7 +626,7 @@ export const SETTINGS_HANDLERS = [
       error_message: null,
       updated_at: new Date().toISOString(),
       github_app_slug: mockSaas ? "openhands" : null,
-      gitlab_enabled: false,
+      gitlab_enabled: mockSaas,
       provider_default_hosts: {
         github: "github.com",
         gitlab: "gitlab.com",
@@ -567,11 +634,26 @@ export const SETTINGS_HANDLERS = [
         azure_devops: "dev.azure.com",
         forgejo: "codeberg.org",
       },
-      slack_enabled: false,
+      slack_enabled: mockSaas,
     };
 
     return HttpResponse.json(config);
   }),
+
+  http.get("/api/v1/sandbox-specs/search", () =>
+    HttpResponse.json({
+      items: [
+        {
+          id: "default-sandbox",
+          command: null,
+          created_at: "2026-01-01T00:00:00Z",
+          initial_env: {},
+          working_dir: "/workspace",
+        },
+      ],
+      next_page_id: null,
+    }),
+  ),
 
   http.get("/api/v1/settings/conversation-schema", async () => {
     await delay();
@@ -681,4 +763,85 @@ export const SETTINGS_HANDLERS = [
 
     return HttpResponse.json(null, { status: 400 });
   }),
+
+  // Personal LLM profiles
+  http.get("/api/v1/settings/profiles", () =>
+    HttpResponse.json({
+      profiles: Array.from(personalProfiles.profiles.values()),
+      active_profile: personalProfiles.active,
+    }),
+  ),
+
+  http.post("/api/v1/settings/profiles/:name", async ({ params, request }) => {
+    const name = decodeURIComponent(params.name?.toString() ?? "");
+    if (!name) {
+      return HttpResponse.json(
+        { error: "Invalid profile name" },
+        { status: 400 },
+      );
+    }
+    const body = (await request.json()) as {
+      preserve_existing_api_key?: boolean;
+      llm?: {
+        model?: string;
+        base_url?: string | null;
+        api_key?: string | null;
+      };
+    };
+    const existing = personalProfiles.profiles.get(name);
+    const apiKeyProvided =
+      typeof body.llm?.api_key === "string" && body.llm.api_key.length > 0;
+    personalProfiles.profiles.set(name, {
+      name,
+      model: body.llm?.model ?? existing?.model ?? null,
+      base_url:
+        body.llm?.base_url !== undefined
+          ? body.llm.base_url
+          : (existing?.base_url ?? null),
+      api_key_set: apiKeyProvided ? true : (existing?.api_key_set ?? false),
+    });
+    return new HttpResponse(null, { status: 204 });
+  }),
+
+  http.delete("/api/v1/settings/profiles/:name", ({ params }) => {
+    const name = decodeURIComponent(params.name?.toString() ?? "");
+    if (!personalProfiles.profiles.delete(name)) {
+      return HttpResponse.json({ error: "Profile not found" }, { status: 404 });
+    }
+    if (personalProfiles.active === name) {
+      personalProfiles.active = null;
+    }
+    return new HttpResponse(null, { status: 204 });
+  }),
+
+  http.post("/api/v1/settings/profiles/:name/activate", ({ params }) => {
+    const name = decodeURIComponent(params.name?.toString() ?? "");
+    if (!personalProfiles.profiles.has(name)) {
+      return HttpResponse.json({ error: "Profile not found" }, { status: 404 });
+    }
+    personalProfiles.active = name;
+    return new HttpResponse(null, { status: 204 });
+  }),
+
+  http.post(
+    "/api/v1/settings/profiles/:name/rename",
+    async ({ params, request }) => {
+      const name = decodeURIComponent(params.name?.toString() ?? "");
+      const body = (await request.json()) as { new_name?: string };
+      const newName = body.new_name?.trim();
+      const existing = personalProfiles.profiles.get(name);
+      if (!existing || !newName) {
+        return HttpResponse.json(
+          { error: "Profile not found" },
+          { status: 404 },
+        );
+      }
+      personalProfiles.profiles.delete(name);
+      personalProfiles.profiles.set(newName, { ...existing, name: newName });
+      if (personalProfiles.active === name) {
+        personalProfiles.active = newName;
+      }
+      return new HttpResponse(null, { status: 204 });
+    },
+  ),
 ];

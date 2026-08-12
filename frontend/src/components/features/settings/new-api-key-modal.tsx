@@ -52,7 +52,7 @@ export function NewApiKeyModal({
     >
       <div data-testid="new-api-key-modal">
         <p className="text-sm">{t(I18nKey.SETTINGS$API_KEY_WARNING)}</p>
-        <div className="bg-base-tertiary p-4 rounded-md font-mono text-sm break-all mt-4">
+        <div className="mt-4 break-all rounded-lg border border-[var(--oh-border)] bg-base-secondary p-4 font-mono text-sm">
           {newlyCreatedKey.key}
         </div>
       </div>

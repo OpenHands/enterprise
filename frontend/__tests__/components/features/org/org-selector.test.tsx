@@ -118,6 +118,32 @@ describe("OrgSelector", () => {
     });
   });
 
+  it("should not allow typeahead filtering", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+      items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_PERSONAL_ORG.id,
+    });
+
+    renderOrgSelector();
+
+    await waitFor(() => {
+      expect(screen.getByRole("combobox")).toHaveValue("Personal Workspace");
+    });
+
+    const trigger = screen.getByTestId("dropdown-trigger");
+    await user.click(trigger);
+
+    const input = screen.getByRole("combobox");
+    expect(input).toHaveAttribute("readonly");
+    await user.type(input, "Acme");
+
+    const listbox = await screen.findByRole("listbox");
+    const options = within(listbox).getAllByRole("option");
+    expect(options).toHaveLength(2);
+    expect(input).toHaveValue("Personal Workspace");
+  });
+
   it("should show all options when dropdown is opened", async () => {
     const user = userEvent.setup();
     vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({

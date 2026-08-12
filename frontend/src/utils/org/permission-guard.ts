@@ -35,6 +35,16 @@ async function getPermissionDeniedFallback(): Promise<string> {
 }
 
 /**
+ * Empty loader data for successful permission checks.
+ *
+ * React Router's dataStrategy treats a missing route result as an error
+ * ("No result returned from dataStrategy for route …"). Returning `null`
+ * can also look like missing loader data during revalidation/HMR, so always
+ * return a concrete object on the allow path.
+ */
+const PERMISSION_GRANTED = {} as const;
+
+/**
  * Creates a clientLoader guard that checks if the user has the required permission.
  * Redirects to the first available settings page if permission is denied.
  *
@@ -47,12 +57,18 @@ async function getPermissionDeniedFallback(): Promise<string> {
 export const createPermissionGuard =
   (requiredPermission: PermissionKey, customRedirectPath?: string) =>
   async ({ request }: { request: Request }) => {
-    // Get config to check app_mode
-    const config = await getConfig();
+    // Get config to check app_mode. A failed config fetch (e.g. mock mode
+    // proxying to a down backend) must not throw into ErrorBoundary.
+    let config: WebClientConfig | undefined;
+    try {
+      config = await getConfig();
+    } catch {
+      return PERMISSION_GRANTED;
+    }
 
     // In OSS mode, skip permission checks - all settings are accessible
     if (config?.app_mode === "oss") {
-      return null;
+      return PERMISSION_GRANTED;
     }
 
     const user = await getActiveOrganizationUser();
@@ -66,7 +82,7 @@ export const createPermissionGuard =
         customRedirectPath ?? (await getPermissionDeniedFallback());
       // Don't redirect to the same path to avoid infinite loops
       if (redirectPath === currentPath) {
-        return null;
+        return PERMISSION_GRANTED;
       }
       return redirect(redirectPath);
     };
@@ -81,5 +97,5 @@ export const createPermissionGuard =
       return getRedirectResponse();
     }
 
-    return null;
+    return PERMISSION_GRANTED;
   };

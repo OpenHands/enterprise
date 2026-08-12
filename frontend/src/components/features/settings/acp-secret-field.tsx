@@ -3,6 +3,8 @@ import { SettingsInput } from "#/components/features/settings/settings-input";
 import { OptionalTag } from "#/components/features/settings/optional-tag";
 import { I18nKey } from "#/i18n/declaration";
 import type { ACPProviderSecretField } from "#/constants/acp-provider-secrets";
+import { formControlMultilineFieldClassName } from "#/utils/form-control-classes";
+import { cn } from "#/utils/utils";
 
 interface AcpSecretFieldProps {
   field: ACPProviderSecretField;
@@ -49,7 +51,10 @@ export function AcpSecretField({
             value={value}
             placeholder={placeholder}
             onChange={(e) => onChange(e.target.value)}
-            className="bg-tertiary border border-[#717888] rounded-sm p-2 text-xs font-mono text-white placeholder:italic placeholder:text-[#717888] min-h-[80px] resize-y focus:outline-none focus:border-white"
+            className={cn(
+              formControlMultilineFieldClassName,
+              "font-mono text-xs min-h-[80px] resize-y",
+            )}
           />
         </label>
       ) : (
@@ -66,7 +71,7 @@ export function AcpSecretField({
           autoComplete={field.secret ? "new-password" : "off"}
         />
       )}
-      <span className="text-xs text-[#717888]">
+      <span className="text-xs text-[var(--oh-muted)]">
         {t(field.hint_key, field.hint_values)}
       </span>
     </div>

@@ -4,8 +4,6 @@ import { useOrganization } from "#/hooks/query/use-organization";
 import { useMe } from "#/hooks/query/use-me";
 import { useConfig } from "#/hooks/query/use-config";
 import { I18nKey } from "#/i18n/declaration";
-import { CreditsChip } from "#/ui/credits-chip";
-import { InteractiveChip } from "#/ui/interactive-chip";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
@@ -79,16 +77,33 @@ function ManageOrg() {
       )}
 
       {!shouldHideBilling && (
-        <div className="flex flex-col gap-2.5">
+        <div data-testid="org-credits" className="flex w-sm flex-col gap-2.5">
           <span className="text-sm">{t(I18nKey.ORG$CREDITS)}</span>
           <div className="flex items-center gap-2">
-            <CreditsChip testId="available-credits">
-              ${Number(balance ?? 0).toFixed(2)}
-            </CreditsChip>
+            <div
+              className={cn(
+                formControlHeightClassName,
+                formControlRadiusClassName,
+                formControlBorderClassName,
+                formControlSurfaceClassName,
+                "flex min-w-0 flex-1 items-center px-3 text-sm text-white",
+              )}
+            >
+              <span
+                data-testid="available-credits"
+                className="min-w-0 truncate font-medium tabular-nums tracking-tight text-white"
+              >
+                ${Number(balance ?? 0).toFixed(2)}
+              </span>
+            </div>
             {canAddCredits && (
-              <InteractiveChip onClick={() => setAddCreditsFormVisible(true)}>
+              <BrandButton
+                type="button"
+                variant="primary"
+                onClick={() => setAddCreditsFormVisible(true)}
+              >
                 {t(I18nKey.ORG$ADD)}
-              </InteractiveChip>
+              </BrandButton>
             )}
           </div>
         </div>
@@ -117,7 +132,7 @@ function ManageOrg() {
             <button
               type="button"
               onClick={() => setChangeOrgNameFormVisible(true)}
-              className="shrink-0 text-sm font-normal leading-5 text-[var(--oh-muted)] transition-colors hover:text-white cursor-pointer"
+              className="shrink-0 cursor-pointer text-sm font-normal leading-5 text-[var(--oh-muted)] transition-[color] duration-75 hover:text-white motion-reduce:transition-none"
             >
               {t(I18nKey.ORG$CHANGE)}
             </button>

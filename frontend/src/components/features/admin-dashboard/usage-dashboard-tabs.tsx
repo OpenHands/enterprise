@@ -3,9 +3,11 @@ import React from "react";
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
 import {
   ExportIcon,
+  FilterIcon,
   SearchIcon,
   StopIcon,
 } from "#/components/shared/icons/inline-icons";
+import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
 import { AreaChart, KPICard, PieChart } from "./usage-dashboard-widgets";
 import {
   buildExportFilename,
@@ -19,7 +21,47 @@ import {
   formatTokens,
   rowsToCsv,
 } from "./usage-dashboard-utils";
-import { downloadBlob } from "#/utils/utils";
+import { cn, downloadBlob } from "#/utils/utils";
+import {
+  formControlFilterTriggerClassName,
+  formControlInlineInputClassName,
+  formControlNativeSelectClassName,
+  formControlShellClassName,
+} from "#/utils/form-control-classes";
+
+const usageNativeSelectClassName = cn(
+  formControlNativeSelectClassName,
+  "w-auto shrink-0",
+);
+
+const usageFilterSelectClassName = formControlNativeSelectClassName;
+
+const usageTableShellClassName =
+  "min-w-0 overflow-hidden rounded-lg border border-border-subtle bg-base-secondary";
+
+const DEFAULT_CONVERSATION_STATUS = "running";
+const DEFAULT_CONVERSATION_SORT_BY = "updated_at";
+const DEFAULT_CONVERSATION_SORT_ORDER = "desc";
+const DEFAULT_CONVERSATION_SANDBOX_STATUS = "";
+
+function countActiveConversationFilters({
+  conversationStatus,
+  conversationSortBy,
+  conversationSortOrder,
+  conversationSandboxStatus,
+}: {
+  conversationStatus: string;
+  conversationSortBy: string;
+  conversationSortOrder: string;
+  conversationSandboxStatus: string;
+}) {
+  return [
+    conversationStatus !== DEFAULT_CONVERSATION_STATUS,
+    conversationSortBy !== DEFAULT_CONVERSATION_SORT_BY,
+    conversationSortOrder !== DEFAULT_CONVERSATION_SORT_ORDER,
+    conversationSandboxStatus !== DEFAULT_CONVERSATION_SANDBOX_STATUS,
+  ].filter(Boolean).length;
+}
 
 export type ChartPoint = { date: string; value: number };
 
@@ -94,7 +136,10 @@ export function OverviewTab({
                   buildExportFilename("conversations_per_day"),
                 );
               }}
-              className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted border border-[var(--oh-border)] rounded-lg hover:text-foreground hover:bg-surface-raised transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className={cn(
+                formControlFilterTriggerClassName,
+                "text-[var(--oh-muted)] hover:text-white disabled:opacity-50",
+              )}
             >
               <ExportIcon />
               Export CSV
@@ -109,41 +154,42 @@ export function OverviewTab({
           )}
         </div>
         <div className="bg-base-secondary border border-border-subtle rounded-lg p-6">
-          <div className="flex items-start justify-between mb-6">
-            <div>
-              <h2 className="text-lg font-medium text-foreground">
-                Spend by agent
-              </h2>
-              <p className="text-sm text-muted">
-                {timeWindowLabel} · total spend
-              </p>
-            </div>
+          <div className="mb-6">
+            <h2 className="text-lg font-medium text-foreground">
+              Spend by agent
+            </h2>
+            <p className="text-sm text-muted">
+              {timeWindowLabel} · total spend
+            </p>
           </div>
           {agentSpendTotal > 0 ? (
-            <div className="flex flex-col items-center gap-6 lg:flex-row">
-              <PieChart
-                data={agentSpendRows.map((row) => ({
-                  value: row.total_cost,
-                  color: row.color,
-                }))}
-                total={agentSpendTotal}
-              />
+            <div className="flex flex-col gap-6">
+              <div className="mx-auto shrink-0">
+                <PieChart
+                  data={agentSpendRows.map((row) => ({
+                    value: row.total_cost,
+                    color: row.color,
+                    label: row.agent_name,
+                    percent: row.percent,
+                  }))}
+                  total={agentSpendTotal}
+                />
+              </div>
               <div className="w-full space-y-3">
                 {agentSpendRows.map((row) => (
-                  <div
-                    key={row.agent_name}
-                    className="flex items-center justify-between text-sm"
-                  >
-                    <div className="flex items-center gap-2">
+                  <div key={row.agent_name} className="space-y-1 text-sm">
+                    <div className="flex min-w-0 items-center gap-2">
                       <span
-                        className="h-2 w-2 rounded-full"
+                        className="h-2 w-2 shrink-0 rounded-full"
                         style={{ backgroundColor: row.color }}
                       />
-                      <span className="text-foreground">{row.agent_name}</span>
+                      <span className="min-w-0 flex-1 text-foreground">
+                        {row.agent_name}
+                      </span>
                     </div>
-                    <span className="text-muted">
+                    <div className="pl-4 tabular-nums text-muted">
                       {formatCost(row.total_cost)} · {row.percent.toFixed(1)}%
-                    </span>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -238,11 +284,29 @@ export function ConversationsTab({
   onConfirmStop: () => void;
   onCancelStop: () => void;
 }) {
+  const [isFiltersOpen, setIsFiltersOpen] = React.useState(false);
+  const filtersRef = useClickOutsideElement<HTMLDivElement>(() =>
+    setIsFiltersOpen(false),
+  );
+  const activeFilterCount = countActiveConversationFilters({
+    conversationStatus,
+    conversationSortBy,
+    conversationSortOrder,
+    conversationSandboxStatus,
+  });
+
+  const clearFilters = () => {
+    onStatusChange(DEFAULT_CONVERSATION_STATUS);
+    onSortByChange(DEFAULT_CONVERSATION_SORT_BY);
+    onSortOrderChange(DEFAULT_CONVERSATION_SORT_ORDER);
+    onSandboxStatusChange(DEFAULT_CONVERSATION_SANDBOX_STATUS);
+  };
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-4">
-        <div className="relative flex-1 max-w-md">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className={cn(formControlShellClassName, "min-w-0 flex-1")}>
+          <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
             <SearchIcon />
           </span>
           <input
@@ -250,191 +314,272 @@ export function ConversationsTab({
             placeholder="Search by title or user..."
             value={conversationSearch}
             onChange={(event) => onSearchChange(event.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-surface-deep border border-border-input rounded-lg text-foreground placeholder:text-text-dim focus:outline-none focus:border-primary"
+            className={cn(formControlInlineInputClassName, "text-white")}
           />
         </div>
-        <select
-          value={conversationStatus}
-          onChange={(event) => onStatusChange(event.target.value)}
-          className="px-3 py-2 bg-surface-deep border border-border-input rounded-lg text-sm text-muted focus:outline-none focus:border-primary"
-        >
-          <option value="">All statuses</option>
-          <option value="running">Running</option>
-          <option value="idle">Idle</option>
-          <option value="paused">Paused</option>
-          <option value="finished">Finished</option>
-          <option value="error">Error</option>
-          <option value="stuck">Stuck</option>
-        </select>
-        <select
-          value={conversationSortBy}
-          onChange={(event) => onSortByChange(event.target.value)}
-          className="px-3 py-2 bg-surface-deep border border-border-input rounded-lg text-sm text-muted focus:outline-none focus:border-primary"
-        >
-          <option value="updated_at">Last updated</option>
-          <option value="created_at">Created</option>
-          <option value="title">Title</option>
-          <option value="llm_model">Model</option>
-          <option value="accumulated_cost">Cost</option>
-        </select>
-        <select
-          value={conversationSortOrder}
-          onChange={(event) => onSortOrderChange(event.target.value)}
-          className="px-3 py-2 bg-surface-deep border border-border-input rounded-lg text-sm text-muted focus:outline-none focus:border-primary"
-        >
-          <option value="desc">Descending</option>
-          <option value="asc">Ascending</option>
-        </select>
-        <select
-          value={conversationSandboxStatus}
-          onChange={(event) => onSandboxStatusChange(event.target.value)}
-          className="px-3 py-2 bg-surface-deep border border-border-input rounded-lg text-sm text-muted focus:outline-none focus:border-primary"
-        >
-          <option value="">Runtime status: All</option>
-          <option value="RUNNING">Running</option>
-          <option value="STARTING">Starting</option>
-          <option value="PAUSED">Paused</option>
-          <option value="ERROR">Error</option>
-          <option value="MISSING">Missing</option>
-        </select>
+
+        <div ref={filtersRef} className="relative shrink-0">
+          <button
+            type="button"
+            data-testid="conversation-filters-button"
+            onClick={() => setIsFiltersOpen((open) => !open)}
+            aria-expanded={isFiltersOpen}
+            aria-haspopup="dialog"
+            className={cn(
+              formControlFilterTriggerClassName,
+              "text-white",
+              isFiltersOpen && "bg-surface-raised",
+            )}
+          >
+            <FilterIcon />
+            Filters
+            {activeFilterCount > 0 && (
+              <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-white px-1.5 py-0.5 text-[11px] font-medium leading-none text-black">
+                {activeFilterCount}
+              </span>
+            )}
+          </button>
+
+          {isFiltersOpen && (
+            <div
+              role="dialog"
+              aria-label="Conversation filters"
+              data-testid="conversation-filters-panel"
+              className={cn(
+                "absolute right-0 top-full z-50 mt-2 w-72",
+                "rounded-xl border border-[var(--oh-border)] bg-[var(--oh-surface-raised)] p-4 shadow-lg",
+              )}
+            >
+              <div className="flex flex-col gap-3">
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-text-dim">
+                    Status
+                  </span>
+                  <select
+                    value={conversationStatus}
+                    onChange={(event) => onStatusChange(event.target.value)}
+                    className={usageFilterSelectClassName}
+                  >
+                    <option value="">All statuses</option>
+                    <option value="running">Running</option>
+                    <option value="idle">Idle</option>
+                    <option value="paused">Paused</option>
+                    <option value="finished">Finished</option>
+                    <option value="error">Error</option>
+                    <option value="stuck">Stuck</option>
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-text-dim">
+                    Sort by
+                  </span>
+                  <select
+                    value={conversationSortBy}
+                    onChange={(event) => onSortByChange(event.target.value)}
+                    className={usageFilterSelectClassName}
+                  >
+                    <option value="updated_at">Last updated</option>
+                    <option value="created_at">Created</option>
+                    <option value="title">Title</option>
+                    <option value="llm_model">Model</option>
+                    <option value="accumulated_cost">Cost</option>
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-text-dim">
+                    Order
+                  </span>
+                  <select
+                    value={conversationSortOrder}
+                    onChange={(event) => onSortOrderChange(event.target.value)}
+                    className={usageFilterSelectClassName}
+                  >
+                    <option value="desc">Descending</option>
+                    <option value="asc">Ascending</option>
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-text-dim">
+                    Runtime status
+                  </span>
+                  <select
+                    value={conversationSandboxStatus}
+                    onChange={(event) =>
+                      onSandboxStatusChange(event.target.value)
+                    }
+                    className={usageFilterSelectClassName}
+                  >
+                    <option value="">All</option>
+                    <option value="RUNNING">Running</option>
+                    <option value="STARTING">Starting</option>
+                    <option value="PAUSED">Paused</option>
+                    <option value="ERROR">Error</option>
+                    <option value="MISSING">Missing</option>
+                  </select>
+                </label>
+
+                {activeFilterCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearFilters}
+                    className="self-start text-sm text-[var(--oh-muted)] transition-colors hover:text-white cursor-pointer"
+                  >
+                    Reset filters
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
 
         <a
           href={exportUrl}
-          className="flex items-center gap-2 px-3 py-2 text-sm text-muted border border-[var(--oh-border)] rounded-lg hover:text-foreground hover:bg-surface-raised transition-colors"
+          className={cn(
+            formControlFilterTriggerClassName,
+            "text-[var(--oh-muted)] hover:text-white",
+          )}
         >
           <ExportIcon />
           Export CSV
         </a>
       </div>
 
-      <div className="bg-base-secondary border border-border-subtle rounded-lg overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-border-subtle">
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                User
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                Tokens
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                Spend
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                Duration
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                Started
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                Last update
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                Associated PR
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                Merged?
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                Agent
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                Type
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                Stop
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {conversationsLoading && (
-              <tr>
-                <td colSpan={11} className="px-4 py-8 text-center text-muted">
-                  Loading conversations...
-                </td>
+      <div className={usageTableShellClassName}>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-max">
+            <thead>
+              <tr className="border-b border-border-subtle">
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  User
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  Tokens
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  Spend
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  Duration
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  Started
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  Last update
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  Associated PR
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  Merged?
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  Agent
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  Type
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  Stop
+                </th>
               </tr>
-            )}
-            {!conversationsLoading &&
-              (conversationsData?.items.length ?? 0) === 0 && (
+            </thead>
+            <tbody>
+              {conversationsLoading && (
                 <tr>
                   <td colSpan={11} className="px-4 py-8 text-center text-muted">
-                    No conversations found for this time window.
+                    Loading conversations...
                   </td>
                 </tr>
               )}
-            {conversationsData?.items.map((conversation) => {
-              const isRunning =
-                conversation.execution_status?.toLowerCase() === "running";
-              return (
-                <tr
-                  key={conversation.id}
-                  className="border-b border-border-subtle hover:bg-interactive-hover-low/50 transition-colors"
-                >
-                  <td className="px-4 py-4">
-                    <div className="text-foreground text-sm font-medium">
-                      {conversation.user_email?.split("@")[0] || "Unknown"}
-                    </div>
-                    <div className="text-xs text-text-dim">
-                      {conversation.user_email || "-"}
-                    </div>
-                  </td>
-                  <td className="px-4 py-4 text-right text-sm font-mono text-foreground">
-                    {formatTokens(conversation.total_tokens)}
-                  </td>
-                  <td className="px-4 py-4 text-right text-sm text-foreground">
-                    {formatCost(conversation.accumulated_cost)}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-muted">
-                    {formatDuration(
-                      conversation.created_at,
-                      conversation.updated_at,
-                    )}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-muted">
-                    {formatDateTimeOrDash(conversation.created_at)}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-muted">
-                    {formatDateTimeOrDash(conversation.updated_at)}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-muted">
-                    {formatAssociatedPr(conversation)}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-muted">
-                    {formatMergedStatus(conversation.pr_merged)}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-muted">
-                    {formatAgentLabel(conversation)}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-muted capitalize">
-                    {conversation.trigger || "-"}
-                  </td>
-                  <td className="px-4 py-4 text-right text-sm">
-                    {isRunning && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onStopConversation({
-                            id: conversation.id,
-                            title: conversation.title ?? null,
-                          })
-                        }
-                        disabled={stoppingIds.has(conversation.id)}
-                        className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted hover:text-foreground hover:bg-interactive-hover rounded transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted disabled:cursor-not-allowed"
-                        title="Stop conversation"
-                        aria-label="Stop conversation"
-                      >
-                        <StopIcon />
-                        {stoppingIds.has(conversation.id)
-                          ? "Stopping…"
-                          : "Stop"}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              {!conversationsLoading &&
+                (conversationsData?.items.length ?? 0) === 0 && (
+                  <tr>
+                    <td
+                      colSpan={11}
+                      className="px-4 py-8 text-center text-muted"
+                    >
+                      No conversations found for this time window.
+                    </td>
+                  </tr>
+                )}
+              {conversationsData?.items.map((conversation) => {
+                const isRunning =
+                  conversation.execution_status?.toLowerCase() === "running";
+                return (
+                  <tr
+                    key={conversation.id}
+                    className="border-b border-border-subtle hover:bg-interactive-hover-low/50 transition-colors"
+                  >
+                    <td className="px-4 py-4">
+                      <div className="text-foreground text-sm font-medium">
+                        {conversation.user_email?.split("@")[0] || "Unknown"}
+                      </div>
+                      <div className="text-xs text-text-dim">
+                        {conversation.user_email || "-"}
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-right text-sm font-mono text-foreground">
+                      {formatTokens(conversation.total_tokens)}
+                    </td>
+                    <td className="px-4 py-4 text-right text-sm text-foreground">
+                      {formatCost(conversation.accumulated_cost)}
+                    </td>
+                    <td className="px-4 py-4 text-sm text-muted">
+                      {formatDuration(
+                        conversation.created_at,
+                        conversation.updated_at,
+                      )}
+                    </td>
+                    <td className="px-4 py-4 text-sm text-muted">
+                      {formatDateTimeOrDash(conversation.created_at)}
+                    </td>
+                    <td className="px-4 py-4 text-sm text-muted">
+                      {formatDateTimeOrDash(conversation.updated_at)}
+                    </td>
+                    <td className="px-4 py-4 text-sm text-muted">
+                      {formatAssociatedPr(conversation)}
+                    </td>
+                    <td className="px-4 py-4 text-sm text-muted">
+                      {formatMergedStatus(conversation.pr_merged)}
+                    </td>
+                    <td className="px-4 py-4 text-sm text-muted">
+                      {formatAgentLabel(conversation)}
+                    </td>
+                    <td className="px-4 py-4 text-sm text-muted capitalize">
+                      {conversation.trigger || "-"}
+                    </td>
+                    <td className="px-4 py-4 text-right text-sm">
+                      {isRunning && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onStopConversation({
+                              id: conversation.id,
+                              title: conversation.title ?? null,
+                            })
+                          }
+                          disabled={stoppingIds.has(conversation.id)}
+                          className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted hover:text-foreground hover:bg-interactive-hover rounded transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted disabled:cursor-not-allowed"
+                          title="Stop conversation"
+                          aria-label="Stop conversation"
+                        >
+                          <StopIcon />
+                          {stoppingIds.has(conversation.id)
+                            ? "Stopping…"
+                            : "Stop"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
         <div className="flex items-center justify-between px-4 py-3 border-t border-border-subtle">
           <div className="flex items-center gap-2">
             <button
@@ -474,7 +619,7 @@ export function ConversationsTab({
                 onChange={(event) =>
                   onPerPageChange(Number(event.target.value))
                 }
-                className="px-2 py-1 bg-surface-deep border border-border-input rounded text-sm text-foreground focus:outline-none focus:border-primary"
+                className={cn(usageNativeSelectClassName, "min-w-16")}
               >
                 <option value="10">10</option>
                 <option value="20">20</option>
@@ -530,109 +675,111 @@ export function UsersTab({
 }) {
   return (
     <div className="space-y-4">
-      <div className="bg-base-secondary border border-border-subtle rounded-lg overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-border-subtle">
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                User
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                Convos
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                First convo
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                Last convo
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                First login
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                Last login
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                Spend MTD
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                Spend YTD
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                Lifetime
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                Budget
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                PRs merged
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {userUsageLoading && (
-              <tr>
-                <td colSpan={11} className="px-4 py-8 text-center text-muted">
-                  Loading user usage...
-                </td>
+      <div className={usageTableShellClassName}>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-max">
+            <thead>
+              <tr className="border-b border-border-subtle">
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  User
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  Convos
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  First convo
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  Last convo
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  First login
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  Last login
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  Spend MTD
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  Spend YTD
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  Lifetime
+                </th>
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  Budget
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  PRs merged
+                </th>
               </tr>
-            )}
-            {!userUsageLoading && (userUsage?.items.length ?? 0) === 0 && (
-              <tr>
-                <td colSpan={11} className="px-4 py-8 text-center text-muted">
-                  No user usage data available yet.
-                </td>
-              </tr>
-            )}
-            {userUsage?.items.map((user) => (
-              <tr
-                key={user.user_id}
-                className="border-b border-border-subtle hover:bg-interactive-hover-low/50 transition-colors"
-              >
-                <td className="px-4 py-4">
-                  <div className="text-foreground text-sm font-medium">
-                    {user.user_name ??
-                      user.user_email?.split("@")[0] ??
-                      "Unknown"}
-                  </div>
-                  <div className="text-xs text-text-dim">
-                    {user.user_email || "-"}
-                  </div>
-                </td>
-                <td className="px-4 py-4 text-right text-sm text-foreground">
-                  {user.conversation_count.toLocaleString()}
-                </td>
-                <td className="px-4 py-4 text-sm text-muted">
-                  {formatDateTimeOrDash(user.first_conversation_at)}
-                </td>
-                <td className="px-4 py-4 text-sm text-muted">
-                  {formatDateTimeOrDash(user.last_conversation_at)}
-                </td>
-                <td className="px-4 py-4 text-sm text-muted">
-                  {formatDateTimeOrDash(user.first_login_at)}
-                </td>
-                <td className="px-4 py-4 text-sm text-muted">
-                  {formatDateTimeOrDash(user.last_login_at)}
-                </td>
-                <td className="px-4 py-4 text-right text-sm text-foreground">
-                  {formatCost(user.spend_mtd)}
-                </td>
-                <td className="px-4 py-4 text-right text-sm text-foreground">
-                  {formatCost(user.spend_ytd)}
-                </td>
-                <td className="px-4 py-4 text-right text-sm text-foreground">
-                  {formatCost(user.spend_lifetime)}
-                </td>
-                <td className="px-4 py-4 text-sm text-muted">
-                  {formatBudget(user)}
-                </td>
-                <td className="px-4 py-4 text-right text-sm text-muted">
-                  {user.prs_merged ?? "-"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {userUsageLoading && (
+                <tr>
+                  <td colSpan={11} className="px-4 py-8 text-center text-muted">
+                    Loading user usage...
+                  </td>
+                </tr>
+              )}
+              {!userUsageLoading && (userUsage?.items.length ?? 0) === 0 && (
+                <tr>
+                  <td colSpan={11} className="px-4 py-8 text-center text-muted">
+                    No user usage data available yet.
+                  </td>
+                </tr>
+              )}
+              {userUsage?.items.map((user) => (
+                <tr
+                  key={user.user_id}
+                  className="border-b border-border-subtle hover:bg-interactive-hover-low/50 transition-colors"
+                >
+                  <td className="px-4 py-4">
+                    <div className="text-foreground text-sm font-medium">
+                      {user.user_name ??
+                        user.user_email?.split("@")[0] ??
+                        "Unknown"}
+                    </div>
+                    <div className="text-xs text-text-dim">
+                      {user.user_email || "-"}
+                    </div>
+                  </td>
+                  <td className="px-4 py-4 text-right text-sm text-foreground">
+                    {user.conversation_count.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-4 text-sm text-muted">
+                    {formatDateTimeOrDash(user.first_conversation_at)}
+                  </td>
+                  <td className="px-4 py-4 text-sm text-muted">
+                    {formatDateTimeOrDash(user.last_conversation_at)}
+                  </td>
+                  <td className="px-4 py-4 text-sm text-muted">
+                    {formatDateTimeOrDash(user.first_login_at)}
+                  </td>
+                  <td className="px-4 py-4 text-sm text-muted">
+                    {formatDateTimeOrDash(user.last_login_at)}
+                  </td>
+                  <td className="px-4 py-4 text-right text-sm text-foreground">
+                    {formatCost(user.spend_mtd)}
+                  </td>
+                  <td className="px-4 py-4 text-right text-sm text-foreground">
+                    {formatCost(user.spend_ytd)}
+                  </td>
+                  <td className="px-4 py-4 text-right text-sm text-foreground">
+                    {formatCost(user.spend_lifetime)}
+                  </td>
+                  <td className="px-4 py-4 text-sm text-muted">
+                    {formatBudget(user)}
+                  </td>
+                  <td className="px-4 py-4 text-right text-sm text-muted">
+                    {user.prs_merged ?? "-"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
@@ -659,8 +806,8 @@ export function ModelsTab({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div className="relative w-64">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-dim">
+        <div className={cn(formControlShellClassName, "w-64")}>
+          <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
             <SearchIcon />
           </span>
           <input
@@ -668,7 +815,7 @@ export function ModelsTab({
             placeholder="Search models..."
             value={modelSearch}
             onChange={(event) => onModelSearchChange(event.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-surface-deep border border-border-input rounded-lg text-foreground placeholder:text-text-dim focus:outline-none focus:border-primary"
+            className={cn(formControlInlineInputClassName, "text-white")}
           />
         </div>
         <button
@@ -698,75 +845,80 @@ export function ModelsTab({
               buildExportFilename("model_usage"),
             );
           }}
-          className="flex items-center gap-2 px-3 py-2 text-sm text-muted border border-[var(--oh-border)] rounded-lg hover:text-foreground hover:bg-surface-raised transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className={cn(
+            formControlFilterTriggerClassName,
+            "text-[var(--oh-muted)] hover:text-white disabled:opacity-50",
+          )}
         >
           <ExportIcon />
           Export CSV
         </button>
       </div>
 
-      <div className="bg-base-secondary border border-border-subtle rounded-lg overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-border-subtle">
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-dim uppercase tracking-wider">
-                Model
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                Conversations
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                Tokens Used
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                Avg Tokens / Convo
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                Avg Cost / Convo
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-dim uppercase tracking-wider">
-                Total Cost
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredModels.map((model) => (
-              <tr
-                key={model.model_name}
-                className="border-b border-border-subtle hover:bg-interactive-hover-low/50 transition-colors"
-              >
-                <td className="px-4 py-5">
-                  <div className="text-foreground font-medium">
-                    {model.model_name}
-                  </div>
-                </td>
-                <td className="px-4 py-5 text-foreground text-sm font-mono text-right">
-                  {model.conversation_count.toLocaleString()}
-                </td>
-                <td className="px-4 py-5 text-foreground text-sm font-mono text-right">
-                  {formatTokens(model.total_tokens)}
-                </td>
-                <td className="px-4 py-5 text-foreground text-sm font-mono text-right">
-                  {formatTokens(model.avgTokens)}
-                </td>
-                <td className="px-4 py-5 text-foreground text-sm font-mono text-right">
-                  ${model.avgCost.toFixed(2)}
-                </td>
-                <td className="px-4 py-5 text-foreground text-sm font-mono text-right font-medium">
-                  ${model.total_cost.toFixed(2)}
-                </td>
+      <div className={usageTableShellClassName}>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-max">
+            <thead>
+              <tr className="border-b border-border-subtle">
+                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
+                  Model
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  Conversations
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  Tokens Used
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  Avg Tokens / Convo
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  Avg Cost / Convo
+                </th>
+                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                  Total Cost
+                </th>
               </tr>
-            ))}
+            </thead>
+            <tbody>
+              {filteredModels.map((model) => (
+                <tr
+                  key={model.model_name}
+                  className="border-b border-border-subtle hover:bg-interactive-hover-low/50 transition-colors"
+                >
+                  <td className="px-4 py-5">
+                    <div className="text-foreground font-medium">
+                      {model.model_name}
+                    </div>
+                  </td>
+                  <td className="px-4 py-5 text-foreground text-sm font-mono text-right">
+                    {model.conversation_count.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-5 text-foreground text-sm font-mono text-right">
+                    {formatTokens(model.total_tokens)}
+                  </td>
+                  <td className="px-4 py-5 text-foreground text-sm font-mono text-right">
+                    {formatTokens(model.avgTokens)}
+                  </td>
+                  <td className="px-4 py-5 text-foreground text-sm font-mono text-right">
+                    ${model.avgCost.toFixed(2)}
+                  </td>
+                  <td className="px-4 py-5 text-foreground text-sm font-mono text-right font-medium">
+                    ${model.total_cost.toFixed(2)}
+                  </td>
+                </tr>
+              ))}
 
-            {filteredModels.length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted">
-                  No model usage data available for this time window.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+              {filteredModels.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-4 py-8 text-center text-muted">
+                    No model usage data available for this time window.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

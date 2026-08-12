@@ -15,6 +15,10 @@ export const AUTH_HANDLERS = [
     return HttpResponse.json(user);
   }),
 
+  http.get("/api/onboarding_status", () =>
+    HttpResponse.json({ should_complete_onboarding: false }),
+  ),
+
   http.post("/api/authenticate", async () =>
     HttpResponse.json({ message: "Authenticated" }),
   ),

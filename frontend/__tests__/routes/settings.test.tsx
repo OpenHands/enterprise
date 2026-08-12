@@ -499,7 +499,7 @@ describe("Settings Screen", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
+            enable_onboarding: false,
           },
         }),
       );
@@ -555,7 +555,7 @@ describe("Settings Screen", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
+            enable_onboarding: false,
           },
         }),
       );
@@ -677,7 +677,7 @@ describe("Settings Screen", () => {
           hide_users_page: true,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
+          enable_onboarding: false,
         },
       };
 
@@ -722,7 +722,7 @@ describe("Settings Screen", () => {
           hide_users_page: false,
           hide_billing_page: true,
           hide_integrations_page: false,
-        enable_onboarding: false,
+          enable_onboarding: false,
         },
       };
 
@@ -976,7 +976,7 @@ describe("getFirstAvailablePath", () => {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-        enable_onboarding: false,
+    enable_onboarding: false,
   };
 
   describe("SaaS mode", () => {
@@ -1086,13 +1086,13 @@ describe("clientLoader redirect behavior", () => {
     };
     mockQueryClient.setQueryData(["web-client-config"], config);
 
-    const result = await clientLoader(
+    const result = (await clientLoader(
       createMockRequest("/settings/user") as any,
-    );
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
-    expect(result?.headers.get("Location")).toBe("/settings/integrations");
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings/integrations");
   });
 
   it("should redirect from /settings/billing to first available page when hide_billing_page is true", async () => {
@@ -1112,13 +1112,13 @@ describe("clientLoader redirect behavior", () => {
     };
     mockQueryClient.setQueryData(["web-client-config"], config);
 
-    const result = await clientLoader(
+    const result = (await clientLoader(
       createMockRequest("/settings/billing") as any,
-    );
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
-    expect(result?.headers.get("Location")).toBe("/settings/user");
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings/user");
   });
 
   it("should redirect from /settings/integrations to first available page when hide_integrations_page is true", async () => {
@@ -1137,13 +1137,13 @@ describe("clientLoader redirect behavior", () => {
     };
     mockQueryClient.setQueryData(["web-client-config"], config);
 
-    const result = await clientLoader(
+    const result = (await clientLoader(
       createMockRequest("/settings/integrations") as any,
-    );
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
-    expect(result?.headers.get("Location")).toBe("/settings/user");
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings/user");
   });
 
   it("should redirect from /settings to /settings/app when LLM, users, and integrations are all hidden", async () => {
@@ -1162,11 +1162,13 @@ describe("clientLoader redirect behavior", () => {
     };
     mockQueryClient.setQueryData(["web-client-config"], config);
 
-    const result = await clientLoader(createMockRequest("/settings") as any);
+    const result = (await clientLoader(
+      createMockRequest("/settings") as any,
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
-    expect(result?.headers.get("Location")).toBe("/settings/app");
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings/app");
   });
 
   it("should redirect from /settings to /settings/mcp in OSS mode when LLM settings is hidden", async () => {
@@ -1186,11 +1188,13 @@ describe("clientLoader redirect behavior", () => {
     };
     mockQueryClient.setQueryData(["web-client-config"], config);
 
-    const result = await clientLoader(createMockRequest("/settings") as any);
+    const result = (await clientLoader(
+      createMockRequest("/settings") as any,
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
-    expect(result?.headers.get("Location")).toBe("/settings/mcp");
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings/mcp");
   });
 
   it("should redirect non-admins away from /settings/budgets", async () => {
@@ -1227,13 +1231,13 @@ describe("clientLoader redirect behavior", () => {
       status: "active",
     });
 
-    const result = await clientLoader(
+    const result = (await clientLoader(
       createMockRequest("/settings/budgets") as any,
-    );
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
-    expect(result?.headers.get("Location")).toBe("/settings");
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings");
   });
 
   it("should not redirect when accessing a non-hidden page", async () => {
@@ -1257,7 +1261,7 @@ describe("clientLoader redirect behavior", () => {
       createMockRequest("/settings/app") as any,
     );
 
-    expect(result).toBeNull();
+    expect(result).toEqual({});
   });
 
   it("should redirect from /settings/integrations in OSS mode when hide_integrations_page is true", async () => {
@@ -1276,13 +1280,13 @@ describe("clientLoader redirect behavior", () => {
     };
     mockQueryClient.setQueryData(["web-client-config"], config);
 
-    const result = await clientLoader(
+    const result = (await clientLoader(
       createMockRequest("/settings/integrations") as any,
-    );
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
+    expect(result.status).toBe(302);
     // In OSS mode, first available is /settings (LLM)
-    expect(result?.headers.get("Location")).toBe("/settings");
+    expect(result.headers.get("Location")).toBe("/settings");
   });
 });

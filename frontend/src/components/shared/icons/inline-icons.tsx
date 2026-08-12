@@ -34,6 +34,23 @@ export function ExportIcon() {
   );
 }
 
+export function FilterIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+    >
+      <path d="M3 5h18" />
+      <path d="M7 12h10" />
+      <path d="M10 19h4" />
+    </svg>
+  );
+}
+
 export function StopIcon() {
   return (
     <svg
@@ -132,6 +149,44 @@ export function TrashIcon() {
     >
       <polyline points="3,6 5,6 21,6" />
       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+export function EyeIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+export function EyeOffIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M9.9 4.2A10.6 10.6 0 0 1 12 4c6.5 0 10 8 10 8a18.5 18.5 0 0 1-2.2 3.3" />
+      <path d="M6.1 6.1C3.7 7.7 2 12 2 12s3.5 7 10 7a9.7 9.7 0 0 0 4.4-1" />
+      <path d="M14.1 14.1a3 3 0 0 1-4.2-4.2" />
+      <line x1="2" y1="2" x2="22" y2="22" />
     </svg>
   );
 }

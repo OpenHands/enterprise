@@ -8,6 +8,9 @@ import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import { useEmailVerification } from "#/hooks/use-email-verification";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { useConfig } from "#/hooks/query/use-config";
+import { BrandButton } from "#/components/features/settings/brand-button";
+import { SettingsInput } from "#/components/features/settings/settings-input";
+import { I18nKey } from "#/i18n/declaration";
 
 // Email validation regex pattern
 const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
@@ -26,7 +29,7 @@ function EmailInputSection({
   children,
 }: {
   email: string;
-  onEmailChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onEmailChange: (value: string) => void;
   onSaveEmail: () => void;
   onResendVerification: () => void;
   isSaving: boolean;
@@ -40,67 +43,58 @@ function EmailInputSection({
   const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-2">
-        <label className="text-sm">{t("SETTINGS$USER_EMAIL")}</label>
-        <div className="flex items-center gap-3">
-          <input
-            type="email"
-            value={email}
-            onChange={onEmailChange}
-            readOnly={!emailChangeEnabled}
-            className={`text-base text-white p-2 bg-base-tertiary rounded-sm border ${
-              isEmailChanged && !isEmailValid
-                ? "border-red-500"
-                : "border-tertiary"
-            } flex-grow ${!emailChangeEnabled ? "cursor-not-allowed opacity-70" : ""}`}
-            placeholder={t("SETTINGS$USER_EMAIL_LOADING")}
-            data-testid="email-input"
-          />
-        </div>
+      <div className="flex max-w-lg flex-col gap-3">
+        <SettingsInput
+          testId="email-input"
+          type="email"
+          label={t(I18nKey.SETTINGS$USER_EMAIL)}
+          value={email}
+          onChange={onEmailChange}
+          isReadOnly={!emailChangeEnabled}
+          placeholder={t(I18nKey.SETTINGS$USER_EMAIL_LOADING)}
+          error={
+            isEmailChanged && !isEmailValid
+              ? t(I18nKey.SETTINGS$INVALID_EMAIL_FORMAT)
+              : undefined
+          }
+        />
 
-        {isEmailChanged && !isEmailValid && (
-          <div
-            className="text-red-500 text-sm mt-1"
-            data-testid="email-validation-error"
-          >
-            {t("SETTINGS$INVALID_EMAIL_FORMAT")}
-          </div>
-        )}
-
-        <div className="flex items-center gap-3 mt-2">
+        <div className="flex flex-wrap items-center gap-3">
           {emailChangeEnabled && (
-            <button
+            <BrandButton
               type="button"
+              variant="primary"
+              testId="save-email-button"
               onClick={onSaveEmail}
-              disabled={!isEmailChanged || isSaving || !isEmailValid}
-              className="px-4 py-2 rounded-sm bg-primary text-[var(--oh-color-base)] hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed disabled:text-[var(--oh-color-base)]"
-              data-testid="save-email-button"
+              isDisabled={!isEmailChanged || isSaving || !isEmailValid}
+              aria-busy={isSaving}
             >
-              {isSaving ? t("SETTINGS$SAVING") : t("SETTINGS$SAVE")}
-            </button>
+              {isSaving ? t(I18nKey.SETTINGS$SAVING) : t(I18nKey.SETTINGS$SAVE)}
+            </BrandButton>
           )}
 
           {emailVerified === false && (
-            <button
+            <BrandButton
               type="button"
+              variant="primary"
+              testId="resend-verification-button"
               onClick={onResendVerification}
-              disabled={isResendingVerification}
-              className="px-4 py-2 rounded-sm bg-primary text-[var(--oh-color-base)] hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed disabled:text-[var(--oh-color-base)]"
-              data-testid="resend-verification-button"
+              isDisabled={isResendingVerification}
+              aria-busy={isResendingVerification}
             >
               {isResendingVerification
-                ? t("SETTINGS$SENDING")
-                : t("SETTINGS$RESEND_VERIFICATION")}
-            </button>
+                ? t(I18nKey.SETTINGS$SENDING)
+                : t(I18nKey.SETTINGS$RESEND_VERIFICATION)}
+            </BrandButton>
           )}
         </div>
 
         {!emailChangeEnabled && (
           <p
-            className="text-sm text-tertiary"
+            className="text-sm text-[var(--oh-muted)]"
             data-testid="email-change-disabled"
           >
-            {t("SETTINGS$EMAIL_CHANGE_DISABLED")}
+            {t(I18nKey.SETTINGS$EMAIL_CHANGE_DISABLED)}
           </p>
         )}
 
@@ -114,18 +108,18 @@ function VerificationAlert() {
   const { t } = useTranslation();
   return (
     <div
-      className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-sm mt-4"
+      className="mt-1 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-red-300"
       role="alert"
     >
-      <p className="font-bold">{t("SETTINGS$EMAIL_VERIFICATION_REQUIRED")}</p>
-      <p className="text-sm">
-        {t("SETTINGS$EMAIL_VERIFICATION_RESTRICTION_MESSAGE")}
+      <p className="font-medium">
+        {t(I18nKey.SETTINGS$EMAIL_VERIFICATION_REQUIRED)}
+      </p>
+      <p className="text-sm text-red-300/90">
+        {t(I18nKey.SETTINGS$EMAIL_VERIFICATION_RESTRICTION_MESSAGE)}
       </p>
     </div>
   );
 }
-
-// These components have been replaced with toast notifications
 
 function UserSettingsScreen() {
   const { t } = useTranslation();
@@ -160,8 +154,7 @@ function UserSettingsScreen() {
       prevVerificationStatusRef.current === false &&
       settings?.email_verified === true
     ) {
-      // Display toast notification instead of setting state
-      displaySuccessToast(t("SETTINGS$EMAIL_VERIFIED_SUCCESSFULLY"));
+      displaySuccessToast(t(I18nKey.SETTINGS$EMAIL_VERIFIED_SUCCESSFULLY));
       setTimeout(() => {
         queryClient.invalidateQueries({
           queryKey: SETTINGS_QUERY_KEYS.personal(organizationId),
@@ -185,8 +178,7 @@ function UserSettingsScreen() {
     };
   }, [settings?.email_verified, refetch, queryClient, t, organizationId]);
 
-  const handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newEmail = e.target.value;
+  const handleEmailChange = (newEmail: string) => {
     setEmail(newEmail);
     setIsEmailValid(EMAIL_REGEX.test(newEmail));
   };
@@ -197,14 +189,13 @@ function UserSettingsScreen() {
       setIsSaving(true);
       await openHands.post("/api/email", { email }, { withCredentials: true });
       setOriginalEmail(email);
-      // Display toast notification instead of setting state
-      displaySuccessToast(t("SETTINGS$EMAIL_SAVED_SUCCESSFULLY"));
+      displaySuccessToast(t(I18nKey.SETTINGS$EMAIL_SAVED_SUCCESSFULLY));
       queryClient.invalidateQueries({
         queryKey: SETTINGS_QUERY_KEYS.personal(organizationId),
       });
     } catch (error) {
       // eslint-disable-next-line no-console
-      console.error(t("SETTINGS$FAILED_TO_SAVE_EMAIL"), error);
+      console.error(t(I18nKey.SETTINGS$FAILED_TO_SAVE_EMAIL), error);
     } finally {
       setIsSaving(false);
     }
@@ -221,7 +212,7 @@ function UserSettingsScreen() {
     <div data-testid="user-settings-screen" className="flex flex-col h-full">
       <div className="flex flex-col gap-6">
         {isLoading ? (
-          <div className="animate-pulse h-8 w-64 bg-tertiary rounded-sm" />
+          <div className="h-9 w-64 max-w-full animate-pulse rounded-lg bg-tertiary" />
         ) : (
           <EmailInputSection
             email={email}

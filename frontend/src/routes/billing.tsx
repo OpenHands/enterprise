@@ -18,12 +18,19 @@ import { WebClientConfig } from "#/api/option-service/option.types";
 import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 import { getFirstAvailablePath } from "#/utils/settings-utils";
 
+const BILLING_LOADER_OK = {} as const;
+
 export const clientLoader = async () => {
-  const config = await queryClient.fetchQuery<WebClientConfig>({
-    queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
-    queryFn: OptionService.getConfig,
-    ...CONFIG_CACHE_OPTIONS,
-  });
+  let config: WebClientConfig | undefined;
+  try {
+    config = await queryClient.fetchQuery<WebClientConfig>({
+      queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
+      queryFn: OptionService.getConfig,
+      ...CONFIG_CACHE_OPTIONS,
+    });
+  } catch {
+    return BILLING_LOADER_OK;
+  }
 
   const isSaas = config?.app_mode === "saas";
   const featureFlags = config?.feature_flags;
@@ -45,7 +52,7 @@ export const clientLoader = async () => {
     return redirect(getFallbackPath());
   }
 
-  return null;
+  return BILLING_LOADER_OK;
 };
 
 function BillingSettingsScreen() {

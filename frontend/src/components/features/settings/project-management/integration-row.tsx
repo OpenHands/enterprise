@@ -10,6 +10,11 @@ import {
   ConfigureButton,
   ConfigureModal,
 } from "#/components/features/settings/project-management/configure-modal";
+import { Text } from "#/ui/typography";
+import { cn } from "#/utils/utils";
+import { settingsListRowHoverClassName } from "#/utils/settings-list-classes";
+import { formControlTransitionClassName } from "#/utils/form-control-classes";
+import { IntegrationProviderIcon } from "#/components/features/settings/git-settings/integration-provider-icon";
 
 interface IntegrationRowProps {
   platform: "jira" | "jira-dc" | "linear";
@@ -75,11 +80,9 @@ export function IntegrationRow({
     unlinkMutation.isPending ||
     configureMutation.isPending;
 
-  // Determine if integration is active and workspace exists
   const isIntegrationActive = integrationData?.status === "active";
   const hasWorkspace = integrationData?.workspace;
 
-  // Determine button text based on integration state
   const buttonText =
     isIntegrationActive && hasWorkspace
       ? t(I18nKey.PROJECT_MANAGEMENT$EDIT_BUTTON_LABEL)
@@ -87,18 +90,25 @@ export function IntegrationRow({
 
   return (
     <div
-      className="flex items-center justify-between flex-wrap gap-2"
+      className={cn(
+        "flex items-center justify-between gap-4 px-3 py-3",
+        formControlTransitionClassName,
+        settingsListRowHoverClassName,
+      )}
       data-testid={dataTestId}
     >
-      <span className="font-medium">{platformName}</span>
-      <div className="flex items-center gap-6">
-        <ConfigureButton
-          onClick={handleConfigure}
-          isDisabled={isLoading}
-          text={buttonText}
-          data-testid={`${platform}-configure-button`}
-        />
+      <div className="flex min-w-0 items-center gap-3">
+        <IntegrationProviderIcon provider={platform} />
+        <Text className="min-w-0 truncate text-sm font-medium text-content-2">
+          {platformName}
+        </Text>
       </div>
+      <ConfigureButton
+        onClick={handleConfigure}
+        isDisabled={isLoading}
+        text={buttonText}
+        data-testid={`${platform}-configure-button`}
+      />
       <ConfigureModal
         isOpen={isConfigureModalOpen}
         onClose={() => setConfigureModalOpen(false)}

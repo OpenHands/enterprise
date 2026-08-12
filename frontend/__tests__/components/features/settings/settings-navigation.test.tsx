@@ -84,17 +84,35 @@ describe("SettingsNavigation", () => {
     useSelectedOrganizationStore.setState({ organizationId: "org-1" });
   });
 
+  describe("settings brand header", () => {
+    it("should show Settings label and Back to App link to canvas", async () => {
+      renderSettingsNavigation();
+
+      await screen.findByTestId("settings-navbar");
+
+      const backLinks = screen.getAllByTestId("settings-back-to-app");
+      expect(backLinks.length).toBeGreaterThan(0);
+      expect(backLinks[0]).toHaveAttribute(
+        "href",
+        `${window.location.origin}/canvas`,
+      );
+      expect(backLinks[0]).toHaveTextContent("SETTINGS$BACK_TO_APP");
+      expect(screen.getAllByText("SETTINGS$TITLE").length).toBeGreaterThan(0);
+    });
+  });
+
   describe("renders navigation items passed via props", () => {
     it("should render org routes when included in navigation items", async () => {
       renderSettingsNavigation(toRenderedItems(SAAS_NAV_ITEMS));
 
       await screen.findByTestId("settings-navbar");
 
-      const orgMembersLink = await screen.findByText("SETTINGS$NAV_ORG_MEMBERS");
-      const orgLink = await screen.findByText("SETTINGS$NAV_ORGANIZATION");
-
-      expect(orgMembersLink).toBeInTheDocument();
-      expect(orgLink).toBeInTheDocument();
+      expect(
+        (await screen.findAllByText("SETTINGS$NAV_ORG_MEMBERS")).length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getAllByText("SETTINGS$NAV_ORGANIZATION").length,
+      ).toBeGreaterThan(0);
     });
 
     it("should not render org routes when excluded from navigation items", async () => {
@@ -116,11 +134,12 @@ describe("SettingsNavigation", () => {
 
       // Verify non-org items are rendered (using their i18n keys as text since
       // react-i18next returns the key when no translation is loaded)
-      const secretsLink = await screen.findByText("SETTINGS$NAV_SECRETS");
-      const apiKeysLink = await screen.findByText("SETTINGS$NAV_API_KEYS");
-
-      expect(secretsLink).toBeInTheDocument();
-      expect(apiKeysLink).toBeInTheDocument();
+      expect(
+        (await screen.findAllByText("SETTINGS$NAV_SECRETS")).length,
+      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("SETTINGS$NAV_API_KEYS").length).toBeGreaterThan(
+        0,
+      );
     });
 
     it("should render empty nav when given an empty items list", async () => {
@@ -136,17 +155,19 @@ describe("SettingsNavigation", () => {
       expect(orgLink).not.toBeInTheDocument();
     });
 
-    it("should render the white OpenHands logo with text and user menu chrome", async () => {
+    it("should render Settings brand chrome and user menu", async () => {
       renderSettingsNavigation(toRenderedItems(SAAS_NAV_ITEMS));
 
       await screen.findByTestId("settings-navbar");
 
       expect(
-        screen.getByLabelText("BRANDING$OPENHANDS_LOGO"),
-      ).toBeInTheDocument();
-      expect(screen.getByText("BRANDING$OPENHANDS")).toBeInTheDocument();
-      expect(screen.getByTestId("settings-nav-user-menu")).toBeInTheDocument();
-      expect(screen.getByText("neo@example.com")).toBeInTheDocument();
+        screen.getAllByTestId("settings-back-to-app").length,
+      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("SETTINGS$TITLE").length).toBeGreaterThan(0);
+      expect(
+        screen.getAllByTestId("settings-nav-user-menu").length,
+      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("neo@example.com").length).toBeGreaterThan(0);
     });
   });
 
@@ -163,7 +184,9 @@ describe("SettingsNavigation", () => {
       await screen.findByTestId("settings-navbar");
 
       // Assert
-      expect(screen.getByText("SETTINGS$ORG_SETTINGS_HEADER")).toBeInTheDocument();
+      expect(
+        screen.getAllByText("SETTINGS$ORG_SETTINGS_HEADER").length,
+      ).toBeGreaterThan(0);
     });
 
     it("should render dividers when included in navigation items", async () => {
@@ -199,8 +222,12 @@ describe("SettingsNavigation", () => {
       await screen.findByTestId("settings-navbar");
 
       // Assert
-      expect(screen.getByText("SETTINGS$ORG_SETTINGS_HEADER")).toBeInTheDocument();
-      expect(screen.getByText("SETTINGS$PERSONAL_SETTINGS_HEADER")).toBeInTheDocument();
+      expect(
+        screen.getAllByText("SETTINGS$ORG_SETTINGS_HEADER").length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getAllByText("SETTINGS$PERSONAL_SETTINGS_HEADER").length,
+      ).toBeGreaterThan(0);
     });
   });
 });

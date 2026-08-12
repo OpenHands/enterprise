@@ -26,7 +26,7 @@ export function DeleteConfirmationModal({
   return (
     <ModalBackdrop>
       <div
-        className="bg-base p-6 rounded-xl flex flex-col gap-4 border border-tertiary"
+        className="bg-base p-6 rounded-xl flex flex-col gap-4 border border-[var(--oh-border)]"
         style={{ width: "400px" }}
       >
         <h3 className="text-xl font-bold">

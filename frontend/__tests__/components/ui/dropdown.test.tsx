@@ -66,6 +66,49 @@ describe("Dropdown", () => {
       expect(screen.queryByText("Option 2")).not.toBeInTheDocument();
     });
 
+    it("should not filter options when searchable is false", async () => {
+      const user = userEvent.setup();
+      render(<Dropdown options={mockOptions} searchable={false} />);
+
+      const trigger = screen.getByTestId("dropdown-trigger");
+      await user.click(trigger);
+
+      const input = screen.getByRole("combobox");
+      expect(input).toHaveAttribute("readonly");
+
+      await user.type(input, "Option 1");
+
+      expect(screen.getByText("Option 1")).toBeInTheDocument();
+      expect(screen.getByText("Option 2")).toBeInTheDocument();
+      expect(screen.getByText("Option 3")).toBeInTheDocument();
+      expect(input).toHaveValue("");
+    });
+
+    it("should keep the selected label when reopening a non-searchable dropdown", async () => {
+      const user = userEvent.setup();
+      render(
+        <Dropdown
+          options={mockOptions}
+          searchable={false}
+          defaultValue={mockOptions[0]}
+        />,
+      );
+
+      const input = screen.getByRole("combobox");
+      expect(input).toHaveValue("Option 1");
+
+      const trigger = screen.getByTestId("dropdown-trigger");
+      await user.click(trigger);
+
+      expect(input).toHaveValue("Option 1");
+      expect(
+        screen.getByRole("option", { name: "Option 1" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("option", { name: "Option 2" }),
+      ).toBeInTheDocument();
+    });
+
     it("should show all options when search is cleared", async () => {
       const user = userEvent.setup();
       render(<Dropdown options={mockOptions} />);

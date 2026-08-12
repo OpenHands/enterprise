@@ -102,7 +102,7 @@ export function CopyableValue({ label, value, testId }: CopyableValueProps) {
       <div className="flex items-center gap-2">
         <code
           data-testid={testId}
-          className="flex-1 select-all break-all bg-tertiary border border-[#717888] rounded-sm p-2 text-xs"
+          className="flex-1 select-all break-all bg-base-secondary border border-[var(--oh-border)] rounded-lg p-2 text-xs"
         >
           {value}
         </code>
@@ -508,7 +508,7 @@ export function ConfigureModal({
 
   return (
     <ModalBackdrop onClose={handleClose}>
-      <ModalBody className="items-start border border-tertiary w-96">
+      <ModalBody className="items-start border border-[var(--oh-border)] w-96">
         <BaseModalTitle
           title={
             showConfigurationFields
@@ -624,15 +624,15 @@ export function ConfigureModal({
                     </p>
                   </div>
                   {/* Visible two-option control instead of a buried text link. */}
-                  <div className="flex w-fit overflow-hidden rounded-sm border border-[#717888] text-sm">
+                  <div className="flex w-fit overflow-hidden rounded-lg border border-[var(--oh-border)] text-sm">
                     <button
                       type="button"
                       data-testid="webhook-mode-auto"
                       onClick={handleEnableAutoMode}
                       className={`px-3 py-1.5 ${
                         !manualMode
-                          ? "bg-[#717888] text-white"
-                          : "bg-transparent text-tertiary-alt"
+                          ? "bg-white/10 text-white"
+                          : "bg-transparent text-[var(--oh-muted)]"
                       }`}
                     >
                       {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_WEBHOOK_MODE_AUTO)}
@@ -643,8 +643,8 @@ export function ConfigureModal({
                       onClick={handleEnableManualMode}
                       className={`px-3 py-1.5 ${
                         manualMode
-                          ? "bg-[#717888] text-white"
-                          : "bg-transparent text-tertiary-alt"
+                          ? "bg-white/10 text-white"
+                          : "bg-transparent text-[var(--oh-muted)]"
                       }`}
                     >
                       {t(

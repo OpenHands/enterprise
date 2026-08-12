@@ -12,6 +12,13 @@ Hardcoded hex leftovers still diverge from neo on many surfaces.
 - Org settings page (`manage-org` + credits/add chips, org name field, delete CTA, git routing list) via canvas `form-control-classes` / `settings-list-classes`
 - Org members list (`manage-organization-members` + member/pending rows + search + pagination) via canvas `settings-list-classes` / `form-control-classes`
 
+## Done — Integrations
+
+- `git-settings.tsx` SaaS providers use neo `IntegrationProviderCard` + `settings-list-classes`
+- GitHub / Slack / Azure configure anchors are compact BrandButtons (no `py-9` spacer)
+- Project management rows (`integration-row`, `project-management-integration`) use settings list shell
+- Webhook status badge uses `--oh-status-*` tokens
+
 ## Still needs tokenization (priority)
 
 ### P0 — chrome users see every session
@@ -45,6 +52,10 @@ Hardcoded hex leftovers still diverge from neo on many surfaces.
 ## Done — Usage & Monitoring
 
 - `usage-dashboard.tsx`, `usage-dashboard-tabs.tsx`, `usage-dashboard-widgets.tsx`, `admin-dashboard.tsx` tokenized to neo / agent-canvas (tabs, time-window control, KPI cards, tables, inputs/selects, chart stroke via `--oh-color-primary`)
+
+## Done — SDK settings view toggle
+
+- `sdk-settings/view-toggle.tsx` Basic / Advanced / All now match agent-canvas neo underline tabs (`role="tablist"`, bottom border) instead of BrandButton pills
 
 ## Token map to prefer
 
