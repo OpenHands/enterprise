@@ -535,7 +535,7 @@ class SaasUserAuth(UserAuth):
         logger.debug('saas_user_auth_get_provider_tokens')
         if self.provider_tokens is not None:
             return self.provider_tokens
-        provider_tokens = {}
+        provider_tokens: dict[ProviderType, ProviderToken] = {}
 
         user_secrets = await self.get_secrets()
 
@@ -551,6 +551,12 @@ class SaasUserAuth(UserAuth):
 
             for token in tokens:
                 idp_type = ProviderType(token.identity_provider)
+                if idp_type == ProviderType.ENTERPRISE_SSO:
+                    # enterprise_sso is a login-only IdP, not a git provider:
+                    # ProviderHandler has no service for it and its tokens
+                    # cannot be refreshed (the row would be deleted and the
+                    # request 401'd). Skip rows minted by older logins.
+                    continue
                 try:
                     host = None
                     if user_secrets and idp_type in user_secrets.provider_tokens:

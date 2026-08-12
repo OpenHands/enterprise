@@ -185,6 +185,12 @@ class TokenManager:
         user_id: str,
         keycloak_access_token: str,
     ):
+        if idp == ProviderType.ENTERPRISE_SSO:
+            # Login-only IdP: its broker tokens are not git provider tokens
+            # and have no consumers. Storing them creates auth_tokens rows
+            # that surface enterprise_sso as a phantom git provider (see
+            # SaasUserAuth.get_provider_tokens).
+            return
         data = await self.get_idp_tokens_from_keycloak(keycloak_access_token, idp)
         if data:
             await self._store_idp_tokens(

@@ -300,21 +300,16 @@ async def test_save_profile_overwrites_existing(test_client, settings_store):
 
 
 @pytest.mark.asyncio
-async def test_save_overwrite_of_active_profile_clears_active(
+async def test_save_overwrite_of_active_profile_updates_running_llm(
     test_client, settings_store
 ):
-    """Overwriting the currently-active profile must drop ``active`` —
-    otherwise the UI claims profile X is in use while ``agent_settings.llm``
-    still points at the *old* X. Mirrors the safety net the main settings
-    POST already enforces via ``reconcile_active_profile``.
-    """
+    """Overwriting the active profile must keep it selected and in sync."""
     settings = _base_settings()
     settings.llm_profiles.save('p', LLM(model='openai/gpt-4o'))
-    settings.switch_to_profile('p')  # makes 'p' active *and* the running llm
+    settings.switch_to_profile('p')
     await _seed(settings_store, settings)
     assert test_client.get('/api/v1/settings/profiles').json()['active_profile'] == 'p'
 
-    # Save a different config under the same name.
     response = test_client.post(
         '/api/v1/settings/profiles/p',
         json={'llm': {'model': 'anthropic/claude-opus-4'}},
@@ -322,12 +317,10 @@ async def test_save_overwrite_of_active_profile_clears_active(
     assert response.status_code == 201
 
     body = test_client.get('/api/v1/settings/profiles').json()
-    assert body['active_profile'] is None
-    # The saved profile reflects the new config; the active marker is gone
-    # because agent_settings.llm still runs the previous one.
+    assert body['active_profile'] == 'p'
     stored = await settings_store.load()
-    assert stored.llm_profiles.get('p').model == 'anthropic/claude-opus-4'
-    assert stored.agent_settings.llm.model == 'openai/gpt-4o'
+    assert stored.llm_profiles.require('p').model == 'anthropic/claude-opus-4'
+    assert stored.agent_settings.llm.model == 'anthropic/claude-opus-4'
 
 
 @pytest.mark.asyncio
@@ -949,16 +942,10 @@ async def test_api_key_never_leaks_across_response_paths(test_client, settings_s
 
 
 @pytest.mark.asyncio
-async def test_journey_direct_llm_edit_clears_active(test_client, settings_store):
-    """Scenario 2 — direct LLM edits invalidate a previously-active profile.
-
-    User saves profile ``j``, activates it, then opens the main Settings
-    page and edits the model/api_key. The currently-running LLM now
-    differs from the saved profile, so the UI must stop showing ``j`` as
-    active. This end-to-end HTTP flow exercises the same reconciliation
-    the unit tests cover, but through the real ``POST /api/v1/settings``
-    path users actually hit.
-    """
+async def test_journey_direct_llm_edit_updates_active_profile(
+    test_client, settings_store
+):
+    """Direct LLM edits keep the selected profile synchronized."""
     await _seed(settings_store, _base_settings())
     test_client.post(
         '/api/v1/settings/profiles/j',
@@ -972,7 +959,9 @@ async def test_journey_direct_llm_edit_clears_active(test_client, settings_store
         json={'agent_settings_diff': {'llm': {'model': 'anthropic/claude-opus-4'}}},
     )
 
-    assert test_client.get('/api/v1/settings/profiles').json()['active_profile'] is None
+    assert test_client.get('/api/v1/settings/profiles').json()['active_profile'] == 'j'
+    stored = await settings_store.load()
+    assert stored.llm_profiles.require('j').model == 'anthropic/claude-opus-4'
 
 
 @pytest.mark.asyncio

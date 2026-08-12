@@ -11,6 +11,7 @@ from typing import Any, cast
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from server.auth.saas_user_auth import SaasUserAuth
+from server.constants import LITE_LLM_API_URL
 from server.models.user_models import GitOrganizationsResponse, SaasUserInfo
 
 from openhands.app_server.config import (
@@ -20,6 +21,7 @@ from openhands.app_server.config import (
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.session_auth import validate_session_key_ownership
+from openhands.app_server.settings.llm_profiles import resolve_profile_llm
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.dependencies import get_dependencies
@@ -54,6 +56,32 @@ def _inject_sdk_compat_fields(
     if include_api_key:
         content['llm_api_key'] = llm.get('api_key')
     content['mcp_config'] = agent_settings.get('mcp_config')
+
+
+def _resolve_exposed_llm_profiles(user_info: SaasUserInfo) -> None:
+    """Overlay each saved LLM profile with its effective runtime config.
+
+    SaaS profiles never persist a real api_key: the org-profiles routes lift
+    real keys into the encrypted member column and store a masked placeholder,
+    which the LLM validator nulls at load. The SDK's
+    ``OpenHandsCloudWorkspace.get_llm(profile_name=...)`` builds an LLM
+    verbatim from this response's ``llm_profiles``, so without this overlay a
+    profile-pinned run (e.g. SaaS automations) calls the LiteLLM proxy with no
+    credentials. Mirrors ``_seed_sandbox_profiles`` and the ``switch_profile``
+    endpoint: resolve the managed/provider-default ``base_url``, force
+    streaming, and fall back to the user's effective settings key for keyless
+    profiles; BYOR profiles with real keys keep their own key.
+    """
+    # ACP agent-settings variants have no ``llm`` field, hence the getattrs.
+    settings_llm = getattr(user_info.agent_settings, 'llm', None)
+    fallback_api_key = getattr(settings_llm, 'api_key', None)
+    profiles = user_info.llm_profiles.profiles
+    for name, profile_llm in profiles.items():
+        profiles[name] = resolve_profile_llm(
+            profile_llm,
+            managed_proxy_url=LITE_LLM_API_URL,
+            fallback_api_key=fallback_api_key,
+        )
 
 
 @saas_users_v1_router.get('/me')
@@ -94,6 +122,7 @@ async def get_current_user_saas(
 
     if expose_secrets:
         await validate_session_key_ownership(user_context, x_session_api_key)
+        _resolve_exposed_llm_profiles(user_info)
         content = user_info.model_dump(mode='json', context={'expose_secrets': True})
         _inject_sdk_compat_fields(content, include_api_key=True)
         return JSONResponse(content=content)  # type: ignore[return-value]

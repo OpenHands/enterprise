@@ -65,14 +65,22 @@ class EventService {
   }
 
   // V1 conversations — App Server REST endpoint
-  static async searchEventsV1(conversationId: string, limit = 100) {
+  static async searchEventsV1(
+    conversationId: string,
+    pageId?: string,
+    limit = 100,
+  ) {
     const { data } = await openHands.get<{
       items: OpenHandsEvent[];
+      next_page_id: string | null;
     }>(`/api/v1/conversation/${conversationId}/events/search`, {
-      params: { limit },
+      params: { limit, ...(pageId && { page_id: pageId }) },
+      // Surface stalled responses as errors instead of hanging the history
+      // load forever (archived conversations have no WebSocket fallback).
+      timeout: 60_000,
     });
 
-    return data.items;
+    return data;
   }
 }
 export default EventService;

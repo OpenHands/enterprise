@@ -41,6 +41,15 @@ _DEFAULT_CSP_DIRECTIVES: dict[str, str] = {
     'worker-src': "'self' blob:",
 }
 
+# Path prefixes that are exempt from the *default* CSP. FastAPI's
+# /docs (Swagger UI) and /redoc (ReDoc) serve HTML that pulls its
+# CSS and JS from cdn.jsdelivr.net, which the default policy does
+# not allowlist — the browser would block the docs page entirely.
+# The override (``CONTENT_SECURITY_POLICY`` env var) still applies
+# to these paths, so operators can opt back in to a strict policy
+# if they want to lock the docs down.
+_DEFAULT_CSP_SKIP_PATH_PREFIXES: tuple[str, ...] = ('/docs', '/redoc')
+
 
 def _build_csp(directives: dict[str, str]) -> str:
     """Render a directive map as a CSP header value, dropping empty entries."""
@@ -113,28 +122,40 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     ``Permissions-Policy`` and ``X-Frame-Options`` on every response.
     HSTS is intentionally left to the edge proxy.
 
+    The default CSP is **skipped** for paths under ``/docs`` (Swagger UI)
+    and ``/redoc`` (ReDoc): FastAPI serves HTML there that loads its CSS
+    and JS from ``cdn.jsdelivr.net``, which the default policy does not
+    allowlist. The companion security headers are still set on those
+    paths — only the CSP itself is omitted.
+
     Set ``CONTENT_SECURITY_POLICY`` to override the default policy string
     wholesale (use to relax directives in an emergency without a code
-    change). Set it to an empty string to disable CSP entirely.
+    change, or to opt back in to a strict policy on the docs paths). Set
+    it to an empty string to disable CSP entirely.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
-    def _policy(self) -> str:
-        # Only honour the override when the env var is actually set so we
-        # don't get an empty-string header when an operator forgets to
-        # unset the variable. An explicit empty value disables CSP.
+    def _policy(self) -> tuple[str, bool]:
+        """Return ``(policy, is_override)``.
+
+        ``is_override`` is ``True`` when the policy came from the
+        ``CONTENT_SECURITY_POLICY`` env var (including an explicit empty
+        value, which signals "disable CSP"). ``False`` means the policy
+        was built from ``_DEFAULT_CSP_DIRECTIVES`` and is subject to the
+        docs-path skip.
+        """
         override = os.getenv('CONTENT_SECURITY_POLICY')
         if override is not None:
-            return override.strip()
+            return override.strip(), True
 
         runtime_hosts = _runtime_hosts_from_web_host()
         directives = {
             name: value.format(runtime_hosts=runtime_hosts).strip()
             for name, value in _DEFAULT_CSP_DIRECTIVES.items()
         }
-        return _build_csp(directives)
+        return _build_csp(directives), False
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
@@ -143,9 +164,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         headers = response.headers
 
         # OHE-2815: enforce-mode CSP. Override at runtime via the
-        # CONTENT_SECURITY_POLICY env var (e.g. "" to disable).
-        policy = self._policy()
-        if policy:
+        # CONTENT_SECURITY_POLICY env var (e.g. "" to disable). The
+        # default policy is also skipped on the FastAPI docs paths
+        # because their bundled HTML loads assets from cdn.jsdelivr.net;
+        # an operator-set policy still applies there.
+        policy, is_override = self._policy()
+        if policy and (is_override or not _is_docs_path(request.url.path)):
             headers['Content-Security-Policy'] = policy
 
         headers['X-Content-Type-Options'] = 'nosniff'
@@ -157,6 +181,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         headers['X-Frame-Options'] = 'SAMEORIGIN'
         # HSTS is intentionally left to the edge reverse proxy.
         return response
+
+
+def _is_docs_path(path: str) -> bool:
+    """Return True if *path* is under a default-CSP-exempt docs prefix."""
+    return any(
+        path == prefix or path.startswith(f'{prefix}/')
+        for prefix in _DEFAULT_CSP_SKIP_PATH_PREFIXES
+    )
 
 
 class LocalhostCORSMiddleware(CORSMiddleware):

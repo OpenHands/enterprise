@@ -25,6 +25,7 @@ const { DEFAULT_FEATURE_FLAGS, useIsAuthedMock, useConfigMock, mockUseAppMode } 
       hide_billing_page: false,
       hide_integrations_page: false,
       enable_onboarding: false,
+      enable_agent_canvas_banner: false,
     };
 
     return {
@@ -213,6 +214,47 @@ describe("HomeScreen", () => {
   it("should render", async () => {
     renderHomeScreen();
     await screen.findByTestId("home-screen");
+  });
+
+  it("should not render the Agent Canvas banner when the feature flag is disabled", async () => {
+    useConfigMock.mockReturnValue({
+      data: {
+        app_mode: "saas",
+        feature_flags: {
+          ...DEFAULT_FEATURE_FLAGS,
+          deployment_mode: "cloud",
+          enable_agent_canvas_banner: false,
+        },
+      },
+      isLoading: false,
+    });
+
+    renderHomeScreen();
+    await screen.findByTestId("home-screen");
+
+    expect(screen.queryByTestId("agent-canvas-banner")).not.toBeInTheDocument();
+  });
+
+  it("should render the Agent Canvas banner when the feature flag is enabled", async () => {
+    useConfigMock.mockReturnValue({
+      data: {
+        app_mode: "oss",
+        feature_flags: {
+          ...DEFAULT_FEATURE_FLAGS,
+          enable_agent_canvas_banner: true,
+        },
+      },
+      isLoading: false,
+    });
+
+    renderHomeScreen();
+    await screen.findByTestId("home-screen");
+
+    const banner = await screen.findByTestId("agent-canvas-banner");
+    expect(banner).toBeInTheDocument();
+    expect(
+      screen.queryByText("New around here? Not sure where to start?"),
+    ).not.toBeInTheDocument();
   });
 
   it("should render the repository connector and suggested tasks sections", async () => {

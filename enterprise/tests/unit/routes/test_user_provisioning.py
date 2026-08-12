@@ -14,7 +14,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from keycloak.exceptions import KeycloakError
 from pydantic import SecretStr
 from server.auth.authorization import (
@@ -25,6 +25,7 @@ from server.auth.authorization import (
 from server.routes.user_provisioning import (
     DEFAULT_PROVISIONED_ROLE,
     ProvisionUserRequest,
+    ProvisionUserResponse,
     _generate_password,
     provision_user,
 )
@@ -103,6 +104,17 @@ class TestProvisionUserRequestValidation:
         req = ProvisionUserRequest(email='a@b.com', role='owner')
         assert req.role == 'owner'
 
+    def test_reissue_api_key_defaults_to_false(self):
+        # Default is idempotent (return existing key). Reissuing is an
+        # opt-in because the caller is about to invalidate whatever is
+        # currently configured for the user.
+        req = ProvisionUserRequest(email='a@b.com')
+        assert req.reissue_api_key is False
+
+    def test_reissue_api_key_can_be_enabled(self):
+        req = ProvisionUserRequest(email='a@b.com', reissue_api_key=True)
+        assert req.reissue_api_key is True
+
 
 class TestProvisionUserHandler:
     """End-to-end handler test with all external collaborators mocked."""
@@ -128,6 +140,10 @@ class TestProvisionUserHandler:
         *,
         org_exists: bool = True,
         keycloak_raises: Exception | None = None,
+        existing_kc_user_id: str | None = None,
+        existing_oh_user: MagicMock | None = None,
+        existing_org_member: MagicMock | None = None,
+        existing_api_key: str | None = None,
     ):
         """Return a stack of patches as a list of context managers.
 
@@ -144,6 +160,9 @@ class TestProvisionUserHandler:
         )
         token_manager_mock.store_offline_token = AsyncMock()
         token_manager_mock.delete_keycloak_user = AsyncMock(return_value=True)
+        token_manager_mock.get_user_id_from_user_email = AsyncMock(
+            return_value=existing_kc_user_id
+        )
 
         new_user = MagicMock()
         new_user.id = uuid.UUID(new_user_id)
@@ -159,6 +178,10 @@ class TestProvisionUserHandler:
         api_key_store_mock.create_api_key = AsyncMock(
             return_value='sk-oh-generated-api-key'
         )
+        api_key_store_mock.retrieve_api_key_by_name = AsyncMock(
+            return_value=existing_api_key
+        )
+        api_key_store_mock.delete_api_key_by_name = AsyncMock(return_value=True)
 
         org = MagicMock() if org_exists else None
 
@@ -169,6 +192,15 @@ class TestProvisionUserHandler:
         remove_member_mock = AsyncMock(return_value=True)
         set_flags_mock = AsyncMock()
         add_user_to_org_mock = AsyncMock()
+
+        # If a pre-existing User row was supplied, return it from
+        # ``UserStore.get_user_by_email``; otherwise return None
+        # (i.e. "no existing local user"). The ``UserStore.create_user``
+        # mock returns ``new_user`` on the create path; the recover
+        # path reuses it idempotently.
+        get_user_by_email_mock = AsyncMock(return_value=existing_oh_user)
+
+        get_org_member_mock = AsyncMock(return_value=existing_org_member)
 
         patches = [
             patch(
@@ -186,6 +218,10 @@ class TestProvisionUserHandler:
                 return_value=new_user,
             ),
             patch(
+                'server.routes.user_provisioning.UserStore.get_user_by_email',
+                get_user_by_email_mock,
+            ),
+            patch(
                 'server.routes.user_provisioning._set_user_provisioned_flags',
                 set_flags_mock,
             ),
@@ -201,6 +237,10 @@ class TestProvisionUserHandler:
             patch(
                 'server.routes.user_provisioning.OrgMemberStore.add_user_to_org',
                 add_user_to_org_mock,
+            ),
+            patch(
+                'server.routes.user_provisioning.OrgMemberStore.get_org_member',
+                get_org_member_mock,
             ),
             patch(
                 'server.routes.user_provisioning.ApiKeyStore.get_instance',
@@ -226,6 +266,8 @@ class TestProvisionUserHandler:
             'api_key_store': api_key_store_mock,
             'set_flags': set_flags_mock,
             'add_user_to_org': add_user_to_org_mock,
+            'get_user_by_email': get_user_by_email_mock,
+            'get_org_member': get_org_member_mock,
             'role_store': role_store_mock,
             'remove_member': remove_member_mock,
             'delete_org_cascade': delete_org_cascade_mock,
@@ -245,13 +287,33 @@ class TestProvisionUserHandler:
             stack.enter_context(p)
         return stack
 
+    @staticmethod
+    async def _call(
+        body, *, caller_user_id, target_org_id
+    ) -> tuple[Response, ProvisionUserResponse]:
+        """Invoke ``provision_user`` with a fresh ``Response``.
+
+        The handler now takes a ``Response`` injection so it can
+        override the default 201 status code on idempotent
+        re-provisions. Tests get the response object back so they can
+        assert on the final status code.
+        """
+        response = Response()
+        result = await provision_user(
+            body=body,
+            response=response,
+            caller_user_id=caller_user_id,
+            target_org_id=target_org_id,
+        )
+        return response, result
+
     @pytest.mark.asyncio
     async def test_happy_path_with_supplied_password(
         self, caller_user_id, target_org_id, new_user_id
     ):
         patches, handles = self._patch_dependencies(new_user_id, target_org_id)
         with self._enter_all(patches):
-            resp = await provision_user(
+            response, resp = await self._call(
                 body=ProvisionUserRequest(
                     email='Alice@Example.com',
                     password='SuperSecret-1234',
@@ -266,6 +328,10 @@ class TestProvisionUserHandler:
         assert resp.user_id == new_user_id
         assert resp.org_id == str(target_org_id)
         assert resp.role == 'member'
+        assert resp.created is True
+        assert resp.action == 'created'
+        # True first-time create returns 201 Created.
+        assert response.status_code == 201
 
         # Offline token must have been stored against the newly created
         # Keycloak user id, not against the caller.
@@ -293,7 +359,7 @@ class TestProvisionUserHandler:
     ):
         patches, handles = self._patch_dependencies(new_user_id, target_org_id)
         with self._enter_all(patches):
-            resp = await provision_user(
+            _, resp = await self._call(
                 body=ProvisionUserRequest(
                     email='admin@example.com',
                     password='SuperSecret-1234',
@@ -304,6 +370,7 @@ class TestProvisionUserHandler:
             )
 
         assert resp.role == 'admin'
+        assert resp.action == 'created'
         handles['role_store'].assert_awaited_once_with('admin')
         handles['add_user_to_org'].assert_awaited_once()
         add_kwargs = handles['add_user_to_org'].await_args.kwargs
@@ -315,7 +382,7 @@ class TestProvisionUserHandler:
     ):
         patches, handles = self._patch_dependencies(new_user_id, target_org_id)
         with self._enter_all(patches):
-            resp = await provision_user(
+            _, resp = await self._call(
                 body=ProvisionUserRequest(
                     email='owner@example.com',
                     password='SuperSecret-1234',
@@ -326,6 +393,7 @@ class TestProvisionUserHandler:
             )
 
         assert resp.role == 'owner'
+        assert resp.action == 'created'
         handles['role_store'].assert_awaited_once_with('owner')
         handles['add_user_to_org'].assert_awaited_once()
         add_kwargs = handles['add_user_to_org'].await_args.kwargs
@@ -337,13 +405,15 @@ class TestProvisionUserHandler:
     ):
         patches, handles = self._patch_dependencies(new_user_id, target_org_id)
         with self._enter_all(patches):
-            resp = await provision_user(
+            _, resp = await self._call(
                 body=ProvisionUserRequest(email='bob@example.com'),
                 caller_user_id=caller_user_id,
                 target_org_id=target_org_id,
             )
 
+        assert resp.password is not None
         assert len(resp.password) >= 8
+        assert resp.action == 'created'
         # Verify the same generated password was used for the Keycloak
         # account creation, not regenerated each time.
         kc_call = handles['token_manager'].create_keycloak_user.await_args
@@ -358,7 +428,7 @@ class TestProvisionUserHandler:
         )
         with self._enter_all(patches):
             with pytest.raises(HTTPException) as exc_info:
-                await provision_user(
+                await self._call(
                     body=ProvisionUserRequest(email='bob@example.com'),
                     caller_user_id=caller_user_id,
                     target_org_id=target_org_id,
@@ -386,7 +456,7 @@ class TestProvisionUserHandler:
         patches, handles = self._patch_dependencies(new_user_id, caller_personal_org_id)
         with self._enter_all(patches):
             with pytest.raises(HTTPException) as exc_info:
-                await provision_user(
+                await self._call(
                     body=ProvisionUserRequest(email='bob@example.com'),
                     caller_user_id=caller_user_id,
                     target_org_id=caller_personal_org_id,
@@ -401,17 +471,26 @@ class TestProvisionUserHandler:
         handles['token_manager'].delete_keycloak_user.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_keycloak_failure_returns_409(
+    async def test_keycloak_real_failure_returns_409(
         self, caller_user_id, target_org_id, new_user_id
     ):
+        """Non-409 Keycloak failures surface as 409 with no rollback.
+
+        ``KeycloakError('user already exists')`` now triggers the
+        TOCTOU recovery branch; this test exercises a *different*
+        Keycloak failure (e.g. a 500 from a broken admin endpoint) so
+        the route should surface it to the caller unchanged.
+        """
         patches, handles = self._patch_dependencies(
             new_user_id,
             target_org_id,
-            keycloak_raises=KeycloakError('user already exists'),
+            keycloak_raises=KeycloakError('admin endpoint exploded'),
         )
+        # The follow-up lookup returns nothing (no recovery possible).
+        handles['token_manager'].get_user_id_from_user_email.return_value = None
         with self._enter_all(patches):
             with pytest.raises(HTTPException) as exc_info:
-                await provision_user(
+                await self._call(
                     body=ProvisionUserRequest(email='dup@example.com'),
                     caller_user_id=caller_user_id,
                     target_org_id=target_org_id,
@@ -422,6 +501,151 @@ class TestProvisionUserHandler:
         handles['token_manager'].delete_keycloak_user.assert_not_awaited()
         handles['delete_org_cascade'].assert_not_awaited()
         handles['remove_member'].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_keycloak_toctou_recovery_returns_409_when_lookup_fails(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """409 from Keycloak + no recovery: surface as 409.
+
+        If the create raises a 409 but the second
+        ``get_user_id_from_user_email`` lookup also returns ``None``,
+        the route cannot recover — Keycloak has reported a duplicate
+        but the admin token cannot see the row that caused the
+        duplicate. The route surfaces a structured 409 instead of
+        silently leaving the user in a half-state.
+        """
+        patches, handles = self._patch_dependencies(
+            new_user_id,
+            target_org_id,
+            keycloak_raises=KeycloakError(
+                'User exists',
+                response_code=409,
+            ),
+            existing_kc_user_id=None,
+            existing_oh_user=None,
+        )
+        # Both lookups return None — no recovery possible.
+        handles['token_manager'].get_user_id_from_user_email.return_value = None
+        handles['get_user_by_email'].return_value = None
+        with self._enter_all(patches):
+            with pytest.raises(HTTPException) as exc_info:
+                await self._call(
+                    body=ProvisionUserRequest(email='dup@example.com'),
+                    caller_user_id=caller_user_id,
+                    target_org_id=target_org_id,
+                )
+
+        assert exc_info.value.status_code == 409
+        assert 'could not be recovered' in exc_info.value.detail
+        handles['token_manager'].create_keycloak_user.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_keycloak_toctou_falls_through_to_idempotent(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """Late-arriving 409 from a concurrent provision falls through.
+
+        Two admins call provision-user for the same email at the same
+        time. The pre-check passes for both; the first wins the
+        create, the second gets a 409 from Keycloak. The route must
+        re-query, confirm the user is now there, and proceed
+        idempotently — *not* surface the race as an error to the
+        caller.
+        """
+        existing_kc_id = 'race-winner-kc-id'
+        existing_oh_user = MagicMock()
+        existing_oh_user.id = uuid.UUID(new_user_id)
+
+        patches, handles = self._patch_dependencies(
+            new_user_id,
+            target_org_id,
+            keycloak_raises=KeycloakError(
+                'User exists with same username',
+                response_code=409,
+            ),
+            # The first pre-check sees nothing; the second one (post
+            # recovery) sees the just-created user.
+            existing_kc_user_id=None,
+            existing_oh_user=None,
+            existing_org_member=MagicMock(),  # already a member
+        )
+        # Pre-check sees nothing first, then sees the user.
+        handles['token_manager'].get_user_id_from_user_email.side_effect = [
+            None,
+            existing_kc_id,
+        ]
+        # ``UserStore.get_user_by_email`` also returns the user on
+        # the second lookup — the concurrent winner already finished
+        # the OpenHands-DB side too.
+        handles['get_user_by_email'].side_effect = [None, existing_oh_user]
+        with self._enter_all(patches):
+            response, resp = await self._call(
+                body=ProvisionUserRequest(email='dup@example.com'),
+                caller_user_id=caller_user_id,
+                target_org_id=target_org_id,
+            )
+
+        assert resp.action == 'reprovisioned'
+        assert resp.created is False
+        assert resp.password is None
+        assert resp.user_id == existing_kc_id
+        # 200 OK on the idempotent path; the caller did not actually
+        # create a new identity.
+        assert response.status_code == 200
+        # The Keycloak user that "won the race" must not be deleted by
+        # the rollback path on this call.
+        handles['token_manager'].delete_keycloak_user.assert_not_awaited()
+        handles['delete_org_cascade'].assert_not_awaited()
+        handles['remove_member'].assert_not_awaited()
+        # The pre-check must have been called twice — once up-front,
+        # once for the recovery.
+        assert handles['token_manager'].get_user_id_from_user_email.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_keycloak_toctou_partial_state_returns_409(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """Keycloak user found on re-check, but OpenHands DB row not yet written.
+
+        Edge case of the TOCTOU race: the concurrent winner has
+        committed the Keycloak user but not yet the OpenHands
+        ``User`` row (the create is still mid-flight). The route
+        must NOT create a duplicate OpenHands row tied to the same
+        Keycloak sub; surface a 409 telling the caller to retry.
+        """
+        recovered_kc_id = 'race-winner-kc-id'
+
+        patches, handles = self._patch_dependencies(
+            new_user_id,
+            target_org_id,
+            keycloak_raises=KeycloakError(
+                'User exists',
+                response_code=409,
+            ),
+            existing_kc_user_id=None,
+            existing_oh_user=None,
+        )
+        # First KC lookup: None. Second KC lookup (recovery): the
+        # user is there. The OpenHands DB lookup returns None on
+        # both calls (the winning concurrent provision is still
+        # in flight on the DB side).
+        handles['token_manager'].get_user_id_from_user_email.side_effect = [
+            None,
+            recovered_kc_id,
+        ]
+        handles['get_user_by_email'].return_value = None
+        with self._enter_all(patches):
+            with pytest.raises(HTTPException) as exc_info:
+                await self._call(
+                    body=ProvisionUserRequest(email='dup@example.com'),
+                    caller_user_id=caller_user_id,
+                    target_org_id=target_org_id,
+                )
+
+        assert exc_info.value.status_code == 409
+        assert 'Retry' in exc_info.value.detail
+        handles['token_manager'].delete_keycloak_user.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rollback_before_user_created_only_cleans_keycloak(
@@ -444,7 +668,7 @@ class TestProvisionUserHandler:
 
         with self._enter_all(patches):
             with pytest.raises(HTTPException) as exc_info:
-                await provision_user(
+                await self._call(
                     body=ProvisionUserRequest(email='bob@example.com'),
                     caller_user_id=caller_user_id,
                     target_org_id=target_org_id,
@@ -474,7 +698,7 @@ class TestProvisionUserHandler:
 
         with self._enter_all(patches):
             with pytest.raises(HTTPException) as exc_info:
-                await provision_user(
+                await self._call(
                     body=ProvisionUserRequest(email='bob@example.com'),
                     caller_user_id=caller_user_id,
                     target_org_id=target_org_id,
@@ -508,7 +732,7 @@ class TestProvisionUserHandler:
                 side_effect=RuntimeError('litellm down'),
             ):
                 with pytest.raises(HTTPException) as exc_info:
-                    await provision_user(
+                    await self._call(
                         body=ProvisionUserRequest(email='bob@example.com'),
                         caller_user_id=caller_user_id,
                         target_org_id=target_org_id,
@@ -540,7 +764,7 @@ class TestProvisionUserHandler:
 
         with self._enter_all(patches):
             with pytest.raises(HTTPException) as exc_info:
-                await provision_user(
+                await self._call(
                     body=ProvisionUserRequest(email='bob@example.com'),
                     caller_user_id=caller_user_id,
                     target_org_id=target_org_id,
@@ -591,7 +815,7 @@ class TestProvisionUserHandler:
 
         with self._enter_all(patches):
             with pytest.raises(HTTPException) as exc_info:
-                await provision_user(
+                await self._call(
                     body=ProvisionUserRequest(email='bob@example.com'),
                     caller_user_id=caller_user_id,
                     target_org_id=target_org_id,
@@ -639,7 +863,7 @@ class TestProvisionUserHandler:
 
         with self._enter_all(patches):
             with pytest.raises(HTTPException) as exc_info:
-                await provision_user(
+                await self._call(
                     body=ProvisionUserRequest(email='bob@example.com'),
                     caller_user_id=caller_user_id,
                     target_org_id=target_org_id,
@@ -663,12 +887,347 @@ class TestProvisionUserHandler:
         personal_org_id = uuid.UUID(new_user_id)
         patches, handles = self._patch_dependencies(new_user_id, personal_org_id)
         with self._enter_all(patches):
-            await provision_user(
+            await self._call(
                 body=ProvisionUserRequest(email='solo@example.com'),
                 caller_user_id=caller_user_id,
                 target_org_id=personal_org_id,
             )
             handles['add_user_to_org'].assert_not_awaited()
+
+    # ------------------------------------------------------------------
+    # OHE-2980 recovery paths: idempotent re-provision and the
+    # corresponding split-state / recover-branch handling. These
+    # mirror the case branches documented in the module docstring.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_idempotent_reprovision_returns_existing_api_key(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """Re-running with an existing KC user + User row is a no-op.
+
+        No Keycloak create, no offline-token refresh, no ``UserStore.
+        create_user``, no target-org membership insert. The route
+        returns 200 OK with ``action='reprovisioned'`` and the same
+        plaintext API key as before — never the regenerated default
+        mock.
+        """
+        existing_kc_id = 'kc-already-there'
+        existing_oh_user = MagicMock()
+        existing_oh_user.id = uuid.UUID(new_user_id)
+        existing_member = MagicMock()
+        existing_api_key = 'sk-oh-already-issued'
+
+        patches, handles = self._patch_dependencies(
+            new_user_id,
+            target_org_id,
+            existing_kc_user_id=existing_kc_id,
+            existing_oh_user=existing_oh_user,
+            existing_org_member=existing_member,
+            existing_api_key=existing_api_key,
+        )
+        with self._enter_all(patches):
+            response, resp = await self._call(
+                body=ProvisionUserRequest(email='alice@example.com'),
+                caller_user_id=caller_user_id,
+                target_org_id=target_org_id,
+            )
+
+        assert resp.action == 'reprovisioned'
+        assert resp.created is False
+        assert resp.user_id == existing_kc_id
+        assert resp.password is None  # never rotated on re-provision
+        assert resp.api_key == existing_api_key
+        assert response.status_code == 200
+
+        # No write-side effects.
+        handles['token_manager'].create_keycloak_user.assert_not_awaited()
+        handles['token_manager'].request_offline_token.assert_not_awaited()
+        handles['token_manager'].store_offline_token.assert_not_awaited()
+        handles['set_flags'].assert_not_awaited()
+        handles['add_user_to_org'].assert_not_awaited()
+        # API key was *not* recreated; we returned the cached one.
+        handles['api_key_store'].create_api_key.assert_not_awaited()
+        handles['api_key_store'].delete_api_key_by_name.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_idempotent_reprovision_adds_to_existing_api_key(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """Idempotent re-provision: member exists but API key does not.
+
+        The caller is trying to mint an API key for a user who
+        already has an OpenHands + Keycloak identity in this org but
+        for some reason the API key row is missing (the most likely
+        scenario in the OEM partner incident: an earlier partial
+        provision). The route must add the membership (already there
+        — no-op) and *create* the missing API key, without touching
+        the Keycloak identity or offline token.
+        """
+        existing_kc_id = 'kc-already-there'
+        existing_oh_user = MagicMock()
+        existing_oh_user.id = uuid.UUID(new_user_id)
+
+        patches, handles = self._patch_dependencies(
+            new_user_id,
+            target_org_id,
+            existing_kc_user_id=existing_kc_id,
+            existing_oh_user=existing_oh_user,
+            existing_org_member=MagicMock(),
+            existing_api_key=None,  # <-- the missing piece
+        )
+        with self._enter_all(patches):
+            response, resp = await self._call(
+                body=ProvisionUserRequest(email='alice@example.com'),
+                caller_user_id=caller_user_id,
+                target_org_id=target_org_id,
+            )
+
+        assert resp.action == 'reprovisioned'
+        assert response.status_code == 200
+        handles['token_manager'].create_keycloak_user.assert_not_awaited()
+        handles['api_key_store'].create_api_key.assert_awaited_once_with(
+            user_id=existing_kc_id,
+            name='Initial API Key',
+            org_id=target_org_id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_recover_branch_creates_user_row_for_existing_keycloak_user(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """Keycloak user exists, OpenHands ``User`` row does not.
+
+        Classic OEM recovery scenario: the original provision got
+        far enough to create the Keycloak identity but the OpenHands
+        DB side never finished. Re-running should detect the
+        half-state, skip the Keycloak create, run ``UserStore.
+        create_user`` to attach the OpenHands row to the existing
+        Keycloak id, and proceed normally.
+        """
+        existing_kc_id = 'kc-already-there'
+
+        patches, handles = self._patch_dependencies(
+            new_user_id,
+            target_org_id,
+            existing_kc_user_id=existing_kc_id,
+            existing_oh_user=None,  # no DB row yet
+            existing_org_member=MagicMock(),
+        )
+        with self._enter_all(patches):
+            response, resp = await self._call(
+                body=ProvisionUserRequest(email='alice@example.com'),
+                caller_user_id=caller_user_id,
+                target_org_id=target_org_id,
+            )
+
+        # Recover path — no password rotation, no Keycloak create.
+        assert resp.user_id == existing_kc_id
+        assert resp.password is None
+        handles['token_manager'].create_keycloak_user.assert_not_awaited()
+        # ``_set_user_provisioned_flags`` runs so the user is not
+        # bounced through TOS / verification interstitials.
+        handles['set_flags'].assert_awaited_once_with(existing_kc_id)
+        # Member row already existed in this scenario.
+        handles['add_user_to_org'].assert_not_awaited()
+        # Since membership pre-existed, action is "reprovisioned", not
+        # "added_to_org" — the OEM partner re-running the call is
+        # treated as a recovery, not as an active re-add.
+        assert resp.action == 'reprovisioned'
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_split_state_db_only_returns_409(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """OpenHands DB row exists but no Keycloak user — refuse to repair.
+
+        ``UserStore.create_user`` is idempotent on the Keycloak sub,
+        so silently re-creating the Keycloak identity would leave the
+        OpenHands DB row orphaned (its ``id`` would no longer match
+        any Keycloak ``sub``). Surface as a 409 with enough detail
+        for an operator to repair by hand.
+        """
+        existing_oh_user = MagicMock()
+        existing_oh_user.id = uuid.UUID(new_user_id)
+
+        patches, handles = self._patch_dependencies(
+            new_user_id,
+            target_org_id,
+            existing_kc_user_id=None,
+            existing_oh_user=existing_oh_user,
+        )
+        with self._enter_all(patches):
+            with pytest.raises(HTTPException) as exc_info:
+                await self._call(
+                    body=ProvisionUserRequest(email='alice@example.com'),
+                    caller_user_id=caller_user_id,
+                    target_org_id=target_org_id,
+                )
+
+        assert exc_info.value.status_code == 409
+        assert 'Manual Keycloak intervention' in exc_info.value.detail
+        # Must not have tried to mutate Keycloak on a split state.
+        handles['token_manager'].create_keycloak_user.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reissue_api_key_deletes_existing_then_recreates(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """``reissue_api_key=True`` deletes the old key before minting.
+
+        Default is idempotent (return existing key); the caller opts
+        into a fresh one by setting ``reissue_api_key=True``. The
+        old key row is deleted first so the ``create`` step does
+        not collide with a uniqueness constraint, and a brand-new
+        plaintext value is returned in the response.
+        """
+        existing_kc_id = 'kc-already-there'
+        existing_oh_user = MagicMock()
+        existing_oh_user.id = uuid.UUID(new_user_id)
+        existing_api_key = 'sk-oh-original'
+
+        patches, handles = self._patch_dependencies(
+            new_user_id,
+            target_org_id,
+            existing_kc_user_id=existing_kc_id,
+            existing_oh_user=existing_oh_user,
+            existing_org_member=MagicMock(),
+            existing_api_key=existing_api_key,
+        )
+        with self._enter_all(patches):
+            _, resp = await self._call(
+                body=ProvisionUserRequest(
+                    email='alice@example.com',
+                    reissue_api_key=True,
+                ),
+                caller_user_id=caller_user_id,
+                target_org_id=target_org_id,
+            )
+
+        # Brand-new key, not the cached one.
+        assert resp.api_key == 'sk-oh-generated-api-key'
+        # Delete ran first with the right scoping.
+        handles['api_key_store'].delete_api_key_by_name.assert_awaited_once_with(
+            user_id=existing_kc_id,
+            name='Initial API Key',
+            org_id=target_org_id,
+        )
+        # Then create ran.
+        handles['api_key_store'].create_api_key.assert_awaited_once_with(
+            user_id=existing_kc_id,
+            name='Initial API Key',
+            org_id=target_org_id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_reissue_api_key_without_existing_key_just_creates(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """``reissue_api_key=True`` with no existing key is a no-op delete.
+
+        If the user has no API key by that name, the lookup returns
+        ``None`` and we skip straight to the create step — there is
+        nothing to delete. Documented here so the behaviour does not
+        surprise future maintainers.
+        """
+        existing_kc_id = 'kc-already-there'
+        existing_oh_user = MagicMock()
+        existing_oh_user.id = uuid.UUID(new_user_id)
+
+        patches, handles = self._patch_dependencies(
+            new_user_id,
+            target_org_id,
+            existing_kc_user_id=existing_kc_id,
+            existing_oh_user=existing_oh_user,
+            existing_org_member=MagicMock(),
+            existing_api_key=None,
+        )
+        with self._enter_all(patches):
+            _, resp = await self._call(
+                body=ProvisionUserRequest(
+                    email='alice@example.com',
+                    reissue_api_key=True,
+                ),
+                caller_user_id=caller_user_id,
+                target_org_id=target_org_id,
+            )
+
+        assert resp.api_key == 'sk-oh-generated-api-key'
+        handles['api_key_store'].delete_api_key_by_name.assert_not_awaited()
+        handles['api_key_store'].create_api_key.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_idempotent_reprovision_into_already_membered_org(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """Member already exists: return 200 reprovisioned, skip add.
+
+        The OEM partner's recovery flow: existing user is *already*
+        a member of the org they keep provisioning into. The route
+        must not attempt to insert a duplicate ``OrgMember`` row,
+        which would violate the ``(org_id, user_id)`` unique
+        constraint.
+        """
+        existing_kc_id = 'kc-already-there'
+        existing_oh_user = MagicMock()
+        existing_oh_user.id = uuid.UUID(new_user_id)
+
+        patches, handles = self._patch_dependencies(
+            new_user_id,
+            target_org_id,
+            existing_kc_user_id=existing_kc_id,
+            existing_oh_user=existing_oh_user,
+            existing_org_member=MagicMock(),
+            existing_api_key=None,
+        )
+        with self._enter_all(patches):
+            response, resp = await self._call(
+                body=ProvisionUserRequest(email='alice@example.com'),
+                caller_user_id=caller_user_id,
+                target_org_id=target_org_id,
+            )
+
+        assert resp.action == 'reprovisioned'
+        assert response.status_code == 200
+        handles['add_user_to_org'].assert_not_awaited()
+        # API key still gets minted since one was missing.
+        handles['api_key_store'].create_api_key.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_added_to_org_action_when_member_did_not_exist(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        """Recover path that *did* add a membership returns added_to_org.
+
+        Case c with no pre-existing ``OrgMember`` row: the user gets
+        added to the target org on this call, so the response is
+        ``added_to_org`` (200 OK), not ``created`` (201 Created) —
+        distinguishing from a true first-time provision that the
+        caller can use to track "this is a recovery, not a create".
+        """
+        existing_kc_id = 'kc-already-there'
+        existing_oh_user = MagicMock()
+        existing_oh_user.id = uuid.UUID(new_user_id)
+
+        patches, handles = self._patch_dependencies(
+            new_user_id,
+            target_org_id,
+            existing_kc_user_id=existing_kc_id,
+            existing_oh_user=existing_oh_user,
+            existing_org_member=None,  # <-- need to add
+        )
+        with self._enter_all(patches):
+            response, resp = await self._call(
+                body=ProvisionUserRequest(email='alice@example.com'),
+                caller_user_id=caller_user_id,
+                target_org_id=target_org_id,
+            )
+
+        assert resp.action == 'added_to_org'
+        assert resp.created is False
+        assert response.status_code == 200
+        handles['add_user_to_org'].assert_awaited_once()
 
     def test_default_role_is_member(self):
         # Document the policy: provisioned users are not auto-promoted.

@@ -3020,3 +3020,67 @@ class TestArchiveRequestParams:
             '/workspace/project', 'git-delta'
         )
         assert params == {'path': '/workspace/project', 'format': 'git-delta'}
+
+
+class TestRemoteSandboxServiceInjectorMaxNumSandboxes:
+    """The max_num_sandboxes default is sourced from the OH_SANDBOX_MAX_NUM_SANDBOXES
+    environment variable so the cap applies even when the injector is built outside
+    the env-parsed config path (e.g. the SANDBOX-based fallback)."""
+
+    ENV_VAR = 'OH_SANDBOX_MAX_NUM_SANDBOXES'
+
+    def test_defaults_to_10_when_unset(self, monkeypatch):
+        from openhands.app_server.sandbox.remote_sandbox_service import (
+            RemoteSandboxServiceInjector,
+            _get_max_num_sandboxes_default,
+        )
+
+        monkeypatch.delenv(self.ENV_VAR, raising=False)
+        assert _get_max_num_sandboxes_default() == 10
+        injector = RemoteSandboxServiceInjector(
+            api_url='https://api.example.com', api_key='k'
+        )
+        assert injector.max_num_sandboxes == 10
+
+    def test_reads_env_var_when_set(self, monkeypatch):
+        from openhands.app_server.sandbox.remote_sandbox_service import (
+            RemoteSandboxServiceInjector,
+            _get_max_num_sandboxes_default,
+        )
+
+        monkeypatch.setenv(self.ENV_VAR, '25')
+        assert _get_max_num_sandboxes_default() == 25
+        injector = RemoteSandboxServiceInjector(
+            api_url='https://api.example.com', api_key='k'
+        )
+        assert injector.max_num_sandboxes == 25
+
+    def test_invalid_value_falls_back_to_10(self, monkeypatch):
+        from openhands.app_server.sandbox.remote_sandbox_service import (
+            _get_max_num_sandboxes_default,
+        )
+
+        monkeypatch.setenv(self.ENV_VAR, 'not-a-number')
+        assert _get_max_num_sandboxes_default() == 10
+
+    @pytest.mark.parametrize('value', ['0', '-5'])
+    def test_non_positive_falls_back_to_10(self, monkeypatch, value):
+        from openhands.app_server.sandbox.remote_sandbox_service import (
+            _get_max_num_sandboxes_default,
+        )
+
+        monkeypatch.setenv(self.ENV_VAR, value)
+        assert _get_max_num_sandboxes_default() == 10
+
+    def test_explicit_value_overrides_env_var(self, monkeypatch):
+        from openhands.app_server.sandbox.remote_sandbox_service import (
+            RemoteSandboxServiceInjector,
+        )
+
+        monkeypatch.setenv(self.ENV_VAR, '25')
+        injector = RemoteSandboxServiceInjector(
+            api_url='https://api.example.com',
+            api_key='k',
+            max_num_sandboxes=7,
+        )
+        assert injector.max_num_sandboxes == 7

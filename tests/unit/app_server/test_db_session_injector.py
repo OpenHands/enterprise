@@ -146,6 +146,17 @@ class TestDbSessionInjectorConfiguration:
             assert service.pool_size == 30
             assert service.max_overflow == 7
 
+    @pytest.mark.parametrize(
+        ('env_value', 'expected'),
+        [('true', True), ('1', True), ('false', False), ('0', False)],
+    )
+    def test_pool_use_lifo_env_var(self, temp_persistence_dir, env_value, expected):
+        """DB_POOL_USE_LIFO overrides the model default."""
+        with patch.dict(os.environ, {'DB_POOL_USE_LIFO': env_value}):
+            service = DbSessionInjector(persistence_dir=temp_persistence_dir)
+
+            assert service.pool_use_lifo is expected
+
     def test_explicit_values_override_env_vars(self, temp_persistence_dir):
         """Test that explicitly provided values override environment variables."""
         env_vars = {

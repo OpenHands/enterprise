@@ -624,23 +624,35 @@ def _mcp_config_as_seen_by_frontend(settings: Settings) -> dict:
     """The ``mcp_config`` the frontend receives from ``GET /settings``.
 
     Mirrors ``settings_router.load_settings``: the response is built as
-    ``GETSettingsModel(**settings.model_dump(...))`` and then serialized. That
-    dump-then-revalidate strips every MCP secret to *absent* — redaction emits
-    ``"**********"``, ``validate_secret`` turns that marker back into ``None`` on
-    the way into ``GETSettingsModel``, and the ``None`` is dropped on the way
-    out. So an unchanged credential arrives at the client as e.g.
-    ``{'strategy': 'bearer'}`` with no ``value`` — not the ``"**********"``
-    sentinel — which is exactly what the client echoes back on the next save.
+    ``GETSettingsModel(**settings.model_dump(exclude={'secrets_store'},
+    context={'expose_secrets': True}))`` and then serialized. The
+    ``expose_secrets`` context preserves the *presence* of every SecretStr
+    through the dump-revalidate cycle so the client can render "this slot
+    is filled" UX, while ``serialize_secret`` masks every value to
+    ``"**********"`` on the way out. So the wire response shows e.g.
+    ``{'strategy': 'bearer', 'value': '**********'}`` — not ``{'strategy':
+    'bearer'}`` with the credential stripped — and ``'**********'`` is the
+    exact sentinel ``_preserve_redacted_mcp_secrets`` looks for to leave a
+    stored credential untouched on the next save.
     """
     response = GETSettingsModel(
-        **settings.model_dump(exclude={'secrets_store'}),
+        **settings.model_dump(
+            exclude={'secrets_store'}, context={'expose_secrets': True}
+        ),
         llm_api_key_set=settings.llm_api_key_is_set,
     )
     return response.model_dump(mode='json')['agent_settings']['mcp_config']
 
 
-def test_get_settings_roundtrip_strips_mcp_auth_secret_to_absent():
-    """Document the root cause: the GET response omits the secret entirely."""
+def test_get_settings_mcp_auth_secret_is_masked_not_stripped():
+    """The GET response carries the auth slot but masks its value.
+
+    The frontend relies on ``{'strategy': ..., 'value': '**********'}`` to
+    render "credential configured" without echoing the value. The mask is
+    also the sentinel ``_preserve_redacted_mcp_secrets`` matches on save to
+    keep the stored credential intact — so masking on read and recognising
+    the mask on write are deliberately symmetric.
+    """
     settings = Settings(
         agent_settings=OpenHandsAgentSettings(
             mcp_config={
@@ -655,16 +667,116 @@ def test_get_settings_roundtrip_strips_mcp_auth_secret_to_absent():
 
     seen = _mcp_config_as_seen_by_frontend(settings)
 
-    # The secret is gone, not redacted to "**********".
-    assert seen['server']['auth'] == {'strategy': 'bearer'}
+    # The secret value is masked, not stripped; the strategy and slot stay.
+    assert seen['server']['auth'] == {'strategy': 'bearer', 'value': '**********'}
+
+
+def test_get_settings_mcp_env_keys_visible_with_masked_values():
+    """``env`` var names come through so the UI can show "JIRA configured"."""
+    settings = Settings(
+        agent_settings=OpenHandsAgentSettings(
+            mcp_config={
+                'jira': {
+                    'command': 'npx',
+                    'args': ['-y', 'mcp-jira'],
+                    'transport': 'stdio',
+                    'env': {
+                        'JIRA_URL': 'https://acme.atlassian.net',
+                        'JIRA_USERNAME': 'user@acme.com',
+                        'JIRA_API_TOKEN': 'real-token',
+                    },
+                }
+            }
+        )
+    )
+
+    seen = _mcp_config_as_seen_by_frontend(settings)
+
+    assert seen['jira']['env'] == {
+        'JIRA_URL': '**********',
+        'JIRA_USERNAME': '**********',
+        'JIRA_API_TOKEN': '**********',
+    }
+
+
+def test_get_settings_mcp_headers_keys_visible_with_masked_values():
+    """``headers`` keys come through so the UI can show which auth headers are set."""
+    settings = Settings(
+        agent_settings=OpenHandsAgentSettings(
+            mcp_config={
+                'server': {
+                    'url': 'https://mcp.example.com',
+                    'transport': 'http',
+                    'headers': {'X-API-Key': 'real-key', 'X-Tenant': 'acme'},
+                }
+            }
+        )
+    )
+
+    seen = _mcp_config_as_seen_by_frontend(settings)
+
+    assert seen['server']['headers'] == {
+        'X-API-Key': '**********',
+        'X-Tenant': '**********',
+    }
+
+
+@pytest.mark.parametrize(
+    'auth,secret_path',
+    (
+        (
+            {'strategy': 'api_key', 'value': 'real-key', 'header_name': 'X-API-Key'},
+            'value',
+        ),
+        (
+            {'strategy': 'basic', 'username': 'user', 'password': 'real-key'},
+            'password',
+        ),
+        (
+            {'strategy': 'header', 'headers': {'X-API-Key': 'real-key'}},
+            ('headers', 'X-API-Key'),
+        ),
+        (
+            {'strategy': 'oauth2', 'state': {'tokens': {'access_token': 'real-key'}}},
+            ('state', 'tokens', 'access_token'),
+        ),
+    ),
+)
+def test_get_settings_mcp_auth_masked_for_every_strategy(
+    auth: dict, secret_path: str | tuple[str, ...]
+):
+    """Every typed auth strategy is masked on the wire, never echoed in plaintext."""
+    settings = Settings(
+        agent_settings=OpenHandsAgentSettings(
+            mcp_config={
+                'server': {
+                    'url': 'https://mcp.example.com',
+                    'transport': 'http',
+                    'auth': auth,
+                }
+            }
+        )
+    )
+
+    seen = _mcp_config_as_seen_by_frontend(settings)
+
+    node = seen['server']['auth']
+    if isinstance(secret_path, tuple):
+        for key in secret_path:
+            node = node[key]
+    else:
+        node = node[secret_path]
+    assert node == '**********'
 
 
 def test_settings_update_preserves_mcp_auth_across_get_roundtrip_on_add():
     """Adding a server must not wipe existing servers' keys (the reported bug).
 
-    Replays the real flow: read the values as the frontend receives them (secret
-    stripped), append a brand-new server with its own key, and save the whole
-    map back — exactly the payload the browser sends.
+    Replays the real flow: read the values as the frontend receives them
+    (credentials masked to ``'**********'``), append a brand-new server with
+    its own key, and save the whole map back — exactly the payload the
+    browser sends. ``_preserve_redacted_mcp_secrets`` matches the mask
+    sentinel and carries the stored credential through.
     """
     settings = Settings(
         agent_settings=OpenHandsAgentSettings(
@@ -724,7 +836,7 @@ def test_settings_update_preserves_mcp_auth_across_get_roundtrip_on_add():
 def test_settings_update_preserves_typed_mcp_auth_across_get_roundtrip(
     auth: dict, secret_path: tuple[str, ...]
 ):
-    """Every typed strategy survives the stripped-secret round trip on an edit."""
+    """Every typed strategy survives the masked-secret round trip on an edit."""
     settings = Settings(
         agent_settings=OpenHandsAgentSettings(
             mcp_config={
@@ -866,6 +978,141 @@ def test_llm_profiles_masking_and_roundtrip():
     assert rehydrated.llm_profiles.get('p').api_key.get_secret_value() == 'secret'
 
 
+def _load_settings_response(settings: Settings) -> dict:
+    """Return ``GETSettingsModel`` as the wire-level dict ``load_settings`` sends.
+
+    Mirrors the router: dumps with ``expose_secrets=True`` so SecretStr
+    presence survives the round-trip, then nulls the three top-level
+    credentials the router always strips (``llm.api_key``, ``search_api_key``,
+    ``sandbox_api_key``).
+    """
+    response = GETSettingsModel(
+        **settings.model_dump(
+            exclude={'secrets_store'}, context={'expose_secrets': True}
+        ),
+        llm_api_key_set=settings.llm_api_key_is_set,
+        search_api_key_set=settings.search_api_key is not None
+        and bool(settings.search_api_key),
+    )
+    response.agent_settings.llm.api_key = None
+    response.search_api_key = None
+    response.sandbox_api_key = None
+    return response.model_dump(mode='json')
+
+
+def test_get_settings_llm_profiles_api_key_masked_when_set():
+    """A profile with a stored key comes back as ``'**********'`` — not ``null``.
+
+    The frontend needs ``'**********'`` to render "key configured" instead of
+    an empty input that asks the user to retype the key on every edit.
+    """
+    settings = Settings()
+    settings.llm_profiles.save(
+        'work', LLM(model='openai/gpt-4o', api_key=SecretStr('sk-real'))
+    )
+    settings.llm_profiles.save(
+        'personal',
+        LLM(model='anthropic/claude-opus-4'),  # no key
+    )
+
+    response = _load_settings_response(settings)
+
+    profiles = response['llm_profiles']['profiles']
+    assert profiles['work']['api_key'] == '**********'
+    assert profiles['personal']['api_key'] is None
+
+
+def test_get_settings_llm_profiles_masked_response_roundtrips_through_model_validate():
+    """The wire response is valid input for ``Settings.model_validate``.
+
+    A masked ``'**********'`` becomes ``None`` via ``validate_secret``, so
+    ``Settings.model_validate`` reconstructs the profile with its ``api_key``
+    attribute present but unset. This is the contract that lets the
+    dedicated ``/llm-profiles`` endpoints (and any future frontend
+    save-without-typing flow) accept the GET response back.
+    """
+    settings = Settings()
+    settings.llm_profiles.save(
+        'work', LLM(model='openai/gpt-4o', api_key=SecretStr('sk-real'))
+    )
+
+    response = _load_settings_response(settings)
+
+    rehydrated = Settings.model_validate(response)
+    assert rehydrated.llm_profiles.active == settings.llm_profiles.active
+    # The mask re-validates to None, which preserves "key was configured"
+    # signal on the rehydrated profile's api_key_set attribute.
+    rehydrated_work = rehydrated.llm_profiles.get('work')
+    assert rehydrated_work is not None
+    assert rehydrated_work.api_key is None
+
+
+def test_get_settings_active_llm_api_key_is_null_even_when_expose_secrets():
+    """The router's explicit ``resp_llm.api_key = None`` wins over the dump.
+
+    Guards the three top-level fields the router always strips: even though
+    ``expose_secrets=True`` would otherwise emit the active LLM's plaintext
+    key, the post-dump null-out ensures the wire response is exactly what
+    it was before the change.
+    """
+    settings = Settings(
+        agent_settings=OpenHandsAgentSettings(
+            llm=LLM(model='openai/gpt-4o', api_key=SecretStr('sk-real')),
+        ),
+        search_api_key=SecretStr('search-key'),
+    )
+
+    response = _load_settings_response(settings)
+
+    assert response['agent_settings']['llm']['api_key'] is None
+    assert response['search_api_key'] is None
+    assert response['sandbox_api_key'] is None
+    # But the api_key_set companion flag still says the slot is configured.
+    assert response['llm_api_key_set'] is True
+    assert response['search_api_key_set'] is True
+
+
+def test_get_settings_aws_credentials_masked():
+    """AWS keys under ``agent_settings.llm`` are masked, not stripped.
+
+    The frontend renders the AWS Bedrock fields from these, so they need
+    the same "configured vs empty" distinction as the OpenAI-shaped keys.
+    """
+    settings = Settings(
+        agent_settings=OpenHandsAgentSettings(
+            llm=LLM(
+                model='bedrock/anthropic.claude-3-5-sonnet',
+                aws_access_key_id=SecretStr('AKIA-real'),
+                aws_secret_access_key=SecretStr('aws-secret-real'),
+                aws_session_token=SecretStr('aws-session-real'),
+            ),
+        ),
+    )
+
+    response = _load_settings_response(settings)
+
+    llm = response['agent_settings']['llm']
+    assert llm['aws_access_key_id'] == '**********'
+    assert llm['aws_secret_access_key'] == '**********'
+    assert llm['aws_session_token'] == '**********'
+
+
+def test_get_settings_verification_critic_api_key_masked():
+    """``verification.critic_api_key`` comes back masked when configured."""
+    settings = Settings(
+        agent_settings=OpenHandsAgentSettings(
+            verification=VerificationSettings(
+                critic_enabled=True,
+                critic_api_key=SecretStr('critic-key-real'),
+            ),
+        ),
+    )
+
+    response = _load_settings_response(settings)
+
+    assert response['agent_settings']['verification']['critic_api_key'] == '**********'
+
+
 def test_switch_to_profile_preserves_other_agent_settings():
     """Switching the LLM must not wipe condenser/verification/mcp_config.
 
@@ -960,8 +1207,8 @@ def test_update_ignores_llm_profiles_payload():
     assert settings.llm_profiles.active is None
 
 
-def test_update_clears_active_when_llm_diverges():
-    """Editing agent_settings.llm via ``update`` must drop a now-stale active profile."""
+def test_update_synchronizes_active_profile_when_llm_diverges():
+    """Editing agent_settings.llm must update the active profile atomically."""
     settings = Settings(
         agent_settings=OpenHandsAgentSettings(
             llm=LLM(model='openai/gpt-4o', api_key=SecretStr('sk-a'))
@@ -977,7 +1224,10 @@ def test_update_clears_active_when_llm_diverges():
         {'agent_settings_diff': {'llm': {'model': 'anthropic/claude-opus-4'}}}
     )
 
-    assert settings.llm_profiles.active is None
+    assert settings.llm_profiles.active == 'p'
+    active = settings.llm_profiles.require('p')
+    assert active.model == 'anthropic/claude-opus-4'
+    assert active.api_key.get_secret_value() == 'sk-a'
 
 
 def test_update_keeps_active_when_llm_unchanged():
