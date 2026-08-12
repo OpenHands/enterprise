@@ -18,12 +18,16 @@ export function KPICard({
   trendUp?: boolean;
 }) {
   return (
-    <div className="bg-base-secondary border border-border-subtle rounded-lg px-4 py-3">
-      <span className="text-sm font-medium leading-5 text-muted">{label}</span>
-      <div className="mt-1 text-2xl font-bold text-foreground">{value}</div>
+    <div className="flex h-full min-h-[104px] flex-col rounded-lg border border-border-subtle bg-base-secondary px-4 py-5">
+      <span className="text-xs font-medium leading-tight text-muted">
+        {label}
+      </span>
+      <div className="mt-auto pt-3 text-left text-2xl font-bold leading-none text-foreground">
+        {value}
+      </div>
       {trend && (
         <div
-          className={`flex items-center gap-1 mt-2 text-xs ${trendUp ? "text-green-400" : "text-red-400"}`}
+          className={`mt-2 flex items-center gap-1 text-xs ${trendUp ? "text-green-400" : "text-red-400"}`}
         >
           {trendUp ? <TrendUpIcon /> : <TrendDownIcon />}
           {trend}
@@ -54,10 +58,10 @@ export function AreaChart({
   const areaD = `${pathD} L ${width},${height} L 0,${height} Z`;
 
   return (
-    <div className="relative h-48 w-full">
+    <div className="relative h-full w-full pb-5">
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="w-full h-full"
+        className="h-full w-full"
         preserveAspectRatio="none"
       >
         {[0, 25, 50, 75, 100].map((pct) => (

@@ -39,11 +39,10 @@ export function DeleteConfirmationModal({
           })}
         </p>
 
-        <div className="w-full flex gap-2 mt-2">
+        <div className="w-full flex justify-end gap-2 mt-2">
           <BrandButton
             type="button"
             variant="secondary"
-            className="grow"
             onClick={onClose}
             isDisabled={isDeleting}
           >
@@ -53,7 +52,6 @@ export function DeleteConfirmationModal({
             testId="confirm-delete-button"
             type="button"
             variant="danger"
-            className="grow"
             onClick={onDelete}
             isDisabled={isDeleting}
           >

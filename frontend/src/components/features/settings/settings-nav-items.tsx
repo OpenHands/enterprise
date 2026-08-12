@@ -12,7 +12,7 @@ interface SettingsNavItemsProps {
 
 /**
  * Shared org selector + nav link list used by the desktop sidebar and mobile drawer.
- * Dividers are full-bleed to the rail's right border; rows keep their own px-2.5 inset.
+ * Rows and dividers share pr-2.5 so separators stop with the nav content, not the rail edge.
  */
 export function SettingsNavItems({
   navigationItems,
@@ -23,7 +23,7 @@ export function SettingsNavItems({
   return (
     <>
       {!shouldHideSelector && (
-        <div className="shrink-0 pr-2.5">
+        <div className="mb-2 shrink-0 pr-2.5">
           <OrgSelector />
         </div>
       )}
@@ -32,14 +32,19 @@ export function SettingsNavItems({
           if (renderedItem.type === "header") {
             return (
               <div key={`header-${renderedItem.text}`} className="pr-2.5">
-                <SettingsNavHeader text={renderedItem.text} />
+                <SettingsNavHeader
+                  text={renderedItem.text}
+                  chip={renderedItem.chip}
+                />
               </div>
             );
           }
 
           if (renderedItem.type === "divider") {
             return (
-              <SettingsNavDivider key={`divider-${index}`} className="my-1.5" />
+              <div key={`divider-${index}`} className="pr-2.5">
+                <SettingsNavDivider className="my-1.5" />
+              </div>
             );
           }
 

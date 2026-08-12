@@ -100,7 +100,7 @@ export function MCPServerListItem({
       </td>
 
       <td className={cn(settingsListTableCellClassName, "text-right")}>
-        <div className="flex items-center justify-end gap-0.5">
+        <div className="ml-auto flex w-fit items-center justify-end gap-0.5">
           <button
             data-testid="edit-mcp-server-button"
             type="button"

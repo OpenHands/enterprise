@@ -23,6 +23,11 @@ import { useJiraDcInstanceStatus } from "#/hooks/query/use-jira-dc-instance-stat
 import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import { IntegrationProviderIcon } from "#/components/features/settings/git-settings/integration-provider-icon";
 import { CopyableValue, generateWebhookSecret } from "./configure-modal";
+import {
+  settingsListContainerClassName,
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+} from "#/utils/settings-list-classes";
 
 const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 
@@ -409,8 +414,7 @@ export function JiraDcIntegrationPanel() {
     <span className="text-sm font-medium text-white">{t(key)}</span>
   );
 
-  const colHead =
-    "px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider";
+  const colHead = settingsListTableHeaderCellClassName;
   const showServerAndServiceAccountSection = !serviceAccountManaged;
 
   const serverAndServiceAccountSection = (
@@ -671,9 +675,9 @@ export function JiraDcIntegrationPanel() {
       </div>
 
       {existingWorkspace ? (
-        <div className="border border-neutral-700 rounded-lg overflow-hidden">
+        <div className={settingsListContainerClassName}>
           <table className="w-full">
-            <thead className="bg-neutral-800">
+            <thead className={settingsListTableHeadClassName}>
               <tr>
                 <th className={colHead}>
                   {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SERVER_SECTION_LABEL)}

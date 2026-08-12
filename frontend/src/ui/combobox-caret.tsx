@@ -22,9 +22,10 @@ export function ComboboxCaretIcon({ className }: { className?: string }) {
   );
 }
 
-/** Matches HeroUI Autocomplete selectorButton styling. */
+/** Matches HeroUI Autocomplete selectorButton styling. Symmetric padding so
+ * open-state rotation never shifts the caret horizontally. */
 export const comboboxCaretButtonClassName = cn(
-  "inline-flex items-center justify-center shrink-0 rounded-none bg-transparent pl-1 pr-2.5 min-w-0 w-auto h-auto text-medium cursor-pointer outline-none",
+  "inline-flex items-center justify-center shrink-0 rounded-none bg-transparent px-1 min-w-0 w-auto h-auto text-medium cursor-pointer outline-none",
   formControlTransformTransitionClassName,
 );
 
@@ -33,3 +34,23 @@ export const heroUiAutocompleteSelectorButtonClassName = cn(
   comboboxCaretButtonClassName,
   "!rounded-none !bg-transparent data-[hover=true]:!bg-transparent",
 );
+
+/** Inline caret for buttons where only the icon rotates, not the whole control. */
+export function ComboboxCaretInline({
+  isOpen,
+  className,
+}: {
+  isOpen?: boolean;
+  className?: string;
+}) {
+  return (
+    <ComboboxCaretIcon
+      className={cn(
+        "shrink-0",
+        formControlTransformTransitionClassName,
+        isOpen && "rotate-180",
+        className,
+      )}
+    />
+  );
+}

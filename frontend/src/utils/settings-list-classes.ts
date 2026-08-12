@@ -45,17 +45,16 @@ export const settingsListTableRowClassName = cn(
 
 /** Compact in-list section title (not a column header). Do not use table-head/sticky classes. */
 export const settingsListSectionHeaderClassName = cn(
-  "flex h-9 w-full items-center justify-between border-b border-[var(--oh-border)] px-3 text-[11px] font-medium leading-4",
+  "flex h-9 w-full items-center justify-between border-b border-[var(--oh-border)] bg-base-secondary/50 px-3 text-[11px] font-medium leading-4 text-tertiary-alt",
 );
 
 export const settingsListTableHeadClassName = cn(
-  formControlSurfaceClassName,
-  "sticky top-0 z-10 border-b border-[var(--oh-border)]",
+  "sticky top-0 z-10 border-b border-[var(--oh-border)] bg-base-secondary/50",
 );
 
+/** Compact muted column labels — distinct from body rows (h-12 / text-sm). */
 export const settingsListTableHeaderCellClassName = cn(
-  settingsListRowHeightClassName,
-  "px-3 text-left text-sm font-medium align-middle",
+  "h-9 min-h-9 px-4 text-left text-xs font-medium leading-4 text-tertiary-alt align-middle",
 );
 
 export const settingsListTableCellClassName = cn(
@@ -70,8 +69,8 @@ export const settingsListIconActionButtonClassName = cn(
 );
 
 /**
- * Equal-width primary CTA column for integration provider rows
- * (GitHub / Slack / Azure, etc.). Keeps stacked row actions aligned.
+ * Compact primary CTA on integration provider rows (GitHub / Slack / Azure, etc.).
+ * Matches agent-canvas compact action height (h-7 / text-xs).
  */
 export const settingsListRowActionButtonClassName =
-  "w-full min-w-[13.75rem] whitespace-nowrap";
+  "h-7 min-h-7 w-fit whitespace-nowrap px-2.5 text-xs";

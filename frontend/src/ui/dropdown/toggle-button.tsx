@@ -1,6 +1,6 @@
 /* eslint-disable react/jsx-props-no-spreading */
 import {
-  ComboboxCaretIcon,
+  ComboboxCaretInline,
   comboboxCaretButtonClassName,
 } from "#/ui/combobox-caret";
 import { cn } from "#/utils/utils";
@@ -25,12 +25,11 @@ export function ToggleButton({
         className: cn(
           comboboxCaretButtonClassName,
           "text-current",
-          isOpen && "rotate-180",
           isDisabled && "cursor-not-allowed",
         ),
       })}
     >
-      <ComboboxCaretIcon />
+      <ComboboxCaretInline isOpen={isOpen} />
     </button>
   );
 }

@@ -144,11 +144,10 @@ export function MarketplaceModal({
   const isEdit = mode === "edit";
 
   const footer = (
-    <div className="w-full flex gap-2 mt-2">
+    <div className="flex w-full justify-end gap-2 mt-2">
       <BrandButton
         type="button"
         variant="secondary"
-        className="grow"
         onClick={onClose}
         isDisabled={isSaving}
       >
@@ -158,7 +157,6 @@ export function MarketplaceModal({
         testId="marketplace-save-button"
         type="button"
         variant="primary"
-        className="grow"
         onClick={handleSave}
         isDisabled={isSaving}
       >

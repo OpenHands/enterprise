@@ -13,6 +13,8 @@ const TOAST_STYLE: CSSProperties = {
   color: "#fff",
   borderRadius: "var(--oh-radius)",
   maxWidth: "400px",
+  fontSize: "0.875rem",
+  lineHeight: "1.25rem",
   wordBreak: "break-word",
   overflowWrap: "anywhere",
   whiteSpace: "pre-wrap",
@@ -117,7 +119,7 @@ export const displayErrorToast = (error: string | null | undefined) => {
 export const displaySuccessToast = (message: string) => {
   const duration = calculateToastDuration(message, 5000);
   toast.success(
-    <span className="[word-break:break-word] [overflow-wrap:anywhere]">
+    <span className="text-sm leading-5 [word-break:break-word] [overflow-wrap:anywhere]">
       {message}
     </span>,
     { ...TOAST_OPTIONS, duration },

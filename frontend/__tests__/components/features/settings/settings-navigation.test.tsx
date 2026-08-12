@@ -50,7 +50,9 @@ const toRenderedItems = (items: SettingsNavItem[]): SettingsNavRenderedItem[] =>
 
 const ITEMS_WITHOUT_ORG = SAAS_NAV_ITEMS.filter(
   (item) =>
-    item.to !== "/settings/org" && item.to !== "/settings/org-members",
+    item.to !== "/settings/org" &&
+    item.to !== "/settings/org-members" &&
+    item.to !== "/settings/credits",
 );
 
 const renderSettingsNavigation = (

@@ -5,13 +5,13 @@ import { useAuthUrl } from "#/hooks/use-auth-url";
 import { settingsListRowActionButtonClassName } from "#/utils/settings-list-classes";
 import { BrandButton } from "../brand-button";
 
-export function ConfigureAzureDevOpsAnchor() {
+export function ConfigureGitLabAnchor() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
 
   const authUrl = useAuthUrl({
     appMode: config?.app_mode ?? null,
-    identityProvider: "azure_devops",
+    identityProvider: "gitlab",
     authUrl: config?.auth_url,
   });
 
@@ -25,7 +25,7 @@ export function ConfigureAzureDevOpsAnchor() {
 
   return (
     <BrandButton
-      testId="configure-azure-devops-button"
+      testId="configure-gitlab-button"
       type="button"
       variant="primary"
       className={settingsListRowActionButtonClassName}

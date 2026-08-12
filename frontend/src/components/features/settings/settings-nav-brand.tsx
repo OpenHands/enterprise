@@ -1,13 +1,13 @@
 import { FaChevronLeft } from "react-icons/fa6";
 import { useTranslation } from "react-i18next";
-import OpenHandsLogoWhite from "#/assets/branding/openhands-logo-white.svg?react";
+import OpenHandsLogoSidebar from "#/assets/branding/openhands-logo-sidebar.svg?react";
 import { getAgentCanvasBannerLink } from "#/components/features/home/home-header/agent-canvas-banner";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 
-/** White mark defaults match `OpenHandsLogoButton` (`variant="white"`). */
+/** Same mark + size as agent-canvas sidebar (`SIDEBAR_LOGO_*`). */
 const SIDEBAR_LOGO_WIDTH = 34;
-const SIDEBAR_LOGO_HEIGHT = 34;
+const SIDEBAR_LOGO_HEIGHT = Math.round((SIDEBAR_LOGO_WIDTH * 30) / 46);
 
 interface SettingsNavBrandProps {
   className?: string;
@@ -29,8 +29,8 @@ export function SettingsNavBrand({ className }: SettingsNavBrandProps) {
       )}
     >
       {/* 18px column + overflow-visible — same as agent-canvas sidebar logo. */}
-      <div className="mr-1 flex h-9 w-[18px] shrink-0 items-center justify-center overflow-visible">
-        <OpenHandsLogoWhite
+      <div className="mr-3 flex h-9 w-[18px] shrink-0 items-center justify-center overflow-visible">
+        <OpenHandsLogoSidebar
           width={SIDEBAR_LOGO_WIDTH}
           height={SIDEBAR_LOGO_HEIGHT}
           className="max-w-none shrink-0"

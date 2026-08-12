@@ -11,6 +11,16 @@
 export const settingsLikeMainScrollClassName =
   "flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable] custom-scrollbar-always px-4 pt-8 pb-12 md:px-0 md:pr-[14px]";
 
+/**
+ * Scroll shell for settings main — no inset. Pair with
+ * {@link settingsLayoutMainContentInsetClassName} so top banners can full-bleed.
+ */
+export const settingsLayoutMainScrollShellClassName =
+  "flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable] custom-scrollbar-always";
+
+/** Horizontal/vertical inset for settings main content below an optional top banner. */
+export const settingsLayoutMainContentInsetClassName =
+  "flex-1 px-4 pt-8 pb-12 md:px-0 md:pl-8 md:pr-[14px] md:pt-8";
+
 /** Settings main column sits flush beside the bordered rail (drawer chrome). */
-export const settingsLayoutMainScrollClassName =
-  "flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable] custom-scrollbar-always px-4 pt-8 pb-12 md:px-0 md:pl-8 md:pr-[14px] md:pt-8";
+export const settingsLayoutMainScrollClassName = `${settingsLayoutMainScrollShellClassName} px-4 pt-8 pb-12 md:px-0 md:pl-8 md:pr-[14px] md:pt-8`;

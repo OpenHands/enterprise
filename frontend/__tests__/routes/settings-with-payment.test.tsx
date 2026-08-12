@@ -33,8 +33,8 @@ vi.mock("react-i18next", async () => {
         const translations: Record<string, string> = {
           SETTINGS$NAV_INTEGRATIONS: "Integrations",
           SETTINGS$NAV_APPLICATION: "Application",
-          SETTINGS$NAV_CREDITS: "Credits",
-          SETTINGS$NAV_BILLING: "Billing",
+          SETTINGS$NAV_CREDITS: "Billing & Credits",
+          SETTINGS$NAV_BILLING: "Billing & Credits",
           SETTINGS$NAV_API_KEYS: "API Keys",
           SETTINGS$NAV_LLM: "LLM",
           SETTINGS$NAV_USER: "User",
@@ -161,7 +161,7 @@ describe("Settings Billing", () => {
     renderSettingsScreen();
 
     const navbar = await screen.findByTestId("settings-navbar");
-    const credits = within(navbar).queryByText("Billing");
+    const credits = within(navbar).queryByText("Billing & Credits");
     expect(credits).not.toBeInTheDocument();
   });
 
@@ -193,7 +193,7 @@ describe("Settings Billing", () => {
     renderSettingsScreen();
 
     const navbar = await screen.findByTestId("settings-navbar");
-    expect(within(navbar).getByText("Billing")).toBeInTheDocument();
+    expect(within(navbar).getByText("Billing & Credits")).toBeInTheDocument();
   });
 
   it("should NOT render the billing tab if: SaaS mode, billing is enabled, and member user", async () => {
@@ -224,7 +224,7 @@ describe("Settings Billing", () => {
     renderSettingsScreen();
 
     const navbar = await screen.findByTestId("settings-navbar");
-    expect(within(navbar).queryByText("Billing")).not.toBeInTheDocument();
+    expect(within(navbar).queryByText("Billing & Credits")).not.toBeInTheDocument();
   });
 
   it("should render the billing settings if clicking the billing item", async () => {
@@ -254,7 +254,7 @@ describe("Settings Billing", () => {
     renderSettingsScreen();
 
     const navbar = await screen.findByTestId("settings-navbar");
-    const credits = within(navbar).getByText("Billing");
+    const credits = within(navbar).getByText("Billing & Credits");
     await user.click(credits);
 
     const billingSection = await screen.findByTestId("billing-settings");

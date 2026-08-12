@@ -545,11 +545,11 @@ function SkillsSettingsScreen() {
 
   return (
     <div className="flex min-h-full flex-col">
-      <div className="flex flex-col gap-10 pb-6">
+      <div className="flex flex-col gap-6">
         {/* Marketplaces */}
         <section className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="flex flex-col gap-1">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 flex flex-col gap-1">
               <Typography.H2>{t(I18nKey.SETTINGS$MARKETPLACES)}</Typography.H2>
               <Typography.Paragraph className="max-w-2xl text-sm text-tertiary-alt">
                 {t(I18nKey.SETTINGS$CONNECT_MARKETPLACES_DESCRIPTION)}
@@ -559,6 +559,7 @@ function SkillsSettingsScreen() {
               testId="add-marketplace-button"
               variant="primary"
               type="button"
+              className="shrink-0 whitespace-nowrap"
               onClick={() => openAddModal()}
             >
               {t(I18nKey.SETTINGS$MARKETPLACE_ADD)}
@@ -577,7 +578,7 @@ function SkillsSettingsScreen() {
         </section>
 
         {/* Available Skills */}
-        <section className="flex flex-col gap-4">
+        <section className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6">
           <div className="flex flex-col gap-1">
             <Typography.H2>
               {t(I18nKey.SETTINGS$SKILLS_AND_PLUGINS)}
@@ -601,12 +602,7 @@ function SkillsSettingsScreen() {
       </div>
 
       {/* Sticky action bar — keeps Save reachable without scrolling to the end */}
-      <div className="sticky bottom-0 z-10 mt-auto flex items-center justify-end gap-4 border-t border-[var(--oh-border)] bg-base/95 py-4 backdrop-blur-sm">
-        {hasUnsavedChanges && (
-          <span className="text-sm text-tertiary-alt">
-            {t(I18nKey.SETTINGS$UNSAVED_CHANGES)}
-          </span>
-        )}
+      <div className="sticky bottom-0 z-10 mt-auto flex items-center justify-start gap-4 bg-base/95 py-4 backdrop-blur-sm">
         <BrandButton
           testId="skills-save-button"
           variant="primary"
@@ -621,6 +617,11 @@ function SkillsSettingsScreen() {
             ? t(I18nKey.SETTINGS$SAVING)
             : t(I18nKey.SETTINGS$SAVE_CHANGES)}
         </BrandButton>
+        {hasUnsavedChanges && (
+          <span className="text-sm text-tertiary-alt">
+            {t(I18nKey.SETTINGS$UNSAVED_CHANGES)}
+          </span>
+        )}
       </div>
 
       {/* Marketplace Modal */}

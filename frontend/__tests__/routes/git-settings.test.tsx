@@ -12,6 +12,7 @@ import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
 import { SecretsService } from "#/api/secrets-service";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 
 const VALID_OSS_CONFIG: WebClientConfig = {
   app_mode: "oss",
@@ -92,6 +93,10 @@ const renderGitSettingsScreen = () => {
           COMMON$STATUS: "Status",
           STATUS$CONNECTED: "Connected",
           SETTINGS$GITLAB_NOT_CONNECTED: "Not Connected",
+          SETTINGS$CONNECT: "Connect",
+          SETTINGS$INSTALL: "Install",
+          GITLAB$CONNECT_TO_GITLAB: "Log in with GitLab",
+          PROJECT_MANAGEMENT$CONFIGURE_BUTTON_LABEL: "Configure",
           SETTINGS$GITLAB_REINSTALL_WEBHOOK: "Reinstall Webhook",
           SETTINGS$GITLAB_INSTALLING_WEBHOOK:
             "Installing GitLab webhook, please wait a few minutes.",
@@ -135,6 +140,7 @@ beforeEach(() => {
   // reset the query client before each test to avoid state leaks
   // between tests.
   queryClient.invalidateQueries();
+  useSelectedOrganizationStore.setState({ organizationId: null });
 });
 
 describe("Content", () => {
@@ -316,12 +322,47 @@ describe("Content", () => {
     await waitFor(() => {
       button = screen.getByTestId("configure-github-repositories-button");
       expect(button).toBeInTheDocument();
-      expect(screen.getByTestId("gitlab-status-text")).toBeInTheDocument();
+      expect(button).toHaveClass("bg-primary");
+      expect(button.querySelector("svg")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("github-status-text")).not.toBeInTheDocument();
+      expect(screen.getByTestId("gitlab-status-text")).toHaveTextContent(
+        "Not Connected",
+      );
+      expect(screen.getByTestId("configure-gitlab-button")).toBeInTheDocument();
       expect(screen.getByTestId("install-slack-app-button")).toBeInTheDocument();
       expect(screen.queryByTestId("submit-button")).not.toBeInTheDocument();
       expect(
         screen.queryByTestId("disconnect-tokens-button"),
       ).not.toBeInTheDocument();
+    });
+  });
+
+  it("should use secondary style, gear icon, and Connected chip when GitHub is installed", async () => {
+    const getConfigSpy = vi.spyOn(OptionService, "getConfig");
+    const getSettingsSpy = vi.spyOn(SettingsService, "getSettings");
+
+    // SaaS settings queries require a selected org.
+    useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+
+    getConfigSpy.mockResolvedValue({
+      ...VALID_SAAS_CONFIG,
+      github_app_slug: "test-slug",
+    });
+    getSettingsSpy.mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS,
+      provider_tokens_set: { github: "github.com" },
+    });
+
+    renderGitSettingsScreen();
+
+    await waitFor(() => {
+      const button = screen.getByTestId("configure-github-repositories-button");
+      expect(button).toHaveClass("bg-base-secondary");
+      expect(button).toHaveClass("border");
+      expect(button.querySelector("svg")).toBeInTheDocument();
+      expect(screen.getByTestId("github-status-text")).toHaveTextContent(
+        "Connected",
+      );
     });
   });
 });

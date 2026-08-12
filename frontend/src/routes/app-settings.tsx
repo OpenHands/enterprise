@@ -373,7 +373,7 @@ function AppSettingsScreen() {
             <h3 className="text-lg font-medium mb-2">
               {t(I18nKey.SETTINGS$GIT_SETTINGS)}
             </h3>
-            <p className="mb-4 text-sm leading-5 text-tertiary-light">
+            <p className="mb-4 text-sm leading-5 text-muted">
               {t(I18nKey.SETTINGS$GIT_SETTINGS_DESCRIPTION)}
             </p>
             <div className="flex flex-col gap-6">
@@ -381,7 +381,7 @@ function AppSettingsScreen() {
                 <h4 className="text-sm font-medium">
                   {t(I18nKey.SETTINGS$REPOSITORY_CLONING)}
                 </h4>
-                <p className="text-sm leading-5 text-tertiary-light">
+                <p className="text-sm leading-5 text-muted">
                   {t(I18nKey.SETTINGS$REPOSITORY_CLONING_DESCRIPTION)}
                 </p>
                 <div className="mt-2 flex flex-col gap-2">

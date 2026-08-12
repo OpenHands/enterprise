@@ -120,31 +120,6 @@ export function UserProgressBar({
   );
 }
 
-export function Avatar({
-  name,
-  size = "md",
-}: {
-  name: string;
-  size?: "sm" | "md";
-}) {
-  const initials = name
-    .split(" ")
-    .map((n) => n[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
-
-  const sizeClass = size === "sm" ? "w-7 h-7 text-xs" : "w-9 h-9 text-sm";
-
-  return (
-    <div
-      className={`${sizeClass} rounded-full bg-tertiary text-foreground flex items-center justify-center font-medium`}
-    >
-      {initials}
-    </div>
-  );
-}
-
 export function StatusPill({ status }: { status: string }) {
   const getStyle = () => {
     if (status.includes("Over cap")) {

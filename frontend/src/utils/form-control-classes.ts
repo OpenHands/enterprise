@@ -96,10 +96,9 @@ export const formControlNativeSelectClassName = cn(
   "[background-repeat:no-repeat]",
 );
 
-/** Settings screens keep italic placeholders on form controls. */
+/** Settings screens: field chrome plus HeroUI wrapper transition override. */
 export const formControlSettingsFieldClassName = cn(
   formControlFieldClassName,
-  "placeholder:italic",
   formControlHeroUiWrapperTransitionClassName,
 );
 

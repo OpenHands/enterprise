@@ -40,13 +40,13 @@ vi.mock("react-i18next", async () => {
         const translations: Record<string, string> = {
           SETTINGS$NAV_INTEGRATIONS: "Integrations",
           SETTINGS$NAV_APPLICATION: "Application",
-          SETTINGS$NAV_CREDITS: "Credits",
+          SETTINGS$NAV_CREDITS: "Billing & Credits",
           SETTINGS$NAV_API_KEYS: "API Keys",
           SETTINGS$NAV_LLM: "LLM",
           SETTINGS$NAV_SECRETS: "Secrets",
           SETTINGS$NAV_MCP: "MCP",
           SETTINGS$NAV_USER: "User",
-          SETTINGS$NAV_BILLING: "Billing",
+          SETTINGS$NAV_BILLING: "Billing & Credits",
           SETTINGS$TITLE: "Settings",
           COMMON$LANGUAGE_MODEL_LLM: "LLM",
           SETTINGS$ORG_WIDE_SETTING_BADGE:
@@ -112,6 +112,10 @@ describe("Settings Screen", () => {
         {
           Component: () => <div data-testid="billing-settings-screen" />,
           path: "/settings/billing",
+        },
+        {
+          Component: () => <div data-testid="credits-settings-screen" />,
+          path: "/settings/credits",
         },
         {
           Component: () => <div data-testid="api-keys-settings-screen" />,
@@ -228,7 +232,7 @@ describe("Settings Screen", () => {
 
     const navbar = await screen.findByTestId("settings-navbar");
     await waitFor(() => {
-      expect(within(navbar).getByText("Billing")).toBeInTheDocument();
+      expect(within(navbar).getByText("Billing & Credits")).toBeInTheDocument();
     });
     sectionsToInclude.forEach((section) => {
       const sectionElements = within(navbar).getAllByText(section, {
@@ -534,7 +538,7 @@ describe("Settings Screen", () => {
       // Assert
       const navbar = await screen.findByTestId("settings-navbar");
       await waitFor(() => {
-        expect(within(navbar).getByText("Billing")).toBeInTheDocument();
+        expect(within(navbar).getByText("Billing & Credits")).toBeInTheDocument();
       });
 
       getConfigSpy.mockRestore();
@@ -567,7 +571,7 @@ describe("Settings Screen", () => {
 
       // Assert
       const navbar = await screen.findByTestId("settings-navbar");
-      expect(within(navbar).queryByText("Billing")).not.toBeInTheDocument();
+      expect(within(navbar).queryByText("Billing & Credits")).not.toBeInTheDocument();
 
       getConfigSpy.mockRestore();
     });
@@ -901,7 +905,7 @@ describe("Settings Screen", () => {
       "/settings/org-defaults/condenser",
       "/settings/org-defaults/verification",
     ])(
-      "renders the org-wide settings badge beside the title on %s for an admin in a team org in SaaS mode",
+      "renders the org-wide settings bar at the top of %s for an admin in a team org in SaaS mode",
       async (path) => {
         seedSaasOrgContext(MOCK_TEAM_ORG_ACME, { role: "admin" });
 

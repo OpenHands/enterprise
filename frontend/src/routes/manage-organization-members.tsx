@@ -156,10 +156,10 @@ function ManageOrganizationMembers() {
   return (
     <div
       data-testid="manage-organization-members-settings"
-      className="flex flex-col gap-2 h-full"
+      className="flex h-full flex-col gap-6"
     >
-      <div className="flex items-start justify-between gap-4 pb-6">
-        <header className="space-y-1">
+      <div className="flex items-start justify-between gap-4">
+        <header className="min-w-0 space-y-1">
           <Typography.H2>{t(I18nKey.ORG$ORGANIZATION_MEMBERS)}</Typography.H2>
           <p
             data-testid="settings-page-subtitle"
@@ -172,6 +172,7 @@ function ManageOrganizationMembers() {
           <BrandButton
             type="button"
             variant="primary"
+            className="shrink-0 whitespace-nowrap"
             onClick={() => setInviteModalOpen(true)}
             startContent={<Plus size={14} />}
           >
@@ -181,7 +182,7 @@ function ManageOrganizationMembers() {
       </div>
 
       {/* Email Search Input */}
-      <div className={cn(formControlShellClassName, "mb-4 w-full")}>
+      <div className={cn(formControlShellClassName, "w-full")}>
         <Search
           size={16}
           className="ml-3 shrink-0 text-tertiary-alt"

@@ -6,14 +6,9 @@ import { ContextMenu } from "#/ui/context-menu";
 import { ContextMenuListItem } from "../context-menu/context-menu-list-item";
 import { ContextMenuIconText } from "#/ui/context-menu-icon-text";
 import { OrganizationUserRole } from "#/types/org";
-import { cn } from "#/utils/utils";
 import UserIcon from "#/icons/user.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
 import AdminIcon from "#/icons/admin.svg?react";
-
-const contextMenuListItemClassName = cn(
-  "cursor-pointer p-0 h-auto hover:bg-transparent",
-);
 
 interface OrganizationMemberRoleContextMenuProps {
   onClose: () => void;
@@ -116,13 +111,12 @@ export function OrganizationMemberRoleContextMenu({
         ref={menuRef}
         testId="organization-member-role-context-menu"
         theme="default"
-        className="!static !top-auto !right-auto !mt-0 min-h-fit min-w-[195px] max-w-[195px] gap-0"
+        className="!static !top-auto !right-auto !mt-0 min-h-fit min-w-[195px] max-w-[195px]"
       >
         {availableRolesToChangeTo.includes("owner") && (
           <ContextMenuListItem
             testId="owner-option"
             onClick={(event) => handleRoleChangeClick(event, "owner")}
-            className={contextMenuListItemClassName}
           >
             <ContextMenuIconText
               icon={
@@ -141,7 +135,6 @@ export function OrganizationMemberRoleContextMenu({
           <ContextMenuListItem
             testId="admin-option"
             onClick={(event) => handleRoleChangeClick(event, "admin")}
-            className={contextMenuListItemClassName}
           >
             <ContextMenuIconText
               icon={
@@ -160,7 +153,6 @@ export function OrganizationMemberRoleContextMenu({
           <ContextMenuListItem
             testId="member-option"
             onClick={(event) => handleRoleChangeClick(event, "member")}
-            className={contextMenuListItemClassName}
           >
             <ContextMenuIconText
               icon={<UserIcon width={16} height={16} className="text-white" />}
@@ -169,11 +161,7 @@ export function OrganizationMemberRoleContextMenu({
             />
           </ContextMenuListItem>
         )}
-        <ContextMenuListItem
-          testId="remove-option"
-          onClick={handleRemoveClick}
-          className={contextMenuListItemClassName}
-        >
+        <ContextMenuListItem testId="remove-option" onClick={handleRemoveClick}>
           <ContextMenuIconText
             icon={
               <DeleteIcon width={16} height={16} className="text-red-500" />

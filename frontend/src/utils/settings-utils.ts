@@ -74,7 +74,10 @@ export function isSettingsPageHidden(
   )
     return true;
   if (featureFlags?.hide_users_page && path === "/settings/user") return true;
-  if (featureFlags?.hide_billing_page && path === "/settings/billing")
+  if (
+    featureFlags?.hide_billing_page &&
+    (path === "/settings/billing" || path === "/settings/credits")
+  )
     return true;
   if (featureFlags?.hide_integrations_page && path === "/settings/integrations")
     return true;

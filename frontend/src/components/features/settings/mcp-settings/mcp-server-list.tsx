@@ -62,7 +62,7 @@ export function MCPServerList({
             <th
               className={cn(
                 settingsListTableHeaderCellClassName,
-                "w-[120px] text-right",
+                "w-[10%] text-right",
               )}
             >
               {t(I18nKey.SETTINGS$ACTIONS)}

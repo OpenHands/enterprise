@@ -135,6 +135,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
 
   if (
     pathname === "/settings/billing" ||
+    pathname === "/settings/credits" ||
     pathname === "/settings/org" ||
     pathname === "/settings/org-members" ||
     isAdminOnlyPath
@@ -151,16 +152,31 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     );
     const isPersonalOrg = selectedOrg?.is_personal === true;
     const isTeamOrg = !!selectedOrg && !selectedOrg.is_personal;
+    const billingHidden = isBillingHidden(
+      config,
+      rolePermissions[user?.role ?? "member"].includes("view_billing"),
+    );
 
     if (pathname === "/settings/billing") {
-      if (
-        !user ||
-        isBillingHidden(
-          config,
-          rolePermissions[user.role ?? "member"].includes("view_billing"),
-        ) ||
-        isTeamOrg
-      ) {
+      if (!user || billingHidden) {
+        if (isSaas) {
+          const fallbackPath = getFirstAvailablePath(isSaas, featureFlags);
+          return redirect(fallbackPath ?? "/settings");
+        }
+      } else if (isTeamOrg) {
+        // Stripe checkout still returns to /settings/billing; send team orgs
+        // to Credits and preserve checkout status for the success/cancel toast.
+        const checkout = url.searchParams.get("checkout");
+        return redirect(
+          checkout
+            ? `/settings/credits?checkout=${encodeURIComponent(checkout)}`
+            : "/settings/credits",
+        );
+      }
+    }
+
+    if (pathname === "/settings/credits") {
+      if (!user || billingHidden || isPersonalOrg || !isTeamOrg) {
         if (isSaas) {
           const fallbackPath = getFirstAvailablePath(isSaas, featureFlags);
           return redirect(fallbackPath ?? "/settings");
@@ -247,16 +263,18 @@ function SettingsScreen() {
 
   return (
     <main data-testid="settings-screen" className="min-h-0 h-full">
-      <SettingsLayout navigationItems={navItems}>
+      <SettingsLayout
+        navigationItems={navItems}
+        topBanner={
+          shouldShowOrgWideBadge ? (
+            <OrgWideSettingsBadge variant={orgWideBadgeVariant} />
+          ) : undefined
+        }
+      >
         <div className="flex flex-col gap-6 pb-8">
           {!shouldHideTitle && (
             <header className="space-y-1">
-              <div className="flex items-center gap-3 flex-wrap">
-                <Typography.H2>{t(currentSectionTitle)}</Typography.H2>
-                {shouldShowOrgWideBadge && (
-                  <OrgWideSettingsBadge variant={orgWideBadgeVariant} />
-                )}
-              </div>
+              <Typography.H2>{t(currentSectionTitle)}</Typography.H2>
               {currentSectionSubtitle ? (
                 <p
                   data-testid="settings-page-subtitle"

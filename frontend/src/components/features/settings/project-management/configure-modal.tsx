@@ -12,6 +12,7 @@ import {
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { useValidateIntegration } from "#/hooks/mutation/use-validate-integration";
 import { useConfig } from "#/hooks/query/use-config";
+import { settingsListRowActionButtonClassName } from "#/utils/settings-list-classes";
 
 interface ConfigureButtonProps {
   onClick: () => void;
@@ -34,7 +35,7 @@ export function ConfigureButton({
       onClick={onClick}
       isDisabled={isDisabled}
       type="button"
-      className="w-30 min-w-20"
+      className={settingsListRowActionButtonClassName}
     >
       {text || t(I18nKey.PROJECT_MANAGEMENT$CONFIGURE_BUTTON_LABEL)}
     </BrandButton>

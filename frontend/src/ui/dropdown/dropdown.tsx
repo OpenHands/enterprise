@@ -50,6 +50,7 @@ export function Dropdown({
     isOpen,
     selectedItem,
     selectItem,
+    toggleMenu,
     getToggleButtonProps,
     getMenuProps,
     getItemProps,
@@ -106,14 +107,32 @@ export function Dropdown({
         : undefined,
     });
 
+  // Padding/gap on the bordered shell is not covered by the input or caret.
+  // Treat those chrome clicks as a toggle so the whole control surface opens.
+  const handleShellClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (isDisabled) {
+      return;
+    }
+    const target = event.target as HTMLElement;
+    if (target.closest("input, button")) {
+      return;
+    }
+    const input = event.currentTarget.querySelector<HTMLInputElement>(
+      'input[role="combobox"]',
+    );
+    input?.focus();
+    toggleMenu();
+  };
+
   return (
     <div className="relative w-full" data-testid={testId}>
       <div
         className={cn(
           dropdownTriggerShellClassName,
-          isDisabled && "cursor-not-allowed opacity-60",
+          isDisabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
           className,
         )}
+        onClick={handleShellClick}
       >
         <DropdownInput
           placeholder={placeholder}

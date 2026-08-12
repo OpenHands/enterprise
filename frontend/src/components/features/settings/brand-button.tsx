@@ -58,7 +58,7 @@ export const BrandButton = forwardRef<
           "bg-[var(--oh-interactive-hover)] text-white hover:opacity-80",
         variant === "danger" && "bg-red-600 text-white hover:bg-red-700",
         variant === "ghost-danger" &&
-          "h-auto min-h-0 bg-transparent px-0 text-red-600 underline hover:text-red-700 hover:no-underline font-normal",
+          "h-auto min-h-0 bg-transparent px-0 text-red-600 hover:text-red-700 font-normal",
         startContent && "flex items-center justify-center gap-2",
         className,
       )}

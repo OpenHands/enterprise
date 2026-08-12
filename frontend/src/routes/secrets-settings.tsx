@@ -94,7 +94,7 @@ function SecretsSettingsScreen() {
   };
 
   return (
-    <div data-testid="secrets-settings-screen" className="flex flex-col gap-5">
+    <div data-testid="secrets-settings-screen" className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <header className="min-w-0 space-y-1">
           <Typography.H2>{t(I18nKey.SETTINGS$NAV_SECRETS)}</Typography.H2>

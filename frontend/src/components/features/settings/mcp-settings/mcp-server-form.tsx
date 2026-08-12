@@ -277,7 +277,7 @@ export function MCPServerForm({
     <form
       data-testid={formTestId}
       onSubmit={handleSubmit}
-      className="flex flex-col items-start gap-6"
+      className="flex w-full flex-col items-stretch gap-6"
     >
       {mode === "add" && (
         <SettingsDropdownInput
@@ -291,7 +291,7 @@ export function MCPServerForm({
           isClearable={false}
           allowsCustomValue={false}
           required
-          wrapperClassName={cn("w-full", "max-w-[680px]")}
+          wrapperClassName="w-full"
         />
       )}
 
@@ -304,7 +304,7 @@ export function MCPServerForm({
             name="url"
             type="url"
             label={t(I18nKey.SETTINGS$MCP_URL)}
-            className="w-full max-w-[680px]"
+            className="w-full"
             required
             defaultValue={server?.url || ""}
             placeholder="https://api.example.com"
@@ -315,7 +315,7 @@ export function MCPServerForm({
             name="api_key"
             type="password"
             label={t(I18nKey.SETTINGS$MCP_API_KEY)}
-            className="w-full max-w-[680px]"
+            className="w-full"
             showOptionalTag
             defaultValue={server?.api_key || ""}
             placeholder={t(I18nKey.SETTINGS$MCP_API_KEY_PLACEHOLDER)}
@@ -327,7 +327,7 @@ export function MCPServerForm({
               name="timeout"
               type="number"
               label={t(I18nKey.SETTINGS$MCP_TIMEOUT_LABEL)}
-              className="w-full max-w-[680px]"
+              className="w-full"
               showOptionalTag
               defaultValue={server?.timeout?.toString() || ""}
               placeholder="60"
@@ -345,7 +345,7 @@ export function MCPServerForm({
             name="name"
             type="text"
             label={t(I18nKey.SETTINGS$MCP_NAME)}
-            className="w-full max-w-[680px]"
+            className="w-full"
             required
             defaultValue={server?.name || ""}
             placeholder="my-mcp-server"
@@ -357,13 +357,13 @@ export function MCPServerForm({
             name="command"
             type="text"
             label={t(I18nKey.SETTINGS$MCP_COMMAND)}
-            className="w-full max-w-[680px]"
+            className="w-full"
             required
             defaultValue={server?.command || ""}
             placeholder="npx"
           />
 
-          <label className="flex flex-col gap-2.5 w-full max-w-[680px]">
+          <label className="flex w-full flex-col gap-2.5">
             <div className="flex items-center gap-2">
               <span className="text-sm">
                 {t(I18nKey.SETTINGS$MCP_COMMAND_ARGUMENTS)}
@@ -387,7 +387,7 @@ export function MCPServerForm({
             </p>
           </label>
 
-          <label className="flex flex-col gap-2.5 w-full max-w-[680px]">
+          <label className="flex w-full flex-col gap-2.5">
             <div className="flex items-center gap-2">
               <span className="text-sm">
                 {t(I18nKey.SETTINGS$MCP_ENVIRONMENT_VARIABLES)}
@@ -410,7 +410,7 @@ export function MCPServerForm({
         </>
       )}
 
-      <div className="flex items-center gap-4">
+      <div className="flex w-full items-center justify-end gap-2">
         <BrandButton
           testId="cancel-button"
           type="button"

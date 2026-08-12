@@ -6,12 +6,12 @@ import {
   HashIcon,
   SearchIcon,
   SlackIcon,
-  TrashIcon,
 } from "#/components/shared/icons/inline-icons";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
+import EditIcon from "#/icons/u-edit.svg?react";
+import DeleteIcon from "#/icons/u-delete.svg?react";
 import {
-  Avatar,
   PillBadge,
   SpendMeter,
   StatusPill,
@@ -145,8 +145,8 @@ export function OrganizationBudgetTab({
         </div>
       </div>
 
-      <div>
-        <div className="flex items-baseline justify-between mb-3">
+      <div className="rounded-lg border border-border-subtle bg-base-secondary p-6">
+        <div className="mb-3 flex items-baseline justify-between">
           <div>
             <span className="text-3xl font-bold text-foreground">
               {`$${currentSpend.toLocaleString("en-US", {
@@ -154,7 +154,7 @@ export function OrganizationBudgetTab({
                 maximumFractionDigits: 2,
               })}`}
             </span>
-            <span className="text-muted ml-2">
+            <span className="ml-2 text-muted">
               {monthlyLimitValue
                 ? `of $${monthlyLimitValue.toLocaleString()} spent in ${cycleLabel}`
                 : `spent in ${cycleLabel}`}
@@ -321,7 +321,7 @@ export function OrganizationBudgetTab({
                   aria-label={`Delete ${threshold.percentage}% threshold`}
                   className={settingsListIconActionButtonClassName}
                 >
-                  <TrashIcon />
+                  <DeleteIcon width={16} height={16} />
                 </button>
               </div>
             );
@@ -415,7 +415,7 @@ export function DefaultBudgetsTab({
 
       <div className="grid grid-cols-2 gap-6">
         <div>
-          <div className="block text-sm text-muted mb-2">Budget cadence</div>
+          <div className="block text-sm text-white mb-2">Budget cadence</div>
           <div className={cn(formControlFieldClassName, "flex items-center")}>
             Monthly
           </div>
@@ -443,7 +443,7 @@ export function DefaultBudgetsTab({
       </div>
 
       <div>
-        <div className="block text-sm text-muted mb-2">Preview</div>
+        <div className="block text-sm text-white mb-2">Preview</div>
         <p className="text-sm text-muted">
           {`New users get up to $${defaultAmountLabel} per month before requiring an increase.`}
         </p>
@@ -597,15 +597,12 @@ export function UserOverridesTab({
                       "h-auto py-3",
                     )}
                   >
-                    <div className="flex items-center gap-3">
-                      <Avatar name={user.name} />
-                      <div>
-                        <div className="text-foreground font-medium">
-                          {user.name}
-                        </div>
-                        <div className="text-sm text-[var(--oh-muted)]">
-                          {user.email || "-"}
-                        </div>
+                    <div>
+                      <div className="text-foreground font-medium">
+                        {user.name}
+                      </div>
+                      <div className="text-sm text-[var(--oh-muted)]">
+                        {user.email || "-"}
                       </div>
                     </div>
                   </td>
@@ -737,14 +734,15 @@ export function UserOverridesTab({
                         </BrandButton>
                       </div>
                     ) : (
-                      <div className="flex items-center justify-end gap-2">
-                        <BrandButton
+                      <div className="ml-auto flex w-fit items-center justify-end gap-0.5">
+                        <button
                           type="button"
-                          variant="secondary"
                           onClick={() => onStartEditing(user)}
+                          aria-label={`Edit budget for ${user.name}`}
+                          className={settingsListIconActionButtonClassName}
                         >
-                          Edit
-                        </BrandButton>
+                          <EditIcon width={16} height={16} />
+                        </button>
                         {user.is_override && (
                           <button
                             type="button"
@@ -756,7 +754,7 @@ export function UserOverridesTab({
                               "disabled:opacity-60",
                             )}
                           >
-                            <TrashIcon />
+                            <DeleteIcon width={16} height={16} />
                           </button>
                         )}
                       </div>

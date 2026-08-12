@@ -16,7 +16,7 @@ export function InstallSlackAppAnchor() {
         window.open("/slack/install", "_blank", "noreferrer noopener")
       }
     >
-      {t(I18nKey.SLACK$INSTALL_APP)}
+      {t(I18nKey.SETTINGS$INSTALL)}
     </BrandButton>
   );
 }

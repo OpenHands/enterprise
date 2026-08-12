@@ -447,15 +447,25 @@ export const MOCK_DEFAULT_USER_SETTINGS: Settings = {
   },
 };
 
+const createInitialMockSettings = (): Settings => {
+  const settings = structuredClone(MOCK_DEFAULT_USER_SETTINGS);
+  // SaaS integrations QA: seed GitHub as installed so the Configure CTA
+  // can show its secondary + external-link treatment.
+  if (import.meta.env.VITE_MOCK_SAAS === "true") {
+    settings.provider_tokens_set = { github: "github.com" };
+  }
+  return settings;
+};
+
 const MOCK_USER_PREFERENCES: {
   settings: Settings | null;
 } = {
   // Seed so mock SaaS/OSS browsers show settings without a prior POST.
-  settings: structuredClone(MOCK_DEFAULT_USER_SETTINGS),
+  settings: createInitialMockSettings(),
 };
 
 export const resetTestHandlersMockSettings = () => {
-  MOCK_USER_PREFERENCES.settings = structuredClone(MOCK_DEFAULT_USER_SETTINGS);
+  MOCK_USER_PREFERENCES.settings = createInitialMockSettings();
 };
 
 // Mock model data used by both V0 and V1 endpoints

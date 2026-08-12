@@ -20,7 +20,7 @@ export function SettingsDesktopSidebar({
     <aside
       data-testid="settings-navbar-desktop"
       className={cn(
-        "hidden md:flex md:w-[300px] md:min-w-[300px] md:shrink-0 md:flex-col md:gap-2",
+        "hidden md:flex md:w-[300px] md:min-w-[300px] md:shrink-0 md:flex-col",
         "md:sticky md:top-0 md:self-stretch md:h-full",
         "md:border-r md:border-[var(--oh-border)] md:bg-base md:pb-2 md:pl-2.5 md:pr-0",
       )}

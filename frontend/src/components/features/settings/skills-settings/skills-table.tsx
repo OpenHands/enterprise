@@ -4,9 +4,17 @@ import { SkillWithState } from "#/types/settings";
 import { Toggle } from "#/components/shared/toggle/toggle";
 import { InfoTooltip } from "#/components/features/settings/info-tooltip";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
+import { SearchIcon } from "#/components/shared/icons/inline-icons";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
-import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
+import {
+  formControlInlineInputClassName,
+  formControlShellClassName,
+} from "#/utils/form-control-classes";
+import {
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+} from "#/utils/settings-list-classes";
 
 interface SkillsTableProps {
   skills: SkillWithState[];
@@ -41,8 +49,7 @@ function ScopeBadge({ scope }: { scope: "instance" | "org" | "personal" }) {
   );
 }
 
-const HEADER_CLASS =
-  "px-4 py-3 text-left text-xs font-medium text-tertiary-alt whitespace-nowrap";
+const HEADER_CLASS = settingsListTableHeaderCellClassName;
 const CELL_CLASS = "px-4 py-3 align-middle";
 
 export function SkillsTable({
@@ -60,21 +67,25 @@ export function SkillsTable({
   return (
     <div className="flex flex-col gap-4">
       {/* Filters */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-        <input
-          data-testid="search-skills-input"
-          type="text"
-          placeholder={t(I18nKey.SETTINGS$SEARCH_PLACEHOLDER)}
-          aria-label={t(I18nKey.SETTINGS$SEARCH_PLACEHOLDER)}
-          value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          className={cn(formControlSettingsFieldClassName, "flex-1")}
-        />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className={cn(formControlShellClassName, "flex-1")}>
+          <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
+            <SearchIcon />
+          </span>
+          <input
+            data-testid="search-skills-input"
+            type="text"
+            placeholder={t(I18nKey.SETTINGS$SEARCH_PLACEHOLDER)}
+            aria-label={t(I18nKey.SETTINGS$SEARCH_PLACEHOLDER)}
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            className={cn(formControlInlineInputClassName, "text-white")}
+          />
+        </div>
         <div className="w-full sm:w-52">
           <SettingsDropdownInput
             testId="type-filter-dropdown"
             name="type-filter"
-            label={t(I18nKey.SETTINGS$TYPE)}
             items={typeOptions}
             defaultSelectedKey="all"
             onSelectionChange={(key) => onTypeChange(key?.toString() ?? null)}
@@ -85,7 +96,6 @@ export function SkillsTable({
           <SettingsDropdownInput
             testId="repository-filter-dropdown"
             name="repository-filter"
-            label={t(I18nKey.SETTINGS$REPOSITORY)}
             items={repositoryOptions}
             defaultSelectedKey="all"
             onSelectionChange={(key) =>
@@ -107,8 +117,8 @@ export function SkillsTable({
               <col className="w-[16%]" />
               <col className="w-[10%]" />
             </colgroup>
-            <thead>
-              <tr className="border-b border-[var(--oh-border)] bg-base-secondary/50">
+            <thead className={settingsListTableHeadClassName}>
+              <tr>
                 <th className={HEADER_CLASS}>{t(I18nKey.SETTINGS$NAME)}</th>
                 <th className={HEADER_CLASS}>
                   {t(I18nKey.SETTINGS$MARKETPLACE_SOURCE)}

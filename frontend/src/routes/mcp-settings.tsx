@@ -10,7 +10,7 @@ import { useUpdateMcpServer } from "#/hooks/mutation/use-update-mcp-server";
 import { I18nKey } from "#/i18n/declaration";
 
 import { MCPServerList } from "#/components/features/settings/mcp-settings/mcp-server-list";
-import { MCPServerForm } from "#/components/features/settings/mcp-settings/mcp-server-form";
+import { MCPServerModal } from "#/components/features/settings/mcp-settings/mcp-server-modal";
 import { KeyStatusIcon } from "#/components/features/settings/key-status-icon";
 import { SettingsInput } from "#/components/features/settings/settings-input";
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
@@ -101,11 +101,14 @@ function MCPSettingsScreen() {
     setSearchApiKeyDirty(false);
   }, [settings?.search_api_key]);
 
+  const closeServerModal = () => {
+    setEditingServer(null);
+    setView("list");
+  };
+
   const handleAddServer = (serverConfig: MCPServerConfig) => {
     addMcpServer(serverConfig, {
-      onSuccess: () => {
-        setView("list");
-      },
+      onSuccess: closeServerModal,
     });
   };
 
@@ -116,9 +119,7 @@ function MCPSettingsScreen() {
         server: serverConfig,
       },
       {
-        onSuccess: () => {
-          setView("list");
-        },
+        onSuccess: closeServerModal,
       },
     );
   };
@@ -172,46 +173,22 @@ function MCPSettingsScreen() {
     return null;
   }
 
-  if (view === "add") {
-    return (
-      <MCPServerForm
-        mode="add"
-        existingServers={allServers}
-        onSubmit={handleAddServer}
-        onCancel={() => setView("list")}
-      />
-    );
-  }
-
-  if (view === "edit" && editingServer) {
-    return (
-      <MCPServerForm
-        mode="edit"
-        server={editingServer}
-        existingServers={allServers}
-        onSubmit={handleEditServer}
-        onCancel={() => {
-          setEditingServer(null);
-          setView("list");
-        }}
-      />
-    );
-  }
-
   return (
-    <div className="h-full flex flex-col gap-6 pb-8">
-      <div className="flex justify-between items-center">
-        <div>
-          <Typography.H2 className="mb-2">
-            {t(I18nKey.SETTINGS$MCP_TITLE)}
-          </Typography.H2>
-          <Typography.Paragraph className="text-sm text-[var(--oh-muted)]">
+    <div data-testid="mcp-settings-screen" className="flex flex-col gap-6">
+      <div className="flex items-start justify-between gap-4">
+        <header className="min-w-0 space-y-1">
+          <Typography.H2>{t(I18nKey.SETTINGS$MCP_TITLE)}</Typography.H2>
+          <p
+            data-testid="settings-page-subtitle"
+            className="text-sm leading-5 text-muted"
+          >
             {t(I18nKey.SETTINGS$MCP_DESCRIPTION)}
-          </Typography.Paragraph>
-        </div>
+          </p>
+        </header>
         <BrandButton
           type="button"
           variant="primary"
+          className="shrink-0 whitespace-nowrap"
           onClick={() => setView("add")}
         >
           {t(I18nKey.SETTINGS$MCP_ADD_SERVER)}
@@ -233,7 +210,7 @@ function MCPSettingsScreen() {
             <Typography.H3>
               {t(I18nKey.SETTINGS$MCP_SEARCH_TITLE)}
             </Typography.H3>
-            <Typography.Paragraph className="text-sm text-[var(--oh-muted)]">
+            <Typography.Paragraph className="text-sm leading-5 text-muted">
               {t(I18nKey.SETTINGS$MCP_SEARCH_DESCRIPTION)}
             </Typography.Paragraph>
           </div>
@@ -280,6 +257,25 @@ function MCPSettingsScreen() {
           </div>
         </section>
       ) : null}
+
+      {view === "add" && (
+        <MCPServerModal
+          mode="add"
+          existingServers={allServers}
+          onSubmit={handleAddServer}
+          onClose={closeServerModal}
+        />
+      )}
+
+      {view === "edit" && editingServer && (
+        <MCPServerModal
+          mode="edit"
+          server={editingServer}
+          existingServers={allServers}
+          onSubmit={handleEditServer}
+          onClose={closeServerModal}
+        />
+      )}
 
       {confirmationModalIsVisible && serverToDelete && (
         <ConfirmationModal

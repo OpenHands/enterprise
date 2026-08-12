@@ -2,6 +2,7 @@ import {
   Links,
   Meta,
   MetaFunction,
+  LinksFunction,
   Outlet,
   Scripts,
   ScrollRestoration,
@@ -45,6 +46,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
     </html>
   );
 }
+
+export const links: LinksFunction = () => [
+  {
+    rel: "icon",
+    type: "image/svg+xml",
+    href: "/favicon.svg",
+  },
+];
 
 export const meta: MetaFunction = () => [
   { title: "OpenHands" },

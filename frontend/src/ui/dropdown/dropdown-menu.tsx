@@ -3,6 +3,7 @@ import { cn } from "#/utils/utils";
 import { DropdownOption } from "./types";
 import {
   dropdownMenuListClassName,
+  dropdownMenuPanelPaddingClassName,
   dropdownMenuRowClassName,
 } from "#/utils/dropdown-classes";
 
@@ -32,7 +33,8 @@ export function DropdownMenu({
       className={cn(
         "absolute z-50 overflow-hidden text-white",
         "w-full mt-1",
-        "bg-tertiary rounded-[6px] context-menu-box-shadow p-1",
+        "bg-tertiary rounded-[6px] context-menu-box-shadow",
+        dropdownMenuPanelPaddingClassName,
         "max-h-60 overflow-auto",
         !isOpen && "hidden",
       )}

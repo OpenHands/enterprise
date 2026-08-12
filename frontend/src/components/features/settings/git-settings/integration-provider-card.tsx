@@ -1,10 +1,7 @@
 import { ReactNode } from "react";
 import { Text } from "#/ui/typography";
 import { cn } from "#/utils/utils";
-import {
-  settingsListRowHeightClassName,
-  settingsListRowHoverClassName,
-} from "#/utils/settings-list-classes";
+import { settingsListRowHoverClassName } from "#/utils/settings-list-classes";
 import { formControlTransitionClassName } from "#/utils/form-control-classes";
 import {
   IntegrationProviderIcon,
@@ -46,8 +43,7 @@ export function IntegrationProviderCard({
     <section data-testid={dataTestId} className={cn(className)}>
       <div
         className={cn(
-          "flex items-center justify-between gap-4 px-3",
-          settingsListRowHeightClassName,
+          "flex items-center justify-between gap-4 px-3 py-3",
           formControlTransitionClassName,
           settingsListRowHoverClassName,
         )}
@@ -81,7 +77,7 @@ export function IntegrationProviderCard({
           </div>
         </div>
         {action ? (
-          <div className="flex w-[13.75rem] shrink-0 justify-end">{action}</div>
+          <div className="flex shrink-0 justify-end">{action}</div>
         ) : null}
       </div>
       {children ? (

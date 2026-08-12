@@ -3,13 +3,20 @@ import { useTranslation } from "react-i18next";
 import { useCreateStripeCheckoutSession } from "#/hooks/mutation/stripe/use-create-stripe-checkout-session";
 import { useBalance } from "#/hooks/query/use-balance";
 import { cn } from "#/utils/utils";
-import MoneyIcon from "#/icons/money.svg?react";
+import CreditCardIcon from "#/icons/credit-card.svg?react";
 import { SettingsInput } from "../settings/settings-input";
 import { BrandButton } from "../settings/brand-button";
 import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { amountIsValid } from "#/utils/amount-is-valid";
 import { I18nKey } from "#/i18n/declaration";
 import { PoweredByStripeTag } from "./powered-by-stripe-tag";
+import {
+  formControlBorderClassName,
+  formControlRadiusClassName,
+  formControlSurfaceClassName,
+} from "#/utils/form-control-classes";
+
+const paymentFormWidthClassName = "w-full max-w-[680px]";
 
 export function PaymentForm({ isDisabled }: { isDisabled?: boolean }) {
   const { t } = useTranslation();
@@ -43,16 +50,31 @@ export function PaymentForm({ isDisabled }: { isDisabled?: boolean }) {
     >
       <div
         className={cn(
-          "flex items-center justify-between w-[680px] bg-primary text-[var(--oh-color-base)] rounded-lg px-3 py-2",
-          "text-[28px] leading-8 -tracking-[0.02em] font-bold",
+          formControlBorderClassName,
+          formControlRadiusClassName,
+          formControlSurfaceClassName,
+          paymentFormWidthClassName,
+          "flex items-center justify-between gap-4 px-4 py-4",
         )}
       >
-        <div className="flex items-center gap-2">
-          <MoneyIcon width={22} height={14} />
-          <span>{t(I18nKey.PAYMENT$MANAGE_CREDITS)}</span>
+        <div className="flex min-w-0 items-center gap-3">
+          <span
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary"
+            aria-hidden
+          >
+            <CreditCardIcon width={18} height={18} />
+          </span>
+          <span className="truncate text-sm font-medium text-muted">
+            {t(I18nKey.PAYMENT$AVAILABLE_CREDITS)}
+          </span>
         </div>
         {!isLoading && (
-          <span data-testid="user-balance">${Number(balance).toFixed(2)}</span>
+          <span
+            data-testid="user-balance"
+            className="shrink-0 text-2xl font-semibold tabular-nums tracking-tight text-foreground"
+          >
+            ${Number(balance).toFixed(2)}
+          </span>
         )}
         {isLoading && <LoadingSpinner size="small" />}
       </div>
@@ -65,14 +87,16 @@ export function PaymentForm({ isDisabled }: { isDisabled?: boolean }) {
           type="number"
           label={t(I18nKey.PAYMENT$ADD_FUNDS)}
           placeholder={t(I18nKey.PAYMENT$SPECIFY_AMOUNT_USD)}
-          className="w-[680px]"
+          className={paymentFormWidthClassName}
           min={10}
           max={25000}
           step={1}
           isDisabled={isDisabled}
         />
 
-        <div className="flex items-center w-[680px] gap-2">
+        <div
+          className={cn(paymentFormWidthClassName, "flex items-center gap-2")}
+        >
           <BrandButton
             variant="primary"
             type="submit"

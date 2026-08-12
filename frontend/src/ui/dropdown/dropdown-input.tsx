@@ -27,8 +27,8 @@ export function DropdownInput({
           "flex-1 min-w-0",
           "placeholder:text-tertiary-alt",
           formControlInlineInputClassName,
-          "px-0 not-italic text-inherit",
-          !searchable && "cursor-pointer caret-transparent",
+          "pl-3 pr-0 not-italic text-inherit",
+          !searchable && "h-full cursor-pointer caret-transparent",
         ),
       })}
     />

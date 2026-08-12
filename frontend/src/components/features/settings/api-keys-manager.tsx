@@ -47,12 +47,12 @@ function LlmApiKeyPaywall() {
   const navigate = useNavigate();
 
   return (
-    <div className="border-b border-[var(--oh-border)] pb-6 mb-6 flex flex-col gap-6">
-      <h3 className="text-xl font-medium text-white">
+    <div className="flex flex-col gap-6">
+      <h3 className="text-lg font-medium text-white">
         {t(I18nKey.SETTINGS$LLM_API_KEY)}
       </h3>
       <div className="bg-base-secondary border border-[var(--oh-border)] rounded-lg p-4 flex flex-col gap-4">
-        <p className="text-sm text-[var(--oh-muted)]">
+        <p className="text-sm leading-5 text-muted">
           {t(I18nKey.SETTINGS$LLM_API_KEY_PAYWALL_MESSAGE)}
         </p>
         <div>
@@ -100,11 +100,11 @@ function LlmApiKeyManager({
   }
 
   return (
-    <div className="border-b border-[var(--oh-border)] pb-6 mb-6 flex flex-col gap-4">
-      <h3 className="text-xl font-medium text-white">
+    <div className="flex flex-col gap-4">
+      <h3 className="text-lg font-medium text-white">
         {t(I18nKey.SETTINGS$LLM_API_KEY)}
       </h3>
-      <p className="text-sm text-[var(--oh-muted)]">
+      <p className="text-sm leading-5 text-muted">
         {t(I18nKey.SETTINGS$LLM_API_KEY_DESCRIPTION)}
       </p>
       <div className={cn(formControlShellClassName, "pr-1.5")}>
@@ -163,7 +163,7 @@ function LlmApiKeyManager({
               }
             }}
           >
-            <CopyIcon width={15} height={15} />
+            <CopyIcon width={16} height={16} />
           </button>
         </div>
       </div>
@@ -483,9 +483,9 @@ export function ApiKeysManager() {
           refreshLlmApiKey={refreshLlmApiKey}
         />
 
-        <div className="flex flex-col gap-4">
+        <div className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6">
           <div className="flex items-center justify-between gap-4">
-            <h3 className="text-xl font-medium text-white">
+            <h3 className="text-lg font-medium text-white">
               {t(I18nKey.SETTINGS$OPENHANDS_API_KEYS)}
             </h3>
             <BrandButton
@@ -497,7 +497,7 @@ export function ApiKeysManager() {
             </BrandButton>
           </div>
 
-          <p className="text-sm text-[var(--oh-muted)]">
+          <p className="text-sm leading-5 text-muted">
             <Trans
               i18nKey={I18nKey.SETTINGS$API_KEYS_DESCRIPTION}
               components={{

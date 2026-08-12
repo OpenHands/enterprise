@@ -26,7 +26,7 @@ export function ApiKeyModalBase({
       >
         <h3 className="text-xl font-bold">{title}</h3>
         {children}
-        <div className="w-full flex gap-2 mt-2">{footer}</div>
+        <div className="w-full flex justify-end gap-2 mt-2">{footer}</div>
       </div>
     </ModalBackdrop>
   );

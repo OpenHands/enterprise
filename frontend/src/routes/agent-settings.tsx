@@ -292,7 +292,7 @@ export default function AgentSettingsScreen() {
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div data-testid="agent-settings-screen" className="h-full relative">
-      <div className="flex flex-col gap-8 pb-20">
+      <div className="flex flex-col gap-6">
         {/* Agent-type selector — only when ACP feature flag is on */}
         {isAcpEnabled && (
           <section className="grid gap-4 xl:grid-cols-2">

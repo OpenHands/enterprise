@@ -30,15 +30,15 @@ export function NewApiKeyModal({
 
   const modalFooter = (
     <>
+      <BrandButton type="button" variant="secondary" onClick={onClose}>
+        {t(I18nKey.BUTTON$CLOSE)}
+      </BrandButton>
       <BrandButton
         type="button"
         variant="primary"
         onClick={handleCopyToClipboard}
       >
         {t(I18nKey.BUTTON$COPY_TO_CLIPBOARD)}
-      </BrandButton>
-      <BrandButton type="button" variant="secondary" onClick={onClose}>
-        {t(I18nKey.BUTTON$CLOSE)}
       </BrandButton>
     </>
   );
@@ -51,7 +51,9 @@ export function NewApiKeyModal({
       footer={modalFooter}
     >
       <div data-testid="new-api-key-modal">
-        <p className="text-sm">{t(I18nKey.SETTINGS$API_KEY_WARNING)}</p>
+        <p className="text-xs leading-5 text-[var(--oh-muted)]">
+          {t(I18nKey.SETTINGS$API_KEY_WARNING)}
+        </p>
         <div className="mt-4 break-all rounded-lg border border-[var(--oh-border)] bg-base-secondary p-4 font-mono text-sm">
           {newlyCreatedKey.key}
         </div>

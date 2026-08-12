@@ -5,6 +5,10 @@ import { Toggle } from "#/components/shared/toggle/toggle";
 import { InfoTooltip } from "#/components/features/settings/info-tooltip";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
+import {
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+} from "#/utils/settings-list-classes";
 import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
 
@@ -42,8 +46,10 @@ function ScopeBadge({ scope }: { scope: "instance" | "org" | "personal" }) {
   );
 }
 
-const HEADER_CLASS =
-  "px-4 py-3 text-left text-xs font-medium text-tertiary-alt whitespace-nowrap";
+const HEADER_CLASS = cn(
+  settingsListTableHeaderCellClassName,
+  "whitespace-nowrap",
+);
 const CELL_CLASS = "px-4 py-3 align-middle";
 
 export function MarketplaceTable({
@@ -70,8 +76,8 @@ export function MarketplaceTable({
             <col className="w-[10%]" />
             <col className="w-[11%]" />
           </colgroup>
-          <thead>
-            <tr className="border-b border-[var(--oh-border)] bg-base-secondary/50">
+          <thead className={settingsListTableHeadClassName}>
+            <tr>
               <th className={HEADER_CLASS}>
                 {t(I18nKey.SETTINGS$MARKETPLACE_NAME)}
               </th>

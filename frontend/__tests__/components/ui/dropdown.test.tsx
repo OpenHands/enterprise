@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { Dropdown } from "#/ui/dropdown/dropdown";
@@ -30,6 +30,29 @@ describe("Dropdown", () => {
 
       const listbox = screen.getByRole("listbox");
       expect(listbox).toBeInTheDocument();
+      expect(screen.getByText("Option 1")).toBeInTheDocument();
+      expect(screen.getByText("Option 2")).toBeInTheDocument();
+      expect(screen.getByText("Option 3")).toBeInTheDocument();
+    });
+
+    it("should open when clicking the trigger shell surface", () => {
+      render(
+        <Dropdown
+          options={mockOptions}
+          searchable={false}
+          defaultValue={mockOptions[0]}
+        />,
+      );
+
+      expect(screen.queryByText("Option 2")).not.toBeInTheDocument();
+
+      const shell = screen.getByRole("combobox").parentElement;
+      expect(shell).not.toBeNull();
+      expect(shell).toHaveClass("cursor-pointer");
+
+      // Click the shell itself (padding/gap), not the nested input/caret.
+      fireEvent.click(shell!);
+
       expect(screen.getByText("Option 1")).toBeInTheDocument();
       expect(screen.getByText("Option 2")).toBeInTheDocument();
       expect(screen.getByText("Option 3")).toBeInTheDocument();

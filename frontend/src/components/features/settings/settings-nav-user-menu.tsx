@@ -13,6 +13,7 @@ import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 import {
   dropdownMenuListClassName,
+  dropdownMenuPanelPaddingClassName,
   dropdownMenuRowClassName,
 } from "#/utils/dropdown-classes";
 
@@ -82,7 +83,8 @@ export function SettingsNavUserMenu() {
           data-testid="settings-nav-user-popover"
           className={cn(
             "absolute bottom-full left-0 right-0 z-[9999] mb-2",
-            "rounded-[6px] bg-tertiary p-1 context-menu-box-shadow",
+            "rounded-[6px] bg-tertiary context-menu-box-shadow",
+            dropdownMenuPanelPaddingClassName,
             dropdownMenuListClassName,
           )}
         >

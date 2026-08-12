@@ -1,5 +1,12 @@
 import React from "react";
 import { cn } from "#/utils/utils";
+import {
+  formControlBorderClassName,
+  formControlFocusWithinClassName,
+  formControlRadiusClassName,
+  formControlSurfaceClassName,
+  formControlTransitionClassName,
+} from "#/utils/form-control-classes";
 import { BrandBadge } from "../badge";
 import XIcon from "#/icons/x.svg?react";
 
@@ -55,14 +62,18 @@ export function BadgeInput({
   return (
     <div
       className={cn(
-        "bg-tertiary border border-[#717888] rounded w-full p-2 placeholder:text-tertiary-alt",
-        "flex flex-wrap items-center gap-2",
+        formControlRadiusClassName,
+        formControlBorderClassName,
+        formControlSurfaceClassName,
+        formControlTransitionClassName,
+        formControlFocusWithinClassName,
+        "flex min-h-9 w-full min-w-0 flex-wrap items-center gap-2 px-3 py-2 text-sm text-white",
         className,
       )}
     >
       {value.map((badge, index) => (
         <div key={index}>
-          <BrandBadge className="flex items-center gap-0.5 py-1 px-2.5 text-sm text-[var(--oh-color-base)] font-semibold leading-[16px]">
+          <BrandBadge className="flex items-center gap-0.5 px-2.5 py-1 text-sm font-medium leading-4 tracking-normal text-[var(--oh-color-base)]">
             {badge}
             <button
               data-testid="remove-button"
@@ -83,7 +94,11 @@ export function BadgeInput({
         onChange={(e) => setInputValue(e.target.value)}
         onKeyDown={handleKeyDown}
         onBlur={() => commitInput(inputValue)}
-        className={cn("flex-grow outline-none bg-transparent", inputClassName)}
+        className={cn(
+          "min-w-[8rem] flex-grow bg-transparent text-inherit outline-none",
+          "placeholder:text-tertiary-alt",
+          inputClassName,
+        )}
       />
     </div>
   );

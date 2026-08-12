@@ -28,6 +28,13 @@ import {
   formControlNativeSelectClassName,
   formControlShellClassName,
 } from "#/utils/form-control-classes";
+import {
+  settingsListContainerClassName,
+  settingsListTableCellClassName,
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+  settingsListTableRowClassName,
+} from "#/utils/settings-list-classes";
 
 const usageNativeSelectClassName = cn(
   formControlNativeSelectClassName,
@@ -36,9 +43,26 @@ const usageNativeSelectClassName = cn(
 
 const usageFilterSelectClassName = formControlNativeSelectClassName;
 
-const usageTableShellClassName =
-  "min-w-0 overflow-hidden rounded-lg border border-border-subtle bg-base-secondary";
+const usageTableShellClassName = cn(settingsListContainerClassName, "min-w-0");
 
+const usageTableHeaderCellClassName = settingsListTableHeaderCellClassName;
+
+const usageTableHeaderCellRightClassName = cn(
+  settingsListTableHeaderCellClassName,
+  "text-right",
+);
+
+const usageTableCellClassName = settingsListTableCellClassName;
+
+const usageTableCellRightClassName = cn(
+  settingsListTableCellClassName,
+  "text-right font-mono tabular-nums",
+);
+
+const usageTableEmptyCellClassName = cn(
+  settingsListTableCellClassName,
+  "h-auto py-8 text-center text-muted",
+);
 const DEFAULT_CONVERSATION_STATUS = "running";
 const DEFAULT_CONVERSATION_SORT_BY = "updated_at";
 const DEFAULT_CONVERSATION_SORT_ORDER = "desc";
@@ -112,9 +136,9 @@ export function OverviewTab({
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="bg-base-secondary border border-border-subtle rounded-lg p-6 lg:col-span-2">
-          <div className="flex items-start justify-between mb-6">
+      <div className="grid grid-cols-1 items-stretch gap-6 lg:grid-cols-3">
+        <div className="flex h-full flex-col rounded-lg border border-border-subtle bg-base-secondary p-6 lg:col-span-2">
+          <div className="mb-4 flex items-start justify-between">
             <div>
               <h2 className="text-lg font-medium text-foreground">
                 Conversations started per day
@@ -145,16 +169,20 @@ export function OverviewTab({
               Export CSV
             </button>
           </div>
-          {chartData.length > 0 ? (
-            <AreaChart data={chartData} />
-          ) : (
-            <div className="py-10 text-center text-sm text-muted">
-              No usage data available yet.
-            </div>
-          )}
+          <div className="relative min-h-36 flex-1">
+            {chartData.length > 0 ? (
+              <div className="absolute inset-0">
+                <AreaChart data={chartData} />
+              </div>
+            ) : (
+              <div className="flex h-full min-h-36 items-center justify-center py-8 text-center text-sm text-muted">
+                No usage data available yet.
+              </div>
+            )}
+          </div>
         </div>
-        <div className="bg-base-secondary border border-border-subtle rounded-lg p-6">
-          <div className="mb-6">
+        <div className="flex h-full flex-col rounded-lg border border-border-subtle bg-base-secondary p-6">
+          <div className="mb-4">
             <h2 className="text-lg font-medium text-foreground">
               Spend by agent
             </h2>
@@ -163,27 +191,25 @@ export function OverviewTab({
             </p>
           </div>
           {agentSpendTotal > 0 ? (
-            <div className="flex flex-col gap-6">
-              <div className="mx-auto shrink-0">
-                <PieChart
-                  data={agentSpendRows.map((row) => ({
-                    value: row.total_cost,
-                    color: row.color,
-                    label: row.agent_name,
-                    percent: row.percent,
-                  }))}
-                  total={agentSpendTotal}
-                />
-              </div>
-              <div className="w-full space-y-3">
+            <div className="flex flex-1 flex-col items-center justify-center gap-4">
+              <PieChart
+                data={agentSpendRows.map((row) => ({
+                  value: row.total_cost,
+                  color: row.color,
+                  label: row.agent_name,
+                  percent: row.percent,
+                }))}
+                total={agentSpendTotal}
+              />
+              <div className="w-full min-w-0 space-y-2">
                 {agentSpendRows.map((row) => (
-                  <div key={row.agent_name} className="space-y-1 text-sm">
+                  <div key={row.agent_name} className="space-y-0.5 text-sm">
                     <div className="flex min-w-0 items-center gap-2">
                       <span
                         className="h-2 w-2 shrink-0 rounded-full"
                         style={{ backgroundColor: row.color }}
                       />
-                      <span className="min-w-0 flex-1 text-foreground">
+                      <span className="min-w-0 flex-1 truncate text-foreground">
                         {row.agent_name}
                       </span>
                     </div>
@@ -195,7 +221,7 @@ export function OverviewTab({
               </div>
             </div>
           ) : (
-            <div className="py-10 text-center text-sm text-muted">
+            <div className="flex flex-1 items-center justify-center py-8 text-center text-sm text-muted">
               No agent spend data available yet.
             </div>
           )}
@@ -450,47 +476,25 @@ export function ConversationsTab({
       <div className={usageTableShellClassName}>
         <div className="overflow-x-auto">
           <table className="w-full min-w-max">
-            <thead>
-              <tr className="border-b border-border-subtle">
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  User
-                </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
-                  Tokens
-                </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
-                  Spend
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  Duration
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  Started
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  Last update
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  Associated PR
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  Merged?
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  Agent
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  Type
-                </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
-                  Stop
-                </th>
+            <thead className={settingsListTableHeadClassName}>
+              <tr>
+                <th className={usageTableHeaderCellClassName}>User</th>
+                <th className={usageTableHeaderCellRightClassName}>Tokens</th>
+                <th className={usageTableHeaderCellRightClassName}>Spend</th>
+                <th className={usageTableHeaderCellClassName}>Duration</th>
+                <th className={usageTableHeaderCellClassName}>Started</th>
+                <th className={usageTableHeaderCellClassName}>Last update</th>
+                <th className={usageTableHeaderCellClassName}>Associated PR</th>
+                <th className={usageTableHeaderCellClassName}>Merged?</th>
+                <th className={usageTableHeaderCellClassName}>Agent</th>
+                <th className={usageTableHeaderCellClassName}>Type</th>
+                <th className={usageTableHeaderCellRightClassName}>Stop</th>
               </tr>
             </thead>
             <tbody>
               {conversationsLoading && (
                 <tr>
-                  <td colSpan={11} className="px-4 py-8 text-center text-muted">
+                  <td colSpan={11} className={usageTableEmptyCellClassName}>
                     Loading conversations...
                   </td>
                 </tr>
@@ -498,10 +502,7 @@ export function ConversationsTab({
               {!conversationsLoading &&
                 (conversationsData?.items.length ?? 0) === 0 && (
                   <tr>
-                    <td
-                      colSpan={11}
-                      className="px-4 py-8 text-center text-muted"
-                    >
+                    <td colSpan={11} className={usageTableEmptyCellClassName}>
                       No conversations found for this time window.
                     </td>
                   </tr>
@@ -512,47 +513,62 @@ export function ConversationsTab({
                 return (
                   <tr
                     key={conversation.id}
-                    className="border-b border-border-subtle hover:bg-interactive-hover-low/50 transition-colors"
+                    className={settingsListTableRowClassName}
                   >
-                    <td className="px-4 py-4">
-                      <div className="text-foreground text-sm font-medium">
+                    <td className={cn(usageTableCellClassName, "h-auto py-3")}>
+                      <div className="text-foreground font-medium">
                         {conversation.user_email?.split("@")[0] || "Unknown"}
                       </div>
-                      <div className="text-xs text-text-dim">
+                      <div className="text-xs text-tertiary-alt">
                         {conversation.user_email || "-"}
                       </div>
                     </td>
-                    <td className="px-4 py-4 text-right text-sm font-mono text-foreground">
+                    <td
+                      className={cn(
+                        usageTableCellRightClassName,
+                        "text-foreground",
+                      )}
+                    >
                       {formatTokens(conversation.total_tokens)}
                     </td>
-                    <td className="px-4 py-4 text-right text-sm text-foreground">
+                    <td
+                      className={cn(
+                        usageTableCellRightClassName,
+                        "text-foreground",
+                      )}
+                    >
                       {formatCost(conversation.accumulated_cost)}
                     </td>
-                    <td className="px-4 py-4 text-sm text-muted">
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
                       {formatDuration(
                         conversation.created_at,
                         conversation.updated_at,
                       )}
                     </td>
-                    <td className="px-4 py-4 text-sm text-muted">
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
                       {formatDateTimeOrDash(conversation.created_at)}
                     </td>
-                    <td className="px-4 py-4 text-sm text-muted">
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
                       {formatDateTimeOrDash(conversation.updated_at)}
                     </td>
-                    <td className="px-4 py-4 text-sm text-muted">
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
                       {formatAssociatedPr(conversation)}
                     </td>
-                    <td className="px-4 py-4 text-sm text-muted">
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
                       {formatMergedStatus(conversation.pr_merged)}
                     </td>
-                    <td className="px-4 py-4 text-sm text-muted">
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
                       {formatAgentLabel(conversation)}
                     </td>
-                    <td className="px-4 py-4 text-sm text-muted capitalize">
+                    <td
+                      className={cn(
+                        usageTableCellClassName,
+                        "text-muted capitalize",
+                      )}
+                    >
                       {conversation.trigger || "-"}
                     </td>
-                    <td className="px-4 py-4 text-right text-sm">
+                    <td className={cn(usageTableCellClassName, "text-right")}>
                       {isRunning && (
                         <button
                           type="button"
@@ -563,7 +579,7 @@ export function ConversationsTab({
                             })
                           }
                           disabled={stoppingIds.has(conversation.id)}
-                          className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted hover:text-foreground hover:bg-interactive-hover rounded transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted disabled:cursor-not-allowed"
+                          className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs text-muted transition-colors hover:bg-interactive-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted"
                           title="Stop conversation"
                           aria-label="Stop conversation"
                         >
@@ -580,7 +596,7 @@ export function ConversationsTab({
             </tbody>
           </table>
         </div>
-        <div className="flex items-center justify-between px-4 py-3 border-t border-border-subtle">
+        <div className="flex items-center justify-between border-t border-[var(--oh-border)] px-3 py-3">
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -678,39 +694,23 @@ export function UsersTab({
       <div className={usageTableShellClassName}>
         <div className="overflow-x-auto">
           <table className="w-full min-w-max">
-            <thead>
-              <tr className="border-b border-border-subtle">
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  User
-                </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
-                  Convos
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  First convo
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  Last convo
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  First login
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  Last login
-                </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+            <thead className={settingsListTableHeadClassName}>
+              <tr>
+                <th className={usageTableHeaderCellClassName}>User</th>
+                <th className={usageTableHeaderCellRightClassName}>Convos</th>
+                <th className={usageTableHeaderCellClassName}>First convo</th>
+                <th className={usageTableHeaderCellClassName}>Last convo</th>
+                <th className={usageTableHeaderCellClassName}>First login</th>
+                <th className={usageTableHeaderCellClassName}>Last login</th>
+                <th className={usageTableHeaderCellRightClassName}>
                   Spend MTD
                 </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                <th className={usageTableHeaderCellRightClassName}>
                   Spend YTD
                 </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
-                  Lifetime
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  Budget
-                </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                <th className={usageTableHeaderCellRightClassName}>Lifetime</th>
+                <th className={usageTableHeaderCellClassName}>Budget</th>
+                <th className={usageTableHeaderCellRightClassName}>
                   PRs merged
                 </th>
               </tr>
@@ -718,14 +718,14 @@ export function UsersTab({
             <tbody>
               {userUsageLoading && (
                 <tr>
-                  <td colSpan={11} className="px-4 py-8 text-center text-muted">
+                  <td colSpan={11} className={usageTableEmptyCellClassName}>
                     Loading user usage...
                   </td>
                 </tr>
               )}
               {!userUsageLoading && (userUsage?.items.length ?? 0) === 0 && (
                 <tr>
-                  <td colSpan={11} className="px-4 py-8 text-center text-muted">
+                  <td colSpan={11} className={usageTableEmptyCellClassName}>
                     No user usage data available yet.
                   </td>
                 </tr>
@@ -733,46 +733,68 @@ export function UsersTab({
               {userUsage?.items.map((user) => (
                 <tr
                   key={user.user_id}
-                  className="border-b border-border-subtle hover:bg-interactive-hover-low/50 transition-colors"
+                  className={settingsListTableRowClassName}
                 >
-                  <td className="px-4 py-4">
-                    <div className="text-foreground text-sm font-medium">
+                  <td className={cn(usageTableCellClassName, "h-auto py-3")}>
+                    <div className="text-foreground font-medium">
                       {user.user_name ??
                         user.user_email?.split("@")[0] ??
                         "Unknown"}
                     </div>
-                    <div className="text-xs text-text-dim">
+                    <div className="text-xs text-tertiary-alt">
                       {user.user_email || "-"}
                     </div>
                   </td>
-                  <td className="px-4 py-4 text-right text-sm text-foreground">
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
                     {user.conversation_count.toLocaleString()}
                   </td>
-                  <td className="px-4 py-4 text-sm text-muted">
+                  <td className={cn(usageTableCellClassName, "text-muted")}>
                     {formatDateTimeOrDash(user.first_conversation_at)}
                   </td>
-                  <td className="px-4 py-4 text-sm text-muted">
+                  <td className={cn(usageTableCellClassName, "text-muted")}>
                     {formatDateTimeOrDash(user.last_conversation_at)}
                   </td>
-                  <td className="px-4 py-4 text-sm text-muted">
+                  <td className={cn(usageTableCellClassName, "text-muted")}>
                     {formatDateTimeOrDash(user.first_login_at)}
                   </td>
-                  <td className="px-4 py-4 text-sm text-muted">
+                  <td className={cn(usageTableCellClassName, "text-muted")}>
                     {formatDateTimeOrDash(user.last_login_at)}
                   </td>
-                  <td className="px-4 py-4 text-right text-sm text-foreground">
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
                     {formatCost(user.spend_mtd)}
                   </td>
-                  <td className="px-4 py-4 text-right text-sm text-foreground">
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
                     {formatCost(user.spend_ytd)}
                   </td>
-                  <td className="px-4 py-4 text-right text-sm text-foreground">
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
                     {formatCost(user.spend_lifetime)}
                   </td>
-                  <td className="px-4 py-4 text-sm text-muted">
+                  <td className={cn(usageTableCellClassName, "text-muted")}>
                     {formatBudget(user)}
                   </td>
-                  <td className="px-4 py-4 text-right text-sm text-muted">
+                  <td
+                    className={cn(usageTableCellRightClassName, "text-muted")}
+                  >
                     {user.prs_merged ?? "-"}
                   </td>
                 </tr>
@@ -858,24 +880,22 @@ export function ModelsTab({
       <div className={usageTableShellClassName}>
         <div className="overflow-x-auto">
           <table className="w-full min-w-max">
-            <thead>
-              <tr className="border-b border-border-subtle">
-                <th className="px-4 py-3 text-left text-sm font-medium leading-5 text-text-dim">
-                  Model
-                </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+            <thead className={settingsListTableHeadClassName}>
+              <tr>
+                <th className={usageTableHeaderCellClassName}>Model</th>
+                <th className={usageTableHeaderCellRightClassName}>
                   Conversations
                 </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                <th className={usageTableHeaderCellRightClassName}>
                   Tokens Used
                 </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                <th className={usageTableHeaderCellRightClassName}>
                   Avg Tokens / Convo
                 </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                <th className={usageTableHeaderCellRightClassName}>
                   Avg Cost / Convo
                 </th>
-                <th className="px-4 py-3 text-right text-sm font-medium leading-5 text-text-dim">
+                <th className={usageTableHeaderCellRightClassName}>
                   Total Cost
                 </th>
               </tr>
@@ -884,26 +904,51 @@ export function ModelsTab({
               {filteredModels.map((model) => (
                 <tr
                   key={model.model_name}
-                  className="border-b border-border-subtle hover:bg-interactive-hover-low/50 transition-colors"
+                  className={settingsListTableRowClassName}
                 >
-                  <td className="px-4 py-5">
-                    <div className="text-foreground font-medium">
+                  <td className={usageTableCellClassName}>
+                    <div className="truncate font-medium text-foreground">
                       {model.model_name}
                     </div>
                   </td>
-                  <td className="px-4 py-5 text-foreground text-sm font-mono text-right">
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
                     {model.conversation_count.toLocaleString()}
                   </td>
-                  <td className="px-4 py-5 text-foreground text-sm font-mono text-right">
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
                     {formatTokens(model.total_tokens)}
                   </td>
-                  <td className="px-4 py-5 text-foreground text-sm font-mono text-right">
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
                     {formatTokens(model.avgTokens)}
                   </td>
-                  <td className="px-4 py-5 text-foreground text-sm font-mono text-right">
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
                     ${model.avgCost.toFixed(2)}
                   </td>
-                  <td className="px-4 py-5 text-foreground text-sm font-mono text-right font-medium">
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "font-medium text-foreground",
+                    )}
+                  >
                     ${model.total_cost.toFixed(2)}
                   </td>
                 </tr>
@@ -911,7 +956,7 @@ export function ModelsTab({
 
               {filteredModels.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-muted">
+                  <td colSpan={6} className={usageTableEmptyCellClassName}>
                     No model usage data available for this time window.
                   </td>
                 </tr>

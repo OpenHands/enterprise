@@ -16,6 +16,7 @@ import { AzureDevOpsWebhookManager } from "#/components/features/settings/git-se
 import { ForgejoTokenInput } from "#/components/features/settings/git-settings/forgejo-token-input";
 import { ConfigureGitHubRepositoriesAnchor } from "#/components/features/settings/git-settings/configure-github-repositories-anchor";
 import { ConfigureAzureDevOpsAnchor } from "#/components/features/settings/git-settings/configure-azure-devops-anchor";
+import { ConfigureGitLabAnchor } from "#/components/features/settings/git-settings/configure-gitlab-anchor";
 import { InstallSlackAppAnchor } from "#/components/features/settings/git-settings/install-slack-app-anchor";
 import { IntegrationProviderCard } from "#/components/features/settings/git-settings/integration-provider-card";
 import { I18nKey } from "#/i18n/declaration";
@@ -247,10 +248,7 @@ function GitSettingsScreen() {
   const connectedStatusLabel = (
     isConnected: boolean,
     disconnectedKey: I18nKey,
-  ) =>
-    `${t(I18nKey.COMMON$STATUS)}: ${
-      isConnected ? t(I18nKey.STATUS$CONNECTED) : t(disconnectedKey)
-    }`;
+  ) => (isConnected ? t(I18nKey.STATUS$CONNECTED) : t(disconnectedKey));
 
   return (
     <form
@@ -275,9 +273,15 @@ function GitSettingsScreen() {
                   <IntegrationProviderCard
                     provider="github"
                     title={t(I18nKey.SETTINGS$GITHUB)}
+                    isConnected={isGitHubTokenSet}
+                    statusTestId="github-status-text"
+                    statusLabel={
+                      isGitHubTokenSet ? t(I18nKey.STATUS$CONNECTED) : undefined
+                    }
                     action={
                       <ConfigureGitHubRepositoriesAnchor
                         slug={config.github_app_slug!}
+                        isInstalled={isGitHubTokenSet}
                       />
                     }
                   />
@@ -293,6 +297,9 @@ function GitSettingsScreen() {
                       isGitLabTokenSet,
                       I18nKey.SETTINGS$GITLAB_NOT_CONNECTED,
                     )}
+                    action={
+                      !isGitLabTokenSet ? <ConfigureGitLabAnchor /> : undefined
+                    }
                   >
                     {isGitLabTokenSet ? <GitLabWebhookManager /> : null}
                   </IntegrationProviderCard>
