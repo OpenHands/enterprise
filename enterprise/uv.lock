@@ -8,5 +8,6 @@ exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
 openhands-agent-server = false
+litellm = false
 openhands-tools = false
 openhands-sdk = false
