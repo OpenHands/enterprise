@@ -433,6 +433,8 @@ class SaasSettingsStore(SettingsStore):
         # Apply defaults if nullable database columns are None in pre-existing rows
         if kwargs.get('git_full_clone') is None:
             kwargs.pop('git_full_clone', None)
+        if kwargs.get('git_clone_timeout') is None:
+            kwargs.pop('git_clone_timeout', None)
         if kwargs.get('enable_sound_notifications') is None:
             kwargs.pop('enable_sound_notifications', None)
         # Apply default if registered_marketplaces is None in the database

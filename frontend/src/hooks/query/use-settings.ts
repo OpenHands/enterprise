@@ -93,6 +93,8 @@ const normalizeSettingsResponse = (settings: Partial<Settings>): Settings => {
     git_user_name: settings.git_user_name || DEFAULT_SETTINGS.git_user_name,
     git_user_email: settings.git_user_email || DEFAULT_SETTINGS.git_user_email,
     git_full_clone: settings.git_full_clone ?? DEFAULT_SETTINGS.git_full_clone,
+    git_clone_timeout:
+      settings.git_clone_timeout ?? DEFAULT_SETTINGS.git_clone_timeout,
     is_new_user: false,
     disabled_skills:
       settings.disabled_skills ?? DEFAULT_SETTINGS.disabled_skills,
