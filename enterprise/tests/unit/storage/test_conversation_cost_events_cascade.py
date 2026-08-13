@@ -91,14 +91,14 @@ def test_cost_event_fk_declares_cascade():
 
 
 @pytest.mark.asyncio
-async def test_delete_conversation_cascades_cost_events(
+async def test_soft_delete_conversation_retains_row_and_cost_events(
     engine: AsyncEngine, session: AsyncSession
 ):
-    """Deleting a conversation must remove its cost-event rows.
+    """Soft-deleting a conversation retains its row and cost-event rows.
 
-    Reproduces the production bug where deleting from
-    ``conversation_metadata`` fails with ``ForeignKeyViolationError`` because
-    ``conversation_cost_events`` still references the row.
+    Production no longer hard-deletes ``conversation_metadata``; it marks
+    ``deleted_at``. The row and its ``conversation_cost_events`` rows are kept
+    for reconciliation/audit, and the conversation is hidden from reads.
     """
     conversation_id = str(uuid4())
     other_conversation_id = str(uuid4())
@@ -143,16 +143,24 @@ async def test_delete_conversation_cascades_cost_events(
     deleted = await service.delete_app_conversation_info(UUID(conversation_id))
     assert deleted is True
 
-    remaining_metadata = (
-        (await session.execute(select(StoredConversationMetadata.conversation_id)))
-        .scalars()
+    # The conversation row is retained (soft-deleted) with deleted_at set.
+    metadata = (
+        (await session.execute(
+            select(StoredConversationMetadata.conversation_id, StoredConversationMetadata.deleted_at)
+        ))
         .all()
     )
-    assert remaining_metadata == [other_conversation_id]
+    metadata_by_id = {row[0]: row[1] for row in metadata}
+    assert metadata_by_id[conversation_id] is not None  # soft-deleted
+    assert metadata_by_id[other_conversation_id] is None  # untouched
 
+    # Cost-event rows are retained (no cascade removal on soft-delete).
     remaining_cost_events = (
         (await session.execute(select(StoredConversationCostEvent.conversation_id)))
         .scalars()
         .all()
     )
-    assert remaining_cost_events == [other_conversation_id]
+    assert set(remaining_cost_events) == {conversation_id, other_conversation_id}
+
+    # The soft-deleted conversation is hidden from reads.
+    assert await service.get_app_conversation_info(UUID(conversation_id)) is None

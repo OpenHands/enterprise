@@ -117,7 +117,10 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
                 StoredConversationMetadata.conversation_id
                 == StoredConversationMetadataSaas.conversation_id,
             )
-            .where(StoredConversationMetadata.conversation_version == 'V1')
+            .where(
+                StoredConversationMetadata.conversation_version == 'V1',
+                StoredConversationMetadata.deleted_at.is_(None),
+            )
         )
         return await self._apply_user_and_org_filter(query)
 
@@ -130,7 +133,10 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
                 StoredConversationMetadata.conversation_id
                 == StoredConversationMetadataSaas.conversation_id,
             )
-            .where(StoredConversationMetadata.conversation_version == 'V1')
+            .where(
+                StoredConversationMetadata.conversation_version == 'V1',
+                StoredConversationMetadata.deleted_at.is_(None),
+            )
         )
         return await self._apply_user_and_org_filter(query)
 
@@ -232,7 +238,10 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
                 StoredConversationMetadata.conversation_id
                 == StoredConversationMetadataSaas.conversation_id,
             )
-            .where(StoredConversationMetadata.conversation_version == 'V1')
+            .where(
+                StoredConversationMetadata.conversation_version == 'V1',
+                StoredConversationMetadata.deleted_at.is_(None),
+            )
         )
 
         # Apply user and organization filtering
