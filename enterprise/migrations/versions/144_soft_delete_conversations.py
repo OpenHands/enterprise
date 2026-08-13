@@ -58,9 +58,7 @@ def _drop_deleted_at(table: str, index_name: str) -> None:
 
 def upgrade() -> None:
     """Upgrade schema: add soft-delete markers."""
-    _add_deleted_at(
-        'conversation_metadata', 'ix_conversation_metadata_deleted_at'
-    )
+    _add_deleted_at('conversation_metadata', 'ix_conversation_metadata_deleted_at')
     _add_deleted_at(
         'app_conversation_start_task', 'ix_app_conversation_start_task_deleted_at'
     )
@@ -71,6 +69,4 @@ def downgrade() -> None:
     _drop_deleted_at(
         'app_conversation_start_task', 'ix_app_conversation_start_task_deleted_at'
     )
-    _drop_deleted_at(
-        'conversation_metadata', 'ix_conversation_metadata_deleted_at'
-    )
+    _drop_deleted_at('conversation_metadata', 'ix_conversation_metadata_deleted_at')

@@ -476,9 +476,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
                 select(
                     StoredConversationMetadata.created_at,
                     StoredConversationMetadata.deleted_at,
-                ).where(
-                    StoredConversationMetadata.conversation_id == str(info.id)
-                )
+                ).where(StoredConversationMetadata.conversation_id == str(info.id))
             )
         ).one_or_none()
         if existing is not None:

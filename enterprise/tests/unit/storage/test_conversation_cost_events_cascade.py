@@ -145,11 +145,13 @@ async def test_soft_delete_conversation_retains_row_and_cost_events(
 
     # The conversation row is retained (soft-deleted) with deleted_at set.
     metadata = (
-        (await session.execute(
-            select(StoredConversationMetadata.conversation_id, StoredConversationMetadata.deleted_at)
-        ))
-        .all()
-    )
+        await session.execute(
+            select(
+                StoredConversationMetadata.conversation_id,
+                StoredConversationMetadata.deleted_at,
+            )
+        )
+    ).all()
     metadata_by_id = {row[0]: row[1] for row in metadata}
     assert metadata_by_id[conversation_id] is not None  # soft-deleted
     assert metadata_by_id[other_conversation_id] is None  # untouched
