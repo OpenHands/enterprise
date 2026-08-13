@@ -39,15 +39,29 @@ export function ProfileRow({
   return (
     <div
       data-testid="profile-row"
-      className={cn(settingsListRowClassName, "justify-between gap-3")}
+      className={cn(
+        settingsListRowClassName,
+        // Stacked name/model/badge needs more than the shared h-12 row height.
+        "h-auto items-start justify-between gap-3 py-3 sm:items-center",
+      )}
     >
       <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
-        <Typography.Text
-          className="min-w-0 max-w-full truncate font-medium text-white"
-          title={profile.name}
-        >
-          {profile.name}
-        </Typography.Text>
+        <div className="flex min-w-0 max-w-full items-center gap-2">
+          <Typography.Text
+            className="min-w-0 truncate font-medium text-white"
+            title={profile.name}
+          >
+            {profile.name}
+          </Typography.Text>
+          {isActive && (
+            <Typography.Text
+              className="shrink-0 whitespace-nowrap rounded-full bg-primary px-2 py-0.5 text-xs font-semibold text-[var(--oh-color-base)]"
+              testId="profile-active-badge"
+            >
+              {t(I18nKey.SETTINGS$PROFILE_ACTIVE_BADGE)}
+            </Typography.Text>
+          )}
+        </div>
         {profile.model ? (
           <Typography.Text
             className="min-w-0 max-w-full truncate text-sm text-[var(--oh-muted)]"
@@ -56,14 +70,6 @@ export function ProfileRow({
             {profile.model}
           </Typography.Text>
         ) : null}
-        {isActive && (
-          <Typography.Text
-            className="self-start whitespace-nowrap rounded-full bg-primary px-2 py-0.5 text-xs font-semibold text-[var(--oh-color-base)] sm:self-auto"
-            testId="profile-active-badge"
-          >
-            {t(I18nKey.SETTINGS$PROFILE_ACTIVE_BADGE)}
-          </Typography.Text>
-        )}
       </div>
       {canManage ? (
         <div className="relative shrink-0">
