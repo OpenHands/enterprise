@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AxiosError } from "axios";
 import { useTranslation } from "react-i18next";
 import { BrandButton } from "#/components/features/settings/brand-button";
-import { LlmSettingsInputsSkeleton } from "#/components/features/settings/llm-settings/llm-settings-inputs-skeleton";
+import { AgentSettingsInputsSkeleton } from "#/components/features/settings/agent-settings/agent-settings-inputs-skeleton";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
 import { SettingsInput } from "#/components/features/settings/settings-input";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
@@ -32,7 +32,11 @@ import {
   normalizeFieldValue,
 } from "#/utils/sdk-settings-schema";
 import { formatCommand, tokenizeCommand } from "#/utils/shell-tokenize";
-import { formControlMultilineFieldClassName } from "#/utils/form-control-classes";
+import {
+  formControlMultilineFieldClassName,
+  formControlSwitchDescriptionClassName,
+  formControlSwitchFieldClassName,
+} from "#/utils/form-control-classes";
 import { cn } from "#/utils/utils";
 import type { ACPProviderConfig } from "#/api/option-service/option.types";
 
@@ -286,7 +290,7 @@ export default function AgentSettingsScreen() {
 
   // ── Loading ───────────────────────────────────────────────────────────────
   if (isSettingsLoading || isSchemaLoading || isConfigLoading) {
-    return <LlmSettingsInputsSkeleton />;
+    return <AgentSettingsInputsSkeleton />;
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -329,7 +333,7 @@ export default function AgentSettingsScreen() {
         {!isAcp && (
           <section className="grid gap-4 xl:grid-cols-2">
             {subAgentsField ? (
-              <div className="flex flex-col gap-1.5">
+              <div className={formControlSwitchFieldClassName}>
                 <SettingsSwitch
                   testId="agent-settings-enable-sub-agents"
                   isToggled={isSubAgentsEnabled}
@@ -346,7 +350,12 @@ export default function AgentSettingsScreen() {
                   subAgentsField.key,
                   subAgentsField.description,
                 ) ? (
-                  <Typography.Paragraph className="text-tertiary-alt text-xs leading-5">
+                  <Typography.Paragraph
+                    className={cn(
+                      formControlSwitchDescriptionClassName,
+                      "text-tertiary-alt text-xs leading-5",
+                    )}
+                  >
                     {resolveSchemaFieldDescription(
                       t,
                       subAgentsField.key,

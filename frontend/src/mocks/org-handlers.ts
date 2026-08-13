@@ -1,10 +1,34 @@
 import { http, HttpResponse } from "msw";
 import {
+  GitOrgClaim,
   Organization,
   OrganizationMember,
   OrganizationUserRole,
   UpdateOrganizationMemberParams,
 } from "#/types/org";
+
+/** Sample GitHub orgs for Git Conversation Routing in mock SaaS mode. */
+const MOCK_USER_GIT_ORGS = {
+  provider: "github",
+  organizations: ["OpenHands", "AcmeCo"],
+};
+
+/** Mutable claims so Claim / Disconnect work without a real backend. */
+const mockGitClaimsByOrgId = new Map<string, GitOrgClaim[]>([
+  [
+    "2",
+    [
+      {
+        id: "claim-1",
+        org_id: "2",
+        provider: "github",
+        git_organization: "openhands",
+        claimed_by: "1",
+        claimed_at: "2026-01-01T00:00:00Z",
+      },
+    ],
+  ],
+]);
 
 const MOCK_MEMBER_AGENT_SETTINGS = {
   llm: {
@@ -340,6 +364,92 @@ export const resetOrgsAndMembersMockData = () => {
 };
 
 export const ORG_HANDLERS = [
+  http.get("/api/v1/users/git-organizations", () =>
+    HttpResponse.json(MOCK_USER_GIT_ORGS),
+  ),
+
+  http.get("/api/organizations/:orgId/git-claims", ({ params }) => {
+    const orgId = params.orgId?.toString();
+    if (!orgId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+    return HttpResponse.json(mockGitClaimsByOrgId.get(orgId) ?? []);
+  }),
+
+  http.post(
+    "/api/organizations/:orgId/git-claims",
+    async ({ params, request }) => {
+      const orgId = params.orgId?.toString();
+      if (!orgId || !orgs.has(orgId)) {
+        return HttpResponse.json(
+          { error: "Organization not found" },
+          { status: 404 },
+        );
+      }
+
+      const body = (await request.json()) as {
+        provider?: string;
+        git_organization?: string;
+      };
+      const provider = body.provider?.toLowerCase().trim();
+      const gitOrganization = body.git_organization?.trim().toLowerCase();
+      if (!provider || !gitOrganization) {
+        return HttpResponse.json(
+          { error: "provider and git_organization are required" },
+          { status: 400 },
+        );
+      }
+
+      const existingClaims = Array.from(mockGitClaimsByOrgId.values()).flat();
+      if (
+        existingClaims.some(
+          (claim) =>
+            claim.provider === provider &&
+            claim.git_organization === gitOrganization,
+        )
+      ) {
+        return HttpResponse.json(
+          { detail: "Connection failed. Org is already claimed." },
+          { status: 409 },
+        );
+      }
+
+      const claim: GitOrgClaim = {
+        id: `claim-${Date.now()}`,
+        org_id: orgId,
+        provider,
+        git_organization: gitOrganization,
+        claimed_by: "99",
+        claimed_at: new Date().toISOString(),
+      };
+      const orgClaims = mockGitClaimsByOrgId.get(orgId) ?? [];
+      mockGitClaimsByOrgId.set(orgId, [...orgClaims, claim]);
+      return HttpResponse.json(claim, { status: 201 });
+    },
+  ),
+
+  http.delete("/api/organizations/:orgId/git-claims/:claimId", ({ params }) => {
+    const orgId = params.orgId?.toString();
+    const claimId = params.claimId?.toString();
+    if (!orgId || !claimId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+
+    const orgClaims = mockGitClaimsByOrgId.get(orgId) ?? [];
+    const next = orgClaims.filter((claim) => claim.id !== claimId);
+    if (next.length === orgClaims.length) {
+      return HttpResponse.json({ error: "Claim not found" }, { status: 404 });
+    }
+    mockGitClaimsByOrgId.set(orgId, next);
+    return new HttpResponse(null, { status: 204 });
+  }),
+
   http.get("/api/organizations/:orgId/me", ({ params }) => {
     const orgId = params.orgId?.toString();
     if (!orgId || !ORGS_AND_MEMBERS[orgId]) {

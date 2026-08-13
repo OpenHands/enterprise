@@ -57,6 +57,24 @@ describe("Dropdown", () => {
       expect(screen.getByText("Option 2")).toBeInTheDocument();
       expect(screen.getByText("Option 3")).toBeInTheDocument();
     });
+
+    it("should toggle closed when clicking the input on a non-searchable dropdown", async () => {
+      const user = userEvent.setup();
+      render(
+        <Dropdown
+          options={mockOptions}
+          searchable={false}
+          defaultValue={mockOptions[0]}
+        />,
+      );
+
+      const input = screen.getByRole("combobox");
+      await user.click(input);
+      expect(screen.getByText("Option 2")).toBeInTheDocument();
+
+      await user.click(input);
+      expect(screen.queryByText("Option 2")).not.toBeInTheDocument();
+    });
   });
 
   describe("Type-ahead / Search", () => {
@@ -99,7 +117,9 @@ describe("Dropdown", () => {
       const input = screen.getByRole("combobox");
       expect(input).toHaveAttribute("readonly");
 
-      await user.type(input, "Option 1");
+      // skipClick: typing focuses via click by default, which would toggle
+      // a non-searchable select closed before the keystrokes run.
+      await user.type(input, "Option 1", { skipClick: true });
 
       expect(screen.getByText("Option 1")).toBeInTheDocument();
       expect(screen.getByText("Option 2")).toBeInTheDocument();
@@ -452,10 +472,10 @@ describe("Dropdown", () => {
   });
 
   describe("Cursor position preservation", () => {
-    it("should keep menu open when clicking the input while dropdown is open", async () => {
+    it("should keep menu open when clicking the input while a searchable dropdown is open", async () => {
       // Without a stateReducer, Downshift's default InputClick behavior
       // toggles the menu (closes it if already open). The stateReducer
-      // should override this to keep the menu open so users can click
+      // should override this for searchable dropdowns so users can click
       // to reposition their cursor without losing the dropdown.
       const user = userEvent.setup();
       render(<Dropdown options={mockOptions} />);

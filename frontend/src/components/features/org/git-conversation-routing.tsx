@@ -18,15 +18,17 @@ export function GitConversationRouting() {
   return (
     <div
       data-testid="git-conversation-routing"
-      className="flex w-full flex-col gap-3"
+      className="flex w-full flex-col gap-4"
     >
-      <Text className="text-lg font-medium text-white">
-        {t(I18nKey.ORG$GIT_CONVERSATION_ROUTING)}
-      </Text>
+      <div className="flex flex-col gap-1">
+        <Text className="text-lg font-medium text-white">
+          {t(I18nKey.ORG$GIT_CONVERSATION_ROUTING)}
+        </Text>
 
-      <Paragraph className="text-sm font-normal leading-5 text-tertiary-light">
-        {t(I18nKey.ORG$GIT_CONVERSATION_ROUTING_DESCRIPTION)}
-      </Paragraph>
+        <Paragraph className="text-sm font-normal leading-5 text-tertiary-light">
+          {t(I18nKey.ORG$GIT_CONVERSATION_ROUTING_DESCRIPTION)}
+        </Paragraph>
+      </div>
 
       {isLoading && (
         <div className="flex justify-center py-4">

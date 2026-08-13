@@ -59,7 +59,10 @@ export function Dropdown({
     items: filteredOptions,
     itemToString: (item) => item?.label ?? "",
     inputValue,
+    // Searchable: keep open on input click so users can reposition the caret.
+    // Non-searchable: toggle like a select (click open / click close).
     stateReducer: (state, actionAndChanges) =>
+      searchable &&
       actionAndChanges.type === useCombobox.stateChangeTypes.InputClick &&
       state.isOpen
         ? { ...actionAndChanges.changes, isOpen: true }

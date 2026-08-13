@@ -7,6 +7,10 @@ import { SettingsInput } from "#/components/features/settings/settings-input";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { Typography } from "#/ui/typography";
 import { cn } from "#/utils/utils";
+import {
+  formControlSwitchDescriptionClassName,
+  formControlSwitchFieldClassName,
+} from "#/utils/form-control-classes";
 import { ModalBackdrop } from "#/components/shared/modals/modal-backdrop";
 import { ModalBody } from "#/components/shared/modals/modal-body";
 import { BaseModalTitle } from "#/components/shared/modals/confirmation-modals/base-modal";
@@ -843,7 +847,7 @@ export function JiraDcIntegrationPanel() {
                   )}
                   {statusBadge(isActive)}
                 </div>
-                <div className="flex flex-col gap-1">
+                <div className={formControlSwitchFieldClassName}>
                   <SettingsSwitch
                     testId="active-toggle"
                     onToggle={handleActiveToggle}
@@ -854,7 +858,12 @@ export function JiraDcIntegrationPanel() {
                       I18nKey.PROJECT_MANAGEMENT$JIRA_DC_EVENT_RESPONSES_TOGGLE_LABEL,
                     )}
                   </SettingsSwitch>
-                  <p className="text-xs text-tertiary-alt">
+                  <p
+                    className={cn(
+                      formControlSwitchDescriptionClassName,
+                      "text-xs text-tertiary-alt",
+                    )}
+                  >
                     {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_PAUSE_HELP)}
                   </p>
                 </div>

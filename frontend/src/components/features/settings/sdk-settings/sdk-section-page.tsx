@@ -152,6 +152,7 @@ export function SdkSectionPage({
   allowAllView = true,
   trailingActions,
   testId = "sdk-section-settings-screen",
+  loadingSkeleton,
 }: {
   settingsSources: SettingsSourceConfig[];
   scope?: SettingsScope;
@@ -205,6 +206,8 @@ export function SdkSectionPage({
   allowAdvancedView?: boolean;
   allowAllView?: boolean;
   testId?: string;
+  /** Override the default LLM-style input grid while settings/schema load. */
+  loadingSkeleton?: React.ReactNode;
 }) {
   const { t } = useTranslation();
   const { mutate: saveSettings, isPending } = useSaveSettings(scope);
@@ -500,7 +503,7 @@ export function SdkSectionPage({
   };
 
   if (isLoading || isFetching || isSchemaLoading) {
-    return <LlmSettingsInputsSkeleton />;
+    return loadingSkeleton ?? <LlmSettingsInputsSkeleton />;
   }
 
   const hasAnyVisibleSection = resolvedSources.some(
@@ -524,7 +527,7 @@ export function SdkSectionPage({
   }
 
   if (Object.keys(flatValues).length === 0) {
-    return <LlmSettingsInputsSkeleton />;
+    return loadingSkeleton ?? <LlmSettingsInputsSkeleton />;
   }
 
   const isDirty = Object.keys(flatDirty).length > 0;

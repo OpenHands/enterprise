@@ -140,6 +140,12 @@ export const formControlButtonClassName = cn(
   "text-sm font-normal disabled:cursor-not-allowed disabled:opacity-30",
 );
 
+/**
+ * Stack for a left-aligned {@link SettingsSwitch} plus helper subline.
+ * Keep the vertical gap tight so the description reads as part of the control.
+ */
+export const formControlSwitchFieldClassName = "flex flex-col gap-0.5";
+
 /** Helper text under a left-aligned {@link SettingsSwitch} (40px track + gap-2). */
 export const formControlSwitchDescriptionClassName = "pl-12";
 

@@ -26,7 +26,10 @@ import {
 } from "#/types/settings";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { useSandboxSpecs } from "#/hooks/query/use-sandbox-specs";
-import { formControlSwitchDescriptionClassName } from "#/utils/form-control-classes";
+import {
+  formControlSwitchDescriptionClassName,
+  formControlSwitchFieldClassName,
+} from "#/utils/form-control-classes";
 import { cn } from "#/utils/utils";
 
 export const clientLoader = createPermissionGuard(
@@ -384,7 +387,7 @@ function AppSettingsScreen() {
                 <p className="text-sm leading-5 text-muted">
                   {t(I18nKey.SETTINGS$REPOSITORY_CLONING_DESCRIPTION)}
                 </p>
-                <div className="mt-2 flex flex-col gap-2">
+                <div className={cn("mt-2", formControlSwitchFieldClassName)}>
                   <SettingsSwitch
                     testId="git-full-clone-switch"
                     name="git-full-clone-switch"

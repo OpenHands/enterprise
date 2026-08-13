@@ -439,7 +439,11 @@ function GitSettingsScreen() {
         </div>
       )}
 
-      {isLoading && <GitSettingInputsSkeleton />}
+      {isLoading && (
+        <GitSettingInputsSkeleton
+          variant={config?.app_mode === "saas" ? "saas" : "oss"}
+        />
+      )}
 
       {!isSaas && (
         <div className="flex justify-end gap-3">

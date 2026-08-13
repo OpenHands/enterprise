@@ -17,6 +17,7 @@ import { cn } from "#/utils/utils";
 import {
   formControlMultilineFieldClassName,
   formControlSwitchDescriptionClassName,
+  formControlSwitchFieldClassName,
 } from "#/utils/form-control-classes";
 
 // ---------------------------------------------------------------------------
@@ -112,7 +113,7 @@ export function SchemaField({
 
   if (isBooleanField(field)) {
     return (
-      <div className="flex flex-col gap-1.5">
+      <div className={formControlSwitchFieldClassName}>
         <SettingsSwitch
           testId={`sdk-settings-${field.key}`}
           isToggled={Boolean(value)}

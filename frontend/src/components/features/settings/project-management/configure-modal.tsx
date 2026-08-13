@@ -12,7 +12,12 @@ import {
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { useValidateIntegration } from "#/hooks/mutation/use-validate-integration";
 import { useConfig } from "#/hooks/query/use-config";
+import {
+  formControlSwitchDescriptionClassName,
+  formControlSwitchFieldClassName,
+} from "#/utils/form-control-classes";
 import { settingsListRowActionButtonClassName } from "#/utils/settings-list-classes";
+import { cn } from "#/utils/utils";
 
 interface ConfigureButtonProps {
   onClick: () => void;
@@ -770,7 +775,7 @@ export function ConfigureModal({
                   <p className="text-red-500 text-sm mt-2">{apiKeyError}</p>
                 )}
               </div>
-              <div className="mt-4">
+              <div className={cn("mt-4", formControlSwitchFieldClassName)}>
                 <SettingsSwitch
                   testId="active-toggle"
                   onToggle={setIsActive}
@@ -779,7 +784,12 @@ export function ConfigureModal({
                   {t(I18nKey.PROJECT_MANAGEMENT$ACTIVE_TOGGLE_LABEL)}
                 </SettingsSwitch>
                 {isJiraDc && (
-                  <p className="text-xs text-tertiary-alt mt-1">
+                  <p
+                    className={cn(
+                      formControlSwitchDescriptionClassName,
+                      "text-xs text-tertiary-alt",
+                    )}
+                  >
                     {t(I18nKey.PROJECT_MANAGEMENT$ACTIVE_TOGGLE_HELP)}
                   </p>
                 )}
