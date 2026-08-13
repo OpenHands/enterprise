@@ -134,14 +134,22 @@ describe("OrgSelector", () => {
     const trigger = screen.getByTestId("dropdown-trigger");
     await user.click(trigger);
 
+    const listbox = await screen.findByRole("listbox");
+    expect(within(listbox).getAllByRole("option")).toHaveLength(2);
+
     const input = screen.getByRole("combobox");
     expect(input).toHaveAttribute("readonly");
     await user.type(input, "Acme");
 
-    const listbox = await screen.findByRole("listbox");
-    const options = within(listbox).getAllByRole("option");
-    expect(options).toHaveLength(2);
+    // Non-searchable select: typing must not change the selected label.
     expect(input).toHaveValue("Personal Workspace");
+
+    // Re-open if typing closed the menu, then confirm options are unfiltered.
+    if (screen.queryAllByRole("option").length === 0) {
+      await user.click(trigger);
+    }
+    const openListbox = await screen.findByRole("listbox");
+    expect(within(openListbox).getAllByRole("option")).toHaveLength(2);
   });
 
   it("should show all options when dropdown is opened", async () => {

@@ -48,6 +48,8 @@ const ORG_WIDE_BADGE_PATHS = new Set<string>([
   "/settings/org-defaults",
   "/settings/org-defaults/condenser",
   "/settings/org-defaults/verification",
+  "/settings/budgets",
+  "/settings/credits",
 ]);
 
 /**

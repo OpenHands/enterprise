@@ -156,6 +156,10 @@ describe("Settings Screen", () => {
           ),
           path: "/settings/org-defaults/verification",
         },
+        {
+          Component: () => <div data-testid="budgets-settings-screen" />,
+          path: "/settings/budgets",
+        },
       ],
     },
   ]);
@@ -877,6 +881,9 @@ describe("Settings Screen", () => {
       mockQueryClient.clear();
       mockQueryClient.setQueryData(["web-client-config"], {
         app_mode: "saas",
+        feature_flags: {
+          enable_billing: true,
+        },
       });
       mockQueryClient.setQueryData(["organizations"], {
         items: [org],
@@ -904,6 +911,8 @@ describe("Settings Screen", () => {
       "/settings/org-defaults",
       "/settings/org-defaults/condenser",
       "/settings/org-defaults/verification",
+      "/settings/budgets",
+      "/settings/credits",
     ])(
       "renders the org-wide settings bar at the top of %s for an admin in a team org in SaaS mode",
       async (path) => {

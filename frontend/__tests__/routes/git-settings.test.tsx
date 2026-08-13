@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRoutesStub } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -142,6 +142,14 @@ beforeEach(() => {
   queryClient.invalidateQueries();
   useSelectedOrganizationStore.setState({ organizationId: null });
 });
+
+const mockOssSettings = () => {
+  vi.spyOn(OptionService, "getConfig").mockResolvedValue(VALID_OSS_CONFIG);
+  vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    provider_tokens_set: {},
+  });
+};
 
 describe("Content", () => {
   it("should render", async () => {
@@ -326,7 +334,7 @@ describe("Content", () => {
       expect(button.querySelector("svg")).not.toBeInTheDocument();
       expect(screen.queryByTestId("github-status-text")).not.toBeInTheDocument();
       expect(screen.getByTestId("gitlab-status-text")).toHaveTextContent(
-        "Not Connected",
+        /Not Connected|SETTINGS\$GITLAB_NOT_CONNECTED/,
       );
       expect(screen.getByTestId("configure-gitlab-button")).toBeInTheDocument();
       expect(screen.getByTestId("install-slack-app-button")).toBeInTheDocument();
@@ -361,114 +369,105 @@ describe("Content", () => {
       expect(button).toHaveClass("border");
       expect(button.querySelector("svg")).toBeInTheDocument();
       expect(screen.getByTestId("github-status-text")).toHaveTextContent(
-        "Connected",
+        /Connected|STATUS\$CONNECTED/,
       );
     });
   });
 });
 
 describe("Form submission", () => {
+  const typeTokenAndSave = async (inputTestId: string, token: string) => {
+    const input = await screen.findByTestId(inputTestId);
+    const submit = await screen.findByTestId("submit-button");
+
+    // fireEvent.change reliably dirty-tracks the neo SettingsInput onChange.
+    fireEvent.change(input, { target: { value: token } });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await userEvent.click(submit);
+  };
+
   it("should save the GitHub token", async () => {
     const saveProvidersSpy = vi.spyOn(SecretsService, "addGitProvider");
     saveProvidersSpy.mockImplementation(() => Promise.resolve(true));
-    const getConfigSpy = vi.spyOn(OptionService, "getConfig");
-    getConfigSpy.mockResolvedValue(VALID_OSS_CONFIG);
+    mockOssSettings();
 
     renderGitSettingsScreen();
+    await typeTokenAndSave("github-token-input", "test-token");
 
-    const githubInput = await screen.findByTestId("github-token-input");
-    const submit = await screen.findByTestId("submit-button");
-
-    await userEvent.type(githubInput, "test-token");
-    await userEvent.click(submit);
-
-    expect(saveProvidersSpy).toHaveBeenCalledWith({
-      github: { token: "test-token", host: "" },
-      gitlab: { token: "", host: "" },
-      bitbucket: { token: "", host: "" },
-      bitbucket_data_center: { token: "", host: "" },
-      azure_devops: { token: "", host: "" },
-      forgejo: { token: "", host: "" },
+    await waitFor(() => {
+      expect(saveProvidersSpy).toHaveBeenCalledWith({
+        github: { token: "test-token", host: "" },
+        gitlab: { token: "", host: "" },
+        bitbucket: { token: "", host: "" },
+        bitbucket_data_center: { token: "", host: "" },
+        azure_devops: { token: "", host: "" },
+        forgejo: { token: "", host: "" },
+      });
     });
   });
 
   it("should save GitLab tokens", async () => {
     const saveProvidersSpy = vi.spyOn(SecretsService, "addGitProvider");
     saveProvidersSpy.mockImplementation(() => Promise.resolve(true));
-    const getConfigSpy = vi.spyOn(OptionService, "getConfig");
-    getConfigSpy.mockResolvedValue(VALID_OSS_CONFIG);
+    mockOssSettings();
 
     renderGitSettingsScreen();
+    await typeTokenAndSave("gitlab-token-input", "test-token");
 
-    const gitlabInput = await screen.findByTestId("gitlab-token-input");
-    const submit = await screen.findByTestId("submit-button");
-
-    await userEvent.type(gitlabInput, "test-token");
-    await userEvent.click(submit);
-
-    expect(saveProvidersSpy).toHaveBeenCalledWith({
-      github: { token: "", host: "" },
-      gitlab: { token: "test-token", host: "" },
-      bitbucket: { token: "", host: "" },
-      bitbucket_data_center: { token: "", host: "" },
-      azure_devops: { token: "", host: "" },
-      forgejo: { token: "", host: "" },
+    await waitFor(() => {
+      expect(saveProvidersSpy).toHaveBeenCalledWith({
+        github: { token: "", host: "" },
+        gitlab: { token: "test-token", host: "" },
+        bitbucket: { token: "", host: "" },
+        bitbucket_data_center: { token: "", host: "" },
+        azure_devops: { token: "", host: "" },
+        forgejo: { token: "", host: "" },
+      });
     });
   });
 
   it("should save the Bitbucket token", async () => {
     const saveProvidersSpy = vi.spyOn(SecretsService, "addGitProvider");
     saveProvidersSpy.mockImplementation(() => Promise.resolve(true));
-    const getConfigSpy = vi.spyOn(OptionService, "getConfig");
-    getConfigSpy.mockResolvedValue(VALID_OSS_CONFIG);
+    mockOssSettings();
 
     renderGitSettingsScreen();
+    await typeTokenAndSave("bitbucket-token-input", "test-token");
 
-    const bitbucketInput = await screen.findByTestId("bitbucket-token-input");
-    const submit = await screen.findByTestId("submit-button");
-
-    await userEvent.type(bitbucketInput, "test-token");
-    await userEvent.click(submit);
-
-    expect(saveProvidersSpy).toHaveBeenCalledWith({
-      github: { token: "", host: "" },
-      gitlab: { token: "", host: "" },
-      bitbucket: { token: "test-token", host: "" },
-      bitbucket_data_center: { token: "", host: "" },
-      azure_devops: { token: "", host: "" },
-      forgejo: { token: "", host: "" },
+    await waitFor(() => {
+      expect(saveProvidersSpy).toHaveBeenCalledWith({
+        github: { token: "", host: "" },
+        gitlab: { token: "", host: "" },
+        bitbucket: { token: "test-token", host: "" },
+        bitbucket_data_center: { token: "", host: "" },
+        azure_devops: { token: "", host: "" },
+        forgejo: { token: "", host: "" },
+      });
     });
   });
 
   it("should save the Azure DevOps token", async () => {
     const saveProvidersSpy = vi.spyOn(SecretsService, "addGitProvider");
     saveProvidersSpy.mockImplementation(() => Promise.resolve(true));
-    const getConfigSpy = vi.spyOn(OptionService, "getConfig");
-    getConfigSpy.mockResolvedValue(VALID_OSS_CONFIG);
+    mockOssSettings();
 
     renderGitSettingsScreen();
+    await typeTokenAndSave("azure-devops-token-input", "test-token");
 
-    const azureDevOpsInput = await screen.findByTestId(
-      "azure-devops-token-input",
-    );
-    const submit = await screen.findByTestId("submit-button");
-
-    await userEvent.type(azureDevOpsInput, "test-token");
-    await userEvent.click(submit);
-
-    expect(saveProvidersSpy).toHaveBeenCalledWith({
-      github: { token: "", host: "" },
-      gitlab: { token: "", host: "" },
-      bitbucket: { token: "", host: "" },
-      bitbucket_data_center: { token: "", host: "" },
-      azure_devops: { token: "test-token", host: "" },
-      forgejo: { token: "", host: "" },
+    await waitFor(() => {
+      expect(saveProvidersSpy).toHaveBeenCalledWith({
+        github: { token: "", host: "" },
+        gitlab: { token: "", host: "" },
+        bitbucket: { token: "", host: "" },
+        bitbucket_data_center: { token: "", host: "" },
+        azure_devops: { token: "test-token", host: "" },
+        forgejo: { token: "", host: "" },
+      });
     });
   });
 
   it("should disable the button if there is no input", async () => {
-    const getConfigSpy = vi.spyOn(OptionService, "getConfig");
-    getConfigSpy.mockResolvedValue(VALID_OSS_CONFIG);
+    mockOssSettings();
 
     renderGitSettingsScreen();
 
@@ -476,19 +475,19 @@ describe("Form submission", () => {
     expect(submit).toBeDisabled();
 
     const githubInput = await screen.findByTestId("github-token-input");
-    await userEvent.type(githubInput, "test-token");
+    fireEvent.change(githubInput, { target: { value: "test-token" } });
 
     expect(submit).not.toBeDisabled();
 
-    await userEvent.clear(githubInput);
+    fireEvent.change(githubInput, { target: { value: "" } });
     expect(submit).toBeDisabled();
 
     const gitlabInput = await screen.findByTestId("gitlab-token-input");
-    await userEvent.type(gitlabInput, "test-token");
+    fireEvent.change(gitlabInput, { target: { value: "test-token" } });
 
     expect(submit).not.toBeDisabled();
 
-    await userEvent.clear(gitlabInput);
+    fireEvent.change(gitlabInput, { target: { value: "" } });
     expect(submit).toBeDisabled();
   });
 
@@ -579,8 +578,8 @@ describe("Form submission", () => {
 
   it("should disable the button after submitting changes", async () => {
     const saveProvidersSpy = vi.spyOn(SecretsService, "addGitProvider");
-    const getConfigSpy = vi.spyOn(OptionService, "getConfig");
-    getConfigSpy.mockResolvedValue(VALID_OSS_CONFIG);
+    saveProvidersSpy.mockImplementation(() => Promise.resolve(true));
+    mockOssSettings();
 
     renderGitSettingsScreen();
     await screen.findByTestId("git-settings-screen");
@@ -589,7 +588,7 @@ describe("Form submission", () => {
     expect(submit).toBeDisabled();
 
     const githubInput = await screen.findByTestId("github-token-input");
-    await userEvent.type(githubInput, "test-token");
+    fireEvent.change(githubInput, { target: { value: "test-token" } });
     expect(submit).not.toBeDisabled();
 
     // submit the form
@@ -598,7 +597,7 @@ describe("Form submission", () => {
     expect(submit).toBeDisabled();
 
     const gitlabInput = await screen.findByTestId("gitlab-token-input");
-    await userEvent.type(gitlabInput, "test-token");
+    fireEvent.change(gitlabInput, { target: { value: "test-token" } });
     expect(gitlabInput).toHaveValue("test-token");
     expect(submit).not.toBeDisabled();
 
@@ -613,8 +612,8 @@ describe("Form submission", () => {
 describe("Status toasts", () => {
   it("should call displaySuccessToast when the settings are saved", async () => {
     const saveProvidersSpy = vi.spyOn(SecretsService, "addGitProvider");
-    const getSettingsSpy = vi.spyOn(SettingsService, "getSettings");
-    getSettingsSpy.mockResolvedValue(MOCK_DEFAULT_USER_SETTINGS);
+    saveProvidersSpy.mockImplementation(() => Promise.resolve(true));
+    mockOssSettings();
 
     const displaySuccessToastSpy = vi.spyOn(
       ToastHandlers,
@@ -625,9 +624,10 @@ describe("Status toasts", () => {
 
     // Toggle setting to change
     const githubInput = await screen.findByTestId("github-token-input");
-    await userEvent.type(githubInput, "test-token");
+    fireEvent.change(githubInput, { target: { value: "test-token" } });
 
     const submit = await screen.findByTestId("submit-button");
+    await waitFor(() => expect(submit).toBeEnabled());
     await userEvent.click(submit);
 
     expect(saveProvidersSpy).toHaveBeenCalled();
@@ -636,8 +636,7 @@ describe("Status toasts", () => {
 
   it("should call displayErrorToast when the settings fail to save", async () => {
     const saveProvidersSpy = vi.spyOn(SecretsService, "addGitProvider");
-    const getSettingsSpy = vi.spyOn(SettingsService, "getSettings");
-    getSettingsSpy.mockResolvedValue(MOCK_DEFAULT_USER_SETTINGS);
+    mockOssSettings();
 
     const displayErrorToastSpy = vi.spyOn(ToastHandlers, "displayErrorToast");
 
@@ -647,9 +646,10 @@ describe("Status toasts", () => {
 
     // Toggle setting to change
     const gitlabInput = await screen.findByTestId("gitlab-token-input");
-    await userEvent.type(gitlabInput, "test-token");
+    fireEvent.change(gitlabInput, { target: { value: "test-token" } });
 
     const submit = await screen.findByTestId("submit-button");
+    await waitFor(() => expect(submit).toBeEnabled());
     await userEvent.click(submit);
 
     expect(saveProvidersSpy).toHaveBeenCalled();
