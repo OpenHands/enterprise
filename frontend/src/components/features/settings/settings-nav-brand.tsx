@@ -15,7 +15,7 @@ interface SettingsNavBrandProps {
 
 /**
  * Settings rail brand — logo aligned like agent-canvas sidebar (18px icon slot
- * with overhanging mark), "Settings" label, Back to App on the right.
+ * with overhanging mark), "Account" label, Back to App on the right.
  */
 export function SettingsNavBrand({ className }: SettingsNavBrandProps) {
   const { t } = useTranslation();
@@ -38,7 +38,7 @@ export function SettingsNavBrand({ className }: SettingsNavBrandProps) {
         />
       </div>
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-white">
-        {t(I18nKey.SETTINGS$TITLE)}
+        {t(I18nKey.ORG$ACCOUNT)}
       </span>
       <a
         href={canvasHref}

@@ -87,7 +87,7 @@ describe("SettingsNavigation", () => {
   });
 
   describe("settings brand header", () => {
-    it("should show Settings label and Back to App link to canvas", async () => {
+    it("should show Account label and Back to App link to canvas", async () => {
       renderSettingsNavigation();
 
       await screen.findByTestId("settings-navbar");
@@ -99,7 +99,7 @@ describe("SettingsNavigation", () => {
         `${window.location.origin}/canvas`,
       );
       expect(backLinks[0]).toHaveTextContent("SETTINGS$BACK_TO_APP");
-      expect(screen.getAllByText("SETTINGS$TITLE").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("ORG$ACCOUNT").length).toBeGreaterThan(0);
     });
   });
 
@@ -157,7 +157,7 @@ describe("SettingsNavigation", () => {
       expect(orgLink).not.toBeInTheDocument();
     });
 
-    it("should render Settings brand chrome and user menu", async () => {
+    it("should render Account brand chrome and user menu", async () => {
       renderSettingsNavigation(toRenderedItems(SAAS_NAV_ITEMS));
 
       await screen.findByTestId("settings-navbar");
@@ -165,7 +165,7 @@ describe("SettingsNavigation", () => {
       expect(
         screen.getAllByTestId("settings-back-to-app").length,
       ).toBeGreaterThan(0);
-      expect(screen.getAllByText("SETTINGS$TITLE").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("ORG$ACCOUNT").length).toBeGreaterThan(0);
       expect(
         screen.getAllByTestId("settings-nav-user-menu").length,
       ).toBeGreaterThan(0);
