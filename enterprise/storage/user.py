@@ -43,6 +43,7 @@ class User(Base):
     git_user_name: Mapped[str | None] = mapped_column(String, nullable=True)
     git_user_email: Mapped[str | None] = mapped_column(String, nullable=True)
     git_full_clone: Mapped[bool | None] = mapped_column(nullable=True, default=False)
+    git_clone_timeout: Mapped[int | None] = mapped_column(nullable=True, default=None)
     sandbox_grouping_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
     default_sandbox_spec_id: Mapped[str | None] = mapped_column(String, nullable=True)
     disabled_skills: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)

@@ -52,6 +52,10 @@ _logger = logging.getLogger(__name__)
 PRE_COMMIT_HOOK = '.git/hooks/pre-commit'
 PRE_COMMIT_LOCAL = '.git/hooks/pre-commit.local'
 
+# Default git clone timeout (seconds), used when the user has not configured a
+# per-user override via the ``git_clone_timeout`` setting.
+DEFAULT_GIT_CLONE_TIMEOUT_SECONDS = 120
+
 
 def get_project_dir(
     working_dir: str,
@@ -392,11 +396,27 @@ class AppConversationServiceBase(AppConversationService, ABC):
             ensure_valid_git_branch_name(request.selected_branch)
 
         full_clone = bool(getattr(user_info, 'git_full_clone', False))
+        # Per-user override for the git clone timeout (seconds). Large monorepos
+        # can exceed the default, so this is configurable in user settings; fall
+        # back to the default when unset or non-positive.
+        raw_clone_timeout = getattr(user_info, 'git_clone_timeout', None)
+        clone_timeout = (
+            int(raw_clone_timeout)
+            if isinstance(raw_clone_timeout, int) and raw_clone_timeout > 0
+            else DEFAULT_GIT_CLONE_TIMEOUT_SECONDS
+        )
         clone_flags = ''
         if not full_clone:
-            clone_flags = ' --depth 1'
+            # Partial ("blobless") clone: fetch the complete commit history so
+            # merges, rebases, and blame have a valid merge base, but defer
+            # downloading file contents until they are actually needed. This
+            # keeps startup fast for large repositories without the broken-merge
+            # problems of a shallow (--depth) clone.
+            clone_flags = ' --filter=blob:none'
             if request.selected_branch:
-                clone_flags += f' --branch {shlex.quote(request.selected_branch)}'
+                clone_flags += (
+                    f' --single-branch --branch {shlex.quote(request.selected_branch)}'
+                )
 
         # Clone the repo - this is the slow part!
         if azure_devops_bearer_token:
@@ -412,7 +432,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 f'git clone{clone_flags} {quoted_remote_repo_url} {quoted_dir_name}'
             )
         result = await workspace.execute_command(
-            clone_command, workspace.working_dir, 120
+            clone_command, workspace.working_dir, clone_timeout
         )
         if result.exit_code:
             _logger.warning(f'Git clone failed: {result.stderr}')
@@ -426,7 +446,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
 
         # Checkout the appropriate branch
         if request.selected_branch:
-            # Needed for full clones; harmless no-op after shallow clones with --branch.
+            # Needed for full clones; harmless no-op after single-branch clones.
             checkout_command = f'git checkout {shlex.quote(request.selected_branch)}'
         else:
             # Generate a random branch name to avoid conflicts

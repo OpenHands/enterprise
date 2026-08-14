@@ -77,6 +77,8 @@ function AppSettingsScreen() {
     React.useState(false);
   const [gitFullCloneHasChanged, setGitFullCloneHasChanged] =
     React.useState(false);
+  const [gitCloneTimeoutHasChanged, setGitCloneTimeoutHasChanged] =
+    React.useState(false);
 
   const formAction = (formData: FormData) => {
     const languageLabel = formData.get("language-input")?.toString();
@@ -122,6 +124,17 @@ function AppSettingsScreen() {
     const gitFullClone =
       formData.get("git-full-clone-switch")?.toString() === "on";
 
+    const gitCloneTimeoutRaw = formData
+      .get("git-clone-timeout-input")
+      ?.toString()
+      ?.trim();
+    const gitCloneTimeoutParsed = gitCloneTimeoutRaw
+      ? Number.parseInt(gitCloneTimeoutRaw, 10)
+      : NaN;
+    const gitCloneTimeout = Number.isFinite(gitCloneTimeoutParsed)
+      ? gitCloneTimeoutParsed
+      : null;
+
     const settingsPayload = {
       language,
       enable_sound_notifications: enableSoundNotifications,
@@ -133,6 +146,7 @@ function AppSettingsScreen() {
       git_user_name: gitUserName,
       git_user_email: gitUserEmail,
       git_full_clone: gitFullClone,
+      git_clone_timeout: gitCloneTimeout,
       ...(!isSaasMode && { user_consents_to_analytics: enableAnalytics }),
     };
 
@@ -158,6 +172,7 @@ function AppSettingsScreen() {
         setGitUserNameHasChanged(false);
         setGitUserEmailHasChanged(false);
         setGitFullCloneHasChanged(false);
+        setGitCloneTimeoutHasChanged(false);
       },
     });
   };
@@ -238,6 +253,14 @@ function AppSettingsScreen() {
     setGitFullCloneHasChanged(checked !== currentValue);
   };
 
+  const checkIfGitCloneTimeoutHasChanged = (value: string) => {
+    const trimmed = value.trim();
+    const newValue = trimmed ? Number.parseInt(trimmed, 10) : null;
+    const normalizedNew = Number.isFinite(newValue as number) ? newValue : null;
+    const currentValue = settings?.git_clone_timeout ?? null;
+    setGitCloneTimeoutHasChanged(normalizedNew !== currentValue);
+  };
+
   const formIsClean =
     !languageInputHasChanged &&
     !analyticsSwitchHasChanged &&
@@ -249,7 +272,8 @@ function AppSettingsScreen() {
     !maxBudgetPerTaskHasChanged &&
     !gitUserNameHasChanged &&
     !gitUserEmailHasChanged &&
-    !gitFullCloneHasChanged;
+    !gitFullCloneHasChanged &&
+    !gitCloneTimeoutHasChanged;
 
   const shouldBeLoading = !settings || isLoading || isPending;
 
@@ -392,6 +416,22 @@ function AppSettingsScreen() {
                 </SettingsSwitch>
                 <p className="text-xs">
                   {t(I18nKey.SETTINGS$FETCH_FULL_GIT_HISTORY_HELPER)}
+                </p>
+                <SettingsInput
+                  testId="git-clone-timeout-input"
+                  name="git-clone-timeout-input"
+                  type="number"
+                  label={t(I18nKey.SETTINGS$GIT_CLONE_TIMEOUT)}
+                  defaultValue={settings.git_clone_timeout?.toString() || ""}
+                  onChange={checkIfGitCloneTimeoutHasChanged}
+                  placeholder={t(I18nKey.SETTINGS$GIT_CLONE_TIMEOUT_PLACEHOLDER)}
+                  min={30}
+                  max={3600}
+                  step={1}
+                  className="w-full max-w-[680px]"
+                />
+                <p className="text-xs">
+                  {t(I18nKey.SETTINGS$GIT_CLONE_TIMEOUT_HELPER)}
                 </p>
               </div>
 

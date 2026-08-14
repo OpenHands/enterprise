@@ -30,10 +30,12 @@ class MockUserInfo:
         git_user_name: str | None = None,
         git_user_email: str | None = None,
         git_full_clone: bool = False,
+        git_clone_timeout: int | None = None,
     ):
         self.git_user_name = git_user_name
         self.git_user_email = git_user_email
         self.git_full_clone = git_full_clone
+        self.git_clone_timeout = git_clone_timeout
 
 
 class MockCommandResult:
@@ -768,7 +770,7 @@ def mock_workspace():
 
 
 @pytest.mark.asyncio
-async def test_clone_or_init_git_repo_uses_shallow_clone_by_default(mock_workspace):
+async def test_clone_or_init_git_repo_uses_partial_clone_by_default(mock_workspace):
     user_info = MockUserInfo()
     service, mock_user_context = _create_service_with_mock_user_context(
         user_info,
@@ -792,14 +794,14 @@ async def test_clone_or_init_git_repo_uses_shallow_clone_by_default(mock_workspa
     await service.clone_or_init_git_repo(task, mock_workspace)
 
     mock_workspace.execute_command.assert_any_call(
-        'git clone --depth 1 https://github.com/owner/repo.git repo',
+        'git clone --filter=blob:none https://github.com/owner/repo.git repo',
         mock_workspace.working_dir,
         120,
     )
 
 
 @pytest.mark.asyncio
-async def test_clone_or_init_git_repo_shallow_clones_selected_branch(mock_workspace):
+async def test_clone_or_init_git_repo_partial_clones_selected_branch(mock_workspace):
     user_info = MockUserInfo()
     service, mock_user_context = _create_service_with_mock_user_context(
         user_info,
@@ -823,7 +825,8 @@ async def test_clone_or_init_git_repo_shallow_clones_selected_branch(mock_worksp
     await service.clone_or_init_git_repo(task, mock_workspace)
 
     mock_workspace.execute_command.assert_any_call(
-        'git clone --depth 1 --branch feature-branch https://github.com/owner/repo.git repo',
+        'git clone --filter=blob:none --single-branch --branch feature-branch '
+        'https://github.com/owner/repo.git repo',
         mock_workspace.working_dir,
         120,
     )
@@ -861,7 +864,72 @@ async def test_clone_or_init_git_repo_preserves_full_clone_when_enabled(
         120,
     )
     commands = [call.args[0] for call in mock_workspace.execute_command.call_args_list]
-    assert not any('git clone --depth 1' in command for command in commands)
+    assert not any('--filter=blob:none' in command for command in commands)
+
+
+@pytest.mark.asyncio
+async def test_clone_or_init_git_repo_uses_configured_clone_timeout(mock_workspace):
+    user_info = MockUserInfo(git_clone_timeout=600)
+    service, mock_user_context = _create_service_with_mock_user_context(
+        user_info,
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(
+        return_value='https://github.com/owner/repo.git'
+    )
+
+    task = Mock()
+    task.request = Mock(
+        selected_repository='owner/repo',
+        selected_branch=None,
+        git_provider=ProviderType.GITHUB,
+    )
+
+    await service.clone_or_init_git_repo(task, mock_workspace)
+
+    mock_workspace.execute_command.assert_any_call(
+        'git clone --filter=blob:none https://github.com/owner/repo.git repo',
+        mock_workspace.working_dir,
+        600,
+    )
+
+
+@pytest.mark.asyncio
+async def test_clone_or_init_git_repo_falls_back_to_default_clone_timeout(
+    mock_workspace,
+):
+    # Non-positive/invalid overrides must fall back to the default timeout.
+    user_info = MockUserInfo(git_clone_timeout=0)
+    service, mock_user_context = _create_service_with_mock_user_context(
+        user_info,
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(
+        return_value='https://github.com/owner/repo.git'
+    )
+
+    task = Mock()
+    task.request = Mock(
+        selected_repository='owner/repo',
+        selected_branch=None,
+        git_provider=ProviderType.GITHUB,
+    )
+
+    await service.clone_or_init_git_repo(task, mock_workspace)
+
+    mock_workspace.execute_command.assert_any_call(
+        'git clone --filter=blob:none https://github.com/owner/repo.git repo',
+        mock_workspace.working_dir,
+        120,
+    )
 
 
 @pytest.mark.asyncio
@@ -933,7 +1001,8 @@ async def test_clone_or_init_git_repo_configures_dynamic_azure_devops_helper(
 
     commands = [call.args[0] for call in mock_workspace.execute_command.call_args_list]
     assert any(
-        "git -c http.extraheader='Authorization: Bearer header.payload.signature' clone --depth 1 --branch main"
+        "git -c http.extraheader='Authorization: Bearer header.payload.signature' "
+        'clone --filter=blob:none --single-branch --branch main'
         in command
         for command in commands
     )

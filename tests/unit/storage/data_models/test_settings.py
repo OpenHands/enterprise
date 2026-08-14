@@ -1807,3 +1807,14 @@ def test_git_full_clone_defaults_to_false_and_updates():
 
     assert settings.git_full_clone is True
     assert settings.model_dump(mode='json')['git_full_clone'] is True
+
+
+def test_git_clone_timeout_defaults_to_none_and_updates():
+    settings = Settings()
+
+    assert settings.git_clone_timeout is None
+
+    settings.update({'git_clone_timeout': 600})
+
+    assert settings.git_clone_timeout == 600
+    assert settings.model_dump(mode='json')['git_clone_timeout'] == 600
