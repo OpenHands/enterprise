@@ -1097,6 +1097,24 @@ async def refresh_conversation(
         _logger.exception(f'Error Refreshing Conversation: {exc}', stack_info=True)
 
 
+def _get_max_num_sandboxes_default() -> int:
+    """Get the default max_num_sandboxes from the environment.
+
+    Reads OH_SANDBOX_MAX_NUM_SANDBOXES so the cap can be applied even when the
+    injector is constructed outside the normal env-parsed config path (e.g. the
+    SANDBOX-based fallback in get_app_server_config). Falls back to 10 (the
+    prior hard-coded default) when unset or set to a non-positive / invalid value.
+    """
+    value = os.getenv('OH_SANDBOX_MAX_NUM_SANDBOXES')
+    if not value:
+        return 10
+    try:
+        parsed = int(value)
+    except ValueError:
+        return 10
+    return parsed if parsed > 0 else 10
+
+
 class RemoteSandboxServiceInjector(SandboxServiceInjector):
     """Dependency injector for remote sandbox services."""
 
@@ -1125,8 +1143,12 @@ class RemoteSandboxServiceInjector(SandboxServiceInjector):
         ),
     )
     max_num_sandboxes: int = Field(
-        default=10,
-        description='Maximum number of sandboxes allowed to run simultaneously',
+        default_factory=_get_max_num_sandboxes_default,
+        description=(
+            'Maximum number of sandboxes allowed to run simultaneously. '
+            'Defaults to the OH_SANDBOX_MAX_NUM_SANDBOXES environment variable '
+            'when set to a positive integer, otherwise 10.'
+        ),
     )
 
     async def inject(

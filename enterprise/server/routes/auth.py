@@ -201,7 +201,7 @@ async def _get_user_orgs_with_data(user_id: str, org_member_ids: list) -> list:
 async def _track_login_analytics_background(
     user_id: str,
     email: str | None,
-    idp: str,
+    idp: str | None,
     current_org_id: parse_uuid | None,
     org_member_ids: list,
     consented: bool,
@@ -472,25 +472,23 @@ async def keycloak_callback(
 
     await UserStore.record_login(user_id)
 
-    # default to github IDP for now.
-    # TODO: remove default once Keycloak is updated universally with the new attribute.
-    idp: str = user_info.identity_provider or ProviderType.GITHUB.value
+    idp: str | None = user_info.identity_provider
     logger.info(f'Full IDP is {idp}')
     idp_type = 'oidc'
-    if ':' in idp:
+    if idp and ':' in idp:
         idp, idp_type = idp.rsplit(':', 1)
         idp_type = idp_type.lower()
 
     # Only fetch/store IdP tokens for OAuth-based IdPs (not SAML)
     # SAML IdPs don't have OAuth tokens to retrieve from Keycloak's broker endpoint
-    if idp_type != 'saml':
+    if idp and idp_type != 'saml':
         await token_manager.store_idp_tokens(
             ProviderType(idp), user_id, keycloak_access_token
         )
 
     valid_offline_token = (
         await token_manager.validate_offline_token(user_id=user_info.sub)
-        if idp_type != 'saml'
+        if idp and idp_type != 'saml'
         else True
     )
 
