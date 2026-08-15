@@ -1482,6 +1482,7 @@ class TestSuperRolePermissions:
                 Permission.MANAGE_SUPER_ADMINS,
                 Permission.MANAGE_FEATURE_FLAGS,
                 Permission.MANAGE_ORG_QUOTA,
+                Permission.MANAGE_USERS,
             ]
         )
         assert SUPER_ROLE_PERMISSIONS[RoleName.MEMBER] == frozenset()

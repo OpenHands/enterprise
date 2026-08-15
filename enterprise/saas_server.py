@@ -34,6 +34,7 @@ from server.middleware import (  # noqa: E402
     SetAuthCookieMiddleware,
 )
 from server.rate_limit import setup_rate_limit_handler  # noqa: E402
+from server.routes.admin_users import admin_user_router  # noqa: E402
 from server.routes.agent_profiles import router as agent_profiles_router  # noqa: E402
 from server.routes.analytics_events import analytics_events_router  # noqa: E402
 from server.routes.api_keys import api_router as api_keys_router  # noqa: E402
@@ -168,6 +169,9 @@ base_app.include_router(
 base_app.include_router(
     feature_flag_router
 )  # Add routes for database-driven feature flags
+base_app.include_router(
+    admin_user_router
+)  # Add routes for instance-level user lifecycle management
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value

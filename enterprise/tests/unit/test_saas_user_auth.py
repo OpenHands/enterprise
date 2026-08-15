@@ -749,6 +749,30 @@ async def test_saas_user_auth_from_bearer_success():
 
 
 @pytest.mark.asyncio
+async def test_saas_user_auth_from_bearer_rejects_disabled_user():
+    """A valid API key cannot authenticate a locally disabled user."""
+    user_id = str(uuid.uuid4())
+    request = MagicMock()
+    request.headers = {'Authorization': 'Bearer disabled_key'}
+    validation = ApiKeyValidationResult(
+        user_id=user_id, org_id=uuid.uuid4(), key_id=7, key_name='key'
+    )
+    disabled_user = MagicMock(is_disabled=True)
+
+    with (
+        patch('server.auth.saas_user_auth.ApiKeyStore') as store_cls,
+        patch(
+            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            AsyncMock(return_value=disabled_user),
+        ),
+    ):
+        store = MagicMock()
+        store.validate_api_key = AsyncMock(return_value=validation)
+        store_cls.get_instance.return_value = store
+        assert await saas_user_auth_from_bearer(request) is None
+
+
+@pytest.mark.asyncio
 async def test_saas_user_auth_from_bearer_no_auth_header():
     """Test that saas_user_auth_from_bearer returns None if no auth header or cookie."""
     mock_request = MagicMock()
