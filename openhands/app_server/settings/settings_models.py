@@ -795,21 +795,16 @@ class Settings(BaseModel):
 
     # ── Batch update ────────────────────────────────────────────────
 
-    def reconcile_active_profile(self) -> None:
-        """Clear ``llm_profiles.active`` when the current LLM diverges from it.
-
-        The active profile is a pointer into ``llm_profiles.profiles``; if the
-        user edits ``agent_settings.llm`` directly (via the main settings
-        endpoint), the pointer becomes a lie. Rather than mutate the saved
-        profile, we drop the active marker so the frontend stops claiming a
-        profile is "in use" that no longer matches what's actually running.
-        """
+    def sync_active_profile_from_settings(self) -> None:
+        """Keep the active profile aligned with the effective LLM settings."""
         active = self.llm_profiles.active
         if active is None:
             return
-        saved = self.llm_profiles.get(active)
-        if saved is None or saved != self.agent_settings.llm:
+        if not self.llm_profiles.has(active):
             self.llm_profiles.active = None
+            return
+        if self.llm_profiles.require(active) != self.agent_settings.llm:
+            self.llm_profiles.save(active, self.agent_settings.llm)
 
     def update(self, payload: dict[str, Any]) -> None:
         """Apply a batch of changes from a nested dict.
@@ -925,7 +920,8 @@ class Settings(BaseModel):
                     value = validated
                 setattr(self, key, value)
 
-        self.reconcile_active_profile()
+        if isinstance(agent_update, dict) and 'llm' in agent_update:
+            self.sync_active_profile_from_settings()
 
     # ── Serialization ───────────────────────────────────────────────
 

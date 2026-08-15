@@ -385,6 +385,44 @@ class TestGetProviderTokensBitbucketDCHost:
 
 
 @pytest.mark.asyncio
+async def test_get_provider_tokens_skips_enterprise_sso_rows():
+    """enterprise_sso auth_tokens rows are a login IdP, not a git provider."""
+    sso_token = MagicMock()
+    sso_token.identity_provider = 'enterprise_sso'
+    sso_token.id = 'token-id-sso'
+    github_token = MagicMock()
+    github_token.identity_provider = 'github'
+    github_token.id = 'token-id-github'
+
+    with (
+        patch('server.auth.saas_user_auth.token_manager') as mock_tm,
+        patch('server.auth.saas_user_auth.a_session_maker') as mock_session_maker,
+    ):
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [sso_token, github_token]
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session_maker.return_value = mock_session
+        mock_tm.get_idp_token_by_user_id = AsyncMock(return_value='github_access_token')
+
+        user_auth = SaasUserAuth(
+            user_id='test_user_id',
+            refresh_token=SecretStr('refresh_token'),
+        )
+        user_auth.get_secrets = AsyncMock(return_value=None)
+
+        result = await user_auth.get_provider_tokens()
+
+    assert ProviderType.ENTERPRISE_SSO not in result
+    assert result[ProviderType.GITHUB].token.get_secret_value() == 'github_access_token'
+    mock_tm.get_idp_token_by_user_id.assert_awaited_once_with(
+        'test_user_id', idp=ProviderType.GITHUB
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_provider_tokens_cached(mock_token_manager):
     """Test that get_provider_tokens returns cached tokens if available."""
     user_auth = SaasUserAuth(

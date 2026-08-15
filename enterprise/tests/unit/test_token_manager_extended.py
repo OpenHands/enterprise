@@ -216,6 +216,21 @@ async def test_store_idp_tokens(token_manager):
 
 
 @pytest.mark.asyncio
+async def test_store_idp_tokens_skips_enterprise_sso(token_manager):
+    """enterprise_sso is a login-only IdP; its broker tokens are never stored."""
+    with (
+        patch.object(token_manager, 'get_idp_tokens_from_keycloak') as mock_fetch,
+        patch.object(token_manager, '_store_idp_tokens') as mock_store,
+    ):
+        await token_manager.store_idp_tokens(
+            ProviderType.ENTERPRISE_SSO, 'test_user_id', 'test_access_token'
+        )
+
+        mock_fetch.assert_not_called()
+        mock_store.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_idp_token(token_manager, create_keycloak_user_info):
     """Test getting an identity provider token."""
     with (

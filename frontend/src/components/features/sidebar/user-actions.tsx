@@ -4,6 +4,8 @@ import { UserAvatar } from "./user-avatar";
 import { useMe } from "#/hooks/query/use-me";
 import { UserContextMenu } from "../user/user-context-menu";
 import { InviteOrganizationMemberModal } from "../org/invite-organization-member-modal";
+import { CreateOrganizationModal } from "../org/create-organization-modal";
+import { OrganizationFeaturePreviewModal } from "../org/organization-feature-preview-modal";
 import { cn } from "#/utils/utils";
 
 interface UserActionsProps {
@@ -20,6 +22,10 @@ export function UserActions({ user, isLoading }: UserActionsProps) {
   // open/close, search text, and scroll position in the org selector).
   const [menuResetCount, setMenuResetCount] = React.useState(0);
   const [inviteMemberModalIsOpen, setInviteMemberModalIsOpen] =
+    React.useState(false);
+  const [createOrganizationModalIsOpen, setCreateOrganizationModalIsOpen] =
+    React.useState(false);
+  const [organizationPreviewModalIsOpen, setOrganizationPreviewModalIsOpen] =
     React.useState(false);
   const hideTimeoutRef = React.useRef<number | null>(null);
 
@@ -65,6 +71,14 @@ export function UserActions({ user, isLoading }: UserActionsProps) {
     setInviteMemberModalIsOpen(true);
   };
 
+  const openCreateOrganizationModal = () => {
+    setCreateOrganizationModalIsOpen(true);
+  };
+
+  const openOrganizationPreviewModal = () => {
+    setOrganizationPreviewModalIsOpen(true);
+  };
+
   return (
     <>
       <div
@@ -86,6 +100,8 @@ export function UserActions({ user, isLoading }: UserActionsProps) {
             type={me?.role ?? "member"}
             onClose={closeAccountMenu}
             onOpenInviteModal={openInviteMemberModal}
+            onOpenCreateOrganizationModal={openCreateOrganizationModal}
+            onOpenOrganizationPreviewModal={openOrganizationPreviewModal}
           />
         </div>
       </div>
@@ -94,6 +110,23 @@ export function UserActions({ user, isLoading }: UserActionsProps) {
         ReactDOM.createPortal(
           <InviteOrganizationMemberModal
             onClose={() => setInviteMemberModalIsOpen(false)}
+          />,
+          document.getElementById("portal-root") || document.body,
+        )}
+
+      {createOrganizationModalIsOpen &&
+        ReactDOM.createPortal(
+          <CreateOrganizationModal
+            contactEmail={me?.email}
+            onClose={() => setCreateOrganizationModalIsOpen(false)}
+          />,
+          document.getElementById("portal-root") || document.body,
+        )}
+
+      {organizationPreviewModalIsOpen &&
+        ReactDOM.createPortal(
+          <OrganizationFeaturePreviewModal
+            onClose={() => setOrganizationPreviewModalIsOpen(false)}
           />,
           document.getElementById("portal-root") || document.body,
         )}

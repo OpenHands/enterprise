@@ -677,6 +677,7 @@ class SaasSettingsStore(SettingsStore):
                 await self._ensure_api_key(
                     item, str(org_id), openhands_type=is_openhands_model(llm_model)
                 )
+                item.sync_active_profile_from_settings()
 
             effective_agent_settings_diff = self._get_persisted_agent_settings(item)
             shared_agent_settings_diff = {

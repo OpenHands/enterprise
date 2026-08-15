@@ -2242,6 +2242,7 @@ class TestOrgMemberServiceGetMe:
         user = MagicMock(spec=User)
         user.id = current_user_id
         user.email = 'test@example.com'
+        user.role_id = None
         return user
 
     @pytest.mark.asyncio

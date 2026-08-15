@@ -71,6 +71,10 @@ interface ConversationWebSocketContextType {
   connectionState: V1_WebSocketConnectionState;
   sendMessage: (message: V1SendMessageRequest) => Promise<SendMessageResult>;
   isLoadingHistory: boolean;
+  /** REST history preload failed (fully, or partway through the archived
+   * conversation pagination). */
+  historyLoadFailed?: boolean;
+  retryHistoryLoad?: () => void;
 }
 
 const ConversationWebSocketContext = createContext<
@@ -349,8 +353,14 @@ export function ConversationWebSocketProvider({
     latestPlanningFileEventRef.current = null;
   }, [conversationId]);
 
-  const { data: preloadedEvents, isFetched: isHistoryFetched } =
-    useConversationHistory(conversationId);
+  const {
+    data: preloadedEvents,
+    isFetched: isHistoryFetched,
+    isError: isHistoryError,
+    isFetchingMore: isFetchingMoreHistory,
+    fetchNextPage: fetchNextHistoryPage,
+    refetch: refetchHistory,
+  } = useConversationHistory(conversationId);
 
   useEffect(() => {
     // Don't do anything until the history query has completed
@@ -365,13 +375,26 @@ export function ConversationWebSocketProvider({
       return;
     }
 
-    // Add all preloaded events to the store
+    // Add all preloaded events to the store (it dedupes by id, so re-running
+    // as archived conversations load additional pages is safe)
     for (const event of preloadedEvents) {
       addEvent(event);
     }
 
-    setIsLoadingHistoryMain(false);
-  }, [preloadedEvents, isHistoryFetched, addEvent]);
+    if (!isFetchingMoreHistory) {
+      setIsLoadingHistoryMain(false);
+    }
+  }, [preloadedEvents, isHistoryFetched, isFetchingMoreHistory, addEvent]);
+
+  const retryHistoryLoad = useCallback(() => {
+    // A mid-pagination failure only needs the failed page again; a failed
+    // initial load needs a full refetch.
+    if (preloadedEvents !== undefined) {
+      fetchNextHistoryPage();
+    } else {
+      refetchHistory();
+    }
+  }, [preloadedEvents, fetchNextHistoryPage, refetchHistory]);
 
   // Separate message handlers for each connection
   const handleMainMessage = useCallback(
@@ -1009,8 +1032,20 @@ export function ConversationWebSocketProvider({
   }, [planningAgentSocket, planningAgentWsUrl]);
 
   const contextValue = useMemo(
-    () => ({ connectionState, sendMessage, isLoadingHistory }),
-    [connectionState, sendMessage, isLoadingHistory],
+    () => ({
+      connectionState,
+      sendMessage,
+      isLoadingHistory,
+      historyLoadFailed: isHistoryError,
+      retryHistoryLoad,
+    }),
+    [
+      connectionState,
+      sendMessage,
+      isLoadingHistory,
+      isHistoryError,
+      retryHistoryLoad,
+    ],
   );
 
   return (

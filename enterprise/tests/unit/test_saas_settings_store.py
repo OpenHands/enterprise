@@ -837,6 +837,8 @@ async def test_store_clears_member_custom_key_when_switching_to_managed_profile(
 
     store = SaasSettingsStore(str(admin_user_id))
     settings = _make_settings(model='openhands/claude-opus-4-5-20251101')
+    settings.llm_profiles.save('managed', settings.agent_settings.llm)
+    settings.switch_to_profile('managed')
 
     with (
         patch('storage.saas_settings_store.a_session_maker', async_session_maker),
@@ -851,6 +853,10 @@ async def test_store_clears_member_custom_key_when_switching_to_managed_profile(
         ) as mock_generate,
     ):
         await store.store(settings)
+
+    active_profile = settings.llm_profiles.require('managed')
+    assert active_profile.api_key is not None
+    assert active_profile.api_key.get_secret_value() == 'sk-managed-key'
 
     with session_maker() as session:
         member = (
