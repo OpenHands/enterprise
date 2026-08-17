@@ -16,7 +16,7 @@ from pydantic import SecretStr
 from openhands.app_server.app_conversation.app_conversation_models import (
     ConversationTrigger,
 )
-from openhands.sdk.secret import LookupSecret, StaticSecret
+from openhands.sdk.secret import LookupSecret
 
 ORG_ID = UUID('00000000-0000-0000-0000-000000000123')
 OTHER_ORG_ID = UUID('00000000-0000-0000-0000-000000000456')
@@ -79,11 +79,10 @@ async def test_enricher_adds_jira_dc_lookup_secret_for_linked_user():
             access_token_hard_timeout=timedelta(minutes=5),
         )
 
-    assert isinstance(enrichment.secrets['JIRA_DC_BASE_URL'], StaticSecret)
-    assert (
-        enrichment.secrets['JIRA_DC_BASE_URL'].value.get_secret_value()
-        == 'https://jira.example.com'
-    )
+    # The base URL must not be a secret (it would get masked in agent output,
+    # mangling Jira links); it is exposed verbatim in the system message instead.
+    assert 'JIRA_DC_BASE_URL' not in enrichment.secrets
+    assert 'https://jira.example.com' in (enrichment.system_message_suffix or '')
     token_secret = enrichment.secrets['JIRA_DC_TOKEN']
     assert isinstance(token_secret, LookupSecret)
     assert (
