@@ -18,7 +18,11 @@ from integrations.resolver_context import ResolverUserContext
 from integrations.resolver_org_router import resolve_org_for_repo
 from integrations.utils import CONVERSATION_URL
 from jinja2 import Environment
-from server.auth.constants import JIRA_DC_ENABLE_OAUTH, JIRA_DC_HTTP_TIMEOUT
+from server.auth.constants import (
+    JIRA_DC_BASE_URL,
+    JIRA_DC_ENABLE_OAUTH,
+    JIRA_DC_HTTP_TIMEOUT,
+)
 from storage.jira_dc_conversation import JiraDcConversation
 from storage.jira_dc_integration_store import JiraDcIntegrationStore
 from storage.jira_dc_user import JiraDcUser
@@ -59,7 +63,8 @@ class JiraDcNewConversationView(JiraDcViewInterface):
         """Instructions passed when conversation is first initialized."""
         instructions_template = jinja_env.get_template('jira_dc_instructions.j2')
         instructions = instructions_template.render(
-            jira_dc_oauth_enabled=JIRA_DC_ENABLE_OAUTH
+            jira_dc_oauth_enabled=JIRA_DC_ENABLE_OAUTH,
+            jira_dc_base_url=JIRA_DC_BASE_URL,
         )
 
         user_msg_template = jinja_env.get_template('jira_dc_new_conversation.j2')
