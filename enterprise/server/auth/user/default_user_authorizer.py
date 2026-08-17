@@ -3,10 +3,7 @@ from dataclasses import dataclass
 from typing import AsyncGenerator
 
 from fastapi import Request
-from openhands.app_server.services.injector import InjectorState
 from pydantic import Field
-from tenacity import RetryError
-
 from server.auth.email_validation import extract_base_email
 from server.auth.token_manager import KeycloakUserInfo, TokenManager
 from server.auth.user.user_authorizer import (
@@ -16,6 +13,9 @@ from server.auth.user.user_authorizer import (
 )
 from storage.user_authorization import UserAuthorizationType
 from storage.user_authorization_store import UserAuthorizationStore
+from tenacity import RetryError
+
+from openhands.app_server.services.injector import InjectorState
 
 logger = logging.getLogger(__name__)
 token_manager = TokenManager()

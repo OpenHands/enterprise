@@ -6,11 +6,7 @@ import pytest
 from fastapi import BackgroundTasks, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from keycloak.exceptions import KeycloakConnectionError
-from openhands.app_server.integrations.service_types import ProviderType
-from openhands.app_server.user_auth.user_auth import AuthType
 from pydantic import SecretStr
-from tenacity import RetryError
-
 from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.user.default_user_authorizer import DefaultUserAuthorizer
@@ -23,6 +19,10 @@ from server.routes.auth import (
     logout,
     set_response_cookie,
 )
+from tenacity import RetryError
+
+from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.user_auth.user_auth import AuthType
 
 
 def create_mock_user_authorizer(success: bool = True, error_detail: str | None = None):
@@ -178,9 +178,7 @@ async def test_keycloak_callback_signup_retry_exhaustion_redirects_to_login(
         ),
         patch(
             'server.routes.auth.token_manager.get_user_info',
-            AsyncMock(
-                return_value=create_keycloak_user_info(email='new@example.com')
-            ),
+            AsyncMock(return_value=create_keycloak_user_info(email='new@example.com')),
         ),
         patch(
             'server.auth.user.default_user_authorizer.token_manager.check_duplicate_base_email',
