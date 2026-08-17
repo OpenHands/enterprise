@@ -24,7 +24,6 @@ from storage.user_settings import UserSettings
 from openhands.app_server.settings.settings_models import Settings
 
 
-
 def _agent_value(settings: Settings, key: str):
     """Navigate into settings.agent_settings using a dot-separated key."""
     obj = settings.agent_settings
