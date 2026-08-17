@@ -6,9 +6,14 @@ import pytest
 from fastapi import BackgroundTasks, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from keycloak.exceptions import KeycloakConnectionError
+from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.user_auth.user_auth import AuthType
 from pydantic import SecretStr
+from tenacity import RetryError
+
 from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.saas_user_auth import SaasUserAuth
+from server.auth.user.default_user_authorizer import DefaultUserAuthorizer
 from server.auth.user.user_authorizer import UserAuthorizationResponse, UserAuthorizer
 from server.routes.auth import (
     accept_tos,
@@ -18,9 +23,6 @@ from server.routes.auth import (
     logout,
     set_response_cookie,
 )
-
-from openhands.app_server.integrations.service_types import ProviderType
-from openhands.app_server.user_auth.user_auth import AuthType
 
 
 def create_mock_user_authorizer(success: bool = True, error_detail: str | None = None):
@@ -138,7 +140,7 @@ async def test_keycloak_callback_token_retrieval_failure(
 
 
 @pytest.mark.asyncio
-async def test_keycloak_callback_connection_failure_is_retryable(
+async def test_keycloak_callback_connection_failure_redirects_to_login(
     mock_request, mock_background_tasks
 ):
     get_keycloak_tokens_mock = AsyncMock(
@@ -148,18 +150,55 @@ async def test_keycloak_callback_connection_failure_is_retryable(
         'server.routes.auth.token_manager.get_keycloak_tokens',
         get_keycloak_tokens_mock,
     ):
-        with pytest.raises(HTTPException) as exc_info:
-            await keycloak_callback(
-                code='test_code',
-                state='test_state',
-                request=mock_request,
-                background_tasks=mock_background_tasks,
-                user_authorizer=create_mock_user_authorizer(),
-            )
+        response = await keycloak_callback(
+            code='test_code',
+            state='test_state',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=create_mock_user_authorizer(),
+        )
 
-    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
-    assert exc_info.value.headers == {'Retry-After': '1'}
-    assert 'temporarily unavailable' in exc_info.value.detail
+    assert response.status_code == status.HTTP_302_FOUND
+    assert response.headers['location'] == (
+        'http://localhost:8000/login?auth_error=service_unavailable'
+    )
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_signup_retry_exhaustion_redirects_to_login(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    retry_error = RetryError(MagicMock())
+    user_authorizer = DefaultUserAuthorizer(prevent_duplicates=True)
+
+    with (
+        patch(
+            'server.routes.auth.token_manager.get_keycloak_tokens',
+            AsyncMock(return_value=('access_token', 'refresh_token')),
+        ),
+        patch(
+            'server.routes.auth.token_manager.get_user_info',
+            AsyncMock(
+                return_value=create_keycloak_user_info(email='new@example.com')
+            ),
+        ),
+        patch(
+            'server.auth.user.default_user_authorizer.token_manager.check_duplicate_base_email',
+            AsyncMock(side_effect=retry_error),
+        ),
+    ):
+        response = await keycloak_callback(
+            code='test_code',
+            state='test_state',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=user_authorizer,
+        )
+
+    assert response.status_code == status.HTTP_302_FOUND
+    assert response.headers['location'] == (
+        'http://localhost:8000/login?auth_error=service_unavailable'
+    )
 
 
 # Note: test_keycloak_callback_missing_user_info was removed as part of the

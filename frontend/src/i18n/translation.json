@@ -17917,6 +17917,23 @@
     "uk": "Обліковий запис з цією електронною адресою вже існує.",
     "ca": "Ja existeix un compte amb aquesta adreça de correu electrònic."
   },
+  "AUTH$SERVICE_UNAVAILABLE": {
+    "en": "We couldn't finish signing you in because the authentication service is temporarily unavailable. Your account is safe—please try signing in again.",
+    "ja": "認証サービスが一時的に利用できないため、サインインを完了できませんでした。アカウントは安全です。もう一度サインインしてください。",
+    "zh-CN": "由于身份验证服务暂时不可用，我们无法完成登录。您的帐户是安全的，请重新登录。",
+    "zh-TW": "由於驗證服務暫時無法使用，我們無法完成登入。您的帳戶是安全的，請重新登入。",
+    "ko-KR": "인증 서비스를 일시적으로 사용할 수 없어 로그인을 완료하지 못했습니다. 계정은 안전하니 다시 로그인해 주세요.",
+    "no": "Vi kunne ikke fullføre påloggingen fordi autentiseringstjenesten er midlertidig utilgjengelig. Kontoen din er trygg – prøv å logge på igjen.",
+    "it": "Non è stato possibile completare l'accesso perché il servizio di autenticazione non è temporaneamente disponibile. Il tuo account è al sicuro: prova ad accedere di nuovo.",
+    "pt": "Não foi possível concluir seu login porque o serviço de autenticação está temporariamente indisponível. Sua conta está segura — tente entrar novamente.",
+    "es": "No pudimos completar el inicio de sesión porque el servicio de autenticación no está disponible temporalmente. Tu cuenta está segura; intenta iniciar sesión de nuevo.",
+    "ar": "تعذر إكمال تسجيل الدخول لأن خدمة المصادقة غير متاحة مؤقتًا. حسابك آمن، يرجى محاولة تسجيل الدخول مرة أخرى.",
+    "fr": "Nous n'avons pas pu terminer votre connexion, car le service d'authentification est temporairement indisponible. Votre compte est sécurisé ; veuillez réessayer de vous connecter.",
+    "tr": "Kimlik doğrulama hizmeti geçici olarak kullanılamadığı için oturum açma işleminiz tamamlanamadı. Hesabınız güvende; lütfen tekrar oturum açmayı deneyin.",
+    "de": "Die Anmeldung konnte nicht abgeschlossen werden, da der Authentifizierungsdienst vorübergehend nicht verfügbar ist. Ihr Konto ist sicher. Bitte versuchen Sie erneut, sich anzumelden.",
+    "uk": "Не вдалося завершити вхід, оскільки служба автентифікації тимчасово недоступна. Ваш обліковий запис у безпеці — спробуйте ввійти ще раз.",
+    "ca": "No hem pogut completar l'inici de sessió perquè el servei d'autenticació no està disponible temporalment. El vostre compte està segur; torneu a provar d'iniciar sessió."
+  },
   "AUTH$RECAPTCHA_BLOCKED": {
     "en": "Access blocked due to suspicious activity. If you believe this is an error, please contact contact@openhands.dev for assistance.",
     "ja": "不審なアクティビティのためアクセスがブロックされました。これが誤りだと思われる場合は、contact@openhands.dev までお問い合わせください。",

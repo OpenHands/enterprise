@@ -19,7 +19,20 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, RedirectResponse
 from keycloak.exceptions import KeycloakConnectionError
+from openhands.analytics import get_analytics_service, resolve_analytics_context
+from openhands.app_server.integrations.provider import (
+    PROVIDER_TOKEN_TYPE,
+    ProviderHandler,
+    ProviderToken,
+)
+from openhands.app_server.integrations.service_types import ProviderType, TokenResponse
+from openhands.app_server.user_auth import get_access_token
+from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
+from openhands.app_server.utils.logger import openhands_logger as logger
 from pydantic import BaseModel, SecretStr
+from sqlalchemy import select
+from tenacity import RetryError
+
 from server.auth.auth_error import TokenRefreshError
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
@@ -59,22 +72,10 @@ from server.utils.rate_limit_utils import (
     check_rate_limit_by_user_id,
 )
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
-from sqlalchemy import select
 from storage.database import a_session_maker
 from storage.default_org_service import DefaultOrgBootstrapService
 from storage.user import User
 from storage.user_store import UserStore
-
-from openhands.analytics import get_analytics_service, resolve_analytics_context
-from openhands.app_server.integrations.provider import (
-    PROVIDER_TOKEN_TYPE,
-    ProviderHandler,
-    ProviderToken,
-)
-from openhands.app_server.integrations.service_types import ProviderType, TokenResponse
-from openhands.app_server.user_auth import get_access_token
-from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
-from openhands.app_server.utils.logger import openhands_logger as logger
 
 with warnings.catch_warnings():
     warnings.simplefilter('ignore')
@@ -83,6 +84,21 @@ api_router = APIRouter(prefix='/api')
 oauth_router = APIRouter(prefix='/oauth')
 
 token_manager = TokenManager()
+
+
+def _authentication_unavailable_redirect(
+    web_url: str, redirect_url: str | None
+) -> RedirectResponse:
+    params = {'auth_error': 'service_unavailable'}
+    if (
+        redirect_url
+        and redirect_url.startswith('/')
+        and not redirect_url.startswith('//')
+    ):
+        params['returnTo'] = redirect_url
+    return RedirectResponse(
+        f'{web_url}/login?{urlencode(params)}', status_code=status.HTTP_302_FOUND
+    )
 
 
 async def _get_keycloak_tokens_or_unavailable(
@@ -303,10 +319,13 @@ async def keycloak_callback(
     web_url = get_web_url(request)
     redirect_uri = web_url + request.url.path
 
-    (
-        keycloak_access_token,
-        keycloak_refresh_token,
-    ) = await _get_keycloak_tokens_or_unavailable(code, redirect_uri)
+    try:
+        keycloak_access_token, keycloak_refresh_token = (
+            await token_manager.get_keycloak_tokens(code, redirect_uri)
+        )
+    except KeycloakConnectionError:
+        logger.warning('Keycloak unavailable during authentication', exc_info=True)
+        return _authentication_unavailable_redirect(web_url, redirect_url)
     if not keycloak_access_token or not keycloak_refresh_token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -315,19 +334,16 @@ async def keycloak_callback(
 
     try:
         user_info = await token_manager.get_user_info(keycloak_access_token)
-    except KeycloakConnectionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='Authentication service temporarily unavailable',
-            headers={'Retry-After': '1'},
-        ) from exc
+        authorization = await user_authorizer.authorize_user(user_info)
+    except (KeycloakConnectionError, RetryError):
+        logger.warning('Keycloak unavailable during authentication', exc_info=True)
+        return _authentication_unavailable_redirect(web_url, redirect_url)
     logger.debug(f'user_info: {user_info}')
     if ROLE_CHECK_ENABLED and user_info.roles is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail='Missing required role'
         )
 
-    authorization = await user_authorizer.authorize_user(user_info)
     if not authorization.success:
         # For duplicate_email errors, clean up the newly created Keycloak user
         # (only if they're not already in our UserStore, i.e., they're a new user)
@@ -482,9 +498,13 @@ async def keycloak_callback(
     # Only fetch/store IdP tokens for OAuth-based IdPs (not SAML)
     # SAML IdPs don't have OAuth tokens to retrieve from Keycloak's broker endpoint
     if idp and idp_type != 'saml':
-        await token_manager.store_idp_tokens(
-            ProviderType(idp), user_id, keycloak_access_token
-        )
+        try:
+            await token_manager.store_idp_tokens(
+                ProviderType(idp), user_id, keycloak_access_token
+            )
+        except (KeycloakConnectionError, RetryError):
+            logger.warning('Keycloak unavailable during authentication', exc_info=True)
+            return _authentication_unavailable_redirect(web_url, redirect_url)
 
     valid_offline_token = (
         await token_manager.validate_offline_token(user_id=user_info.sub)

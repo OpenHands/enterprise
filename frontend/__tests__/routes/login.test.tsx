@@ -217,7 +217,7 @@ describe("LoginPage", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
+          enable_onboarding: false,
         },
       });
 
@@ -257,7 +257,7 @@ describe("LoginPage", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
+          enable_onboarding: false,
         },
       });
 
@@ -421,7 +421,7 @@ describe("LoginPage", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
+          enable_onboarding: false,
         },
       });
 
@@ -477,6 +477,21 @@ describe("LoginPage", () => {
       await waitFor(() => {
         expect(
           screen.getByText("AUTH$DUPLICATE_EMAIL_ERROR"),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it("should display retry guidance when authentication is unavailable", async () => {
+      render(
+        <RouterStub
+          initialEntries={["/login?auth_error=service_unavailable"]}
+        />,
+        { wrapper: createWrapper() },
+      );
+
+      await waitFor(() => {
+        expect(
+          screen.getByText("AUTH$SERVICE_UNAVAILABLE"),
         ).toBeInTheDocument();
       });
     });
