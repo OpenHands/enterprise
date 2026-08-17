@@ -26,6 +26,9 @@ from storage.user_settings import UserSettings
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.http_session import httpx_verify_option
 
+# Timeout in seconds for LiteLLM management API requests.
+LITELLM_MANAGEMENT_TIMEOUT = float(os.getenv('LITELLM_MANAGEMENT_TIMEOUT', '5'))
+
 # Timeout in seconds for key verification requests to LiteLLM
 KEY_VERIFICATION_TIMEOUT = 5.0
 
@@ -158,7 +161,8 @@ class LiteLlmManager:
             async with httpx.AsyncClient(
                 headers={
                     'x-goog-api-key': LITE_LLM_API_KEY,
-                }
+                },
+                timeout=httpx.Timeout(LITELLM_MANAGEMENT_TIMEOUT),
             ) as client:
                 # Check if team already exists and get its budget
                 # New users joining existing orgs should inherit the team's budget

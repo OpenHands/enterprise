@@ -74,6 +74,7 @@ PERSONAL_WORKSPACE_VERSION_TO_MODEL = {
     5: 'minimax-m2.5',
     6: 'minimax-m2.7',
     7: 'glm-5.2',
+    8: 'kimi-k3',
 }
 
 LITELLM_DEFAULT_MODEL = os.getenv('LITELLM_DEFAULT_MODEL')

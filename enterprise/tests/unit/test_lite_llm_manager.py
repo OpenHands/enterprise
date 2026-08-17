@@ -442,6 +442,7 @@ class TestLiteLlmManager:
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
             patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('storage.lite_llm_manager.LITELLM_MANAGEMENT_TIMEOUT', 30.0),
             patch('httpx.AsyncClient', mock_client_class),
         ):
             result = await LiteLlmManager.create_entries(
@@ -453,6 +454,8 @@ class TestLiteLlmManager:
             assert _agent_value(result, 'llm.model') == get_default_litellm_model()
             assert _secret_value(result, 'llm.api_key') == 'test-api-key'
             assert _agent_value(result, 'llm.base_url') == 'http://test.com'
+            client_timeout = mock_client_class.call_args.kwargs['timeout']
+            assert client_timeout.read == 30.0
 
             # Verify API calls were made (get_team + user_exists + 4 posts)
             assert mock_client.get.call_count == 2  # get_team + user_exists

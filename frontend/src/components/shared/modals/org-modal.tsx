@@ -2,6 +2,7 @@ import React from "react";
 import { ModalBackdrop } from "./modal-backdrop";
 import { ModalBody } from "./modal-body";
 import { ModalButtonGroup } from "./modal-button-group";
+import { cn } from "#/utils/utils";
 
 interface OrgModalProps {
   testId?: string;
@@ -21,6 +22,7 @@ interface OrgModalProps {
   formAction?: (formData: FormData) => void;
   fullWidthButtons?: boolean;
   hideSecondaryButton?: boolean;
+  className?: string;
 }
 
 export function OrgModal({
@@ -41,6 +43,7 @@ export function OrgModal({
   formAction,
   fullWidthButtons = false,
   hideSecondaryButton = false,
+  className,
 }: OrgModalProps) {
   const content = (
     <>
@@ -66,8 +69,10 @@ export function OrgModal({
     </>
   );
 
-  const modalBodyClassName =
-    "items-start rounded-xl p-6 w-sm flex flex-col gap-4 bg-base-secondary border border-tertiary";
+  const modalBodyClassName = cn(
+    "items-start rounded-xl p-6 w-sm flex flex-col gap-4 bg-base-secondary border border-tertiary",
+    className,
+  );
 
   return (
     <ModalBackdrop
