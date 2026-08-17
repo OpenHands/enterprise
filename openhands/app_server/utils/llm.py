@@ -81,6 +81,9 @@ class ModelsResponse(BaseModel):
     * ``verified_providers`` — provider names shown in the "Verified"
       section of the model selector.
     * ``default_model`` — the recommended default model id.
+    * ``free_models`` — ``provider/model`` strings that are free to use on
+      the managed OpenHands provider (rendered with a "Free" badge). Default
+      empty, so self-hosted / default discovery behavior is unchanged.
     * ``hidden_models`` — ``provider/model`` strings that the backend still
       serves but does not promote: they must not be offered as dropdown
       options, yet an already-saved setting referencing one is still valid
@@ -97,6 +100,7 @@ class ModelsResponse(BaseModel):
     verified_models: list[str]
     verified_providers: list[str]
     default_model: str
+    free_models: list[str] = []
     hidden_models: list[str] = []
     hidden_model_canonicals: dict[str, str] = {}
 
@@ -264,6 +268,8 @@ def _derive_verified_models(openhands_models: list[str]) -> list[str]:
 def get_supported_llm_models(
     verified_models: list[str] | None = None,
     extra_models: list[str] | None = None,
+    free_models: list[str] | None = None,
+    default_model: str | None = None,
 ) -> ModelsResponse:
     """Collect every model available to this server and return structured data.
 
@@ -281,6 +287,11 @@ def get_supported_llm_models(
             hardcoded ``OPENHANDS_MODELS``.
         extra_models: Optional list of additional model names to include
             (e.g. from Bedrock or Ollama discovery).
+        free_models: Optional list of ``"openhands/<name>"`` strings that are
+            free to use on the managed OpenHands provider (SaaS mode, from the
+            database). Surfaced verbatim in ``ModelsResponse.free_models``.
+        default_model: Optional recommended default model id. When ``None``
+            the hardcoded ``DEFAULT_OPENHANDS_MODEL`` is used.
     """
     litellm_model_list = litellm.model_list + list(litellm.model_cost.keys())
     model_list = remove_error_modelId(litellm_model_list)
@@ -300,7 +311,8 @@ def get_supported_llm_models(
         models=unique_models,
         verified_models=_derive_verified_models(openhands_models),
         verified_providers=VERIFIED_PROVIDERS,
-        default_model=DEFAULT_OPENHANDS_MODEL,
+        default_model=default_model or DEFAULT_OPENHANDS_MODEL,
+        free_models=free_models or [],
     )
 
 

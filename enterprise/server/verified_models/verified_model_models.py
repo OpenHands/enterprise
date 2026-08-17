@@ -14,6 +14,8 @@ class VerifiedModelCreate(BaseModel):
         StringConstraints(max_length=100),
     ]
     is_enabled: bool = True
+    is_free: bool = False
+    is_default: bool = False
 
 
 class VerifiedModel(VerifiedModelCreate):
@@ -24,6 +26,8 @@ class VerifiedModel(VerifiedModelCreate):
 
 class VerifiedModelUpdate(BaseModel):
     is_enabled: bool | None = None
+    is_free: bool | None = None
+    is_default: bool | None = None
 
 
 class VerifiedModelPage(BaseModel):

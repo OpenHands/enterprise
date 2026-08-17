@@ -20,6 +20,13 @@ class LLMModel(BaseModel):
     verified: bool = Field(
         default=False, description='Whether the model is verified by OpenHands'
     )
+    free: bool = Field(
+        default=False,
+        description=(
+            'Whether the model is free to use on the OpenHands provider '
+            '(rendered as a "Free" badge in the model selector)'
+        ),
+    )
     hidden: bool = Field(
         default=False,
         description=(

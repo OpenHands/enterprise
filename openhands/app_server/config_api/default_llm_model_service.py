@@ -52,7 +52,11 @@ def _to_llm_models(
     while still treating saved settings that reference them as available.
     A hidden model with a known canonical mapping carries the visible model
     name it aliases in ``canonical``.
+
+    The ``free`` flag mirrors ``verified``: it is set for any model whose
+    ``provider/model`` string appears in ``models_response.free_models``.
     """
+    free_set = set(models_response.free_models)
     results: list[LLMModel] = []
     flagged_models = [(m, False) for m in models_response.models] + [
         (m, True) for m in models_response.hidden_models
@@ -80,6 +84,7 @@ def _to_llm_models(
                     if is_verified is not None
                     else model_name in _VERIFIED_MODEL_SET
                 ),
+                free=model_name in free_set,
                 hidden=hidden,
                 canonical=canonical,
             )

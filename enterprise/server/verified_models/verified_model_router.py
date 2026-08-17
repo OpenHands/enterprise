@@ -72,6 +72,8 @@ async def create_verified_model(
             model_name=data.model_name,
             provider=data.provider,
             is_enabled=data.is_enabled,
+            is_free=data.is_free,
+            is_default=data.is_default,
         )
         return model
     except ValueError as ex:
@@ -96,6 +98,8 @@ async def update_verified_model(
         model_name=model_name,
         provider=provider,
         is_enabled=data.is_enabled,
+        is_free=data.is_free,
+        is_default=data.is_default,
     )
     if not model:
         raise HTTPException(
@@ -153,7 +157,25 @@ class SaaSLLMModelService(DefaultLLMModelService):
                 detail='Too many models defined in database',
             )
         db_verified = [f'{m.provider}/{m.model_name}' for m in page.items]
-        self._cached_response = get_supported_llm_models(db_verified)
+        free_models = [
+            f'{m.provider}/{m.model_name}' for m in page.items if m.is_free
+        ]
+        # At most one row per provider carries is_default (DB-enforced). The
+        # openhands provider's default drives the app-wide default model shown
+        # on onboarding and when creating a new OpenHands model.
+        default_model = next(
+            (
+                f'{m.provider}/{m.model_name}'
+                for m in page.items
+                if m.is_default and m.provider == 'openhands'
+            ),
+            None,
+        )
+        self._cached_response = get_supported_llm_models(
+            db_verified,
+            free_models=free_models,
+            default_model=default_model,
+        )
         return self._cached_response
 
 
