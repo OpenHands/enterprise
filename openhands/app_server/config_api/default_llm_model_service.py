@@ -54,9 +54,12 @@ def _to_llm_models(
     name it aliases in ``canonical``.
 
     The ``free`` flag mirrors ``verified``: it is set for any model whose
-    ``provider/model`` string appears in ``models_response.free_models``.
+    ``provider/model`` string appears in ``models_response.free_models``. The
+    ``default`` flag is set for the single model matching
+    ``models_response.default_model``.
     """
     free_set = set(models_response.free_models)
+    default_model = models_response.default_model
     results: list[LLMModel] = []
     flagged_models = [(m, False) for m in models_response.models] + [
         (m, True) for m in models_response.hidden_models
@@ -85,6 +88,7 @@ def _to_llm_models(
                     else model_name in _VERIFIED_MODEL_SET
                 ),
                 free=model_name in free_set,
+                default=model_name == default_model,
                 hidden=hidden,
                 canonical=canonical,
             )

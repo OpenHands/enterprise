@@ -234,6 +234,19 @@ class TestToLLMModelsHiddenCanonical:
 
         assert all(m.free is False for m in _to_llm_models(response))
 
+    def test_default_flag_set_from_default_model(self):
+        response = ModelsResponse(
+            models=['openhands/default-model', 'openhands/other-model'],
+            verified_models=['default-model', 'other-model'],
+            verified_providers=['openhands'],
+            default_model='openhands/default-model',
+        )
+
+        by_name = {m.name: m for m in _to_llm_models(response)}
+
+        assert by_name['default-model'].default is True
+        assert by_name['other-model'].default is False
+
 
 class TestDefaultLLMModelServiceSearchProviders:
     """Test suite for DefaultLLMModelService.search_providers."""

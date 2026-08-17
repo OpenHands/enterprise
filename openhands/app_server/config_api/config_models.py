@@ -27,6 +27,13 @@ class LLMModel(BaseModel):
             '(rendered as a "Free" badge in the model selector)'
         ),
     )
+    default: bool = Field(
+        default=False,
+        description=(
+            "Whether this is the provider's default model, used to preselect "
+            'it on onboarding and when creating a new model for the provider'
+        ),
+    )
     hidden: bool = Field(
         default=False,
         description=(
