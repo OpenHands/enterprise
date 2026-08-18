@@ -27,42 +27,31 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def _add_deleted_at(table: str, index_name: str) -> None:
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
-    columns = {column['name'] for column in inspector.get_columns(table)}
-    indexes = {index['name'] for index in inspector.get_indexes(table)}
-
-    if 'deleted_at' not in columns:
-        with op.batch_alter_table(table) as batch_op:
-            batch_op.add_column(
-                sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True)
-            )
-
-    if index_name not in indexes:
-        op.create_index(index_name, table, ['deleted_at'], unique=False)
+    op.add_column(
+        table,
+        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
+    )
+    op.create_index(
+        index_name,
+        table,
+        ["deleted_at"],
+        unique=False,
+        postgresql_where=sa.text("deleted_at IS NOT NULL"),
+    )
 
 
 def _drop_deleted_at(table: str, index_name: str) -> None:
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
-    columns = {column['name'] for column in inspector.get_columns(table)}
-    indexes = {index['name'] for index in inspector.get_indexes(table)}
-
-    if index_name in indexes:
-        op.drop_index(index_name, table_name=table)
-
-    if 'deleted_at' in columns:
-        with op.batch_alter_table(table) as batch_op:
-            batch_op.drop_column('deleted_at')
+    op.drop_index(index_name, table_name=table)
+    op.drop_column(table, "deleted_at")
 
 
 def upgrade() -> None:
     """Upgrade schema: add soft-delete markers."""
-    _add_deleted_at('conversation_metadata', 'ix_conversation_metadata_deleted_at')
+    _add_deleted_at("conversation_metadata", "ix_conversation_metadata_deleted_at")
     _add_deleted_at(
-        'app_conversation_start_task', 'ix_app_conversation_start_task_deleted_at'
+        "app_conversation_start_task",
+        "ix_app_conversation_start_task_deleted_at",
     )
-
 
 def downgrade() -> None:
     """Downgrade schema: drop soft-delete markers."""
