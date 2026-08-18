@@ -416,16 +416,16 @@ class TestGetActiveWorkspaceForOrg:
 
 
 def test_active_link_migration_uses_postgresql_partial_unique_index():
-    """Migration 145 dedupes multi-active rows and creates the partial unique
+    """Migration 147 dedupes multi-active rows and creates the partial unique
     index that makes email-mode auto-enroll race-safe."""
     migration_path = (
         Path(__file__).parents[3]
         / 'migrations'
         / 'versions'
-        / '145_enforce_single_active_jira_user_link.py'
+        / '147_enforce_single_active_jira_user_link.py'
     )
     spec = importlib.util.spec_from_file_location(
-        'migration_145_enforce_single_active_jira_user_link', migration_path
+        'migration_147_enforce_single_active_jira_user_link', migration_path
     )
     assert spec and spec.loader
     migration = importlib.util.module_from_spec(spec)
