@@ -1357,7 +1357,6 @@ class TestLiteLlmManager:
         user_response = MagicMock()
         user_response.is_success = False
         user_response.status_code = 404
-        user_response.json.return_value = {'detail': 'User not found'}
         mock_http_client.get.return_value = user_response
 
         # Act
@@ -3423,44 +3422,16 @@ class TestGetUser:
         )
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_v1_when_v2_is_missing(self, mock_client):
-        """Proxies predating /v2/user/info (404) still resolve via /user/info."""
-        mock_client.get.side_effect = [
-            self._response(404, {'detail': 'Not Found'}),
-            self._response(
-                200,
-                {
-                    'user_info': {'user_id': 'test-user-id', 'max_budget': 50.0},
-                    'keys': [],
-                    'teams': [],
-                },
-            ),
-        ]
-
-        result = await LiteLlmManager._get_user(mock_client, 'test-user-id')
-
-        assert result == {'user_id': 'test-user-id', 'max_budget': 50.0}
-        assert [call.args[0] for call in mock_client.get.call_args_list] == [
-            'http://test.com/v2/user/info',
-            'http://test.com/user/info',
-        ]
-
-    @pytest.mark.asyncio
     async def test_returns_none_for_unknown_user(self, mock_client):
-        """A 404 from both endpoints means the user genuinely does not exist."""
-        mock_client.get.side_effect = [
-            self._response(404, {'detail': 'User not found'}),
-            self._response(404, {'detail': 'User not found'}),
-        ]
+        """A 404 means the user does not exist."""
+        mock_client.get.return_value = self._response(404, {'detail': 'User not found'})
 
         assert await LiteLlmManager._get_user(mock_client, 'missing-user') is None
 
     @pytest.mark.asyncio
-    async def test_raises_on_server_error_without_falling_back(self, mock_client):
-        """A 500 is a failure, not a reason to fetch the heavyweight payload."""
+    async def test_raises_on_server_error(self, mock_client):
+        """Any other failure surfaces to the caller."""
         mock_client.get.return_value = self._response(500)
 
         with pytest.raises(httpx.HTTPStatusError):
             await LiteLlmManager._get_user(mock_client, 'test-user-id')
-
-        mock_client.get.assert_awaited_once()

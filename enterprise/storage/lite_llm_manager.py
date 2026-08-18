@@ -915,16 +915,13 @@ class LiteLlmManager:
     async def _get_user(client: httpx.AsyncClient, user_id: str) -> dict | None:
         """Get a user from litellm with the id matching that given.
 
-        Returns the user row itself (litellm's ``user_info`` object), or None when
-        no such user exists.
+        Returns the user row - the legacy endpoint's ``user_info`` object - or
+        None when no such user exists.
 
         Uses ``/v2/user/info``, which returns only the user row. The legacy
         ``/user/info`` inlines every team the user belongs to, member rosters
         included - and since every user is a member of the shared team, that
-        response carries the whole platform and grows without bound. Proxies
-        predating ``/v2/user/info`` (litellm < 1.84) answer it with a 404, so a
-        404 falls back to the legacy endpoint rather than being trusted as
-        "no such user".
+        response carries the whole platform and grows without bound.
         """
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
@@ -934,19 +931,10 @@ class LiteLlmManager:
             f'{LITE_LLM_API_URL}/v2/user/info',
             params={'user_id': user_id},
         )
-        if response.is_success:
-            return response.json()
-        if response.status_code not in (404, 405):
-            response.raise_for_status()
-
-        response = await client.get(
-            f'{LITE_LLM_API_URL}/user/info',
-            params={'user_id': user_id},
-        )
         if response.status_code == 404:
             return None
         response.raise_for_status()
-        return response.json().get('user_info')
+        return response.json()
 
     @staticmethod
     async def _update_user(
