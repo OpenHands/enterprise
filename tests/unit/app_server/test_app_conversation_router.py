@@ -5,6 +5,7 @@ focusing on UUID string parsing, validation, and error handling.
 """
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -12,28 +13,39 @@ import httpx
 import pytest
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
+from pydantic import SecretStr
 
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversation,
     AppConversationInfo,
     AppConversationPage,
+    AppConversationStartRequest,
     SwitchProfileRequest,
 )
 from openhands.app_server.app_conversation.app_conversation_router import (
+    AGENT_SERVER,
     AgentServerContext,
     _finalize_sandbox_delete,
+    _resolve_file_path,
+    _validate_codex_credentials,
     batch_get_app_conversations,
     count_app_conversations,
     get_conversation_git_changes,
     get_conversation_git_diff,
+    list_conversation_files,
+    read_conversation_file,
     search_app_conversations,
     switch_conversation_profile,
 )
+from openhands.app_server.file_store import get_file_store
+from openhands.app_server.integrations.provider import CustomSecret
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
+from openhands.app_server.secrets.file_secrets_store import FileSecretsStore
+from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.settings.settings_models import Settings
 from openhands.sdk.llm import LLM
-from openhands.sdk.settings import OpenHandsAgentSettings
+from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
 
 
 def _make_mock_app_conversation(
@@ -67,6 +79,117 @@ def _make_mock_service(
     )
     service.count_app_conversations = AsyncMock(return_value=count_return)
     return service
+
+
+def _codex_user_context():
+    user_context = MagicMock()
+    user_context.get_user_info = AsyncMock(
+        return_value=SimpleNamespace(
+            agent_settings=ACPAgentSettings(acp_server='codex')
+        )
+    )
+    return user_context
+
+
+@pytest.fixture
+def file_secrets_store(tmp_path):
+    return FileSecretsStore(get_file_store('local', str(tmp_path)))
+
+
+@pytest.mark.parametrize(
+    'agent_settings',
+    [
+        OpenHandsAgentSettings(),
+        ACPAgentSettings(acp_server='claude-code'),
+        None,
+    ],
+)
+@pytest.mark.asyncio
+async def test_codex_preflight_skips_non_codex_agents(
+    file_secrets_store,
+    agent_settings,
+):
+    user_context = MagicMock()
+    user_context.get_user_info = AsyncMock(
+        return_value=SimpleNamespace(agent_settings=agent_settings)
+    )
+
+    await _validate_codex_credentials(
+        AppConversationStartRequest(),
+        user_context,
+        file_secrets_store,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'custom_secrets',
+    [
+        {},
+        {'CODEX_AUTH_JSON': CustomSecret(secret=SecretStr('{"tokens": {}}'))},
+    ],
+)
+async def test_codex_preflight_rejects_missing_or_invalid_credentials(
+    file_secrets_store,
+    custom_secrets,
+):
+    await file_secrets_store.store(Secrets(custom_secrets=custom_secrets))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _validate_codex_credentials(
+            AppConversationStartRequest(),
+            _codex_user_context(),
+            file_secrets_store,
+        )
+
+    assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert exc_info.value.detail == (
+        'Connect your Codex account or set an API key before starting a '
+        'Codex conversation.'
+    )
+
+
+@pytest.mark.parametrize(
+    'custom_secrets',
+    [
+        {
+            'CODEX_AUTH_JSON': CustomSecret(
+                secret=SecretStr(
+                    '{"auth_mode":"chatgpt","tokens":{"refresh_token":"refresh"}}'
+                )
+            )
+        },
+        {'OPENAI_API_KEY': CustomSecret(secret=SecretStr('openai-key'))},
+        {'CODEX_API_KEY': CustomSecret(secret=SecretStr('codex-key'))},
+    ],
+)
+@pytest.mark.asyncio
+async def test_codex_preflight_allows_stored_credentials(
+    file_secrets_store,
+    custom_secrets,
+):
+    await file_secrets_store.store(Secrets(custom_secrets=custom_secrets))
+
+    await _validate_codex_credentials(
+        AppConversationStartRequest(),
+        _codex_user_context(),
+        file_secrets_store,
+    )
+
+
+@pytest.mark.asyncio
+async def test_codex_preflight_allows_request_scoped_auth(file_secrets_store):
+    await _validate_codex_credentials(
+        AppConversationStartRequest(
+            secrets={
+                'CODEX_AUTH_JSON': SecretStr(
+                    '{"auth_mode":"chatgpt","tokens":{"refresh_token":"refresh"}}'
+                )
+            }
+        ),
+        _codex_user_context(),
+        file_secrets_store,
+    )
 
 
 @pytest.mark.asyncio
@@ -426,7 +549,10 @@ def _make_settings_for_switch(
 
 
 def _make_agent_server_context(
-    conversation_id, llm_model: str | None = 'openai/old-model'
+    conversation_id,
+    llm_model: str | None = 'openai/old-model',
+    working_dir: str = '/workspace/project',
+    selected_repository: str | None = None,
 ) -> AgentServerContext:
     """Build a minimal AgentServerContext for the success path tests."""
     info = AppConversationInfo(
@@ -434,11 +560,14 @@ def _make_agent_server_context(
         created_by_user_id='test-user',
         sandbox_id=str(uuid4()),
         llm_model=llm_model,
+        selected_repository=selected_repository,
     )
+    sandbox_spec = MagicMock()
+    sandbox_spec.working_dir = working_dir
     return AgentServerContext(
         conversation=info,
         sandbox=MagicMock(status=SandboxStatus.RUNNING),
-        sandbox_spec=MagicMock(),
+        sandbox_spec=sandbox_spec,
         agent_server_url='http://agent.test',
         session_api_key='sess-key',
     )
@@ -1084,6 +1213,496 @@ class TestGitProxyEndpoints:
 
         assert exc_info.value.status_code == status.HTTP_409_CONFLICT
         assert 'paused' in exc_info.value.detail.lower()
+
+
+@pytest.mark.asyncio
+class TestListConversationFiles:
+    """Test suite for the /files runtime proxy endpoint.
+
+    Like the git-proxy endpoints, it resolves the conversation's runtime via
+    ``_get_agent_server_context`` and forwards a bash ``find`` server-side using
+    the sandbox's session API key, returning the full workspace file tree.
+    """
+
+    def _bash_response(self, exit_code=0, stdout='', stderr=''):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json = MagicMock(
+            return_value={
+                'exit_code': exit_code,
+                'stdout': stdout,
+                'stderr': stderr,
+            }
+        )
+        return response
+
+    async def test_forwards_find_command_and_normalizes_paths(self):
+        """Happy path: POSTs the bash `find` to the runtime with the working
+        dir as cwd and the session key, then returns relative, de-duped,
+        `./`-stripped paths."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_return=self._bash_response(
+                stdout='./src/index.ts\n./hello.txt\n./src/index.ts\n',
+            )
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        assert result == ['src/index.ts', 'hello.txt']
+        call = client.post.await_args
+        assert call.args[0] == 'http://agent.test/api/bash/execute_bash_command'
+        assert call.kwargs['json']['cwd'] == '/workspace/project'
+        assert 'find .' in call.kwargs['json']['command']
+        assert call.kwargs['headers'] == {'X-Session-API-Key': 'sess-key'}
+
+    async def test_returns_empty_list_on_nonzero_exit(self):
+        """A non-zero exit (e.g. missing directory) yields [] rather than an
+        error the UI would surface."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_return=self._bash_response(exit_code=1, stderr='no such dir')
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        assert result == []
+
+    async def test_returns_404_when_conversation_not_reachable(self):
+        """A JSONResponse from the context helper is mirrored as an
+        HTTPException with the same status."""
+        helper_response = JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={'error': 'Conversation not found'},
+        )
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=helper_response),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await list_conversation_files(
+                    conversation_id=uuid4(),
+                    path='/workspace/project',
+                    app_conversation_service=MagicMock(),
+                    sandbox_service=MagicMock(),
+                    sandbox_spec_service=MagicMock(),
+                    httpx_client=_make_httpx_client(),
+                )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_returns_409_when_sandbox_paused(self):
+        """A paused sandbox (context helper None) surfaces as 409 Conflict."""
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=None),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await list_conversation_files(
+                    conversation_id=uuid4(),
+                    path='/workspace/project',
+                    app_conversation_service=MagicMock(),
+                    sandbox_service=MagicMock(),
+                    sandbox_spec_service=MagicMock(),
+                    httpx_client=_make_httpx_client(),
+                )
+
+        assert exc_info.value.status_code == status.HTTP_409_CONFLICT
+        assert 'paused' in exc_info.value.detail.lower()
+
+    async def test_returns_502_when_runtime_unreachable(self):
+        """A network-level RequestError is folded into a 502."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_side_effect=httpx.RequestError('connection refused'),
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await list_conversation_files(
+                    conversation_id=conv_id,
+                    path='/workspace/project',
+                    app_conversation_service=MagicMock(),
+                    sandbox_service=MagicMock(),
+                    sandbox_spec_service=MagicMock(),
+                    httpx_client=client,
+                )
+
+        assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
+
+    async def test_resolves_workspace_dir_when_path_omitted(self):
+        """With no ``path``, the cwd is derived from the sandbox spec's
+        ``working_dir`` and the conversation's selected repository."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(
+            conv_id,
+            working_dir='/workspace',
+            selected_repository='OpenHands/enterprise',
+        )
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await list_conversation_files(
+                conversation_id=conv_id,
+                path=None,
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        call = client.post.await_args
+        assert call.kwargs['json']['cwd'] == '/workspace/enterprise'
+
+    async def test_falls_back_to_resolved_dir_when_path_does_not_exist(self):
+        """The regression case: the frontend passes a ``path`` rooted in its
+        ``/workspace/project`` convention, but the runtime cloned the repo
+        under a different working dir (``/workspace/enterprise`` here). The
+        endpoint must ignore the stale path and list the resolved project dir
+        instead of returning ``[]`` from a missing-directory error."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(
+            conv_id,
+            working_dir='/workspace',
+            selected_repository='OpenHands/enterprise',
+        )
+        client = _make_httpx_client(
+            post_return=self._bash_response(stdout='./README.md\n'),
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        # The stale /workspace/project was NOT used as cwd; the resolved
+        # /workspace/enterprise was.
+        call = client.post.await_args
+        assert call.kwargs['json']['cwd'] == '/workspace/enterprise'
+        assert result == ['README.md']
+
+    async def test_honors_subdir_of_resolved_workspace(self):
+        """A ``path`` that descends into the resolved project dir is used
+        as-is, so listing a subdirectory of the workspace still works."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(
+            conv_id,
+            working_dir='/workspace',
+            selected_repository='OpenHands/enterprise',
+        )
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/enterprise/frontend/src',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        call = client.post.await_args
+        assert call.kwargs['json']['cwd'] == '/workspace/enterprise/frontend/src'
+
+    async def test_resolves_dir_without_selected_repository(self):
+        """With no selected repository the project dir is the bare working
+        dir, and a stale caller path is replaced with it."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(
+            conv_id, working_dir='/workspace/project', selected_repository=None
+        )
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await list_conversation_files(
+                conversation_id=conv_id,
+                path='/some/other/place',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        call = client.post.await_args
+        assert call.kwargs['json']['cwd'] == '/workspace/project'
+
+
+@pytest.mark.asyncio
+class TestReadConversationFile:
+    """Tests for ``read_conversation_file`` and ``_resolve_file_path``.
+
+    The cloud ``/file`` endpoint downloads via the runtime's
+    ``/api/file/download``, which requires an absolute path that already points
+    at the file (it does not join the path with the workspace's working_dir).
+    The frontend roots its request path at its own working-dir convention
+    (``/workspace/project[/{repoName}]``) when the conversation response does
+    not expose ``workspace.working_dir``, so the endpoint must remap the path
+    onto the runtime's actual project dir before downloading.
+    """
+
+    def _make_conversation(self, conv_id, selected_repository=None):
+        conv = MagicMock()
+        conv.id = conv_id
+        conv.sandbox_id = 'sandbox-1'
+        conv.selected_repository = selected_repository
+        return conv
+
+    def _make_sandbox(self, working_dir='/workspace', session_api_key='sess-key'):
+        sandbox = MagicMock()
+        sandbox.status = SandboxStatus.RUNNING
+        sandbox.session_api_key = session_api_key
+        exposed_url = MagicMock()
+        exposed_url.name = AGENT_SERVER
+        exposed_url.url = 'http://localhost:1234'
+        sandbox.exposed_urls = [exposed_url]
+        sandbox_spec = MagicMock()
+        sandbox_spec.working_dir = working_dir
+        sandbox.sandbox_spec_id = 'spec-1'
+        return sandbox, sandbox_spec
+
+    @staticmethod
+    def _make_download_result(success=True):
+        result = MagicMock()
+        result.success = success
+        return result
+
+    async def test_remaps_stale_frontend_root_to_resolved_project_dir(self, tmp_path):
+        """Regression: the frontend sends a path rooted at
+        ``/workspace/project/enterprise`` but the runtime cloned the repo at
+        ``/workspace/enterprise``. The download must receive the resolved
+        path, not the stale one."""
+        conv_id = uuid4()
+        conv = self._make_conversation(conv_id, 'OpenHands/enterprise')
+        sandbox, sandbox_spec = self._make_sandbox(working_dir='/workspace')
+
+        app_service = MagicMock()
+        app_service.get_app_conversation = AsyncMock(return_value=conv)
+        sb_service = MagicMock()
+        sb_service.get_sandbox = AsyncMock(return_value=sandbox)
+        spec_service = MagicMock()
+        spec_service.get_sandbox_spec = AsyncMock(return_value=sandbox_spec)
+
+        download_result = self._make_download_result(success=True)
+        workspace = AsyncMock()
+        workspace.file_download = AsyncMock(return_value=download_result)
+
+        # The endpoint writes the downloaded file to a path it gets from
+        # tempfile.NamedTemporaryFile(); point its ``.name`` at a file we own
+        # under the pytest-managed tmp_path so cleanup is automatic and no
+        # blocking os call is needed in this async test.
+        download_file = tmp_path / 'downloaded.md'
+        download_file.write_bytes(b'# README')
+        named_temp = MagicMock()
+        named_temp.__enter__.return_value.name = str(download_file)
+        named_temp.__exit__.return_value = False
+
+        with (
+            patch(
+                'openhands.app_server.app_conversation.app_conversation_router.'
+                'AsyncRemoteWorkspace',
+                return_value=workspace,
+            ),
+            patch(
+                'openhands.app_server.app_conversation.app_conversation_router.'
+                'tempfile.NamedTemporaryFile',
+                return_value=named_temp,
+            ),
+        ):
+            result = await read_conversation_file(
+                conversation_id=conv_id,
+                file_path='/workspace/project/enterprise/README.md',
+                app_conversation_service=app_service,
+                sandbox_service=sb_service,
+                sandbox_spec_service=spec_service,
+            )
+
+        assert result == '# README'
+        call = workspace.file_download.await_args
+        assert call.kwargs['source_path'] == '/workspace/enterprise/README.md'
+
+    async def test_uses_path_as_is_when_already_in_project_dir(self, tmp_path):
+        """An absolute path already under the resolved project dir is passed
+        through unchanged."""
+        conv_id = uuid4()
+        conv = self._make_conversation(conv_id, 'OpenHands/enterprise')
+        sandbox, sandbox_spec = self._make_sandbox(working_dir='/workspace')
+
+        app_service = MagicMock()
+        app_service.get_app_conversation = AsyncMock(return_value=conv)
+        sb_service = MagicMock()
+        sb_service.get_sandbox = AsyncMock(return_value=sandbox)
+        spec_service = MagicMock()
+        spec_service.get_sandbox_spec = AsyncMock(return_value=sandbox_spec)
+
+        download_result = self._make_download_result(success=True)
+        workspace = AsyncMock()
+        workspace.file_download = AsyncMock(return_value=download_result)
+
+        download_file = tmp_path / 'index.ts'
+        download_file.write_bytes(b'export const x = 1;')
+        named_temp = MagicMock()
+        named_temp.__enter__.return_value.name = str(download_file)
+        named_temp.__exit__.return_value = False
+
+        with (
+            patch(
+                'openhands.app_server.app_conversation.app_conversation_router.'
+                'AsyncRemoteWorkspace',
+                return_value=workspace,
+            ),
+            patch(
+                'openhands.app_server.app_conversation.app_conversation_router.'
+                'tempfile.NamedTemporaryFile',
+                return_value=named_temp,
+            ),
+        ):
+            await read_conversation_file(
+                conversation_id=conv_id,
+                file_path='/workspace/enterprise/frontend/src/index.ts',
+                app_conversation_service=app_service,
+                sandbox_service=sb_service,
+                sandbox_spec_service=spec_service,
+            )
+
+        call = workspace.file_download.await_args
+        assert (
+            call.kwargs['source_path'] == '/workspace/enterprise/frontend/src/index.ts'
+        )
+
+    async def test_returns_empty_string_when_download_fails(self):
+        """A failed download (e.g. file not found) returns '' rather than
+        raising — preserving the endpoint's existing contract."""
+        conv_id = uuid4()
+        conv = self._make_conversation(conv_id, 'OpenHands/enterprise')
+        sandbox, sandbox_spec = self._make_sandbox(working_dir='/workspace')
+
+        app_service = MagicMock()
+        app_service.get_app_conversation = AsyncMock(return_value=conv)
+        sb_service = MagicMock()
+        sb_service.get_sandbox = AsyncMock(return_value=sandbox)
+        spec_service = MagicMock()
+        spec_service.get_sandbox_spec = AsyncMock(return_value=sandbox_spec)
+
+        workspace = AsyncMock()
+        workspace.file_download = AsyncMock(
+            return_value=self._make_download_result(success=False)
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            'AsyncRemoteWorkspace',
+            return_value=workspace,
+        ):
+            result = await read_conversation_file(
+                conversation_id=conv_id,
+                file_path='/workspace/project/enterprise/missing.txt',
+                app_conversation_service=app_service,
+                sandbox_service=sb_service,
+                sandbox_spec_service=spec_service,
+            )
+
+        assert result == ''
+        # Even on failure, the remapped path was used.
+        call = workspace.file_download.await_args
+        assert call.kwargs['source_path'] == '/workspace/enterprise/missing.txt'
+
+    def test_resolve_file_path_relative_is_anchored_under_project_dir(self):
+        """A relative path is joined under the resolved project dir (the
+        runtime rejects relative paths with a 400)."""
+        ctx = _make_agent_server_context(
+            uuid4(),
+            working_dir='/workspace',
+            selected_repository='OpenHands/enterprise',
+        )
+        assert _resolve_file_path('README.md', ctx) == '/workspace/enterprise/README.md'
+        assert (
+            _resolve_file_path('frontend/package.json', ctx)
+            == '/workspace/enterprise/frontend/package.json'
+        )
+
+    def test_resolve_file_path_stale_root_is_reanchored(self):
+        """The frontend's stale ``/workspace/project/{repo}`` root is stripped
+        and re-anchored under the resolved project dir."""
+        ctx = _make_agent_server_context(
+            uuid4(),
+            working_dir='/workspace',
+            selected_repository='OpenHands/enterprise',
+        )
+        assert (
+            _resolve_file_path('/workspace/project/enterprise/README.md', ctx)
+            == '/workspace/enterprise/README.md'
+        )
+        assert (
+            _resolve_file_path(
+                '/workspace/project/enterprise/frontend/src/index.ts', ctx
+            )
+            == '/workspace/enterprise/frontend/src/index.ts'
+        )
+
+    def test_resolve_file_path_unrecognized_root_passthrough(self):
+        """A path under no recognizable root is passed through unchanged so the
+        runtime can reject it (→ "") rather than silently mis-routing it."""
+        ctx = _make_agent_server_context(
+            uuid4(),
+            working_dir='/workspace',
+            selected_repository='OpenHands/enterprise',
+        )
+        assert _resolve_file_path('/etc/passwd', ctx) == '/etc/passwd'
 
 
 class TestFinalizeSandboxDelete:

@@ -15,6 +15,7 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.models import Success
@@ -74,6 +75,8 @@ from openhands.app_server.sandbox.sandbox_models import (
 from openhands.app_server.sandbox.sandbox_service import SandboxService
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.sandbox.sandbox_spec_service import SandboxSpecService
+from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.services.db_session_injector import set_db_session_keep_open
 from openhands.app_server.services.httpx_client_injector import (
     set_httpx_client_keep_open,
@@ -84,11 +87,13 @@ from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
-from openhands.app_server.user_auth import get_user_settings
+from openhands.app_server.user_auth import get_secrets_store, get_user_settings
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
+from openhands.sdk.agent.acp_file_credentials import is_valid_codex_auth
+from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.skills import KeywordTrigger, TaskTrigger
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
@@ -118,6 +123,64 @@ db_session_dependency = depends_db_session()
 httpx_client_dependency = depends_httpx_client()
 sandbox_service_dependency = depends_sandbox_service()
 sandbox_spec_service_dependency = depends_sandbox_spec_service()
+
+
+def _custom_secret_value(secrets: Secrets | None, name: str) -> str | None:
+    custom_secret = secrets.custom_secrets.get(name) if secrets else None
+    if custom_secret is None:
+        return None
+    return custom_secret.secret.get_secret_value()
+
+
+def _has_api_key(value: str | None) -> bool:
+    return bool(value and value.strip())
+
+
+def _request_or_stored_secret_value(
+    secrets: Secrets | None,
+    request_secrets: dict[str, SecretStr],
+    name: str,
+) -> str | None:
+    if name in request_secrets:
+        return request_secrets[name].get_secret_value()
+    return _custom_secret_value(secrets, name)
+
+
+async def _validate_codex_credentials(
+    request: AppConversationStartRequest,
+    user_context: UserContext,
+    secrets_store: SecretsStore,
+) -> None:
+    user = await user_context.get_user_info(
+        resolve_agent_profile=True,
+        override_agent_profile_id=request.agent_profile_id,
+    )
+    agent_settings = user.agent_settings
+    if not (
+        isinstance(agent_settings, ACPAgentSettings)
+        and agent_settings.acp_server == 'codex'
+    ):
+        return
+
+    secrets = await secrets_store.load()
+    api_secrets = request.secrets or {}
+    codex_auth = _request_or_stored_secret_value(
+        secrets, api_secrets, 'CODEX_AUTH_JSON'
+    )
+    api_keys = (
+        _request_or_stored_secret_value(secrets, api_secrets, 'OPENAI_API_KEY'),
+        _request_or_stored_secret_value(secrets, api_secrets, 'CODEX_API_KEY'),
+    )
+    if is_valid_codex_auth(codex_auth) or any(map(_has_api_key, api_keys)):
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            'Connect your Codex account or set an API key before starting a '
+            'Codex conversation.'
+        ),
+    )
 
 
 @dataclass
@@ -366,12 +429,15 @@ async def start_app_conversation(
     request: Request,
     start_request: AppConversationStartRequest,
     user_context: UserContext = user_context_dependency,
+    secrets_store: SecretsStore = Depends(get_secrets_store),
     db_session: AsyncSession = db_session_dependency,
     httpx_client: httpx.AsyncClient = httpx_client_dependency,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
 ) -> AppConversationStartTask:
+    await _validate_codex_credentials(start_request, user_context, secrets_store)
+
     # Because we are processing after the request finishes, keep the db connection open
     set_db_session_keep_open(request.state, True)
     set_httpx_client_keep_open(request.state, True)
@@ -1033,10 +1099,12 @@ async def delete_app_conversation(
 async def stream_app_conversation_start(
     request: AppConversationStartRequest,
     user_context: UserContext = user_context_dependency,
+    secrets_store: SecretsStore = Depends(get_secrets_store),
 ) -> list[AppConversationStartTask]:
     """Start an app conversation start task and stream updates from it.
     Leaves the connection open until either the conversation starts or there was an error
     """
+    await _validate_codex_credentials(request, user_context, secrets_store)
     response = StreamingResponse(
         _stream_app_conversation_start(request, user_context),
         media_type='application/json',
@@ -1187,6 +1255,21 @@ async def read_conversation_file(
         working_dir=sandbox_spec.working_dir,
     )
 
+    # The runtime's file_download requires an absolute path that already points
+    # at the file. The frontend may have rooted ``file_path`` at its own
+    # working-dir convention (e.g. ``/workspace/project/enterprise/...``)
+    # rather than the runtime's actual clone location
+    # (``{working_dir}/{repo_name}/...``); remap it onto the resolved project
+    # dir so the download resolves the right file instead of 404-ing into "".
+    ctx = AgentServerContext(
+        conversation=conversation,
+        sandbox=sandbox,
+        sandbox_spec=sandbox_spec,
+        agent_server_url=agent_server_url,
+        session_api_key=sandbox.session_api_key,
+    )
+    resolved_path = _resolve_file_path(file_path, ctx)
+
     # Read the file at the specified path
     temp_file_path = None
     try:
@@ -1196,7 +1279,7 @@ async def read_conversation_file(
 
         # Download the file from remote system
         result = await remote_workspace.file_download(
-            source_path=file_path,
+            source_path=resolved_path,
             destination_path=temp_file_path,
         )
 
@@ -1364,6 +1447,257 @@ async def get_conversation_git_diff(
         sandbox_spec_service,
         httpx_client,
     )
+
+
+# Directory names we never descend into when listing workspace files — kept in
+# sync with the Agent Canvas frontend's local `find` listing so cloud and local
+# backends exclude the same heavy/build dirs.
+_WORKSPACE_LIST_EXCLUDED_DIRS = (
+    '.git',
+    'node_modules',
+    '.venv',
+    'venv',
+    '__pycache__',
+    'dist',
+    'build',
+    '.next',
+    '.cache',
+    '.pytest_cache',
+    '.mypy_cache',
+    '.turbo',
+    '.parcel-cache',
+    'target',
+)
+
+# Cap the number of files returned so a giant repo doesn't overwhelm the UI.
+_WORKSPACE_LIST_MAX_FILES = 2000
+
+
+def _build_workspace_list_command() -> str:
+    """`find` invocation that lists regular files relative to the cwd,
+    pruning heavy/build directories and bounding the result."""
+    prune_expr = ' -o '.join(
+        f"-name '{name}' -prune" for name in _WORKSPACE_LIST_EXCLUDED_DIRS
+    )
+    return (
+        f'find . \\( {prune_expr} \\) -o -type f -print 2>/dev/null '
+        f'| sort | head -n {_WORKSPACE_LIST_MAX_FILES}'
+    )
+
+
+def _resolve_workspace_dir(path: str | None, ctx: AgentServerContext) -> str:
+    """Resolve the directory to list files in.
+
+    The caller may pass ``path`` (e.g. the value the frontend computed from its
+    working-dir convention), but that convention does not always match the
+    runtime's actual working directory — different deployments clone the repo
+    at ``{working_dir}/{repo_name}``, ``{working_dir}/{conversation_id}``, or
+    plain ``working_dir``. The authoritative project root is derived from the
+    sandbox spec's ``working_dir`` and the conversation's
+    ``selected_repository`` (the same resolution the skills/hooks endpoints
+    use), so prefer it. ``path`` is only honored when it points at a real
+    subdirectory the runtime exposes — i.e. it is the resolved project dir or a
+    descendant of it — which keeps "list a subdirectory of the workspace"
+    working without ever listing outside the workspace.
+    """
+    project_dir = get_project_dir(
+        ctx.sandbox_spec.working_dir, ctx.conversation.selected_repository
+    )
+    if not path:
+        return project_dir
+    # Accept the caller's path only when it is the resolved project dir or a
+    # descendant of it, so "list a subdirectory of the workspace" still works
+    # without ever listing outside the conversation's project. The bare
+    # ``working_dir`` is deliberately NOT a candidate when a repository is
+    # selected: it is a *parent* of the clone, so treating it as an anchor
+    # would accept any sibling path (e.g. ``/workspace/project`` under
+    # ``/workspace``) and list the wrong — often nonexistent — directory.
+    base = project_dir.rstrip('/')
+    normalized = path.rstrip('/')
+    if normalized == base or normalized.startswith(base.rstrip('/') + '/'):
+        return path
+    return project_dir
+
+
+def _resolve_file_path(file_path: str, ctx: AgentServerContext) -> str:
+    """Resolve a file path to an absolute path inside the conversation's project.
+
+    The runtime's ``/api/file/download`` requires an **absolute** path and does
+    not join it with the workspace's ``working_dir``, so the path we hand it
+    must already point at the right place. The frontend builds its request path
+    as ``{workspaceRoot}/{relativePath}``, where ``relativePath`` is correct
+    (it comes from the ``/files`` tree, which is relative to the real project
+    dir) but ``workspaceRoot`` is the frontend's working-dir convention. When
+    the cloud conversation response does not expose ``workspace.working_dir``
+    that convention falls back to ``{DEFAULT_WORKING_DIR}[/{repoName}]`` (e.g.
+    ``/workspace/project/enterprise``), which does not match the runtime's
+    actual clone location (``{working_dir}/{repo_name}``, e.g.
+    ``/workspace/enterprise``). The download then 404s and the endpoint
+    silently returns ``""``.
+
+    This remaps the path onto the authoritative project dir derived from the
+    sandbox spec (the same ``get_project_dir`` resolution used by
+    ``_resolve_workspace_dir`` and the skills/hooks endpoints):
+
+    * an absolute path already inside the project dir is used as-is;
+    * an absolute path rooted at a stale frontend default is re-anchored by
+      stripping the stale root prefix (longest match first, so
+      ``/workspace/project/enterprise`` is preferred over ``/workspace``) and
+      re-joining under the project dir;
+    * a relative path is joined under the project dir (the runtime rejects
+      relative paths, so this also fixes that case).
+    """
+    working_dir = ctx.sandbox_spec.working_dir
+    repo_name = (
+        ctx.conversation.selected_repository.split('/')[-1]
+        if ctx.conversation.selected_repository
+        else None
+    )
+    project_dir = get_project_dir(working_dir, ctx.conversation.selected_repository)
+
+    if not file_path:
+        return project_dir
+
+    normalized = file_path.rstrip('/')
+    if not normalized.startswith('/'):
+        # Relative path: anchor under the project dir.
+        return f'{project_dir}/{normalized}'
+
+    project_base = project_dir.rstrip('/')
+    if normalized == project_base or normalized.startswith(project_base + '/'):
+        # Already inside the real project dir.
+        return file_path
+
+    # The path is absolute but not under the project dir. It is likely rooted
+    # at one of the frontend's stale defaults; strip the longest matching
+    # stale root and re-anchor under the project dir. Ordered longest-first so
+    # a more specific root (``/workspace/project/enterprise``) wins over its
+    # parent (``/workspace/project``), and the bare ``working_dir`` (which is
+    # a parent of the clone) is only a last resort.
+    stale_roots: list[str] = []
+    if repo_name:
+        stale_roots.append(f'{working_dir}/project/{repo_name}')
+    stale_roots.append(f'{working_dir}/project')
+    stale_roots.append(working_dir)
+    for root in sorted({r.rstrip('/') for r in stale_roots}, key=len, reverse=True):
+        if normalized == root or normalized.startswith(root + '/'):
+            remainder = normalized[len(root) :].lstrip('/')
+            return f'{project_dir}/{remainder}' if remainder else project_dir
+
+    # No recognizable root; let the runtime reject it (returns "").
+    return file_path
+
+
+@router.get('/{conversation_id}/files')
+async def list_conversation_files(
+    conversation_id: UUID,
+    path: Annotated[
+        str | None,
+        Query(
+            description=(
+                'Optional absolute path to the workspace directory to list. '
+                'When omitted, or when it does not match the conversation '
+                'workspace, the directory is resolved from the sandbox spec '
+                "and the conversation's selected repository."
+            ),
+        ),
+    ] = None,
+    app_conversation_service: AppConversationService = (
+        app_conversation_service_dependency
+    ),
+    sandbox_service: SandboxService = sandbox_service_dependency,
+    sandbox_spec_service: SandboxSpecService = sandbox_spec_service_dependency,
+    httpx_client: httpx.AsyncClient = httpx_client_dependency,
+) -> list[str]:
+    """List every regular file under a conversation workspace directory.
+
+    Mirrors the git-proxy endpoints: browsers can't reach runtime sandboxes
+    directly (no CORS for non-localhost origins), so the frontend hits this on
+    the cloud API host and we make the runtime hop server-side using the
+    sandbox's session API key. Unlike `/git/changes` (which only reports
+    modified/untracked files), this enumerates the full tree so the Files tab
+    matches the local-backend experience. Paths are returned relative to the
+    listed directory (e.g. ``src/index.html``).
+    """
+    ctx = await _get_agent_server_context(
+        conversation_id,
+        app_conversation_service,
+        sandbox_service,
+        sandbox_spec_service,
+    )
+    if isinstance(ctx, JSONResponse):
+        raise HTTPException(
+            status_code=ctx.status_code,
+            detail=f'Conversation {conversation_id} is not reachable',
+        )
+    if ctx is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Sandbox is paused; resume it before listing files.',
+        )
+
+    cwd = _resolve_workspace_dir(path, ctx)
+    headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
+    try:
+        upstream = await httpx_client.post(
+            f'{ctx.agent_server_url}/api/bash/execute_bash_command',
+            json={
+                'command': _build_workspace_list_command(),
+                'cwd': cwd,
+                'timeout': 30,
+            },
+            headers=headers,
+            timeout=40.0,
+        )
+        upstream.raise_for_status()
+        data = upstream.json()
+    except httpx.HTTPStatusError as e:
+        logger.exception(
+            'Agent server returned error listing files: %s - %s',
+            e.response.status_code,
+            e.response.text,
+            stack_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f'Agent server error: {e.response.status_code}',
+        ) from e
+    except (json.JSONDecodeError, httpx.DecodingError) as e:
+        logger.exception(
+            'Agent server returned non-JSON listing files: %s', e, stack_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Agent server returned unexpected response.',
+        ) from e
+    except httpx.RequestError as e:
+        logger.exception(
+            'Failed to reach agent server listing files: %s', e, stack_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Failed to reach agent server.',
+        ) from e
+
+    if not isinstance(data, dict) or data.get('exit_code') != 0:
+        # A non-zero exit (e.g. the directory doesn't exist yet) means there is
+        # nothing to list rather than an error worth surfacing to the UI.
+        return []
+
+    stdout = data.get('stdout') or ''
+    seen: set[str] = set()
+    files: list[str] = []
+    for line in stdout.splitlines():
+        rel = line.strip()
+        if rel.startswith('./'):
+            rel = rel[2:]
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        files.append(rel)
+        if len(files) >= _WORKSPACE_LIST_MAX_FILES:
+            break
+    return files
 
 
 @router.get('/{conversation_id}/skills')

@@ -194,7 +194,9 @@ async def load_settings(
 
         llm = settings.agent_settings.llm
         settings_with_token_data = GETSettingsModel(
-            **settings.model_dump(exclude={'secrets_store'}),
+            **settings.model_dump(
+                exclude={'secrets_store'}, context={'expose_secrets': True}
+            ),
             llm_api_key_set=settings.llm_api_key_is_set,
             search_api_key_set=settings.search_api_key is not None
             and bool(settings.search_api_key),
@@ -315,6 +317,7 @@ async def store_settings(
                 )
 
         _post_merge_llm_fixups(settings)
+        settings.sync_active_profile_from_settings()
 
         if existing_settings:
             if 'search_api_key' not in payload and settings.search_api_key is None:
@@ -610,6 +613,7 @@ async def save_profile(
             # key") instead of the snapshotted active-settings key.
             llm = llm.model_copy(update={'api_key': existing.api_key})
 
+        was_active = settings.llm_profiles.active == name
         try:
             settings.llm_profiles.save(
                 name, llm, include_secrets=request.include_secrets
@@ -618,9 +622,8 @@ async def save_profile(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from exc
-        # Without this, overwriting the active profile leaves
-        # agent_settings.llm stale — active would lie about what's running.
-        settings.reconcile_active_profile()
+        if was_active:
+            settings.switch_to_profile(name)
         await settings_store.store(settings)
 
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' saved")

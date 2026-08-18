@@ -24,6 +24,10 @@ from openhands.app_server.web_client.web_client_models import (
 from openhands.sdk.settings import ACP_PROVIDERS
 
 
+def _env_flag_enabled(name: str, default: str = 'false') -> bool:
+    return os.getenv(name, default).lower() in ('true', '1')
+
+
 def _get_recaptcha_site_key() -> str | None:
     """Get reCAPTCHA site key from environment variable."""
     key = os.getenv('RECAPTCHA_SITE_KEY', '').strip()
@@ -182,9 +186,8 @@ def _get_feature_flags() -> WebClientFeatureFlags:
 
     Reads ENABLE_BILLING, HIDE_LLM_SETTINGS, ENABLE_JIRA, ENABLE_JIRA_DC,
     ENABLE_LINEAR, HIDE_USERS_PAGE, HIDE_BILLING_PAGE, HIDE_INTEGRATIONS_PAGE,
-    HIDE_PERSONAL_WORKSPACES, and OH_ENABLE_ONBOARDING from environment. Each
-    flag is True only if the corresponding env var is exactly 'true', otherwise
-    False.
+    HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, and
+    ENABLE_AGENT_CANVAS_BANNER from environment.
 
     OH_ALLOW_USER_LLM_CONFIGURATION and ENABLE_ACP are the exceptions: they
     default to 'true' when unset. OH_ALLOW_USER_LLM_CONFIGURATION keeps the
@@ -210,6 +213,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_acp=os.getenv('ENABLE_ACP', 'true') == 'true',
         enable_onboarding=os.getenv('OH_ENABLE_ONBOARDING', 'false') == 'true',
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
+        enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
     )
 
 
