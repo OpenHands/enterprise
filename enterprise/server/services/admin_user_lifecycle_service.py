@@ -15,6 +15,10 @@ from storage.user_store import UserStore
 from openhands.app_server.utils.logger import openhands_logger as logger
 
 
+class LastSuperAdminError(RuntimeError):
+    """Raised when an operation would remove the final active superadmin."""
+
+
 @dataclass(frozen=True)
 class UserLifecycleResult:
     """Summary of a lifecycle operation."""
@@ -54,10 +58,11 @@ class AdminUserLifecycleService:
         if user is None:
             return None
 
+        await self._ensure_not_last_active_superadmin(user)
+        await self._set_disabled(user_id, True)
         await self.token_manager.disable_keycloak_user(user_id, user.email)
         await self._delete_api_keys(user_id)
         await self._delete_offline_token(user_id)
-        await self._set_disabled(user_id, True)
         logger.info('admin_user_lifecycle:disabled', extra={'user_id': user_id})
         return UserLifecycleResult(user_id=user_id, email=user.email)
 
@@ -86,6 +91,8 @@ class AdminUserLifecycleService:
         if user is None:
             return None
 
+        await self._ensure_not_last_active_superadmin(user)
+        await self._set_disabled(user_id, True)
         await self.token_manager.disable_keycloak_user(user_id, user.email)
         await self._delete_api_keys(user_id)
         await self._delete_offline_token(user_id)
@@ -107,6 +114,18 @@ class AdminUserLifecycleService:
         return UserDeletionResult(
             user_id=user_id, email=user.email, notes=tuple(warnings)
         )
+
+    async def _ensure_not_last_active_superadmin(self, user: User) -> None:
+        if user.role_id is None:
+            return
+
+        superadmins = await UserStore.list_super_admins()
+        if any(admin.id == user.id for admin in superadmins):
+            active = [admin for admin in superadmins if not admin.is_disabled]
+            if len(active) <= 1:
+                raise LastSuperAdminError(
+                    'Cannot disable or delete the last active superadmin'
+                )
 
     async def _set_disabled(self, user_id: str, disabled: bool) -> None:
         async with a_session_maker() as session:
@@ -148,8 +167,31 @@ class AdminUserLifecycleService:
             # metadata for shared-org conversations is removed by user_id
             # after the cascade (which already handled the personal org),
             # without sweeping unrelated conversations.
+            await session.execute(
+                text('''
+                    DELETE FROM conversation_metadata
+                    WHERE conversation_id IN (
+                        SELECT conversation_id FROM conversation_metadata_saas
+                        WHERE user_id = :uuid
+                    )
+                '''),
+                {'uuid': user_uuid_str},
+            )
+            await session.execute(
+                text('''
+                    DELETE FROM app_conversation_start_task
+                    WHERE app_conversation_id IN (
+                        SELECT conversation_id::uuid FROM conversation_metadata_saas
+                        WHERE user_id = :uuid
+                    )
+                '''),
+                {'uuid': user_uuid_str},
+            )
             statements = (
                 'DELETE FROM conversation_metadata_saas WHERE user_id = :uuid',
+                'DELETE FROM conversation_work WHERE user_id = :uid',
+                'DELETE FROM app_conversation_start_task WHERE created_by_user_id = :uid',
+                'DELETE FROM jira_workspaces WHERE admin_user_id = :uid',
                 'DELETE FROM user_settings WHERE keycloak_user_id = :uid',
                 'DELETE FROM api_keys WHERE user_id = :uid',
                 'DELETE FROM offline_tokens WHERE user_id = :uid',
@@ -187,4 +229,9 @@ class AdminUserLifecycleService:
             await session.commit()
 
 
-__all__ = ['AdminUserLifecycleService', 'UserLifecycleResult', 'UserDeletionResult']
+__all__ = [
+    'AdminUserLifecycleService',
+    'LastSuperAdminError',
+    'UserLifecycleResult',
+    'UserDeletionResult',
+]

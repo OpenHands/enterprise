@@ -17,6 +17,7 @@ def user():
     value.email = 'user@example.com'
     value.current_org_id = uuid4()
     value.is_disabled = False
+    value.role_id = None
     return value
 
 
@@ -70,6 +71,7 @@ async def test_delete_user_runs_all_cleanup_steps(user):
         patch.object(service, 'get_user', AsyncMock(return_value=user)),
         patch.object(service, '_delete_api_keys', AsyncMock()) as delete_keys,
         patch.object(service, '_delete_offline_token', AsyncMock()) as delete_token,
+        patch.object(service, '_set_disabled', AsyncMock()) as set_disabled,
         patch.object(service, '_delete_user_data', AsyncMock()) as delete_data,
         patch(
             'server.services.admin_user_lifecycle_service.LiteLlmManager.delete_user',
@@ -101,6 +103,7 @@ async def test_delete_user_reports_external_cleanup_warnings(user):
         patch.object(service, 'get_user', AsyncMock(return_value=user)),
         patch.object(service, '_delete_api_keys', AsyncMock()),
         patch.object(service, '_delete_offline_token', AsyncMock()),
+        patch.object(service, '_set_disabled', AsyncMock()),
         patch.object(service, '_delete_user_data', AsyncMock()),
         patch(
             'server.services.admin_user_lifecycle_service.LiteLlmManager.delete_user',

@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from server.auth.authorization import Permission, require_permission
 from server.services.admin_user_lifecycle_service import (
     AdminUserLifecycleService,
+    LastSuperAdminError,
     UserDeletionResult,
     UserLifecycleResult,
 )
@@ -37,7 +38,12 @@ async def disable_user(
     user_id: str,
     _: str = Depends(require_permission(Permission.MANAGE_USERS)),
 ) -> UserLifecycleResponse:
-    result = await AdminUserLifecycleService().disable_user(user_id)
+    try:
+        result = await AdminUserLifecycleService().disable_user(user_id)
+    except LastSuperAdminError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
@@ -63,7 +69,12 @@ async def delete_user(
     user_id: str,
     _: str = Depends(require_permission(Permission.MANAGE_USERS)),
 ) -> UserLifecycleResponse:
-    result = await AdminUserLifecycleService().delete_user(user_id)
+    try:
+        result = await AdminUserLifecycleService().delete_user(user_id)
+    except LastSuperAdminError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
