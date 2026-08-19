@@ -1,0 +1,50 @@
+name: SonarQube
+
+# push and manual only. No pull_request or pull_request_target: those run for forks,
+# which would expose SONAR_TOKEN to anyone who opens a PR.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sonarqube-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # SonarQube reads git history to attribute issues to authors.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Not a build. SonarJS resolves types from node_modules, and without them it
+      # degrades to a shallower analysis silently rather than failing.
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: openhands-ui/.bun-version
+
+      - name: Install openhands-ui dependencies
+        working-directory: openhands-ui
+        run: bun install --frozen-lockfile
+
+      - uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
