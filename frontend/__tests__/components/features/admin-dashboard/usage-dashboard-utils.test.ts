@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   buildExportFilename,
+  formatDateTime,
   formatShortDate,
   rowsToCsv,
 } from "#/components/features/admin-dashboard/usage-dashboard-utils";
@@ -18,6 +19,32 @@ describe("formatShortDate", () => {
 
   it("renders UTC-midnight timestamps on their UTC day", () => {
     expect(formatShortDate("2026-07-01T00:00:00Z")).toBe("Jul 1");
+  });
+});
+
+describe("formatDateTime", () => {
+  const originalTimeZone = process.env.TZ;
+
+  beforeAll(() => {
+    process.env.TZ = "America/Los_Angeles";
+  });
+
+  afterAll(() => {
+    if (originalTimeZone === undefined) {
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = originalTimeZone;
+    }
+  });
+
+  it("converts timezone-less UTC timestamps to local time", () => {
+    expect(formatDateTime("2026-06-16T12:00:00")).toBe("Jun 16, 2026, 5:00 AM");
+  });
+
+  it("preserves explicit timezone offsets", () => {
+    expect(formatDateTime("2026-06-16T12:00:00+02:00")).toBe(
+      "Jun 16, 2026, 3:00 AM",
+    );
   });
 });
 
