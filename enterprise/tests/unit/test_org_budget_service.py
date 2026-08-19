@@ -18,7 +18,9 @@ from sqlalchemy import select
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_threshold import OrgBudgetThreshold
+from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
+from storage.role import Role
 from storage.user import User
 
 
@@ -412,6 +414,102 @@ async def test_run_budget_maintenance_uses_cycle_roll_sync(
 
 
 @pytest.mark.asyncio
+async def test_get_budget_state_uses_litellm_cycle_spend(
+    async_session_maker, budget_org
+):
+    user_id = uuid4()
+    async with async_session_maker() as session:
+        session.add_all(
+            [
+                Role(id=1, name='member', rank=1),
+                User(
+                    id=user_id,
+                    current_org_id=budget_org.id,
+                    email='member@example.com',
+                    git_user_name='member',
+                ),
+                OrgMember(
+                    org_id=budget_org.id,
+                    user_id=user_id,
+                    role_id=1,
+                    llm_api_key='test-api-key',
+                    status='active',
+                ),
+                OrgBudgetSettings(
+                    org_id=budget_org.id,
+                    enabled=True,
+                    reset_day=1,
+                    monthly_limit=100.0,
+                    default_user_monthly_limit=50.0,
+                    cycle_start_at=datetime.now(UTC),
+                    cycle_start_spend=40.0,
+                    user_cycle_start_spend={str(user_id): 15.0},
+                ),
+            ]
+        )
+        await session.commit()
+
+        financial_data = {
+            'team_spend': 130.0,
+            'members': {str(user_id): {'spend': 55.0}},
+        }
+        with patch(
+            'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+            AsyncMock(return_value=financial_data),
+        ):
+            state = await OrgBudgetService(session).get_budget_state(budget_org.id)
+
+    assert state['current_spend'] == 90.0
+    assert state['users_total'] == 1
+    assert state['users'][0]['current_spend'] == 40.0
+
+
+@pytest.mark.asyncio
+async def test_budget_maintenance_alerts_on_litellm_spend(
+    async_session_maker, budget_org
+):
+    async with async_session_maker() as session:
+        cycle_start = _current_cycle_start(datetime.now(UTC), 1)
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            reset_day=1,
+            monthly_limit=100.0,
+            cycle_start_at=cycle_start,
+            cycle_start_spend=10.0,
+        )
+        threshold = OrgBudgetThreshold(
+            org_id=budget_org.id,
+            percentage=80,
+            email_enabled=True,
+            slack_enabled=False,
+        )
+        session.add_all([settings, threshold])
+        await session.commit()
+
+        financial_data = {'team_spend': 95.0, 'members': {}}
+        service = OrgBudgetService(session)
+        service._send_alerts = AsyncMock()
+        with (
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+                AsyncMock(return_value=financial_data),
+            ),
+            patch.object(
+                service,
+                '_sync_litellm_budgets',
+                AsyncMock(return_value=financial_data),
+            ),
+        ):
+            result = await service.run_budget_maintenance(budget_org.id)
+
+    assert result['current_spend'] == 85.0
+    service._send_alerts.assert_awaited_once()
+    assert service._send_alerts.await_args.args[3] == 85.0
+    assert service._send_alerts.await_args.args[4] == 85.0
+
+
+@pytest.mark.asyncio
 async def test_sync_litellm_budgets_updates_team_and_members(
     async_session_maker, budget_org
 ):
@@ -503,6 +601,7 @@ async def test_sync_litellm_budgets_updates_team_and_members(
         )
 
         assert settings.user_cycle_start_spend == {
+            str(disabled_user_id): 12.0,
             str(override_user_id): 7.0,
             str(default_user_id): 5.0,
         }
