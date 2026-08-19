@@ -107,6 +107,51 @@ def _effective_user_budget_limit(
     return default_limit, False, False
 
 
+def _budget_values_match(actual: float | None, expected: float | None) -> bool:
+    if actual is None or expected is None:
+        return actual is expected
+    return abs(actual - expected) <= 1e-6
+
+
+def _budget_sync_readback_errors(
+    financial_data: dict,
+    expected_team_budget: float | None,
+    expected_member_budgets: dict[str, float | None],
+) -> list[str]:
+    errors: list[str] = []
+    actual_team_budget = financial_data.get('team_max_budget')
+    if not _budget_values_match(actual_team_budget, expected_team_budget):
+        errors.append(
+            'team_budget_mismatch: '
+            f'expected={expected_team_budget} actual={actual_team_budget}'
+        )
+
+    members = financial_data.get('members', {})
+    for user_id, expected_budget in expected_member_budgets.items():
+        member = members.get(user_id)
+        if member is None:
+            errors.append(f'member_budget_missing: {user_id}')
+            continue
+
+        actual_budget = member.get('max_budget')
+        uses_shared_budget = bool(member.get('uses_shared_budget'))
+        if expected_budget is None:
+            if not uses_shared_budget:
+                errors.append(
+                    f'member_budget_mismatch: {user_id}: '
+                    f'expected=shared actual={actual_budget}'
+                )
+        elif uses_shared_budget or not _budget_values_match(
+            actual_budget, expected_budget
+        ):
+            errors.append(
+                f'member_budget_mismatch: {user_id}: '
+                f'expected={expected_budget} actual={actual_budget} '
+                f'uses_shared_budget={uses_shared_budget}'
+            )
+    return errors
+
+
 def _escape_ilike(value: str) -> str:
     return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
@@ -584,12 +629,12 @@ class OrgBudgetService:
 
         if settings.enabled and settings.monthly_limit:
             # Anchor LiteLLM budgets to our cycle start spend so resets stay aligned.
-            max_budget = settings.cycle_start_spend + settings.monthly_limit
+            expected_team_budget = settings.cycle_start_spend + settings.monthly_limit
             try:
                 await LiteLlmManager.update_team(
                     str(org_id),
                     team_alias=None,
-                    max_budget=max_budget,
+                    max_budget=expected_team_budget,
                 )
             except Exception as e:
                 sync_errors.append(f'team_update_failed: {e}')
@@ -598,6 +643,7 @@ class OrgBudgetService:
                     extra={'org_id': str(org_id), 'error': str(e)},
                 )
         else:
+            expected_team_budget = None
             try:
                 await LiteLlmManager.update_team(
                     str(org_id),
@@ -615,6 +661,7 @@ class OrgBudgetService:
         override_map = {str(o.user_id): o for o in overrides}
         existing_user_baselines = settings.user_cycle_start_spend or {}
         active_user_baselines: dict[str, float] = {}
+        expected_member_budgets: dict[str, float | None] = {}
 
         for user_id, info in members.items():
             baseline = existing_user_baselines.get(user_id)
@@ -636,6 +683,7 @@ class OrgBudgetService:
             else:
                 max_budget_in_team = None
                 clear_budget = True
+            expected_member_budgets[user_id] = max_budget_in_team
             try:
                 await LiteLlmManager.update_user_in_team(
                     user_id,
@@ -655,6 +703,27 @@ class OrgBudgetService:
                 )
 
         settings.user_cycle_start_spend = active_user_baselines
+
+        try:
+            readback = await LiteLlmManager.get_team_members_financial_data(str(org_id))
+        except Exception as e:
+            readback = None
+            sync_errors.append(f'verification_fetch_failed: {e}')
+            logger.warning(
+                'org_budget_litellm_verification_fetch_failed',
+                extra={'org_id': str(org_id), 'error': str(e)},
+            )
+        if readback:
+            financial_data = readback
+            sync_errors.extend(
+                _budget_sync_readback_errors(
+                    readback,
+                    expected_team_budget,
+                    expected_member_budgets,
+                )
+            )
+        elif readback is not None:
+            sync_errors.append('verification_fetch_empty')
 
         if sync_errors:
             summary = sync_errors[0]
