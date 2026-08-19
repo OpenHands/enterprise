@@ -80,7 +80,7 @@ def _litellm_cycle_spend(
 ) -> float:
     if not financial_data:
         return 0.0
-    cumulative_spend = _float_or_zero(financial_data.get('team_spend'))
+    cumulative_spend = _float_or_zero(financial_data.get("team_spend"))
     return max(cumulative_spend - _float_or_zero(settings.cycle_start_spend), 0.0)
 
 
@@ -91,7 +91,7 @@ def _litellm_member_cycle_spend(
 ) -> float:
     if not member_info:
         return 0.0
-    cumulative_spend = _float_or_zero(member_info.get('spend'))
+    cumulative_spend = _float_or_zero(member_info.get("spend"))
     baseline = _float_or_zero((settings.user_cycle_start_spend or {}).get(user_id))
     return max(cumulative_spend - baseline, 0.0)
 
@@ -108,7 +108,7 @@ def _effective_user_budget_limit(
 
 
 def _escape_ilike(value: str) -> str:
-    return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class OrgBudgetService:
@@ -119,7 +119,7 @@ class OrgBudgetService:
     ):
         if store is None:
             if db_session is None:
-                raise ValueError('db_session is required when store is not provided')
+                raise ValueError("db_session is required when store is not provided")
             store = OrgBudgetStore(db_session=db_session)
         self.store = store
         self.db_session = store.db_session
@@ -132,7 +132,7 @@ class OrgBudgetService:
         if await self._is_personal_org(org_id):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail='Organization budgets are not available for personal workspaces',
+                detail="Organization budgets are not available for personal workspaces",
             )
 
     async def get_budget_state(
@@ -160,24 +160,24 @@ class OrgBudgetService:
             users_status=users_status,
         )
         return {
-            'settings': settings,
-            'thresholds': thresholds,
-            'cycle': cycle,
-            'current_spend': current_spend,
-            'users': users,
-            'users_total': users_total,
-            'users_page': users_page,
-            'users_per_page': users_per_page,
+            "settings": settings,
+            "thresholds": thresholds,
+            "cycle": cycle,
+            "current_spend": current_spend,
+            "users": users,
+            "users_total": users_total,
+            "users_page": users_page,
+            "users_per_page": users_per_page,
         }
 
     async def run_budget_maintenance(self, org_id: UUID) -> dict:
         if await self._is_personal_org(org_id):
             return {
-                'cycle_start_at': None,
-                'cycle_end_at': None,
-                'cycle_rolled': False,
-                'current_spend': 0.0,
-                'skipped': 'personal_org',
+                "cycle_start_at": None,
+                "cycle_end_at": None,
+                "cycle_rolled": False,
+                "current_spend": 0.0,
+                "skipped": "personal_org",
             }
 
         settings = await self._get_or_create_settings(org_id)
@@ -204,10 +204,10 @@ class OrgBudgetService:
             )
 
         return {
-            'cycle_start_at': cycle.start_at,
-            'cycle_end_at': cycle.end_at,
-            'cycle_rolled': cycle_rolled,
-            'current_spend': current_spend,
+            "cycle_start_at": cycle.start_at,
+            "cycle_end_at": cycle.end_at,
+            "cycle_rolled": cycle_rolled,
+            "current_spend": current_spend,
         }
 
     async def update_budget_settings(
@@ -228,18 +228,18 @@ class OrgBudgetService:
         reset_day_changed = False
         previous_enabled = settings.enabled
 
-        if 'enabled' in fields_set:
+        if "enabled" in fields_set:
             settings.enabled = update_data.enabled
-        if 'monthly_limit' in fields_set:
+        if "monthly_limit" in fields_set:
             settings.monthly_limit = update_data.monthly_limit
-        if 'reset_day' in fields_set:
+        if "reset_day" in fields_set:
             settings.reset_day = update_data.reset_day
             reset_day_changed = True
-        if 'default_user_monthly_limit' in fields_set:
+        if "default_user_monthly_limit" in fields_set:
             settings.default_user_monthly_limit = update_data.default_user_monthly_limit
-        if 'slack_channel' in fields_set:
+        if "slack_channel" in fields_set:
             settings.slack_channel = update_data.slack_channel
-        if 'slack_team_id' in fields_set:
+        if "slack_team_id" in fields_set:
             settings.slack_team_id = update_data.slack_team_id
 
         if settings.enabled and (
@@ -247,7 +247,7 @@ class OrgBudgetService:
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail='monthly_limit is required when budgets are enabled',
+                detail="monthly_limit is required when budgets are enabled",
             )
 
         if reset_day_changed or (not previous_enabled and settings.enabled):
@@ -257,7 +257,7 @@ class OrgBudgetService:
             settings.cycle_start_spend = await self._fetch_team_spend(org_id)
             settings.user_cycle_start_spend = {}
 
-        if 'thresholds' in fields_set and update_data.thresholds is not None:
+        if "thresholds" in fields_set and update_data.thresholds is not None:
             await self._replace_thresholds(org_id, thresholds, update_data.thresholds)
             thresholds = await self._get_thresholds(org_id)
 
@@ -285,14 +285,14 @@ class OrgBudgetService:
             users_status=users_status,
         )
         return {
-            'settings': settings,
-            'thresholds': thresholds,
-            'cycle': cycle,
-            'current_spend': current_spend,
-            'users': users,
-            'users_total': users_total,
-            'users_page': users_page,
-            'users_per_page': users_per_page,
+            "settings": settings,
+            "thresholds": thresholds,
+            "cycle": cycle,
+            "current_spend": current_spend,
+            "users": users,
+            "users_total": users_total,
+            "users_page": users_page,
+            "users_per_page": users_per_page,
         }
 
     async def upsert_user_override(
@@ -388,8 +388,8 @@ class OrgBudgetService:
             return await LiteLlmManager.get_team_members_financial_data(str(org_id))
         except Exception as e:
             logger.warning(
-                'org_budget_litellm_financial_data_fetch_failed',
-                extra={'org_id': str(org_id), 'error': str(e)},
+                "org_budget_litellm_financial_data_fetch_failed",
+                extra={"org_id": str(org_id), "error": str(e)},
             )
             return None
 
@@ -397,7 +397,7 @@ class OrgBudgetService:
         financial_data = await self._fetch_budget_financial_data(org_id)
         if not financial_data:
             return 0.0
-        return _float_or_zero(financial_data.get('team_spend'))
+        return _float_or_zero(financial_data.get("team_spend"))
 
     async def _get_cycle_spend(
         self,
@@ -410,28 +410,28 @@ class OrgBudgetService:
         return _litellm_cycle_spend(settings, financial_data)
 
     def _budget_row_matches_status(self, row: dict, users_status: str | None) -> bool:
-        status_value = (users_status or '').strip().lower()
+        status_value = (users_status or "").strip().lower()
         if not status_value:
             return True
 
-        effective_limit = row['effective_monthly_limit']
-        is_disabled = row['is_disabled']
+        effective_limit = row["effective_monthly_limit"]
+        is_disabled = row["is_disabled"]
         has_limit = (
             not is_disabled and effective_limit is not None and effective_limit > 0
         )
-        current_spend = row['current_spend']
+        current_spend = row["current_spend"]
 
-        if status_value == 'disabled':
+        if status_value == "disabled":
             return is_disabled
-        if status_value == 'nocap':
+        if status_value == "nocap":
             return not is_disabled and (effective_limit is None or effective_limit <= 0)
-        if status_value == 'overcap':
+        if status_value == "overcap":
             return has_limit and current_spend > effective_limit
-        if status_value == 'over90':
+        if status_value == "over90":
             return has_limit and current_spend >= effective_limit * 0.9
-        if status_value == 'over80':
+        if status_value == "over80":
             return has_limit and current_spend >= effective_limit * 0.8
-        if status_value == 'ontrack':
+        if status_value == "ontrack":
             return has_limit and current_spend < effective_limit * 0.8
         return True
 
@@ -447,7 +447,7 @@ class OrgBudgetService:
     ) -> tuple[list[dict], int]:
         if financial_data is None:
             financial_data = await self._fetch_budget_financial_data(org_id)
-        members = (financial_data or {}).get('members', {})
+        members = (financial_data or {}).get("members", {})
 
         query = (
             select(OrgMember, User, OrgUserBudgetOverride)
@@ -463,14 +463,14 @@ class OrgBudgetService:
             .order_by(User.email.asc(), User.id.asc())
         )
 
-        search_value = (users_search or '').strip()
+        search_value = (users_search or "").strip()
         if search_value:
             escaped = _escape_ilike(search_value)
-            pattern = f'%{escaped}%'
+            pattern = f"%{escaped}%"
             query = query.where(
                 or_(
-                    User.email.ilike(pattern, escape='\\'),
-                    User.git_user_name.ilike(pattern, escape='\\'),
+                    User.email.ilike(pattern, escape="\\"),
+                    User.git_user_name.ilike(pattern, escape="\\"),
                 )
             )
 
@@ -482,16 +482,16 @@ class OrgBudgetService:
                 override, settings.default_user_monthly_limit
             )
             row = {
-                'user_id': user_id,
-                'user_email': user.email,
-                'user_name': user.git_user_name,
-                'current_spend': _litellm_member_cycle_spend(
+                "user_id": user_id,
+                "user_email": user.email,
+                "user_name": user.git_user_name,
+                "current_spend": _litellm_member_cycle_spend(
                     settings, user_id, members.get(user_id)
                 ),
-                'monthly_limit': override.monthly_limit if override else None,
-                'effective_monthly_limit': effective_limit,
-                'is_disabled': is_disabled,
-                'is_override': is_override,
+                "monthly_limit": override.monthly_limit if override else None,
+                "effective_monthly_limit": effective_limit,
+                "is_disabled": is_disabled,
+                "is_override": is_override,
             }
             if self._budget_row_matches_status(row, users_status):
                 rows.append(row)
@@ -504,7 +504,7 @@ class OrgBudgetService:
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         financial_data = await self._fetch_budget_financial_data(org_id)
-        members = (financial_data or {}).get('members', {})
+        members = (financial_data or {}).get("members", {})
 
         result = await self.db_session.execute(
             select(OrgMember, User)
@@ -526,16 +526,16 @@ class OrgBudgetService:
         )
         user_id_str = str(user_id)
         return {
-            'user_id': str(org_member.user_id),
-            'user_email': user.email,
-            'user_name': user.git_user_name,
-            'current_spend': _litellm_member_cycle_spend(
+            "user_id": str(org_member.user_id),
+            "user_email": user.email,
+            "user_name": user.git_user_name,
+            "current_spend": _litellm_member_cycle_spend(
                 settings, user_id_str, members.get(user_id_str)
             ),
-            'monthly_limit': override.monthly_limit if override else None,
-            'effective_monthly_limit': effective_limit,
-            'is_disabled': is_disabled,
-            'is_override': is_override,
+            "monthly_limit": override.monthly_limit if override else None,
+            "effective_monthly_limit": effective_limit,
+            "is_disabled": is_disabled,
+            "is_override": is_override,
         }
 
     async def _record_litellm_sync(
@@ -558,7 +558,7 @@ class OrgBudgetService:
         financial_data: dict | None = None,
     ) -> dict | None:
         if not settings.enabled and not clear_disabled:
-            await self._record_litellm_sync(settings, 'skipped')
+            await self._record_litellm_sync(settings, "skipped")
             return financial_data
 
         sync_errors: list[str] = []
@@ -568,21 +568,19 @@ class OrgBudgetService:
                     str(org_id)
                 )
             except Exception as e:
-                error_message = f'fetch_failed: {e}'
+                error_message = f"fetch_failed: {e}"
                 logger.warning(
-                    'org_budget_litellm_fetch_failed',
-                    extra={'org_id': str(org_id), 'error': str(e)},
+                    "org_budget_litellm_fetch_failed",
+                    extra={"org_id": str(org_id), "error": str(e)},
                 )
-                await self._record_litellm_sync(
-                    settings, 'error', error_message[:500]
-                )
+                await self._record_litellm_sync(settings, "error", error_message[:500])
                 return None
 
         if not financial_data:
-            await self._record_litellm_sync(settings, 'skipped')
+            await self._record_litellm_sync(settings, "skipped")
             return financial_data
 
-        members = financial_data.get('members', {})
+        members = financial_data.get("members", {})
 
         if settings.enabled and settings.monthly_limit:
             # Anchor LiteLLM budgets to our cycle start spend so resets stay aligned.
@@ -594,10 +592,10 @@ class OrgBudgetService:
                     max_budget=max_budget,
                 )
             except Exception as e:
-                sync_errors.append(f'team_update_failed: {e}')
+                sync_errors.append(f"team_update_failed: {e}")
                 logger.warning(
-                    'org_budget_litellm_team_update_failed',
-                    extra={'org_id': str(org_id), 'error': str(e)},
+                    "org_budget_litellm_team_update_failed",
+                    extra={"org_id": str(org_id), "error": str(e)},
                 )
         else:
             try:
@@ -608,10 +606,10 @@ class OrgBudgetService:
                     clear_budget=True,
                 )
             except Exception as e:
-                sync_errors.append(f'team_clear_failed: {e}')
+                sync_errors.append(f"team_clear_failed: {e}")
                 logger.warning(
-                    'org_budget_litellm_team_clear_failed',
-                    extra={'org_id': str(org_id), 'error': str(e)},
+                    "org_budget_litellm_team_clear_failed",
+                    extra={"org_id": str(org_id), "error": str(e)},
                 )
 
         override_map = {str(o.user_id): o for o in overrides}
@@ -621,7 +619,7 @@ class OrgBudgetService:
         for user_id, info in members.items():
             baseline = existing_user_baselines.get(user_id)
             if baseline is None:
-                baseline = _float_or_zero(info.get('spend'))
+                baseline = _float_or_zero(info.get("spend"))
             active_user_baselines[user_id] = baseline
 
             override = override_map.get(user_id)
@@ -646,13 +644,13 @@ class OrgBudgetService:
                     clear_budget=clear_budget,
                 )
             except Exception as e:
-                sync_errors.append(f'user_update_failed: {user_id}: {e}')
+                sync_errors.append(f"user_update_failed: {user_id}: {e}")
                 logger.warning(
-                    'org_budget_litellm_user_update_failed',
+                    "org_budget_litellm_user_update_failed",
                     extra={
-                        'org_id': str(org_id),
-                        'user_id': user_id,
-                        'error': str(e),
+                        "org_id": str(org_id),
+                        "user_id": user_id,
+                        "error": str(e),
                     },
                 )
 
@@ -661,10 +659,10 @@ class OrgBudgetService:
         if sync_errors:
             summary = sync_errors[0]
             if len(sync_errors) > 1:
-                summary = f'{summary} (+{len(sync_errors) - 1} more)'
-            await self._record_litellm_sync(settings, 'error', summary[:500])
+                summary = f"{summary} (+{len(sync_errors) - 1} more)"
+            await self._record_litellm_sync(settings, "error", summary[:500])
         else:
-            await self._record_litellm_sync(settings, 'success')
+            await self._record_litellm_sync(settings, "success")
         return financial_data
 
     async def _maybe_send_alerts(
@@ -738,7 +736,7 @@ class OrgBudgetService:
 
     async def _get_org_name(self, org_id: UUID) -> str:
         result = await self.db_session.execute(select(Org.name).where(Org.id == org_id))
-        return result.scalar_one_or_none() or 'your organization'
+        return result.scalar_one_or_none() or "your organization"
 
     async def _get_admin_emails(self, org_id: UUID) -> list[str]:
         query = (
@@ -760,7 +758,7 @@ class OrgBudgetService:
         percentage: float,
     ) -> None:
         if not SLACK_AVAILABLE:
-            logger.warning('Slack SDK not installed, skipping slack budget alert')
+            logger.warning("Slack SDK not installed, skipping slack budget alert")
             return
         if not settings.slack_channel:
             return
@@ -776,10 +774,10 @@ class OrgBudgetService:
 
         client = AsyncWebClient(token=token)
         message = (
-            f':warning: OpenHands budget alert for *{org_name}*\n'
-            f'Threshold: *{threshold}%*\n'
-            f'Current spend: *${current_spend:,.2f}* '
-            f'({percentage:.1f}% of ${settings.monthly_limit:,.2f})'
+            f":warning: OpenHands budget alert for *{org_name}*\n"
+            f"Threshold: *{threshold}%*\n"
+            f"Current spend: *${current_spend:,.2f}* "
+            f"({percentage:.1f}% of ${settings.monthly_limit:,.2f})"
         )
         try:
             await client.chat_postMessage(
@@ -788,8 +786,8 @@ class OrgBudgetService:
             )
         except Exception as e:
             logger.warning(
-                'Slack budget alert failed',
-                extra={'error': str(e), 'team_id': team_id},
+                "Slack budget alert failed",
+                extra={"error": str(e), "team_id": team_id},
             )
 
     async def _resolve_slack_team_id(self, settings: OrgBudgetSettings) -> str | None:
@@ -801,7 +799,7 @@ class OrgBudgetService:
             return team_ids[0]
         if team_ids:
             logger.warning(
-                'Multiple Slack teams configured; set slack_team_id to enable alerts'
+                "Multiple Slack teams configured; set slack_team_id to enable alerts"
             )
         return None
 
