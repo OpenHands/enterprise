@@ -10,6 +10,11 @@ name: SonarQube
 on:
   push:
     branches: [main]
+  # Community Build has one branch per project, so a PR scan becomes the report card
+  # until the next push to main. That is wanted here: it shows the repo's grade without
+  # merging first. pull_request_target must never be used -- unlike pull_request, it
+  # exposes secrets to fork-triggered runs.
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -21,6 +26,8 @@ concurrency:
 
 jobs:
   scan:
+    # Fork PRs get no secrets, so the scan could only fail on a missing token.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
