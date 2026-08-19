@@ -1,19 +1,12 @@
 name: SonarQube
 
-# main only. SonarQube Community Build has no branch or PR analysis: every submission
-# lands on the project's single branch, so scanning a PR would overwrite the
-# main-branch report card with proposed code. PR analysis needs the community branch
-# plugin, which is a separate POC.
-#
-# pull_request_target must never be added here -- unlike pull_request, it exposes
+# Community Build has one branch per project, so a PR scan becomes the report card until
+# the next push to main. That is wanted during the POC: it shows the repo's grade without
+# merging first. pull_request_target must never be used -- unlike pull_request, it exposes
 # secrets to fork-triggered runs.
 on:
   push:
     branches: [main]
-  # Community Build has one branch per project, so a PR scan becomes the report card
-  # until the next push to main. That is wanted here: it shows the repo's grade without
-  # merging first. pull_request_target must never be used -- unlike pull_request, it
-  # exposes secrets to fork-triggered runs.
   pull_request:
   workflow_dispatch:
 
@@ -28,7 +21,10 @@ jobs:
   scan:
     # Fork PRs get no secrets, so the scan could only fail on a missing token.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    name: Coverage and SonarQube analysis
     runs-on: ubuntu-24.04
+    env:
+      INSTALL_DOCKER: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,22 +32,73 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # ---- toolchain, mirroring py-tests.yml and fe-unit-tests.yml ----
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      # Not a build. SonarJS resolves types from node_modules, and without them it
-      # degrades to a shallower analysis silently rather than failing.
+      - name: Install poetry via pipx
+        run: pipx install poetry
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: poetry
+
+      # ---- backend coverage: both Python roots ----
+      - name: Install Python dependencies
+        run: |
+          poetry install --with dev,test,runtime
+          poetry run pip install pytest-xdist pytest-rerunfailures
+      - name: Build environment
+        run: make build
+
+      # continue-on-error so a failing test still yields coverage to analyse. The test
+      # suites are gated by py-tests.yml; this workflow is measuring, not gating.
+      - name: Unit tests -- openhands
+        continue-on-error: true
+        env:
+          COVERAGE_FILE: .coverage.openhands
+        run: PYTHONPATH=".:$PYTHONPATH" poetry run pytest --forked -n auto -s ./tests/unit --cov=openhands --cov-branch
+
+      - name: Install enterprise dependencies
+        working-directory: ./enterprise
+        run: poetry install --with dev,test
+      - name: Unit tests -- enterprise
+        continue-on-error: true
+        env:
+          COVERAGE_FILE: .coverage.enterprise
+        # Run from the repo root so coverage paths line up with the other suite.
+        run: PYTHONPATH=".:$PYTHONPATH" poetry run --project=enterprise pytest --forked -n auto -s -p no:ddtrace -p no:ddtrace.pytest_bdd -p no:ddtrace.pytest_benchmark ./enterprise/tests/unit --cov=enterprise --cov-branch
+
+      # SonarQube reads Cobertura XML, not coverage.py's binary format.
+      - name: Combine coverage into XML
+        run: |
+          poetry run coverage combine .coverage.openhands .coverage.enterprise
+          poetry run coverage xml -o coverage.xml
+          poetry run coverage report --skip-empty || true
+
+      # ---- frontend coverage ----
+      # Generated here rather than downloaded: fe-unit-tests.yml is path-filtered to
+      # frontend/**, so on a Python-only commit there would be no artifact to fetch.
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
+      - name: Frontend tests with coverage
+        continue-on-error: true
+        working-directory: frontend
+        run: npm run test:coverage
 
+      # Not a build. SonarJS resolves types from node_modules and degrades to a shallower
+      # analysis silently without them.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: openhands-ui/.bun-version
-
       - name: Install openhands-ui dependencies
         working-directory: openhands-ui
         run: bun install --frozen-lockfile
