@@ -83,3 +83,46 @@ async def test_get_status_no_usage_today():
     assert result.daily_limit == 20
     assert result.used_today == 0
     assert result.remaining == 20
+
+
+@pytest.mark.asyncio
+async def test_reserve_no_limit_is_noop():
+    """When limit is None (unlimited), reserve does nothing."""
+    session = AsyncMock()
+    session.scalar.return_value = SimpleNamespace(daily_conversation_limit=None, current_org_id=None)
+
+    service = DailyConversationQuotaService(session)
+    await service.reserve(USER_ID)
+
+    session.execute.assert_not_called()
+    session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reserve_at_limit_raises_429():
+    """When usage equals limit, reserve raises HTTP 429 with a message."""
+    from fastapi import HTTPException
+
+    session = AsyncMock()
+    # First scalar: user with limit 2
+    # Second scalar: existing usage with count 2
+    session.scalar.side_effect = [
+        SimpleNamespace(daily_conversation_limit=2),
+        SimpleNamespace(conversation_count=2),
+    ]
+    # execute returns None (conflict, no row returned)
+    session.execute.return_value = SimpleNamespace(
+        scalar_one_or_none=lambda: None
+    )
+
+    service = DailyConversationQuotaService(session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.reserve(USER_ID)
+
+    assert exc_info.value.status_code == 429
+    detail = exc_info.value.detail
+    assert detail['code'] == 'daily_conversation_limit_reached'
+    assert '/settings/quota' in detail['message']
+    assert detail['limit'] == 2
+    assert detail['used'] == 2

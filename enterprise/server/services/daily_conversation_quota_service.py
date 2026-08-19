@@ -1,13 +1,16 @@
-"""Read-only daily conversation quota status for the authenticated user."""
+"""Read-only daily conversation quota status and enforcement for SaaS."""
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
+from fastapi import HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from storage.daily_conversation_usage import DailyConversationUsage
 from storage.user import User
@@ -32,11 +35,11 @@ class QuotaStatus(BaseModel):
     reset_at: str
 
 
+@dataclass
 class DailyConversationQuotaService:
-    """Read-only quota status. Enforcement is added in a later stacked PR."""
+    """Quota status and enforcement. Enforcement is gated by a configured limit."""
 
-    def __init__(self, db_session: AsyncSession) -> None:
-        self.db_session = db_session
+    db_session: AsyncSession
 
     async def get_status(self, user_id: str) -> QuotaStatus:
         limit = await self.get_limit(user_id)
@@ -87,6 +90,77 @@ class DailyConversationQuotaService:
                 return org.daily_conversation_limit
 
         return configured_daily_limit()
+
+    async def reserve(self, user_id: str) -> None:
+        """Atomically increment today's usage, raising HTTP 429 if at limit."""
+        limit = await self.get_limit(user_id)
+        if limit is None:
+            return
+
+        today = datetime.now(UTC).date()
+        if limit <= 0:
+            used = await self._used(user_id, today)
+            raise self._limit_reached(limit, used, today)
+
+        now = datetime.now(UTC)
+        statement = (
+            insert(DailyConversationUsage)
+            .values(
+                user_id=UUID(user_id),
+                usage_date=today,
+                conversation_count=1,
+                created_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_update(
+                index_elements=['user_id', 'usage_date'],
+                set_={
+                    'conversation_count': DailyConversationUsage.conversation_count + 1,
+                    'updated_at': now,
+                },
+                where=DailyConversationUsage.conversation_count < limit,
+            )
+            .returning(DailyConversationUsage.conversation_count)
+        )
+        count = (await self.db_session.execute(statement)).scalar_one_or_none()
+        if count is None:
+            await self.db_session.rollback()
+            used = await self._used(user_id, today)
+            raise self._limit_reached(limit, used, today)
+        await self.db_session.commit()
+
+    async def release(self, user_id: str) -> None:
+        """Release a reservation when the start request was not accepted."""
+        today = datetime.now(UTC).date()
+        await self.db_session.execute(
+            text(
+                'UPDATE daily_conversation_usage '
+                'SET conversation_count = GREATEST(conversation_count - 1, 0), '
+                'updated_at = CURRENT_TIMESTAMP '
+                'WHERE user_id = :user_id AND usage_date = :usage_date'
+            ),
+            {'user_id': UUID(user_id), 'usage_date': today},
+        )
+        await self.db_session.commit()
+
+    @staticmethod
+    def _limit_reached(limit: int, used: int, usage_date: date) -> HTTPException:
+        reset_at = datetime.combine(
+            usage_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+        )
+        return HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                'code': 'daily_conversation_limit_reached',
+                'message': (
+                    f'Daily conversation limit of {limit} reached. '
+                    'Request a quota increase at /settings/quota.'
+                ),
+                'limit': limit,
+                'used': used,
+                'reset_at': reset_at.isoformat(),
+            },
+        )
 
     @staticmethod
     def _next_reset_iso() -> str:

@@ -438,6 +438,21 @@ async def start_app_conversation(
 ) -> AppConversationStartTask:
     await _validate_codex_credentials(start_request, user_context, secrets_store)
 
+    quota = None
+    quota_user_id = await user_context.get_user_id()
+    try:
+        from openhands.app_server.shared import server_config
+
+        if server_config.app_mode.value == 'saas' and quota_user_id:
+            from server.services.daily_conversation_quota_service import (
+                DailyConversationQuotaService,
+            )
+
+            quota = DailyConversationQuotaService(db_session)
+            await quota.reserve(quota_user_id)
+    except ImportError:
+        pass
+
     # Because we are processing after the request finishes, keep the db connection open
     set_db_session_keep_open(request.state, True)
     set_httpx_client_keep_open(request.state, True)
@@ -469,6 +484,8 @@ async def start_app_conversation(
         asyncio.create_task(_consume_remaining(async_iter, db_session, httpx_client))
         return result
     except Exception:
+        if quota is not None and quota_user_id:
+            await quota.release(quota_user_id)
         await db_session.close()
         await httpx_client.aclose()
         raise
