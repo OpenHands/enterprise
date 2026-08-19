@@ -28,6 +28,7 @@ from storage.database import a_session_maker
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.org_service import OrgService
+from storage.saas_settings_store import managed_llm_key_config_from_model
 
 from openhands.app_server.settings.llm_profiles import (
     LLMProfiles,
@@ -255,8 +256,11 @@ async def save_profile(
             # Caller has no new key: keep the profile's stored key (even "no
             # key") instead of the snapshotted one.
             llm = llm.model_copy(update={'api_key': existing.api_key})
+        include_secrets = request.include_secrets and (
+            managed_llm_key_config_from_model(llm.model, llm.base_url) is None
+        )
         try:
-            profiles.save(name, llm, include_secrets=request.include_secrets)
+            profiles.save(name, llm, include_secrets=include_secrets)
         except ProfileLimitExceededError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)

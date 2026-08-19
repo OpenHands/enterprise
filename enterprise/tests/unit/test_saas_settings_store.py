@@ -412,6 +412,50 @@ async def test_ensure_api_key_keeps_valid_key():
 
 
 @pytest.mark.asyncio
+async def test_ensure_api_key_rotates_invalid_fallback_key():
+    from storage.lite_llm_manager import get_openhands_cloud_key_alias
+
+    store = SaasSettingsStore('test-user-id-123')
+    item = _make_settings(model='openhands/gpt-4', api_key='')
+    expected_alias = get_openhands_cloud_key_alias('test-user-id-123', 'org-123')
+
+    with (
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.verify_existing_key',
+            new_callable=AsyncMock,
+            return_value=False,
+        ) as mock_verify,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
+            new_callable=AsyncMock,
+        ) as mock_delete,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.generate_key',
+            new_callable=AsyncMock,
+            return_value='sk-new-key',
+        ) as mock_generate,
+    ):
+        await store._ensure_api_key(
+            item,
+            'org-123',
+            openhands_type=True,
+            fallback_api_key=SecretStr('sk-invalid-key'),
+        )
+
+    mock_verify.assert_awaited_once_with(
+        'sk-invalid-key',
+        'test-user-id-123',
+        'org-123',
+        openhands_type=True,
+    )
+    mock_delete.assert_awaited_once_with(key_alias=expected_alias)
+    mock_generate.assert_awaited_once_with(
+        'test-user-id-123', 'org-123', expected_alias, {'type': 'openhands'}
+    )
+    assert _secret_value(item, 'llm.api_key') == 'sk-new-key'
+
+
+@pytest.mark.asyncio
 async def test_ensure_api_key_generates_new_key_when_verification_fails():
     """When verification fails, a new managed key is minted under the shared
     alias after deleting any prior key — symmetric across model types so
@@ -855,8 +899,7 @@ async def test_store_clears_member_custom_key_when_switching_to_managed_profile(
         await store.store(settings)
 
     active_profile = settings.llm_profiles.require('managed')
-    assert active_profile.api_key is not None
-    assert active_profile.api_key.get_secret_value() == 'sk-managed-key'
+    assert active_profile.api_key is None
 
     with session_maker() as session:
         member = (
@@ -874,6 +917,69 @@ async def test_store_clears_member_custom_key_when_switching_to_managed_profile(
 
     mock_delete.assert_awaited_once()
     mock_generate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_store_reuses_existing_managed_key_for_blank_openhands_profile(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from sqlalchemy import select
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+    decrypt_value = fixture['decrypt_value']
+    existing_key = 'admin-initial-key'
+
+    store = SaasSettingsStore(str(admin_user_id))
+    settings = _make_settings(
+        model='openhands/gemini-3-pro-preview',
+        api_key='',
+    )
+    settings.llm_profiles.save('managed', settings.agent_settings.llm)
+    settings.switch_to_profile('managed')
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.verify_existing_key',
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_verify,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
+            new_callable=AsyncMock,
+        ) as mock_delete,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.generate_key',
+            new_callable=AsyncMock,
+            return_value='sk-unexpected-rotation',
+        ) as mock_generate,
+    ):
+        await store.store(settings)
+
+    mock_verify.assert_awaited_once_with(
+        existing_key,
+        str(admin_user_id),
+        str(org_id),
+        openhands_type=True,
+    )
+    mock_delete.assert_not_awaited()
+    mock_generate.assert_not_awaited()
+    assert _secret_value(settings, 'llm.api_key') == existing_key
+    assert settings.llm_profiles.require('managed').api_key is None
+
+    with session_maker() as session:
+        member = session.scalar(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == admin_user_id,
+            )
+        )
+        assert member is not None
+        assert member.has_custom_llm_api_key is False
+        assert decrypt_value(member._llm_api_key) == existing_key
 
 
 @pytest.mark.asyncio
