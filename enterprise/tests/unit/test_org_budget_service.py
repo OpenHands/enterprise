@@ -554,11 +554,31 @@ async def test_sync_litellm_budgets_updates_team_and_members(
                 str(default_user_id): {'spend': 5.0},
             }
         }
+        readback = {
+            'team_max_budget': 120.0,
+            'members': {
+                str(disabled_user_id): {
+                    'spend': 12.0,
+                    'max_budget': 120.0,
+                    'uses_shared_budget': True,
+                },
+                str(override_user_id): {
+                    'spend': 7.0,
+                    'max_budget': 57.0,
+                    'uses_shared_budget': False,
+                },
+                str(default_user_id): {
+                    'spend': 5.0,
+                    'max_budget': 35.0,
+                    'uses_shared_budget': False,
+                },
+            },
+        }
 
         with (
             patch(
                 'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
-                AsyncMock(return_value=financial_data),
+                AsyncMock(side_effect=[financial_data, readback]),
             ),
             patch(
                 'server.services.org_budget_service.LiteLlmManager.update_team',
@@ -611,6 +631,70 @@ async def test_sync_litellm_budgets_updates_team_and_members(
 
 
 @pytest.mark.asyncio
+async def test_sync_litellm_budgets_reports_member_readback_mismatch(
+    async_session_maker, budget_org
+):
+    user_id = uuid4()
+    before = {
+        'team_max_budget': 80.0,
+        'team_spend': 20.0,
+        'members': {
+            str(user_id): {
+                'spend': 5.0,
+                'max_budget': 80.0,
+                'uses_shared_budget': True,
+            }
+        },
+    }
+    after = {
+        'team_max_budget': 120.0,
+        'team_spend': 20.0,
+        'members': {
+            str(user_id): {
+                'spend': 5.0,
+                'max_budget': 120.0,
+                'uses_shared_budget': True,
+            }
+        },
+    }
+
+    async with async_session_maker() as session:
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            reset_day=1,
+            monthly_limit=100.0,
+            default_user_monthly_limit=30.0,
+            cycle_start_at=datetime.now(UTC),
+            cycle_start_spend=20.0,
+        )
+        service = OrgBudgetService(session)
+        with (
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+                AsyncMock(side_effect=[before, after]),
+            ) as get_financial_data,
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_team',
+                AsyncMock(),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_user_in_team',
+                AsyncMock(),
+            ),
+        ):
+            result = await service._sync_litellm_budgets(
+                budget_org.id, settings, []
+            )
+
+    assert result == after
+    assert get_financial_data.await_count == 2
+    assert settings.litellm_last_sync_status == 'error'
+    assert settings.litellm_last_sync_error is not None
+    assert f'member_budget_mismatch: {user_id}' in settings.litellm_last_sync_error
+
+
+@pytest.mark.asyncio
 async def test_sync_litellm_budgets_keeps_member_cap_stable_across_sessions(
     async_session_maker, budget_org
 ):
@@ -619,7 +703,27 @@ async def test_sync_litellm_budgets_keeps_member_cap_stable_across_sessions(
     financial_data = AsyncMock(
         side_effect=[
             {'members': {str(user_id): {'spend': 7.0}}},
+            {
+                'team_max_budget': 120.0,
+                'members': {
+                    str(user_id): {
+                        'spend': 7.0,
+                        'max_budget': 57.0,
+                        'uses_shared_budget': False,
+                    }
+                },
+            },
             {'members': {str(user_id): {'spend': 23.0}}},
+            {
+                'team_max_budget': 120.0,
+                'members': {
+                    str(user_id): {
+                        'spend': 23.0,
+                        'max_budget': 57.0,
+                        'uses_shared_budget': False,
+                    }
+                },
+            },
         ]
     )
 
