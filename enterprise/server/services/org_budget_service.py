@@ -9,7 +9,7 @@ from uuid import UUID
 from fastapi import HTTPException, Request, status
 from server.auth.authorization import RoleName
 from server.services.smtp_email_service import SMTPEmailService
-from sqlalchemy import and_, case, func, literal, or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
@@ -20,8 +20,6 @@ from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
 from storage.slack_team import SlackTeam
-from storage.stored_conversation_metadata import StoredConversationMetadata
-from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
 from storage.user import User
 
 from openhands.app_server.services.injector import Injector, InjectorState
@@ -70,6 +68,32 @@ def _current_cycle_start(now: datetime, reset_day: int) -> datetime:
 def _next_cycle_start(cycle_start: datetime, reset_day: int) -> datetime:
     year, month = _add_month(cycle_start.year, cycle_start.month)
     return datetime(year, month, reset_day, tzinfo=UTC)
+
+
+def _float_or_zero(value) -> float:
+    return float(value or 0.0)
+
+
+def _litellm_cycle_spend(
+    settings: OrgBudgetSettings,
+    financial_data: dict | None,
+) -> float:
+    if not financial_data:
+        return 0.0
+    cumulative_spend = _float_or_zero(financial_data.get('team_spend'))
+    return max(cumulative_spend - _float_or_zero(settings.cycle_start_spend), 0.0)
+
+
+def _litellm_member_cycle_spend(
+    settings: OrgBudgetSettings,
+    user_id: str,
+    member_info: dict | None,
+) -> float:
+    if not member_info:
+        return 0.0
+    cumulative_spend = _float_or_zero(member_info.get('spend'))
+    baseline = _float_or_zero((settings.user_cycle_start_spend or {}).get(user_id))
+    return max(cumulative_spend - baseline, 0.0)
 
 
 def _effective_user_budget_limit(
@@ -124,11 +148,12 @@ class OrgBudgetService:
         thresholds = await self._get_thresholds(org_id)
         cycle = self._current_cycle(settings)
 
-        current_spend = await self._get_cycle_spend(org_id, cycle.start_at)
+        financial_data = await self._fetch_budget_financial_data(org_id)
+        current_spend = await self._get_cycle_spend(org_id, settings, financial_data)
         users, users_total = await self._build_user_budget_rows(
             org_id,
             settings,
-            cycle.start_at,
+            financial_data,
             users_page=users_page,
             users_per_page=users_per_page,
             users_search=users_search,
@@ -164,7 +189,8 @@ class OrgBudgetService:
         if cycle_rolled:
             cycle = self._current_cycle(settings)
 
-        current_spend = await self._get_cycle_spend(org_id, cycle.start_at)
+        financial_data = await self._fetch_budget_financial_data(org_id)
+        current_spend = await self._get_cycle_spend(org_id, settings, financial_data)
         await self._maybe_send_alerts(
             org_id,
             settings,
@@ -173,7 +199,9 @@ class OrgBudgetService:
             cycle.start_at,
         )
         if not cycle_rolled:
-            await self._sync_litellm_budgets(org_id, settings, overrides)
+            await self._sync_litellm_budgets(
+                org_id, settings, overrides, financial_data=financial_data
+            )
 
         return {
             'cycle_start_at': cycle.start_at,
@@ -236,7 +264,7 @@ class OrgBudgetService:
         await self.store.flush()
         await self.store.refresh(settings)
 
-        await self._sync_litellm_budgets(
+        financial_data = await self._sync_litellm_budgets(
             org_id,
             settings,
             overrides,
@@ -244,11 +272,13 @@ class OrgBudgetService:
         )
 
         cycle = self._current_cycle(settings)
-        current_spend = await self._get_cycle_spend(org_id, cycle.start_at)
+        if financial_data is None:
+            financial_data = await self._fetch_budget_financial_data(org_id)
+        current_spend = await self._get_cycle_spend(org_id, settings, financial_data)
         users, users_total = await self._build_user_budget_rows(
             org_id,
             settings,
-            cycle.start_at,
+            financial_data,
             users_page=users_page,
             users_per_page=users_per_page,
             users_search=users_search,
@@ -353,96 +383,74 @@ class OrgBudgetService:
         await self._sync_litellm_budgets(org_id, settings, overrides)
         return True
 
-    async def _fetch_team_spend(self, org_id: UUID) -> float:
+    async def _fetch_budget_financial_data(self, org_id: UUID) -> dict | None:
         try:
-            financial_data = await LiteLlmManager.get_team_members_financial_data(
-                str(org_id)
-            )
+            return await LiteLlmManager.get_team_members_financial_data(str(org_id))
         except Exception as e:
             logger.warning(
-                'org_budget_team_spend_fetch_failed',
+                'org_budget_litellm_financial_data_fetch_failed',
                 extra={'org_id': str(org_id), 'error': str(e)},
             )
-            return 0.0
+            return None
+
+    async def _fetch_team_spend(self, org_id: UUID) -> float:
+        financial_data = await self._fetch_budget_financial_data(org_id)
         if not financial_data:
             return 0.0
-        return float(financial_data.get('team_spend') or 0.0)
+        return _float_or_zero(financial_data.get('team_spend'))
 
-    async def _get_cycle_spend(self, org_id: UUID, cycle_start: datetime) -> float:
-        total_query = (
-            select(
-                func.coalesce(func.sum(StoredConversationMetadata.accumulated_cost), 0)
-            )
-            .select_from(StoredConversationMetadata)
-            .join(
-                StoredConversationMetadataSaas,
-                StoredConversationMetadata.conversation_id
-                == StoredConversationMetadataSaas.conversation_id,
-            )
-            .where(StoredConversationMetadata.conversation_version == 'V1')
-            .where(StoredConversationMetadataSaas.org_id == org_id)
-            .where(StoredConversationMetadata.created_at >= cycle_start)
+    async def _get_cycle_spend(
+        self,
+        org_id: UUID,
+        settings: OrgBudgetSettings,
+        financial_data: dict | None = None,
+    ) -> float:
+        if financial_data is None:
+            financial_data = await self._fetch_budget_financial_data(org_id)
+        return _litellm_cycle_spend(settings, financial_data)
+
+    def _budget_row_matches_status(self, row: dict, users_status: str | None) -> bool:
+        status_value = (users_status or '').strip().lower()
+        if not status_value:
+            return True
+
+        effective_limit = row['effective_monthly_limit']
+        is_disabled = row['is_disabled']
+        has_limit = (
+            not is_disabled and effective_limit is not None and effective_limit > 0
         )
-        result = await self.db_session.execute(total_query)
-        return float(result.scalar() or 0.0)
+        current_spend = row['current_spend']
+
+        if status_value == 'disabled':
+            return is_disabled
+        if status_value == 'nocap':
+            return not is_disabled and (effective_limit is None or effective_limit <= 0)
+        if status_value == 'overcap':
+            return has_limit and current_spend > effective_limit
+        if status_value == 'over90':
+            return has_limit and current_spend >= effective_limit * 0.9
+        if status_value == 'over80':
+            return has_limit and current_spend >= effective_limit * 0.8
+        if status_value == 'ontrack':
+            return has_limit and current_spend < effective_limit * 0.8
+        return True
 
     async def _build_user_budget_rows(
         self,
         org_id: UUID,
         settings: OrgBudgetSettings,
-        cycle_start: datetime,
+        financial_data: dict | None,
         users_page: int,
         users_per_page: int,
         users_search: str | None,
         users_status: str | None,
     ) -> tuple[list[dict], int]:
-        spend_subquery = (
-            select(
-                StoredConversationMetadataSaas.user_id.label('user_id'),
-                func.coalesce(
-                    func.sum(StoredConversationMetadata.accumulated_cost), 0
-                ).label('current_spend'),
-            )
-            .select_from(StoredConversationMetadata)
-            .join(
-                StoredConversationMetadataSaas,
-                StoredConversationMetadata.conversation_id
-                == StoredConversationMetadataSaas.conversation_id,
-            )
-            .where(StoredConversationMetadata.conversation_version == 'V1')
-            .where(StoredConversationMetadataSaas.org_id == org_id)
-            .where(StoredConversationMetadata.created_at >= cycle_start)
-            .group_by(StoredConversationMetadataSaas.user_id)
-        ).subquery()
+        if financial_data is None:
+            financial_data = await self._fetch_budget_financial_data(org_id)
+        members = (financial_data or {}).get('members', {})
 
-        default_limit = literal(settings.default_user_monthly_limit)
-        effective_limit = case(
-            (OrgUserBudgetOverride.is_disabled.is_(True), literal(None)),
-            (
-                OrgUserBudgetOverride.user_id.isnot(None),
-                OrgUserBudgetOverride.monthly_limit,
-            ),
-            else_=default_limit,
-        )
-        is_disabled = case(
-            (OrgUserBudgetOverride.is_disabled.is_(True), literal(True)),
-            else_=literal(False),
-        )
-        is_override = OrgUserBudgetOverride.user_id.isnot(None)
-        current_spend = func.coalesce(spend_subquery.c.current_spend, 0.0)
-
-        base_query = (
-            select(
-                OrgMember.user_id.label('user_id'),
-                User.email.label('user_email'),
-                User.git_user_name.label('user_name'),
-                current_spend.label('current_spend'),
-                OrgUserBudgetOverride.monthly_limit.label('monthly_limit'),
-                effective_limit.label('effective_monthly_limit'),
-                is_disabled.label('is_disabled'),
-                is_override.label('is_override'),
-            )
-            .select_from(OrgMember)
+        query = (
+            select(OrgMember, User, OrgUserBudgetOverride)
             .join(User, OrgMember.user_id == User.id)
             .outerjoin(
                 OrgUserBudgetOverride,
@@ -451,106 +459,52 @@ class OrgBudgetService:
                     OrgUserBudgetOverride.user_id == OrgMember.user_id,
                 ),
             )
-            .outerjoin(spend_subquery, spend_subquery.c.user_id == OrgMember.user_id)
             .where(OrgMember.org_id == org_id)
+            .order_by(User.email.asc(), User.id.asc())
         )
 
         search_value = (users_search or '').strip()
         if search_value:
             escaped = _escape_ilike(search_value)
             pattern = f'%{escaped}%'
-            base_query = base_query.where(
+            query = query.where(
                 or_(
                     User.email.ilike(pattern, escape='\\'),
                     User.git_user_name.ilike(pattern, escape='\\'),
                 )
             )
 
-        status_value = (users_status or '').strip().lower()
-        if status_value:
-            has_limit = and_(
-                is_disabled.is_(False),
-                effective_limit.isnot(None),
-                effective_limit > 0,
-            )
-            if status_value == 'disabled':
-                base_query = base_query.where(is_disabled.is_(True))
-            elif status_value == 'nocap':
-                base_query = base_query.where(
-                    and_(
-                        is_disabled.is_(False),
-                        or_(effective_limit.is_(None), effective_limit <= 0),
-                    )
-                )
-            elif status_value == 'overcap':
-                base_query = base_query.where(
-                    and_(has_limit, current_spend > effective_limit)
-                )
-            elif status_value == 'over90':
-                base_query = base_query.where(
-                    and_(has_limit, current_spend >= effective_limit * 0.9)
-                )
-            elif status_value == 'over80':
-                base_query = base_query.where(
-                    and_(has_limit, current_spend >= effective_limit * 0.8)
-                )
-            elif status_value == 'ontrack':
-                base_query = base_query.where(
-                    and_(has_limit, current_spend < effective_limit * 0.8)
-                )
-
-        total_query = select(func.count()).select_from(base_query.subquery())
-        total_result = await self.db_session.execute(total_query)
-        total = int(total_result.scalar() or 0)
-
-        offset = (users_page - 1) * users_per_page
-        query = (
-            base_query.order_by(User.email.asc(), User.id.asc())
-            .limit(users_per_page)
-            .offset(offset)
-        )
         result = await self.db_session.execute(query)
         rows = []
-        for row in result:
-            rows.append(
-                {
-                    'user_id': str(row.user_id),
-                    'user_email': row.user_email,
-                    'user_name': row.user_name,
-                    'current_spend': float(row.current_spend or 0.0),
-                    'monthly_limit': row.monthly_limit,
-                    'effective_monthly_limit': row.effective_monthly_limit,
-                    'is_disabled': bool(row.is_disabled),
-                    'is_override': bool(row.is_override),
-                }
+        for org_member, user, override in result:
+            user_id = str(org_member.user_id)
+            effective_limit, is_disabled, is_override = _effective_user_budget_limit(
+                override, settings.default_user_monthly_limit
             )
-        return rows, total
+            row = {
+                'user_id': user_id,
+                'user_email': user.email,
+                'user_name': user.git_user_name,
+                'current_spend': _litellm_member_cycle_spend(
+                    settings, user_id, members.get(user_id)
+                ),
+                'monthly_limit': override.monthly_limit if override else None,
+                'effective_monthly_limit': effective_limit,
+                'is_disabled': is_disabled,
+                'is_override': is_override,
+            }
+            if self._budget_row_matches_status(row, users_status):
+                rows.append(row)
 
-    async def _get_user_spend(
-        self, org_id: UUID, user_id: UUID, cycle_start: datetime
-    ) -> float:
-        user_query = (
-            select(
-                func.coalesce(func.sum(StoredConversationMetadata.accumulated_cost), 0)
-            )
-            .select_from(StoredConversationMetadata)
-            .join(
-                StoredConversationMetadataSaas,
-                StoredConversationMetadata.conversation_id
-                == StoredConversationMetadataSaas.conversation_id,
-            )
-            .where(StoredConversationMetadata.conversation_version == 'V1')
-            .where(StoredConversationMetadataSaas.org_id == org_id)
-            .where(StoredConversationMetadataSaas.user_id == user_id)
-            .where(StoredConversationMetadata.created_at >= cycle_start)
-        )
-        result = await self.db_session.execute(user_query)
-        return float(result.scalar() or 0.0)
+        total = len(rows)
+        offset = (users_page - 1) * users_per_page
+        return rows[offset : offset + users_per_page], total
 
     async def get_user_budget_row(self, org_id: UUID, user_id: UUID) -> dict | None:
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
-        cycle = self._current_cycle(settings)
+        financial_data = await self._fetch_budget_financial_data(org_id)
+        members = (financial_data or {}).get('members', {})
 
         result = await self.db_session.execute(
             select(OrgMember, User)
@@ -570,12 +524,14 @@ class OrgBudgetService:
         effective_limit, is_disabled, is_override = _effective_user_budget_limit(
             override, settings.default_user_monthly_limit
         )
-        current_spend = await self._get_user_spend(org_id, user_id, cycle.start_at)
+        user_id_str = str(user_id)
         return {
             'user_id': str(org_member.user_id),
             'user_email': user.email,
             'user_name': user.git_user_name,
-            'current_spend': current_spend,
+            'current_spend': _litellm_member_cycle_spend(
+                settings, user_id_str, members.get(user_id_str)
+            ),
             'monthly_limit': override.monthly_limit if override else None,
             'effective_monthly_limit': effective_limit,
             'is_disabled': is_disabled,
@@ -599,28 +555,32 @@ class OrgBudgetService:
         settings: OrgBudgetSettings,
         overrides: list[OrgUserBudgetOverride],
         clear_disabled: bool = False,
-    ) -> None:
+        financial_data: dict | None = None,
+    ) -> dict | None:
         if not settings.enabled and not clear_disabled:
             await self._record_litellm_sync(settings, 'skipped')
-            return
+            return financial_data
 
         sync_errors: list[str] = []
-        try:
-            financial_data = await LiteLlmManager.get_team_members_financial_data(
-                str(org_id)
-            )
-        except Exception as e:
-            error_message = f'fetch_failed: {e}'
-            logger.warning(
-                'org_budget_litellm_fetch_failed',
-                extra={'org_id': str(org_id), 'error': str(e)},
-            )
-            await self._record_litellm_sync(settings, 'error', error_message[:500])
-            return
+        if financial_data is None:
+            try:
+                financial_data = await LiteLlmManager.get_team_members_financial_data(
+                    str(org_id)
+                )
+            except Exception as e:
+                error_message = f'fetch_failed: {e}'
+                logger.warning(
+                    'org_budget_litellm_fetch_failed',
+                    extra={'org_id': str(org_id), 'error': str(e)},
+                )
+                await self._record_litellm_sync(
+                    settings, 'error', error_message[:500]
+                )
+                return None
 
         if not financial_data:
             await self._record_litellm_sync(settings, 'skipped')
-            return
+            return financial_data
 
         members = financial_data.get('members', {})
 
@@ -659,6 +619,11 @@ class OrgBudgetService:
         active_user_baselines: dict[str, float] = {}
 
         for user_id, info in members.items():
+            baseline = existing_user_baselines.get(user_id)
+            if baseline is None:
+                baseline = _float_or_zero(info.get('spend'))
+            active_user_baselines[user_id] = baseline
+
             override = override_map.get(user_id)
             effective_limit, is_disabled, _ = _effective_user_budget_limit(
                 override, settings.default_user_monthly_limit
@@ -668,10 +633,6 @@ class OrgBudgetService:
                 clear_budget = True
             elif effective_limit is not None:
                 # LiteLLM compares cumulative spend against an absolute member cap.
-                baseline = existing_user_baselines.get(user_id)
-                if baseline is None:
-                    baseline = float(info.get('spend') or 0.0)
-                active_user_baselines[user_id] = baseline
                 max_budget_in_team = baseline + effective_limit
                 clear_budget = False
             else:
@@ -704,6 +665,7 @@ class OrgBudgetService:
             await self._record_litellm_sync(settings, 'error', summary[:500])
         else:
             await self._record_litellm_sync(settings, 'success')
+        return financial_data
 
     async def _maybe_send_alerts(
         self,
