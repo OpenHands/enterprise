@@ -1,22 +1,30 @@
 name: SonarQube
 
-# push and manual only. No pull_request or pull_request_target: those run for forks,
-# which would expose SONAR_TOKEN to anyone who opens a PR.
+# pull_request is safe with respect to secrets -- GitHub withholds them from
+# fork-triggered runs, unlike pull_request_target. It is here to validate the setup.
+#
+# REMOVE IT BEFORE MERGE. SonarQube Community Build has no branch or PR analysis, so
+# every submission lands on the project's single branch: a PR scan overwrites the
+# main-branch report card with the PR's code until the next push to main. PR analysis
+# arrives with the community branch plugin, which is POC 2.
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: sonarqube-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ (github.head_ref && github.ref) || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   scan:
-    runs-on: ubuntu-latest
+    # Fork PRs get no secrets, so the scan could only fail on a missing token.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
