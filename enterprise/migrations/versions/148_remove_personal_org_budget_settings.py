@@ -1,7 +1,7 @@
 """Remove budget settings accidentally created for personal workspaces.
 
-Revision ID: 144
-Revises: 143
+Revision ID: 148
+Revises: 147
 Create Date: 2026-06-16 00:00:00.000000
 """
 
@@ -10,8 +10,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '144'
-down_revision: Union[str, None] = '143'
+revision: str = '148'
+down_revision: Union[str, None] = '147'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

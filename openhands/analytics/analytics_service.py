@@ -22,6 +22,7 @@ from openhands.analytics.analytics_constants import (
     CONVERSATION_DELETED,
     CONVERSATION_ERRORED,
     CONVERSATION_FINISHED,
+    CONVERSATION_REQUESTED,
     CREDIT_LIMIT_REACHED,
     CREDIT_PURCHASED,
     GIT_PROVIDER_CONNECTED,
@@ -216,6 +217,29 @@ class AnalyticsService:
                 'conversation_id': conversation_id,
                 'trigger': trigger,
                 'llm_model': llm_model,
+                'agent_type': agent_type,
+                'has_repository': has_repository,
+            },
+            session_id=session_id,
+        )
+
+    def track_conversation_requested(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        request_id: str,
+        trigger: str | None = None,
+        agent_type: str = 'default',
+        has_repository: bool = False,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'conversation requested' when Cloud accepts a start task."""
+        self.capture(
+            ctx=ctx,
+            event=CONVERSATION_REQUESTED,
+            properties={
+                'request_id': request_id,
+                'trigger': trigger,
                 'agent_type': agent_type,
                 'has_repository': has_repository,
             },

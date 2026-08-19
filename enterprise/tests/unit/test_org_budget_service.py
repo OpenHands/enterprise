@@ -121,7 +121,7 @@ def test_budget_maintenance_scheduler_excludes_personal_and_disabled_orgs(
 
 def test_cleanup_migration_removes_only_personal_org_settings(session_maker):
     migration = import_module(
-        'migrations.versions.144_remove_personal_org_budget_settings'
+        'migrations.versions.148_remove_personal_org_budget_settings'
     )
     personal_id = uuid4()
     team_id = uuid4()
