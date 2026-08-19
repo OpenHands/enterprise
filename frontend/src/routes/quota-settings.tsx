@@ -65,10 +65,11 @@ function QuotaSettingsScreen() {
   }
 
   const unlimited = quota.daily_limit === null;
+  const limit = quota.daily_limit ?? 0;
   const pct =
-    unlimited || quota.daily_limit === 0
+    unlimited || limit === 0
       ? 0
-      : Math.min((quota.used_today / quota.daily_limit) * 100, 100);
+      : Math.min((quota.used_today / limit) * 100, 100);
 
   return (
     <div className="flex flex-col gap-6 p-4 max-w-2xl">
