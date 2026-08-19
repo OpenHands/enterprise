@@ -211,7 +211,7 @@ base_app.include_router(
     analytics_events_router
 )  # Add routes for client-initiated analytics events
 base_app.include_router(quota_router)  # Add routes for quota status
-base_app.include_router(quota_admin_router)  # Add admin routes for org-level quota
+base_app.include_router(quota_admin_router)  # Add admin routes for quota (org-level + increase requests)
 
 
 base_app.add_middleware(

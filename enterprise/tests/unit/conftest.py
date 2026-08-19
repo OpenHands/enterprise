@@ -23,6 +23,7 @@ from storage.base import Base
 from storage.billing_session import BillingSession
 from storage.conversation_work import ConversationWork
 from storage.daily_conversation_usage import DailyConversationUsage  # noqa: F401
+from storage.quota_increase_request import QuotaIncreaseRequest  # noqa: F401
 from storage.device_code import DeviceCode  # noqa: F401
 from storage.feedback import Feedback
 from storage.github_app_installation import GithubAppInstallation
