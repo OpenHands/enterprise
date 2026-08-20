@@ -10,7 +10,6 @@ from storage.database import a_session_maker
 
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.dependencies import get_dependencies
-from openhands.app_server.utils.logger import openhands_logger as logger
 
 quota_router = APIRouter(
     prefix='/api/quota', tags=['Quota'], dependencies=get_dependencies()
@@ -67,9 +66,7 @@ async def _require_admin(user_id: str) -> None:
         )
 
 
-@quota_admin_router.put(
-    '/orgs/{org_id}/quota', response_model=OrgQuotaResponse
-)
+@quota_admin_router.put('/orgs/{org_id}/quota', response_model=OrgQuotaResponse)
 async def set_org_quota(
     org_id: str,
     body: OrgQuotaUpdateRequest,
@@ -87,9 +84,7 @@ async def set_org_quota(
     from storage.org import Org
 
     async with a_session_maker() as session:
-        org = await session.scalar(
-            select(Org).where(Org.id == UUID(org_id))
-        )
+        org = await session.scalar(select(Org).where(Org.id == UUID(org_id)))
         if org is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
