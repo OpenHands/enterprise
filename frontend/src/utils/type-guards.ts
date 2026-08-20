@@ -24,7 +24,7 @@ export const isAxiosErrorWithStructuredDetail = (
     return false;
   }
 
-  const detail = data.detail;
+  const { detail } = data;
   return (
     typeof detail === "object" &&
     detail !== null &&

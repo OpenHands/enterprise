@@ -21,7 +21,7 @@ export const retrieveAxiosErrorMessage = (error: AxiosError) => {
   ) {
     errorMessage = error.response.data.detail;
   } else if (isAxiosErrorWithStructuredDetail(error)) {
-    errorMessage = error.response?.data.detail.message ?? null;
+    errorMessage = error.response?.data.detail.message ?? error.message;
   } else if (
     isAxiosErrorWithMessageField(error) &&
     error.response?.data.message

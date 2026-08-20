@@ -89,13 +89,32 @@ async def test_get_status_no_usage_today():
 async def test_reserve_no_limit_is_noop():
     """When limit is None (unlimited), reserve does nothing."""
     session = AsyncMock()
-    session.scalar.return_value = SimpleNamespace(daily_conversation_limit=None, current_org_id=None)
+    session.scalar.return_value = SimpleNamespace(
+        daily_conversation_limit=None, current_org_id=None
+    )
 
     service = DailyConversationQuotaService(session)
-    await service.reserve(USER_ID)
+    reserved = await service.reserve(USER_ID)
 
+    assert reserved is False
     session.execute.assert_not_called()
     session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reserve_under_limit_consumes_slot():
+    """When under the limit, reserve increments usage and reports True."""
+    session = AsyncMock()
+    session.scalar.return_value = SimpleNamespace(
+        daily_conversation_limit=2, current_org_id=None
+    )
+    session.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: 1)
+
+    service = DailyConversationQuotaService(session)
+    reserved = await service.reserve(USER_ID)
+
+    assert reserved is True
+    session.commit.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -111,9 +130,7 @@ async def test_reserve_at_limit_raises_429():
         SimpleNamespace(conversation_count=2),
     ]
     # execute returns None (conflict, no row returned)
-    session.execute.return_value = SimpleNamespace(
-        scalar_one_or_none=lambda: None
-    )
+    session.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: None)
 
     service = DailyConversationQuotaService(session)
 

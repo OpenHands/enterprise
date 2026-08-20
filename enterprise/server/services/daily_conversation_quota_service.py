@@ -102,11 +102,15 @@ class DailyConversationQuotaService:
 
         return configured_daily_limit()
 
-    async def reserve(self, user_id: str) -> None:
-        """Atomically increment today's usage, raising HTTP 429 if at limit."""
+    async def reserve(self, user_id: str) -> bool:
+        """Atomically increment today's usage, raising HTTP 429 if at limit.
+
+        Returns True when a slot was consumed (so callers know a failed
+        start must be released) and False for unlimited users.
+        """
         limit = await self.get_limit(user_id)
         if limit is None:
-            return
+            return False
 
         today = datetime.now(UTC).date()
         if limit <= 0:
@@ -139,6 +143,7 @@ class DailyConversationQuotaService:
             used = await self._used(user_id, today)
             raise self._limit_reached(limit, used, today)
         await self.db_session.commit()
+        return True
 
     async def release(self, user_id: str) -> None:
         """Release a reservation when the start request was not accepted."""
