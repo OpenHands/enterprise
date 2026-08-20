@@ -15,20 +15,6 @@ from typing import Any, AsyncIterator
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
-from pydantic import BaseModel, Field, ValidationError
-from server.constants import LITE_LLM_API_URL
-from server.routes.org_models import OrgNotFoundError
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
-from storage.agent_profile_resolution import (
-    OrgLLMProfileMutator,
-    load_agent_profiles,
-)
-from storage.database import a_session_maker
-from storage.org import Org
-from storage.org_member import OrgMember
-from storage.org_service import OrgService
-
 from openhands.app_server.settings.llm_profiles import (
     LLMProfiles,
     ProfileAlreadyExistsError,
@@ -48,6 +34,20 @@ from openhands.sdk.profiles import (
     rename_llm_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
+from pydantic import BaseModel, Field, SecretStr, ValidationError
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from server.constants import LITE_LLM_API_URL
+from server.routes.org_models import OrgNotFoundError
+from storage.agent_profile_resolution import (
+    OrgLLMProfileMutator,
+    load_agent_profiles,
+)
+from storage.database import a_session_maker
+from storage.org import Org
+from storage.org_member import OrgMember
+from storage.org_service import OrgService
 
 from ..auth.authorization import Permission, require_permission
 
@@ -124,6 +124,47 @@ class RenameProfileRequest(BaseModel):
 
 
 # ── Helper Functions ────────────────────────────────────────────────────────
+
+
+def _resolve_provider_connection(org: Org, llm: LLM) -> LLM:
+    """Apply a referenced provider connection's credentials to ``llm``.
+
+    Read-at-use resolution at the single activation choke point, mirroring the
+    SDK's ``LLMProfileStore._resolve_provider_connection``:
+
+    - no ``provider_connection_id`` -> unchanged (byte-identical old path).
+    - connection found -> its ``api_key`` / ``base_url`` win (``base_url`` is
+      applied as-is, including ``None``).
+    - connection missing -> 422, a resolvable config problem (recreate the
+      connection or edit the profile).
+
+    The resolved key is then snapshotted into the member's active settings by
+    the caller. Rotating a shared key therefore takes effect the next time a
+    linked profile is activated — it is not pushed retroactively.
+    """
+    connection_id = getattr(llm, 'provider_connection_id', None)
+    if not connection_id:
+        return llm
+
+    # Imported lazily to keep this module importable if the settings package
+    # layout shifts; also avoids a hard import cost on the hot non-linked path.
+    from server.routes.org_provider_connections import _load_connections
+
+    connection = _load_connections(org).get(connection_id)
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Profile references provider connection '{connection_id}', "
+                'which does not exist. Update the profile or recreate the '
+                'connection.'
+            ),
+        )
+    updates: dict[str, Any] = {'base_url': connection.base_url}
+    api_key = connection.api_key_value()
+    if api_key is not None:
+        updates['api_key'] = SecretStr(api_key)
+    return llm.model_copy(update=updates)
 
 
 def _load_profiles(org: Org) -> LLMProfiles:
@@ -338,6 +379,9 @@ async def activate_profile(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Profile '{name}' not found",
             )
+        # Resolve a linked provider connection into concrete credentials before
+        # the key is masked/snapshotted below. No-op for unlinked profiles.
+        llm = _resolve_provider_connection(_org, llm)
         profiles.active = name
 
         # Same session as the org write so both side-effects commit atomically.

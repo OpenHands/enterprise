@@ -14,6 +14,12 @@ os.environ['SERVE_FRONTEND'] = 'false'
 
 from fastapi import Request, status  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
+from openhands.app_server.app import app as base_app  # noqa: E402
+from openhands.app_server.middleware import (  # noqa: E402
+    CacheControlMiddleware,
+)
+from openhands.app_server.static import SPAStaticFiles  # noqa: E402
+
 from server.auth.auth_error import ExpiredError, NoCredentialsError  # noqa: E402
 from server.auth.constants import (  # noqa: E402
     AZURE_DEVOPS_CLIENT_ID,
@@ -55,6 +61,9 @@ from server.routes.org_invitations import (  # noqa: E402
     invitation_router,
 )
 from server.routes.org_profiles import router as org_profiles_router  # noqa: E402
+from server.routes.org_provider_connections import (  # noqa: E402
+    router as org_provider_connections_router,
+)
 from server.routes.orgs import org_router  # noqa: E402
 from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
@@ -76,12 +85,6 @@ from server.sharing.shared_event_router import (  # noqa: E402
 from server.verified_models.verified_model_router import (  # noqa: E402
     api_router as verified_models_router,
 )
-
-from openhands.app_server.app import app as base_app  # noqa: E402
-from openhands.app_server.middleware import (  # noqa: E402
-    CacheControlMiddleware,
-)
-from openhands.app_server.static import SPAStaticFiles  # noqa: E402
 
 directory = os.getenv('FRONTEND_DIRECTORY', './frontend/build')
 
@@ -175,6 +178,9 @@ if USER_PROVISIONING_ENABLED:
 base_app.include_router(
     org_profiles_router, prefix='/api/organizations'
 )  # Add routes for org LLM profiles
+base_app.include_router(
+    org_provider_connections_router, prefix='/api/organizations'
+)  # Add routes for org LLM provider connections
 base_app.include_router(
     agent_profiles_router
 )  # Add flat /api/agent-profiles routes for org Agent Profiles
