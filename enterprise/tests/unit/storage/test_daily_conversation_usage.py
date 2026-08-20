@@ -7,7 +7,7 @@ def test_user_has_nullable_daily_conversation_limit(engine):
     column = next(
         column
         for column in inspect(engine).get_columns(User.__tablename__)
-        if column['name'] == "daily_conversation_limit"
+        if column['name'] == 'daily_conversation_limit'
     )
 
     assert column['nullable'] is True
