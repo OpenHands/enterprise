@@ -149,10 +149,9 @@ class TestBudgetFromTeamInfo:
     async def test_personal_workspace_falls_back_to_team_budget(self):
         """A personal workspace with no membership row reads the team budget.
 
-        LiteLLM only creates a ``team_memberships`` row when the user is added
-        to the team *with* a per-member budget. Teams provisioned while billing
-        was disabled have none, so the member row comes from
-        ``members_with_roles`` and carries no financial data at all.
+        LiteLLM only creates a ``team_memberships`` row for members added with a
+        per-member budget; teams set up while billing was off have none, so the
+        member row falls back to ``members_with_roles`` with no financial data.
         """
         mock_http_client = AsyncMock()
         with (
