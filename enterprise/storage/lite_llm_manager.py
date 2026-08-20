@@ -1257,11 +1257,26 @@ class LiteLlmManager:
         if not user_membership:
             return None
 
+        team_info = team_response.get('team_info', {})
         if keycloak_user_id != team_id:
-            team_info = team_response.get('team_info', {})
             if 'max_budget' not in team_info or 'spend' not in team_info:
                 return None
             user_membership['max_budget_in_team'] = team_info['max_budget']
+            user_membership['spend'] = team_info['spend']
+        elif 'spend' not in user_membership:
+            # Personal workspace (team_id == the user's own id). The budget
+            # normally rides on a LiteLLM team-membership row, but that row only
+            # exists when the user was added to the team *with* a per-member
+            # budget. Teams provisioned while billing was disabled have none, so
+            # ``_team_member_rows`` falls back to ``members_with_roles``, whose
+            # entries carry only user_id/user_email/role. For a personal
+            # workspace the team budget *is* the user's budget, so read it from
+            # ``team_info`` in the shape ``get_budget_from_team_info`` expects.
+            if 'max_budget' not in team_info or 'spend' not in team_info:
+                return None
+            user_membership['litellm_budget_table'] = {
+                'max_budget': team_info['max_budget']
+            }
             user_membership['spend'] = team_info['spend']
 
         return user_membership
