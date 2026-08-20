@@ -51,9 +51,9 @@ from server.routes.org_invitations import (  # noqa: E402
 from server.routes.org_invitations import (  # noqa: E402
     invitation_router,
 )
-from server.routes.quota import quota_router  # noqa: E402
 from server.routes.org_profiles import router as org_profiles_router  # noqa: E402
 from server.routes.orgs import org_router  # noqa: E402
+from server.routes.quota import quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
 from server.routes.super_admins import super_admin_router  # noqa: E402
