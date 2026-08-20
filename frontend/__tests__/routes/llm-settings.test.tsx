@@ -178,7 +178,6 @@ function buildOrganization(
     sandbox_api_key: overrides.sandbox_api_key ?? null,
     max_budget_per_task: overrides.max_budget_per_task ?? 0,
     enable_solvability_analysis: overrides.enable_solvability_analysis ?? false,
-    v1_enabled: overrides.v1_enabled ?? true,
     credits: overrides.credits ?? 0,
     is_personal: overrides.is_personal,
     ...overrides,

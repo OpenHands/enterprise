@@ -65,11 +65,10 @@ describe("Content", () => {
     });
   });
 
-  it("should not render the legacy max-budget control", async () => {
-    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
-      ...MOCK_DEFAULT_USER_SETTINGS,
-      v1_enabled: false,
-    });
+  it("should not render the max-budget control", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      MOCK_DEFAULT_USER_SETTINGS,
+    );
 
     renderAppSettingsScreen();
 

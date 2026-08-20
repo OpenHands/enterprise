@@ -6,16 +6,6 @@ import userEvent from "@testing-library/user-event";
 import V1ConversationService from "#/api/conversation-service/v1-conversation-service.api";
 import { NewConversation } from "#/components/features/home/new-conversation/new-conversation";
 
-vi.mock("#/hooks/query/use-settings", async () => {
-  const actual = await vi.importActual<typeof import("#/hooks/query/use-settings")>(
-    "#/hooks/query/use-settings",
-  );
-  return {
-    ...actual,
-    getSettingsQueryFn: vi.fn().mockResolvedValue({ v1_enabled: true }),
-  };
-});
-
 vi.mock("#/context/use-selected-organization", () => ({
   useSelectedOrganizationId: () => ({ organizationId: null }),
 }));

@@ -81,7 +81,6 @@ def slack_update_conversation_view_v1(mock_slack_user, mock_user_auth):
         channel_id='C1234567890',
         keycloak_user_id='test-user-123',
         parent_id='1234567890.123456',
-        v1_enabled=True,
     )
     return SlackUpdateExistingConversationView(
         bot_access_token='xoxb-test-token',

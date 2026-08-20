@@ -64,7 +64,6 @@ export const createMockOrganization = (
   sandbox_api_key: null,
   max_budget_per_task: 25.0,
   enable_solvability_analysis: false,
-  v1_enabled: true,
   credits,
   is_personal,
 });

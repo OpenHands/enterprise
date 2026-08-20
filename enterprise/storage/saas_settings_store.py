@@ -425,8 +425,6 @@ class SaasSettingsStore(SettingsStore):
             org_conversation.model_dump(mode='json'),
             member_conversation_diff,
         )
-        if org.v1_enabled is None:
-            kwargs['v1_enabled'] = True
         # Apply default if sandbox_grouping_strategy is None in the database
         if kwargs.get('sandbox_grouping_strategy') is None:
             kwargs.pop('sandbox_grouping_strategy', None)

@@ -9,7 +9,6 @@ from uuid import UUID
 
 from server.auth.token_manager import TokenManager
 from server.constants import (
-    DEFAULT_V1_ENABLED,
     LITE_LLM_API_URL,
     ORG_SETTINGS_VERSION,
     PERSONAL_WORKSPACE_VERSION_TO_MODEL,
@@ -128,7 +127,6 @@ class UserStore:
                     contact_name=resolve_display_name(user_info)
                     or user_info.get('preferred_username', ''),
                     contact_email=user_info['email'],
-                    v1_enabled=True,
                 )
                 session.add(org)
                 org_created = True
@@ -350,10 +348,6 @@ class UserStore:
             for key, value in org_kwargs.items():
                 if hasattr(org, key):
                     setattr(org, key, value)
-
-            # Apply DEFAULT_V1_ENABLED for migrated orgs if v1_enabled was not set
-            if org.v1_enabled is None:
-                org.v1_enabled = DEFAULT_V1_ENABLED
 
             user_kwargs = UserStore.get_kwargs_from_user_settings(
                 decrypted_user_settings
@@ -1180,7 +1174,6 @@ class UserStore:
             language='en', enable_proactive_conversation_starters=True
         )
 
-        default_settings.v1_enabled = DEFAULT_V1_ENABLED
 
         from storage.lite_llm_manager import LiteLlmManager
 
@@ -1303,7 +1296,6 @@ class UserStore:
             if org.sandbox_api_key
             else None,
             max_budget_per_task=org.max_budget_per_task,
-            v1_enabled=org.v1_enabled,
             sandbox_grouping_strategy=org.sandbox_grouping_strategy,
             agent_settings=agent_settings,
             mcp_config=member_mcp_config,

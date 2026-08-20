@@ -196,7 +196,6 @@ export type Settings = {
   git_user_name?: string;
   git_user_email?: string;
   git_full_clone?: boolean;
-  v1_enabled?: boolean;
   agent_settings_schema?: SettingsSchema | null;
   agent_settings?: Record<string, SettingsValue> | null;
   conversation_settings_schema?: SettingsSchema | null;

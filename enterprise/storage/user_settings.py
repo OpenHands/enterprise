@@ -66,7 +66,6 @@ class UserSettings(Base):
     email_verified: Mapped[bool | None] = mapped_column(nullable=True)
     git_user_name: Mapped[str | None] = mapped_column(String, nullable=True)
     git_user_email: Mapped[str | None] = mapped_column(String, nullable=True)
-    v1_enabled: Mapped[bool | None] = mapped_column(nullable=True)
     agent_settings: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
