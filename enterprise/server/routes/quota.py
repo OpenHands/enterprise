@@ -1,6 +1,7 @@
 """Quota status and increase request API for the settings page."""
 
 import os
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -11,8 +12,8 @@ from server.services.quota_increase_request_service import (
     QuotaIncreaseRequestService,
 )
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from storage.database import a_session_maker
+from storage.user import User
 
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.dependencies import get_dependencies
@@ -68,13 +69,17 @@ async def get_quota_status(user_id: str = Depends(get_user_id)) -> QuotaStatusRe
         request_service = QuotaIncreaseRequestService(session)
         latest = await request_service.get_latest_for_user(user_id)
 
+        user = await session.scalar(select(User).where(User.id == UUID(user_id)))
+
     return QuotaStatusResponse(
         daily_limit=status_result.daily_limit,
         used_today=status_result.used_today,
         remaining=status_result.remaining,
         reset_at=status_result.reset_at,
-        work_email=None,  # populated below
-        work_email_verified=False,
+        work_email=user.work_email if user else None,
+        work_email_verified=(
+            user.work_email_verified_at is not None if user else False
+        ),
         latest_request_status=latest.status if latest else None,
         latest_request_requested_limit=latest.requested_limit if latest else None,
     )
@@ -108,7 +113,7 @@ async def create_quota_increase_request(
         _send_verification_email(request.work_email, token)
 
         # PostHog: identify work email and capture event
-        _capture_quota_event(user_id, request.work_email, request.requested_limit)
+        await _capture_quota_event(user_id, request.work_email, request.requested_limit)
 
     return QuotaIncreaseRequestResponse(
         id=request.id,
@@ -195,6 +200,34 @@ async def approve_quota_request(
     )
 
 
+@quota_admin_router.post(
+    '/requests/{request_id}/reject', response_model=QuotaIncreaseRequestResponse
+)
+async def reject_quota_request(
+    request_id: int,
+    user_id: str = Depends(get_user_id),
+) -> QuotaIncreaseRequestResponse:
+    """Reject a pending quota increase request (admin only).
+
+    Gives admins a way to clear a pending request without granting it,
+    unblocking the user to submit a new one.
+    """
+    await _require_admin(user_id)
+    async with a_session_maker() as session:
+        service = QuotaIncreaseRequestService(session)
+        request = await service.reject_request(request_id=request_id)
+
+    return QuotaIncreaseRequestResponse(
+        id=request.id,
+        status=request.status,
+        work_email=request.work_email,
+        baseline_limit=request.baseline_limit,
+        requested_limit=request.requested_limit,
+        reason=request.reason,
+        created_at=request.created_at.isoformat() if request.created_at else '',
+    )
+
+
 def _send_verification_email(email: str, token: str) -> None:
     """Send a verification email with the signed link.
 
@@ -210,7 +243,9 @@ def _send_verification_email(email: str, token: str) -> None:
             )
             return
 
-        web_host = os.environ.get('WEB_HOST', 'https://app.all-hands.dev').strip().rstrip('/')
+        web_host = (
+            os.environ.get('WEB_HOST', 'https://app.all-hands.dev').strip().rstrip('/')
+        )
         if not web_host.startswith(('http://', 'https://')):
             web_host = f'https://{web_host}'
         verify_url = f'{web_host}/api/quota/verify?token={token}'
@@ -264,7 +299,9 @@ def _send_verification_email(email: str, token: str) -> None:
         )
 
 
-def _capture_quota_event(user_id: str, work_email: str, requested_limit: int) -> None:
+async def _capture_quota_event(
+    user_id: str, work_email: str, requested_limit: int
+) -> None:
     """Capture a PostHog event and set work_email as a person property."""
     try:
         from openhands.analytics import get_analytics_service, resolve_analytics_context
@@ -273,7 +310,7 @@ def _capture_quota_event(user_id: str, work_email: str, requested_limit: int) ->
         if analytics is None:
             return
 
-        ctx = resolve_analytics_context(user_id)
+        ctx = await resolve_analytics_context(user_id)
         # Set work_email as a person property
         analytics.set_person_properties(ctx, {'work_email': work_email})
         # Capture the request event
@@ -311,9 +348,7 @@ class OrgQuotaResponse(BaseModel):
     daily_conversation_limit: int | None
 
 
-@quota_admin_router.put(
-    '/orgs/{org_id}/quota', response_model=OrgQuotaResponse
-)
+@quota_admin_router.put('/orgs/{org_id}/quota', response_model=OrgQuotaResponse)
 async def set_org_quota(
     org_id: str,
     body: OrgQuotaUpdateRequest,
@@ -331,9 +366,7 @@ async def set_org_quota(
     from storage.org import Org
 
     async with a_session_maker() as session:
-        org = await session.scalar(
-            select(Org).where(Org.id == UUID(org_id))
-        )
+        org = await session.scalar(select(Org).where(Org.id == UUID(org_id)))
         if org is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

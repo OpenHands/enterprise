@@ -22,7 +22,9 @@ class QuotaIncreaseRequest(Base):
     __tablename__ = 'quota_increase_request'
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[UUID] = mapped_column(ForeignKey('user.id'), nullable=False, index=True)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey('user.id'), nullable=False, index=True
+    )
     work_email: Mapped[str] = mapped_column(String(255), nullable=False)
     baseline_limit: Mapped[int] = mapped_column(Integer, nullable=False)
     requested_limit: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -30,8 +32,12 @@ class QuotaIncreaseRequest(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default="'pending'"
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     approved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -43,5 +49,8 @@ class QuotaIncreaseRequest(Base):
     STATUS_PENDING = 'pending'
     STATUS_APPROVED = 'approved'
     STATUS_REJECTED = 'rejected'
+    # Pending requests whose verification token TTL elapsed are expired when
+    # the user submits a replacement request.
+    STATUS_EXPIRED = 'expired'
 
     user: Mapped['User'] = relationship('User', foreign_keys=[user_id])

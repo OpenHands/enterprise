@@ -72,6 +72,17 @@ class DailyConversationQuotaService:
         if user.daily_conversation_limit is not None:
             return user.daily_conversation_limit
 
+        return await self.get_default_limit(user)
+
+    async def get_default_limit(self, user: User) -> int | None:
+        """Effective limit ignoring any user-level override.
+
+        Resolves the org-level override, then the deployment default.
+        Returns None when the user is unlimited at this level (org
+        exemption via -1, or no deployment default configured). Quota
+        increase requests cap against this value so self-service grants
+        cannot compound on top of previously granted increases.
+        """
         # Org-level override: NULL means inherit deployment default,
         # -1 means exempt (unlimited, for paying SaaS orgs),
         # any other integer is the org-specific limit.
