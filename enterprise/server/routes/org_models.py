@@ -102,6 +102,13 @@ class OrgNotFoundError(Exception):
         super().__init__(f'Organization with id "{org_id}" not found')
 
 
+class OrgCreditsResult(BaseModel):
+    """Organization credit balance and its availability."""
+
+    credits: float | None = None
+    available: bool = False
+
+
 class OrgConcurrentModificationError(Exception):
     """Raised when a concurrent modification conflict is detected.
 
@@ -220,13 +227,24 @@ class OrgResponse(BaseModel):
     max_budget_per_task: float | None = None
     v1_enabled: bool | None = None
     credits: float | None = None
+    credits_available: bool = False
     is_personal: bool = False
 
     @classmethod
     def from_org(
-        cls, org: Org, credits: float | None = None, user_id: str | None = None
+        cls,
+        org: Org,
+        credits: OrgCreditsResult | float | None = None,
+        user_id: str | None = None,
     ) -> 'OrgResponse':
         """Create an OrgResponse from an Org entity."""
+        if isinstance(credits, OrgCreditsResult):
+            credit_balance = credits.credits
+            credits_available = credits.available
+        else:
+            credit_balance = credits
+            credits_available = credits is not None
+
         return cls(
             id=str(org.id),
             name=org.name,
@@ -249,7 +267,8 @@ class OrgResponse(BaseModel):
             sandbox_api_key=None,
             max_budget_per_task=org.max_budget_per_task,
             v1_enabled=org.v1_enabled,
-            credits=credits,
+            credits=credit_balance,
+            credits_available=credits_available,
             is_personal=str(org.id) == user_id if user_id else False,
         )
 
