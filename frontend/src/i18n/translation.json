@@ -29220,7 +29220,7 @@
     "tr": "Kota",
     "de": "Kontingent",
     "uk": "Квота",
-    "pt-BR": "Cota"
+    "ca": "Quota"
   },
   "SETTINGS$QUOTA_DAILY_LIMIT": {
     "en": "Daily limit",
@@ -29237,7 +29237,7 @@
     "tr": "Günlük limit",
     "de": "Tageslimit",
     "uk": "Денний ліміт",
-    "pt-BR": "Limite diário"
+    "ca": "Límit diari"
   },
   "SETTINGS$QUOTA_USED_TODAY": {
     "en": "Used today",
@@ -29254,7 +29254,7 @@
     "tr": "Bugün kullanılan",
     "de": "Heute verwendet",
     "uk": "Використано сьогодні",
-    "pt-BR": "Usado hoje"
+    "ca": "Utilitzat avui"
   },
   "SETTINGS$QUOTA_REMAINING": {
     "en": "Remaining",
@@ -29271,7 +29271,7 @@
     "tr": "Kalan",
     "de": "Verbleibend",
     "uk": "Залишилось",
-    "pt-BR": "Restante"
+    "ca": "Restant"
   },
   "SETTINGS$QUOTA_UNLIMITED": {
     "en": "Unlimited",
@@ -29288,7 +29288,7 @@
     "tr": "Sınırsız",
     "de": "Unbegrenzt",
     "uk": "Безлімітний",
-    "pt-BR": "Ilimitado"
+    "ca": "Il·limitat"
   },
   "SETTINGS$QUOTA_RESETS_IN": {
     "en": "Resets in",
@@ -29305,7 +29305,7 @@
     "tr": "Sıfırlanmaya",
     "de": "Zurücksetzen in",
     "uk": "Скидається через",
-    "pt-BR": "Redefinir em"
+    "ca": "Es restableix en"
   },
   "SETTINGS$QUOTA_SALES_ONLY": {
     "en": "Quota management is only available in SaaS mode.",
@@ -29322,6 +29322,6 @@
     "tr": "Kota yönetimi yalnızca SaaS modunda kullanılabilir.",
     "de": "Kontingentverwaltung ist nur im SaaS-Modus verfügbar.",
     "uk": "Управління квотою доступне лише в режимі SaaS.",
-    "pt-BR": "O gerenciamento de cota está disponível apenas no modo SaaS."
+    "ca": "La gestió de quotes només està disponible en mode SaaS."
   }
 }

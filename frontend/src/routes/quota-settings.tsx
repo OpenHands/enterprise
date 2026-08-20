@@ -10,7 +10,7 @@ function useCountdown(resetAt: string | null) {
   useEffect(() => {
     if (!resetAt) {
       setRemaining("");
-      return;
+      return undefined;
     }
 
     const update = () => {
@@ -46,9 +46,7 @@ function QuotaSettingsScreen() {
   if (!isSaas) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-tertiary">
-          {t(I18nKey.SETTINGS$QUOTA_SALES_ONLY)}
-        </p>
+        <p className="text-tertiary">{t(I18nKey.SETTINGS$QUOTA_SALES_ONLY)}</p>
       </div>
     );
   }
@@ -126,7 +124,10 @@ function QuotaSettingsScreen() {
         data-testid="quota-reset-countdown"
       >
         <span>{t(I18nKey.SETTINGS$QUOTA_RESETS_IN)}</span>
-        <span className="font-mono font-semibold text-primary" data-testid="quota-countdown">
+        <span
+          className="font-mono font-semibold text-primary"
+          data-testid="quota-countdown"
+        >
           {countdown}
         </span>
       </div>
