@@ -683,9 +683,7 @@ async def test_sync_litellm_budgets_reports_member_readback_mismatch(
                 AsyncMock(),
             ),
         ):
-            result = await service._sync_litellm_budgets(
-                budget_org.id, settings, []
-            )
+            result = await service._sync_litellm_budgets(budget_org.id, settings, [])
 
     assert result == after
     assert get_financial_data.await_count == 2
