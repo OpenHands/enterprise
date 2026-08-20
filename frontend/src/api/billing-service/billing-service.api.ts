@@ -32,10 +32,10 @@ class BillingService {
 
   /**
    * Get the user's current credit balance
-   * @returns The user's credit balance as a string
+   * @returns The user's credit balance, or null when no limit is configured
    */
-  static async getBalance(): Promise<string> {
-    const { data } = await openHands.get<{ credits: string }>(
+  static async getBalance(): Promise<string | null> {
+    const { data } = await openHands.get<{ credits: string | null }>(
       "/api/billing/credits",
     );
     return data.credits;
