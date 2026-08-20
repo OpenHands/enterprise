@@ -180,9 +180,10 @@ class TestBudgetFromTeamInfo:
                 mock_http_client, 'user-1', 'user-1'
             )
 
-        assert LiteLlmManager.get_budget_from_team_info(
-            result, 'user-1', 'user-1'
-        ) == (10.0, 4.0)
+        assert LiteLlmManager.get_budget_from_team_info(result, 'user-1', 'user-1') == (
+            10.0,
+            4.0,
+        )
 
     @pytest.mark.asyncio
     async def test_personal_workspace_keeps_membership_row_budget(self):
@@ -213,9 +214,10 @@ class TestBudgetFromTeamInfo:
                 mock_http_client, 'user-1', 'user-1'
             )
 
-        assert LiteLlmManager.get_budget_from_team_info(
-            result, 'user-1', 'user-1'
-        ) == (25.0, 1.0)
+        assert LiteLlmManager.get_budget_from_team_info(result, 'user-1', 'user-1') == (
+            25.0,
+            1.0,
+        )
 
     @pytest.mark.asyncio
     async def test_personal_workspace_rejects_partial_team_financial_data(self):
