@@ -51,12 +51,42 @@ class DailyConversationQuotaService:
         )
 
     async def get_limit(self, user_id: str) -> int | None:
+        """Resolve the effective daily conversation limit.
+
+        Precedence (first non-None wins):
+        1. User-level override (``user.daily_conversation_limit``)
+        2. Org-level override (``org.daily_conversation_limit``)
+        3. Deployment default (``OH_DAILY_CONVERSATION_LIMIT`` env var)
+
+        NULL at any level means "inherit from the next level down."
+        A NULL org override means the org is exempt (unlimited) — paying
+        SaaS orgs can have this set to NULL to bypass quota enforcement.
+        """
         user = await self.db_session.scalar(
             select(User).where(User.id == UUID(user_id))
         )
-        if user is None or user.daily_conversation_limit is None:
+        if user is None:
             return configured_daily_limit()
-        return user.daily_conversation_limit
+
+        # User-level override takes precedence.
+        if user.daily_conversation_limit is not None:
+            return user.daily_conversation_limit
+
+        # Org-level override: NULL means inherit deployment default,
+        # -1 means exempt (unlimited, for paying SaaS orgs),
+        # any other integer is the org-specific limit.
+        if user.current_org_id is not None:
+            from storage.org import Org
+
+            org = await self.db_session.scalar(
+                select(Org).where(Org.id == user.current_org_id)
+            )
+            if org is not None and org.daily_conversation_limit is not None:
+                if org.daily_conversation_limit == -1:
+                    return None  # exempt — unlimited
+                return org.daily_conversation_limit
+
+        return configured_daily_limit()
 
     @staticmethod
     def _next_reset_iso() -> str:

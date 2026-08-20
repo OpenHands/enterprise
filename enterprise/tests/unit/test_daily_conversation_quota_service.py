@@ -16,12 +16,13 @@ async def test_get_status_unlimited():
     """When limit is None (unlimited), remaining is None and reset_at is next UTC midnight."""
     session = AsyncMock()
     session.scalar.side_effect = [
-        SimpleNamespace(daily_conversation_limit=None),
+        SimpleNamespace(daily_conversation_limit=None, current_org_id=None),
         None,  # no usage record for today
     ]
 
-    service = DailyConversationQuotaService(session)
-    result = await service.get_status(USER_ID)
+    with patch.dict('os.environ', {}, clear=True):
+        service = DailyConversationQuotaService(session)
+        result = await service.get_status(USER_ID)
 
     assert isinstance(result, QuotaStatus)
     assert result.daily_limit is None
@@ -37,7 +38,7 @@ async def test_get_status_with_limit_and_usage():
     # First scalar call: User lookup returns a user with limit 20
     # Second scalar call: DailyConversationUsage lookup returns count 5
     session.scalar.side_effect = [
-        SimpleNamespace(daily_conversation_limit=20),
+        SimpleNamespace(daily_conversation_limit=20, current_org_id=None),
         SimpleNamespace(conversation_count=5),
     ]
 
@@ -55,7 +56,7 @@ async def test_get_status_remaining_floor_zero():
     """Remaining never goes below zero even if usage exceeds limit."""
     session = AsyncMock()
     session.scalar.side_effect = [
-        SimpleNamespace(daily_conversation_limit=10),
+        SimpleNamespace(daily_conversation_limit=10, current_org_id=None),
         SimpleNamespace(conversation_count=12),
     ]
 
@@ -72,7 +73,7 @@ async def test_get_status_no_usage_today():
     """When no usage record exists for today, used_today is 0."""
     session = AsyncMock()
     session.scalar.side_effect = [
-        SimpleNamespace(daily_conversation_limit=20),
+        SimpleNamespace(daily_conversation_limit=20, current_org_id=None),
         None,
     ]
 
