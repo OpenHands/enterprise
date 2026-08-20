@@ -227,6 +227,7 @@ class OrgBudgetService:
                 datetime.now(UTC), settings.reset_day
             )
             settings.cycle_start_spend = await self._fetch_team_spend(org_id)
+            settings.user_cycle_start_spend = {}
 
         if 'thresholds' in fields_set and update_data.thresholds is not None:
             await self._replace_thresholds(org_id, thresholds, update_data.thresholds)
@@ -343,6 +344,7 @@ class OrgBudgetService:
         settings.cycle_start_at = _current_cycle_start(now, settings.reset_day)
         org_id = settings.org_id
         settings.cycle_start_spend = await self._fetch_team_spend(org_id)
+        settings.user_cycle_start_spend = {}
         for threshold in thresholds:
             threshold.last_triggered_at = None
             threshold.last_triggered_cycle_start = None
@@ -653,6 +655,8 @@ class OrgBudgetService:
                 )
 
         override_map = {str(o.user_id): o for o in overrides}
+        existing_user_baselines = settings.user_cycle_start_spend or {}
+        active_user_baselines: dict[str, float] = {}
 
         for user_id, info in members.items():
             override = override_map.get(user_id)
@@ -663,7 +667,12 @@ class OrgBudgetService:
                 max_budget_in_team = None
                 clear_budget = True
             elif effective_limit is not None:
-                max_budget_in_team = float(info.get('spend') or 0.0) + effective_limit
+                # LiteLLM compares cumulative spend against an absolute member cap.
+                baseline = existing_user_baselines.get(user_id)
+                if baseline is None:
+                    baseline = float(info.get('spend') or 0.0)
+                active_user_baselines[user_id] = baseline
+                max_budget_in_team = baseline + effective_limit
                 clear_budget = False
             else:
                 max_budget_in_team = None
@@ -685,6 +694,8 @@ class OrgBudgetService:
                         'error': str(e),
                     },
                 )
+
+        settings.user_cycle_start_spend = active_user_baselines
 
         if sync_errors:
             summary = sync_errors[0]

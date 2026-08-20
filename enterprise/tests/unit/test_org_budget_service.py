@@ -280,6 +280,7 @@ async def test_roll_cycle_if_needed_updates_cycle(async_session_maker, budget_or
             slack_team_id=None,
             cycle_start_at=past_cycle_start,
             cycle_start_spend=10.0,
+            user_cycle_start_spend={'existing-user': 4.0},
         )
         threshold = OrgBudgetThreshold(
             org_id=budget_org.id,
@@ -311,6 +312,7 @@ async def test_roll_cycle_if_needed_updates_cycle(async_session_maker, budget_or
             now, reset_day
         )
         assert settings.cycle_start_spend == 42.5
+        assert settings.user_cycle_start_spend == {}
         assert threshold.last_triggered_at is None
         assert threshold.last_triggered_cycle_start is None
         fetch_mock.assert_awaited_once_with(settings.org_id)
@@ -500,9 +502,80 @@ async def test_sync_litellm_budgets_updates_team_and_members(
             any_order=True,
         )
 
+        assert settings.user_cycle_start_spend == {
+            str(override_user_id): 7.0,
+            str(default_user_id): 5.0,
+        }
         assert settings.litellm_last_sync_status == 'success'
         assert settings.litellm_last_sync_error is None
         assert settings.litellm_last_sync_at is not None
+
+
+@pytest.mark.asyncio
+async def test_sync_litellm_budgets_keeps_member_cap_stable_across_sessions(
+    async_session_maker, budget_org
+):
+    user_id = uuid4()
+    cycle_start = datetime.now(UTC)
+    financial_data = AsyncMock(
+        side_effect=[
+            {'members': {str(user_id): {'spend': 7.0}}},
+            {'members': {str(user_id): {'spend': 23.0}}},
+        ]
+    )
+
+    with (
+        patch(
+            'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+            financial_data,
+        ),
+        patch(
+            'server.services.org_budget_service.LiteLlmManager.update_team',
+            AsyncMock(),
+        ),
+        patch(
+            'server.services.org_budget_service.LiteLlmManager.update_user_in_team',
+            AsyncMock(),
+        ) as update_user,
+    ):
+        async with async_session_maker() as session:
+            settings = OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=True,
+                reset_day=1,
+                monthly_limit=100.0,
+                default_user_monthly_limit=50.0,
+                cycle_start_at=cycle_start,
+                cycle_start_spend=20.0,
+            )
+            session.add(settings)
+            await session.commit()
+
+            await OrgBudgetService(session)._sync_litellm_budgets(
+                budget_org.id, settings, []
+            )
+            await session.commit()
+
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(OrgBudgetSettings).where(
+                    OrgBudgetSettings.org_id == budget_org.id
+                )
+            )
+            settings = result.scalar_one()
+            await OrgBudgetService(session)._sync_litellm_budgets(
+                budget_org.id, settings, []
+            )
+            await session.commit()
+
+            assert settings.user_cycle_start_spend == {str(user_id): 7.0}
+
+    assert [
+        await_call.kwargs['max_budget'] for await_call in update_user.await_args_list
+    ] == [
+        57.0,
+        57.0,
+    ]
 
 
 @pytest.mark.asyncio
