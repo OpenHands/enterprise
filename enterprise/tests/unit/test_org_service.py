@@ -2011,6 +2011,46 @@ async def test_check_byor_export_enabled_returns_true_when_enabled():
 
 
 @pytest.mark.asyncio
+async def test_check_byor_export_enabled_returns_true_when_self_hosted():
+    """
+    GIVEN: The deployment is self-hosted (no billing/Stripe)
+    WHEN: check_byor_export_enabled is called
+    THEN: Returns True without consulting the org record or credits
+    """
+    # Arrange
+    user_id = 'test-user-123'
+
+    with (
+        patch('storage.org_service.DEPLOYMENT_MODE', 'self_hosted'),
+        patch(
+            'storage.org_service.UserStore.get_user_by_id',
+            new_callable=AsyncMock,
+        ) as mock_get_user,
+        patch(
+            'storage.org_service.OrgStore.get_org_by_id',
+            new_callable=AsyncMock,
+        ) as mock_get_org,
+        patch(
+            'storage.org_service.OrgService.get_org_credits',
+            new_callable=AsyncMock,
+        ) as mock_get_credits,
+        patch(
+            'storage.org_service.OrgStore.enable_byor_export',
+            new_callable=AsyncMock,
+        ) as mock_enable_byor_export,
+    ):
+        # Act
+        result = await OrgService.check_byor_export_enabled(user_id)
+
+        # Assert
+        assert result is True
+        mock_get_user.assert_not_called()
+        mock_get_org.assert_not_called()
+        mock_get_credits.assert_not_called()
+        mock_enable_byor_export.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_check_byor_export_enabled_returns_false_when_disabled_without_credits():
     """
     GIVEN: User has current_org with byor_export_enabled=False and no credits
