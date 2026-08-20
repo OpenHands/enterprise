@@ -100,6 +100,17 @@ class OrgBudgetService:
         self.store = store
         self.db_session = store.db_session
 
+    async def _is_personal_org(self, org_id: UUID) -> bool:
+        result = await self.db_session.execute(select(User.id).where(User.id == org_id))
+        return result.scalar_one_or_none() is not None
+
+    async def _reject_personal_org(self, org_id: UUID) -> None:
+        if await self._is_personal_org(org_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Organization budgets are not available for personal workspaces',
+            )
+
     async def get_budget_state(
         self,
         org_id: UUID,
@@ -108,6 +119,7 @@ class OrgBudgetService:
         users_search: str | None = None,
         users_status: str | None = None,
     ):
+        await self._reject_personal_org(org_id)
         settings = await self._get_or_create_settings(org_id)
         thresholds = await self._get_thresholds(org_id)
         cycle = self._current_cycle(settings)
@@ -134,6 +146,15 @@ class OrgBudgetService:
         }
 
     async def run_budget_maintenance(self, org_id: UUID) -> dict:
+        if await self._is_personal_org(org_id):
+            return {
+                'cycle_start_at': None,
+                'cycle_end_at': None,
+                'cycle_rolled': False,
+                'current_spend': 0.0,
+                'skipped': 'personal_org',
+            }
+
         settings = await self._get_or_create_settings(org_id)
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
@@ -170,6 +191,7 @@ class OrgBudgetService:
         users_search: str | None = None,
         users_status: str | None = None,
     ):
+        await self._reject_personal_org(org_id)
         settings = await self._get_or_create_settings(org_id)
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
@@ -205,6 +227,7 @@ class OrgBudgetService:
                 datetime.now(UTC), settings.reset_day
             )
             settings.cycle_start_spend = await self._fetch_team_spend(org_id)
+            settings.user_cycle_start_spend = {}
 
         if 'thresholds' in fields_set and update_data.thresholds is not None:
             await self._replace_thresholds(org_id, thresholds, update_data.thresholds)
@@ -213,7 +236,12 @@ class OrgBudgetService:
         await self.store.flush()
         await self.store.refresh(settings)
 
-        await self._sync_litellm_budgets(org_id, settings, overrides)
+        await self._sync_litellm_budgets(
+            org_id,
+            settings,
+            overrides,
+            clear_disabled=previous_enabled and not settings.enabled,
+        )
 
         cycle = self._current_cycle(settings)
         current_spend = await self._get_cycle_spend(org_id, cycle.start_at)
@@ -244,6 +272,7 @@ class OrgBudgetService:
         monthly_limit: float | None,
         is_disabled: bool,
     ) -> OrgUserBudgetOverride:
+        await self._reject_personal_org(org_id)
         override = await self.store.upsert_override(
             org_id=org_id,
             user_id=user_id,
@@ -256,6 +285,7 @@ class OrgBudgetService:
         return override
 
     async def delete_user_override(self, org_id: UUID, user_id: UUID) -> None:
+        await self._reject_personal_org(org_id)
         override = await self._get_override(org_id, user_id)
         if override is None:
             return
@@ -314,6 +344,7 @@ class OrgBudgetService:
         settings.cycle_start_at = _current_cycle_start(now, settings.reset_day)
         org_id = settings.org_id
         settings.cycle_start_spend = await self._fetch_team_spend(org_id)
+        settings.user_cycle_start_spend = {}
         for threshold in thresholds:
             threshold.last_triggered_at = None
             threshold.last_triggered_cycle_start = None
@@ -567,7 +598,12 @@ class OrgBudgetService:
         org_id: UUID,
         settings: OrgBudgetSettings,
         overrides: list[OrgUserBudgetOverride],
+        clear_disabled: bool = False,
     ) -> None:
+        if not settings.enabled and not clear_disabled:
+            await self._record_litellm_sync(settings, 'skipped')
+            return
+
         sync_errors: list[str] = []
         try:
             financial_data = await LiteLlmManager.get_team_members_financial_data(
@@ -619,6 +655,8 @@ class OrgBudgetService:
                 )
 
         override_map = {str(o.user_id): o for o in overrides}
+        existing_user_baselines = settings.user_cycle_start_spend or {}
+        active_user_baselines: dict[str, float] = {}
 
         for user_id, info in members.items():
             override = override_map.get(user_id)
@@ -629,7 +667,12 @@ class OrgBudgetService:
                 max_budget_in_team = None
                 clear_budget = True
             elif effective_limit is not None:
-                max_budget_in_team = float(info.get('spend') or 0.0) + effective_limit
+                # LiteLLM compares cumulative spend against an absolute member cap.
+                baseline = existing_user_baselines.get(user_id)
+                if baseline is None:
+                    baseline = float(info.get('spend') or 0.0)
+                active_user_baselines[user_id] = baseline
+                max_budget_in_team = baseline + effective_limit
                 clear_budget = False
             else:
                 max_budget_in_team = None
@@ -651,6 +694,8 @@ class OrgBudgetService:
                         'error': str(e),
                     },
                 )
+
+        settings.user_cycle_start_spend = active_user_baselines
 
         if sync_errors:
             summary = sync_errors[0]

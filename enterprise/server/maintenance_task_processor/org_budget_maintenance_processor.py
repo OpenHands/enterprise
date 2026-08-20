@@ -26,8 +26,10 @@ class OrgBudgetMaintenanceProcessor(MaintenanceTaskProcessor):
 
                 try:
                     await service.run_budget_maintenance(org_uuid)
+                    await session.commit()
                     processed += 1
                 except Exception as exc:
+                    await session.rollback()
                     logger.exception(
                         'org_budget_maintenance_failed',
                         extra={
