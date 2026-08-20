@@ -65,6 +65,18 @@ describe("Content", () => {
     });
   });
 
+  it("should not render the legacy max-budget control", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS,
+      v1_enabled: false,
+    });
+
+    renderAppSettingsScreen();
+
+    await screen.findByTestId("language-input");
+    expect(screen.queryByTestId("max-budget-per-task-input")).toBeNull();
+  });
+
   it("should render analytics toggle as enabled when server returns null (opt-in by default)", async () => {
     const getSettingsSpy = vi.spyOn(SettingsService, "getSettings");
     getSettingsSpy.mockResolvedValue({
