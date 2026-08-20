@@ -5921,7 +5921,7 @@ posthog = ["posthog (>=6,<7)"]
 
 [[package]]
 name = "openhands-ai"
-version = "1.52.0"
+version = "1.52.2"
 description = "OpenHands: Code Less, Make More"
 optional = false
 python-versions = "^3.12,<3.14"
@@ -5968,7 +5968,7 @@ memory-profiler = "0.61.0"
 numpy = "2.4.4"
 openai = "2.33.0"
 openhands-agent-server = "1.41.0"
-openhands-sdk = "1.41.0"
+openhands-sdk = {git = "https://github.com/OpenHands/software-agent-sdk.git", rev = "96705f910ee6ab8649aa5733abb5c97d5e0a4822", subdirectory = "openhands-sdk"}
 openhands-tools = "1.41.0"
 opentelemetry-api = "1.39.1"
 opentelemetry-exporter-otlp-proto-grpc = "1.39.1"
@@ -6022,15 +6022,13 @@ url = ".."
 
 [[package]]
 name = "openhands-sdk"
-version = "1.41.0"
+version = "1.42.1"
 description = "OpenHands SDK - Core functionality for building AI agents"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
-files = [
-    {file = "openhands_sdk-1.41.0-py3-none-any.whl", hash = "sha256:3fcd1ff4ef93c49a37ed1095d36c69714711661a0e8e7812882088af3a6d0427"},
-    {file = "openhands_sdk-1.41.0.tar.gz", hash = "sha256:b12bb6f5a69bfee476a4ae8700b0bf33c478f67ea708c8d4a5f75a95d6f4045f"},
-]
+files = []
+develop = false
 
 [package.dependencies]
 agent-client-protocol = ">=0.10.1"
@@ -6040,6 +6038,7 @@ fastmcp = ">=3.0.0"
 filelock = ">=3.20.1"
 httpx = {version = ">=0.27.0", extras = ["socks"]}
 joserfc = ">=1.6.8"
+jsonschema = ">=4.23.0"
 litellm = ">=1.93.0"
 lmnr = ">=0.7.56,<0.8.0"
 pillow = ">=12.1.1"
@@ -6055,6 +6054,13 @@ websockets = ">=12"
 boto3 = ["boto3 (>=1.35.0)"]
 toolshield = ["toolshield (>=0.1.3,<0.2)"]
 vertex = ["google-cloud-aiplatform (>=1.38)"]
+
+[package.source]
+type = "git"
+url = "https://github.com/OpenHands/software-agent-sdk.git"
+reference = "96705f910ee6ab8649aa5733abb5c97d5e0a4822"
+resolved_reference = "96705f910ee6ab8649aa5733abb5c97d5e0a4822"
+subdirectory = "openhands-sdk"
 
 [[package]]
 name = "openhands-tools"
