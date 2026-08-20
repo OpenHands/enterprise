@@ -107,6 +107,10 @@ class Permission(str, Enum):
     # granted only to the ``superadmin`` super role.
     MANAGE_SUPER_ADMINS = 'manage_super_admins'
 
+    # Instance-level feature flag administration: create/update/delete flags
+    # and their targeting rules. Granted only to the ``superadmin`` super role.
+    MANAGE_FEATURE_FLAGS = 'manage_feature_flags'
+
 
 class RoleName(str, Enum):
     """Role names used in the system.
@@ -242,6 +246,7 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.CREATE_ORGANIZATION,
             Permission.PROVISION_USER,
             Permission.MANAGE_SUPER_ADMINS,
+            Permission.MANAGE_FEATURE_FLAGS,
         ]
     ),
     RoleName.MEMBER: frozenset(),
