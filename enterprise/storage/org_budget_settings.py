@@ -1,7 +1,16 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Identity, Integer, String
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Identity,
+    Integer,
+    String,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 from storage.base import Base
 
@@ -27,6 +36,9 @@ class OrgBudgetSettings(Base):
         nullable=False,
     )
     cycle_start_spend: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    user_cycle_start_spend: Mapped[dict[str, float]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
     litellm_last_sync_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

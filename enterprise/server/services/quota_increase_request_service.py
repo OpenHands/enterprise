@@ -1,18 +1,19 @@
-"""Quota increase request service: create, verify, approve."""
+"""Quota increase request service: create, verify, approve, reject."""
 
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import HTTPException, status
+from server.services.daily_conversation_quota_service import (
+    DailyConversationQuotaService,
+)
+from server.services.free_email_domains import is_free_email_domain
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from storage.quota_increase_request import QuotaIncreaseRequest
 from storage.user import User
-
-from server.services.free_email_domains import is_free_email_domain
 
 MAX_MULTIPLIER = 10
 VERIFICATION_TOKEN_TTL = timedelta(hours=1)
@@ -34,8 +35,11 @@ class QuotaIncreaseRequestService:
         """Create a new quota increase request and persist the work email.
 
         Validates that the email is not a free domain, the requested limit
-        is within 1x–10x of the current effective limit, and there is no
-        conflicting pending request.
+        is at least the current effective limit and at most 10x the base
+        (org/deployment) default, and there is no conflicting pending
+        request. Capping against the base default rather than the current
+        effective limit prevents approved increases from compounding into
+        unbounded self-service escalation.
         """
         work_email = work_email.strip().lower()
 
@@ -53,29 +57,33 @@ class QuotaIncreaseRequestService:
                 status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
             )
 
-        baseline = user.daily_conversation_limit
-        if baseline is None:
-            raw = os.getenv('OH_DAILY_CONVERSATION_LIMIT', '').strip()
-            baseline = int(raw) if raw else None
-
-        if baseline is None or baseline <= 0:
+        quota_service = DailyConversationQuotaService(self.db_session)
+        base_default = await quota_service.get_default_limit(user)
+        if base_default is None or base_default <= 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='Quota increases are only available when a daily limit is configured.',
             )
 
-        max_allowed = baseline * MAX_MULTIPLIER
-        if requested_limit < baseline:
+        effective_limit = (
+            user.daily_conversation_limit
+            if user.daily_conversation_limit is not None
+            else base_default
+        )
+
+        max_allowed = base_default * MAX_MULTIPLIER
+        if requested_limit < effective_limit:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f'Requested limit ({requested_limit}) must be at least the current limit ({baseline}).',
+                detail=f'Requested limit ({requested_limit}) must be at least the current limit ({effective_limit}).',
             )
         if requested_limit > max_allowed:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f'Requested limit ({requested_limit}) cannot exceed 10x the current limit ({max_allowed}).',
+                detail=f'Requested limit ({requested_limit}) cannot exceed 10x the base limit ({max_allowed}).',
             )
 
+        now = datetime.now(UTC)
         existing = await self.db_session.scalar(
             select(QuotaIncreaseRequest).where(
                 QuotaIncreaseRequest.user_id == UUID(user_id),
@@ -83,17 +91,26 @@ class QuotaIncreaseRequestService:
             )
         )
         if existing is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail='You already have a pending quota increase request. '
-                'Check your work email for the verification link.',
-            )
+            # A pending request whose verification token has expired can no
+            # longer be completed; expire it so the user is not permanently
+            # locked out (e.g. the verification email never arrived).
+            if (
+                existing.created_at is not None
+                and now - existing.created_at >= VERIFICATION_TOKEN_TTL
+            ):
+                existing.status = QuotaIncreaseRequest.STATUS_EXPIRED
+                existing.updated_at = now
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail='You already have a pending quota increase request. '
+                    'Check your work email for the verification link.',
+                )
 
-        now = datetime.now(UTC)
         request = QuotaIncreaseRequest(
             user_id=UUID(user_id),
             work_email=work_email,
-            baseline_limit=baseline,
+            baseline_limit=effective_limit,
             requested_limit=requested_limit,
             reason=reason,
             status=QuotaIncreaseRequest.STATUS_PENDING,
@@ -118,9 +135,7 @@ class QuotaIncreaseRequestService:
         without re-applying the limit.
         """
         request = await self.db_session.scalar(
-            select(QuotaIncreaseRequest).where(
-                QuotaIncreaseRequest.id == request_id
-            )
+            select(QuotaIncreaseRequest).where(QuotaIncreaseRequest.id == request_id)
         )
         if request is None:
             raise HTTPException(
@@ -155,6 +170,36 @@ class QuotaIncreaseRequestService:
         await self.db_session.refresh(request)
         return request
 
+    async def reject_request(self, request_id: int) -> QuotaIncreaseRequest:
+        """Reject a pending request without applying any limit change.
+
+        Idempotent for already-rejected requests. Approved requests cannot
+        be rejected (the limit was already applied).
+        """
+        request = await self.db_session.scalar(
+            select(QuotaIncreaseRequest).where(QuotaIncreaseRequest.id == request_id)
+        )
+        if request is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Quota increase request not found',
+            )
+
+        if request.status == QuotaIncreaseRequest.STATUS_REJECTED:
+            return request
+
+        if request.status != QuotaIncreaseRequest.STATUS_PENDING:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f'Request is already {request.status}',
+            )
+
+        request.status = QuotaIncreaseRequest.STATUS_REJECTED
+        request.updated_at = datetime.now(UTC)
+        await self.db_session.commit()
+        await self.db_session.refresh(request)
+        return request
+
     async def list_pending_requests(self) -> list[QuotaIncreaseRequest]:
         result = await self.db_session.execute(
             select(QuotaIncreaseRequest)
@@ -163,9 +208,7 @@ class QuotaIncreaseRequestService:
         )
         return list(result.scalars().all())
 
-    async def get_latest_for_user(
-        self, user_id: str
-    ) -> QuotaIncreaseRequest | None:
+    async def get_latest_for_user(self, user_id: str) -> QuotaIncreaseRequest | None:
         return await self.db_session.scalar(
             select(QuotaIncreaseRequest)
             .where(QuotaIncreaseRequest.user_id == UUID(user_id))

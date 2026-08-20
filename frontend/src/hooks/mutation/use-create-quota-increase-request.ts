@@ -6,7 +6,10 @@ import {
   type CreateQuotaIncreaseRequest,
 } from "#/api/quota-service/quota-service.api";
 import { QUOTA_QUERY_KEYS } from "#/hooks/query/use-quota-status";
-import { displayErrorToast, displaySuccessToast } from "#/utils/custom-toast-handlers";
+import {
+  displayErrorToast,
+  displaySuccessToast,
+} from "#/utils/custom-toast-handlers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 export const useCreateQuotaIncreaseRequest = () => {
