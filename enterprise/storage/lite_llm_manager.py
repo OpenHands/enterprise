@@ -1264,9 +1264,8 @@ class LiteLlmManager:
             user_membership['max_budget_in_team'] = team_info['max_budget']
             user_membership['spend'] = team_info['spend']
         elif 'spend' not in user_membership:
-            # Personal workspace with no per-member budget row (member came from
-            # members_with_roles): the team budget is the user's. Shape it as
-            # get_budget_from_team_info expects for the user_id == org_id path.
+            # No per-member budget row: surface the team budget in the shape
+            # get_budget_from_team_info expects on the user_id == org_id path.
             if 'max_budget' not in team_info or 'spend' not in team_info:
                 return None
             user_membership['litellm_budget_table'] = {
