@@ -4,7 +4,6 @@ from storage.billing_session import BillingSession
 from storage.billing_session_type import BillingSessionType
 from storage.conversation_work import ConversationWork
 from storage.daily_conversation_usage import DailyConversationUsage
-from storage.quota_increase_request import QuotaIncreaseRequest
 from storage.feedback import ConversationFeedback, Feedback
 from storage.github_app_installation import GithubAppInstallation
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
@@ -27,6 +26,7 @@ from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.proactive_convos import ProactiveConversation
+from storage.quota_increase_request import QuotaIncreaseRequest
 from storage.resend_synced_user import ResendSyncedUser
 from storage.role import Role
 from storage.slack_conversation import SlackConversation
@@ -54,6 +54,7 @@ __all__ = [
     'StoredConversationMetadataSaas',
     'ConversationWork',
     'DailyConversationUsage',
+    'QuotaIncreaseRequest',
     'Feedback',
     'GithubAppInstallation',
     'GitlabWebhook',

@@ -1,6 +1,5 @@
 """Tests for org-level daily conversation quota resolution."""
 
-import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
