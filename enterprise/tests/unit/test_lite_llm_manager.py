@@ -90,6 +90,62 @@ class TestOrgTeamAlias:
         assert alias == 'Organization 11111111-1111-1111-1111-111111111111'
 
 
+class TestBudgetFromTeamInfo:
+    def test_returns_unknown_without_team_info(self):
+        assert LiteLlmManager.get_budget_from_team_info(None, 'user-1', 'org-1') is None
+
+    def test_returns_unknown_for_incomplete_team_info(self):
+        assert (
+            LiteLlmManager.get_budget_from_team_info({'spend': 12.0}, 'user-1', 'org-1')
+            is None
+        )
+
+    def test_returns_unknown_for_incomplete_personal_info(self):
+        assert (
+            LiteLlmManager.get_budget_from_team_info(
+                {'spend': 12.0}, 'user-1', 'user-1'
+            )
+            is None
+        )
+
+    def test_preserves_explicit_unlimited_team_budget(self):
+        assert LiteLlmManager.get_budget_from_team_info(
+            {'spend': 12.0, 'max_budget_in_team': None}, 'user-1', 'org-1'
+        ) == (None, 12.0)
+
+    def test_preserves_explicit_unlimited_personal_budget(self):
+        assert LiteLlmManager.get_budget_from_team_info(
+            {'spend': 12.0, 'litellm_budget_table': None}, 'user-1', 'user-1'
+        ) == (None, 12.0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'team_info',
+        [{'max_budget': None}, {'spend': 12.0}],
+    )
+    async def test_user_team_info_rejects_partial_team_financial_data(self, team_info):
+        mock_http_client = AsyncMock()
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+            patch.object(
+                LiteLlmManager,
+                '_get_team',
+                AsyncMock(
+                    return_value={
+                        'team_info': team_info,
+                        'team_memberships': [{'user_id': 'user-1', 'team_id': 'org-1'}],
+                    }
+                ),
+            ),
+        ):
+            result = await LiteLlmManager._get_user_team_info(
+                mock_http_client, 'user-1', 'org-1'
+            )
+
+        assert result is None
+
+
 class TestDefaultInitialBudget:
     """Test cases for DEFAULT_INITIAL_BUDGET configuration."""
 

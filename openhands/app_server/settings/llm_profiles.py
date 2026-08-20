@@ -48,6 +48,15 @@ def resolve_profile_llm(
     the profile carries no real key. Managed profiles persist a masked key, so
     without the fallback the agent server would call the LiteLLM proxy with no
     credentials; BYOR profiles keep their own key (the fallback is skipped).
+
+    A profile that routes to the managed LiteLLM proxy additionally has any
+    stored key *overridden* by ``fallback_api_key``, rather than only filled in
+    when absent. Managed virtual keys are rotated out from under the profile
+    (``LiteLlmManager`` deletes the old key by alias and mints a new one), so a
+    real key that got persisted on a managed profile — bypassing the masking the
+    org-profiles routes normally apply — pins the profile to a credential that
+    dies at the next rotation with no path back. The org's current key is the
+    only authoritative one for anything pointed at the managed proxy.
     """
     resolved = profile_llm.model_copy(
         update={
@@ -60,7 +69,14 @@ def resolve_profile_llm(
             'stream': True,
         }
     )
-    if not has_real_api_key(resolved.api_key) and has_real_api_key(fallback_api_key):
+    # Compare the *resolved* base_url so this covers both an inferred managed
+    # url (``openhands/`` models) and one the profile stored explicitly.
+    routes_to_managed_proxy = bool(
+        managed_proxy_url and resolved.base_url == managed_proxy_url
+    )
+    if has_real_api_key(fallback_api_key) and (
+        routes_to_managed_proxy or not has_real_api_key(resolved.api_key)
+    ):
         resolved = resolved.model_copy(update={'api_key': fallback_api_key})
     return resolved
 

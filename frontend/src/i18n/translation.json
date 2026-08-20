@@ -29220,7 +29220,7 @@
     "tr": "Kota",
     "de": "Kontingent",
     "uk": "Квота",
-    "pt-BR": "Cota"
+    "ca": "Quota"
   },
   "SETTINGS$QUOTA_DAILY_LIMIT": {
     "en": "Daily limit",
@@ -29237,7 +29237,7 @@
     "tr": "Günlük limit",
     "de": "Tageslimit",
     "uk": "Денний ліміт",
-    "pt-BR": "Limite diário"
+    "ca": "Límit diari"
   },
   "SETTINGS$QUOTA_USED_TODAY": {
     "en": "Used today",
@@ -29254,7 +29254,7 @@
     "tr": "Bugün kullanılan",
     "de": "Heute verwendet",
     "uk": "Використано сьогодні",
-    "pt-BR": "Usado hoje"
+    "ca": "Utilitzat avui"
   },
   "SETTINGS$QUOTA_REMAINING": {
     "en": "Remaining",
@@ -29271,7 +29271,7 @@
     "tr": "Kalan",
     "de": "Verbleibend",
     "uk": "Залишилось",
-    "pt-BR": "Restante"
+    "ca": "Restant"
   },
   "SETTINGS$QUOTA_UNLIMITED": {
     "en": "Unlimited",
@@ -29288,7 +29288,7 @@
     "tr": "Sınırsız",
     "de": "Unbegrenzt",
     "uk": "Безлімітний",
-    "pt-BR": "Ilimitado"
+    "ca": "Il·limitat"
   },
   "SETTINGS$QUOTA_RESETS_IN": {
     "en": "Resets in",
@@ -29305,7 +29305,7 @@
     "tr": "Sıfırlanmaya",
     "de": "Zurücksetzen in",
     "uk": "Скидається через",
-    "pt-BR": "Redefinir em"
+    "ca": "Es restableix en"
   },
   "SETTINGS$QUOTA_SALES_ONLY": {
     "en": "Quota management is only available in SaaS mode.",
@@ -29322,7 +29322,7 @@
     "tr": "Kota yönetimi yalnızca SaaS modunda kullanılabilir.",
     "de": "Kontingentverwaltung ist nur im SaaS-Modus verfügbar.",
     "uk": "Управління квотою доступне лише в режимі SaaS.",
-    "pt-BR": "O gerenciamento de cota está disponível apenas no modo SaaS."
+    "ca": "La gestió de quotes només està disponible en mode SaaS."
   },
   "SETTINGS$QUOTA_REQUEST_TITLE": {
     "en": "Request a quota increase",
@@ -29339,7 +29339,7 @@
     "tr": "Kota artışı iste",
     "de": "Kontingenterhöhung anfordern",
     "uk": "Запит на збільшення квоти",
-    "pt-BR": "Solicitar aumento de cota"
+    "ca": "Sol·licita un augment de quota"
   },
   "SETTINGS$QUOTA_REQUEST_DESCRIPTION": {
     "en": "Enter your work email and choose a new daily limit (up to 10x your current limit). We will send a verification email to confirm.",
@@ -29356,7 +29356,7 @@
     "tr": "İş e-postanızı girin ve yeni bir günlük limit seçin (mevcut limitin 10 katına kadar). Onay için bir doğrulama e-postası göndereceğiz.",
     "de": "Geben Sie Ihre geschäftliche E-Mail ein und wählen Sie ein neues Tageslimit (bis zu 10x des aktuellen Limits). Wir senden eine Bestätigungs-E-Mail.",
     "uk": "Введіть робочу електронну адресу та виберіть новий денний ліміт (до 10x поточного). Ми надішлемо лист для підтвердження.",
-    "pt-BR": "Insira seu e-mail de trabalho e escolha um novo limite de cota diário (até 10x o limite atual). Enviaremos um e-mail de verificação."
+    "ca": "Introduïu el vostre correu electrònic de feina i trieu un nou límit diari (fins a 10x el límit actual). Enviarem un correu de verificació per confirmar-ho."
   },
   "SETTINGS$QUOTA_WORK_EMAIL": {
     "en": "Work email",
@@ -29373,7 +29373,7 @@
     "tr": "İş e-postası",
     "de": "Geschäftliche E-Mail",
     "uk": "Робоча електронна адреса",
-    "pt-BR": "E-mail de trabalho"
+    "ca": "Correu electrònic de feina"
   },
   "SETTINGS$QUOTA_REQUESTED_LIMIT": {
     "en": "Requested daily limit",
@@ -29390,7 +29390,7 @@
     "tr": "İstenen günlük limit",
     "de": "Angefordertes Tageslimit",
     "uk": "Запитаний денний ліміт",
-    "pt-BR": "Limite diário solicitado"
+    "ca": "Límit diari sol·licitat"
   },
   "SETTINGS$QUOTA_MAX_ALLOWED": {
     "en": "Max allowed",
@@ -29407,7 +29407,7 @@
     "tr": "Maksimum izin verilen",
     "de": "Maximal erlaubt",
     "uk": "Максимально дозволено",
-    "pt-BR": "Máximo permitido"
+    "ca": "Màxim permès"
   },
   "SETTINGS$QUOTA_REASON": {
     "en": "Reason",
@@ -29424,7 +29424,7 @@
     "tr": "Sebep",
     "de": "Grund",
     "uk": "Причина",
-    "pt-BR": "Motivo"
+    "ca": "Motiu"
   },
   "SETTINGS$QUOTA_OPTIONAL": {
     "en": "optional",
@@ -29441,7 +29441,7 @@
     "tr": "isteğe bağlı",
     "de": "optional",
     "uk": "необов'язково",
-    "pt-BR": "opcional"
+    "ca": "opcional"
   },
   "SETTINGS$QUOTA_SUBMIT": {
     "en": "Submit request",
@@ -29458,7 +29458,7 @@
     "tr": "İsteği gönder",
     "de": "Anfrage senden",
     "uk": "Надіслати запит",
-    "pt-BR": "Enviar solicitação"
+    "ca": "Envia la sol·licitud"
   },
   "SETTINGS$QUOTA_SUBMITTING": {
     "en": "Submitting...",
@@ -29475,7 +29475,7 @@
     "tr": "Gönderiliyor...",
     "de": "Senden...",
     "uk": "Надсилання...",
-    "pt-BR": "Enviando..."
+    "ca": "S'està enviant..."
   },
   "SETTINGS$QUOTA_REQUEST_SENT": {
     "en": "Verification email sent! Check your work email to activate your new quota.",
@@ -29492,7 +29492,7 @@
     "tr": "Doğrulama e-postası gönderildi! Yeni kotanızı etkinleştirmek için iş e-postanızı kontrol edin.",
     "de": "Bestätigungs-E-Mail gesendet! Überprüfen Sie Ihre geschäftliche E-Mail, um Ihr neues Kontingent zu aktivieren.",
     "uk": "Лист для підтвердження надіслано! Перевірте робочу пошту, щоб активувати нову квоту.",
-    "pt-BR": "E-mail de verificação enviado! Verifique seu e-mail de trabalho para ativar a nova cota."
+    "ca": "S'ha enviat el correu de verificació! Reviseu el correu de feina per activar la nova quota."
   },
   "SETTINGS$QUOTA_REQUEST_FAILED": {
     "en": "Failed to submit quota increase request.",
@@ -29509,7 +29509,7 @@
     "tr": "Kota artışı isteği gönderilemedi.",
     "de": "Anfrage zur Kontingenterhöhung fehlgeschlagen.",
     "uk": "Не вдалося надіслати запит на збільшення квоти.",
-    "pt-BR": "Falha ao enviar solicitação de aumento de cota."
+    "ca": "No s'ha pogut enviar la sol·licitud d'augment de quota."
   },
   "SETTINGS$QUOTA_REQUEST_PENDING": {
     "en": "You have a pending quota increase request. Check your work email for the verification link.",
@@ -29526,7 +29526,7 @@
     "tr": "Bekleyen bir kota artışı isteğiniz var. Doğrulama bağlantısı için iş e-postanızı kontrol edin.",
     "de": "Sie haben eine ausstehende Kontingenterhöhungsanfrage. Überprüfen Sie Ihre geschäftliche E-Mail auf den Bestätigungslink.",
     "uk": "У вас є очікуваний запит на збільшення квоти. Перевірте робочу пошту для посилання підтвердження.",
-    "pt-BR": "Você tem uma solicitação de aumento de cota pendente. Verifique seu e-mail de trabalho para o link de verificação."
+    "ca": "Teniu una sol·licitud d'augment de quota pendent. Reviseu el correu de feina per trobar l'enllaç de verificació."
   },
   "SETTINGS$QUOTA_REQUEST_APPROVED": {
     "en": "Your quota increase has been approved! New limit:",
@@ -29543,6 +29543,6 @@
     "tr": "Kota artışınız onaylandı! Yeni limit:",
     "de": "Ihre Kontingenterhöhung wurde genehmigt! Neues Limit:",
     "uk": "Ваш запит на збільшення квоти схвалено! Новий ліміт:",
-    "pt-BR": "Seu aumento de cota foi aprovado! Novo limite:"
+    "ca": "S'ha aprovat l'augment de quota! Nou límit:"
   }
 }
