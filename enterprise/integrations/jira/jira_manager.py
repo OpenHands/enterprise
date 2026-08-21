@@ -239,9 +239,11 @@ class JiraManager(Manager[JiraViewInterface]):
                 await self._send_error_from_payload(
                     payload,
                     workspace,
-                    'Could not determine your Jira email address. Please make your '
-                    'email visible in your Atlassian profile so OpenHands can match '
-                    'your account.',
+                    'Could not determine your Jira email address. In your '
+                    'Atlassian account settings (Profile and visibility > '
+                    'Contact), set your email address visibility to "Anyone", '
+                    'then try again. This change can take 15 minutes or more '
+                    'to take effect.',
                 )
                 return None, None
 
