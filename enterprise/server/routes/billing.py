@@ -318,7 +318,7 @@ async def success_callback(session_id: str, request: Request):
         billing_session.status = 'completed'
         billing_session.price = add_credits
         billing_session.updated_at = datetime.now(UTC)
-        session.merge(billing_session)
+        await session.merge(billing_session)
         logger.info(
             'stripe_checkout_success',
             extra={
