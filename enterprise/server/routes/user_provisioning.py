@@ -604,7 +604,6 @@ async def provision_user(
         # subsequent steps (``OrgMemberStore.get_org_member``,
         # ``api_key`` retrieval) have an up-to-date view.
         if openhands_user_id is None:
-
             # Match on the Keycloak sub, not email: a user deleted from Keycloak and recreated
             # via federated OAuth keeps their email but gets a new sub, orphaning the old OH
             # row - matching by email would provision that orphan.
