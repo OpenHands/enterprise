@@ -13,15 +13,25 @@ Mirrors ``org_profiles``:
 - CRUD requires ``EDIT_ORG_SETTINGS``; listing requires ``VIEW_ORG_SETTINGS``.
 
 Permission model:
-- List/Get: VIEW_ORG_SETTINGS
+- List: VIEW_ORG_SETTINGS
 - Create/Update/Delete: EDIT_ORG_SETTINGS (owner/admin)
 """
 
 import contextlib
+import uuid
 from typing import AsyncIterator
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from server.routes.org_models import OrgNotFoundError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from storage.agent_profile_resolution import load_llm_profiles
+from storage.database import a_session_maker
+from storage.org import Org
+from storage.org_service import OrgService
+
 from openhands.app_server.settings.provider_connections import (
     CONNECTION_ID_PATTERN,
     ProviderConnection,
@@ -31,15 +41,6 @@ from openhands.app_server.settings.provider_connections import (
     now_epoch,
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from server.routes.org_models import OrgNotFoundError
-from storage.agent_profile_resolution import load_llm_profiles
-from storage.database import a_session_maker
-from storage.org import Org
-from storage.org_service import OrgService
 
 from ..auth.authorization import Permission, require_permission
 
@@ -202,7 +203,7 @@ async def list_provider_connections(
     org = await _get_org(org_id, user_id)
     connections = _load_connections(org)
     return ProviderConnectionListResponse(
-        connections=[_to_response(conn) for conn in connections.list()]
+        connections=[_to_response(conn) for conn in connections.all()]
     )
 
 
@@ -217,14 +218,12 @@ async def create_provider_connection(
     user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
 ) -> ProviderConnectionResponse:
     """Create a new provider connection. The id is generated server-side."""
-    import uuid as _uuid
-
     async with _org_connections_transaction(org_id, user_id) as (
         _session,
         _org,
         connections,
     ):
-        connection_id = _uuid.uuid4().hex
+        connection_id = uuid.uuid4().hex
         now = now_epoch()
         conn = ProviderConnection(
             id=connection_id,

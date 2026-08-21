@@ -22,16 +22,6 @@ packages = [
 [tool.poetry.dependencies]
 python = "^3.12,<3.14"
 openhands-ai = { path = "../", develop = true }
-# TEMPORARY: git-pin the SDK packages to the unreleased commit adding
-# LLM.provider_connection_id (software-agent-sdk#4492). Declared here as direct
-# deps — not just on the root — because Poetry resolves the ``openhands-ai`` path
-# dependency's PEP 621 ``[project]`` pins (==1.42.1, sourceless) and would
-# otherwise pull these from PyPI. Enterprise imports ``openhands.sdk`` /
-# ``openhands.app_server`` directly, so a direct dep is legitimate. Revert to a
-# normal version pin once a release containing #4492 exists.
-openhands-sdk = { git = "https://github.com/OpenHands/software-agent-sdk.git", subdirectory = "openhands-sdk", rev = "73fabfd76491940fcb1a042289a18ad618ec89d7" }
-openhands-agent-server = { git = "https://github.com/OpenHands/software-agent-sdk.git", subdirectory = "openhands-agent-server", rev = "73fabfd76491940fcb1a042289a18ad618ec89d7" }
-openhands-tools = { git = "https://github.com/OpenHands/software-agent-sdk.git", subdirectory = "openhands-tools", rev = "73fabfd76491940fcb1a042289a18ad618ec89d7" }
 authlib = "1.6.12"
 gspread = "6.2.1"
 alembic = "1.18.4"

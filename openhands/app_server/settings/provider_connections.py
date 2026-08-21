@@ -67,9 +67,6 @@ def _get_max_connections_per_org() -> int:
     return 64
 
 
-MAX_CONNECTIONS_PER_ORG: int = _get_max_connections_per_org()
-
-
 def now_epoch() -> int:
     return int(time.time())
 
@@ -192,7 +189,7 @@ class ProviderConnections(BaseModel):
     def has(self, connection_id: str) -> bool:
         return connection_id in self.connections
 
-    def list(self) -> list[ProviderConnection]:
+    def all(self) -> list[ProviderConnection]:
         return list(self.connections.values())
 
     def summaries(self) -> list[dict[str, Any]]:
@@ -219,8 +216,11 @@ class ProviderConnections(BaseModel):
             raise ValueError(f'Invalid provider connection id: {conn.id!r}')
         if conn.id in self.connections:
             raise ValueError(f"Provider connection '{conn.id}' already exists")
-        if len(self.connections) >= MAX_CONNECTIONS_PER_ORG:
-            raise ProviderConnectionLimitExceededError(MAX_CONNECTIONS_PER_ORG)
+        # Read the env-configured limit at call time so a value set after
+        # import (or flipped in a test) still takes effect.
+        limit = _get_max_connections_per_org()
+        if len(self.connections) >= limit:
+            raise ProviderConnectionLimitExceededError(limit)
         # Reassign the whole dict so validate_assignment re-runs the validator.
         self.connections = {**self.connections, conn.id: conn}
         return conn

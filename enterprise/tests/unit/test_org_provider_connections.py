@@ -5,16 +5,16 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
-from openhands.app_server.settings.provider_connections import (
-    MAX_CONNECTIONS_PER_ORG,
-    ProviderConnection,
-    ProviderConnections,
-)
 from sqlalchemy import select
-
 from storage.org import Org
 from storage.role import Role
 from storage.user import User
+
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnection,
+    ProviderConnectionLimitExceededError,
+    ProviderConnections,
+)
 
 # Mock the database module before importing the router — matches the
 # test_org_profiles.py pattern so module-level imports don't touch a real engine.
@@ -87,11 +87,31 @@ class TestProviderConnectionsModel:
         with pytest.raises(ValueError):
             pc.create(ProviderConnection(id='has/slash', display_name='S', api_key='k'))
 
-    def test_create_enforces_limit(self):
+    def test_create_enforces_limit(self, monkeypatch):
+        # The limit is read from the env at call time, not frozen at import.
+        monkeypatch.setenv('MAX_PROVIDER_CONNECTIONS_PER_ORG', '2')
         pc = ProviderConnections()
-        for i in range(MAX_CONNECTIONS_PER_ORG):
+        for i in range(2):
             pc.create(ProviderConnection(id=f'c{i}', display_name='S', api_key='k'))
-        with pytest.raises(ValueError):
+        with pytest.raises(ProviderConnectionLimitExceededError) as exc:
+            pc.create(ProviderConnection(id='overflow', display_name='S', api_key='k'))
+        assert exc.value.limit == 2
+
+    def test_create_enforces_default_limit_without_env(self, monkeypatch):
+        monkeypatch.delenv('MAX_PROVIDER_CONNECTIONS_PER_ORG', raising=False)
+        pc = ProviderConnections()
+        for i in range(64):
+            pc.create(ProviderConnection(id=f'c{i}', display_name='S', api_key='k'))
+        with pytest.raises(ProviderConnectionLimitExceededError) as exc:
+            pc.create(ProviderConnection(id='overflow', display_name='S', api_key='k'))
+        assert exc.value.limit == 64
+
+    def test_invalid_limit_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv('MAX_PROVIDER_CONNECTIONS_PER_ORG', 'not-an-int')
+        pc = ProviderConnections()
+        for i in range(64):
+            pc.create(ProviderConnection(id=f'c{i}', display_name='S', api_key='k'))
+        with pytest.raises(ProviderConnectionLimitExceededError):
             pc.create(ProviderConnection(id='overflow', display_name='S', api_key='k'))
 
     def test_delete(self):

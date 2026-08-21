@@ -15,6 +15,21 @@ from typing import Any, AsyncIterator
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
+from pydantic import BaseModel, Field, SecretStr, ValidationError
+from server.constants import LITE_LLM_API_URL
+from server.routes.org_models import OrgNotFoundError
+from server.routes.org_provider_connections import _load_connections
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from storage.agent_profile_resolution import (
+    OrgLLMProfileMutator,
+    load_agent_profiles,
+)
+from storage.database import a_session_maker
+from storage.org import Org
+from storage.org_member import OrgMember
+from storage.org_service import OrgService
+
 from openhands.app_server.settings.llm_profiles import (
     LLMProfiles,
     ProfileAlreadyExistsError,
@@ -34,20 +49,6 @@ from openhands.sdk.profiles import (
     rename_llm_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
-from pydantic import BaseModel, Field, SecretStr, ValidationError
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from server.constants import LITE_LLM_API_URL
-from server.routes.org_models import OrgNotFoundError
-from storage.agent_profile_resolution import (
-    OrgLLMProfileMutator,
-    load_agent_profiles,
-)
-from storage.database import a_session_maker
-from storage.org import Org
-from storage.org_member import OrgMember
-from storage.org_service import OrgService
 
 from ..auth.authorization import Permission, require_permission
 
@@ -145,10 +146,6 @@ def _resolve_provider_connection(org: Org, llm: LLM) -> LLM:
     connection_id = getattr(llm, 'provider_connection_id', None)
     if not connection_id:
         return llm
-
-    # Imported lazily to keep this module importable if the settings package
-    # layout shifts; also avoids a hard import cost on the hot non-linked path.
-    from server.routes.org_provider_connections import _load_connections
 
     connection = _load_connections(org).get(connection_id)
     if connection is None:
