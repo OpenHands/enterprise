@@ -13,6 +13,7 @@ to JiraFactory, keeping the orchestration logic clean and traceable.
 
 import httpx
 from integrations.jira.jira_payload import (
+    JiraEventType,
     JiraPayloadError,
     JiraPayloadParser,
     JiraPayloadSkipped,
@@ -75,6 +76,9 @@ class JiraManager(Manager[JiraViewInterface]):
             oh_label=OH_LABEL,
             inline_oh_label=INLINE_OH_LABEL,
         )
+        # Service-account accountId per workspace.id, resolved lazily from
+        # /myself for matching picker mentions.
+        self._svc_mention_cache: dict[int, str] = {}
 
     async def receive_message(self, message: Message):
         """Process incoming Jira webhook message.
@@ -124,6 +128,20 @@ class JiraManager(Manager[JiraViewInterface]):
         workspace = await self._get_active_workspace(payload)
         if not workspace:
             return
+
+        # A picker mention ([~accountid:...]) only counts when it targets the
+        # service account; the literal inline label always counts.
+        if (
+            payload.event_type == JiraEventType.COMMENT_MENTION
+            and not payload.literal_mention
+        ):
+            bot_id = await self._get_bot_account_id(workspace)
+            if not bot_id or bot_id not in payload.mention_ids:
+                logger.info(
+                    '[Jira] Comment mentions users but not the service account',
+                    extra={'issue_key': payload.issue_key},
+                )
+                return
 
         # Step 3: Authenticate user
         jira_user, saas_user_auth = await self._authenticate_user(payload, workspace)
@@ -214,6 +232,33 @@ class JiraManager(Manager[JiraViewInterface]):
             return None
 
         return workspace
+
+    async def _get_bot_account_id(self, workspace: JiraWorkspace) -> str | None:
+        """Service account's accountId, for matching picker mentions.
+
+        Cached per workspace; failures are not cached, so a later comment
+        re-attempts resolution (this event is dropped, not retried).
+        """
+        cached = self._svc_mention_cache.get(workspace.id)
+        if cached:
+            return cached
+        try:
+            api_key = self.token_manager.decrypt_text(workspace.svc_acc_api_key)
+            url = f'{JIRA_CLOUD_API_URL}/{workspace.jira_cloud_id}/rest/api/2/myself'
+            async with httpx.AsyncClient(
+                verify=httpx_verify_option(), timeout=JIRA_HTTP_TIMEOUT
+            ) as client:
+                response = await client.get(
+                    url, auth=(workspace.svc_acc_email, api_key)
+                )
+                response.raise_for_status()
+                account_id = (response.json().get('accountId') or '').strip().lower()
+        except Exception as e:
+            logger.warning(f'[Jira] Could not resolve bot account id: {str(e)}')
+            return None
+        if account_id:
+            self._svc_mention_cache[workspace.id] = account_id
+        return account_id or None
 
     async def _authenticate_user(
         self, payload: JiraWebhookPayload, workspace: JiraWorkspace
