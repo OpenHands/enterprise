@@ -71,7 +71,7 @@ DEFAULT_INITIAL_BUDGET: float | None = _get_default_initial_budget()
 # enforcement disabled, so free users can run free models without credits while
 # still being blocked from paid models. Override per environment via
 # FREE_LLM_MODELS (comma-separated).
-_DEFAULT_FREE_LLM_MODELS = ['glm-5.2', 'minimax-m2.5', 'minimax-m2.7']
+_DEFAULT_FREE_LLM_MODELS = ['glm-5.2', 'minimax-m2.5', 'minimax-m2.7', 'kimi-k3']
 
 
 def _get_free_llm_models() -> list[str]:
