@@ -26,6 +26,9 @@ from storage.user_settings import UserSettings
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.http_session import httpx_verify_option
 
+# Timeout in seconds for LiteLLM management API requests.
+LITELLM_MANAGEMENT_TIMEOUT = float(os.getenv('LITELLM_MANAGEMENT_TIMEOUT', '5'))
+
 # Timeout in seconds for key verification requests to LiteLLM
 KEY_VERIFICATION_TIMEOUT = 5.0
 
@@ -123,29 +126,24 @@ class LiteLlmManager:
     @staticmethod
     def get_budget_from_team_info(
         user_team_info: dict | None, user_id: str, org_id: str
-    ) -> tuple[float, float]:
-        """Extract max_budget and spend from user team info.
+    ) -> tuple[float | None, float] | None:
+        """Extract known budget data, preserving an explicit unlimited cap."""
+        if not user_team_info or 'spend' not in user_team_info:
+            return None
 
-        For personal orgs (user_id == org_id), uses litellm_budget_table.max_budget.
-        For team orgs, uses max_budget_in_team (populated by get_user_team_info).
-
-        Args:
-            user_team_info: The response from get_user_team_info
-            user_id: The user's ID
-            org_id: The organization's ID
-
-        Returns:
-            Tuple of (max_budget, spend)
-        """
-        if not user_team_info:
-            return 0, 0
-        spend = user_team_info.get('spend', 0)
+        spend = user_team_info['spend'] or 0
         if user_id == org_id:
-            max_budget = (user_team_info.get('litellm_budget_table') or {}).get(
-                'max_budget', 0
+            if 'litellm_budget_table' not in user_team_info:
+                return None
+            budget_table = user_team_info['litellm_budget_table']
+            max_budget = (
+                budget_table.get('max_budget') if budget_table is not None else None
             )
         else:
-            max_budget = user_team_info.get('max_budget_in_team') or 0
+            if 'max_budget_in_team' not in user_team_info:
+                return None
+            max_budget = user_team_info['max_budget_in_team']
+
         return max_budget, spend
 
     @staticmethod
@@ -193,7 +191,8 @@ class LiteLlmManager:
             async with httpx.AsyncClient(
                 headers={
                     'x-goog-api-key': LITE_LLM_API_KEY,
-                }
+                },
+                timeout=httpx.Timeout(LITELLM_MANAGEMENT_TIMEOUT),
             ) as client:
                 # Check if team already exists and get its budget
                 # New users joining existing orgs should inherit the team's budget
@@ -1321,8 +1320,10 @@ class LiteLlmManager:
 
         if keycloak_user_id != team_id:
             team_info = team_response.get('team_info', {})
-            user_membership['max_budget_in_team'] = team_info.get('max_budget')
-            user_membership['spend'] = team_info.get('spend', 0)
+            if 'max_budget' not in team_info or 'spend' not in team_info:
+                return None
+            user_membership['max_budget_in_team'] = team_info['max_budget']
+            user_membership['spend'] = team_info['spend']
 
         return user_membership
 

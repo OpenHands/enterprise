@@ -36,7 +36,7 @@ from integrations.utils import (
     get_session_expired_message,
 )
 from jinja2 import Environment, FileSystemLoader
-from server.auth.constants import JIRA_HTTP_TIMEOUT
+from server.auth.constants import JIRA_ENABLE_OAUTH, JIRA_HTTP_TIMEOUT
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
 from storage.jira_integration_store import JiraIntegrationStore
@@ -219,9 +219,57 @@ class JiraManager(Manager[JiraViewInterface]):
         self, payload: JiraWebhookPayload, workspace: JiraWorkspace
     ) -> tuple[JiraUser | None, UserAuth | None]:
         """Authenticate the Jira user and get OpenHands auth."""
-        jira_user = await self.integration_store.get_active_user(
-            payload.account_id, workspace.id
-        )
+        # In email-match mode (OAuth disabled) users never OAuth-link, so the
+        # webhook's Atlassian account id can never match a stored row. Resolve
+        # the user by matching their Jira email to their OpenHands email and
+        # auto-enroll them. In OAuth mode we resolve strictly by the verified
+        # account id, preserving the verification guarantee.
+        if not JIRA_ENABLE_OAUTH:
+            if not payload.user_email:
+                # Atlassian omits the email unless the user's profile
+                # visibility allows it, and email is the only identity we can
+                # match in this mode.
+                logger.warning(
+                    '[Jira] No user email in webhook payload; cannot match user',
+                    extra={
+                        'account_id': payload.account_id,
+                        'workspace_id': workspace.id,
+                    },
+                )
+                await self._send_error_from_payload(
+                    payload,
+                    workspace,
+                    'Could not determine your Jira email address. Please make your '
+                    'email visible in your Atlassian profile so OpenHands can match '
+                    'your account.',
+                )
+                return None, None
+
+            jira_user = None
+            keycloak_user_id = await self.token_manager.get_user_id_from_user_email(
+                payload.user_email
+            )
+            if not keycloak_user_id:
+                logger.warning(
+                    f'[Jira] No OpenHands user found for email: {payload.user_email}'
+                )
+            else:
+                jira_user = await self.integration_store.get_active_user_by_keycloak_id_and_workspace(
+                    keycloak_user_id, workspace.id
+                )
+                # Email mode is itself the admin's opt-in: a user whose Jira email
+                # matches an OpenHands account is auto-enrolled, no manual link
+                # step. Never in OAuth mode, which requires a verified identity.
+                if not jira_user:
+                    jira_user = (
+                        await self.integration_store.get_or_create_active_email_link(
+                            keycloak_user_id, workspace.id
+                        )
+                    )
+        else:
+            jira_user = await self.integration_store.get_active_user(
+                payload.account_id, workspace.id
+            )
 
         if not jira_user:
             logger.warning(

@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 import { AutomationsButton } from "#/components/shared/buttons/automations-button";
 
 describe("AutomationsButton", () => {
-  it("should render a link to /automations", () => {
+  it("should render a link to /canvas/automations", () => {
     render(<AutomationsButton />);
 
     const link = screen.getByTestId("automations-button");
     expect(link).toBeInTheDocument();
-    expect(link).toHaveAttribute("href", "/automations");
+    expect(link).toHaveAttribute("href", "/canvas/automations");
   });
 
   it("should be focusable and accessible when enabled", () => {

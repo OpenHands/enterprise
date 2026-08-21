@@ -38,8 +38,26 @@ from openhands.app_server.user_auth import (
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.models import EditResponse
 from openhands.app_server.utils.redis import get_redis_client_async, redis_exceptions
+from openhands.sdk.agent.acp_file_credentials import (
+    CODEX_AUTH_SECRET_NAME,
+    is_valid_codex_auth,
+)
 
 _logger = logging.getLogger(__name__)
+
+_INVALID_CODEX_AUTH_DETAIL = (
+    'CODEX_AUTH_JSON must contain ChatGPT-mode Codex auth JSON with a non-empty '
+    'tokens.refresh_token. For API-key mode, save the key as OPENAI_API_KEY instead.'
+)
+
+
+def _validate_codex_auth_secret(name: str, value: str) -> None:
+    if name == CODEX_AUTH_SECRET_NAME and not is_valid_codex_auth(value):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_INVALID_CODEX_AUTH_DETAIL,
+        )
+
 
 # Create router with /api/v1/secrets prefix
 router = APIRouter(
@@ -388,6 +406,10 @@ async def create_custom_secret(
         201: Secret saved successfully
         500: Error saving secret
     """
+    _validate_codex_auth_secret(
+        incoming_secret.name, incoming_secret.value.get_secret_value()
+    )
+
     async with _secrets_write_lock(user_id, secrets_store):
         existing_secrets = await secrets_store.load()
         custom_secrets = (
@@ -455,6 +477,9 @@ async def update_custom_secret(
 
         custom_secrets = dict(existing_secrets.custom_secrets)
         existing_secret = custom_secrets.pop(secret_id)
+        _validate_codex_auth_secret(
+            secret_name, existing_secret.secret.get_secret_value()
+        )
 
         if secret_name != secret_id and secret_name in custom_secrets:
             raise HTTPException(

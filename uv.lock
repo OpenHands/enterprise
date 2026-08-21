@@ -788,7 +788,7 @@ name = "clr-loader"
 version = "0.2.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "sys_platform == 'win32'" },
+    { name = "cffi" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/18/24/c12faf3f61614b3131b5c98d3bf0d376b49c7feaa73edca559aeb2aee080/clr_loader-0.2.10.tar.gz", hash = "sha256:81f114afbc5005bafc5efe5af1341d400e22137e275b042a8979f3feb9fc9446", size = 83605, upload-time = "2026-01-03T23:13:06.984Z" }
 wheels = [
@@ -2209,14 +2209,14 @@ wheels = [
 
 [[package]]
 name = "joserfc"
-version = "1.6.4"
+version = "1.7.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/c6/de8fdbdfa75c8ca04fead38a82d573df8a82906e984c349d58665f459558/joserfc-1.6.4.tar.gz", hash = "sha256:34ce5f499bfcc5e9ad4cc75077f9278ab3227b71da9aaf28f9ab705f8a560d3c", size = 231866, upload-time = "2026-04-13T13:15:40.632Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/e0/27a6a081ae25420eda6768ceae05d7022a7f2447f420588843f2a44e4298/joserfc-1.7.4.tar.gz", hash = "sha256:b3bc561672ae541b17a9237053b48a03dacddd92d68047b3ecdfb4b5714a88ed", size = 234027, upload-time = "2026-07-19T15:43:02.739Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/f7/210b27752e972edb36d239315b08d3eb6b14824cc4a590da2337d195260b/joserfc-1.6.4-py3-none-any.whl", hash = "sha256:3e4a22b509b41908989237a045e25c8308d5fd47ab96bdae2dd8057c6451003a", size = 70464, upload-time = "2026-04-13T13:15:39.259Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/bf/249dcd99b3376375910b7fa922383b57792975c8758f50d44612e749226c/joserfc-1.7.4-py3-none-any.whl", hash = "sha256:32d46c2cd5e3203c13e87a6c61333cab310b1ba80cd54b4c4f386a848a122463", size = 71000, upload-time = "2026-07-19T15:43:01.299Z" },
 ]
 
 [[package]]
@@ -2881,6 +2881,30 @@ wheels = [
 ]
 
 [[package]]
+name = "moto"
+version = "5.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "boto3" },
+    { name = "botocore" },
+    { name = "cryptography" },
+    { name = "requests" },
+    { name = "responses" },
+    { name = "werkzeug" },
+    { name = "xmltodict" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/47/63/d944f387582cc53f53febbff2b3fa36a6d2ed7c1feef8990bf646cfa9cba/moto-5.2.2.tar.gz", hash = "sha256:aac8023a429e125e91c91f8f4730a67b54f518cda587352f7e67252fe3168f75", size = 8678761, upload-time = "2026-06-06T18:57:54.931Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c1/45/13cff46f4f617a6e97e1d497d75abd913e250bb4c823a4985668c6e593e4/moto-5.2.2-py3-none-any.whl", hash = "sha256:3817f1e39721ca833579b921e53e3b68547ace6a34d848c9486fbb5905808de9", size = 6698689, upload-time = "2026-06-06T18:57:51.435Z" },
+]
+
+[package.optional-dependencies]
+s3 = [
+    { name = "py-partiql-parser" },
+    { name = "pyyaml" },
+]
+
+[[package]]
 name = "msgpack"
 version = "1.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3204,7 +3228,7 @@ wheels = [
 
 [[package]]
 name = "openhands-agent-server"
-version = "1.39.1"
+version = "1.42.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
@@ -3219,9 +3243,9 @@ dependencies = [
     { name = "websockets" },
     { name = "wsproto" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4d/45/d11b93a4fc1265d9cd2a010eb8c819e2be2a5a37fd547fb295108162869c/openhands_agent_server-1.39.1.tar.gz", hash = "sha256:941922d78431c4e28cf625c7fe57d40458ff4ef93d670f4df505e475e0ec829f", size = 237744, upload-time = "2026-07-30T08:42:03.836Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/0a/2bf9e3c9a217819fff09c19d4307b722e3f7575fab52c4fe22fb00af8574/openhands_agent_server-1.42.1.tar.gz", hash = "sha256:449a62da7a16ec4cd90c611812b763d6e02ee331b412e09316fa6ab5c289afcc", size = 245494, upload-time = "2026-08-12T14:04:40.216Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/b2/bd3627e243fa22774f98c68f53ce4d1bbf6b885b8d7ccf3d8aa44a4273b3/openhands_agent_server-1.39.1-py3-none-any.whl", hash = "sha256:0e012457ab0240a4939d99237c71f9255bc830824d9004c8d85a0046767382e7", size = 272680, upload-time = "2026-07-30T08:41:59.033Z" },
+    { url = "https://files.pythonhosted.org/packages/72/8c/e3e28a7051191f9dc319efc205c257646896a62c249cb165f74bddf151be/openhands_agent_server-1.42.1-py3-none-any.whl", hash = "sha256:772a73b19684acab5f9f61b1c244f156052625ade51a5e48a424b3c13039f7a7", size = 281622, upload-time = "2026-08-12T14:04:35.031Z" },
 ]
 
 [[package]]
@@ -3332,6 +3356,7 @@ runtime = [
 ]
 test = [
     { name = "gevent" },
+    { name = "moto", extra = ["s3"] },
     { name = "pandas" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -3382,9 +3407,9 @@ requires-dist = [
     { name = "memory-profiler", specifier = "==0.61.0" },
     { name = "numpy", specifier = "==2.4.4" },
     { name = "openai", specifier = "==2.33.0" },
-    { name = "openhands-agent-server", specifier = "==1.39.1" },
-    { name = "openhands-sdk", specifier = "==1.39.1" },
-    { name = "openhands-tools", specifier = "==1.39.1" },
+    { name = "openhands-agent-server", specifier = "==1.42.1" },
+    { name = "openhands-sdk", specifier = "==1.42.1" },
+    { name = "openhands-tools", specifier = "==1.42.1" },
     { name = "opentelemetry-api", specifier = "==1.39.1" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = "==1.39.1" },
     { name = "orjson", specifier = "==3.11.8" },
@@ -3449,6 +3474,7 @@ runtime = [
 ]
 test = [
     { name = "gevent", specifier = "==25.9.1" },
+    { name = "moto", extras = ["s3"], specifier = ">=5.2.2,<6.0.0" },
     { name = "pandas" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-asyncio", specifier = "==1.3.0" },
@@ -3462,7 +3488,7 @@ test = [
 
 [[package]]
 name = "openhands-sdk"
-version = "1.39.1"
+version = "1.42.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -3472,6 +3498,7 @@ dependencies = [
     { name = "filelock" },
     { name = "httpx", extra = ["socks"] },
     { name = "joserfc" },
+    { name = "jsonschema" },
     { name = "litellm" },
     { name = "lmnr" },
     { name = "pillow" },
@@ -3483,14 +3510,14 @@ dependencies = [
     { name = "tree-sitter-bash" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8b/6c/44071d322e8dd1c48de62f807232d6a7948bc1e43fe5af9db71a06ec4077/openhands_sdk-1.39.1.tar.gz", hash = "sha256:1647c1549d8926d0c3b8ae5043892dc33906aceab842dc6a4549944fdfc2075a", size = 648803, upload-time = "2026-07-30T08:42:04.79Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/e5/4f120814c913e0806c9243eec93d5dd3980261204acef816df884107ae24/openhands_sdk-1.42.1.tar.gz", hash = "sha256:4293dd09ea6a1f681b5094595122c3a0d5998f16f356c9ffb6cea8b10a7b4b0d", size = 666779, upload-time = "2026-08-12T14:04:41.291Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/4a/c069e6fd5b8e1a2d681f849890b4439b1fda6faa8c648f5cb44e38d0a886/openhands_sdk-1.39.1-py3-none-any.whl", hash = "sha256:2f3f8c0e490ca5449860dc84f0aef5d90d48646615e7106571a6014ef0612138", size = 774886, upload-time = "2026-07-30T08:42:00.344Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/40/cad4dc348017c3c292804acca04e8c75da726c7631bf8de48d9e7c6dc130/openhands_sdk-1.42.1-py3-none-any.whl", hash = "sha256:10af3d6caf1075ecbb8520db1150c0ec0179ee352b19f0395d2273afda6004d2", size = 796708, upload-time = "2026-08-12T14:04:36.732Z" },
 ]
 
 [[package]]
 name = "openhands-tools"
-version = "1.39.1"
+version = "1.42.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "binaryornot" },
@@ -3504,9 +3531,9 @@ dependencies = [
     { name = "tree-sitter" },
     { name = "tree-sitter-bash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4e/c9/693c9e879deaa582e038968bd41f98908648c1fbd1a4f6f841437caea682/openhands_tools-1.39.1.tar.gz", hash = "sha256:0618b2776d0e63b1fe6eb1c95228820357cecf8ee97f53ee0a9c8aa94cfb80e6", size = 146555, upload-time = "2026-07-30T08:42:05.665Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cb/20/de905f277e98e1f6a73fc889df5189127f380d631f75f4eb0c2dd33db51f/openhands_tools-1.42.1.tar.gz", hash = "sha256:e2e11248cd8ac501835e1484213b376bc33b68abe798460b4b9ad77c764284da", size = 146939, upload-time = "2026-08-12T14:04:42.403Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f5/e2/5c083bc176d466e11d68481d81dbb9d0066885b27ee4e57161c943ba9289/openhands_tools-1.39.1-py3-none-any.whl", hash = "sha256:f127b47dca585d8098316e4333ebeca8fc4fc0d66bbcffd2a5d26980674206d4", size = 191978, upload-time = "2026-07-30T08:42:01.832Z" },
+    { url = "https://files.pythonhosted.org/packages/58/51/b3c3f1a0375ce88a9befa73e6ee0212efb0e08a16de122cbd19274d8b1b0/openhands_tools-1.42.1-py3-none-any.whl", hash = "sha256:38d63c8f316fdd27364a96a2a87e1c090fcd4d1056de02699e4a160345985106", size = 192423, upload-time = "2026-08-12T14:04:38.02Z" },
 ]
 
 [[package]]
@@ -4165,6 +4192,15 @@ keyring = [
 ]
 memory = [
     { name = "cachetools" },
+]
+
+[[package]]
+name = "py-partiql-parser"
+version = "0.6.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/56/7a/a0f6bda783eb4df8e3dfd55973a1ac6d368a89178c300e1b5b91cd181e5e/py_partiql_parser-0.6.3.tar.gz", hash = "sha256:09cecf916ce6e3da2c050f0cb6106166de42c33d34a078ec2eb19377ea70389a", size = 17456, upload-time = "2025-10-18T13:56:13.441Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c9/33/a7cbfccc39056a5cf8126b7aab4c8bafbedd4f0ca68ae40ecb627a2d2cd3/py_partiql_parser-0.6.3-py2.py3-none-any.whl", hash = "sha256:deb0769c3346179d2f590dcbde556f708cdb929059fb654bad75f4cf6e07f582", size = 23752, upload-time = "2025-10-18T13:56:12.256Z" },
 ]
 
 [[package]]
@@ -7170,7 +7206,7 @@ name = "pythonnet"
 version = "3.0.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "clr-loader", marker = "sys_platform == 'win32'" },
+    { name = "clr-loader" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9a/d6/1afd75edd932306ae9bd2c2d961d603dc2b52fcec51b04afea464f1f6646/pythonnet-3.0.5.tar.gz", hash = "sha256:48e43ca463941b3608b32b4e236db92d8d40db4c58a75ace902985f76dac21cf", size = 239212, upload-time = "2024-12-13T08:30:44.393Z" }
 wheels = [
@@ -7479,6 +7515,20 @@ wheels = [
 ]
 
 [[package]]
+name = "responses"
+version = "0.26.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f0/1a/4af3e6d659394b809838490b144e4ab8d7ed3b9fecc7ca78f5d2f79b1a3d/responses-0.26.2.tar.gz", hash = "sha256:9c9259b46a8349197edebf43cfa68a87e1a2802ef503ff8b2fecbabc0b45afd8", size = 84030, upload-time = "2026-07-03T16:44:50.325Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/28/693e1d9ebf72baa062ded80d837a035b86ce75eda5a269379e9e2b1008a8/responses-0.26.2-py3-none-any.whl", hash = "sha256:6fdfeabd58e5ec473b98dfe02e6d46d3173bd8dd573eff2ccccf1a05a5135364", size = 35609, upload-time = "2026-07-03T16:44:49.1Z" },
+]
+
+[[package]]
 name = "rfc3339-validator"
 version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
@@ -7657,8 +7707,8 @@ name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "jeepney", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "cryptography" },
+    { name = "jeepney" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [
@@ -8382,6 +8432,18 @@ wheels = [
 ]
 
 [[package]]
+name = "werkzeug"
+version = "3.1.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markupsafe" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/dd/b2/381be8cfdee792dd117872481b6e378f85c957dd7c5bca38897b08f765fd/werkzeug-3.1.8.tar.gz", hash = "sha256:9bad61a4268dac112f1c5cd4630a56ede601b6ed420300677a869083d70a4c44", size = 875852, upload-time = "2026-04-02T18:49:14.268Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/8c/2e650f2afeb7ee576912636c23ddb621c91ac6a98e66dc8d29c3c69446e1/werkzeug-3.1.8-py3-none-any.whl", hash = "sha256:63a77fb8892bf28ebc3178683445222aa500e48ebad5ec77b0ad80f8726b1f50", size = 226459, upload-time = "2026-04-02T18:49:12.72Z" },
+]
+
+[[package]]
 name = "whatthepatch"
 version = "1.0.7"
 source = { registry = "https://pypi.org/simple" }
@@ -8445,7 +8507,7 @@ name = "xattr"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "cffi" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/08/d5/25f7b19af3a2cb4000cac4f9e5525a40bec79f4f5d0ac9b517c0544586a0/xattr-1.3.0.tar.gz", hash = "sha256:30439fabd7de0787b27e9a6e1d569c5959854cb322f64ce7380fedbfa5035036", size = 17148, upload-time = "2025-10-13T22:16:47.353Z" }
 wheels = [
@@ -8464,6 +8526,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/46/2c/c06ef49dc36e7954e55b802a8b231770d286a9758b3d936bd1e04ce5ba88/xlsxwriter-3.2.9.tar.gz", hash = "sha256:254b1c37a368c444eac6e2f867405cc9e461b0ed97a3233b2ac1e574efb4140c", size = 215940, upload-time = "2025-09-16T00:16:21.63Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3a/0c/3662f4a66880196a590b202f0db82d919dd2f89e99a27fadef91c4a33d41/xlsxwriter-3.2.9-py3-none-any.whl", hash = "sha256:9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3", size = 175315, upload-time = "2025-09-16T00:16:20.108Z" },
+]
+
+[[package]]
+name = "xmltodict"
+version = "1.0.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/70/80f3b7c10d2630aa66414bf23d210386700aa390547278c789afa994fd7e/xmltodict-1.0.4.tar.gz", hash = "sha256:6d94c9f834dd9e44514162799d344d815a3a4faec913717a9ecbfa5be1bb8e61", size = 26124, upload-time = "2026-02-22T02:21:22.074Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/34/98a2f52245f4d47be93b580dae5f9861ef58977d73a79eb47c58f1ad1f3a/xmltodict-1.0.4-py3-none-any.whl", hash = "sha256:a4a00d300b0e1c59fc2bfccb53d7b2e88c32f200df138a0dd2229f842497026a", size = 13580, upload-time = "2026-02-22T02:21:21.039Z" },
 ]
 
 [[package]]

@@ -102,6 +102,13 @@ class OrgNotFoundError(Exception):
         super().__init__(f'Organization with id "{org_id}" not found')
 
 
+class OrgCreditsResult(BaseModel):
+    """Organization credit balance and its availability."""
+
+    credits: float | None = None
+    available: bool = False
+
+
 class OrgConcurrentModificationError(Exception):
     """Raised when a concurrent modification conflict is detected.
 
@@ -220,13 +227,24 @@ class OrgResponse(BaseModel):
     max_budget_per_task: float | None = None
     v1_enabled: bool | None = None
     credits: float | None = None
+    credits_available: bool = False
     is_personal: bool = False
 
     @classmethod
     def from_org(
-        cls, org: Org, credits: float | None = None, user_id: str | None = None
+        cls,
+        org: Org,
+        credits: OrgCreditsResult | float | None = None,
+        user_id: str | None = None,
     ) -> 'OrgResponse':
         """Create an OrgResponse from an Org entity."""
+        if isinstance(credits, OrgCreditsResult):
+            credit_balance = credits.credits
+            credits_available = credits.available
+        else:
+            credit_balance = credits
+            credits_available = credits is not None
+
         return cls(
             id=str(org.id),
             name=org.name,
@@ -249,7 +267,8 @@ class OrgResponse(BaseModel):
             sandbox_api_key=None,
             max_budget_per_task=org.max_budget_per_task,
             v1_enabled=org.v1_enabled,
-            credits=credits,
+            credits=credit_balance,
+            credits_available=credits_available,
             is_personal=str(org.id) == user_id if user_id else False,
         )
 
@@ -544,8 +563,8 @@ class MeResponse(BaseModel):
     user_id: str
     email: str
     role: str
-    # The caller's role-derived permissions, so clients can gate UI off a
-    # server-defined permission instead of re-deriving the role mapping.
+    # The caller's server-defined permissions, so clients can gate UI without
+    # re-deriving org-scoped or instance-level role mappings.
     permissions: list[str] = Field(default_factory=list)
     llm_api_key: str
     llm_api_key_for_byor: str | None = None
@@ -571,11 +590,24 @@ class MeResponse(BaseModel):
         member: OrgMember,
         role: Role,
         email: str,
+        super_role: Role | None = None,
     ) -> 'MeResponse':
         """Create a MeResponse from an OrgMember, Role, and user email."""
         # Imported lazily: a module-level import would cycle
         # (org_models -> authorization -> storage.org_member_store -> org_models).
-        from server.auth.authorization import get_role_permissions
+        from server.auth.authorization import (
+            get_role_permissions,
+            get_super_role_permissions,
+        )
+
+        permission_values = {
+            permission.value for permission in get_role_permissions(role.name)
+        }
+        if super_role is not None:
+            permission_values.update(
+                permission.value
+                for permission in get_super_role_permissions(super_role.name)
+            )
 
         # Only access member.llm_api_key when has_custom_llm_api_key is True
         # to avoid decryption errors when the key is not set
@@ -587,9 +619,7 @@ class MeResponse(BaseModel):
             user_id=str(member.user_id),
             email=email,
             role=role.name,
-            permissions=sorted(
-                permission.value for permission in get_role_permissions(role.name)
-            ),
+            permissions=sorted(permission_values),
             llm_api_key=llm_api_key,
             llm_api_key_for_byor=cls._mask_key(member.llm_api_key_for_byor) or None,
             agent_settings_diff=dict(member.agent_settings_diff or {}),

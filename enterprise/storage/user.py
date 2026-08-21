@@ -52,6 +52,8 @@ class User(Base):
     onboarding_completed: Mapped[bool | None] = mapped_column(
         nullable=True, default=False
     )
+    # NULL inherits the deployment-wide daily conversation limit.
+    daily_conversation_limit: Mapped[int | None] = mapped_column(nullable=True)
 
     # Relationships
     # Instance-level super-role relationship, not an org-scoped membership role.
