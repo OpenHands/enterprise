@@ -21,7 +21,6 @@ import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import { useIsOnIntermediatePage } from "#/hooks/use-is-on-intermediate-page";
 import { useAutoLogin } from "#/hooks/use-auto-login";
 import { useAuthCallback } from "#/hooks/use-auth-callback";
-import { useReoTracking } from "#/hooks/use-reo-tracking";
 import { useSyncPostHogConsent } from "#/hooks/use-sync-posthog-consent";
 import { useAutoSelectOrganization } from "#/hooks/use-auto-select-organization";
 import { LOCAL_STORAGE_KEYS } from "#/utils/local-storage";
@@ -95,9 +94,6 @@ export default function MainApp() {
 
   // Handle authentication callback and set login method after successful authentication
   useAuthCallback();
-
-  // Initialize Reo.dev tracking in SaaS mode
-  useReoTracking();
 
   // Sync PostHog opt-in/out state with backend setting on mount
   useSyncPostHogConsent();
