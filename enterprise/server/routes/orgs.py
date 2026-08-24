@@ -368,9 +368,7 @@ async def update_org_defaults_settings(
         # changed the LLM model/base_url; verify the member's existing key
         # still authenticates and rotate if not.
         if settings_store is not None and user_id is not None:
-            await _maybe_rotate_managed_key_for_org_update(
-                settings_store, user_id
-            )
+            await _maybe_rotate_managed_key_for_org_update(settings_store, user_id)
 
         return OrgDefaultsSettingsResponse.from_org(updated_org)
     except OrgNotFoundError as e:
@@ -861,9 +859,7 @@ async def update_org(
         # mirroring update_org_defaults_settings and the personal settings
         # endpoints.
         if settings_store is not None and user_id is not None:
-            await _maybe_rotate_managed_key_for_org_update(
-                settings_store, user_id
-            )
+            await _maybe_rotate_managed_key_for_org_update(settings_store, user_id)
 
         # Retrieve credits from LiteLLM (following same pattern as create endpoint)
         credits = await OrgService.get_org_credits(user_id, updated_org.id)
