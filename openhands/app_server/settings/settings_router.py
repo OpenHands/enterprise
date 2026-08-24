@@ -218,14 +218,6 @@ async def _maybe_rotate_stale_managed_key(
         )
         return llm.model_copy(update={'api_key': SecretStr(rotation.new_key)})
 
-    logger.info(
-        'settings:managed_key_not_rotated',
-        extra={
-            'user_id': user_id,
-            'model': llm.model,
-            'rotation_status': rotation.status,
-        },
-    )
     return llm
 
 
