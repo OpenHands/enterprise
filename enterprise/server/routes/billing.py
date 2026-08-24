@@ -105,10 +105,7 @@ async def get_credits(
         user_team_info, user_id, str(effective_org_id)
     )
     if budget_info is None:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='Credit balance is temporarily unavailable',
-        )
+        return GetCreditsResponse(credits=Decimal('0.00'))
     max_budget, spend = budget_info
     credits = calculate_credits({'max_budget': max_budget, 'spend': spend})
     if credits is None:

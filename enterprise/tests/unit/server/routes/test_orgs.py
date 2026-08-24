@@ -1444,6 +1444,89 @@ async def test_update_org_defaults_settings_rejects_non_default_fields():
 
 
 @pytest.mark.asyncio
+async def test_update_org_defaults_settings_rotates_stale_managed_key():
+    """GIVEN: An org-defaults update with a settings_store injected
+    WHEN: the route is invoked
+    THEN: _maybe_rotate_stale_managed_key is called with the loaded LLM
+    """
+    org_id = uuid.uuid4()
+    updated_org = MagicMock(spec=Org)
+    updated_org.agent_settings = OpenHandsAgentSettings(
+        llm={'model': 'openhands/claude-3.5-sonnet'}
+    )
+    updated_org.conversation_settings = ConversationSettings(confirmation_mode=False)
+    updated_org.llm_api_key = 'secret'
+    updated_org.search_api_key = None
+
+    update_data = OrgUpdate(
+        agent_settings_diff={'llm': {'model': 'openhands/claude-3.5-sonnet'}},
+    )
+
+    mock_settings = MagicMock()
+    mock_settings.agent_settings.llm = MagicMock()
+    mock_settings_store = MagicMock()
+    mock_settings_store.load = AsyncMock(return_value=mock_settings)
+
+    with (
+        patch(
+            'server.routes.orgs.OrgService.update_org_with_permissions',
+            AsyncMock(return_value=updated_org),
+        ),
+        patch(
+            'server.routes.orgs._maybe_rotate_managed_key_for_org_update',
+            AsyncMock(),
+        ) as mock_rotate,
+    ):
+        await update_org_defaults_settings(
+            org_id=org_id,
+            settings=update_data,
+            user_id=TEST_USER_ID,
+            settings_store=mock_settings_store,
+        )
+
+    mock_rotate.assert_awaited_once_with(mock_settings_store, TEST_USER_ID)
+
+
+@pytest.mark.asyncio
+async def test_update_org_defaults_settings_skips_rotation_when_no_store():
+    """GIVEN: An org-defaults update with no settings_store (e.g. non-SaaS)
+    WHEN: the route is invoked
+    THEN: _maybe_rotate_managed_key_for_org_update is not called
+    """
+    org_id = uuid.uuid4()
+    updated_org = MagicMock(spec=Org)
+    updated_org.agent_settings = OpenHandsAgentSettings(
+        llm={'model': 'openhands/claude-3.5-sonnet'}
+    )
+    updated_org.conversation_settings = ConversationSettings(confirmation_mode=False)
+    updated_org.llm_api_key = 'secret'
+    updated_org.search_api_key = None
+
+    update_data = OrgUpdate(
+        agent_settings_diff={'llm': {'model': 'openhands/claude-3.5-sonnet'}},
+    )
+
+    with (
+        patch(
+            'server.routes.orgs.OrgService.update_org_with_permissions',
+            AsyncMock(return_value=updated_org),
+        ),
+        patch(
+            'server.routes.orgs._maybe_rotate_managed_key_for_org_update',
+            AsyncMock(),
+        ) as mock_rotate,
+    ):
+        await update_org_defaults_settings(
+            org_id=org_id,
+            settings=update_data,
+            user_id=TEST_USER_ID,
+            settings_store=None,
+        )
+
+    mock_rotate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_delete_org_success(mock_app, mock_owner_role):
     """
     GIVEN: Valid organization deletion request by owner

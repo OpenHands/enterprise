@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import SecretStr
 from server.routes.org_models import OrgUpdate
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -1684,3 +1685,116 @@ async def test_count_team_orgs_excludes_personal_workspaces(async_session_maker)
 
     with patch('storage.org_store.a_session_maker', async_session_maker):
         assert await OrgStore.count_team_orgs() == 1
+
+
+# ---------------------------------------------------------------------------
+# _maybe_get_managed_llm_key_for_user: auth-level key verification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_maybe_get_managed_key_returns_existing_when_auth_valid(
+    mock_litellm_api,
+):
+    """When the key is registered AND passes auth verification, return it."""
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    managed_url = 'http://test.url'
+
+    member = MagicMock(spec=OrgMember)
+    member.llm_api_key = SecretStr('existing-managed-key')
+
+    updated_org = MagicMock(spec=Org)
+    updated_org.id = org_id
+    updated_org.agent_settings = OpenHandsAgentSettings(
+        llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+    ).model_dump(mode='json')
+
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(
+                return_value=MagicMock(first=MagicMock(return_value=member))
+            )
+        )
+    )
+
+    with (
+        patch('storage.org_store.LITE_LLM_API_URL', managed_url),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_key',
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.generate_key',
+            new=AsyncMock(return_value='new-key'),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
+            new=AsyncMock(),
+        ),
+    ):
+        result = await OrgStore._maybe_get_managed_llm_key_for_user(
+            session=mock_session,
+            updated_org=updated_org,
+            user_id=str(user_id),
+        )
+
+    assert result == 'existing-managed-key'
+
+
+@pytest.mark.asyncio
+async def test_maybe_get_managed_key_rotates_when_auth_fails(mock_litellm_api):
+    """When the key is registered but fails auth verification, rotate it."""
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    managed_url = 'http://test.url'
+
+    member = MagicMock(spec=OrgMember)
+    member.llm_api_key = SecretStr('stale-managed-key')
+
+    updated_org = MagicMock(spec=Org)
+    updated_org.id = org_id
+    updated_org.agent_settings = OpenHandsAgentSettings(
+        llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+    ).model_dump(mode='json')
+
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(
+                return_value=MagicMock(first=MagicMock(return_value=member))
+            )
+        )
+    )
+
+    with (
+        patch('storage.org_store.LITE_LLM_API_URL', managed_url),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_key',
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
+            new=AsyncMock(),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.generate_key',
+            new=AsyncMock(return_value='fresh-rotated-key'),
+        ),
+    ):
+        result = await OrgStore._maybe_get_managed_llm_key_for_user(
+            session=mock_session,
+            updated_org=updated_org,
+            user_id=str(user_id),
+        )
+
+    assert result == 'fresh-rotated-key'
