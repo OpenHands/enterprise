@@ -1473,6 +1473,7 @@ class TestSuperRolePermissions:
                 Permission.CREATE_ORGANIZATION,
                 Permission.PROVISION_USER,
                 Permission.MANAGE_SUPER_ADMINS,
+                Permission.MANAGE_ORG_QUOTA,
             ]
         )
         assert SUPER_ROLE_PERMISSIONS[RoleName.MEMBER] == frozenset()
@@ -1519,6 +1520,23 @@ class TestSuperRolePermissions:
         assert Permission.PROVISION_USER not in SUPER_ROLE_PERMISSIONS[RoleName.OWNER]
         assert Permission.PROVISION_USER in SUPER_ROLE_PERMISSIONS[RoleName.ADMIN]
         assert Permission.PROVISION_USER not in SUPER_ROLE_PERMISSIONS[RoleName.MEMBER]
+
+    def test_manage_org_quota_is_superadmin_only(self):
+        """
+        GIVEN: SUPER_ROLE_PERMISSIONS and ROLE_PERMISSIONS
+        WHEN: looking up MANAGE_ORG_QUOTA
+        THEN: only the superadmin super role carries it -- no org-scoped
+              role does, so an org owner cannot lift their own org's quota.
+        """
+        assert Permission.MANAGE_ORG_QUOTA in SUPER_ROLE_PERMISSIONS[RoleName.ADMIN]
+        assert Permission.MANAGE_ORG_QUOTA not in SUPER_ROLE_PERMISSIONS[RoleName.OWNER]
+        assert (
+            Permission.MANAGE_ORG_QUOTA not in SUPER_ROLE_PERMISSIONS[RoleName.MEMBER]
+        )
+        for role_name, permissions in ROLE_PERMISSIONS.items():
+            assert Permission.MANAGE_ORG_QUOTA not in permissions, (
+                f'org-scoped role {role_name} must not grant MANAGE_ORG_QUOTA'
+            )
 
 
 class TestHasPermissionSuper:
