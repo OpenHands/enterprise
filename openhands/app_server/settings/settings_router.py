@@ -10,7 +10,13 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from openhands.sdk.llm import LLM
+from openhands.sdk.settings import (
+    ConversationSettings,
+    OpenHandsAgentSettings,
+    export_agent_settings_schema,
+)
+from pydantic import BaseModel, Field, SecretStr
 
 from openhands.analytics import get_analytics_service
 from openhands.app_server.config_api.config_models import AppMode
@@ -47,17 +53,12 @@ from openhands.app_server.user_auth import (
 )
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.llm import (
+    MASKED_API_KEY,
     get_provider_api_base,
     is_openhands_model,
     resolve_llm_base_url,
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
-from openhands.sdk.llm import LLM
-from openhands.sdk.settings import (
-    ConversationSettings,
-    OpenHandsAgentSettings,
-    export_agent_settings_schema,
-)
 
 LITE_LLM_API_URL = os.environ.get(
     'LITE_LLM_API_URL', 'https://llm-proxy.app.all-hands.dev'
@@ -136,6 +137,96 @@ def _post_merge_llm_fixups(settings: Settings) -> None:
         base_url=llm.base_url,
         managed_proxy_url=LITE_LLM_API_URL,
     )
+
+
+async def _maybe_rotate_stale_managed_key(
+    llm: LLM,
+    settings_store: SettingsStore,
+    user_id: str | None,
+) -> LLM:
+    """Best-effort verify-and-rotate for stale SaaS managed LiteLLM keys.
+
+    Mirrors ``_maybe_refresh_managed_llm_key`` on the conversation service, but
+    runs at *write* time (profile save/activate, settings store) so a user
+    saving a profile that carries a dead managed key gets a fresh one
+    transparently, instead of discovering the breakage at conversation start.
+
+    Only acts when all of the following hold:
+    - The store is a ``SaasSettingsStore`` (SaaS mode).
+    - The LLM config routes to the managed OpenHands LiteLLM proxy
+      (``managed_llm_key_config_from_model`` is not None).
+    - The LLM carries a real (non-empty, non-masked) api_key.
+
+    On an explicit auth failure from ``verify_key``, rotates the member's
+    managed key and returns a copy of ``llm`` with the new key. Any error is
+    swallowed — this must never block a settings save.
+    """
+    if user_id is None or not isinstance(llm, LLM) or not has_real_api_key(llm.api_key):
+        return llm
+
+    try:
+        from storage.lite_llm_manager import (
+            LiteLlmManager,  # type: ignore[import-not-found]
+        )
+        from storage.saas_settings_store import (  # type: ignore[import-not-found]
+            ManagedLlmKeyStatus,
+            SaasSettingsStore,
+            managed_llm_key_config_from_model,
+        )
+    except ImportError:
+        return llm
+
+    if not isinstance(settings_store, SaasSettingsStore):
+        return llm
+
+    if managed_llm_key_config_from_model(llm.model, llm.base_url) is None:
+        return llm
+
+    raw_key = (
+        llm.api_key.get_secret_value()
+        if isinstance(llm.api_key, SecretStr)
+        else str(llm.api_key)
+    )
+    if not raw_key or raw_key == MASKED_API_KEY:
+        return llm
+
+    try:
+        if await LiteLlmManager.verify_key(raw_key, user_id):
+            return llm
+    except Exception:
+        logger.warning(
+            'settings:managed_key_verify_failed',
+            exc_info=True,
+            extra={'user_id': user_id, 'model': llm.model},
+        )
+        return llm
+
+    try:
+        rotation = await settings_store.rotate_managed_llm_key()
+    except Exception:
+        logger.warning(
+            'settings:managed_key_rotate_failed',
+            exc_info=True,
+            extra={'user_id': user_id, 'model': llm.model},
+        )
+        return llm
+
+    if rotation.status == ManagedLlmKeyStatus.ROTATED and rotation.new_key:
+        logger.info(
+            'settings:managed_key_rotated_on_write',
+            extra={'user_id': user_id, 'model': llm.model},
+        )
+        return llm.model_copy(update={'api_key': SecretStr(rotation.new_key)})
+
+    logger.info(
+        'settings:managed_key_not_rotated',
+        extra={
+            'user_id': user_id,
+            'model': llm.model,
+            'rotation_status': rotation.status,
+        },
+    )
+    return llm
 
 
 # NOTE: We use response_model=None for endpoints that return JSONResponse directly.
@@ -317,6 +408,10 @@ async def store_settings(
                 )
 
         _post_merge_llm_fixups(settings)
+        rotated = await _maybe_rotate_stale_managed_key(
+            settings.agent_settings.llm, settings_store, user_id
+        )
+        object.__setattr__(settings.agent_settings, 'llm', rotated)
         settings.sync_active_profile_from_settings()
 
         if existing_settings:
@@ -613,6 +708,19 @@ async def save_profile(
             # key") instead of the snapshotted active-settings key.
             llm = llm.model_copy(update={'api_key': existing.api_key})
 
+        # Resolve the profile's base_url (provider default / managed proxy)
+        # before the managed-key check so the config is classified correctly.
+        llm = llm.model_copy(
+            update={
+                'base_url': resolve_llm_base_url(
+                    model=llm.model,
+                    base_url=llm.base_url,
+                    managed_proxy_url=LITE_LLM_API_URL,
+                )
+            }
+        )
+        llm = await _maybe_rotate_stale_managed_key(llm, settings_store, user_id)
+
         was_active = settings.llm_profiles.active == name
         try:
             settings.llm_profiles.save(
@@ -676,6 +784,11 @@ async def activate_profile(
             ) from exc
 
         _post_merge_llm_fixups(settings)
+        rotated = await _maybe_rotate_stale_managed_key(
+            settings.agent_settings.llm, settings_store, user_id
+        )
+        object.__setattr__(settings.agent_settings, 'llm', rotated)
+        settings.sync_active_profile_from_settings()
         await settings_store.store(settings)
 
     return ActivateProfileResponse(
