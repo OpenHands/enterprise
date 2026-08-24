@@ -1,7 +1,7 @@
 """Create feature_flags and feature_flag_rules tables.
 
-Revision ID: 150
-Revises: 149
+Revision ID: 151
+Revises: 150
 Create Date: 2025-06-05 00:00:00.000000
 """
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "150"
-down_revision: Union[str, None] = "149"
+revision: str = "151"
+down_revision: Union[str, None] = "150"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
