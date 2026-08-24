@@ -14,8 +14,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
-from openhands.sdk.llm import LLM
-from openhands.sdk.settings import OpenHandsAgentSettings
 from pydantic import SecretStr
 
 from openhands.app_server.app import app
@@ -31,6 +29,8 @@ from openhands.app_server.settings.settings_router import (
 )
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth.user_auth import UserAuth
+from openhands.sdk.llm import LLM
+from openhands.sdk.settings import OpenHandsAgentSettings
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
