@@ -26,6 +26,7 @@ from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.proactive_convos import ProactiveConversation
+from storage.quota_increase_request import QuotaIncreaseRequest
 from storage.resend_synced_user import ResendSyncedUser
 from storage.role import Role
 from storage.slack_conversation import SlackConversation
@@ -53,6 +54,7 @@ __all__ = [
     'StoredConversationMetadataSaas',
     'ConversationWork',
     'DailyConversationUsage',
+    'QuotaIncreaseRequest',
     'Feedback',
     'GithubAppInstallation',
     'GitlabWebhook',

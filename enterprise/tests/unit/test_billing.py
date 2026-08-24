@@ -249,7 +249,8 @@ async def test_get_credits_rejects_missing_stripe_configuration():
 
 
 @pytest.mark.asyncio
-async def test_get_credits_rejects_unavailable_litellm_data():
+async def test_get_credits_returns_zero_when_budget_info_unavailable():
+    """When budget info is unavailable, return 0 credits instead of 503."""
     with (
         patch('integrations.stripe_service.STRIPE_API_KEY', 'mock_key'),
         patch(
@@ -257,10 +258,9 @@ async def test_get_credits_rejects_unavailable_litellm_data():
             return_value=None,
         ),
     ):
-        with pytest.raises(HTTPException) as exc_info:
-            await get_credits('mock-user', uuid.uuid4())
+        result = await get_credits('mock-user', uuid.uuid4())
 
-    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert result.credits == Decimal('0.00')
 
 
 @pytest.mark.asyncio
