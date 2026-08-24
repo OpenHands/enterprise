@@ -2042,9 +2042,7 @@ async def test_check_byor_export_enabled_returns_true_when_env_var_set():
             new_callable=AsyncMock,
         ) as mock_get_credits,
     ):
-        result = await OrgService.check_byor_export_enabled(
-            user_id, org_id=org_id
-        )
+        result = await OrgService.check_byor_export_enabled(user_id, org_id=org_id)
 
         assert result is True
         mock_get_user.assert_not_called()
