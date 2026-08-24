@@ -83,6 +83,17 @@ class DailyConversationQuotaService:
         if user is not None and user.daily_conversation_limit is not None:
             return self._resolve_sentinel(user.daily_conversation_limit)
 
+        return await self.get_default_limit(org_id)
+
+    async def get_default_limit(self, org_id: UUID) -> int | None:
+        """Effective limit for ``org_id`` ignoring any user-level override.
+
+        Resolves the org-level override, then the deployment default.
+        Returns None when unlimited at this level (org exemption via
+        ``EXEMPT_LIMIT``, or no deployment default configured). Quota
+        increase requests cap against this value so self-service grants
+        cannot compound on top of previously granted increases.
+        """
         org = await self.db_session.scalar(select(Org).where(Org.id == org_id))
         if org is not None and org.daily_conversation_limit is not None:
             return self._resolve_sentinel(org.daily_conversation_limit)

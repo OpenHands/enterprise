@@ -8,6 +8,7 @@ user's last-selected ``current_org_id``.
 
 import uuid
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -25,7 +26,12 @@ EFFECTIVE_ORG = uuid.uuid4()
 
 @asynccontextmanager
 async def _session():
-    yield AsyncMock()
+    """Session whose User lookup returns a user with no work email."""
+    session = AsyncMock()
+    session.scalar = AsyncMock(
+        return_value=SimpleNamespace(work_email=None, work_email_verified_at=None)
+    )
+    yield session
 
 
 @pytest.fixture
@@ -57,6 +63,10 @@ async def test_status_is_scoped_to_the_effective_org(mock_app):
             'server.routes.quota.DailyConversationQuotaService.get_status',
             get_status,
         ),
+        patch(
+            'server.routes.quota.QuotaIncreaseRequestService.get_latest_for_user',
+            AsyncMock(return_value=None),
+        ),
     ):
         async with _client(mock_app) as client:
             resp = await client.get('/api/quota/status')
@@ -67,6 +77,10 @@ async def test_status_is_scoped_to_the_effective_org(mock_app):
         'used_today': 3,
         'remaining': 12,
         'reset_at': '2026-08-26T00:00:00+00:00',
+        'work_email': None,
+        'work_email_verified': False,
+        'latest_request_status': None,
+        'latest_request_requested_limit': None,
     }
     # The effective org -- not the user's current_org_id -- reaches the service.
     get_status.assert_awaited_once_with(CALLER_USER_ID, EFFECTIVE_ORG)
@@ -86,6 +100,10 @@ async def test_status_reports_unlimited_without_a_limit(mock_app):
         patch(
             'server.routes.quota.DailyConversationQuotaService.get_status',
             AsyncMock(return_value=status),
+        ),
+        patch(
+            'server.routes.quota.QuotaIncreaseRequestService.get_latest_for_user',
+            AsyncMock(return_value=None),
         ),
     ):
         async with _client(mock_app) as client:
