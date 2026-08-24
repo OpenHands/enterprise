@@ -149,10 +149,54 @@ class GithubIssue(ResolverViewInterface):
             keycloak_user_id=self.user_info.keycloak_user_id,
         )
 
+        # Fallback: if no org resolved and personal workspaces are hidden,
+        # redirect to the default org to avoid creating conversations in
+        # disabled personal workspaces
+        if self.resolved_org_id is None:
+            self.resolved_org_id = await self._get_fallback_org_for_unclaimed()
+
         # All conversations use V1 app conversation service
         conversation_id = uuid4()
         self.conversation_id = conversation_id.hex
         return conversation_id
+
+    async def _get_fallback_org_for_unclaimed(self) -> UUID | None:
+        """Get the fallback org when the git org is not claimed.
+
+        When personal workspaces are hidden and the user's current_org_id points
+        to their personal workspace, redirect to the default org instead.
+        This prevents conversations from being created in disabled personal workspaces.
+        """
+        from storage.default_org_service import get_default_org_config
+        from storage.org_store import OrgStore
+        from storage.user_store import UserStore
+
+        config = get_default_org_config()
+        if not config.hide_personal_workspaces:
+            return None
+
+        # Get user's current org
+        user_id = self.user_info.keycloak_user_id
+        user = await UserStore.get_user_by_id(user_id)
+        if user is None:
+            return None
+
+        # Check if current_org_id is the user's personal workspace
+        # Personal workspaces have org_id == user_id
+        if str(user.current_org_id) == user_id:
+            # Try to get the default org
+            default_org = await OrgStore.get_default_org()
+            if default_org is not None:
+                logger.info(
+                    '[GitHub] Redirecting resolver conversation from personal workspace '
+                    'to default org %s for user %s (unclaimed org %s)',
+                    default_org.id,
+                    user_id,
+                    self.full_repo_name.split('/')[0],
+                )
+                return default_org.id
+
+        return None
 
     async def create_new_conversation(
         self,
