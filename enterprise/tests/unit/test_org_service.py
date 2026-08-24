@@ -1984,6 +1984,10 @@ async def test_check_byor_export_enabled_returns_true_when_enabled():
 
     with (
         patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
+        patch(
             'storage.org_service.UserStore.get_user_by_id',
             AsyncMock(return_value=mock_user),
         ),
@@ -2011,6 +2015,44 @@ async def test_check_byor_export_enabled_returns_true_when_enabled():
 
 
 @pytest.mark.asyncio
+async def test_check_byor_export_enabled_returns_true_when_env_var_set():
+    """
+    GIVEN: ENABLE_BYOR_EXPORT env var is set (True)
+    WHEN: check_byor_export_enabled is called
+    THEN: Returns True without touching the DB or billing
+    """
+    user_id = 'test-user-123'
+    org_id = uuid.uuid4()
+
+    with (
+        patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            True,
+        ),
+        patch(
+            'storage.org_service.UserStore.get_user_by_id',
+            AsyncMock(),
+        ) as mock_get_user,
+        patch(
+            'storage.org_service.OrgStore.get_org_by_id',
+            new_callable=AsyncMock,
+        ) as mock_get_org,
+        patch(
+            'storage.org_service.OrgService.get_org_credits',
+            new_callable=AsyncMock,
+        ) as mock_get_credits,
+    ):
+        result = await OrgService.check_byor_export_enabled(
+            user_id, org_id=org_id
+        )
+
+        assert result is True
+        mock_get_user.assert_not_called()
+        mock_get_org.assert_not_called()
+        mock_get_credits.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_check_byor_export_enabled_returns_false_when_disabled_without_credits():
     """
     GIVEN: User has current_org with byor_export_enabled=False and no credits
@@ -2028,6 +2070,10 @@ async def test_check_byor_export_enabled_returns_false_when_disabled_without_cre
     mock_org.byor_export_enabled = False
 
     with (
+        patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
         patch(
             'storage.org_service.UserStore.get_user_by_id',
             AsyncMock(return_value=mock_user),
@@ -2076,6 +2122,10 @@ async def test_check_byor_export_enabled_sets_flag_when_disabled_with_credits():
 
     with (
         patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
+        patch(
             'storage.org_service.UserStore.get_user_by_id',
             AsyncMock(return_value=mock_user),
         ),
@@ -2112,9 +2162,15 @@ async def test_check_byor_export_enabled_returns_false_when_user_not_found():
     # Arrange
     user_id = 'nonexistent-user'
 
-    with patch(
-        'storage.org_service.UserStore.get_user_by_id',
-        AsyncMock(return_value=None),
+    with (
+        patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
+        patch(
+            'storage.org_service.UserStore.get_user_by_id',
+            AsyncMock(return_value=None),
+        ),
     ):
         # Act
         result = await OrgService.check_byor_export_enabled(user_id)
@@ -2136,9 +2192,15 @@ async def test_check_byor_export_enabled_returns_false_when_no_current_org():
     mock_user = MagicMock()
     mock_user.current_org_id = None
 
-    with patch(
-        'storage.org_service.UserStore.get_user_by_id',
-        AsyncMock(return_value=mock_user),
+    with (
+        patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
+        patch(
+            'storage.org_service.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
     ):
         # Act
         result = await OrgService.check_byor_export_enabled(user_id)
@@ -2162,6 +2224,10 @@ async def test_check_byor_export_enabled_returns_false_when_org_not_found():
     mock_user.current_org_id = org_id
 
     with (
+        patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
         patch(
             'storage.org_service.UserStore.get_user_by_id',
             AsyncMock(return_value=mock_user),

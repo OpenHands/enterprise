@@ -41,6 +41,10 @@ class WebClientFeatureFlags(BaseModel):
     enable_onboarding: bool = False
     enable_automations: bool = True
     enable_agent_canvas_banner: bool = False
+    # When true, LLM API key export (BYOR) is enabled for every org regardless of
+    # billing/credits. Mirrors the ENABLE_BYOR_EXPORT env var so the frontend can
+    # distinguish "export disabled on this deployment" from "buy credits to enable".
+    enable_byor_export: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')
