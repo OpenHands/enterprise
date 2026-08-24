@@ -54,6 +54,12 @@ class User(Base):
     )
     # NULL inherits the deployment-wide daily conversation limit.
     daily_conversation_limit: Mapped[int | None] = mapped_column(nullable=True)
+    # Work email submitted for quota increase requests; verified via
+    # signed email link before the requested limit is applied.
+    work_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    work_email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Relationships
     # Instance-level super-role relationship, not an org-scoped membership role.

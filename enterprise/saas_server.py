@@ -53,7 +53,7 @@ from server.routes.org_invitations import (  # noqa: E402
 )
 from server.routes.org_profiles import router as org_profiles_router  # noqa: E402
 from server.routes.orgs import org_router  # noqa: E402
-from server.routes.quota import quota_router  # noqa: E402
+from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
 from server.routes.super_admins import super_admin_router  # noqa: E402
@@ -211,6 +211,9 @@ base_app.include_router(
     analytics_events_router
 )  # Add routes for client-initiated analytics events
 base_app.include_router(quota_router)  # Add routes for quota status
+base_app.include_router(
+    quota_admin_router
+)  # Add admin routes for quota (org-level + increase requests)
 
 
 base_app.add_middleware(
