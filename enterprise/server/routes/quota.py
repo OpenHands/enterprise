@@ -16,6 +16,7 @@ from storage.org import Org
 
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.dependencies import get_dependencies
+from openhands.app_server.utils.logger import openhands_logger as logger
 
 quota_router = APIRouter(
     prefix='/api/quota', tags=['Quota'], dependencies=get_dependencies()
@@ -97,7 +98,7 @@ class OrgQuotaResponse(BaseModel):
 async def set_org_quota(
     org_id: UUID,
     body: OrgQuotaUpdateRequest,
-    _: str = Depends(require_permission(Permission.MANAGE_ORG_QUOTA)),
+    caller_user_id: str = Depends(require_permission(Permission.MANAGE_ORG_QUOTA)),
 ) -> OrgQuotaResponse:
     """Set or clear an org-level daily conversation limit override.
 
@@ -120,6 +121,16 @@ async def set_org_quota(
             )
         org.daily_conversation_limit = body.daily_conversation_limit
         await session.commit()
+
+        logger.info(
+            'org_quota:set',
+            extra={
+                'caller_user_id': caller_user_id,
+                'org_id': str(org.id),
+                'daily_conversation_limit': org.daily_conversation_limit,
+                'exempt': org.daily_conversation_limit == EXEMPT_LIMIT,
+            },
+        )
 
         return OrgQuotaResponse(
             org_id=str(org.id),

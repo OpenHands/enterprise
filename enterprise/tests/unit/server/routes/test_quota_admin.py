@@ -234,3 +234,41 @@ async def test_conflicting_x_org_id_header_is_rejected(
 
     assert resp.status_code == 400
     assert org.daily_conversation_limit is None
+
+
+@pytest.mark.asyncio
+async def test_successful_change_is_logged_with_the_caller(
+    mock_app, grant_manage_org_quota
+):
+    """The mutation is attributable: who changed which org's quota, to what.
+
+    Exempting an org is revenue-affecting, so an unattributable write is
+    not good enough -- this mirrors ``super_admins:grant`` / ``:revoke``.
+    """
+    org = _fake_org()
+    with _patch_session(org), patch('server.routes.quota.logger') as log:
+        async with _client(mock_app) as client:
+            resp = await client.put(_url(), json={'daily_conversation_limit': -1})
+
+    assert resp.status_code == 200
+    log.info.assert_called_once()
+    event, kwargs = log.info.call_args[0][0], log.info.call_args[1]
+    assert event == 'org_quota:set'
+    assert kwargs['extra'] == {
+        'caller_user_id': CALLER_USER_ID,
+        'org_id': str(ORG_ID),
+        'daily_conversation_limit': -1,
+        'exempt': True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_denied_request_logs_no_change(mock_app, deny_manage_org_quota):
+    """A rejected call must not leave a record implying a change happened."""
+    org = _fake_org()
+    with _patch_session(org), patch('server.routes.quota.logger') as log:
+        async with _client(mock_app) as client:
+            resp = await client.put(_url(), json={'daily_conversation_limit': 5})
+
+    assert resp.status_code == 403
+    log.info.assert_not_called()
