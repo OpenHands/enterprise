@@ -28,6 +28,7 @@ class QuotaIncreaseRequestService:
     async def create_request(
         self,
         user_id: str,
+        org_id: UUID,
         work_email: str,
         requested_limit: int,
         reason: str | None = None,
@@ -40,6 +41,10 @@ class QuotaIncreaseRequestService:
         request. Capping against the base default rather than the current
         effective limit prevents approved increases from compounding into
         unbounded self-service escalation.
+
+        ``org_id`` is the request's effective org (resolved via
+        ``EFFECTIVE_ORG_ID``), so the cap follows the org the caller is
+        actually working in rather than their last-selected one.
         """
         work_email = work_email.strip().lower()
 
@@ -58,7 +63,7 @@ class QuotaIncreaseRequestService:
             )
 
         quota_service = DailyConversationQuotaService(self.db_session)
-        base_default = await quota_service.get_default_limit(user)
+        base_default = await quota_service.get_default_limit(org_id)
         if base_default is None or base_default <= 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

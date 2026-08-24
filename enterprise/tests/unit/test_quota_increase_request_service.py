@@ -10,6 +10,7 @@ from server.services.quota_increase_request_service import (
 )
 
 USER_ID = str(uuid4())
+ORG_ID = uuid4()
 
 ENV_DEFAULT = {'OH_DAILY_CONVERSATION_LIMIT': '20'}
 
@@ -17,9 +18,12 @@ ENV_DEFAULT = {'OH_DAILY_CONVERSATION_LIMIT': '20'}
 def make_user(daily_conversation_limit=None):
     return SimpleNamespace(
         daily_conversation_limit=daily_conversation_limit,
-        current_org_id=None,
         work_email=None,
     )
+
+
+def make_org(daily_conversation_limit=None):
+    return SimpleNamespace(daily_conversation_limit=daily_conversation_limit)
 
 
 @pytest.mark.asyncio
@@ -27,7 +31,7 @@ async def test_create_request_rejects_free_email():
     session = AsyncMock()
     service = QuotaIncreaseRequestService(session)
     with pytest.raises(HTTPException) as exc_info:
-        await service.create_request(USER_ID, 'user@gmail.com', 200)
+        await service.create_request(USER_ID, ORG_ID, 'user@gmail.com', 200)
     assert exc_info.value.status_code == 400
     assert 'work email' in exc_info.value.detail.lower()
 
@@ -35,11 +39,11 @@ async def test_create_request_rejects_free_email():
 @pytest.mark.asyncio
 async def test_create_request_rejects_too_high():
     session = AsyncMock()
-    session.scalar.return_value = make_user(daily_conversation_limit=20)
+    session.scalar.side_effect = [make_user(daily_conversation_limit=20), make_org()]
     service = QuotaIncreaseRequestService(session)
     with patch.dict('os.environ', ENV_DEFAULT):
         with pytest.raises(HTTPException) as exc_info:
-            await service.create_request(USER_ID, 'user@acme.com', 201)
+            await service.create_request(USER_ID, ORG_ID, 'user@acme.com', 201)
     assert exc_info.value.status_code == 400
     assert '10x' in exc_info.value.detail
 
@@ -53,23 +57,45 @@ async def test_create_request_caps_against_base_default_not_current_limit():
     (10x the base default), not 2000 (10x the current limit).
     """
     session = AsyncMock()
-    session.scalar.return_value = make_user(daily_conversation_limit=200)
+    session.scalar.side_effect = [make_user(daily_conversation_limit=200), make_org()]
     service = QuotaIncreaseRequestService(session)
     with patch.dict('os.environ', ENV_DEFAULT):
         with pytest.raises(HTTPException) as exc_info:
-            await service.create_request(USER_ID, 'user@acme.com', 250)
+            await service.create_request(USER_ID, ORG_ID, 'user@acme.com', 250)
     assert exc_info.value.status_code == 400
     assert '10x' in exc_info.value.detail
 
 
 @pytest.mark.asyncio
+async def test_create_request_caps_against_the_effective_org_default():
+    """The baseline comes from the org passed in, not the env default.
+
+    With a deployment default of 20 but an org override of 50, the ceiling
+    is 10x50, so a 400 request is allowed through rather than rejected.
+    """
+    session = AsyncMock()
+    session.add = Mock()
+    session.scalar.side_effect = [
+        make_user(daily_conversation_limit=None),
+        make_org(daily_conversation_limit=50),
+        None,  # no pending request
+    ]
+    service = QuotaIncreaseRequestService(session)
+    with patch.dict('os.environ', ENV_DEFAULT):
+        result = await service.create_request(USER_ID, ORG_ID, 'user@acme.com', 400)
+
+    assert result.baseline_limit == 50
+    assert result.requested_limit == 400
+
+
+@pytest.mark.asyncio
 async def test_create_request_rejects_below_baseline():
     session = AsyncMock()
-    session.scalar.return_value = make_user(daily_conversation_limit=20)
+    session.scalar.side_effect = [make_user(daily_conversation_limit=20), make_org()]
     service = QuotaIncreaseRequestService(session)
     with patch.dict('os.environ', ENV_DEFAULT):
         with pytest.raises(HTTPException) as exc_info:
-            await service.create_request(USER_ID, 'user@acme.com', 10)
+            await service.create_request(USER_ID, ORG_ID, 'user@acme.com', 10)
     assert exc_info.value.status_code == 400
     assert 'at least' in exc_info.value.detail.lower()
 
@@ -78,11 +104,11 @@ async def test_create_request_rejects_below_baseline():
 async def test_create_request_rejects_unlimited_user():
     """No deployment/org default configured means no increase flow."""
     session = AsyncMock()
-    session.scalar.return_value = make_user(daily_conversation_limit=None)
+    session.scalar.side_effect = [make_user(daily_conversation_limit=None), make_org()]
     service = QuotaIncreaseRequestService(session)
     with patch.dict('os.environ', {'OH_DAILY_CONVERSATION_LIMIT': ''}):
         with pytest.raises(HTTPException) as exc_info:
-            await service.create_request(USER_ID, 'user@acme.com', 100)
+            await service.create_request(USER_ID, ORG_ID, 'user@acme.com', 100)
     assert exc_info.value.status_code == 400
     assert 'daily limit is configured' in exc_info.value.detail
 
@@ -98,11 +124,15 @@ async def test_create_request_rejects_recent_duplicate_pending():
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
     )
-    session.scalar.side_effect = [make_user(daily_conversation_limit=20), existing]
+    session.scalar.side_effect = [
+        make_user(daily_conversation_limit=20),
+        make_org(),
+        existing,
+    ]
     service = QuotaIncreaseRequestService(session)
     with patch.dict('os.environ', ENV_DEFAULT):
         with pytest.raises(HTTPException) as exc_info:
-            await service.create_request(USER_ID, 'user@acme.com', 100)
+            await service.create_request(USER_ID, ORG_ID, 'user@acme.com', 100)
     assert exc_info.value.status_code == 409
 
 
@@ -120,10 +150,10 @@ async def test_create_request_expires_stale_pending_and_creates_new():
         updated_at=datetime.now(UTC) - timedelta(hours=2),
     )
     user = make_user(daily_conversation_limit=20)
-    session.scalar.side_effect = [user, stale]
+    session.scalar.side_effect = [user, make_org(), stale]
     service = QuotaIncreaseRequestService(session)
     with patch.dict('os.environ', ENV_DEFAULT):
-        result = await service.create_request(USER_ID, 'user@acme.com', 100)
+        result = await service.create_request(USER_ID, ORG_ID, 'user@acme.com', 100)
 
     assert stale.status == 'expired'
     assert result.status == 'pending'
