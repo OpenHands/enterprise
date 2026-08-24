@@ -105,10 +105,7 @@ async def get_credits(
         user_team_info, user_id, str(effective_org_id)
     )
     if budget_info is None:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='Credit balance is temporarily unavailable',
-        )
+        return GetCreditsResponse(credits=Decimal('0.00'))
     max_budget, spend = budget_info
     credits = calculate_credits({'max_budget': max_budget, 'spend': spend})
     if credits is None:
@@ -318,7 +315,7 @@ async def success_callback(session_id: str, request: Request):
         billing_session.status = 'completed'
         billing_session.price = add_credits
         billing_session.updated_at = datetime.now(UTC)
-        session.merge(billing_session)
+        await session.merge(billing_session)
         logger.info(
             'stripe_checkout_success',
             extra={
