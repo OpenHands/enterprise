@@ -1179,7 +1179,11 @@ def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
     cycle = state['cycle']
     current_spend = state['current_spend']
     monthly_limit = settings.monthly_limit or 0
-    percentage = (current_spend / monthly_limit * 100) if monthly_limit else 0.0
+    percentage = (
+        (current_spend / monthly_limit * 100)
+        if current_spend is not None and monthly_limit
+        else None
+    )
 
     return OrgBudgetSettingsResponse(
         enabled=settings.enabled,
@@ -1193,8 +1197,12 @@ def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
         default_user_monthly_limit=settings.default_user_monthly_limit,
         cycle_start_at=cycle.start_at,
         cycle_end_at=cycle.end_at,
+        spend_status=state['spend_status'],
+        spend_observed_at=state['spend_observed_at'],
         current_spend=current_spend,
-        current_spend_percentage=round(percentage, 1),
+        current_spend_percentage=(
+            round(percentage, 1) if percentage is not None else None
+        ),
         thresholds=[
             OrgBudgetThresholdResponse(
                 id=threshold.id,

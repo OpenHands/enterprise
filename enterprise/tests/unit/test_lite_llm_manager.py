@@ -3632,18 +3632,9 @@ class TestGetTeamMembersFinancialData:
 
         assert result['team_max_budget'] == 500.0
         assert result['team_spend'] == 125.5
-        assert result['members'] == {
-            'user-1': {
-                'spend': 0,
-                'max_budget': 500.0,
-                'uses_shared_budget': True,
-            },
-            'user-2': {
-                'spend': 0,
-                'max_budget': 500.0,
-                'uses_shared_budget': True,
-            },
-        }
+        # Role-only rows do not carry spend. Omitting them is safer than
+        # manufacturing zero usage; the budget service reports membership drift.
+        assert result['members'] == {}
 
     @pytest.mark.asyncio
     async def test_returns_empty_dict_when_litellm_not_configured(
@@ -3785,11 +3776,11 @@ class TestGetTeamMembersFinancialData:
         }
 
     @pytest.mark.asyncio
-    async def test_uses_defaults_when_no_budget_data_available(self, mock_http_client):
+    async def test_rejects_response_when_budget_data_is_missing(self, mock_http_client):
         """
-        GIVEN: Team without budget and members without individual budgets
+        GIVEN: Team without required budget counters
         WHEN: _get_team_members_financial_data is called
-        THEN: Returns default values (spend=0, max_budget=None)
+        THEN: Raises rather than manufacturing zero spend
         """
         # Arrange
         mock_response = MagicMock()
@@ -3813,26 +3804,10 @@ class TestGetTeamMembersFinancialData:
 
         with patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'):
             with patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'):
-                # Act
-                result = await LiteLlmManager._get_team_members_financial_data(
-                    mock_http_client, 'test-team'
-                )
-
-        # Assert
-        assert result['team_max_budget'] is None
-        assert result['team_spend'] == 0
-        members = result['members']
-        # Both users fall back to team budget (which is None)
-        assert members['user-no-data'] == {
-            'spend': 0,
-            'max_budget': None,
-            'uses_shared_budget': True,
-        }
-        assert members['user-null-spend'] == {
-            'spend': 0,
-            'max_budget': None,
-            'uses_shared_budget': True,
-        }
+                with pytest.raises(ValueError, match='required budget fields'):
+                    await LiteLlmManager._get_team_members_financial_data(
+                        mock_http_client, 'test-team'
+                    )
 
     @pytest.mark.asyncio
     async def test_skips_members_without_user_id(self, mock_http_client):

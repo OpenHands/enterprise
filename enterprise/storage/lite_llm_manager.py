@@ -1877,16 +1877,36 @@ class LiteLlmManager:
             return {}
 
         members: dict[str, dict] = {}
+        using_role_only_members = not bool(team_info.get('team_memberships'))
         team_memberships = LiteLlmManager._team_member_rows(team_info)
 
-        team_data = team_info.get('team_info', {})
-        team_max_budget = team_data.get('max_budget')
-        team_spend = team_data.get('spend', 0) or 0
+        # Get team-level budget info (shared across all members in team orgs)
+        team_data = team_info.get('team_info')
+        if not isinstance(team_data, dict):
+            raise ValueError('LiteLLM team response is missing team_info')
+        if 'max_budget' not in team_data or 'spend' not in team_data:
+            raise ValueError(
+                'LiteLLM team_info is missing required budget fields '
+                '(max_budget, spend)'
+            )
+        team_max_budget = team_data['max_budget']
+        team_spend = team_data['spend']
 
         for membership in team_memberships:
             user_id = membership.get('user_id')
             if not user_id or user_id == 'default_user_id':
                 continue
+            if 'spend' not in membership or membership['spend'] is None:
+                if using_role_only_members:
+                    logger.warning(
+                        'LiteLlmManager:_get_team_members_financial_data:'
+                        'member_spend_unavailable',
+                        extra={'team_id': team_id, 'user_id': user_id},
+                    )
+                    continue
+                raise ValueError(
+                    f'LiteLLM membership {user_id} is missing required spend data'
+                )
 
             member_max_budget = membership.get('max_budget_in_team')
             uses_shared_budget = member_max_budget is None
@@ -1894,7 +1914,7 @@ class LiteLlmManager:
                 member_max_budget = team_max_budget
 
             members[user_id] = {
-                'spend': membership.get('spend', 0) or 0,
+                'spend': membership['spend'],
                 'max_budget': member_max_budget,
                 'uses_shared_budget': uses_shared_budget,
             }

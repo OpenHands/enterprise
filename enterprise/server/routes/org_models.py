@@ -1,7 +1,7 @@
 import logging
 import re
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -800,7 +800,7 @@ class OrgBudgetUserResponse(BaseModel):
     user_id: str
     user_email: str | None = None
     user_name: str | None = None
-    current_spend: float = 0.0
+    current_spend: float | None = None
     monthly_limit: float | None = None
     effective_monthly_limit: float | None = None
     is_disabled: bool = False
@@ -820,8 +820,10 @@ class OrgBudgetSettingsResponse(BaseModel):
     default_user_monthly_limit: float | None = None
     cycle_start_at: datetime
     cycle_end_at: datetime
-    current_spend: float = 0.0
-    current_spend_percentage: float = 0.0
+    spend_status: Literal['live', 'stale', 'unavailable']
+    spend_observed_at: datetime | None = None
+    current_spend: float | None = None
+    current_spend_percentage: float | None = None
     thresholds: list[OrgBudgetThresholdResponse] = Field(default_factory=list)
     users: list[OrgBudgetUserResponse] = Field(default_factory=list)
     users_total: int = 0
