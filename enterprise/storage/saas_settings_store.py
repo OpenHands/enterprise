@@ -203,11 +203,25 @@ class SaasSettingsStore(SettingsStore):
 
     @staticmethod
     def _get_persisted_agent_settings(item: Settings) -> dict[str, Any]:
+        """Dump the agent settings to persist as this member's override.
+
+        A member row holds a *delta* over ``org.agent_settings``: a key that is
+        absent resolves to the org default on load. On an ``agent_kind`` flip
+        the SDK fills the incoming variant from its own defaults, so persisting
+        the full dump would freeze those placeholders in as member overrides -
+        notably an ``llm`` block pointing at the SDK's default model instead of
+        the org's connection. Keep the flip sparse so absence does its job.
+        """
         persisted = item.agent_settings.model_dump(
             mode='json',
             exclude={'llm': {'api_key'}},
         )
         persisted.pop('mcp_config', None)
+        sparse_fields = item._agent_kind_changed_fields
+        if sparse_fields is not None:
+            persisted = {
+                key: value for key, value in persisted.items() if key in sparse_fields
+            }
         return persisted
 
     @staticmethod
@@ -767,10 +781,17 @@ class SaasSettingsStore(SettingsStore):
             # Single assignment so SQLAlchemy tracks the change. Private keys
             # (``mcp_config``) stay out of the diff — they live in their own
             # column and are handled below.
-            org_member.agent_settings_diff = deep_merge(
-                member_agent_settings_diff,
-                agent_settings_update,
-            )
+            if item._agent_kind_changed_fields is not None:
+                # The outgoing variant's fields mean nothing to the new kind,
+                # and a stale ``llm`` left behind here would keep shadowing the
+                # org default. Replace instead of merging so the flip clears
+                # them - this also self-heals rows written before this fix.
+                org_member.agent_settings_diff = agent_settings_update
+            else:
+                org_member.agent_settings_diff = deep_merge(
+                    member_agent_settings_diff,
+                    agent_settings_update,
+                )
             org_member.conversation_settings_diff = deep_merge(
                 dict(org_member.conversation_settings_diff),
                 effective_conversation_diff,

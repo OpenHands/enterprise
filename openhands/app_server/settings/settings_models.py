@@ -736,6 +736,14 @@ class Settings(BaseModel):
     # ``active_agent_profile_id`` for reconstructed copies.
     _resolved_view: bool = PrivateAttr(default=False)
     _mcp_config_updated: bool = PrivateAttr(default=False)
+    # Set by ``update()`` when the applied diff flipped ``agent_kind``, to the
+    # field names the caller actually supplied. A kind flip discards the
+    # outgoing variant's config and fills the incoming variant from SDK
+    # defaults, so every *other* field in the result is fabricated. Persistence
+    # layers that store these settings as a delta over an org-wide default need
+    # to write only these fields - persisting a fabricated default as a
+    # member-level override would shadow the org default permanently.
+    _agent_kind_changed_fields: frozenset[str] | None = PrivateAttr(default=None)
 
     # Marketplace registrations for plugin resolution
     # Users can register multiple marketplaces with different auto-load behaviors
@@ -854,7 +862,14 @@ class Settings(BaseModel):
             # The SDK owns the discriminated-union merge: replace on
             # ``agent_kind`` change, deep-merge within a variant. Cross-kind
             # config preservation tracked in OpenHands/OpenHands#14370.
+            previous_agent_kind = self.agent_settings.agent_kind
             new_settings = apply_agent_settings_diff(self.agent_settings, coerced)
+            if new_settings.agent_kind != previous_agent_kind:
+                # Captured before the ``mcp_config`` round-trip below, which
+                # rebuilds from a full dump and would mark every field as set.
+                self._agent_kind_changed_fields = frozenset(
+                    new_settings.model_fields_set
+                )
             if replace_mcp_config:
                 dumped = new_settings.model_dump(
                     mode='json', context={'expose_secrets': True}

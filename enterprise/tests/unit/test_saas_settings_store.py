@@ -1,3 +1,4 @@
+import contextlib
 import uuid
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -2241,3 +2242,223 @@ def test_profile_sync_skips_non_openhands_agent_kind():
     active = settings.llm_profiles.require('Default')
     assert active.model == 'litellm_proxy/claude-sonnet-4-5-20250929'
     assert active.base_url == 'http://x:4000'
+
+
+ORG_LLM_MODEL = 'openhands/claude-sonnet-4-5-20250929'
+ORG_LLM_BASE_URL = 'http://openhands-litellm.openhands.svc.cluster.local:4000'
+
+
+def _seed_org_llm_and_clear_member(session_maker, fixture, member_key='member1_user_id'):
+    """Give the org a real LLM connection and make the member a pure inheritor.
+
+    Mirrors the common deployment shape: the org default carries the LLM
+    connection and a member who has never overridden it holds an empty diff.
+    """
+    from sqlalchemy import select
+    from server.constants import ORG_SETTINGS_VERSION
+    from storage.org import Org
+    from storage.org_member import OrgMember
+    from storage.user import User
+
+    with session_maker() as session:
+        org = session.execute(
+            select(Org).where(Org.id == fixture['org_id'])
+        ).scalar_one()
+        org.agent_settings = {
+            'agent_kind': 'openhands',
+            'llm': {'model': ORG_LLM_MODEL, 'base_url': ORG_LLM_BASE_URL},
+        }
+        # The fixture's org_version=1 would trigger the settings-version
+        # migration on load, which rewrites agent_settings to the version's
+        # default model and discards the connection seeded above.
+        org.org_version = ORG_SETTINGS_VERSION
+        member = session.execute(
+            select(OrgMember).where(OrgMember.user_id == fixture[member_key])
+        ).scalar_one()
+        member.agent_settings_diff = {}
+        # load() rebuilds Settings, which rejects None for these bool columns.
+        user = session.execute(
+            select(User).where(User.id == fixture[member_key])
+        ).scalar_one()
+        user.enable_sound_notifications = False
+        session.commit()
+
+
+def _member_diff(session_maker, fixture, member_key='member1_user_id'):
+    from sqlalchemy import select
+    from storage.org_member import OrgMember
+
+    with session_maker() as session:
+        member = session.execute(
+            select(OrgMember).where(OrgMember.user_id == fixture[member_key])
+        ).scalar_one()
+        return dict(member.agent_settings_diff)
+
+
+@pytest.mark.asyncio
+async def test_agent_kind_round_trip_falls_back_to_org_llm(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """Switching to an ACP harness and back must restore the org's LLM.
+
+    A member row is a delta over ``org.agent_settings``, so an absent key
+    resolves to the org default. Switching agent_kind makes the SDK rebuild the
+    variant from its own defaults; persisting that full dump wrote the SDK's
+    placeholder llm as a member-level override, permanently shadowing the org
+    connection. Every new conversation then failed until the user hand-picked a
+    model, on every conversation.
+    """
+    fixture = org_with_multiple_members_fixture
+    _seed_org_llm_and_clear_member(session_maker, fixture)
+    store = SaasSettingsStore(str(fixture['member1_user_id']))
+
+    load_patches = (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        # Managed-key provisioning needs live LiteLLM config and is not what
+        # these tests exercise.
+        patch.object(SaasSettingsStore, '_ensure_api_key', new_callable=AsyncMock),
+    )
+
+    # Baseline: the member inherits the org connection.
+    with contextlib.ExitStack() as stack:
+        for p in load_patches:
+            stack.enter_context(p)
+        loaded = await store.load()
+    assert loaded.agent_settings.llm.model == ORG_LLM_MODEL
+
+    # Switch to the Codex harness, then back to the OpenHands agent.
+    for diff in ({'agent_kind': 'acp', 'acp_server': 'codex'}, {'agent_kind': 'openhands'}):
+        with contextlib.ExitStack() as stack:
+            for p in load_patches:
+                stack.enter_context(p)
+            loaded = await store.load()
+            loaded.update({'agent_settings_diff': diff})
+            await store.store(loaded)
+
+    # The flip must not have left an llm override behind.
+    assert 'llm' not in _member_diff(session_maker, fixture)
+
+    with contextlib.ExitStack() as stack:
+        for p in load_patches:
+            stack.enter_context(p)
+        final = await store.load()
+    assert final.agent_settings.agent_kind == 'openhands'
+    assert final.agent_settings.llm.model == ORG_LLM_MODEL
+    assert final.agent_settings.llm.base_url == ORG_LLM_BASE_URL
+
+
+@pytest.mark.asyncio
+async def test_agent_kind_flip_replaces_stale_member_diff(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """A kind flip must clear the outgoing variant's keys, not merge over them.
+
+    Deep-merging a sparse flip onto the existing row would preserve both the
+    stale llm override and the now-meaningless acp_* keys. Replacing is what
+    lets rows corrupted before this fix heal on the next switch.
+    """
+    from sqlalchemy import select
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    _seed_org_llm_and_clear_member(session_maker, fixture)
+
+    with session_maker() as session:
+        member = session.execute(
+            select(OrgMember).where(OrgMember.user_id == fixture['member1_user_id'])
+        ).scalar_one()
+        member.agent_settings_diff = {
+            'agent_kind': 'acp',
+            'acp_server': 'codex',
+            'acp_model': 'gpt-5.5',
+            'llm': {'model': 'gpt-5.5', 'base_url': 'https://api.openai.com'},
+        }
+        session.commit()
+
+    store = SaasSettingsStore(str(fixture['member1_user_id']))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await store.load()
+        loaded.update({'agent_settings_diff': {'agent_kind': 'openhands'}})
+        await store.store(loaded)
+
+    diff = _member_diff(session_maker, fixture)
+    assert diff.get('agent_kind') == 'openhands'
+    assert 'llm' not in diff
+    assert 'acp_server' not in diff
+    assert 'acp_model' not in diff
+
+
+@pytest.mark.asyncio
+async def test_non_flip_save_still_persists_full_agent_settings(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """A save that does not change agent_kind keeps writing the full dump.
+
+    The sparse write is scoped to kind flips. Applying it to every save would
+    change how ordinary edits persist, so pin the existing behaviour.
+    """
+    fixture = org_with_multiple_members_fixture
+    _seed_org_llm_and_clear_member(session_maker, fixture)
+    store = SaasSettingsStore(str(fixture['member1_user_id']))
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch.object(SaasSettingsStore, '_ensure_api_key', new_callable=AsyncMock),
+    ):
+        loaded = await store.load()
+        loaded.update(
+            {'agent_settings_diff': {'llm': {'model': 'openhands/hand-picked'}}}
+        )
+        await store.store(loaded)
+
+    diff = _member_diff(session_maker, fixture)
+    assert diff['llm']['model'] == 'openhands/hand-picked'
+    assert 'condenser' in diff or 'agent_context' in diff
+
+
+@pytest.mark.asyncio
+async def test_explicit_llm_alongside_kind_flip_is_persisted(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """A model chosen in the same request as a kind flip is still the member's.
+
+    The sparse write drops only fabricated defaults, so a value the caller
+    actually sent must survive and keep overriding the org.
+    """
+    fixture = org_with_multiple_members_fixture
+    _seed_org_llm_and_clear_member(session_maker, fixture)
+    store = SaasSettingsStore(str(fixture['member1_user_id']))
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch.object(SaasSettingsStore, '_ensure_api_key', new_callable=AsyncMock),
+    ):
+        loaded = await store.load()
+        loaded.update({'agent_settings_diff': {'agent_kind': 'acp'}})
+        await store.store(loaded)
+
+        loaded = await store.load()
+        loaded.update(
+            {
+                'agent_settings_diff': {
+                    'agent_kind': 'openhands',
+                    'llm': {'model': 'openhands/hand-picked'},
+                }
+            }
+        )
+        await store.store(loaded)
+
+    assert _member_diff(session_maker, fixture)['llm']['model'] == (
+        'openhands/hand-picked'
+    )
+
