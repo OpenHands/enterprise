@@ -464,19 +464,6 @@ async def on_conversation_update(
                 )
             )
 
-    # Analytics: conversation created
-    analytics = get_analytics_service()
-    if analytics and sandbox_record.created_by_user_id:
-        ctx = await resolve_analytics_context(sandbox_record.created_by_user_id)
-        analytics.track_conversation_created(
-            ctx=ctx,
-            conversation_id=str(conversation_info.id),
-            trigger=existing.trigger.value if existing.trigger else None,
-            llm_model=llm_model,
-            agent_type='default',
-            has_repository=existing.selected_repository is not None,
-        )
-
     return Success()
 
 

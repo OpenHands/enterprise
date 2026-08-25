@@ -90,4 +90,8 @@ export interface WebClientConfig {
   jira_dc_service_account_email?: string | null;
   /** Non-secret Jira DC service-account env config error, if any. */
   jira_dc_service_account_config_error?: string | null;
+  /** False when the install links Jira Cloud users by email match instead of
+   *  Atlassian OAuth; drives direct-save + manual-webhook UI in the configure
+   *  flow. Absent ⇒ true (OAuth), so SaaS/older backends are unaffected. */
+  jira_oauth_enabled?: boolean;
 }

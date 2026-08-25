@@ -890,3 +890,25 @@ class TestEmailChangeEnabled:
             config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
 
         assert config.email_change_enabled is False
+
+
+class TestGetJiraOauthEnabled:
+    """Tests for _get_jira_oauth_enabled."""
+
+    def test_defaults_to_true_when_env_var_unset(self):
+        """OAuth linking is the default so SaaS behavior is unchanged."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_jira_oauth_enabled,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert _get_jira_oauth_enabled() is True
+
+    def test_false_when_env_var_disabled(self):
+        """JIRA_ENABLE_OAUTH=0 signals email-match mode to the web client."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_jira_oauth_enabled,
+        )
+
+        with patch.dict(os.environ, {'JIRA_ENABLE_OAUTH': '0'}):
+            assert _get_jira_oauth_enabled() is False
