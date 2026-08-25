@@ -624,9 +624,8 @@ class TestSandboxLifecycle:
     @pytest.mark.asyncio
     async def test_resume_sandbox_success(self, remote_sandbox_service):
         """Test successful sandbox resume."""
-        # Setup
         stored_sandbox = create_stored_sandbox()
-        runtime_data = create_runtime_data()
+        runtime_data = create_runtime_data(status='paused')
 
         remote_sandbox_service._get_stored_sandbox = AsyncMock(
             return_value=stored_sandbox
@@ -639,10 +638,8 @@ class TestSandboxLifecycle:
         mock_response.json.return_value = {'session_api_key': 'new-session-key-123'}
         remote_sandbox_service.httpx_client.request.return_value = mock_response
 
-        # Execute
         result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
 
-        # Verify
         assert result is True
         remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(9)
         remote_sandbox_service.httpx_client.request.assert_called_once_with(
@@ -653,24 +650,90 @@ class TestSandboxLifecycle:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'runtime_status', ['running', 'starting', 'error', 'stopped']
+    )
+    async def test_resume_non_paused_sandbox_skips_limit_cleanup(
+        self, remote_sandbox_service, runtime_status
+    ):
+        stored_sandbox = create_stored_sandbox()
+        runtime_data = create_runtime_data(status=runtime_status)
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(return_value=runtime_data)
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        request = httpx.Request('POST', 'https://api.example.com/resume')
+        response = httpx.Response(409, request=request)
+        remote_sandbox_service.httpx_client.request.return_value = response
+
+        result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert result is False
+        remote_sandbox_service.pause_old_sandboxes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_repeated_noop_resume_does_not_fetch_global_runtime_list(
+        self, remote_sandbox_service
+    ):
+        request_count = 100
+        stored_sandbox = create_stored_sandbox()
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        db_result = MagicMock()
+        db_result.scalars.return_value.all.return_value = []
+        remote_sandbox_service.db_session.execute.return_value = db_result
+
+        def runtime_response(method, url, **kwargs):
+            request = httpx.Request(method, url)
+            if url.endswith('/list'):
+                return httpx.Response(200, request=request, json={'runtimes': []})
+            if '/sessions/' in url:
+                return httpx.Response(
+                    200,
+                    request=request,
+                    json=create_runtime_data(status='running'),
+                )
+            return httpx.Response(409, request=request)
+
+        remote_sandbox_service.httpx_client.request.side_effect = runtime_response
+
+        results = await asyncio.gather(
+            *[
+                remote_sandbox_service.resume_sandbox('test-sandbox-123')
+                for _ in range(request_count)
+            ]
+        )
+
+        assert results == [False] * request_count
+        requested_urls = [
+            call.args[1]
+            for call in remote_sandbox_service.httpx_client.request.call_args_list
+        ]
+        assert not any(url.endswith('/list') for url in requested_urls)
+        assert len(requested_urls) <= request_count * 2
+        remote_sandbox_service.db_session.execute.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_resume_sandbox_not_found(self, remote_sandbox_service):
         """Test resuming non-existent sandbox."""
-        # Setup
         remote_sandbox_service._get_stored_sandbox = AsyncMock(return_value=None)
+        remote_sandbox_service._get_runtime = AsyncMock()
         remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
 
-        # Execute
         result = await remote_sandbox_service.resume_sandbox('non-existent')
 
-        # Verify
         assert result is False
+        remote_sandbox_service._get_runtime.assert_not_called()
+        remote_sandbox_service.pause_old_sandboxes.assert_not_called()
+        remote_sandbox_service.httpx_client.request.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_resume_sandbox_runtime_not_found(self, remote_sandbox_service):
         """Test resuming sandbox when runtime returns 404."""
-        # Setup
         stored_sandbox = create_stored_sandbox()
-        runtime_data = create_runtime_data()
+        runtime_data = create_runtime_data(status='paused')
 
         remote_sandbox_service._get_stored_sandbox = AsyncMock(
             return_value=stored_sandbox
@@ -682,11 +745,10 @@ class TestSandboxLifecycle:
         mock_response.status_code = 404
         remote_sandbox_service.httpx_client.request.return_value = mock_response
 
-        # Execute
         result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
 
-        # Verify
         assert result is False
+        remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(9)
 
     @pytest.mark.asyncio
     async def test_pause_sandbox_success(self, remote_sandbox_service):
