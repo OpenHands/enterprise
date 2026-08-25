@@ -39,7 +39,11 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     ConversationTrigger,
 )
 from openhands.app_server.config import get_app_conversation_service
-from openhands.app_server.integrations.provider import ProviderHandler, ProviderType
+from openhands.app_server.integrations.provider import (
+    ProviderHandler,
+    ProviderType,
+    Repository,
+)
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user_auth.user_auth import UserAuth
@@ -65,6 +69,9 @@ class JiraNewConversationView(JiraViewInterface):
     jira_user: JiraUser
     jira_workspace: JiraWorkspace
     selected_repo: str | None = None
+    # Provider of the verified selected_repo (set by factory); repos are not
+    # always GitHub.
+    git_provider: ProviderType | None = None
     conversation_id: str = ''
 
     # Lazy-loaded issue details (cached after first fetch)
@@ -238,7 +245,7 @@ class JiraNewConversationView(JiraViewInterface):
             initial_message=initial_message,
             selected_repository=self.selected_repo,
             selected_branch=None,
-            git_provider=ProviderType.GITHUB if self.selected_repo else None,
+            git_provider=self.git_provider if self.selected_repo else None,
             title=f'Jira Issue {self.payload.issue_key}: {self._issue_title or "Unknown"}',
             trigger=ConversationTrigger.JIRA,
             processors=[jira_callback_processor],
@@ -374,14 +381,14 @@ class JiraFactory:
         issue_key: str,
         potential_repos: list[str],
         provider_handler: ProviderHandler,
-    ) -> list[str]:
+    ) -> list[Repository]:
         """Verify which repos the user has access to."""
-        verified_repos: list[str] = []
+        verified_repos: list[Repository] = []
 
         for repo_name in potential_repos:
             try:
                 repository = await provider_handler.verify_repo_provider(repo_name)
-                verified_repos.append(repository.full_name)
+                verified_repos.append(repository)
                 logger.debug(
                     '[Jira] Repository verification succeeded',
                     extra={'issue_key': issue_key, 'repository': repository.full_name},
@@ -402,8 +409,8 @@ class JiraFactory:
     def _select_single_repo(
         issue_key: str,
         potential_repos: list[str],
-        verified_repos: list[str],
-    ) -> str:
+        verified_repos: list[Repository],
+    ) -> Repository:
         """Select exactly one repo from verified repos.
 
         Raises:
@@ -416,14 +423,15 @@ class JiraFactory:
             )
 
         if len(verified_repos) > 1:
+            verified_names = ', '.join(repo.full_name for repo in verified_repos)
             raise RepositorySelectionError(
-                f'Multiple repositories found: {", ".join(verified_repos)}. '
+                f'Multiple repositories found: {verified_names}. '
                 'Please specify exactly one repository in the issue description or comment.'
             )
 
         logger.info(
             '[Jira] Verified repository access',
-            extra={'issue_key': issue_key, 'repository': verified_repos[0]},
+            extra={'issue_key': issue_key, 'repository': verified_repos[0].full_name},
         )
         return verified_repos[0]
 
@@ -433,7 +441,7 @@ class JiraFactory:
         user_auth: UserAuth,
         issue_title: str,
         issue_description: str,
-    ) -> str | None:
+    ) -> Repository | None:
         """Infer and verify the repository from issue content.
 
         Raises:
@@ -517,20 +525,22 @@ class JiraFactory:
             raise StartingConvoException('Failed to fetch issue details') from e
 
         # Infer and select repository
-        selected_repo = await JiraFactory._infer_repository(
+        repository = await JiraFactory._infer_repository(
             payload=payload,
             user_auth=user_auth,
             issue_title=issue_title,
             issue_description=issue_description,
         )
 
-        view.selected_repo = selected_repo
+        view.selected_repo = repository.full_name if repository else None
+        view.git_provider = repository.git_provider if repository else None
 
         logger.info(
             '[Jira] View created successfully',
             extra={
                 'issue_key': payload.issue_key,
-                'selected_repo': selected_repo,
+                'selected_repo': view.selected_repo,
+                'git_provider': view.git_provider.value if view.git_provider else None,
             },
         )
 
