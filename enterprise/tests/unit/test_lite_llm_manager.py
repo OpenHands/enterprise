@@ -146,6 +146,106 @@ class TestBudgetFromTeamInfo:
 
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_personal_workspace_falls_back_to_team_budget(self):
+        """A personal workspace with no membership row reads the team budget.
+
+        LiteLLM only creates a ``team_memberships`` row for members added with a
+        per-member budget; teams set up while billing was off have none, so the
+        member row falls back to ``members_with_roles`` with no financial data.
+        """
+        mock_http_client = AsyncMock()
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+            patch.object(
+                LiteLlmManager,
+                '_get_team',
+                AsyncMock(
+                    return_value={
+                        'team_memberships': [],
+                        'team_info': {
+                            'max_budget': 10.0,
+                            'spend': 4.0,
+                            'members_with_roles': [
+                                {'user_id': 'default_user_id', 'role': 'admin'},
+                                {'user_id': 'user-1', 'role': 'user'},
+                            ],
+                        },
+                    }
+                ),
+            ),
+        ):
+            result = await LiteLlmManager._get_user_team_info(
+                mock_http_client, 'user-1', 'user-1'
+            )
+
+        assert LiteLlmManager.get_budget_from_team_info(result, 'user-1', 'user-1') == (
+            10.0,
+            4.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_personal_workspace_keeps_membership_row_budget(self):
+        """An existing membership row still wins over the team budget."""
+        mock_http_client = AsyncMock()
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+            patch.object(
+                LiteLlmManager,
+                '_get_team',
+                AsyncMock(
+                    return_value={
+                        'team_memberships': [
+                            {
+                                'user_id': 'user-1',
+                                'team_id': 'user-1',
+                                'spend': 1.0,
+                                'litellm_budget_table': {'max_budget': 25.0},
+                            }
+                        ],
+                        'team_info': {'max_budget': 10.0, 'spend': 4.0},
+                    }
+                ),
+            ),
+        ):
+            result = await LiteLlmManager._get_user_team_info(
+                mock_http_client, 'user-1', 'user-1'
+            )
+
+        assert LiteLlmManager.get_budget_from_team_info(result, 'user-1', 'user-1') == (
+            25.0,
+            1.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_personal_workspace_rejects_partial_team_financial_data(self):
+        """Missing team financials still yield unknown, not a bogus balance."""
+        mock_http_client = AsyncMock()
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+            patch.object(
+                LiteLlmManager,
+                '_get_team',
+                AsyncMock(
+                    return_value={
+                        'team_memberships': [],
+                        'team_info': {
+                            'spend': 4.0,
+                            'members_with_roles': [{'user_id': 'user-1'}],
+                        },
+                    }
+                ),
+            ),
+        ):
+            result = await LiteLlmManager._get_user_team_info(
+                mock_http_client, 'user-1', 'user-1'
+            )
+
+        assert result is None
+
 
 class TestDefaultInitialBudget:
     """Test cases for DEFAULT_INITIAL_BUDGET configuration."""
