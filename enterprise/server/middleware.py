@@ -179,6 +179,10 @@ class SetAuthCookieMiddleware:
             '/api/billing/customer-setup-success',
             '/api/billing/stripe-webhook',
             '/api/email/resend',
+            # Quota-increase verification is opened from the user's work
+            # email client, often without an app session; the signed JWS
+            # token in the query string is the credential.
+            '/api/quota/verify',
             '/api/organizations/members/invite/accept',
             '/oauth/device/authorize',
             '/oauth/device/token',

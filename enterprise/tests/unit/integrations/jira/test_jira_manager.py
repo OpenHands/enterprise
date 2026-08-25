@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from integrations.jira.jira_manager import JiraManager
-from integrations.jira.jira_payload import JiraEventType, JiraWebhookPayload
+from integrations.jira.jira_payload import (
+    JiraEventType,
+    JiraPayloadSuccess,
+    JiraWebhookPayload,
+)
 
 from openhands.app_server.types import (
     LLMAuthenticationError,
@@ -478,3 +482,108 @@ class TestSendComment:
 
         # Should not raise exception
         await jira_manager._send_comment(new_conversation_view, 'Test comment')
+
+
+class TestPickerMentionGate:
+    """Picker mentions only trigger when they target the service account."""
+
+    def _picker_payload(self, sample_webhook_payload, mention_ids):
+        return replace(
+            sample_webhook_payload,
+            comment_body='[~accountid:someone] please fix this',
+            literal_mention=False,
+            mention_ids=mention_ids,
+        )
+
+    @pytest.mark.asyncio
+    async def test_picker_mention_of_other_user_skips(
+        self, jira_manager, sample_jira_workspace, sample_webhook_payload
+    ):
+        payload = self._picker_payload(sample_webhook_payload, ('someone-else',))
+        jira_manager.payload_parser.parse = MagicMock(
+            return_value=JiraPayloadSuccess(payload)
+        )
+        jira_manager._get_active_workspace = AsyncMock(
+            return_value=sample_jira_workspace
+        )
+        jira_manager._get_bot_account_id = AsyncMock(return_value='bot-account-id')
+        jira_manager._authenticate_user = AsyncMock()
+        message = MagicMock()
+        message.message = {'payload': {}}
+
+        await jira_manager.receive_message(message)
+
+        jira_manager._authenticate_user.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_picker_mention_of_bot_proceeds(
+        self, jira_manager, sample_jira_workspace, sample_webhook_payload
+    ):
+        payload = self._picker_payload(sample_webhook_payload, ('bot-account-id',))
+        jira_manager.payload_parser.parse = MagicMock(
+            return_value=JiraPayloadSuccess(payload)
+        )
+        jira_manager._get_active_workspace = AsyncMock(
+            return_value=sample_jira_workspace
+        )
+        jira_manager._get_bot_account_id = AsyncMock(return_value='bot-account-id')
+        jira_manager._authenticate_user = AsyncMock(return_value=(None, None))
+        message = MagicMock()
+        message.message = {'payload': {}}
+
+        await jira_manager.receive_message(message)
+
+        jira_manager._authenticate_user.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_literal_mention_skips_bot_lookup(
+        self, jira_manager, sample_jira_workspace, sample_webhook_payload
+    ):
+        jira_manager.payload_parser.parse = MagicMock(
+            return_value=JiraPayloadSuccess(sample_webhook_payload)
+        )
+        jira_manager._get_active_workspace = AsyncMock(
+            return_value=sample_jira_workspace
+        )
+        jira_manager._get_bot_account_id = AsyncMock()
+        jira_manager._authenticate_user = AsyncMock(return_value=(None, None))
+        message = MagicMock()
+        message.message = {'payload': {}}
+
+        await jira_manager.receive_message(message)
+
+        jira_manager._get_bot_account_id.assert_not_awaited()
+        jira_manager._authenticate_user.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_bot_account_id_fetches_and_caches(
+        self, jira_manager, sample_jira_workspace
+    ):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {'accountId': '712020:BOT-Id'}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch('integrations.jira.jira_manager.httpx.AsyncClient') as mock_client:
+            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                return_value=mock_response
+            )
+
+            first = await jira_manager._get_bot_account_id(sample_jira_workspace)
+            second = await jira_manager._get_bot_account_id(sample_jira_workspace)
+
+        assert first == '712020:bot-id'
+        assert second == '712020:bot-id'
+        mock_client.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_bot_account_id_failure_returns_none(
+        self, jira_manager, sample_jira_workspace
+    ):
+        with patch('integrations.jira.jira_manager.httpx.AsyncClient') as mock_client:
+            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                side_effect=Exception('boom')
+            )
+
+            result = await jira_manager._get_bot_account_id(sample_jira_workspace)
+
+        assert result is None

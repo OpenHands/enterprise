@@ -852,7 +852,15 @@ class OrgStore:
             str(updated_org.id),
             openhands_type=openhands_type,
         ):
-            return existing_key_raw
+            # The key is registered in LiteLLM, but it may still be stale
+            # (e.g. revoked server-side). Do a real auth check before reusing it.
+            if await LiteLlmManager.verify_key(existing_key_raw, user_id):
+                return existing_key_raw
+            logger.info(
+                'Managed LLM key exists but failed auth verification; '
+                'rotating on org-defaults save',
+                extra={'user_id': user_id, 'org_id': str(updated_org.id)},
+            )
 
         # One managed key per (user, org) under the same deterministic alias,
         # deleting any prior key first — symmetric across openhands/* and BYOR
