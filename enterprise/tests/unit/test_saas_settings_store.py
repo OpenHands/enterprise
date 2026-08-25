@@ -899,8 +899,8 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
         'llm': {'model': 'old-model-v3', 'base_url': 'http://old-url-3.com'},
     }
 
-    # Assert - the acting member's own save still persisted. Without this the
-    # scoping fix would silently turn every per-user save into a no-op.
+    # Assert - the acting member's own save still persisted. Scoping the write
+    # to one row must not make the save itself a no-op.
     member1_diff = members[member1_user_id].agent_settings_diff
     assert member1_diff['agent_kind'] == 'acp'
     assert member1_diff['acp_server'] == 'codex'
@@ -2178,10 +2178,10 @@ async def test_acp_switch_does_not_overwrite_org_llm_profiles(
     """A member switching to an ACP harness must not touch org.llm_profiles.
 
     On installs where the org's LLM connection lives in a profile rather than
-    in agent_settings, the per-user save path used to setattr the member's
-    llm_profiles onto the org row. Switching to ACP leaves agent_settings.llm
-    at SDK defaults, so the org's real model/base_url were replaced with
-    junk that switching back could not restore.
+    in agent_settings, that profile is the only record of the org's model and
+    base_url. Switching to ACP leaves agent_settings.llm at SDK defaults, so
+    letting a member's save reach the org row would overwrite the connection
+    with a placeholder.
     """
     from sqlalchemy import select
     from storage.org import Org
@@ -2303,10 +2303,10 @@ async def test_agent_kind_round_trip_falls_back_to_org_llm(
 
     A member row is a delta over ``org.agent_settings``, so an absent key
     resolves to the org default. Switching agent_kind makes the SDK rebuild the
-    variant from its own defaults; persisting that full dump wrote the SDK's
-    placeholder llm as a member-level override, permanently shadowing the org
-    connection. Every new conversation then failed until the user hand-picked a
-    model, on every conversation.
+    variant from its own defaults, which means the resulting llm is a
+    placeholder rather than a choice the member made. Persisting it would
+    shadow the org connection permanently, leaving every new conversation to
+    fail until the member hand-picks a model.
     """
     fixture = org_with_multiple_members_fixture
     _seed_org_llm_and_clear_member(session_maker, fixture)
@@ -2353,11 +2353,12 @@ async def test_agent_kind_round_trip_falls_back_to_org_llm(
 async def test_agent_kind_flip_replaces_stale_member_diff(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """A kind flip must clear the outgoing variant's keys, not merge over them.
+    """A kind flip must leave only keys that belong to the new kind.
 
     Deep-merging a sparse flip onto the existing row would preserve both the
-    stale llm override and the now-meaningless acp_* keys. Replacing is what
-    lets rows corrupted before this fix heal on the next switch.
+    llm override and the acp_* keys the new kind has no use for. Replacing the
+    row is also what lets a row carrying either of those recover on the next
+    switch.
     """
     from sqlalchemy import select
     from storage.org_member import OrgMember
@@ -2398,10 +2399,11 @@ async def test_agent_kind_flip_replaces_stale_member_diff(
 async def test_non_flip_save_still_persists_full_agent_settings(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """A save that does not change agent_kind keeps writing the full dump.
+    """A save that does not change agent_kind writes the full dump.
 
-    The sparse write is scoped to kind flips. Applying it to every save would
-    change how ordinary edits persist, so pin the existing behaviour.
+    The sparse write is scoped to kind flips, where the SDK fabricates the
+    fields the caller did not send. An ordinary edit fabricates nothing, so it
+    persists in full. This pins that boundary.
     """
     fixture = org_with_multiple_members_fixture
     _seed_org_llm_and_clear_member(session_maker, fixture)

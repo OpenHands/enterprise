@@ -106,14 +106,14 @@ def managed_llm_key_config_from_model(
 
 
 # ``Settings`` field names that are also columns on ``Org``. The per-user save
-# path dumps the whole ``Settings`` model, so without this guard a plain
-# member's save would ``setattr`` each of these onto the shared org row.
-#
-# ``llm_profiles`` is the one that bites hardest: where an org's LLM connection
-# lives in a profile rather than in ``agent_settings``, a member switching to an
-# ACP harness pushed SDK-default model/base_url over the org's real profile, and
-# switching back did not restore it. Org-level values are set through
+# path dumps the whole ``Settings`` model and copies unrecognized fields onto the
+# ``Org`` row, so these are excluded: they belong to the org, and a plain
+# member's save must not reach them. Org-level values are set through
 # ``POST /orgs/app``, which is permission-gated.
+#
+# ``llm_profiles`` matters most. On installs where the org's LLM connection lives
+# in a profile rather than in ``agent_settings``, that profile is the only record
+# of the org's model and base_url.
 _ORG_OWNED_SETTINGS_KEYS = frozenset(
     {
         'llm_api_key',
@@ -701,13 +701,13 @@ class SaasSettingsStore(SettingsStore):
                 item.sync_active_profile_from_settings()
 
             # This is the per-user save path (POST /api/v1/settings), which any
-            # org member may call. It writes the acting member's row only —
+            # org member may call, so it writes the acting member's row only:
             # never ``org.agent_settings`` / ``org.conversation_settings`` and
-            # never other members' rows. Broadcasting from here let one member
-            # push e.g. ``agent_kind: acp`` onto the org default and every
-            # other member, breaking conversations for everyone without the
-            # matching credentials. Org-wide defaults are set through
-            # ``POST /orgs/app``, which is gated on EDIT_ORG_SETTINGS.
+            # never another member's row. A personal harness choice such as
+            # ``agent_kind: acp`` reaching the org default would break
+            # conversations for every member without the matching credentials.
+            # Org-wide defaults are set through ``POST /orgs/app``, which is
+            # gated on EDIT_ORG_SETTINGS.
             effective_agent_settings_diff = self._get_persisted_agent_settings(item)
             agent_settings_update = {
                 key: value
@@ -776,16 +776,14 @@ class SaasSettingsStore(SettingsStore):
             member_agent_settings_diff = dict(org_member.agent_settings_diff)
             for private_key in MEMBER_PRIVATE_AGENT_KEYS:
                 member_agent_settings_diff.pop(private_key, None)
-            # The acting member's own values used to reach their row via the
-            # org-wide broadcast above; now they are merged in explicitly.
             # Single assignment so SQLAlchemy tracks the change. Private keys
             # (``mcp_config``) stay out of the diff — they live in their own
             # column and are handled below.
             if item._agent_kind_changed_fields is not None:
                 # The outgoing variant's fields mean nothing to the new kind,
-                # and a stale ``llm`` left behind here would keep shadowing the
-                # org default. Replace instead of merging so the flip clears
-                # them - this also self-heals rows written before this fix.
+                # so replace rather than merge: the row then holds only keys
+                # that belong to the current kind. Merging would leave an
+                # ``llm`` behind, which would go on shadowing the org default.
                 org_member.agent_settings_diff = agent_settings_update
             else:
                 org_member.agent_settings_diff = deep_merge(
