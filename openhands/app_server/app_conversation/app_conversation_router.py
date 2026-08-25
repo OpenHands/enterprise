@@ -978,14 +978,14 @@ async def _finalize_sandbox_delete(
                     sandbox_id
                 )
             )
+            # Release the count query transaction before runtime-api I/O. Remote
+            # sandbox deletion uses its own short write transaction afterward.
+            await db_session.commit()
             if conversation_count == 0:
                 await sandbox_service.delete_sandbox(sandbox_id)
-        await db_session.commit()
     except Exception:
-        # Any failure in the finalizer (a transient stop/lookup error, the count
-        # query, the commit itself): do NOT commit a half-done delete, so no
-        # orphaned row is left; the row + running runtime stay for the runtime-api
-        # idle reap to capture + reap.
+        # On count failures, roll back its transaction. Runtime failures leave the
+        # independently managed sandbox row in a retryable state.
         logger.exception(
             'Deferred sandbox cleanup failed for %s; kept for retry',
             sandbox_id,

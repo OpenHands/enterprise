@@ -29,6 +29,7 @@ from openhands.app_server.sandbox.remote_sandbox_service import (
     STATUS_MAPPING,
     WEBHOOK_CALLBACK_VARIABLE,
     RemoteSandboxService,
+    RemoteSandboxServiceInjector,
     StoredRemoteSandbox,
 )
 from openhands.app_server.sandbox.sandbox_models import (
@@ -43,6 +44,7 @@ from openhands.app_server.sandbox.sandbox_spec_models import (
     RemoteSandboxSpecInfo,
     SandboxSpecInfo,
 )
+from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
 from openhands.app_server.user.user_context import UserContext
 
@@ -87,7 +89,7 @@ def remote_sandbox_service(
     mock_sandbox_spec_service, mock_user_context, mock_httpx_client, mock_db_session
 ):
     """Create RemoteSandboxService instance with mocked dependencies."""
-    return RemoteSandboxService(
+    service = RemoteSandboxService(
         sandbox_spec_service=mock_sandbox_spec_service,
         api_url='https://api.example.com',
         api_key='test-api-key',
@@ -98,8 +100,12 @@ def remote_sandbox_service(
         max_num_sandboxes=10,
         user_context=mock_user_context,
         httpx_client=mock_httpx_client,
-        db_session=mock_db_session,
+        db_session_factory=_async_cm_factory(mock_db_session),
     )
+    service.db_session = mock_db_session
+    service._set_session_api_key_hash = AsyncMock(return_value=True)
+    service._delete_stored_sandbox = AsyncMock(return_value=True)
+    return service
 
 
 def _make_stream_response(
@@ -739,10 +745,12 @@ class TestSandboxLifecycle:
 
         # Verify
         assert result is True
-        remote_sandbox_service.db_session.delete.assert_called_once_with(stored_sandbox)
-        # delete_sandbox no longer commits internally: the session key is dropped
-        # atomically with the row delete, which the caller commits.
-        remote_sandbox_service.db_session.commit.assert_not_awaited()
+        remote_sandbox_service._set_session_api_key_hash.assert_awaited_once_with(
+            'test-sandbox-123', None
+        )
+        remote_sandbox_service._delete_stored_sandbox.assert_awaited_once_with(
+            'test-sandbox-123'
+        )
         remote_sandbox_service.httpx_client.request.assert_called_once_with(
             'POST',
             'https://api.example.com/stop',
@@ -843,7 +851,9 @@ class TestSandboxLifecycle:
         result = await remote_sandbox_service.delete_sandbox('test-sandbox-123')
 
         assert result is True
-        remote_sandbox_service.db_session.delete.assert_called_once_with(stored_sandbox)
+        remote_sandbox_service._delete_stored_sandbox.assert_awaited_once_with(
+            'test-sandbox-123'
+        )
         # Nothing to stop when the runtime is already gone.
         remote_sandbox_service.httpx_client.request.assert_not_called()
 
@@ -897,11 +907,12 @@ class TestSandboxLifecycle:
         with pytest.raises(SandboxDeleteRetryError):
             await remote_sandbox_service.delete_sandbox('test-sandbox-123')
 
-        # Row kept for retry, but the key is dead and that has been persisted so a
-        # rollback cannot bring it back.
-        remote_sandbox_service.db_session.delete.assert_not_called()
-        assert stored_sandbox.session_api_key_hash is None
-        remote_sandbox_service.db_session.commit.assert_awaited_once()
+        # Row kept for retry, but key revocation ran in its own committed
+        # transaction before the failed runtime request.
+        remote_sandbox_service._set_session_api_key_hash.assert_awaited_once_with(
+            'test-sandbox-123', None
+        )
+        remote_sandbox_service._delete_stored_sandbox.assert_not_awaited()
 
 
 class TestBuildSandboxStartRequest:
@@ -923,7 +934,7 @@ class TestBuildSandboxStartRequest:
             max_num_sandboxes=10,
             user_context=AsyncMock(spec=UserContext),
             httpx_client=AsyncMock(spec=httpx.AsyncClient),
-            db_session=AsyncMock(spec=AsyncSession),
+            db_session_factory=_async_cm_factory(AsyncMock(spec=AsyncSession)),
         )
         spec = SandboxSpecInfo(
             id='test-image:latest',
@@ -955,7 +966,7 @@ class TestBuildSandboxStartRequest:
             max_num_sandboxes=10,
             user_context=AsyncMock(spec=UserContext),
             httpx_client=AsyncMock(spec=httpx.AsyncClient),
-            db_session=AsyncMock(spec=AsyncSession),
+            db_session_factory=_async_cm_factory(AsyncMock(spec=AsyncSession)),
         )
         spec = RemoteSandboxSpecInfo(
             id='test-image:latest',
@@ -992,7 +1003,7 @@ class TestBuildSandboxStartRequest:
             max_num_sandboxes=10,
             user_context=AsyncMock(spec=UserContext),
             httpx_client=AsyncMock(spec=httpx.AsyncClient),
-            db_session=AsyncMock(spec=AsyncSession),
+            db_session_factory=_async_cm_factory(AsyncMock(spec=AsyncSession)),
         )
         spec = SandboxSpecInfo(
             id='test-image:latest',
@@ -1301,29 +1312,30 @@ class TestUserSecurity:
 
     @pytest.mark.asyncio
     async def test_secure_select_with_user_id(self, remote_sandbox_service):
-        """Test that _secure_select filters by user ID."""
-        # Setup
         remote_sandbox_service.user_context.get_user_id.return_value = 'test-user-123'
 
-        # Execute
-        await remote_sandbox_service._secure_select()
+        query = await remote_sandbox_service._secure_select()
 
-        # Verify
-        # Note: We can't easily test the exact SQL query structure, but we can verify
-        # that get_user_id was called, which means user filtering should be applied
-        remote_sandbox_service.user_context.get_user_id.assert_called_once()
+        assert 'created_by_user_id' in str(query.whereclause)
 
     @pytest.mark.asyncio
-    async def test_secure_select_without_user_id(self, remote_sandbox_service):
-        """Test that _secure_select works when user ID is None."""
-        # Setup
+    async def test_secure_select_rejects_unbounded_admin_query(
+        self, remote_sandbox_service
+    ):
         remote_sandbox_service.user_context.get_user_id.return_value = None
 
-        # Execute
-        await remote_sandbox_service._secure_select()
+        with pytest.raises(ValueError, match='filtered or limited'):
+            await remote_sandbox_service._secure_select()
 
-        # Verify
-        remote_sandbox_service.user_context.get_user_id.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_secure_select_allows_limited_admin_query(
+        self, remote_sandbox_service
+    ):
+        remote_sandbox_service.user_context.get_user_id.return_value = None
+
+        query = await remote_sandbox_service._secure_select(limit=101)
+
+        assert query._limit_clause is not None
 
 
 class TestErrorHandling:
@@ -1371,6 +1383,7 @@ class TestErrorHandling:
 
         # Verify
         assert result is False
+        remote_sandbox_service._set_session_api_key_hash.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delete_sandbox_http_error(self, remote_sandbox_service):
@@ -1678,10 +1691,14 @@ class _SessionTracker:
     asserted directly.
     """
 
-    def __init__(self):
+    def __init__(self, value=None):
         self.open = 0
         self.enter_count = 0
         self.max_open = 0
+        self.value = value or MagicMock()
+
+    def begin(self):
+        return self()
 
     def __call__(self, *args, **kwargs):
         tracker = self
@@ -1691,13 +1708,87 @@ class _SessionTracker:
                 tracker.open += 1
                 tracker.enter_count += 1
                 tracker.max_open = max(tracker.max_open, tracker.open)
-                return MagicMock()
+                return tracker.value
 
             async def __aexit__(self, *exc):
                 tracker.open -= 1
                 return False
 
         return _Session()
+
+
+class TestRemoteSandboxServiceSessionScoping:
+    @pytest.mark.asyncio
+    async def test_injector_releases_db_sessions_before_runtime_api_calls(
+        self, mock_sandbox_spec_service, mock_user_context
+    ):
+        stored = create_stored_sandbox('sandbox-1')
+        older = create_stored_sandbox('sandbox-2')
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = [stored, older]
+        result.scalar_one_or_none.return_value = stored
+        db_session = AsyncMock(spec=AsyncSession)
+        db_session.execute.return_value = result
+        tracker = _SessionTracker(db_session)
+        network_open_counts: list[int] = []
+
+        async def request(method, url, **kwargs):
+            network_open_counts.append(tracker.open)
+            response = MagicMock(status_code=200)
+            response.raise_for_status.return_value = None
+            if url.endswith('/sessions/batch'):
+                response.json.return_value = [
+                    create_runtime_data('sandbox-1'),
+                    create_runtime_data('sandbox-2'),
+                ]
+            elif url.endswith('/list'):
+                response.json.return_value = {
+                    'runtimes': [
+                        create_runtime_data('sandbox-1'),
+                        create_runtime_data('sandbox-2'),
+                    ]
+                }
+            else:
+                response.json.return_value = create_runtime_data('sandbox-1')
+            return response
+
+        httpx_client = AsyncMock(spec=httpx.AsyncClient)
+        httpx_client.request.side_effect = request
+        config = MagicMock(web_url='https://web.example.com')
+        config.db_session.get_async_session_maker = AsyncMock(return_value=tracker)
+        injector = RemoteSandboxServiceInjector(
+            api_url='https://api.example.com', api_key='test-api-key'
+        )
+
+        with (
+            patch('openhands.app_server.config.get_global_config', return_value=config),
+            patch(
+                'openhands.app_server.config.get_user_context',
+                side_effect=_async_cm_factory(mock_user_context),
+            ),
+            patch(
+                'openhands.app_server.config.get_sandbox_spec_service',
+                side_effect=_async_cm_factory(mock_sandbox_spec_service),
+            ),
+            patch(
+                'openhands.app_server.config.get_httpx_client',
+                side_effect=_async_cm_factory(httpx_client),
+            ),
+            patch('openhands.app_server.config.get_db_session', side_effect=tracker),
+        ):
+            injected = injector.inject(InjectorState())
+            service = await anext(injected)
+            try:
+                await service.search_sandboxes(limit=1)
+                await service.get_sandbox('sandbox-1')
+                paused = await service.pause_old_sandboxes(max_num_sandboxes=1)
+            finally:
+                await injected.aclose()
+
+        assert paused == ['sandbox-1']
+        assert tracker.enter_count == 5
+        assert network_open_counts == [0] * 5
+        assert tracker.open == 0
 
 
 class TestPollAgentServersSessionScoping:
@@ -2870,18 +2961,21 @@ class TestDeleteSandboxKeyHandling:
         await engine.dispose()
 
     @pytest.fixture
-    async def real_session(self, async_engine):
+    def session_maker(self, async_engine):
         from sqlalchemy.ext.asyncio import async_sessionmaker
 
-        maker = async_sessionmaker(
+        return async_sessionmaker(
             async_engine, class_=AsyncSession, expire_on_commit=False
         )
-        async with maker() as session:
+
+    @pytest.fixture
+    async def real_session(self, session_maker):
+        async with session_maker() as session:
             yield session
 
     @pytest.fixture
     def service_with_real_db(
-        self, mock_sandbox_spec_service, mock_user_context, real_session
+        self, mock_sandbox_spec_service, mock_user_context, session_maker
     ):
         return RemoteSandboxService(
             sandbox_spec_service=mock_sandbox_spec_service,
@@ -2894,7 +2988,7 @@ class TestDeleteSandboxKeyHandling:
             max_num_sandboxes=10,
             user_context=mock_user_context,
             httpx_client=AsyncMock(spec=httpx.AsyncClient),
-            db_session=real_session,
+            db_session_factory=session_maker.begin,
         )
 
     @pytest.mark.asyncio

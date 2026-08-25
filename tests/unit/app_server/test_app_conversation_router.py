@@ -1729,6 +1729,9 @@ class TestFinalizeSandboxDelete:
     @pytest.mark.asyncio
     async def test_archives_then_deletes_when_unreferenced(self):
         sandbox_service, info_service, db_session, httpx_client = self._deps(0)
+        events = []
+        db_session.commit.side_effect = lambda: events.append('commit')
+        sandbox_service.delete_sandbox.side_effect = lambda *_: events.append('delete')
         conv = uuid4()
         await _finalize_sandbox_delete(
             sandbox_service, info_service, 'sbx-1', db_session, httpx_client, conv
@@ -1740,6 +1743,7 @@ class TestFinalizeSandboxDelete:
         )
         sandbox_service.delete_sandbox.assert_awaited_once_with('sbx-1')
         db_session.commit.assert_awaited_once()
+        assert events == ['commit', 'delete']
 
     @pytest.mark.asyncio
     async def test_archives_but_keeps_shared_sandbox(self):
