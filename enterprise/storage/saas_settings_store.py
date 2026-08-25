@@ -105,15 +105,9 @@ def managed_llm_key_config_from_model(
     return ManagedLlmKeyConfig(openhands_type=openhands_type)
 
 
-# ``Settings`` field names that are also columns on ``Org``. The per-user save
-# path dumps the whole ``Settings`` model and copies unrecognized fields onto the
-# ``Org`` row, so these are excluded: they belong to the org, and a plain
-# member's save must not reach them. Org-level values are set through
-# ``POST /orgs/app``, which is permission-gated.
-#
-# ``llm_profiles`` matters most. On installs where the org's LLM connection lives
-# in a profile rather than in ``agent_settings``, that profile is the only record
-# of the org's model and base_url.
+# ``Settings`` fields that are also ``Org`` columns. The save loop below copies
+# matching keys onto the ``Org`` row, so these are held back: they are org-wide
+# defaults, set through the permission-gated ``POST /orgs/app``.
 _ORG_OWNED_SETTINGS_KEYS = frozenset(
     {
         'llm_api_key',
@@ -205,12 +199,9 @@ class SaasSettingsStore(SettingsStore):
     def _get_persisted_agent_settings(item: Settings) -> dict[str, Any]:
         """Dump the agent settings to persist as this member's override.
 
-        A member row holds a *delta* over ``org.agent_settings``: a key that is
-        absent resolves to the org default on load. On an ``agent_kind`` flip
-        the SDK fills the incoming variant from its own defaults, so persisting
-        the full dump would freeze those placeholders in as member overrides -
-        notably an ``llm`` block pointing at the SDK's default model instead of
-        the org's connection. Keep the flip sparse so absence does its job.
+        The row is a delta over ``org.agent_settings``, so an absent key
+        resolves to the org default. An ``agent_kind`` flip fills the new
+        variant from SDK defaults, so persist only what the caller sent.
         """
         persisted = item.agent_settings.model_dump(
             mode='json',
@@ -700,14 +691,9 @@ class SaasSettingsStore(SettingsStore):
                 )
                 item.sync_active_profile_from_settings()
 
-            # This is the per-user save path (POST /api/v1/settings), which any
-            # org member may call, so it writes the acting member's row only:
-            # never ``org.agent_settings`` / ``org.conversation_settings`` and
-            # never another member's row. A personal harness choice such as
-            # ``agent_kind: acp`` reaching the org default would break
-            # conversations for every member without the matching credentials.
-            # Org-wide defaults are set through ``POST /orgs/app``, which is
-            # gated on EDIT_ORG_SETTINGS.
+            # Per-user save (POST /api/v1/settings), callable by any member, so
+            # it writes this member's row only. Org-wide defaults go through the
+            # permission-gated ``POST /orgs/app``.
             effective_agent_settings_diff = self._get_persisted_agent_settings(item)
             agent_settings_update = {
                 key: value
@@ -756,10 +742,8 @@ class SaasSettingsStore(SettingsStore):
                 else None
             )
 
-            # The LLM API key is the one genuinely org-wide value here: a
-            # non-managed (BYOR) key entered by any member is the org's key for
-            # the shared provider, so it still fans out to every member row.
-            # Agent/conversation settings deliberately do not.
+            # A non-managed (BYOR) key is the org's key for the shared
+            # provider, so it does reach every member row.
             await OrgMemberStore.update_all_members_settings_async(
                 session,
                 org_id,
@@ -776,14 +760,10 @@ class SaasSettingsStore(SettingsStore):
             member_agent_settings_diff = dict(org_member.agent_settings_diff)
             for private_key in MEMBER_PRIVATE_AGENT_KEYS:
                 member_agent_settings_diff.pop(private_key, None)
-            # Single assignment so SQLAlchemy tracks the change. Private keys
-            # (``mcp_config``) stay out of the diff — they live in their own
-            # column and are handled below.
+            # Single assignment so SQLAlchemy tracks the JSON column change.
             if item._agent_kind_changed_fields is not None:
-                # The outgoing variant's fields mean nothing to the new kind,
-                # so replace rather than merge: the row then holds only keys
-                # that belong to the current kind. Merging would leave an
-                # ``llm`` behind, which would go on shadowing the org default.
+                # Replace: the outgoing variant's keys, its ``llm`` included,
+                # mean nothing to the new kind and would shadow the org default.
                 org_member.agent_settings_diff = agent_settings_update
             else:
                 org_member.agent_settings_diff = deep_merge(

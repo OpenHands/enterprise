@@ -555,14 +555,12 @@ async def update_org_app_settings(
         HTTPException: 500 if update fails
     """
     try:
-        # Org-wide marketplaces are admin/owner-only, even though the other
+        # Org-wide defaults are admin/owner-only, even though the other
         # settings on this endpoint are member-editable.
-        if update_data.registered_marketplaces is not None:
-            await authorize_permission(request, user_id, Permission.EDIT_ORG_SETTINGS)
-        # Same for the org-wide agent defaults: a member changing their own
-        # harness goes through POST /api/v1/settings, which only touches their
-        # own row. Changing what *every* member defaults to is admin/owner-only.
-        if update_data.agent_settings_diff is not None:
+        if (
+            update_data.registered_marketplaces is not None
+            or update_data.agent_settings_diff is not None
+        ):
             await authorize_permission(request, user_id, Permission.EDIT_ORG_SETTINGS)
         return await service.update_org_app_settings(update_data)
     except OrgConcurrentModificationError as e:

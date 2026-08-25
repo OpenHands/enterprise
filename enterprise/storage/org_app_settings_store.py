@@ -104,9 +104,8 @@ class OrgAppSettingsStore:
         Only updates fields that are explicitly provided in update_data.
         Uses flush() - commit happens at request end via DbSessionInjector.
 
-        ``agent_settings_diff`` is merged into the org-wide ``agent_settings``
-        defaults rather than overwriting them; everything else is a plain
-        column write.
+        ``agent_settings_diff`` merges into the existing ``agent_settings``
+        defaults; every other field is a plain column write.
 
         Implements optimistic locking: if last_known_updated_at is provided and
         doesn't match the current DB version, raises OrgConcurrentModificationError.
@@ -211,12 +210,8 @@ class OrgAppSettingsStore:
                 mp.model_dump(mode='json') for mp in validated_marketplaces
             ]
 
-        # Org-wide agent defaults arrive as a sparse diff, so pop it before the
-        # setattr loop below (``Org`` has no ``agent_settings_diff`` attribute,
-        # and the JSON column must be merged into, not overwritten). The merge
-        # itself is owned by the SDK via ``OrgStore._merge_and_validate_settings``
-        # so an ``agent_kind`` switch replaces the variant instead of blending
-        # two harnesses' keys together.
+        # Popped before the setattr loop: ``Org`` has no matching attribute,
+        # and this is a diff to merge into the JSON column, not a value to set.
         agent_settings_diff = update_dict.pop('agent_settings_diff', None)
         if agent_settings_diff is not None:
             org.agent_settings = OrgStore._merge_and_validate_settings(

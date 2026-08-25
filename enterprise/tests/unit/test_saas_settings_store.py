@@ -812,7 +812,7 @@ async def test_store_syncs_external_provider_key_without_broadcasting_settings(
         for member in members.values():
             assert decrypt_value(member._llm_api_key) == 'shared-external-api-key'
 
-        # ...but only the acting member's settings changed.
+        # Only the acting member's settings changed.
         admin_member = members[admin_user_id]
         assert admin_member.agent_settings_diff['llm']['model'] == (
             'anthropic/claude-sonnet-4'
@@ -899,8 +899,7 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
         'llm': {'model': 'old-model-v3', 'base_url': 'http://old-url-3.com'},
     }
 
-    # Assert - the acting member's own save still persisted. Scoping the write
-    # to one row must not make the save itself a no-op.
+    # Assert - the acting member's own save still persisted.
     member1_diff = members[member1_user_id].agent_settings_diff
     assert member1_diff['agent_kind'] == 'acp'
     assert member1_diff['acp_server'] == 'codex'
@@ -2268,9 +2267,8 @@ def _seed_org_llm_and_clear_member(session_maker, fixture, member_key='member1_u
             'agent_kind': 'openhands',
             'llm': {'model': ORG_LLM_MODEL, 'base_url': ORG_LLM_BASE_URL},
         }
-        # The fixture's org_version=1 would trigger the settings-version
-        # migration on load, which rewrites agent_settings to the version's
-        # default model and discards the connection seeded above.
+        # Without this, load() runs the settings-version migration and
+        # overwrites agent_settings with that version's default model.
         org.org_version = ORG_SETTINGS_VERSION
         member = session.execute(
             select(OrgMember).where(OrgMember.user_id == fixture[member_key])

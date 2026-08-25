@@ -736,13 +736,9 @@ class Settings(BaseModel):
     # ``active_agent_profile_id`` for reconstructed copies.
     _resolved_view: bool = PrivateAttr(default=False)
     _mcp_config_updated: bool = PrivateAttr(default=False)
-    # Set by ``update()`` when the applied diff flipped ``agent_kind``, to the
-    # field names the caller actually supplied. A kind flip discards the
-    # outgoing variant's config and fills the incoming variant from SDK
-    # defaults, so every *other* field in the result is fabricated. Persistence
-    # layers that store these settings as a delta over an org-wide default need
-    # to write only these fields - persisting a fabricated default as a
-    # member-level override would shadow the org default permanently.
+    # Field names the caller supplied on an ``agent_kind`` flip. The flip fills
+    # the new variant from SDK defaults, so a caller persisting these settings
+    # as a delta can tell a real choice from a fabricated one.
     _agent_kind_changed_fields: frozenset[str] | None = PrivateAttr(default=None)
 
     # Marketplace registrations for plugin resolution
@@ -811,11 +807,8 @@ class Settings(BaseModel):
         if not self.llm_profiles.has(active):
             self.llm_profiles.active = None
             return
-        # Only an OpenHands agent's ``llm`` block describes a real connection.
-        # An ACP harness picks its own model via ``acp_model`` and leaves
-        # ``llm`` at SDK defaults, so syncing that placeholder would overwrite
-        # the active profile's model and base_url with junk - and switching
-        # back cannot recover them.
+        # An ACP harness picks its model via ``acp_model`` and leaves ``llm`` at
+        # SDK defaults, so syncing it would overwrite the profile with junk.
         if self.agent_settings.agent_kind != 'openhands':
             return
         if self.llm_profiles.require(active) != self.agent_settings.llm:
@@ -865,8 +858,8 @@ class Settings(BaseModel):
             previous_agent_kind = self.agent_settings.agent_kind
             new_settings = apply_agent_settings_diff(self.agent_settings, coerced)
             if new_settings.agent_kind != previous_agent_kind:
-                # Captured before the ``mcp_config`` round-trip below, which
-                # rebuilds from a full dump and would mark every field as set.
+                # Before the ``mcp_config`` round-trip below, which rebuilds
+                # from a full dump and marks every field as set.
                 self._agent_kind_changed_fields = frozenset(
                     new_settings.model_fields_set
                 )
