@@ -105,14 +105,6 @@ def managed_llm_key_config_from_model(
     return ManagedLlmKeyConfig(openhands_type=openhands_type)
 
 
-# Runtime values the SDK regenerates on every construction. They describe the
-# moment a request ran, not a setting anyone chose, so they are stripped before
-# persisting: storing one pins a stale value and makes every save look like a
-# change to the field that carries it.
-_VOLATILE_AGENT_SETTINGS_PATHS: tuple[tuple[str, ...], ...] = (
-    ('agent_context', 'current_datetime'),
-)
-
 _MISSING = object()
 
 
@@ -239,14 +231,6 @@ class SaasSettingsStore(SettingsStore):
         dumped = agent_settings.model_dump(mode='json', exclude={'llm': {'api_key'}})
         # Lives in its own column.
         dumped.pop('mcp_config', None)
-        for *parents, leaf in _VOLATILE_AGENT_SETTINGS_PATHS:
-            target = dumped
-            for parent in parents:
-                target = target.get(parent) if isinstance(target, dict) else None
-                if not isinstance(target, dict):
-                    break
-            if isinstance(target, dict):
-                target.pop(leaf, None)
         return dumped
 
     @staticmethod

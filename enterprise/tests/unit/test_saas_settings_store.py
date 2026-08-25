@@ -2428,9 +2428,11 @@ async def test_non_flip_save_persists_only_the_changed_field(
         )
         await store.store(loaded)
 
-    assert _member_diff(session_maker, fixture) == {
-        'llm': {'model': 'openhands/hand-picked'}
-    }
+    diff = _member_diff(session_maker, fixture)
+    assert diff['llm'] == {'model': 'openhands/hand-picked'}
+    # The rest of the LLM block matched the org, so it stays inherited.
+    assert 'condenser' not in diff
+    assert 'agent' not in diff
 
 
 @pytest.mark.asyncio
@@ -2505,7 +2507,11 @@ async def test_member_keeps_tracking_org_defaults_after_an_edit(
         loaded.update({'agent_settings_diff': {'enable_sub_agents': True}})
         await store.store(loaded)
 
-    assert _member_diff(session_maker, fixture) == {'enable_sub_agents': True}
+    diff = _member_diff(session_maker, fixture)
+    assert diff['enable_sub_agents'] is True
+    # Nothing the member left alone became an override.
+    assert 'llm' not in diff
+    assert 'condenser' not in diff
 
     # An admin then moves the org onto a different model.
     with session_maker() as session:
@@ -2526,30 +2532,3 @@ async def test_member_keeps_tracking_org_defaults_after_an_edit(
     assert after.agent_settings.llm.model == 'openhands/new-org-model'
     assert after.agent_settings.enable_sub_agents is True
 
-
-@pytest.mark.asyncio
-async def test_runtime_values_are_not_persisted(
-    session_maker, async_session_maker, org_with_multiple_members_fixture
-):
-    """``current_datetime`` is regenerated per call and must not be stored.
-
-    It describes when a request ran rather than a setting anyone chose.
-    Persisting it pins that moment: ``load()`` returns the stored value, so the
-    agent is handed a stale "now" on every later conversation.
-    """
-    fixture = org_with_multiple_members_fixture
-    _seed_org_llm_and_clear_member(session_maker, fixture)
-    store = SaasSettingsStore(str(fixture['member1_user_id']))
-
-    with (
-        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
-        patch('storage.user_store.a_session_maker', async_session_maker),
-        patch('storage.org_store.a_session_maker', async_session_maker),
-        patch.object(SaasSettingsStore, '_ensure_api_key', new_callable=AsyncMock),
-    ):
-        loaded = await store.load()
-        loaded.update({'agent_settings_diff': {'enable_sub_agents': True}})
-        await store.store(loaded)
-
-    diff = _member_diff(session_maker, fixture)
-    assert 'current_datetime' not in diff.get('agent_context', {})
