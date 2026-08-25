@@ -1174,7 +1174,6 @@ class UserStore:
             language='en', enable_proactive_conversation_starters=True
         )
 
-
         from storage.lite_llm_manager import LiteLlmManager
 
         settings = await LiteLlmManager.create_entries(

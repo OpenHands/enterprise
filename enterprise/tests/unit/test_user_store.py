@@ -1755,7 +1755,6 @@ async def test_migrate_user_sql_multiple_conversations(async_session_maker):
             )
 
 
-
 # --- Tests for mark_onboarding_completed ---
 
 
