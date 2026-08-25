@@ -33,13 +33,24 @@
 
 ## About OpenHands Enterprise
 
-This is the source-available backend codebase for OpenHands Enterprise. It provides a self-hosted developer control center for coding agents and automations, with additional enterprise features including authentication, billing, and integrations.
+OpenHands Enterprise brings the power of autonomous coding agents to your organization with the governance, security, and compliance your enterprise demands.
+
+OpenHands Enterprise allows you to run AI coding agents directly on your own servers or in your private cloud. 
+
+**This is the source-available, commercially licensed backend codebase for OpenHands Enterprise**. It provides a self-hosted developer control center for coding agents and automations, with additional enterprise features including authentication, billing, and integrations.
 
 ### License
 
-OpenHands Enterprise is commercially licensed under the [Polyform Free Trial License](./LICENSE). This is **not** an open source license. Usage is limited to 30 days per calendar year without a commercial license.
+> [!WARNING]
+> OpenHands Enterprise is commercially licensed under the [Polyform Free Trial License](./LICENSE). This is **not** an open source license. Usage is limited to 30 days per calendar year without a commercial license.
 
 For commercial licensing and pricing inquiries, please [contact us](https://www.openhands.dev/contact).
+
+### Free 30 Day Trial
+
+The preferred method of installing OpenHands Enterprise is via our Replicated installer. 
+- Fist, read the [Quick Start guide](https://docs.openhands.dev/enterprise/quick-start) to understand system requirements for OpenHands Enterprise
+- Then, [register for a Trial account](https://install.r9.all-hands.dev/openhands/signup) via the Replicated installer portal.
 
 ### Learn More
 
