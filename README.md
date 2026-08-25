@@ -1,11 +1,5 @@
 <a name="readme-top"></a>
 
-> [!WARNING]
-> This software is licensed under the [Polyform Free Trial License](./LICENSE). This is **NOT** an open source license. Usage is limited to 30 days per calendar year without a commercial license. If you would like to use it beyond 30 days, please [contact us](https://www.openhands.dev/contact).
-
-> [!NOTE]
-> The preferred method of installing OpenHands Cloud is via Replicated. [You can access it here](https://install.r9.all-hands.dev/openhands/signup)
-
 <div align="center">
   <img src="https://assets.openhands.dev/logo-whitebackground.png" alt="OpenHands logo" width="340">
   <p align="center">
