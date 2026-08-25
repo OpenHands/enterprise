@@ -44,6 +44,8 @@ const budgetResponse = {
   default_user_monthly_limit: 250,
   cycle_start_at: "2024-01-01T00:00:00Z",
   cycle_end_at: "2024-01-31T00:00:00Z",
+  spend_status: "live" as const,
+  spend_observed_at: "2024-01-15T12:00:00Z",
   current_spend: 200,
   current_spend_percentage: 20,
   thresholds: [
@@ -108,9 +110,7 @@ describe("Budgets", () => {
     const user = userEvent.setup();
     await renderBudgets();
 
-    await user.click(
-      screen.getByRole("button", { name: /\+ Add threshold/i }),
-    );
+    await user.click(screen.getByRole("button", { name: /\+ Add threshold/i }));
 
     expect(await screen.findByText("50%")).toBeInTheDocument();
 
@@ -124,9 +124,9 @@ describe("Budgets", () => {
       .mocked(organizationService.updateBudgetSettings)
       .mock.calls.at(-1)?.[0];
 
-    expect(firstSave?.payload.thresholds?.map((item) => item.percentage)).toEqual(
-      [50, 75],
-    );
+    expect(
+      firstSave?.payload.thresholds?.map((item) => item.percentage),
+    ).toEqual([50, 75]);
 
     await user.click(screen.getByLabelText("Delete 50% threshold"));
     await user.click(screen.getByRole("button", { name: "Save changes" }));
@@ -135,9 +135,9 @@ describe("Budgets", () => {
       const lastSave = vi
         .mocked(organizationService.updateBudgetSettings)
         .mock.calls.at(-1)?.[0];
-      expect(lastSave?.payload.thresholds?.map((item) => item.percentage)).toEqual(
-        [75],
-      );
+      expect(
+        lastSave?.payload.thresholds?.map((item) => item.percentage),
+      ).toEqual([75]);
     });
   });
 
@@ -145,9 +145,7 @@ describe("Budgets", () => {
     const user = userEvent.setup();
     await renderBudgets();
 
-    await user.click(
-      screen.getByRole("button", { name: "User overrides" }),
-    );
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
 
     await screen.findByText("User One");
 
@@ -170,9 +168,7 @@ describe("Budgets", () => {
       });
     });
 
-    await user.click(
-      screen.getByLabelText("Remove override for User One"),
-    );
+    await user.click(screen.getByLabelText("Remove override for User One"));
 
     await waitFor(() => {
       expect(organizationService.deleteBudgetOverride).toHaveBeenCalledWith({
@@ -180,5 +176,23 @@ describe("Budgets", () => {
         userId: "user-1",
       });
     });
+  });
+
+  it("shows unavailable spend instead of rendering it as zero", async () => {
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      spend_status: "unavailable",
+      spend_observed_at: null,
+      current_spend: null,
+      current_spend_percentage: null,
+      users: [{ ...budgetResponse.users[0], current_spend: null }],
+    });
+
+    await renderBudgets();
+
+    expect(
+      screen.getByText(/Spend data is temporarily unavailable/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 });

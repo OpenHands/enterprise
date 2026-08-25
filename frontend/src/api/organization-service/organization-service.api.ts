@@ -612,7 +612,7 @@ interface OrgBudgetUser {
   user_id: string;
   user_email: string | null;
   user_name: string | null;
-  current_spend: number;
+  current_spend: number | null;
   monthly_limit: number | null;
   effective_monthly_limit: number | null;
   is_disabled: boolean;
@@ -628,8 +628,10 @@ interface OrgBudgetSettings {
   default_user_monthly_limit: number | null;
   cycle_start_at: string;
   cycle_end_at: string;
-  current_spend: number;
-  current_spend_percentage: number;
+  spend_status: "live" | "stale" | "unavailable";
+  spend_observed_at: string | null;
+  current_spend: number | null;
+  current_spend_percentage: number | null;
   thresholds: OrgBudgetThreshold[];
   users: OrgBudgetUser[];
   users_total: number;
