@@ -37,10 +37,7 @@ from storage.user_store import UserStore
 from openhands.app_server.settings.llm_profiles import LLMProfiles, resolve_profile_llm
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
-from openhands.app_server.utils.jsonpatch_compat import (
-    deep_merge,
-    deep_merge_with_wholesale_keys,
-)
+from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
@@ -663,36 +660,22 @@ class SaasSettingsStore(SettingsStore):
                 )
                 item.sync_active_profile_from_settings()
 
+            # This is the per-user save path (POST /api/v1/settings), which any
+            # org member may call. It writes the acting member's row only —
+            # never ``org.agent_settings`` / ``org.conversation_settings`` and
+            # never other members' rows. Broadcasting from here let one member
+            # push e.g. ``agent_kind: acp`` onto the org default and every
+            # other member, breaking conversations for everyone without the
+            # matching credentials. Org-wide defaults are set through
+            # ``POST /orgs/app``, which is gated on EDIT_ORG_SETTINGS.
             effective_agent_settings_diff = self._get_persisted_agent_settings(item)
-            shared_agent_settings_diff = {
+            agent_settings_update = {
                 key: value
                 for key, value in effective_agent_settings_diff.items()
                 if key not in MEMBER_PRIVATE_AGENT_KEYS
             }
-
-            # Strip any pre-existing private keys from the org dump before
-            # merging, so legacy values written by older code paths are
-            # cleaned up on the next save and stop leaking to other members.
-            org_agent_settings_dump = OrgStore.get_agent_settings_from_org(
-                org
-            ).model_dump(mode='json')
-            for private_key in MEMBER_PRIVATE_AGENT_KEYS:
-                org_agent_settings_dump.pop(private_key, None)
-
-            # Single assignment so SQLAlchemy tracks the change
-            org.agent_settings = deep_merge_with_wholesale_keys(
-                org_agent_settings_dump,
-                shared_agent_settings_diff,
-            )
-
             effective_conversation_diff = item.conversation_settings.model_dump(
                 mode='json'
-            )
-            org.conversation_settings = deep_merge(
-                OrgStore.get_conversation_settings_from_org(org).model_dump(
-                    mode='json'
-                ),
-                effective_conversation_diff,
             )
 
             kwargs = item.model_dump(context={'expose_secrets': True})
@@ -737,12 +720,14 @@ class SaasSettingsStore(SettingsStore):
                 else None
             )
 
+            # The LLM API key is the one genuinely org-wide value here: a
+            # non-managed (BYOR) key entered by any member is the org's key for
+            # the shared provider, so it still fans out to every member row.
+            # Agent/conversation settings deliberately do not.
             await OrgMemberStore.update_all_members_settings_async(
                 session,
                 org_id,
                 OrgMemberSettingsUpdate(
-                    agent_settings_diff=shared_agent_settings_diff,
-                    conversation_settings_diff=effective_conversation_diff,
                     llm_api_key=(
                         current_member_llm_api_key_raw  # type: ignore[arg-type]
                         if not uses_managed_llm_key
@@ -755,7 +740,19 @@ class SaasSettingsStore(SettingsStore):
             member_agent_settings_diff = dict(org_member.agent_settings_diff)
             for private_key in MEMBER_PRIVATE_AGENT_KEYS:
                 member_agent_settings_diff.pop(private_key, None)
-            org_member.agent_settings_diff = member_agent_settings_diff
+            # The acting member's own values used to reach their row via the
+            # org-wide broadcast above; now they are merged in explicitly.
+            # Single assignment so SQLAlchemy tracks the change. Private keys
+            # (``mcp_config``) stay out of the diff — they live in their own
+            # column and are handled below.
+            org_member.agent_settings_diff = deep_merge(
+                member_agent_settings_diff,
+                agent_settings_update,
+            )
+            org_member.conversation_settings_diff = deep_merge(
+                dict(org_member.conversation_settings_diff),
+                effective_conversation_diff,
+            )
             org_member.title_llm_profile = item.title_llm_profile
             if item._mcp_config_updated:
                 org_member.mcp_config = self._get_persisted_mcp_config(item)
