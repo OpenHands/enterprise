@@ -24,6 +24,7 @@ from integrations.jira.jira_view import (
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartTaskStatus,
 )
+from openhands.app_server.integrations.service_types import ProviderType, Repository
 
 
 class TestJiraNewConversationView:
@@ -127,6 +128,40 @@ class TestJiraNewConversationView:
         assert captured_requests[0].git_provider is None
         mock_store.create_conversation.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    @patch('integrations.jira.jira_view.get_app_conversation_service')
+    @patch('integrations.jira.jira_view.integration_store')
+    async def test_create_or_update_conversation_uses_view_git_provider(
+        self,
+        mock_store,
+        mock_get_service,
+        new_conversation_view,
+        mock_jinja_env,
+    ):
+        """The start request carries the verified provider, not hardcoded GitHub."""
+        new_conversation_view.git_provider = ProviderType.GITLAB
+        new_conversation_view._issue_title = 'Test Issue'
+        new_conversation_view._issue_description = 'Test description'
+        mock_store.create_conversation = AsyncMock()
+        captured_requests = []
+
+        async def mock_start_generator(request):
+            captured_requests.append(request)
+            yield MagicMock(status=AppConversationStartTaskStatus.READY)
+
+        mock_service = MagicMock()
+        mock_service.start_app_conversation = mock_start_generator
+        mock_get_service.return_value.__aenter__.return_value = mock_service
+
+        result = await new_conversation_view.create_or_update_conversation(
+            mock_jinja_env
+        )
+
+        assert result
+        assert len(captured_requests) == 1
+        assert captured_requests[0].selected_repository == 'test/repo1'
+        assert captured_requests[0].git_provider == ProviderType.GITLAB
+
     def test_get_response_msg(self, new_conversation_view):
         """Test get_response_msg method"""
         response = new_conversation_view.get_response_msg()
@@ -193,7 +228,55 @@ class TestJiraFactory:
 
             assert isinstance(view, JiraNewConversationView)
             assert view.selected_repo == 'test/repo1'
+            assert view.git_provider == ProviderType.GITHUB
             mock_handler.verify_repo_provider.assert_called_once_with('test/repo1')
+
+    @pytest.mark.asyncio
+    @patch('integrations.jira.jira_view.JiraFactory._create_provider_handler')
+    @patch('integrations.jira.jira_view.infer_repo_from_message')
+    async def test_create_view_gitlab_repo(
+        self,
+        mock_infer_repos,
+        mock_create_handler,
+        sample_webhook_payload,
+        sample_user_auth,
+        sample_jira_user,
+        sample_jira_workspace,
+    ):
+        """A verified GitLab repo yields a GitLab provider on the view."""
+        gitlab_repo = Repository(
+            id='3',
+            full_name='group/gitlab-repo',
+            stargazers_count=0,
+            git_provider=ProviderType.GITLAB,
+            is_public=False,
+        )
+        mock_handler = MagicMock()
+        mock_handler.verify_repo_provider = AsyncMock(return_value=gitlab_repo)
+        mock_create_handler.return_value = mock_handler
+        mock_infer_repos.return_value = ['group/gitlab-repo']
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            'fields': {'summary': 'Test Issue', 'description': 'Test description'}
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch('httpx.AsyncClient') as mock_client:
+            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                return_value=mock_response
+            )
+
+            view = await JiraFactory.create_view(
+                payload=sample_webhook_payload,
+                workspace=sample_jira_workspace,
+                user=sample_jira_user,
+                user_auth=sample_user_auth,
+                decrypted_api_key='test_api_key',
+            )
+
+            assert view.selected_repo == 'group/gitlab-repo'
+            assert view.git_provider == ProviderType.GITLAB
 
     @pytest.mark.asyncio
     @patch('integrations.jira.jira_view.JiraFactory._create_provider_handler')

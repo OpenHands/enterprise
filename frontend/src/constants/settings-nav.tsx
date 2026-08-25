@@ -145,6 +145,12 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "billing",
   },
   {
+    icon: <FiBarChart2 size={22} />,
+    to: "/settings/quota",
+    text: "SETTINGS$NAV_QUOTA",
+    section: "user",
+  },
+  {
     icon: <PuzzlePieceIcon width={22} height={22} />,
     to: "/settings/integrations",
     text: "SETTINGS$NAV_INTEGRATIONS",
