@@ -803,6 +803,13 @@ class Settings(BaseModel):
         if not self.llm_profiles.has(active):
             self.llm_profiles.active = None
             return
+        # Only an OpenHands agent's ``llm`` block describes a real connection.
+        # An ACP harness picks its own model via ``acp_model`` and leaves
+        # ``llm`` at SDK defaults, so syncing that placeholder would overwrite
+        # the active profile's model and base_url with junk - and switching
+        # back cannot recover them.
+        if self.agent_settings.agent_kind != 'openhands':
+            return
         if self.llm_profiles.require(active) != self.agent_settings.llm:
             self.llm_profiles.save(active, self.agent_settings.llm)
 

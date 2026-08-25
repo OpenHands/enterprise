@@ -2168,3 +2168,76 @@ class TestGetEffectiveLlmApiKey:
         result = SaasSettingsStore._get_effective_llm_api_key(org, member)
 
         assert result is None
+
+
+@pytest.mark.asyncio
+async def test_acp_switch_does_not_overwrite_org_llm_profiles(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """A member switching to an ACP harness must not touch org.llm_profiles.
+
+    On installs where the org's LLM connection lives in a profile rather than
+    in agent_settings, the per-user save path used to setattr the member's
+    llm_profiles onto the org row. Switching to ACP leaves agent_settings.llm
+    at SDK defaults, so the org's real model/base_url were replaced with
+    junk that switching back could not restore.
+    """
+    from sqlalchemy import select
+    from storage.org import Org
+
+    from openhands.sdk.llm import LLM
+
+    fixture = org_with_multiple_members_fixture
+    org_id = fixture['org_id']
+    member_store = SaasSettingsStore(str(fixture['member1_user_id']))
+
+    good = LLM(
+        model='litellm_proxy/claude-sonnet-4-5-20250929',
+        base_url='http://openhands-litellm.openhands.svc.cluster.local:4000',
+        api_key=SecretStr('org-key'),
+    )
+    async with async_session_maker() as session:
+        org = (
+            await session.execute(select(Org).where(Org.id == org_id))
+        ).scalar_one()
+        org.llm_profiles = {
+            'profiles': {'Default': good.model_dump(mode='json')},
+            'active': 'Default',
+        }
+        await session.commit()
+
+    settings = DataSettings()
+    settings.update({'agent_settings_diff': {'agent_kind': 'acp'}})
+    with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
+        await member_store.store(settings)
+
+    async with async_session_maker() as session:
+        org = (
+            await session.execute(select(Org).where(Org.id == org_id))
+        ).scalar_one()
+    profile = (org.llm_profiles or {})['profiles']['Default']
+    assert profile['model'] == 'litellm_proxy/claude-sonnet-4-5-20250929'
+    assert (
+        profile['base_url']
+        == 'http://openhands-litellm.openhands.svc.cluster.local:4000'
+    )
+
+
+def test_profile_sync_skips_non_openhands_agent_kind():
+    """sync_active_profile_from_settings must leave the active profile alone
+    for a non-OpenHands agent, whose llm block is an unused placeholder."""
+    from openhands.sdk.llm import LLM
+
+    settings = DataSettings()
+    settings.llm_profiles.save(
+        'Default',
+        LLM(model='litellm_proxy/claude-sonnet-4-5-20250929', base_url='http://x:4000'),
+    )
+    settings.llm_profiles.active = 'Default'
+
+    settings.update({'agent_settings_diff': {'agent_kind': 'acp'}})
+    settings.sync_active_profile_from_settings()
+
+    active = settings.llm_profiles.require('Default')
+    assert active.model == 'litellm_proxy/claude-sonnet-4-5-20250929'
+    assert active.base_url == 'http://x:4000'

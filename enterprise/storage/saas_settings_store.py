@@ -105,6 +105,32 @@ def managed_llm_key_config_from_model(
     return ManagedLlmKeyConfig(openhands_type=openhands_type)
 
 
+# ``Settings`` field names that are also columns on ``Org``. The per-user save
+# path dumps the whole ``Settings`` model, so without this guard a plain
+# member's save would ``setattr`` each of these onto the shared org row.
+#
+# ``llm_profiles`` is the one that bites hardest: where an org's LLM connection
+# lives in a profile rather than in ``agent_settings``, a member switching to an
+# ACP harness pushed SDK-default model/base_url over the org's real profile, and
+# switching back did not restore it. Org-level values are set through
+# ``POST /orgs/app``, which is permission-gated.
+_ORG_OWNED_SETTINGS_KEYS = frozenset(
+    {
+        'llm_api_key',
+        'agent_settings',
+        'conversation_settings',
+        'llm_profiles',
+        'enable_proactive_conversation_starters',
+        'max_budget_per_task',
+        'remote_runtime_resource_factor',
+        'sandbox_base_container_image',
+        'sandbox_runtime_container_image',
+        'sandbox_grouping_strategy',
+        'v1_enabled',
+    }
+)
+
+
 @dataclass
 class SaasSettingsStore(SettingsStore):
     user_id: str
@@ -700,11 +726,7 @@ class SaasSettingsStore(SettingsStore):
                 if key == 'registered_marketplaces':
                     # Save personal marketplace settings to user_settings table
                     user_settings.registered_marketplaces = value
-                elif hasattr(org, key) and key not in {
-                    'llm_api_key',
-                    'agent_settings',
-                    'conversation_settings',
-                }:
+                elif hasattr(org, key) and key not in _ORG_OWNED_SETTINGS_KEYS:
                     setattr(org, key, value)
 
             current_member_llm_api_key = item.agent_settings.llm.api_key
