@@ -47,7 +47,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
-EntityT = TypeVar("EntityT", bound=DeclarativeBase)
+EntityT = TypeVar('EntityT', bound=DeclarativeBase)
 
 
 # ---------------------------------------------------------------------------
@@ -61,27 +61,27 @@ EntityT = TypeVar("EntityT", bound=DeclarativeBase)
 # Keeping both in one place means ``BaseSearchFilter`` only has to look the
 # operator up once to satisfy both the in-memory and SQL contracts.
 _OPERATORS: dict[str, tuple[Any, Any]] = {
-    "contains": (
+    'contains': (
         lambda field, value: value in field if field is not None else False,
-        lambda col, value: col.ilike(f"%{value}%"),
+        lambda col, value: col.ilike(f'%{value}%'),
     ),
-    "eq": (
+    'eq': (
         lambda field, value: field == value,
         lambda col, value: col == value,
     ),
-    "lt": (
+    'lt': (
         lambda field, value: field is not None and field < value,
         lambda col, value: col < value,
     ),
-    "lte": (
+    'lte': (
         lambda field, value: field is not None and field <= value,
         lambda col, value: col <= value,
     ),
-    "gt": (
+    'gt': (
         lambda field, value: field is not None and field > value,
         lambda col, value: col > value,
     ),
-    "gte": (
+    'gte': (
         lambda field, value: field is not None and field >= value,
         lambda col, value: col >= value,
     ),
@@ -154,8 +154,8 @@ class SearchFilter(DiscriminatedUnionMixin, Generic[EntityT]):
         entity = cls.__entity__
         if entity is None:
             raise NotImplementedError(
-                f"{cls.__name__} does not declare an entity; "
-                "set the ``entity`` class argument or ``__entity__``."
+                f'{cls.__name__} does not declare an entity; '
+                'set the ``entity`` class argument or ``__entity__``.'
             )
         return entity
 
@@ -215,9 +215,9 @@ class BaseSearchFilter(SearchFilter[EntityT]):
                 continue
             if op not in _OPERATORS:
                 raise ValueError(
-                    f"Unsupported filter operator ``{op}`` on "
-                    f"{type(self).__name__}.{attr_name}; "
-                    f"expected one of {sorted(_OPERATORS)}."
+                    f'Unsupported filter operator ``{op}`` on '
+                    f'{type(self).__name__}.{attr_name}; '
+                    f'expected one of {sorted(_OPERATORS)}.'
                 )
             active.append((field_name, op, value))
         return active
@@ -229,9 +229,9 @@ class BaseSearchFilter(SearchFilter[EntityT]):
         Returns ``(field, None)`` when the attribute does not use the
         ``__`` separator, so non-filter fields are skipped harmlessly.
         """
-        if "__" not in attr_name:
+        if '__' not in attr_name:
             return attr_name, None
-        field, _, op = attr_name.rpartition("__")
+        field, _, op = attr_name.rpartition('__')
         return field, op or None
 
     def _build_clause(
@@ -252,8 +252,8 @@ class BaseSearchFilter(SearchFilter[EntityT]):
         column = getattr(entity, field_name, None)
         if column is None:
             raise AttributeError(
-                f"{entity.__name__} has no attribute ``{field_name}``; "
-                f"cannot build filter clause."
+                f'{entity.__name__} has no attribute ``{field_name}``; '
+                f'cannot build filter clause.'
             )
         return column
 
@@ -269,10 +269,10 @@ def build_clause(field_name: str, op: str, value: Any, entity: type[Any]) -> Any
     """
     if op not in _OPERATORS:
         raise ValueError(
-            f"Unsupported filter operator ``{op}``; expected one of "
-            f"{sorted(_OPERATORS)}."
+            f'Unsupported filter operator ``{op}``; expected one of '
+            f'{sorted(_OPERATORS)}.'
         )
     column = getattr(entity, field_name, None)
     if column is None:
-        raise AttributeError(f"{entity.__name__} has no attribute ``{field_name}``.")
+        raise AttributeError(f'{entity.__name__} has no attribute ``{field_name}``.')
     return _OPERATORS[op][1](column, value)

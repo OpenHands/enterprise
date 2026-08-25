@@ -12,10 +12,9 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 import pytest
+from server.utils.search_filter import BaseSearchFilter, SearchFilter
 from sqlalchemy import DateTime, String, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
-
-from server.utils.search_filter import BaseSearchFilter, SearchFilter
 
 
 class _Base(DeclarativeBase):
@@ -23,7 +22,7 @@ class _Base(DeclarativeBase):
 
 
 class _User(_Base):
-    __tablename__ = "user"
+    __tablename__ = 'user'
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     email: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -43,7 +42,7 @@ class _UserSearchFilter(BaseSearchFilter, entity=_User):
 @pytest.fixture()
 def session():
     """Create a fresh in-memory SQLite session for each test."""
-    engine = create_engine("sqlite://", echo=False)
+    engine = create_engine('sqlite://', echo=False)
     _Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     with Session() as s:
@@ -53,17 +52,17 @@ def session():
 def _seed(session) -> list[_User]:
     users = [
         _User(
-            email="alice@example.com",
+            email='alice@example.com',
             created_at=datetime(2024, 1, 1),
             age=30,
         ),
         _User(
-            email="bob@example.com",
+            email='bob@example.com',
             created_at=datetime(2020, 1, 1),
             age=25,
         ),
         _User(
-            email="charlie@other.io",
+            email='charlie@other.io',
             created_at=datetime(2025, 6, 1),
             age=40,
         ),
@@ -106,14 +105,14 @@ class TestMatches:
 
     def test_contains_matches_substring(self, session):
         users = _seed(session)
-        f = _UserSearchFilter(email__contains="example.com")
+        f = _UserSearchFilter(email__contains='example.com')
         assert f.matches(users[0])  # alice@example.com
         assert not f.matches(users[2])  # charlie@other.io
         assert not f.matches(users[3])  # None email
 
     def test_eq_matches_exact(self, session):
         users = _seed(session)
-        f = _UserSearchFilter(email__eq="alice@example.com")
+        f = _UserSearchFilter(email__eq='alice@example.com')
         assert f.matches(users[0])
         assert not f.matches(users[1])
 
@@ -146,7 +145,7 @@ class TestMatches:
 
     def test_multiple_clauses_are_anded(self, session):
         users = _seed(session)
-        f = _UserSearchFilter(email__contains="example.com", age__gte=30)
+        f = _UserSearchFilter(email__contains='example.com', age__gte=30)
         assert f.matches(users[0])  # alice, 30
         assert not f.matches(users[1])  # bob, 25 (age too low)
         assert not f.matches(users[2])  # charlie, no example.com
@@ -165,17 +164,17 @@ class TestFilterSql:
 
     def test_contains_filters_rows(self, session):
         _seed(session)
-        f = _UserSearchFilter(email__contains="example.com")
+        f = _UserSearchFilter(email__contains='example.com')
         rows = list(session.execute(f.filter_sql(select(_User))).scalars())
         emails = {r.email for r in rows}
-        assert emails == {"alice@example.com", "bob@example.com"}
+        assert emails == {'alice@example.com', 'bob@example.com'}
 
     def test_eq_filters_rows(self, session):
         _seed(session)
-        f = _UserSearchFilter(email__eq="alice@example.com")
+        f = _UserSearchFilter(email__eq='alice@example.com')
         rows = list(session.execute(f.filter_sql(select(_User))).scalars())
         assert len(rows) == 1
-        assert rows[0].email == "alice@example.com"
+        assert rows[0].email == 'alice@example.com'
 
     def test_lt_filters_rows(self, session):
         _seed(session)
@@ -207,16 +206,16 @@ class TestFilterSql:
 
     def test_multiple_clauses_are_anded_in_sql(self, session):
         _seed(session)
-        f = _UserSearchFilter(email__contains="example.com", age__gte=30)
+        f = _UserSearchFilter(email__contains='example.com', age__gte=30)
         rows = list(session.execute(f.filter_sql(select(_User))).scalars())
         assert len(rows) == 1
-        assert rows[0].email == "alice@example.com"
+        assert rows[0].email == 'alice@example.com'
 
     def test_does_not_mutate_caller_query(self, session):
         """filter_sql must return a new statement, leaving the input alone."""
         _seed(session)
         base = select(_User)
-        f = _UserSearchFilter(email__contains="alice")
+        f = _UserSearchFilter(email__contains='alice')
         _ = f.filter_sql(base)
         # The original query has no WHERE clause.
         rows = list(session.execute(base).scalars())
@@ -227,19 +226,19 @@ class TestSerialization:
     """Tests for the DiscriminatedUnionMixin round-trip."""
 
     def test_roundtrip_with_kind_discriminator(self):
-        f = _UserSearchFilter(email__contains="alice", age__gte=30)
+        f = _UserSearchFilter(email__contains='alice', age__gte=30)
         data = f.model_dump()
-        assert data["kind"] == "_UserSearchFilter"
+        assert data['kind'] == '_UserSearchFilter'
         restored = _UserSearchFilter.model_validate(data)
-        assert restored.email__contains == "alice"
+        assert restored.email__contains == 'alice'
         assert restored.age__gte == 30
 
     def test_none_clauses_excluded_from_serialization_when_unset(self):
-        f = _UserSearchFilter(email__contains="alice")
+        f = _UserSearchFilter(email__contains='alice')
         data = f.model_dump()
         # Only the set clause carries a value; unset ones are None.
-        assert data["email__contains"] == "alice"
-        assert data["age__lt"] is None
+        assert data['email__contains'] == 'alice'
+        assert data['age__lt'] is None
 
 
 class TestParsingAndErrors:
@@ -250,26 +249,26 @@ class TestParsingAndErrors:
 
         class _FilterWithMeta(BaseSearchFilter, entity=_User):
             email__contains: str | None = None
-            meta_field: str = "constant"
+            meta_field: str = 'constant'
 
-        f = _FilterWithMeta(email__contains="alice")
+        f = _FilterWithMeta(email__contains='alice')
         # meta_field is not a filter clause, so it does not break matches.
-        u = _User(email="alice@example.com", age=10)
+        u = _User(email='alice@example.com', age=10)
         assert f.matches(u)
 
     def test_unknown_operator_raises(self):
         class _BadFilter(BaseSearchFilter, entity=_User):
             email__bogus: str | None = None
 
-        f = _BadFilter(email__bogus="x")
-        with pytest.raises(ValueError, match="Unsupported filter operator"):
-            f.matches(_User(email="x"))
+        f = _BadFilter(email__bogus='x')
+        with pytest.raises(ValueError, match='Unsupported filter operator'):
+            f.matches(_User(email='x'))
 
     def test_missing_column_raises(self):
         class _BadFilter(BaseSearchFilter, entity=_User):
             nonexistent__eq: str | None = None
 
-        f = _BadFilter(nonexistent__eq="x")
+        f = _BadFilter(nonexistent__eq='x')
         # The column is only resolved when building a SQL clause.
-        with pytest.raises(AttributeError, match="has no attribute"):
+        with pytest.raises(AttributeError, match='has no attribute'):
             f.filter_sql(select(_User))
