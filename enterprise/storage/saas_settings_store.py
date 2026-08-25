@@ -105,6 +105,39 @@ def managed_llm_key_config_from_model(
     return ManagedLlmKeyConfig(openhands_type=openhands_type)
 
 
+# Runtime values the SDK regenerates on every construction. They describe the
+# moment a request ran, not a setting anyone chose, so they are stripped before
+# persisting: storing one pins a stale value and makes every save look like a
+# change to the field that carries it.
+_VOLATILE_AGENT_SETTINGS_PATHS: tuple[tuple[str, ...], ...] = (
+    ('agent_context', 'current_datetime'),
+)
+
+_MISSING = object()
+
+
+def _without_matching_values(
+    member: dict[str, Any], org: dict[str, Any]
+) -> dict[str, Any]:
+    """Drop entries from ``member`` that already match the org-wide default.
+
+    Recurses into nested dicts so changing one field stores that field alone
+    rather than the whole block it lives in. What is left is a genuine
+    override; what is dropped resolves through the org on load, and so keeps
+    following the org when an admin changes it.
+    """
+    pruned: dict[str, Any] = {}
+    for key, value in member.items():
+        org_value = org.get(key, _MISSING)
+        if isinstance(value, dict) and isinstance(org_value, dict):
+            nested = _without_matching_values(value, org_value)
+            if nested:
+                pruned[key] = nested
+        elif org_value is _MISSING or org_value != value:
+            pruned[key] = value
+    return pruned
+
+
 # ``Settings`` fields that are also ``Org`` columns. The save loop below copies
 # matching keys onto the ``Org`` row, so these are held back: they are org-wide
 # defaults, set through the permission-gated ``POST /orgs/app``.
@@ -196,6 +229,27 @@ class SaasSettingsStore(SettingsStore):
         return None
 
     @staticmethod
+    def _agent_settings_dump(agent_settings: Any) -> dict[str, Any]:
+        """Dump agent settings to their persisted shape.
+
+        Both sides of the member-vs-org comparison go through here so they are
+        built the same way; a key present on one side only would read as a
+        difference and be stored as an override.
+        """
+        dumped = agent_settings.model_dump(mode='json', exclude={'llm': {'api_key'}})
+        # Lives in its own column.
+        dumped.pop('mcp_config', None)
+        for *parents, leaf in _VOLATILE_AGENT_SETTINGS_PATHS:
+            target = dumped
+            for parent in parents:
+                target = target.get(parent) if isinstance(target, dict) else None
+                if not isinstance(target, dict):
+                    break
+            if isinstance(target, dict):
+                target.pop(leaf, None)
+        return dumped
+
+    @staticmethod
     def _get_persisted_agent_settings(item: Settings) -> dict[str, Any]:
         """Dump the agent settings to persist as this member's override.
 
@@ -203,11 +257,7 @@ class SaasSettingsStore(SettingsStore):
         resolves to the org default. An ``agent_kind`` flip fills the new
         variant from SDK defaults, so persist only what the caller sent.
         """
-        persisted = item.agent_settings.model_dump(
-            mode='json',
-            exclude={'llm': {'api_key'}},
-        )
-        persisted.pop('mcp_config', None)
+        persisted = SaasSettingsStore._agent_settings_dump(item.agent_settings)
         sparse_fields = item._agent_kind_changed_fields
         if sparse_fields is not None:
             persisted = {
@@ -700,6 +750,15 @@ class SaasSettingsStore(SettingsStore):
                 for key, value in effective_agent_settings_diff.items()
                 if key not in MEMBER_PRIVATE_AGENT_KEYS
             }
+            # Keep the row a genuine delta: anything matching the org default
+            # is dropped so it resolves through the org on load, and so follows
+            # an admin changing that default later.
+            agent_settings_update = _without_matching_values(
+                agent_settings_update,
+                self._agent_settings_dump(
+                    OrgStore.get_agent_settings_from_org(org)
+                ),
+            )
             effective_conversation_diff = item.conversation_settings.model_dump(
                 mode='json'
             )

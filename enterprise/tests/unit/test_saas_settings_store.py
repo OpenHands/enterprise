@@ -2387,21 +2387,30 @@ async def test_agent_kind_flip_replaces_stale_member_diff(
         await store.store(loaded)
 
     diff = _member_diff(session_maker, fixture)
-    assert diff.get('agent_kind') == 'openhands'
     assert 'llm' not in diff
     assert 'acp_server' not in diff
     assert 'acp_model' not in diff
+    # ``openhands`` is the org default, so it needs no member-level entry.
+    assert 'agent_kind' not in diff
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch.object(SaasSettingsStore, '_ensure_api_key', new_callable=AsyncMock),
+    ):
+        loaded = await store.load()
+    assert loaded.agent_settings.agent_kind == 'openhands'
 
 
 @pytest.mark.asyncio
-async def test_non_flip_save_still_persists_full_agent_settings(
+async def test_non_flip_save_persists_only_the_changed_field(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """A save that does not change agent_kind writes the full dump.
+    """An ordinary edit stores that field alone.
 
-    The sparse write is scoped to kind flips, where the SDK fabricates the
-    fields the caller did not send. An ordinary edit fabricates nothing, so it
-    persists in full. This pins that boundary.
+    Everything the member did not change matches the org default and resolves
+    through it on load, so the row stays a delta.
     """
     fixture = org_with_multiple_members_fixture
     _seed_org_llm_and_clear_member(session_maker, fixture)
@@ -2419,9 +2428,9 @@ async def test_non_flip_save_still_persists_full_agent_settings(
         )
         await store.store(loaded)
 
-    diff = _member_diff(session_maker, fixture)
-    assert diff['llm']['model'] == 'openhands/hand-picked'
-    assert 'condenser' in diff or 'agent_context' in diff
+    assert _member_diff(session_maker, fixture) == {
+        'llm': {'model': 'openhands/hand-picked'}
+    }
 
 
 @pytest.mark.asyncio
@@ -2462,3 +2471,85 @@ async def test_explicit_llm_alongside_kind_flip_is_persisted(
         'openhands/hand-picked'
     )
 
+
+
+@pytest.mark.asyncio
+async def test_member_keeps_tracking_org_defaults_after_an_edit(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """Changing one setting must not detach a member from every other default.
+
+    The save path receives the member's composed settings: the org defaults
+    with their own changes already merged in. Storing that whole view turns
+    each inherited value into an explicit override, so an admin changing an
+    org default afterwards reaches only the members who never opened settings.
+    """
+    from sqlalchemy import select
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    _seed_org_llm_and_clear_member(session_maker, fixture)
+    store = SaasSettingsStore(str(fixture['member1_user_id']))
+    patches = (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch.object(SaasSettingsStore, '_ensure_api_key', new_callable=AsyncMock),
+    )
+
+    # The member changes one thing that has nothing to do with the LLM.
+    with contextlib.ExitStack() as stack:
+        for patcher in patches:
+            stack.enter_context(patcher)
+        loaded = await store.load()
+        loaded.update({'agent_settings_diff': {'enable_sub_agents': True}})
+        await store.store(loaded)
+
+    assert _member_diff(session_maker, fixture) == {'enable_sub_agents': True}
+
+    # An admin then moves the org onto a different model.
+    with session_maker() as session:
+        org = session.execute(
+            select(Org).where(Org.id == fixture['org_id'])
+        ).scalar_one()
+        org.agent_settings = {
+            'agent_kind': 'openhands',
+            'llm': {'model': 'openhands/new-org-model', 'base_url': ORG_LLM_BASE_URL},
+        }
+        session.commit()
+
+    with contextlib.ExitStack() as stack:
+        for patcher in patches:
+            stack.enter_context(patcher)
+        after = await store.load()
+
+    assert after.agent_settings.llm.model == 'openhands/new-org-model'
+    assert after.agent_settings.enable_sub_agents is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_values_are_not_persisted(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """``current_datetime`` is regenerated per call and must not be stored.
+
+    It describes when a request ran rather than a setting anyone chose.
+    Persisting it pins that moment: ``load()`` returns the stored value, so the
+    agent is handed a stale "now" on every later conversation.
+    """
+    fixture = org_with_multiple_members_fixture
+    _seed_org_llm_and_clear_member(session_maker, fixture)
+    store = SaasSettingsStore(str(fixture['member1_user_id']))
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch.object(SaasSettingsStore, '_ensure_api_key', new_callable=AsyncMock),
+    ):
+        loaded = await store.load()
+        loaded.update({'agent_settings_diff': {'enable_sub_agents': True}})
+        await store.store(loaded)
+
+    diff = _member_diff(session_maker, fixture)
+    assert 'current_datetime' not in diff.get('agent_context', {})
