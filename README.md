@@ -35,7 +35,7 @@
 
 OpenHands Enterprise brings the power of autonomous coding agents to your organization with the governance, security, and compliance your enterprise demands.
 
-OpenHands Enterprise allows you to run AI coding agents directly on your own servers or in your private cloud. 
+OpenHands Enterprise allows you to run AI coding agents directly on your own servers or in your private cloud.
 
 **This is the source-available, commercially licensed backend codebase for OpenHands Enterprise**. It provides a self-hosted developer control center for coding agents and automations, with additional enterprise features including authentication, billing, and integrations.
 
@@ -46,9 +46,19 @@ OpenHands Enterprise allows you to run AI coding agents directly on your own ser
 
 For commercial licensing and pricing inquiries, please [contact us](https://www.openhands.dev/contact).
 
+### What OpenHands Enterprise Offers
+
+- Multi-use RBAC — Manage multiple users from a single platform
+- Platform integrations — Invoke OpenHands directly from Slack, Jira, GitHub, GitLab, or Bitbucket
+- Scalability — Run unlimited parallel agent conversations without local resource constraints
+- Enterprise security — SAML authentication, RBAC, and centralized agent traces
+- Usage Monitoring — Track and enforce budgets; monitor usage across all users
+
+> [Choosing between OpenHands Agent Canvas and OpenHands Enterprise](https://docs.openhands.dev/enterprise/enterprise-vs-oss)
+
 ### Free 30 Day Trial
 
-The preferred method of installing OpenHands Enterprise is via our Replicated installer. 
+The preferred method of installing OpenHands Enterprise is via our Replicated installer.
 - Fist, read the [Quick Start guide](https://docs.openhands.dev/enterprise/quick-start) to understand system requirements for OpenHands Enterprise
 - Then, [register for a Trial account](https://install.r9.all-hands.dev/openhands/signup) via the Replicated installer portal.
 
