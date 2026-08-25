@@ -563,16 +563,62 @@ async def test_get_budget_state_uses_last_known_good_snapshot_on_fetch_failure(
         await session.commit()
 
         get_financial_data = AsyncMock(side_effect=TimeoutError('timed out'))
-        with patch(
-            'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
-            get_financial_data,
+        with (
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+                get_financial_data,
+            ),
+            patch(
+                'server.services.org_budget_service.asyncio.sleep',
+                AsyncMock(),
+            ),
         ):
             state = await OrgBudgetService(session).get_budget_state(budget_org.id)
 
     assert state['current_spend'] == 90.0
     assert state['spend_status'] == 'stale'
     assert state['spend_observed_at'] == observed_at
-    get_financial_data.assert_awaited_once()
+    assert get_financial_data.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_get_budget_state_retries_transient_fetch_failure(
+    async_session_maker, budget_org
+):
+    async with async_session_maker() as session:
+        session.add(
+            OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=True,
+                reset_day=1,
+                monthly_limit=100.0,
+                cycle_start_at=datetime.now(UTC),
+                cycle_start_spend=40.0,
+            )
+        )
+        await session.commit()
+
+        get_financial_data = AsyncMock(
+            side_effect=[
+                TimeoutError('timed out'),
+                _financial_data(team_spend=130.0),
+            ]
+        )
+        with (
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+                get_financial_data,
+            ),
+            patch(
+                'server.services.org_budget_service.asyncio.sleep',
+                AsyncMock(),
+            ),
+        ):
+            state = await OrgBudgetService(session).get_budget_state(budget_org.id)
+
+    assert state['current_spend'] == 90.0
+    assert state['spend_status'] == 'live'
+    assert get_financial_data.await_count == 2
 
 
 @pytest.mark.asyncio

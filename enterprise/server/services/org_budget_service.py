@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import AsyncGenerator, Literal
 from uuid import UUID
 
+import httpx
 from fastapi import HTTPException, Request, status
 from server.auth.authorization import RoleName
 from server.services.smtp_email_service import SMTPEmailService
@@ -39,6 +40,9 @@ DEFAULT_THRESHOLDS = (
     (90, True, True),
     (100, True, True),
 )
+
+LITELLM_FINANCIAL_READ_MAX_ATTEMPTS = 3
+LITELLM_FINANCIAL_READ_RETRY_DELAY_SECONDS = 0.1
 
 
 @dataclass
@@ -109,6 +113,14 @@ def _required_nonnegative_float(value: object, field_name: str) -> float:
     if result is None:
         raise ValueError(f'{field_name} is required')
     return result
+
+
+def _is_retryable_litellm_read_error(error: Exception) -> bool:
+    if isinstance(error, (TimeoutError, httpx.TransportError)):
+        return True
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code == 429 or error.response.status_code >= 500
+    return False
 
 
 def _parse_litellm_financial_snapshot(
@@ -637,9 +649,7 @@ class OrgBudgetService:
     ) -> BudgetFinancialSnapshotResult:
         error: str | None = None
         try:
-            financial_data = await LiteLlmManager.get_team_members_financial_data(
-                str(org_id)
-            )
+            financial_data = await self._fetch_litellm_financial_data(org_id)
             snapshot = _parse_litellm_financial_snapshot(financial_data)
             org_member_ids = await self._org_member_ids(org_id)
             missing_member_ids = sorted(org_member_ids - set(snapshot.members))
@@ -679,6 +689,30 @@ class OrgBudgetService:
             status='unavailable',
             error=error,
         )
+
+    async def _fetch_litellm_financial_data(self, org_id: UUID) -> dict:
+        for attempt in range(1, LITELLM_FINANCIAL_READ_MAX_ATTEMPTS + 1):
+            try:
+                return await LiteLlmManager.get_team_members_financial_data(str(org_id))
+            except Exception as error:
+                if (
+                    attempt == LITELLM_FINANCIAL_READ_MAX_ATTEMPTS
+                    or not _is_retryable_litellm_read_error(error)
+                ):
+                    raise
+                logger.warning(
+                    'org_budget_litellm_financial_data_fetch_retry',
+                    extra={
+                        'org_id': str(org_id),
+                        'attempt': attempt,
+                        'error': str(error),
+                    },
+                )
+                await asyncio.sleep(
+                    LITELLM_FINANCIAL_READ_RETRY_DELAY_SECONDS * attempt
+                )
+
+        raise RuntimeError('unreachable')
 
     @staticmethod
     def _snapshot_unavailable_detail() -> str:
