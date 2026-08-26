@@ -2196,9 +2196,7 @@ async def test_acp_switch_does_not_overwrite_org_llm_profiles(
         api_key=SecretStr('org-key'),
     )
     async with async_session_maker() as session:
-        org = (
-            await session.execute(select(Org).where(Org.id == org_id))
-        ).scalar_one()
+        org = (await session.execute(select(Org).where(Org.id == org_id))).scalar_one()
         org.llm_profiles = {
             'profiles': {'Default': good.model_dump(mode='json')},
             'active': 'Default',
@@ -2211,9 +2209,7 @@ async def test_acp_switch_does_not_overwrite_org_llm_profiles(
         await member_store.store(settings)
 
     async with async_session_maker() as session:
-        org = (
-            await session.execute(select(Org).where(Org.id == org_id))
-        ).scalar_one()
+        org = (await session.execute(select(Org).where(Org.id == org_id))).scalar_one()
     profile = (org.llm_profiles or {})['profiles']['Default']
     assert profile['model'] == 'litellm_proxy/claude-sonnet-4-5-20250929'
     assert (
@@ -2240,4 +2236,3 @@ def test_profile_sync_skips_non_openhands_agent_kind():
     active = settings.llm_profiles.require('Default')
     assert active.model == 'litellm_proxy/claude-sonnet-4-5-20250929'
     assert active.base_url == 'http://x:4000'
-
