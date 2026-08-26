@@ -4,6 +4,14 @@ from server.services.landing_notifications.consumer_models import (
     PullRequestRecord,
     ReleasePlan,
 )
+from server.services.landing_notifications.guidance import build_test_guidance
+from server.services.landing_notifications.guidance_models import (
+    GuidanceKind,
+    GuidanceSource,
+    LinearIssueContext,
+    TestGuidance,
+    TestInstruction,
+)
 from server.services.landing_notifications.models import (
     DeliveryPolicy,
     Environment,
@@ -22,12 +30,18 @@ __all__ = [
     'EnvironmentRelease',
     'FeatureProgress',
     'FeatureRegistration',
+    'GuidanceKind',
+    'GuidanceSource',
     'LandingStage',
+    'LinearIssueContext',
     'PullRequestRecord',
     'ReleaseArtifact',
     'ReleaseComponent',
     'ReleaseEvidence',
     'ReleasePlan',
+    'TestGuidance',
+    'TestInstruction',
+    'build_test_guidance',
     'derive_stage',
     'plan_release',
 ]
