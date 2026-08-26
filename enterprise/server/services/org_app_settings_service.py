@@ -92,6 +92,10 @@ class OrgAppSettingsService:
         User ID is obtained from the injected user_context.
         Session auto-commits at request end via DbSessionInjector.
 
+        Org-wide fields (``registered_marketplaces``, ``agent_settings_diff``)
+        are permission-gated on the route, not here — this method assumes the
+        caller has already been authorized to write whatever it passes.
+
         Args:
             update_data: The update data from the request
 
