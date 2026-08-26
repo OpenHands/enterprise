@@ -19,9 +19,11 @@ from server.routes.org_models import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from storage.org import Org
+from storage.org_store import OrgStore
 from storage.user import User
 
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.sdk.settings import OpenHandsAgentSettings
 
 
 @dataclass
@@ -101,6 +103,9 @@ class OrgAppSettingsStore:
 
         Only updates fields that are explicitly provided in update_data.
         Uses flush() - commit happens at request end via DbSessionInjector.
+
+        ``agent_settings_diff`` merges into the existing ``agent_settings``
+        defaults; every other field is a plain column write.
 
         Implements optimistic locking: if last_known_updated_at is provided and
         doesn't match the current DB version, raises OrgConcurrentModificationError.
@@ -204,6 +209,16 @@ class OrgAppSettingsStore:
             org.registered_marketplaces = [
                 mp.model_dump(mode='json') for mp in validated_marketplaces
             ]
+
+        # Popped before the setattr loop: ``Org`` has no matching attribute,
+        # and this is a diff to merge into the JSON column, not a value to set.
+        agent_settings_diff = update_dict.pop('agent_settings_diff', None)
+        if agent_settings_diff is not None:
+            org.agent_settings = OrgStore._merge_and_validate_settings(
+                org.agent_settings,
+                agent_settings_diff,
+                OpenHandsAgentSettings,
+            ).model_dump(mode='json', exclude_unset=True)
 
         # Update regular org fields
         for field, value in update_dict.items():
