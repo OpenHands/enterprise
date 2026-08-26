@@ -111,6 +111,12 @@ class Permission(str, Enum):
     # and their targeting rules. Granted only to the ``superadmin`` super role.
     MANAGE_FEATURE_FLAGS = 'manage_feature_flags'
 
+    # Instance-level quota administration: set or clear an organization's
+    # daily conversation limit. Like MANAGE_SUPER_ADMINS this is an explicit
+    # instance-admin capability -- it is NOT implied by any org-scoped role,
+    # so an org owner cannot lift their own org's quota.
+    MANAGE_ORG_QUOTA = 'manage_org_quota'
+
 
 class RoleName(str, Enum):
     """Role names used in the system.
@@ -237,7 +243,8 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
 SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
     # Only superadmin is functional for now. It can create organizations,
     # provision users into a selected organization without becoming an org
-    # member itself, and grant/revoke the super-admin role on other users.
+    # member itself, grant/revoke the super-admin role on other users, and
+    # set org-level conversation quotas.
     # Additional instance-admin capabilities should be added here explicitly
     # as the corresponding routes are wired to permission checks.
     RoleName.OWNER: frozenset(),
@@ -247,6 +254,7 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.PROVISION_USER,
             Permission.MANAGE_SUPER_ADMINS,
             Permission.MANAGE_FEATURE_FLAGS,
+            Permission.MANAGE_ORG_QUOTA,
         ]
     ),
     RoleName.MEMBER: frozenset(),

@@ -33,6 +33,7 @@ from storage.org_git_claim import OrgGitClaim  # noqa: F401
 from storage.org_invitation import OrgInvitation  # noqa: F401
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride  # noqa: F401
+from storage.quota_increase_request import QuotaIncreaseRequest  # noqa: F401
 from storage.role import Role
 from storage.slack_conversation import SlackConversation  # noqa: F401
 from storage.stored_conversation_metadata import StoredConversationMetadata

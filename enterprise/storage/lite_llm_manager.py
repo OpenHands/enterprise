@@ -1318,11 +1318,20 @@ class LiteLlmManager:
         if not user_membership:
             return None
 
+        team_info = team_response.get('team_info', {})
         if keycloak_user_id != team_id:
-            team_info = team_response.get('team_info', {})
             if 'max_budget' not in team_info or 'spend' not in team_info:
                 return None
             user_membership['max_budget_in_team'] = team_info['max_budget']
+            user_membership['spend'] = team_info['spend']
+        elif 'spend' not in user_membership:
+            # A personal workspace belongs to one user, so the team's budget is
+            # that user's balance; store it the way a per-member budget would.
+            if 'max_budget' not in team_info or 'spend' not in team_info:
+                return None
+            user_membership['litellm_budget_table'] = {
+                'max_budget': team_info['max_budget']
+            }
             user_membership['spend'] = team_info['spend']
 
         return user_membership

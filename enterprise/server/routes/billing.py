@@ -109,7 +109,7 @@ async def get_credits(
     max_budget, spend = budget_info
     credits = calculate_credits({'max_budget': max_budget, 'spend': spend})
     if credits is None:
-        return GetCreditsResponse()
+        return GetCreditsResponse(credits=Decimal('0.00'))
     return GetCreditsResponse(credits=Decimal('{:.2f}'.format(credits)))
 
 
