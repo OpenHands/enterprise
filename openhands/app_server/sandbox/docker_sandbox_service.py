@@ -516,23 +516,53 @@ class DockerSandboxService(SandboxService):
             raise SandboxError('Failed to start container') from e
 
     async def resume_sandbox(self, sandbox_id: str) -> bool:
-        """Resume a paused sandbox."""
-        # Enforce sandbox limits by cleaning up old sandboxes
-        await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
+        """Resume a resumable container or no-op when it is already active."""
+        if not sandbox_id.startswith(self.container_name_prefix):
+            return False
 
         try:
-            if not sandbox_id.startswith(self.container_name_prefix):
-                return False
             container = self.docker_client.containers.get(sandbox_id)
+            container_status = container.status.lower()
+            if container_status in ('running', 'created', 'restarting'):
+                return True
+            if container_status == 'removing':
+                return False
+            if container_status not in ('paused', 'exited'):
+                raise SandboxError(
+                    status_code=409,
+                    detail={
+                        'code': 'runtime_not_resumable',
+                        'current_status': container_status,
+                    },
+                )
 
-            if container.status == 'paused':
+            await self.pause_old_sandboxes(
+                self.max_num_sandboxes - 1,
+                exclude_sandbox_ids={sandbox_id},
+            )
+            container.reload()
+            container_status = container.status.lower()
+            if container_status in ('running', 'created', 'restarting'):
+                return True
+            if container_status == 'removing':
+                return False
+            if container_status == 'paused':
                 container.unpause()
-            elif container.status == 'exited':
+            elif container_status == 'exited':
                 container.start()
-
+            else:
+                raise SandboxError(
+                    status_code=409,
+                    detail={
+                        'code': 'runtime_not_resumable',
+                        'current_status': container_status,
+                    },
+                )
             return True
-        except (NotFound, APIError):
+        except NotFound:
             return False
+        except APIError as exc:
+            raise SandboxError(status_code=502, detail='runtime_resume_failed') from exc
 
     async def pause_sandbox(self, sandbox_id: str) -> bool:
         """Pause a running sandbox."""

@@ -166,10 +166,11 @@ class SandboxService(ABC):
 
     @abstractmethod
     async def resume_sandbox(self, sandbox_id: str) -> bool:
-        """Begin the process of resuming a sandbox.
+        """Begin resuming a sandbox or no-op when it is already active.
 
-        Return True if the sandbox exists and is being resumed or is already running.
-        Return False if the sandbox did not exist.
+        Return True if the sandbox is being resumed or is already active. Return False
+        if the sandbox or runtime does not exist. Raise SandboxError for state conflicts
+        or backend failures.
         """
 
     async def wait_for_sandbox_running(
@@ -315,23 +316,29 @@ class SandboxService(ABC):
         """
         return True
 
-    async def pause_old_sandboxes(self, max_num_sandboxes: int) -> list[str]:
+    async def pause_old_sandboxes(
+        self,
+        max_num_sandboxes: int,
+        exclude_sandbox_ids: set[str] | None = None,
+    ) -> list[str]:
         """Pause the oldest sandboxes if there are more than max_num_sandboxes running.
         In a multi user environment, this will pause sandboxes only for the current user.
 
         Args:
             max_num_sandboxes: Maximum number of sandboxes to keep running
+            exclude_sandbox_ids: Sandboxes that must not be paused by this cleanup
 
         Returns:
             List of sandbox IDs that were paused
         """
-        if max_num_sandboxes <= 0:
-            raise ValueError('max_num_sandboxes must be greater than 0')
+        if max_num_sandboxes < 0:
+            raise ValueError('max_num_sandboxes must be non-negative')
 
         # Get all running sandboxes (iterate through all pages)
+        excluded = exclude_sandbox_ids or set()
         running_sandboxes = []
         async for sandbox in page_iterator(self.search_sandboxes, limit=100):
-            if sandbox.status == SandboxStatus.RUNNING:
+            if sandbox.status == SandboxStatus.RUNNING and sandbox.id not in excluded:
                 running_sandboxes.append(sandbox)
 
         # If we're within the limit, no cleanup needed

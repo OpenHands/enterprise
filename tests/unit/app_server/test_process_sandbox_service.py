@@ -9,6 +9,7 @@ import httpx
 import psutil
 import pytest
 
+from openhands.app_server.errors import SandboxError
 from openhands.app_server.sandbox.process_sandbox_service import (
     ProcessInfo,
     ProcessSandboxService,
@@ -172,6 +173,77 @@ class TestProcessSandboxService:
         """Test resuming a sandbox that doesn't exist."""
         result = await process_sandbox_service.resume_sandbox('nonexistent')
         assert result is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('process_status', 'should_resume'),
+        [(psutil.STATUS_RUNNING, False), (psutil.STATUS_STOPPED, True)],
+    )
+    async def test_resume_sandbox_state_aware(
+        self, process_sandbox_service, process_status, should_resume
+    ):
+        process_info = ProcessInfo(
+            pid=1234,
+            port=9000,
+            user_id='test-user-id',
+            working_dir='/tmp/test',
+            session_api_key='test-key',
+            created_at=datetime.now(),
+            sandbox_spec_id='test-spec',
+        )
+        process = MagicMock()
+        process.is_running.return_value = True
+        process.status.return_value = process_status
+
+        with (
+            patch.dict(
+                'openhands.app_server.sandbox.process_sandbox_service._processes',
+                {'test-sandbox': process_info},
+                clear=True,
+            ),
+            patch(
+                'openhands.app_server.sandbox.process_sandbox_service.psutil.Process',
+                return_value=process,
+            ),
+        ):
+            result = await process_sandbox_service.resume_sandbox('test-sandbox')
+
+        assert result is True
+        if should_resume:
+            process.resume.assert_called_once()
+        else:
+            process.resume.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resume_sandbox_access_denied_is_upstream_failure(
+        self, process_sandbox_service
+    ):
+        process_info = ProcessInfo(
+            pid=1234,
+            port=9000,
+            user_id='test-user-id',
+            working_dir='/tmp/test',
+            session_api_key='test-key',
+            created_at=datetime.now(),
+            sandbox_spec_id='test-spec',
+        )
+
+        with (
+            patch.dict(
+                'openhands.app_server.sandbox.process_sandbox_service._processes',
+                {'test-sandbox': process_info},
+                clear=True,
+            ),
+            patch(
+                'openhands.app_server.sandbox.process_sandbox_service.psutil.Process',
+                side_effect=psutil.AccessDenied(1234),
+            ),
+            pytest.raises(SandboxError) as exc_info,
+        ):
+            await process_sandbox_service.resume_sandbox('test-sandbox')
+
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail == 'runtime_status_lookup_failed'
 
     @pytest.mark.asyncio
     async def test_pause_sandbox_not_found(self, process_sandbox_service):

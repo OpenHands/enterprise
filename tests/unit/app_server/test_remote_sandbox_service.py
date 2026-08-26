@@ -30,6 +30,7 @@ from openhands.app_server.sandbox.remote_sandbox_service import (
     WEBHOOK_CALLBACK_VARIABLE,
     RemoteSandboxService,
     StoredRemoteSandbox,
+    _hash_session_api_key,
 )
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
@@ -622,12 +623,12 @@ class TestSandboxLifecycle:
         assert request_data['runtime_class'] == 'sysbox-runc'
 
     @pytest.mark.asyncio
-    async def test_resume_sandbox_success(self, remote_sandbox_service):
-        """Test successful sandbox resume."""
-        # Setup
-        stored_sandbox = create_stored_sandbox()
-        runtime_data = create_runtime_data()
-
+    @pytest.mark.parametrize('runtime_status', ['paused', 'error'])
+    async def test_resume_sandbox_success(self, remote_sandbox_service, runtime_status):
+        stored_sandbox = create_stored_sandbox(
+            session_api_key_hash='existing-session-key-hash'
+        )
+        runtime_data = create_runtime_data(status=runtime_status)
         remote_sandbox_service._get_stored_sandbox = AsyncMock(
             return_value=stored_sandbox
         )
@@ -639,12 +640,16 @@ class TestSandboxLifecycle:
         mock_response.json.return_value = {'session_api_key': 'new-session-key-123'}
         remote_sandbox_service.httpx_client.request.return_value = mock_response
 
-        # Execute
         result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
 
-        # Verify
         assert result is True
-        remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(9)
+        assert stored_sandbox.session_api_key_hash == _hash_session_api_key(
+            'new-session-key-123'
+        )
+        assert remote_sandbox_service.db_session.commit.await_count == 2
+        remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(
+            9, exclude_sandbox_ids={'test-sandbox-123'}
+        )
         remote_sandbox_service.httpx_client.request.assert_called_once_with(
             'POST',
             'https://api.example.com/resume',
@@ -653,40 +658,319 @@ class TestSandboxLifecycle:
         )
 
     @pytest.mark.asyncio
-    async def test_resume_sandbox_not_found(self, remote_sandbox_service):
-        """Test resuming non-existent sandbox."""
-        # Setup
-        remote_sandbox_service._get_stored_sandbox = AsyncMock(return_value=None)
-        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
-
-        # Execute
-        result = await remote_sandbox_service.resume_sandbox('non-existent')
-
-        # Verify
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_resume_sandbox_runtime_not_found(self, remote_sandbox_service):
-        """Test resuming sandbox when runtime returns 404."""
-        # Setup
-        stored_sandbox = create_stored_sandbox()
-        runtime_data = create_runtime_data()
-
+    @pytest.mark.parametrize('runtime_status', ['running', 'starting'])
+    async def test_resume_active_sandbox_is_noop(
+        self, remote_sandbox_service, runtime_status
+    ):
+        stored_sandbox = create_stored_sandbox(
+            session_api_key_hash='existing-session-key-hash'
+        )
         remote_sandbox_service._get_stored_sandbox = AsyncMock(
             return_value=stored_sandbox
         )
-        remote_sandbox_service._get_runtime = AsyncMock(return_value=runtime_data)
+        remote_sandbox_service._get_runtime = AsyncMock(
+            return_value=create_runtime_data(status=runtime_status)
+        )
         remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
 
+        result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert result is True
+        assert stored_sandbox.session_api_key_hash == _hash_session_api_key(
+            'test-session-key'
+        )
+        remote_sandbox_service.db_session.commit.assert_awaited_once()
+        remote_sandbox_service.pause_old_sandboxes.assert_not_called()
+        remote_sandbox_service.httpx_client.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('runtime_status', ['stopping', 'terminating'])
+    async def test_resume_transitioning_sandbox_preserves_conflict(
+        self, remote_sandbox_service, runtime_status
+    ):
+        stored_sandbox = create_stored_sandbox(
+            session_api_key_hash='existing-session-key-hash'
+        )
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            return_value=create_runtime_data(status=runtime_status)
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+
+        with pytest.raises(SandboxError) as exc_info:
+            await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == {
+            'code': 'runtime_not_resumable',
+            'current_status': runtime_status,
+        }
+        assert stored_sandbox.session_api_key_hash is None
+        remote_sandbox_service.db_session.commit.assert_awaited_once()
+        remote_sandbox_service.pause_old_sandboxes.assert_not_called()
+        remote_sandbox_service.httpx_client.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resume_sandbox_not_found_before_cleanup(
+        self, remote_sandbox_service
+    ):
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(return_value=None)
+        remote_sandbox_service._get_runtime = AsyncMock()
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+
+        result = await remote_sandbox_service.resume_sandbox('non-existent')
+
+        assert result is False
+        remote_sandbox_service._get_runtime.assert_not_called()
+        remote_sandbox_service.pause_old_sandboxes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resume_stopped_runtime_is_missing(self, remote_sandbox_service):
+        stored_sandbox = create_stored_sandbox(
+            session_api_key_hash='existing-session-key-hash'
+        )
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            return_value=create_runtime_data(status='stopped')
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+
+        result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert result is False
+        assert stored_sandbox.session_api_key_hash is None
+        remote_sandbox_service.db_session.commit.assert_awaited_once()
+        remote_sandbox_service.pause_old_sandboxes.assert_not_called()
+        remote_sandbox_service.httpx_client.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resume_sandbox_runtime_not_found(self, remote_sandbox_service):
+        stored_sandbox = create_stored_sandbox(
+            session_api_key_hash='existing-session-key-hash'
+        )
+        request = httpx.Request(
+            'GET', 'https://api.example.com/sessions/test-sandbox-123'
+        )
+        response = httpx.Response(404, request=request)
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                'Not found', request=request, response=response
+            )
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+
+        result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert result is False
+        assert stored_sandbox.session_api_key_hash is None
+        remote_sandbox_service.db_session.commit.assert_awaited_once()
+        remote_sandbox_service.pause_old_sandboxes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resume_sandbox_preserves_runtime_api_conflict(
+        self, remote_sandbox_service
+    ):
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=create_stored_sandbox()
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            side_effect=[
+                create_runtime_data(status='paused'),
+                create_runtime_data(status='stopping'),
+            ]
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        conflict_detail = {
+            'code': 'runtime_not_resumable',
+            'current_status': 'stopping',
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 409
+        mock_response.json.return_value = {'detail': conflict_detail}
+        remote_sandbox_service.httpx_client.request.return_value = mock_response
+
+        with pytest.raises(SandboxError) as exc_info:
+            await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == conflict_detail
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('conflict_detail', 'expected_status', 'expected_detail'),
+        [
+            (
+                {
+                    'code': 'runtime_not_resumable',
+                    'current_status': 'terminating',
+                },
+                409,
+                {
+                    'code': 'runtime_not_resumable',
+                    'current_status': 'terminating',
+                },
+            ),
+            ('legacy conflict', 502, 'runtime_status_lookup_failed'),
+        ],
+    )
+    async def test_resume_conflict_handles_status_refresh_failure(
+        self,
+        remote_sandbox_service,
+        conflict_detail,
+        expected_status,
+        expected_detail,
+    ):
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=create_stored_sandbox()
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            side_effect=[
+                create_runtime_data(status='paused'),
+                httpx.HTTPError('refresh failed'),
+            ]
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        mock_response = MagicMock()
+        mock_response.status_code = 409
+        mock_response.json.return_value = {'detail': conflict_detail}
+        remote_sandbox_service.httpx_client.request.return_value = mock_response
+
+        with pytest.raises(SandboxError) as exc_info:
+            await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert exc_info.value.status_code == expected_status
+        assert exc_info.value.detail == expected_detail
+
+    @pytest.mark.asyncio
+    async def test_resume_conflict_is_noop_when_runtime_became_active(
+        self, remote_sandbox_service
+    ):
+        stored_sandbox = create_stored_sandbox(
+            session_api_key_hash='existing-session-key-hash'
+        )
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            side_effect=[
+                create_runtime_data(status='paused'),
+                create_runtime_data(
+                    status='running', session_api_key='concurrent-session-key'
+                ),
+            ]
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        mock_response = MagicMock()
+        mock_response.status_code = 409
+        mock_response.json.return_value = {'detail': 'already running'}
+        remote_sandbox_service.httpx_client.request.return_value = mock_response
+
+        result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert result is True
+        assert stored_sandbox.session_api_key_hash == _hash_session_api_key(
+            'concurrent-session-key'
+        )
+        assert remote_sandbox_service.db_session.commit.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_resume_post_not_found_remains_missing(self, remote_sandbox_service):
+        stored_sandbox = create_stored_sandbox(
+            session_api_key_hash='existing-session-key-hash'
+        )
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            return_value=create_runtime_data(status='paused')
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
         mock_response = MagicMock()
         mock_response.status_code = 404
         remote_sandbox_service.httpx_client.request.return_value = mock_response
 
-        # Execute
         result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
 
-        # Verify
         assert result is False
+        assert stored_sandbox.session_api_key_hash is None
+        remote_sandbox_service.db_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('runtime_data', [[], {}, {'status': None}, {'status': 1}])
+    async def test_resume_rejects_malformed_runtime_response(
+        self, remote_sandbox_service, runtime_data
+    ):
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=create_stored_sandbox()
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(return_value=runtime_data)
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+
+        with pytest.raises(SandboxError) as exc_info:
+            await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail == 'runtime_status_lookup_failed'
+        remote_sandbox_service.pause_old_sandboxes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resume_success_requires_rotated_session_key(
+        self, remote_sandbox_service
+    ):
+        stored_sandbox = create_stored_sandbox(
+            session_api_key_hash='existing-session-key-hash'
+        )
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            return_value=create_runtime_data(status='paused')
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}
+        remote_sandbox_service.httpx_client.request.return_value = mock_response
+
+        with pytest.raises(SandboxError) as exc_info:
+            await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert exc_info.value.status_code == 502
+        assert stored_sandbox.session_api_key_hash is None
+        remote_sandbox_service.db_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_resume_rejects_unrotated_session_key(self, remote_sandbox_service):
+        session_api_key = 'unchanged-session-key'
+        stored_sandbox = create_stored_sandbox(
+            session_api_key_hash=_hash_session_api_key(session_api_key)
+        )
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            return_value=create_runtime_data(status='paused')
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'session_api_key': session_api_key}
+        remote_sandbox_service.httpx_client.request.return_value = mock_response
+
+        with pytest.raises(SandboxError) as exc_info:
+            await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail == 'runtime_session_key_not_rotated'
+        assert stored_sandbox.session_api_key_hash is None
+        remote_sandbox_service.db_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_pause_sandbox_success(self, remote_sandbox_service):
@@ -1331,11 +1615,8 @@ class TestErrorHandling:
 
     @pytest.mark.asyncio
     async def test_resume_sandbox_http_error(self, remote_sandbox_service):
-        """Test resume sandbox with HTTP error."""
-        # Setup
         stored_sandbox = create_stored_sandbox()
-        runtime_data = create_runtime_data()
-
+        runtime_data = create_runtime_data(status='paused')
         remote_sandbox_service._get_stored_sandbox = AsyncMock(
             return_value=stored_sandbox
         )
@@ -1345,11 +1626,11 @@ class TestErrorHandling:
             'API Error'
         )
 
-        # Execute
-        result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+        with pytest.raises(SandboxError) as exc_info:
+            await remote_sandbox_service.resume_sandbox('test-sandbox-123')
 
-        # Verify
-        assert result is False
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail == 'runtime_resume_failed'
 
     @pytest.mark.asyncio
     async def test_pause_sandbox_http_error(self, remote_sandbox_service):
@@ -1629,6 +1910,39 @@ class TestRemoteSandboxRunningCleanup:
 
         assert paused == ['old-sb']
         remote_sandbox_service.pause_sandbox.assert_called_once_with('old-sb')
+
+    @pytest.mark.asyncio
+    async def test_pause_old_sandboxes_can_pause_all(self, remote_sandbox_service):
+        running = [create_stored_sandbox('only-sb')]
+        remote_sandbox_service._get_user_running_sandboxes = AsyncMock(
+            return_value=running
+        )
+        remote_sandbox_service.pause_sandbox = AsyncMock(return_value=True)
+
+        paused = await remote_sandbox_service.pause_old_sandboxes(max_num_sandboxes=0)
+
+        assert paused == ['only-sb']
+        remote_sandbox_service.pause_sandbox.assert_called_once_with('only-sb')
+
+    @pytest.mark.asyncio
+    async def test_pause_old_sandboxes_excludes_requested_sandbox(
+        self, remote_sandbox_service
+    ):
+        running = [
+            create_stored_sandbox('target'),
+            create_stored_sandbox('other'),
+        ]
+        remote_sandbox_service._get_user_running_sandboxes = AsyncMock(
+            return_value=running
+        )
+        remote_sandbox_service.pause_sandbox = AsyncMock(return_value=True)
+
+        paused = await remote_sandbox_service.pause_old_sandboxes(
+            max_num_sandboxes=0, exclude_sandbox_ids={'target'}
+        )
+
+        assert paused == ['other']
+        remote_sandbox_service.pause_sandbox.assert_called_once_with('other')
 
     @pytest.mark.asyncio
     async def test_pause_old_sandboxes_noop_when_within_limit(

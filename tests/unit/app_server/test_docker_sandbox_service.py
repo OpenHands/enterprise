@@ -809,7 +809,7 @@ class TestDockerSandboxService:
         mock_container.unpause.assert_called_once()
         mock_container.start.assert_not_called()
         # Verify cleanup was called with the correct limit
-        mock_cleanup.assert_called_once_with(2)
+        mock_cleanup.assert_called_once_with(2, exclude_sandbox_ids={'oh-test-abc123'})
 
     async def test_resume_sandbox_from_exited(self, service):
         """Test resuming an exited sandbox."""
@@ -829,25 +829,37 @@ class TestDockerSandboxService:
         mock_container.start.assert_called_once()
         mock_container.unpause.assert_not_called()
         # Verify cleanup was called with the correct limit
-        mock_cleanup.assert_called_once_with(2)
+        mock_cleanup.assert_called_once_with(2, exclude_sandbox_ids={'oh-test-abc123'})
+
+    async def test_resume_becomes_active_during_cleanup_is_noop(self, service):
+        mock_container = MagicMock(status='paused')
+        service.docker_client.containers.get.return_value = mock_container
+
+        async def activate_container(*args, **kwargs):
+            mock_container.status = 'running'
+            return []
+
+        with patch.object(
+            service, 'pause_old_sandboxes', side_effect=activate_container
+        ):
+            result = await service.resume_sandbox('oh-test-abc123')
+
+        assert result is True
+        mock_container.reload.assert_called_once()
+        mock_container.unpause.assert_not_called()
+        mock_container.start.assert_not_called()
 
     async def test_resume_sandbox_wrong_prefix(self, service):
-        """Test resuming sandbox with wrong prefix."""
         with patch.object(
             service, 'pause_old_sandboxes', return_value=[]
         ) as mock_cleanup:
-            # Execute
             result = await service.resume_sandbox('wrong-prefix-abc123')
 
-        # Verify
         assert result is False
         service.docker_client.containers.get.assert_not_called()
-        # Verify cleanup was still called
-        mock_cleanup.assert_called_once_with(2)
+        mock_cleanup.assert_not_called()
 
     async def test_resume_sandbox_not_found(self, service):
-        """Test resuming non-existent sandbox."""
-        # Setup
         service.docker_client.containers.get.side_effect = NotFound(
             'Container not found'
         )
@@ -855,13 +867,51 @@ class TestDockerSandboxService:
         with patch.object(
             service, 'pause_old_sandboxes', return_value=[]
         ) as mock_cleanup:
-            # Execute
             result = await service.resume_sandbox('oh-test-abc123')
 
-        # Verify
         assert result is False
-        # Verify cleanup was still called
-        mock_cleanup.assert_called_once_with(2)
+        mock_cleanup.assert_not_called()
+
+    @pytest.mark.parametrize('container_status', ['running', 'created', 'restarting'])
+    async def test_resume_active_sandbox_is_noop(self, service, container_status):
+        mock_container = MagicMock(status=container_status)
+        service.docker_client.containers.get.return_value = mock_container
+
+        with patch.object(
+            service, 'pause_old_sandboxes', return_value=[]
+        ) as mock_cleanup:
+            result = await service.resume_sandbox('oh-test-abc123')
+
+        assert result is True
+        mock_cleanup.assert_not_called()
+        mock_container.unpause.assert_not_called()
+        mock_container.start.assert_not_called()
+
+    async def test_resume_non_resumable_sandbox_conflicts(self, service):
+        mock_container = MagicMock(status='dead')
+        service.docker_client.containers.get.return_value = mock_container
+
+        with (
+            patch.object(service, 'pause_old_sandboxes', return_value=[]) as cleanup,
+            pytest.raises(SandboxError) as exc_info,
+        ):
+            await service.resume_sandbox('oh-test-abc123')
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == {
+            'code': 'runtime_not_resumable',
+            'current_status': 'dead',
+        }
+        cleanup.assert_not_called()
+
+    async def test_resume_docker_api_error_is_upstream_failure(self, service):
+        service.docker_client.containers.get.side_effect = APIError('Docker failed')
+
+        with pytest.raises(SandboxError) as exc_info:
+            await service.resume_sandbox('oh-test-abc123')
+
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail == 'runtime_resume_failed'
 
     async def test_pause_sandbox_success(self, service):
         """Test pausing a running sandbox."""
