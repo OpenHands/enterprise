@@ -65,6 +65,7 @@ class ProfileInfo(BaseModel):
     model: str | None
     base_url: str | None
     api_key_set: bool
+    provider_connection_id: str | None = None
 
 
 class ProfileListResponse(BaseModel):
