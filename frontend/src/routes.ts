@@ -17,7 +17,7 @@ export default [
     id: "routes/integrations-hub-cross-app-redirect",
   }),
   layout("routes/root-layout.tsx", [
-    index("routes/root-to-settings.tsx"),
+    index("routes/root-landing.tsx"),
     route("accept-tos", "routes/accept-tos.tsx"),
     route("launch", "routes/launch.tsx"),
     route("settings", "routes/settings.tsx", [
