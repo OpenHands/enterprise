@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import cast
+from typing import Any, cast
 
+from integrations.azure_devops.azure_devops_bot_credential import (
+    get_azure_devops_bot_credential,
+)
 from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
 from integrations.azure_devops.azure_devops_view import (
     AzureDevOpsFactory,
@@ -23,9 +26,11 @@ from integrations.utils import (
 from integrations.v1_utils import get_saas_user_auth
 from jinja2 import Environment, FileSystemLoader
 from pydantic import SecretStr
+from server.auth.constants import AZURE_DEVOPS_BOT_USERNAME
 from server.auth.token_manager import TokenManager
 
 from openhands.app_server.integrations.azure_devops.azure_devops_service import (
+    AzureDevOpsService,
     AzureDevOpsServiceImpl,
 )
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
@@ -82,13 +87,33 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
             message
         ) or AzureDevOpsFactory.is_work_item_comment(message)
 
+    @staticmethod
+    def _is_bot_actor(actor: dict[str, Any]) -> bool:
+        """Whether the event actor is the configured bot account."""
+        if not AZURE_DEVOPS_BOT_USERNAME:
+            return False
+        bot = AZURE_DEVOPS_BOT_USERNAME.lower()
+        return any(
+            str(actor.get(field) or '').lower() == bot
+            for field in ('uniqueName', 'displayName', 'id')
+        )
+
     async def receive_message(self, message: Message) -> None:
         self._confirm_incoming_source_type(message)
         if not self.is_job_requested(message):
             return
 
-        keycloak_user_id = await self._resolve_mentioner_keycloak_id(message)
         actor = AzureDevOpsFactory.extract_actor(message)
+        # Skip the bot's own comments so its reply (posted via the bot PAT) can't
+        # re-trigger a job, on top of the OpenHands content-marker guard.
+        if self._is_bot_actor(actor):
+            logger.info(
+                '[Azure DevOps] Ignoring event authored by the bot account '
+                f'{AZURE_DEVOPS_BOT_USERNAME!r}'
+            )
+            return
+
+        keycloak_user_id = await self._resolve_mentioner_keycloak_id(message)
         if not keycloak_user_id:
             logger.info(
                 f'[Azure DevOps] Mentioner {actor.get("displayName") or actor.get("uniqueName") or "unknown"} '
@@ -125,13 +150,26 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
         )
         await self.start_job(azure_view)
 
+    def _posting_service(self, azure_view: ResolverViewInterface) -> AzureDevOpsService:
+        """Service used to POST comments/reactions.
+
+        Posts as the configured bot when AZURE_DEVOPS_BOT_TOKEN is set, else as
+        the @-mentioning user (backward compatible). Either way the resolver job
+        runs with the mentioner's own token (see start_job); the bot identity
+        only affects who posts.
+        """
+        bot_credential = get_azure_devops_bot_credential()
+        if bot_credential is not None:
+            return bot_credential.build_service()
+        return AzureDevOpsServiceImpl(
+            external_auth_id=azure_view.user_info.keycloak_user_id
+        )
+
     async def send_message(
         self, message: str, azure_view: ResolverViewInterface
     ) -> None:
         message = mark_openhands_comment(message)
-        azure_service = AzureDevOpsServiceImpl(
-            external_auth_id=azure_view.user_info.keycloak_user_id
-        )
+        azure_service = self._posting_service(azure_view)
 
         if isinstance(azure_view, AzureDevOpsPRComment):
             if azure_view.thread_id:
