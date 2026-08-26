@@ -532,13 +532,14 @@ async def update_org_app_settings(
     """Update organization app settings for the user's current organization.
 
     Base access requires MANAGE_APPLICATION_SETTINGS (all members). Editing
-    org-wide ``registered_marketplaces`` additionally requires EDIT_ORG_SETTINGS
-    (admin/owner), since those defaults apply to every member.
+    org-wide ``registered_marketplaces`` or ``agent_settings_diff``
+    additionally requires EDIT_ORG_SETTINGS (admin/owner), since those defaults
+    apply to every member.
 
     Args:
         update_data: App settings update data
         request: The incoming request (used to resolve the target org for the
-            marketplace permission check)
+            org-wide permission checks)
         service: OrgAppSettingsService (injected by dependency)
         user_id: Authenticated user ID (injected by ``require_permission``)
 
@@ -554,9 +555,12 @@ async def update_org_app_settings(
         HTTPException: 500 if update fails
     """
     try:
-        # Org-wide marketplaces are admin/owner-only, even though the other
+        # Org-wide defaults are admin/owner-only, even though the other
         # settings on this endpoint are member-editable.
-        if update_data.registered_marketplaces is not None:
+        if (
+            update_data.registered_marketplaces is not None
+            or update_data.agent_settings_diff is not None
+        ):
             await authorize_permission(request, user_id, Permission.EDIT_ORG_SETTINGS)
         return await service.update_org_app_settings(update_data)
     except OrgConcurrentModificationError as e:

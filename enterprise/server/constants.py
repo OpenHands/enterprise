@@ -81,6 +81,7 @@ PERSONAL_WORKSPACE_VERSION_TO_MODEL = {
     6: 'minimax-m2.7',
     7: 'glm-5.2',
     8: 'kimi-k3',
+    9: 'deepseek-v4-flash',
 }
 
 LITELLM_DEFAULT_MODEL = os.getenv('LITELLM_DEFAULT_MODEL')
