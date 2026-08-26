@@ -736,6 +736,10 @@ class Settings(BaseModel):
     # ``active_agent_profile_id`` for reconstructed copies.
     _resolved_view: bool = PrivateAttr(default=False)
     _mcp_config_updated: bool = PrivateAttr(default=False)
+    # Field names the caller supplied on an ``agent_kind`` flip. The flip fills
+    # the new variant from SDK defaults, so a caller persisting these settings
+    # as a delta can tell a real choice from a fabricated one.
+    _agent_kind_changed_fields: frozenset[str] | None = PrivateAttr(default=None)
 
     # Marketplace registrations for plugin resolution
     # Users can register multiple marketplaces with different auto-load behaviors
@@ -803,6 +807,10 @@ class Settings(BaseModel):
         if not self.llm_profiles.has(active):
             self.llm_profiles.active = None
             return
+        # An ACP harness picks its model via ``acp_model`` and leaves ``llm`` at
+        # SDK defaults, so syncing it would overwrite the profile with junk.
+        if self.agent_settings.agent_kind != 'openhands':
+            return
         if self.llm_profiles.require(active) != self.agent_settings.llm:
             self.llm_profiles.save(active, self.agent_settings.llm)
 
@@ -847,7 +855,14 @@ class Settings(BaseModel):
             # The SDK owns the discriminated-union merge: replace on
             # ``agent_kind`` change, deep-merge within a variant. Cross-kind
             # config preservation tracked in OpenHands/OpenHands#14370.
+            previous_agent_kind = self.agent_settings.agent_kind
             new_settings = apply_agent_settings_diff(self.agent_settings, coerced)
+            if new_settings.agent_kind != previous_agent_kind:
+                # Before the ``mcp_config`` round-trip below, which rebuilds
+                # from a full dump and marks every field as set.
+                self._agent_kind_changed_fields = frozenset(
+                    new_settings.model_fields_set
+                )
             if replace_mcp_config:
                 dumped = new_settings.model_dump(
                     mode='json', context={'expose_secrets': True}

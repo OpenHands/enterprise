@@ -37,10 +37,7 @@ from storage.user_store import UserStore
 from openhands.app_server.settings.llm_profiles import LLMProfiles, resolve_profile_llm
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
-from openhands.app_server.utils.jsonpatch_compat import (
-    deep_merge,
-    deep_merge_with_wholesale_keys,
-)
+from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
@@ -106,6 +103,51 @@ def managed_llm_key_config_from_model(
     if not uses_managed_llm_key:
         return None
     return ManagedLlmKeyConfig(openhands_type=openhands_type)
+
+
+_MISSING = object()
+
+
+def _without_matching_values(
+    member: dict[str, Any], org: dict[str, Any]
+) -> dict[str, Any]:
+    """Drop entries from ``member`` that already match the org-wide default.
+
+    Recurses into nested dicts so changing one field stores that field alone
+    rather than the whole block it lives in. What is left is a genuine
+    override; what is dropped resolves through the org on load, and so keeps
+    following the org when an admin changes it.
+    """
+    pruned: dict[str, Any] = {}
+    for key, value in member.items():
+        org_value = org.get(key, _MISSING)
+        if isinstance(value, dict) and isinstance(org_value, dict):
+            nested = _without_matching_values(value, org_value)
+            if nested:
+                pruned[key] = nested
+        elif org_value is _MISSING or org_value != value:
+            pruned[key] = value
+    return pruned
+
+
+# ``Settings`` fields that are also ``Org`` columns. The save loop below copies
+# matching keys onto the ``Org`` row, so these are held back: they are org-wide
+# defaults, set through the permission-gated ``POST /orgs/app``.
+_ORG_OWNED_SETTINGS_KEYS = frozenset(
+    {
+        'llm_api_key',
+        'agent_settings',
+        'conversation_settings',
+        'llm_profiles',
+        'enable_proactive_conversation_starters',
+        'max_budget_per_task',
+        'remote_runtime_resource_factor',
+        'sandbox_base_container_image',
+        'sandbox_runtime_container_image',
+        'sandbox_grouping_strategy',
+        'v1_enabled',
+    }
+)
 
 
 @dataclass
@@ -179,12 +221,32 @@ class SaasSettingsStore(SettingsStore):
         return None
 
     @staticmethod
+    def _agent_settings_dump(agent_settings: Any) -> dict[str, Any]:
+        """Dump agent settings to their persisted shape.
+
+        Both sides of the member-vs-org comparison go through here so they are
+        built the same way; a key present on one side only would read as a
+        difference and be stored as an override.
+        """
+        dumped = agent_settings.model_dump(mode='json', exclude={'llm': {'api_key'}})
+        # Lives in its own column.
+        dumped.pop('mcp_config', None)
+        return dumped
+
+    @staticmethod
     def _get_persisted_agent_settings(item: Settings) -> dict[str, Any]:
-        persisted = item.agent_settings.model_dump(
-            mode='json',
-            exclude={'llm': {'api_key'}},
-        )
-        persisted.pop('mcp_config', None)
+        """Dump the agent settings to persist as this member's override.
+
+        The row is a delta over ``org.agent_settings``, so an absent key
+        resolves to the org default. An ``agent_kind`` flip fills the new
+        variant from SDK defaults, so persist only what the caller sent.
+        """
+        persisted = SaasSettingsStore._agent_settings_dump(item.agent_settings)
+        sparse_fields = item._agent_kind_changed_fields
+        if sparse_fields is not None:
+            persisted = {
+                key: value for key, value in persisted.items() if key in sparse_fields
+            }
         return persisted
 
     @staticmethod
@@ -663,36 +725,26 @@ class SaasSettingsStore(SettingsStore):
                 )
                 item.sync_active_profile_from_settings()
 
+            # Per-user save (POST /api/v1/settings), callable by any member, so
+            # it writes this member's row only. Org-wide defaults go through the
+            # permission-gated ``POST /orgs/app``.
             effective_agent_settings_diff = self._get_persisted_agent_settings(item)
-            shared_agent_settings_diff = {
+            agent_settings_update = {
                 key: value
                 for key, value in effective_agent_settings_diff.items()
                 if key not in MEMBER_PRIVATE_AGENT_KEYS
             }
-
-            # Strip any pre-existing private keys from the org dump before
-            # merging, so legacy values written by older code paths are
-            # cleaned up on the next save and stop leaking to other members.
-            org_agent_settings_dump = OrgStore.get_agent_settings_from_org(
-                org
-            ).model_dump(mode='json')
-            for private_key in MEMBER_PRIVATE_AGENT_KEYS:
-                org_agent_settings_dump.pop(private_key, None)
-
-            # Single assignment so SQLAlchemy tracks the change
-            org.agent_settings = deep_merge_with_wholesale_keys(
-                org_agent_settings_dump,
-                shared_agent_settings_diff,
+            # Keep the row a genuine delta: anything matching the org default
+            # is dropped so it resolves through the org on load, and so follows
+            # an admin changing that default later.
+            agent_settings_update = _without_matching_values(
+                agent_settings_update,
+                self._agent_settings_dump(
+                    OrgStore.get_agent_settings_from_org(org)
+                ),
             )
-
             effective_conversation_diff = item.conversation_settings.model_dump(
                 mode='json'
-            )
-            org.conversation_settings = deep_merge(
-                OrgStore.get_conversation_settings_from_org(org).model_dump(
-                    mode='json'
-                ),
-                effective_conversation_diff,
             )
 
             kwargs = item.model_dump(context={'expose_secrets': True})
@@ -717,11 +769,7 @@ class SaasSettingsStore(SettingsStore):
                 if key == 'registered_marketplaces':
                     # Save personal marketplace settings to user_settings table
                     user_settings.registered_marketplaces = value
-                elif hasattr(org, key) and key not in {
-                    'llm_api_key',
-                    'agent_settings',
-                    'conversation_settings',
-                }:
+                elif hasattr(org, key) and key not in _ORG_OWNED_SETTINGS_KEYS:
                     setattr(org, key, value)
 
             current_member_llm_api_key = item.agent_settings.llm.api_key
@@ -737,12 +785,12 @@ class SaasSettingsStore(SettingsStore):
                 else None
             )
 
+            # A non-managed (BYOR) key is the org's key for the shared
+            # provider, so it does reach every member row.
             await OrgMemberStore.update_all_members_settings_async(
                 session,
                 org_id,
                 OrgMemberSettingsUpdate(
-                    agent_settings_diff=shared_agent_settings_diff,
-                    conversation_settings_diff=effective_conversation_diff,
                     llm_api_key=(
                         current_member_llm_api_key_raw  # type: ignore[arg-type]
                         if not uses_managed_llm_key
@@ -755,7 +803,20 @@ class SaasSettingsStore(SettingsStore):
             member_agent_settings_diff = dict(org_member.agent_settings_diff)
             for private_key in MEMBER_PRIVATE_AGENT_KEYS:
                 member_agent_settings_diff.pop(private_key, None)
-            org_member.agent_settings_diff = member_agent_settings_diff
+            # Single assignment so SQLAlchemy tracks the JSON column change.
+            if item._agent_kind_changed_fields is not None:
+                # Replace: the outgoing variant's keys, its ``llm`` included,
+                # mean nothing to the new kind and would shadow the org default.
+                org_member.agent_settings_diff = agent_settings_update
+            else:
+                org_member.agent_settings_diff = deep_merge(
+                    member_agent_settings_diff,
+                    agent_settings_update,
+                )
+            org_member.conversation_settings_diff = deep_merge(
+                dict(org_member.conversation_settings_diff),
+                effective_conversation_diff,
+            )
             org_member.title_llm_profile = item.title_llm_profile
             if item._mcp_config_updated:
                 org_member.mcp_config = self._get_persisted_mcp_config(item)

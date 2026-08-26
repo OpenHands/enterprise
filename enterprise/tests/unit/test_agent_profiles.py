@@ -1006,11 +1006,16 @@ class TestPersistedVsResolvedSettingsView:
         assert decrypt_value(member._llm_api_key) == 'initial-key'
 
     @pytest.mark.asyncio
-    async def test_shared_agent_settings_edit_persists_while_profile_active(
+    async def test_agent_settings_edit_persists_while_profile_active(
         self, async_session_maker, patch_agent_routes
     ):
-        """F3: with a profile active, org-level agent-settings edits made
-        through the settings API must still persist (no silent write-drop)."""
+        """F3: with a profile active, agent-settings edits made through the
+        settings API must still persist (no silent write-drop).
+
+        The settings API is member-scoped, so the edit lands on the acting
+        member's row; the org-wide defaults are only writable through the
+        EDIT_ORG_SETTINGS-gated ``POST /orgs/app``.
+        """
         org_id = patch_agent_routes
         uid = str(USER_ID)
         await self._setup_active_profile(async_session_maker, org_id, ['a'])
@@ -1026,8 +1031,11 @@ class TestPersistedVsResolvedSettingsView:
             )
             await store.store(settings)
 
+        member = await _read_member(async_session_maker, org_id, USER_ID)
+        assert member.agent_settings_diff.get('enable_sub_agents') is True
+
         org = await _read_org_raw(async_session_maker, org_id)
-        assert (org.agent_settings or {}).get('enable_sub_agents') is True
+        assert (org.agent_settings or {}).get('enable_sub_agents') is not True
 
     @pytest.mark.asyncio
     async def test_resolved_load_is_launch_view_and_store_refuses_it(
