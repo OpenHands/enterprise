@@ -15,15 +15,20 @@ The implementation is intentionally split into stacked changes:
 3. A guidance engine links verified E2E tests or derives labelled suggestions
    from PR and Linear evidence.
 4. A delivery layer renders idempotent Slack and email notifications.
+5. An operations layer composes delivery and Linear updates and documents the
+   producer handoff.
 
-The environment producers remain in their owning repositories. The policy file
-references the expected workflows and GitOps paths without attempting to deploy
-cross-repository changes from this repo.
+The environment producers remain in their owning repositories. The policy and
+release-contract documents reference the expected workflows and GitOps paths
+without attempting to deploy cross-repository changes from this repo.
 
 ## Source of truth
 
 - `.github/landing-checklist/repos.yml`: environment, delivery, and notification
   policy.
+- `.github/landing-checklist/environment-release.schema.json`: versioned producer
+  event contract.
+- `docs/landing-checklist/environment-release.md`: release-lane handoff and rollout.
 - `.github/landing-checklist/tracker-format.md`: GitHub, Slack, and email display
   contract.
 - `docs/landing-checklist/linear/state-machine.md`: lifecycle and evidence rules.

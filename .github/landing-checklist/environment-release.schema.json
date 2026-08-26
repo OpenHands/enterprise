@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/OpenHands/enterprise/.github/landing-checklist/environment-release.schema.json",
+  "title": "OpenHands environment-release event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "environment",
+    "status",
+    "released_at",
+    "producer_repo",
+    "producer_sha",
+    "run_url",
+    "environment_url",
+    "artifact",
+    "components"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"type": "string", "minLength": 1},
+    "environment": {
+      "enum": [
+        "saas-staging",
+        "saas-production",
+        "replicated-unstable",
+        "replicated-beta",
+        "replicated-stable"
+      ]
+    },
+    "status": {"const": "ready"},
+    "released_at": {"type": "string", "format": "date-time"},
+    "producer_repo": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+    "producer_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "run_url": {"type": "string", "format": "uri"},
+    "environment_url": {"type": "string", "format": "uri"},
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "version"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "sequence": {"type": ["integer", "null"], "minimum": 1},
+        "kots_cursor": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["repo", "previous_ref", "released_ref"],
+        "properties": {
+          "repo": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+          "previous_ref": {"type": "string", "minLength": 1},
+          "released_ref": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

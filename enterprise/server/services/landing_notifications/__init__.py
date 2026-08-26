@@ -17,6 +17,11 @@ from server.services.landing_notifications.guidance_models import (
     TestGuidance,
     TestInstruction,
 )
+from server.services.landing_notifications.linear_updates import (
+    LinearClient,
+    LinearCommentPlan,
+    plan_linear_comment,
+)
 from server.services.landing_notifications.models import (
     DeliveryPolicy,
     Environment,
@@ -37,6 +42,10 @@ from server.services.landing_notifications.notifications import (
     plan_delivery_attempts,
     render_notification,
 )
+from server.services.landing_notifications.orchestrator import (
+    ReleaseOperationPlan,
+    plan_release_operations,
+)
 from server.services.landing_notifications.policy import derive_stage
 
 __all__ = [
@@ -52,6 +61,8 @@ __all__ = [
     'GuidanceKind',
     'GuidanceSource',
     'LandingStage',
+    'LinearClient',
+    'LinearCommentPlan',
     'LinearIssueContext',
     'NotificationContent',
     'PullRequestRecord',
@@ -59,6 +70,7 @@ __all__ = [
     'ReleaseArtifact',
     'ReleaseComponent',
     'ReleaseEvidence',
+    'ReleaseOperationPlan',
     'ReleasePlan',
     'TestGuidance',
     'TestInstruction',
@@ -66,6 +78,8 @@ __all__ = [
     'derive_stage',
     'execute_delivery_attempts',
     'plan_delivery_attempts',
+    'plan_linear_comment',
     'plan_release',
+    'plan_release_operations',
     'render_notification',
 ]
