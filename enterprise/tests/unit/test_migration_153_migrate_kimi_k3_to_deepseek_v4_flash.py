@@ -103,16 +103,11 @@ def test_replace_model_values_updates_nested_profile_models_only_on_exact_match(
     replaced, changed = migration_153._replace_model_values(payload)
 
     assert changed is True
-    assert replaced == {
-        'profiles': {
-            'managed': {'model': 'openhands/kimi-k3'},
-            'legacy_proxy': {'model': 'litellm_proxy/kimi-k3'},
-            'bare': {'model': 'kimi-k3'},
-            'custom': {'model': 'anthropic/kimi-k3'},
-        },
-        'active': 'managed',
-    }
-    assert payload['profiles']['managed']['model'] == 'openhands/deepseek-v4-flash'
+    assert replaced['profiles']['managed']['model'] == 'openhands/deepseek-v4-flash'
+    assert replaced['profiles']['legacy_proxy']['model'] == 'litellm_proxy/deepseek-v4-flash'
+    assert replaced['profiles']['bare']['model'] == 'kimi-k3'
+    assert replaced['profiles']['custom']['model'] == 'anthropic/kimi-k3'
+    assert payload['profiles']['managed']['model'] == 'openhands/kimi-k3'
 
 
 def test_upgrade_encrypted_llm_profiles_reencrypts_changed_rows(monkeypatch):
@@ -143,7 +138,7 @@ def test_upgrade_encrypted_llm_profiles_reencrypts_changed_rows(monkeypatch):
         if value == 'encrypted-managed':
             return {
                 'profiles': {
-                    'Default': {'model': 'openhands/deepseek-v4-flash'},
+                    'Default': {'model': 'openhands/kimi-k3'},
                 },
                 'active': 'Default',
             }
