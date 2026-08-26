@@ -50,18 +50,27 @@ Provide a video or screenshots of testing your PR. e.g. you added a new feature 
 
 <!-- Optional: migrations, config changes, rollout concerns, follow-ups, or anything reviewers should know. -->
 
+<!--
+Complete this section for conventional feature PRs (`feat:` or `feat(scope):`).
+-->
+
 <!-- landing-checklist:v1 -->
-### 🚀 Feature Landing Checklist
+### Feature landing checklist
+
 _Required before merge:_
 - [ ] Documentation added for the feature on the website
-  _(add the page to `OpenHands/docs`, but set `hidden: true` in its frontmatter — the feature isn't public yet. Automation removes `hidden: true` only after two tech-council approvals and independent verification that the flag is enabled in production.)_
 - [ ] E2E test added covering regression / up-to-spec behavior
-- [ ] Feature is gated by an ENABLE_<FEATURE> flag and exposed through the appropriate Helm / embedded-cluster configuration
+- [ ] Feature is gated by an `ENABLE_<FEATURE>` flag and exposed through the appropriate Helm / embedded-cluster configuration
 
-_Tracked post-merge (do not check manually — automation updates these):_
-- [ ] Bug bash completed (3+ engineers), issues filed for next cycle
-- [ ] Feature is available in the most recent release
-- [ ] Feature included in an X / LinkedIn post
+_Evidence:_
+- Linear tracking ticket: `___________`
+- Feature flag name: `___________`
+- Primary E2E test: `path, test name, or URL`
+- Delivery targets: `saas-staging, saas-production, replicated-unstable, replicated-beta, replicated-stable`
 
-Linear tracking ticket: _(auto-linked by automation once PR is opened)_
-Feature flag name: `___________`
+_Tracked after merge:_
+- [ ] Required test environments are ready
+- [ ] Bug bash completed with 3+ engineers
+- [ ] Tech council approved
+- [ ] Required final environments and production flag are verified
+- [ ] Public launch and cleanup completed

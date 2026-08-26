@@ -1,61 +1,46 @@
-# Linear "Feature Landing" state machine
+# Feature landing state machine
 
-Why Linear and not the GitHub PR: the landing process runs for months after
-the PR is merged and closed. We need one durable record per feature that
-survives PR merge, so every automation reads/writes state on a single Linear
-issue rather than trying to reconstruct state from GitHub each time.
+## Visible stages
 
-## Setup (one-time, human)
+```text
+Review -> Merged -> Testable -> Bug Bash -> Council Review -> Council Approved -> Production Enabled -> GA
+```
 
-1. Create a Linear **project** called `Feature Launches`, shared/owned
-   across all teams (`CS`, `PRD`, `PLTF`, `FDE`, `OHE`, `OSS`, `ALL`) rather
-   than scoped to one — any team can land a `(feat)` PR in a production
-   repo, and its ticket lands in this one shared project. New issues are
-   created under whichever team the PR author's Linear account belongs to
-   (falls back to `ALL` if that can't be resolved), with the project set to
-   `Feature Launches` regardless of team.
-2. Create these **labels** (used as the state machine) as workspace labels, or
-   create the full set for every participating team. Automation 6 prefers a
-   matching team label and falls back to a unique workspace label:
-   - `stage:review` — PR open, checklist in progress
-   - `stage:merged` — PR merged, not yet confirmed in prod
-   - `stage:in-prod` — confirmed shipped to production
-   - `stage:bug-bash-pending` — reminder sent, awaiting scheduling
-   - `stage:bug-bash-active` — bash scheduled, sub-issues open
-   - `stage:council-review` — bug bash clear, awaiting Slack reactions
-   - `stage:council-approved` — two valid council approvals, flag not yet verified on
-   - `stage:flag-on` — approved and independently verified on for all users
-   - `stage:ga` — flag removed, on by default, and public social-post evidence recorded
-   - `landing:deferred` — non-stage label for a bug-bash issue explicitly moved
-     into a named next cycle; without both this label and a target cycle, an
-     open issue still blocks council review
-3. Tech council approval happens in **`#tech-council`**. Automation 5 posts
-   an approval request in the feature's existing Slack thread. Automation 6
-   counts reactions deterministically: two distinct human channel members
-   reacting `✅` approves; any channel member reacting `🚫` blocks until that
-   reaction is removed. Bot/app reactions, reactions from users outside the
-   channel, and reactions from the original `(feat)` PR author do not count.
-   Automation 5 maps the PR author from their Linear email and fails closed if
-   it cannot. The bot needs Slack scopes `chat:write`, `reactions:read`,
-   `channels:read`, `users:read`, `users:read.email`, and (if the channel is
-   private) `groups:read`.
-4. Create an **issue template** "Feature Landing" with the checklist body
-   (mirrors the PR template) so every ticket looks consistent — see
-   `feature-landing-issue-template.md` in this folder.
+The Linear ticket stores the current stage plus environment evidence. SaaS and
+Replicated releases are parallel tracks, not additional sequential stages.
 
-## State transitions (who moves the label, and how)
+## Derived transitions
 
-| From | To | Trigger | Owner |
-|---|---|---|---|
-| (none) | `stage:review` | PR opened with `(feat)` title in an allowlisted repo | Automation 1 (event) |
-| `stage:review` | `stage:merged` | PR merged | Automation 2 (event) |
-| `stage:merged` | `stage:in-prod` | merge commit SHA found in production release/deploy | Automation 3 (cron) |
-| `stage:in-prod` | `stage:bug-bash-pending` | 3 business days elapsed with no bug bash scheduled | Automation 4 (cron) |
-| `stage:bug-bash-pending` | `stage:bug-bash-active` | child issues or structured `bug-bash-report` appears | Automation 4 (cron, next pass) |
-| `stage:bug-bash-active` | `stage:council-review` | valid 3+ attendee report (including Helm install-test evidence, and Replicated install-test evidence once that capability ships), all findings fixed or explicitly moved to a named next cycle, checklist items 1-5 have evidence, and approval request is posted in `#tech-council` | Automation 5 (cron) |
-| `stage:council-review` | `stage:council-approved` | two distinct human `#tech-council` members react `✅`, with no `🚫` from a channel member | Automation 6 (deterministic reaction poller) |
-| `stage:council-approved` | `stage:flag-on` | flag-enablement change independently confirmed in production | Production reconciler (not yet implemented) |
-| `stage:flag-on` | `stage:ga` | 3 months elapsed, flag removed in code, and supported public X/LinkedIn post URL recorded | Automation 7 (cron) |
+| Stage | Required evidence |
+|---|---|
+| Review | Feature PR is open. |
+| Merged | Feature PR merge SHA is recorded. |
+| Testable | Every configured `test_target` has a ready release event containing the merge SHA. |
+| Bug Bash | The DRI started the structured bug bash. |
+| Council Review | Bug bash completed and required defects are resolved or scheduled. |
+| Council Approved | The deterministic Slack reaction gate reached quorum. |
+| Production Enabled | Every `final_target` is ready and the production feature flag is independently verified. |
+| GA | Public docs/social evidence is recorded and cleanup requirements are complete. |
 
-Each automation is idempotent: it re-derives "what state is this issue in"
-from its label on every run, so a missed or duplicated run is harmless.
+## Environment evidence
+
+Each environment record contains:
+
+- event ID
+- environment enum
+- released component version or Replicated sequence
+- released source ref
+- environment URL
+- workflow or Argo CD evidence URL
+- release timestamp
+- test guidance snapshot used in notifications
+
+Evidence is immutable by event ID. A later release appends evidence rather than
+rewriting an earlier release record.
+
+## Delivery policy
+
+The default policy requires SaaS staging plus Replicated unstable and beta for
+`Testable`, then SaaS production plus Replicated stable for
+`Production Enabled`. A feature may explicitly declare SaaS-only or
+self-hosted-only targets. Missing targets fail closed.

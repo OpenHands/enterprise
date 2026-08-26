@@ -1,40 +1,38 @@
-# Feature Landing Checklist
+# Feature landing notifications
 
-This directory holds the full design for the engineering "landing checklist"
-process: GitHub presubmit checks, Linear state machine, and the OpenHands
-automations that carry a feature from `(feat)` PR merge through production
-verification, bug bash, tech-council approval, docs reveal, and eventual
-feature-flag removal.
+This pilot connects feature landing state to five internal release targets:
 
-Start with [`PLAN.md`](PLAN.md) for the overall architecture and rollout plan.
+```text
+SaaS:        staging -> production
+Replicated:  unstable -> beta -> stable
+```
 
-## What's live in this repo vs. reference-only
+The implementation is intentionally split into stacked changes:
 
-Originally the plan was to host the reusable checklist logic and the
-canonical `repos.yml` allowlist in a single shared location
-(`OpenHands/OpenHands`) so all production repos consume the same
-implementation. The team is moving away from treating `OpenHands/OpenHands`
-as that shared home, so for now — scoped to this pilot — **everything is
-live directly in this repo**, `OpenHands/enterprise`. See `PLAN.md`'s
-"Central artifact location" section for the reasoning and the deferred
-decision about what happens when a second production repo needs this.
+1. This foundation defines the policy, event schema, lifecycle, tracker format,
+   and deterministic presubmit check.
+2. A release consumer validates environment events and attributes included PRs.
+3. A guidance engine links verified E2E tests or derives labelled suggestions
+   from PR and Linear evidence.
+4. A delivery layer renders idempotent Slack and email notifications.
 
-Wired up and active:
+The environment producers remain in their owning repositories. The policy file
+references the expected workflows and GitOps paths without attempting to deploy
+cross-repository changes from this repo.
 
-- `.github/workflows/landing-checklist.yml` — the caller workflow, invoking
-  `.github/workflows/landing-checklist-reusable.yml` via a same-repo
-  relative reference (no cross-repo Actions dependency).
-- `.github/workflows/landing-checklist-reusable.yml` — the actual presubmit
-  check logic.
-- `.github/landing-checklist/repos.yml` — the canonical production repo
-  allowlist. Because this repo is private, automations that read this file
-  fetch it via the authenticated GitHub Contents API (`GITHUB_TOKEN` +
-  `Accept: application/vnd.github.raw`), not a public raw URL.
-- `.github/pull_request_template.md` — updated with the
-  `<!-- landing-checklist:v1 -->` checklist block.
+## Source of truth
 
-Everything else in this directory (`repos.yml`, the Linear templates, and
-the automation specs under `automations/`) is a design-reference copy kept
-in sync with what's live under `.github/`, for visibility and review — it is
-not deployed anywhere else. Nothing here needs to be deployed to
-`OpenHands/OpenHands` or any other repo for the pilot to work.
+- `.github/landing-checklist/repos.yml`: environment, delivery, and notification
+  policy.
+- `.github/landing-checklist/tracker-format.md`: GitHub, Slack, and email display
+  contract.
+- `docs/landing-checklist/linear/state-machine.md`: lifecycle and evidence rules.
+- `enterprise/server/services/landing_notifications/`: tested deterministic
+  models and policy logic.
+
+## Security boundary
+
+Release producers run only after trusted environment deployments. Notification
+secrets never run in pull-request workflows. Cross-repository metadata should be
+read through a narrowly scoped GitHub App. External contributors are not emailed
+without an explicit address and opt-in.
