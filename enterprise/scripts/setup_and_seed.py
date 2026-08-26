@@ -232,7 +232,6 @@ def create_tables(engine):
                 _sandbox_api_key VARCHAR,
                 max_budget_per_task FLOAT,
                 enable_solvability_analysis BOOLEAN DEFAULT false,
-                v1_enabled BOOLEAN,
                 condenser_max_size INTEGER,
                 created_at TIMESTAMP WITH TIME ZONE,
                 updated_at TIMESTAMP WITH TIME ZONE,

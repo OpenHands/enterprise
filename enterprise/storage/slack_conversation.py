@@ -18,7 +18,6 @@ class SlackConversation(Base):
     keycloak_user_id: Mapped[str] = mapped_column(String, nullable=False)
     org_id: Mapped[UUID | None] = mapped_column(ForeignKey('org.id'), nullable=True)
     parent_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    v1_enabled: Mapped[bool | None] = mapped_column(nullable=True)
 
     # Relationships
     org: Mapped['Org | None'] = relationship(

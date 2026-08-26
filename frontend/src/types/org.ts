@@ -17,7 +17,6 @@ export interface Organization {
   sandbox_api_key: string | null;
   max_budget_per_task: number;
   enable_solvability_analysis: boolean;
-  v1_enabled: boolean;
   credits: number | null;
   credits_available?: boolean;
   is_personal?: boolean;

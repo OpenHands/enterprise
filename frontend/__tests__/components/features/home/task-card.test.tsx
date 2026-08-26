@@ -9,16 +9,6 @@ import { TaskCard } from "#/components/features/home/tasks/task-card";
 import { GitRepository } from "#/types/git";
 import { SuggestedTask } from "#/utils/types";
 
-vi.mock("#/hooks/query/use-settings", async () => {
-  const actual = await vi.importActual<typeof import("#/hooks/query/use-settings")>(
-    "#/hooks/query/use-settings",
-  );
-  return {
-    ...actual,
-    getSettingsQueryFn: vi.fn().mockResolvedValue({ v1_enabled: true }),
-  };
-});
-
 vi.mock("#/context/use-selected-organization", () => ({
   useSelectedOrganizationId: () => ({ organizationId: null }),
 }));
@@ -36,7 +26,12 @@ const MOCK_RESPOSITORIES: GitRepository[] = [
   { id: "2", full_name: "repo2", git_provider: "github", is_public: true },
   { id: "3", full_name: "repo3", git_provider: "gitlab", is_public: true },
   { id: "4", full_name: "repo4", git_provider: "gitlab", is_public: true },
-  { id: "5", full_name: "repo5", git_provider: "azure_devops", is_public: true },
+  {
+    id: "5",
+    full_name: "repo5",
+    git_provider: "azure_devops",
+    is_public: true,
+  },
 ];
 
 const renderTaskCard = (task = MOCK_TASK_1) => {

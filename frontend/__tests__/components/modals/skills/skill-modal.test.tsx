@@ -61,7 +61,8 @@ describe("SkillsModal", () => {
 
     // Mock the agent state to return a ready state
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: AgentState.AWAITING_USER_INPUT, isArchived: false,
+      curAgentState: AgentState.AWAITING_USER_INPUT,
+      isArchived: false,
     });
   });
 
@@ -115,6 +116,3 @@ describe("SkillsModal", () => {
     });
   });
 });
-
-// Note: Tests for V0 API and v1_enabled settings were removed as the component
-// now uses V1 API exclusively via useConversationSkills hook

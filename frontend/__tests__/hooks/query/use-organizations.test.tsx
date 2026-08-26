@@ -50,7 +50,6 @@ function createMinimalOrg(
     sandbox_api_key: null,
     max_budget_per_task: 0,
     enable_solvability_analysis: false,
-    v1_enabled: false,
     credits: 0,
   };
 }

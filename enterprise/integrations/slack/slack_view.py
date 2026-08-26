@@ -206,7 +206,6 @@ class SlackNewConversationView(SlackViewInterface):
                 org_id=user_info.org_id,
                 parent_id=self.thread_ts
                 or self.message_ts,  # conversations can start in a thread reply as well; we should always references the parent's (root level msg's) message ID
-                v1_enabled=True,  # All conversations are V1
             )
             await slack_conversation_store.create_slack_conversation(slack_conversation)
 

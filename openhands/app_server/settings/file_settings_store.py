@@ -37,10 +37,6 @@ class FileSettingsStore(SettingsStore):
                     }
             settings = Settings(**kwargs)
 
-            # Turn on V1 in OpenHands
-            # We can simplify / remove this as part of V0 removal
-            settings.v1_enabled = True
-
             return settings
         except FileNotFoundError:
             return None

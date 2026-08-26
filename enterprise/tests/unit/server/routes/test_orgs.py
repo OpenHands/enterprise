@@ -1201,7 +1201,6 @@ async def test_list_user_orgs_all_fields_present(mock_app_list):
         sandbox_runtime_container_image='test-runtime',
         org_version=5,
         max_budget_per_task=1000.0,
-        v1_enabled=True,
     )
     mock_user = MagicMock()
     mock_user.current_org_id = org_id
@@ -1244,7 +1243,6 @@ async def test_list_user_orgs_all_fields_present(mock_app_list):
         assert org_data['sandbox_runtime_container_image'] == 'test-runtime'
         assert org_data['org_version'] == 5
         assert org_data['max_budget_per_task'] == 1000.0
-        assert org_data['v1_enabled'] is True
         assert org_data['credits'] is None
 
 
