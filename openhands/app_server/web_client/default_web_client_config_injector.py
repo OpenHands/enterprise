@@ -163,6 +163,15 @@ def _get_jira_dc_oauth_host() -> str | None:
     return urlparse(base_url).hostname or None
 
 
+def _get_jira_oauth_enabled() -> bool:
+    """Whether Jira Cloud links users via Atlassian OAuth.
+
+    False in email-match mode (``JIRA_ENABLE_OAUTH`` off), where the configure
+    flow saves the workspace directly and users are matched by email.
+    """
+    return os.getenv('JIRA_ENABLE_OAUTH', '1') in ('1', 'true')
+
+
 def _get_jira_dc_service_account_config_error() -> str | None:
     """Return a web-client-safe service-account config error, if any."""
     return get_jira_dc_service_account_env_config().error
@@ -259,6 +268,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
     jira_dc_service_account_config_error: str | None = Field(
         default_factory=_get_jira_dc_service_account_config_error
     )
+    jira_oauth_enabled: bool = Field(default_factory=_get_jira_oauth_enabled)
     acp_providers: list[ACPProviderConfig] = Field(
         default_factory=lambda: [
             ACPProviderConfig(
@@ -304,6 +314,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             jira_dc_service_account_config_error=(
                 self.jira_dc_service_account_config_error
             ),
+            jira_oauth_enabled=self.jira_oauth_enabled,
             acp_providers=self.acp_providers,
         )
         return result

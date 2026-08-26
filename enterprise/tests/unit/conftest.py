@@ -22,6 +22,7 @@ from storage.api_key import ApiKey  # noqa: F401
 from storage.base import Base
 from storage.billing_session import BillingSession
 from storage.conversation_work import ConversationWork
+from storage.daily_conversation_usage import DailyConversationUsage  # noqa: F401
 from storage.device_code import DeviceCode  # noqa: F401
 from storage.feedback import Feedback
 from storage.github_app_installation import GithubAppInstallation
@@ -32,6 +33,7 @@ from storage.org_git_claim import OrgGitClaim  # noqa: F401
 from storage.org_invitation import OrgInvitation  # noqa: F401
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride  # noqa: F401
+from storage.quota_increase_request import QuotaIncreaseRequest  # noqa: F401
 from storage.role import Role
 from storage.slack_conversation import SlackConversation  # noqa: F401
 from storage.stored_conversation_metadata import StoredConversationMetadata

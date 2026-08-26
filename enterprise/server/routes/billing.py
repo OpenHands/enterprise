@@ -79,9 +79,10 @@ class LiteLlmUserInfo(typing.TypedDict, total=False):
     spend: float | None
 
 
-def calculate_credits(user_info: LiteLlmUserInfo) -> float:
-    # using `or` after get with default because it could be missing or present as None.
-    max_budget = user_info.get('max_budget') or 0.0
+def calculate_credits(user_info: LiteLlmUserInfo) -> float | None:
+    max_budget = user_info.get('max_budget')
+    if max_budget is None:
+        return None
     spend = user_info.get('spend') or 0.0
     return max(max_budget - spend, 0.0)
 
@@ -93,14 +94,22 @@ async def get_credits(
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
 ) -> GetCreditsResponse:
     if not stripe_service.STRIPE_API_KEY:
-        return GetCreditsResponse()
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Billing is not configured',
+        )
     user_team_info = await LiteLlmManager.get_user_team_info(
         user_id, str(effective_org_id)
     )
-    max_budget, spend = LiteLlmManager.get_budget_from_team_info(
+    budget_info = LiteLlmManager.get_budget_from_team_info(
         user_team_info, user_id, str(effective_org_id)
     )
-    credits = max(max_budget - spend, 0)
+    if budget_info is None:
+        return GetCreditsResponse(credits=Decimal('0.00'))
+    max_budget, spend = budget_info
+    credits = calculate_credits({'max_budget': max_budget, 'spend': spend})
+    if credits is None:
+        return GetCreditsResponse(credits=Decimal('0.00'))
     return GetCreditsResponse(credits=Decimal('{:.2f}'.format(credits)))
 
 
@@ -279,13 +288,20 @@ async def success_callback(session_id: str, request: Request):
         )
         amount_subtotal = stripe_session.amount_subtotal or 0
         add_credits = amount_subtotal / 100
-        max_budget, _ = LiteLlmManager.get_budget_from_team_info(
+        budget_info = LiteLlmManager.get_budget_from_team_info(
             user_team_info, billing_session.user_id, str(user.current_org_id)
         )
+        if budget_info is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='Credit balance is temporarily unavailable',
+            )
+        max_budget, spend = budget_info
 
         result = await session.execute(select(Org).where(Org.id == user.current_org_id))
         org = result.scalar_one_or_none()
-        new_max_budget = max_budget + add_credits
+        budget_baseline = max(spend, max_budget if max_budget is not None else spend)
+        new_max_budget = budget_baseline + add_credits
 
         await LiteLlmManager.update_team_and_users_budget(
             str(user.current_org_id), new_max_budget
@@ -299,7 +315,7 @@ async def success_callback(session_id: str, request: Request):
         billing_session.status = 'completed'
         billing_session.price = add_credits
         billing_session.updated_at = datetime.now(UTC)
-        session.merge(billing_session)
+        await session.merge(billing_session)
         logger.info(
             'stripe_checkout_success',
             extra={

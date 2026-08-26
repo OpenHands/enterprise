@@ -144,11 +144,17 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   ) {
     const user = await getActiveOrganizationUser();
 
-    const orgId = getSelectedOrganizationIdFromStore();
     const organizationsData = queryClient.getQueryData<{
       items: Organization[];
       currentOrgId: string | null;
     }>(["organizations"]);
+    // After a hard load the selected-org store is empty (in-memory only), so
+    // fall back to the backend's current org like getActiveOrganizationUser.
+    const orgId =
+      getSelectedOrganizationIdFromStore() ??
+      organizationsData?.currentOrgId ??
+      organizationsData?.items?.[0]?.id ??
+      null;
     const selectedOrg = organizationsData?.items?.find(
       (org) => org.id === orgId,
     );

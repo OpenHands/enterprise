@@ -38,6 +38,10 @@ export function DropdownMenu({
         "max-h-60 overflow-auto",
         !isOpen && "hidden",
       )}
+      // Menu-item clicks bubble to any <label> wrapping the Dropdown, whose
+      // default action re-clicks the combobox input and reopens the menu
+      // right after selection; cancel that default here.
+      onClick={(event) => event.preventDefault()}
     >
       <ul
         {...getMenuProps({ className: cn("p-0", dropdownMenuListClassName) })}

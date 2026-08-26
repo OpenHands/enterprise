@@ -216,6 +216,28 @@ describe("Dropdown", () => {
       expect(screen.queryByText("Option 2")).not.toBeInTheDocument();
     });
 
+    it("should close dropdown after selection when wrapped in a label", async () => {
+      // Regression (OHE-2485): a wrapping <label> makes the combobox input
+      // its implicit control, so option clicks were forwarded to the input
+      // as a second click that reopened the menu right after selection.
+      const user = userEvent.setup();
+      render(
+        // The rule can't see the combobox input rendered inside Dropdown;
+        // the implicit (no htmlFor) association is what this test exercises.
+        // eslint-disable-next-line jsx-a11y/label-has-associated-control
+        <label>
+          <Dropdown options={mockOptions} />
+        </label>,
+      );
+
+      const trigger = screen.getByTestId("dropdown-trigger");
+      await user.click(trigger);
+      await user.click(screen.getByText("Option 1"));
+
+      expect(screen.getByRole("combobox")).toHaveValue("Option 1");
+      expect(screen.queryByText("Option 2")).not.toBeInTheDocument();
+    });
+
     it("should display selected option in input", async () => {
       const user = userEvent.setup();
       render(<Dropdown options={mockOptions} />);

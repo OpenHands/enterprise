@@ -89,12 +89,14 @@ function CreditsSettingsScreen() {
             {t(I18nKey.PAYMENT$AVAILABLE_CREDITS)}
           </span>
         </div>
-        {!isLoading && (
+        {!isLoading && balance !== undefined && (
           <span
             data-testid="available-credits"
             className="shrink-0 text-2xl font-semibold tabular-nums tracking-tight text-foreground"
           >
-            ${Number(balance ?? 0).toFixed(2)}
+            {balance === null
+              ? t(I18nKey.CONVERSATION$NO_BUDGET_LIMIT)
+              : `$${Number(balance).toFixed(2)}`}
           </span>
         )}
         {isLoading && <LoadingSpinner size="small" />}

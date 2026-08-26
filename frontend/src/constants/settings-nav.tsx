@@ -183,6 +183,13 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     subtitle: "SETTINGS$PAGE_APPLICATION_SUBLINE",
     section: "user",
   },
+  {
+    icon: <BarChart2 className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/quota",
+    text: "SETTINGS$NAV_QUOTA",
+    subtitle: "SETTINGS$PAGE_QUOTA_SUBLINE",
+    section: "user",
+  },
 ];
 
 export const OSS_NAV_ITEMS: SettingsNavItem[] = [
