@@ -215,6 +215,74 @@ class TestProcessSandboxService:
             process.resume.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'process_status', [psutil.STATUS_DEAD, psutil.STATUS_ZOMBIE]
+    )
+    async def test_resume_defunct_process_returns_false(
+        self, process_sandbox_service, process_status
+    ):
+        process_info = ProcessInfo(
+            pid=1234,
+            port=9000,
+            user_id='test-user-id',
+            working_dir='/tmp/test',
+            session_api_key='test-key',
+            created_at=datetime.now(),
+            sandbox_spec_id='test-spec',
+        )
+        process = MagicMock()
+        process.is_running.return_value = True
+        process.status.return_value = process_status
+
+        with (
+            patch.dict(
+                'openhands.app_server.sandbox.process_sandbox_service._processes',
+                {'test-sandbox': process_info},
+                clear=True,
+            ),
+            patch(
+                'openhands.app_server.sandbox.process_sandbox_service.psutil.Process',
+                return_value=process,
+            ),
+        ):
+            result = await process_sandbox_service.resume_sandbox('test-sandbox')
+
+        assert result is False
+        process.resume.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resume_non_running_process_returns_false(
+        self, process_sandbox_service
+    ):
+        process_info = ProcessInfo(
+            pid=1234,
+            port=9000,
+            user_id='test-user-id',
+            working_dir='/tmp/test',
+            session_api_key='test-key',
+            created_at=datetime.now(),
+            sandbox_spec_id='test-spec',
+        )
+        process = MagicMock()
+        process.is_running.return_value = False
+
+        with (
+            patch.dict(
+                'openhands.app_server.sandbox.process_sandbox_service._processes',
+                {'test-sandbox': process_info},
+                clear=True,
+            ),
+            patch(
+                'openhands.app_server.sandbox.process_sandbox_service.psutil.Process',
+                return_value=process,
+            ),
+        ):
+            result = await process_sandbox_service.resume_sandbox('test-sandbox')
+
+        assert result is False
+        process.resume.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_resume_sandbox_access_denied_is_upstream_failure(
         self, process_sandbox_service
     ):

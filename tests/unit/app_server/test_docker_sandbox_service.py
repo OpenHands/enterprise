@@ -849,6 +849,34 @@ class TestDockerSandboxService:
         mock_container.unpause.assert_not_called()
         mock_container.start.assert_not_called()
 
+    async def test_resume_removing_container_returns_false(self, service):
+        mock_container = MagicMock(status='removing')
+        service.docker_client.containers.get.return_value = mock_container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]) as cleanup:
+            result = await service.resume_sandbox('oh-test-abc123')
+
+        assert result is False
+        cleanup.assert_not_called()
+        mock_container.unpause.assert_not_called()
+        mock_container.start.assert_not_called()
+
+    async def test_resume_becomes_removing_during_cleanup_returns_false(self, service):
+        mock_container = MagicMock(status='paused')
+        service.docker_client.containers.get.return_value = mock_container
+
+        async def remove_container(*args, **kwargs):
+            mock_container.status = 'removing'
+            return []
+
+        with patch.object(service, 'pause_old_sandboxes', side_effect=remove_container):
+            result = await service.resume_sandbox('oh-test-abc123')
+
+        assert result is False
+        mock_container.reload.assert_called_once()
+        mock_container.unpause.assert_not_called()
+        mock_container.start.assert_not_called()
+
     async def test_resume_sandbox_wrong_prefix(self, service):
         with patch.object(
             service, 'pause_old_sandboxes', return_value=[]
