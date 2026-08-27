@@ -19,7 +19,11 @@ export function useLlmApiKey() {
 
   const query = useQuery({
     queryKey: [LLM_API_KEY_QUERY_KEY],
-    enabled: config?.app_mode === "saas",
+    // Fetch the BYOR key on SaaS, or whenever the deployment has explicitly
+    // enabled BYOR export (e.g. self-hosted installs without billing).
+    enabled:
+      config?.app_mode === "saas" ||
+      !!config?.feature_flags?.enable_byor_export,
     queryFn: async () => {
       const { data } =
         await openHands.get<LlmApiKeyResponse>("/api/keys/llm/byor");
