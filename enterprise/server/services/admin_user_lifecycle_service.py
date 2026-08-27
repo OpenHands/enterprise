@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from uuid import UUID
 
+import httpx
+
 from server.auth.token_manager import TokenManager
 from sqlalchemy import text, update
 from storage.database import a_session_maker
@@ -80,9 +82,9 @@ class AdminUserLifecycleService:
     async def delete_user(self, user_id: str) -> UserDeletionResult | None:
         """Delete all Enterprise-owned data and the external identity.
 
-        Local database deletion is transactional and strict: any failure
-        aborts before the Keycloak identity is removed, so retrying is safe
-        and no cross-system partial state is silently left behind. External
+        Local database deletion is attempted before the Keycloak identity
+        is removed, so retrying can reconcile any failed local cleanup.
+        External
         cleanup (Keycloak / LiteLLM) is best-effort and reported as warnings
         so an operator can reconcile any credential that could not be
         revoked before the account disappears.
@@ -101,7 +103,7 @@ class AdminUserLifecycleService:
         warnings: list[str] = []
         try:
             await LiteLlmManager.delete_user(user_id)
-        except Exception as exc:
+        except httpx.HTTPError as exc:
             warnings.append(f'LiteLLM cleanup failed: {exc}')
             logger.warning(
                 'admin_user_lifecycle:litellm_cleanup_failed',

@@ -964,7 +964,8 @@ class TokenManager:
         keycloak_admin = get_keycloak_admin(self.external)
         user = await keycloak_admin.a_get_user(user_id)
         if user is None:
-            raise ValueError(f'Keycloak user not found: {user_id}')
+            logger.warning('Keycloak user not found while enabling: %s', user_id)
+            return
         await keycloak_admin.a_update_user(
             user_id=user_id,
             payload={

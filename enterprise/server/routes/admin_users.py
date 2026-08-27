@@ -36,7 +36,7 @@ def _deletion_response(result: UserDeletionResult) -> UserLifecycleResponse:
 @admin_user_router.post('/{user_id}/disable', response_model=UserLifecycleResponse)
 async def disable_user(
     user_id: str,
-    _: str = Depends(require_permission(Permission.MANAGE_USERS)),
+    _ = Depends(require_permission(Permission.MANAGE_USERS)),
 ) -> UserLifecycleResponse:
     try:
         result = await AdminUserLifecycleService().disable_user(user_id)
@@ -54,7 +54,7 @@ async def disable_user(
 @admin_user_router.post('/{user_id}/enable', response_model=UserLifecycleResponse)
 async def enable_user(
     user_id: str,
-    _: str = Depends(require_permission(Permission.MANAGE_USERS)),
+    _ = Depends(require_permission(Permission.MANAGE_USERS)),
 ) -> UserLifecycleResponse:
     result = await AdminUserLifecycleService().enable_user(user_id)
     if result is None:
@@ -67,7 +67,7 @@ async def enable_user(
 @admin_user_router.delete('/{user_id}', response_model=UserLifecycleResponse)
 async def delete_user(
     user_id: str,
-    _: str = Depends(require_permission(Permission.MANAGE_USERS)),
+    _ = Depends(require_permission(Permission.MANAGE_USERS)),
 ) -> UserLifecycleResponse:
     try:
         result = await AdminUserLifecycleService().delete_user(user_id)
