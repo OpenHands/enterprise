@@ -3385,6 +3385,132 @@ class TestFreeTierModelRestriction:
         assert json_payload['max_budget_in_team'] is None
 
 
+class TestReconcileFreeTierModels:
+    """Backfill free-tier team allowlists when FREE_LLM_MODELS changes.
+
+    FREE_LLM_MODELS is patched to a fixed set here so the tests are independent
+    of the deployed env var.
+    """
+
+    _MODELS = ['model-a', 'model-b', 'model-c']
+
+    def test_need_update_legacy_zero_budget_empty_models(self):
+        with patch('storage.lite_llm_manager.FREE_LLM_MODELS', self._MODELS):
+            # Pre-free-tier no-credit team: budget 0.0, no allowlist.
+            assert LiteLlmManager._free_tier_models_need_update(
+                {'team_id': 't', 'max_budget': 0.0, 'models': []}
+            )
+
+    def test_need_update_restricted_free_tier_missing_new_model(self):
+        with patch('storage.lite_llm_manager.FREE_LLM_MODELS', self._MODELS):
+            # Free-tier team provisioned before 'model-c' was added.
+            assert LiteLlmManager._free_tier_models_need_update(
+                {'team_id': 't', 'max_budget': None, 'models': ['model-a', 'model-b']}
+            )
+
+    def test_no_update_when_already_in_sync(self):
+        with patch('storage.lite_llm_manager.FREE_LLM_MODELS', self._MODELS):
+            assert not LiteLlmManager._free_tier_models_need_update(
+                {'team_id': 't', 'max_budget': None, 'models': list(self._MODELS)}
+            )
+
+    def test_no_update_for_paid_team(self):
+        with patch('storage.lite_llm_manager.FREE_LLM_MODELS', self._MODELS):
+            # Paid team: positive budget, full (empty) allowlist. Never touched.
+            assert not LiteLlmManager._free_tier_models_need_update(
+                {'team_id': 't', 'max_budget': 25.0, 'models': []}
+            )
+
+    def test_no_update_for_unlimited_team(self):
+        with patch('storage.lite_llm_manager.FREE_LLM_MODELS', self._MODELS):
+            # Unlimited team: no budget enforcement and no restriction.
+            assert not LiteLlmManager._free_tier_models_need_update(
+                {'team_id': 't', 'max_budget': None, 'models': []}
+            )
+
+    def test_no_update_when_models_not_subset(self):
+        with patch('storage.lite_llm_manager.FREE_LLM_MODELS', self._MODELS):
+            # Custom allowlist that isn't a free-tier subset must be left alone.
+            assert not LiteLlmManager._free_tier_models_need_update(
+                {'team_id': 't', 'max_budget': None, 'models': ['some-paid-model']}
+            )
+
+    @pytest.mark.asyncio
+    async def test_reconcile_only_updates_drifted_free_tier_teams(self):
+        teams = [
+            # drifted free-tier team -> reconcile
+            {'team_id': 'free-old', 'max_budget': None, 'models': ['model-a']},
+            # legacy zero-budget team -> reconcile
+            {'team_id': 'legacy', 'max_budget': 0.0, 'models': []},
+            # already in sync -> skip
+            {'team_id': 'free-ok', 'max_budget': None, 'models': list(self._MODELS)},
+            # paid team -> skip
+            {'team_id': 'paid', 'max_budget': 25.0, 'models': []},
+            # missing team_id -> skip
+            {'max_budget': 0.0, 'models': []},
+        ]
+
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-api-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+            patch('storage.lite_llm_manager.FREE_LLM_MODELS', self._MODELS),
+            patch.object(
+                LiteLlmManager,
+                '_list_teams',
+                new=AsyncMock(return_value=teams),
+            ),
+            patch.object(
+                LiteLlmManager,
+                'update_team_and_users_budget',
+                new=AsyncMock(),
+            ) as mock_update,
+        ):
+            result = await LiteLlmManager.reconcile_free_tier_models()
+
+        assert result == {'checked': 4, 'reconciled': 2, 'errors': 0}
+        updated_ids = sorted(call.args[0] for call in mock_update.call_args_list)
+        assert updated_ids == ['free-old', 'legacy']
+        for call in mock_update.call_args_list:
+            assert call.args[1] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_reconcile_counts_errors_without_raising(self):
+        teams = [
+            {'team_id': 'free-a', 'max_budget': None, 'models': ['model-a']},
+            {'team_id': 'free-b', 'max_budget': 0.0, 'models': []},
+        ]
+
+        async def _boom(team_id, max_budget):
+            if team_id == 'free-a':
+                raise httpx.HTTPError('boom')
+
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-api-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+            patch('storage.lite_llm_manager.FREE_LLM_MODELS', self._MODELS),
+            patch.object(
+                LiteLlmManager, '_list_teams', new=AsyncMock(return_value=teams)
+            ),
+            patch.object(
+                LiteLlmManager,
+                'update_team_and_users_budget',
+                new=AsyncMock(side_effect=_boom),
+            ),
+        ):
+            result = await LiteLlmManager.reconcile_free_tier_models()
+
+        assert result == {'checked': 2, 'reconciled': 1, 'errors': 1}
+
+    @pytest.mark.asyncio
+    async def test_reconcile_noop_without_config(self):
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', None),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', None),
+        ):
+            result = await LiteLlmManager.reconcile_free_tier_models()
+        assert result == {'checked': 0, 'reconciled': 0, 'errors': 0}
+
+
 class TestGetTeamMembersFinancialData:
     """Test cases for _get_team_members_financial_data method."""
 

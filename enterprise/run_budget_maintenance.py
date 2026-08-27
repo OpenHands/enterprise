@@ -12,6 +12,7 @@ from server.maintenance_task_processor.org_budget_maintenance_processor import (
     OrgBudgetMaintenanceProcessor,
 )
 from storage.database import session_maker
+from storage.lite_llm_manager import LiteLlmManager
 from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.user import User
@@ -69,6 +70,20 @@ def enqueue_budget_tasks(batch_size: int = BATCH_SIZE) -> int:
         return len(org_ids)
 
 
+async def _reconcile_free_tier_models() -> None:
+    """Sync free-tier team allowlists with the current FREE_LLM_MODELS.
+
+    Best-effort: a proxy hiccup here must not fail budget maintenance, which is
+    why exceptions are swallowed. The sweep itself is a no-op when nothing has
+    drifted, so it only does real work after FREE_LLM_MODELS changes.
+    """
+    try:
+        result = await LiteLlmManager.reconcile_free_tier_models()
+        logger.info('Reconciled free-tier team models', extra=result)
+    except Exception:
+        logger.exception('Failed to reconcile free-tier team models')
+
+
 def main() -> None:
     total = enqueue_budget_tasks()
     if total:
@@ -76,6 +91,7 @@ def main() -> None:
     else:
         logger.info('No org budget settings found; skipping maintenance enqueue')
 
+    asyncio.run(_reconcile_free_tier_models())
     asyncio.run(run_maintenance_tasks.main())
 
 
