@@ -698,6 +698,7 @@ class TestTypedEventMethods:
         props = kwargs['properties']
         assert props['trigger'] == 'automation'
         assert props['conversation_source'] == 'automation'
+
     def test_track_conversation_requested(self, saas_service):
         """track_conversation_requested captures request milestone metadata."""
         service, mock_client = saas_service
