@@ -436,9 +436,9 @@ async def test_gui_trigger_stamps_clientsource_tag(
 
     saved = await service.get_app_conversation_info(conversation_info.id)
     assert saved.tags.get('clientsource') == 'agentcanvas'
-    # Analytics should report conversation_source = "canvas"
     kwargs = analytics.track_conversation_created.call_args.kwargs
     assert kwargs['trigger'] == 'gui'
+    # conversation_source mapping is verified in test_analytics_service.py
 
 
 @pytest.mark.asyncio

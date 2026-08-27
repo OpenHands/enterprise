@@ -469,11 +469,7 @@ async def on_conversation_update(
                 )
             )
 
-    # Analytics: conversation created
-    # Use the computed `trigger` (which includes detect_automation_trigger()
-    # tag-based detection) rather than `existing.trigger` (the DB value before
-    # this callback, which is None for automation-created conversations that
-    # were created directly on the agent-server).
+    # existing.trigger is the stale DB value loaded before detect_automation_trigger().
     analytics = get_analytics_service()
     if analytics and sandbox_record.created_by_user_id:
         ctx = await resolve_analytics_context(sandbox_record.created_by_user_id)
