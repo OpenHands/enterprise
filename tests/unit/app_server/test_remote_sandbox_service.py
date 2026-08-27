@@ -671,6 +671,12 @@ class TestSandboxLifecycle:
 
         assert result is False
         remote_sandbox_service.pause_old_sandboxes.assert_not_called()
+        remote_sandbox_service.httpx_client.request.assert_called_once_with(
+            'POST',
+            'https://api.example.com/resume',
+            headers={'X-API-Key': 'test-api-key'},
+            json={'runtime_id': 'runtime-456'},
+        )
 
     @pytest.mark.asyncio
     async def test_repeated_noop_resume_does_not_fetch_global_runtime_list(
