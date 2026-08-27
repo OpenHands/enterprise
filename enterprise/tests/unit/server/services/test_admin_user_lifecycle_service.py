@@ -3,9 +3,11 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 from server.services.admin_user_lifecycle_service import (
     AdminUserLifecycleService,
+    LastSuperAdminError,
     UserDeletionResult,
 )
 
@@ -107,7 +109,7 @@ async def test_delete_user_reports_external_cleanup_warnings(user):
         patch.object(service, '_delete_user_data', AsyncMock()),
         patch(
             'server.services.admin_user_lifecycle_service.LiteLlmManager.delete_user',
-            AsyncMock(side_effect=RuntimeError('litellm down')),
+            AsyncMock(side_effect=httpx.ConnectError('litellm down')),
         ),
     ):
         result = await service.delete_user(str(user.id))
@@ -116,6 +118,42 @@ async def test_delete_user_reports_external_cleanup_warnings(user):
         'LiteLLM cleanup failed: litellm down',
         'Keycloak deletion failed or user already absent',
     ]
+
+
+@pytest.mark.asyncio
+async def test_disable_user_rejects_last_active_superadmin(user):
+    user.role_id = 1
+    service = AdminUserLifecycleService(MagicMock())
+    with (
+        patch.object(service, 'get_user', AsyncMock(return_value=user)),
+        patch(
+            'server.services.admin_user_lifecycle_service.UserStore.list_super_admins',
+            AsyncMock(return_value=[user]),
+        ),
+    ):
+        with pytest.raises(LastSuperAdminError):
+            await service.disable_user(str(user.id))
+
+
+@pytest.mark.asyncio
+async def test_delete_user_reports_litellm_http_failure(user):
+    token_manager = MagicMock()
+    token_manager.disable_keycloak_user = AsyncMock()
+    token_manager.delete_keycloak_user = AsyncMock(return_value=True)
+    service = AdminUserLifecycleService(token_manager)
+    with (
+        patch.object(service, 'get_user', AsyncMock(return_value=user)),
+        patch.object(service, '_delete_api_keys', AsyncMock()),
+        patch.object(service, '_delete_offline_token', AsyncMock()),
+        patch.object(service, '_delete_user_data', AsyncMock()),
+        patch(
+            'server.services.admin_user_lifecycle_service.LiteLlmManager.delete_user',
+            AsyncMock(side_effect=httpx.ConnectError('litellm down')),
+        ),
+    ):
+        result = await service.delete_user(str(user.id))
+
+    assert result.cleanup_warnings == ['LiteLLM cleanup failed: litellm down']
 
 
 @pytest.mark.asyncio

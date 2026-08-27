@@ -84,10 +84,7 @@ class AdminUserLifecycleService:
 
         Local database deletion is attempted before the Keycloak identity
         is removed, so retrying can reconcile any failed local cleanup.
-        External
-        cleanup (Keycloak / LiteLLM) is best-effort and reported as warnings
-        so an operator can reconcile any credential that could not be
-        revoked before the account disappears.
+        External cleanup failures are returned as warnings for reconciliation.
         """
         user = await self.get_user(user_id)
         if user is None:
@@ -160,15 +157,8 @@ class AdminUserLifecycleService:
         user_id_str = str(user_id)
         user_uuid_str = str(user_uuid)
         async with a_session_maker() as session:
-            # Direct user-owned rows that are not guaranteed to live in the
-            # personal workspace org being cascade-deleted above. Rows owned
-            # by the personal org (api_keys, conversation_metadata_saas,
-            # slack_*, billing, for that org) are already removed by
-            # ``delete_org_cascade``; these cover shared-org and
-            # identity-level leftovers deterministically. Conversation
-            # metadata for shared-org conversations is removed by user_id
-            # after the cascade (which already handled the personal org),
-            # without sweeping unrelated conversations.
+            # Personal org was cascade-deleted above; these DELETEs cover
+            # identity-level rows and shared-org leftovers.
             await session.execute(
                 text("""
                     DELETE FROM conversation_metadata
