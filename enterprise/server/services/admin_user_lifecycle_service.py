@@ -168,23 +168,23 @@ class AdminUserLifecycleService:
             # after the cascade (which already handled the personal org),
             # without sweeping unrelated conversations.
             await session.execute(
-                text('''
+                text("""
                     DELETE FROM conversation_metadata
                     WHERE conversation_id IN (
                         SELECT conversation_id FROM conversation_metadata_saas
                         WHERE user_id = :uuid
                     )
-                '''),
+                """),
                 {'uuid': user_uuid_str},
             )
             await session.execute(
-                text('''
+                text("""
                     DELETE FROM app_conversation_start_task
                     WHERE app_conversation_id IN (
                         SELECT conversation_id::uuid FROM conversation_metadata_saas
                         WHERE user_id = :uuid
                     )
-                '''),
+                """),
                 {'uuid': user_uuid_str},
             )
             statements = (
