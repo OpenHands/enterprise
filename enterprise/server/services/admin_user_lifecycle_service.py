@@ -118,6 +118,8 @@ class AdminUserLifecycleService:
             return
 
         superadmins = await UserStore.list_super_admins()
+        if user.is_disabled:
+            return
         if any(admin.id == user.id for admin in superadmins):
             active = [admin for admin in superadmins if not admin.is_disabled]
             if len(active) <= 1:

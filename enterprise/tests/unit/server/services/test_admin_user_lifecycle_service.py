@@ -136,6 +136,19 @@ async def test_disable_user_rejects_last_active_superadmin(user):
 
 
 @pytest.mark.asyncio
+async def test_disable_user_allows_already_disabled_superadmin(user):
+    user.role_id = 1
+    user.is_disabled = True
+    service = AdminUserLifecycleService(MagicMock())
+    with patch(
+        'server.services.admin_user_lifecycle_service.UserStore.list_super_admins',
+        AsyncMock(return_value=[user]),
+    ):
+        await service._ensure_not_last_active_superadmin(user)
+
+
+
+@pytest.mark.asyncio
 async def test_delete_user_reports_litellm_http_failure(user):
     token_manager = MagicMock()
     token_manager.disable_keycloak_user = AsyncMock()
