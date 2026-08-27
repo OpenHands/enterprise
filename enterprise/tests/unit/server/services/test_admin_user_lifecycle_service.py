@@ -145,6 +145,7 @@ async def test_delete_user_reports_litellm_http_failure(user):
         patch.object(service, 'get_user', AsyncMock(return_value=user)),
         patch.object(service, '_delete_api_keys', AsyncMock()),
         patch.object(service, '_delete_offline_token', AsyncMock()),
+        patch.object(service, '_set_disabled', AsyncMock()),
         patch.object(service, '_delete_user_data', AsyncMock()),
         patch(
             'server.services.admin_user_lifecycle_service.LiteLlmManager.delete_user',
