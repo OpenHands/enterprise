@@ -4,6 +4,7 @@ This module tests the git-related functionality, specifically the clone_or_init_
 and the recent bug fixes for git checkout operations.
 """
 
+import inspect
 import subprocess
 from pathlib import Path
 from types import MethodType
@@ -39,9 +40,15 @@ class MockUserInfo:
 class MockCommandResult:
     """Mock class for command execution result."""
 
-    def __init__(self, exit_code: int = 0, stderr: str = ''):
+    def __init__(
+        self,
+        exit_code: int = 0,
+        stderr: str = '',
+        stdout: str = '',
+    ):
         self.exit_code = exit_code
         self.stderr = stderr
+        self.stdout = stdout
 
 
 class MockWorkspace:
@@ -743,11 +750,13 @@ def _create_service_with_mock_user_context(
     """
     mock_user_context = MagicMock()
     mock_user_context.get_user_info = AsyncMock(return_value=user_info)
+    # No GPG key configured by default; _configure_gpg_signing is a no-op.
+    mock_user_context.get_secrets = AsyncMock(return_value={})
 
     # Create a simple mock service and set required attribute
     service = MagicMock()
     service.user_context = mock_user_context
-    methods_to_bind = ['_configure_git_user_settings']
+    methods_to_bind = ['_configure_git_user_settings', '_configure_gpg_signing']
     if bind_methods:
         methods_to_bind.extend(bind_methods)
         # Remove potential duplicates while keeping order
@@ -1150,6 +1159,384 @@ async def test_configure_git_user_settings_special_characters_in_name(mock_works
     mock_workspace.execute_command.assert_any_call(
         'git config --global user.name "Test O\'Brien"', '/workspace/project'
     )
+
+
+# =============================================================================
+# Tests for _configure_gpg_signing
+# =============================================================================
+
+_SAMPLE_ARMORED_KEY = """-----BEGIN PGP PRIVATE KEY BLOCK-----
+
+lQVYBGqNlNsBEADGnBXafqUoQI1HvWn5CZor/n7/KdHQRFfy1jJC3AMoRTJz
+dummyBase64BodyOnlyForTestsDoNotImport
+-----END PGP PRIVATE KEY BLOCK-----"""
+
+_SAMPLE_COLONS_OUTPUT = (
+    'sec:-:4096:1:A81B138AAC22BA50:1787663579:1819199579::::scESC::::::23::0:\n'
+    'uid:-:1787663579::Test User <test@example.com>:::::::\n'
+)
+
+
+class MockSecretSource:
+    """Mock SecretSource for testing secret resolution."""
+
+    def __init__(self, value: str | None):
+        self._value = value
+
+    def get_value(self) -> str | None:
+        return self._value
+
+
+def _create_service_for_gpg_tests(
+    secrets: dict[str, MockSecretSource] | None = None,
+) -> tuple:
+    """Create a mock service with _configure_gpg_signing and its helpers bound.
+
+    Returns (service, mock_user_context) with get_secrets configured.
+    """
+    mock_user_context = MagicMock()
+    mock_user_context.get_secrets = AsyncMock(return_value=secrets or {})
+
+    service = MagicMock()
+    service.user_context = mock_user_context
+
+    methods_to_bind = [
+        '_configure_gpg_signing',
+        '_find_gpg_secret',
+        '_decode_key_material',
+        '_parse_gpg_key_info',
+        '_run_git_config',
+    ]
+    for method_name in methods_to_bind:
+        real_method = getattr(AppConversationServiceBase, method_name)
+        # Static methods must not be bound (no self); instance methods need
+        # binding so `self` resolves to the mock service.
+        if isinstance(
+            inspect.getattr_static(AppConversationServiceBase, method_name),
+            staticmethod,
+        ):
+            setattr(service, method_name, real_method)
+        else:
+            setattr(service, method_name, MethodType(real_method, service))
+
+    return service, mock_user_context
+
+
+@pytest.mark.asyncio
+async def test_configure_gpg_signing_no_secret_configured(mock_workspace):
+    """When no GPG secret is registered, signing stays off (no commands run)."""
+    service, _ = _create_service_for_gpg_tests(secrets={})
+
+    await service._configure_gpg_signing(mock_workspace)
+
+    mock_workspace.execute_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_configure_gpg_signing_empty_secret_value(mock_workspace):
+    """An empty GPG secret logs a warning and runs no commands."""
+    service, _ = _create_service_for_gpg_tests(
+        secrets={'GPG_KEY': MockSecretSource(value='')}
+    )
+
+    await service._configure_gpg_signing(mock_workspace)
+
+    mock_workspace.execute_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_configure_gpg_signing_invalid_material(mock_workspace):
+    """Non-armored, non-base64 material is rejected before any commands run."""
+    service, _ = _create_service_for_gpg_tests(
+        secrets={'GPG_KEY': MockSecretSource(value='not-a-valid-key')}
+    )
+
+    await service._configure_gpg_signing(mock_workspace)
+
+    mock_workspace.execute_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_configure_gpg_signing_armored_key_enables_signing(mock_workspace):
+    """A valid armored private key is imported and signing is enabled."""
+    service, _ = _create_service_for_gpg_tests(
+        secrets={'GPG_KEY': MockSecretSource(value=_SAMPLE_ARMORED_KEY)}
+    )
+    # 1: write key file (ok)
+    # 2: gpgconf kill agent (ok)
+    # 3: gpg --import (ok)
+    # 4: rm key file (ok)
+    # 5: gpg --list-secret-keys (returns colons)
+    # 6+: git config calls
+    mock_workspace.execute_command = AsyncMock(
+        side_effect=[
+            MockCommandResult(exit_code=0),  # printf > key file
+            MockCommandResult(exit_code=0),  # gpgconf --kill
+            MockCommandResult(exit_code=0),  # gpg --import
+            MockCommandResult(exit_code=0),  # rm -f key file
+            MockCommandResult(
+                exit_code=0, stdout=_SAMPLE_COLONS_OUTPUT
+            ),  # list secret keys
+            MockCommandResult(exit_code=0),  # git config commit.gpgsign
+            MockCommandResult(exit_code=0),  # git config user.signingkey
+            MockCommandResult(exit_code=0),  # git config user.email
+            MockCommandResult(exit_code=0),  # git config user.name
+        ]
+    )
+
+    await service._configure_gpg_signing(mock_workspace)
+
+    commands = [call.args[0] for call in mock_workspace.execute_command.call_args_list]
+    assert any('printf %s' in c and '> ' in c for c in commands), (
+        'key material must be written to a temp file'
+    )
+    assert any('gpgconf --kill gpg-agent' in c for c in commands), (
+        'gpg-agent must be reloaded before import'
+    )
+    assert any(c.startswith('gpg --batch --import') for c in commands), (
+        'key must be imported'
+    )
+    assert any('rm -f /tmp/.oh-gpg-import-' in c for c in commands), (
+        'temp key file must be removed'
+    )
+    assert any(
+        'gpg --list-secret-keys --keyid-format=long --with-colons' in c
+        for c in commands
+    ), 'must list secret keys to extract key id'
+    assert any('git config --global commit.gpgsign true' in c for c in commands), (
+        'signing must be enabled'
+    )
+    assert any(
+        'git config --global user.signingkey A81B138AAC22BA50' in c for c in commands
+    ), 'signing key must be pinned'
+    assert any(
+        'git config --global user.email test@example.com' in c for c in commands
+    ), 'email must be pinned to key UID'
+    assert any(
+        'git config --global user.name' in c and 'Test User' in c for c in commands
+    ), 'name must be pinned to key UID'
+
+
+@pytest.mark.asyncio
+async def test_configure_gpg_signing_base64_encoded_key(mock_workspace):
+    """A base64-encoded private key is decoded and imported."""
+    import base64 as b64
+
+    encoded = b64.b64encode(_SAMPLE_ARMORED_KEY.encode()).decode()
+    service, _ = _create_service_for_gpg_tests(
+        secrets={'GPG_KEY': MockSecretSource(value=encoded)}
+    )
+    mock_workspace.execute_command = AsyncMock(
+        side_effect=[
+            MockCommandResult(exit_code=0),  # write key file
+            MockCommandResult(exit_code=0),  # gpgconf --kill
+            MockCommandResult(exit_code=0),  # gpg --import
+            MockCommandResult(exit_code=0),  # rm key file
+            MockCommandResult(exit_code=0, stdout=_SAMPLE_COLONS_OUTPUT),
+            MockCommandResult(exit_code=0),  # commit.gpgsign
+            MockCommandResult(exit_code=0),  # user.signingkey
+            MockCommandResult(exit_code=0),  # user.email
+            MockCommandResult(exit_code=0),  # user.name
+        ]
+    )
+
+    await service._configure_gpg_signing(mock_workspace)
+
+    # The decoded armored key must be written to the temp file.
+    write_call = mock_workspace.execute_command.call_args_list[0]
+    assert 'BEGIN PGP PRIVATE KEY BLOCK' in write_call.args[0]
+
+
+@pytest.mark.asyncio
+async def test_configure_gpg_signing_import_fails(mock_workspace):
+    """If gpg --import fails, signing is not enabled."""
+    service, _ = _create_service_for_gpg_tests(
+        secrets={'GPG_KEY': MockSecretSource(value=_SAMPLE_ARMORED_KEY)}
+    )
+    mock_workspace.execute_command = AsyncMock(
+        side_effect=[
+            MockCommandResult(exit_code=0),  # write key file
+            MockCommandResult(exit_code=0),  # gpgconf --kill
+            MockCommandResult(
+                exit_code=1, stderr='import failed'
+            ),  # gpg --import fails
+            MockCommandResult(exit_code=0),  # rm key file (still runs in finally)
+        ]
+    )
+
+    await service._configure_gpg_signing(mock_workspace)
+
+    commands = [call.args[0] for call in mock_workspace.execute_command.call_args_list]
+    # No git config commands should run after a failed import.
+    assert not any('git config' in c for c in commands), (
+        'no git config should run after import failure'
+    )
+    # Temp file still cleaned up.
+    assert any('rm -f /tmp/.oh-gpg-import-' in c for c in commands)
+
+
+@pytest.mark.asyncio
+async def test_configure_gpg_signing_no_secret_key_imported(mock_workspace):
+    """Import succeeds but no sec key (e.g. public key) -> signing disabled."""
+    service, _ = _create_service_for_gpg_tests(
+        secrets={'GPG_KEY': MockSecretSource(value=_SAMPLE_ARMORED_KEY)}
+    )
+    # list-secret-keys returns empty (no sec line).
+    empty_colons = ''
+    mock_workspace.execute_command = AsyncMock(
+        side_effect=[
+            MockCommandResult(exit_code=0),  # write key file
+            MockCommandResult(exit_code=0),  # gpgconf --kill
+            MockCommandResult(exit_code=0),  # gpg --import
+            MockCommandResult(exit_code=0),  # rm key file
+            MockCommandResult(exit_code=0, stdout=empty_colons),  # no sec keys
+        ]
+    )
+
+    await service._configure_gpg_signing(mock_workspace)
+
+    commands = [call.args[0] for call in mock_workspace.execute_command.call_args_list]
+    assert not any('git config' in c for c in commands), (
+        'no git config should run when no secret key is imported'
+    )
+
+
+@pytest.mark.asyncio
+async def test_configure_gpg_signing_case_insensitive_secret_name(mock_workspace):
+    """The GPG secret name is matched case-insensitively."""
+    service, _ = _create_service_for_gpg_tests(
+        secrets={'gpg_key': MockSecretSource(value=_SAMPLE_ARMORED_KEY)}
+    )
+    mock_workspace.execute_command = AsyncMock(
+        side_effect=[
+            MockCommandResult(exit_code=0),  # write key file
+            MockCommandResult(exit_code=0),  # gpgconf --kill
+            MockCommandResult(exit_code=0),  # gpg --import
+            MockCommandResult(exit_code=0),  # rm key file
+            MockCommandResult(exit_code=0, stdout=_SAMPLE_COLONS_OUTPUT),
+            MockCommandResult(exit_code=0),  # commit.gpgsign
+            MockCommandResult(exit_code=0),  # user.signingkey
+            MockCommandResult(exit_code=0),  # user.email
+            MockCommandResult(exit_code=0),  # user.name
+        ]
+    )
+
+    await service._configure_gpg_signing(mock_workspace)
+
+    assert mock_workspace.execute_command.call_count == 9
+
+
+@pytest.mark.asyncio
+async def test_configure_gpg_signing_accepts_gpg_private_key_name(mock_workspace):
+    """GPG_PRIVATE_KEY is accepted as an alternative secret name."""
+    service, _ = _create_service_for_gpg_tests(
+        secrets={'GPG_PRIVATE_KEY': MockSecretSource(value=_SAMPLE_ARMORED_KEY)}
+    )
+    mock_workspace.execute_command = AsyncMock(
+        side_effect=[
+            MockCommandResult(exit_code=0),  # write key file
+            MockCommandResult(exit_code=0),  # gpgconf --kill
+            MockCommandResult(exit_code=0),  # gpg --import
+            MockCommandResult(exit_code=0),  # rm key file
+            MockCommandResult(exit_code=0, stdout=_SAMPLE_COLONS_OUTPUT),
+            MockCommandResult(exit_code=0),  # commit.gpgsign
+            MockCommandResult(exit_code=0),  # user.signingkey
+            MockCommandResult(exit_code=0),  # user.email
+            MockCommandResult(exit_code=0),  # user.name
+        ]
+    )
+
+    await service._configure_gpg_signing(mock_workspace)
+
+    assert mock_workspace.execute_command.call_count == 9
+
+
+@pytest.mark.asyncio
+async def test_configure_gpg_signing_temp_file_cleaned_on_exception(mock_workspace):
+    """The temp key file is removed even if an exception occurs mid-import."""
+    service, _ = _create_service_for_gpg_tests(
+        secrets={'GPG_KEY': MockSecretSource(value=_SAMPLE_ARMORED_KEY)}
+    )
+    mock_workspace.execute_command = AsyncMock(
+        side_effect=[
+            MockCommandResult(exit_code=0),  # write key file
+            MockCommandResult(exit_code=0),  # gpgconf --kill
+            RuntimeError('boom'),  # gpg --import raises
+            MockCommandResult(exit_code=0),  # rm key file (finally block)
+        ]
+    )
+
+    # Should not raise; exception is caught by the outer try/except.
+    await service._configure_gpg_signing(mock_workspace)
+
+    commands = [call.args[0] for call in mock_workspace.execute_command.call_args_list]
+    assert any('rm -f /tmp/.oh-gpg-import-' in c for c in commands), (
+        'temp file must be cleaned up even on exception'
+    )
+
+
+def test_decode_key_material_armored():
+    """Raw armored key material is returned as-is."""
+    result = AppConversationServiceBase._decode_key_material(_SAMPLE_ARMORED_KEY)
+    assert result == _SAMPLE_ARMORED_KEY
+
+
+def test_decode_key_material_base64():
+    """Base64-encoded armored key material is decoded."""
+    import base64 as b64
+
+    encoded = b64.b64encode(_SAMPLE_ARMORED_KEY.encode()).decode()
+    result = AppConversationServiceBase._decode_key_material(encoded)
+    assert result == _SAMPLE_ARMORED_KEY
+
+
+def test_decode_key_material_invalid():
+    """Non-key, non-base64 material returns None."""
+    assert AppConversationServiceBase._decode_key_material('garbage') is None
+
+
+def test_parse_gpg_key_info_extracts_id_and_email():
+    """Key ID, email, and name are parsed from --with-colons output."""
+    key_id, email, name = AppConversationServiceBase._parse_gpg_key_info(
+        _SAMPLE_COLONS_OUTPUT
+    )
+    assert key_id == 'A81B138AAC22BA50'
+    assert email == 'test@example.com'
+    assert name == 'Test User'
+
+
+def test_parse_gpg_key_info_empty_output():
+    """Empty colons output yields all-None."""
+    assert AppConversationServiceBase._parse_gpg_key_info('') == (None, None, None)
+
+
+def test_parse_gpg_key_info_public_key_only():
+    """pub lines (no sec) yield no key id."""
+    pub_only = 'pub:-:4096:1:A81B138AAC22BA50:1787663579::::scESC::::::23::0:\n'
+    key_id, email, name = AppConversationServiceBase._parse_gpg_key_info(pub_only)
+    assert key_id is None
+    assert email is None
+    assert name is None
+
+
+def test_find_gpg_secret_finds_gpg_key():
+    """_find_gpg_secret locates GPG_KEY case-insensitively."""
+    secrets = {
+        'OTHER': MockSecretSource('x'),
+        'gpg_key': MockSecretSource(_SAMPLE_ARMORED_KEY),
+    }
+    service, _ = _create_service_for_gpg_tests()
+    result = service._find_gpg_secret(secrets)
+    assert result is not None
+    name, _ = result
+    assert name == 'gpg_key'
+
+
+def test_find_gpg_secret_returns_none_when_absent():
+    """No matching secret name returns None."""
+    secrets = {'GITHUB_TOKEN': MockSecretSource('x')}
+    service, _ = _create_service_for_gpg_tests()
+    assert service._find_gpg_secret(secrets) is None
 
 
 # =============================================================================
