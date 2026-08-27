@@ -71,7 +71,7 @@ async def test_delete_user_runs_all_cleanup_steps(user):
         patch.object(service, 'get_user', AsyncMock(return_value=user)),
         patch.object(service, '_delete_api_keys', AsyncMock()) as delete_keys,
         patch.object(service, '_delete_offline_token', AsyncMock()) as delete_token,
-        patch.object(service, '_set_disabled', AsyncMock()) as set_disabled,
+        patch.object(service, '_set_disabled', AsyncMock()),
         patch.object(service, '_delete_user_data', AsyncMock()) as delete_data,
         patch(
             'server.services.admin_user_lifecycle_service.LiteLlmManager.delete_user',
