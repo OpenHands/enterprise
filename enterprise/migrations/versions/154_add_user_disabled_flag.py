@@ -1,7 +1,7 @@
 """Add an instance-level disabled flag to users.
 
 Revision ID: 154
-Revises: 143
+Revises: 153
 """
 
 from typing import Sequence, Union

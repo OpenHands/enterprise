@@ -170,8 +170,7 @@ class AdminUserLifecycleService:
         user_uuid = user.id
         await OrgStore.delete_org_cascade(user_uuid, requester_user_id=user_id)
 
-        user_id_str = str(user_id)
-        user_uuid_str = str(user_uuid)
+        user_id_str = str(user_uuid)
         async with a_session_maker() as session:
             # Personal org was cascade-deleted above; these DELETEs cover
             # identity-level rows and shared-org leftovers.
@@ -180,26 +179,26 @@ class AdminUserLifecycleService:
                     DELETE FROM conversation_metadata
                     WHERE conversation_id IN (
                         SELECT conversation_id FROM conversation_metadata_saas
-                        WHERE user_id = :uuid
+                        WHERE user_id = :uid
                     )
                 """),
-                {'uuid': user_uuid_str},
+                {'uid': user_id_str},
             )
             await session.execute(
                 text("""
                     DELETE FROM app_conversation_start_task
                     WHERE app_conversation_id IN (
                         SELECT conversation_id::uuid FROM conversation_metadata_saas
-                        WHERE user_id = :uuid
+                        WHERE user_id = :uid
                     )
                 """),
-                {'uuid': user_uuid_str},
+                {'uid': user_id_str},
             )
             statements = (
-                'DELETE FROM conversation_metadata_saas WHERE user_id = :uuid',
-                'DELETE FROM daily_conversation_usage WHERE user_id = :uuid',
-                'UPDATE quota_increase_request SET approved_by_user_id = NULL WHERE approved_by_user_id = :uuid',
-                'DELETE FROM quota_increase_request WHERE user_id = :uuid',
+                'DELETE FROM conversation_metadata_saas WHERE user_id = :uid',
+                'DELETE FROM daily_conversation_usage WHERE user_id = :uid',
+                'UPDATE quota_increase_request SET approved_by_user_id = NULL WHERE approved_by_user_id = :uid',
+                'DELETE FROM quota_increase_request WHERE user_id = :uid',
                 'DELETE FROM conversation_work WHERE user_id = :uid',
                 'DELETE FROM app_conversation_start_task WHERE created_by_user_id = :uid',
                 'DELETE FROM jira_workspaces WHERE admin_user_id = :uid',
@@ -217,10 +216,10 @@ class AdminUserLifecycleService:
                 'DELETE FROM slack_users WHERE keycloak_user_id = :uid',
                 'DELETE FROM resend_synced_users WHERE keycloak_user_id = :uid',
                 'DELETE FROM github_app_installations WHERE user_id = :uid',
-                'DELETE FROM org_git_claim WHERE claimed_by = :uuid',
-                'DELETE FROM org_invitation WHERE inviter_id = :uuid OR accepted_by_user_id = :uuid',
-                'DELETE FROM org_user_budget_override WHERE user_id = :uuid',
-                'DELETE FROM org_member WHERE user_id = :uuid',
+                'DELETE FROM org_git_claim WHERE claimed_by = :uid',
+                'DELETE FROM org_invitation WHERE inviter_id = :uid OR accepted_by_user_id = :uid',
+                'DELETE FROM org_user_budget_override WHERE user_id = :uid',
+                'DELETE FROM org_member WHERE user_id = :uid',
                 'DELETE FROM jira_users WHERE keycloak_user_id = :uid',
                 'DELETE FROM jira_dc_users WHERE keycloak_user_id = :uid',
                 'DELETE FROM linear_users WHERE keycloak_user_id = :uid',
@@ -231,11 +230,11 @@ class AdminUserLifecycleService:
             for statement in statements:
                 await session.execute(
                     text(statement),
-                    {'uid': user_id_str, 'uuid': user_uuid_str},
+                    {'uid': user_id_str},
                 )
             await session.execute(
-                text('DELETE FROM "user" WHERE id = :uuid'),
-                {'uuid': user_uuid_str},
+                text('DELETE FROM "user" WHERE id = :uid'),
+                {'uid': user_id_str},
             )
             await session.commit()
 
