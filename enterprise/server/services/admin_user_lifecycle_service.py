@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 import httpx
-
 from server.auth.token_manager import TokenManager
 from sqlalchemy import text, update
 from storage.database import a_session_maker
