@@ -364,7 +364,7 @@ async def test_conversation_trigger_detected_from_tags(
     )
     existing = AppConversationInfo(
         id=conversation_info.id,
-        title=None,
+        title='Test',
         sandbox_id=sandbox_record.id,
         created_by_user_id=sandbox_record.created_by_user_id,
         trigger=None,
