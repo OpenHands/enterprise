@@ -1,0 +1,55 @@
+You are checked out to branch {{ branch_name }}, which has an open PR #{{ pr_number }}: "{{ pr_title }}" on Bitbucket Data Center.
+A comment on the PR has been addressed to you.
+
+# Bitbucket Data Center Context
+- Server URL: {{ bitbucket_base_url }}
+- Repository: {{ full_repo_name }} ({{ bitbucket_base_url }}/projects/{{ project_key }}/repos/{{ repo_slug }})
+- REST API base: {{ bitbucket_base_url }}/rest/api/1.0/projects/{{ project_key }}/repos/{{ repo_slug }}
+
+## Credentials
+The environment variable $BITBUCKET_DATA_CENTER_TOKEN holds your Bitbucket Data Center credential:
+- If its value contains a colon, it is in `username:token` form — use HTTP Basic auth: `curl -u "$BITBUCKET_DATA_CENTER_TOKEN" ...`
+- Otherwise it is an OAuth access token — use a Bearer header: `curl -H "Authorization: Bearer $BITBUCKET_DATA_CENTER_TOKEN" ...`
+
+Example endpoint — this PR's diff:
+{{ bitbucket_base_url }}/rest/api/1.0/projects/{{ project_key }}/repos/{{ repo_slug }}/pull-requests/{{ pr_number }}/diff
+
+The token value is supplied only as a sandbox secret/environment variable. Never echo or log the value of $BITBUCKET_DATA_CENTER_TOKEN — treat it as a secret.
+
+# PR Description
+{{ pr_body }}
+
+{% if file_location %}
+# Comment location
+The comment is in the file `{{ file_location }}` on line #{{ line_number }}.
+{% endif %}
+
+# Comment
+{{ pr_comment }}
+
+{% if comments %}
+# Previous Comments
+Use these earlier PR comments as context only. The comment above is the actionable request.
+{% for comment in comments %}
+- @{{ comment.author }} said at {{ comment.created_at }}:
+{{ comment.body }}
+{% if not loop.last %}
+
+{% endif %}
+{% endfor %}
+{% endif %}
+
+# Steps to Handle the Comment
+
+## Understand the PR Context
+Use $BITBUCKET_DATA_CENTER_TOKEN and the Bitbucket Data Center REST API to:
+    1. Retrieve the diff against the base branch to understand the changes
+    2. Fetch the PR body and any linked issues for context
+
+## Process the Comment
+If it's a question, answer it.
+
+If it requests a code update:
+    1. Modify the code accordingly in the current branch
+    2. Commit your changes with a clear commit message
+    3. Push the changes to Bitbucket Data Center to update the PR.

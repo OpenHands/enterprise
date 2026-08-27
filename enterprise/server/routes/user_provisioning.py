@@ -452,8 +452,17 @@ async def provision_user(
     # so we can decide which branch to take. Both lookups are
     # best-effort and read-only; failures here are not fatal and we
     # fall through to the create path.
+    existing_oh_user = None
+
+    # Match on the Keycloak sub, not email: a user deleted from Keycloak and recreated
+    # via federated OAuth keeps their email but gets a new sub, orphaning the old OH
+    # row - matching by email would provision that orphan.
     existing_kc_user_id = await token_manager.get_user_id_from_user_email(email)
-    existing_oh_user = await UserStore.get_user_by_email(email)
+    if existing_kc_user_id:
+        existing_oh_user = await UserStore.get_user_by_id(existing_kc_user_id)
+
+    if not existing_oh_user:
+        existing_oh_user = await UserStore.get_user_by_email(email)
 
     if existing_oh_user is not None and existing_kc_user_id is None:
         # OpenHands DB row exists but no Keycloak user — split state
@@ -595,7 +604,15 @@ async def provision_user(
         # subsequent steps (``OrgMemberStore.get_org_member``,
         # ``api_key`` retrieval) have an up-to-date view.
         if openhands_user_id is None:
-            existing_oh_user = await UserStore.get_user_by_email(email)
+            # Match on the Keycloak sub, not email: a user deleted from Keycloak and recreated
+            # via federated OAuth keeps their email but gets a new sub, orphaning the old OH
+            # row - matching by email would provision that orphan.
+            assert kc_user_id is not None
+            existing_oh_user = await UserStore.get_user_by_id(kc_user_id)
+
+            if not existing_oh_user:
+                existing_oh_user = await UserStore.get_user_by_email(email)
+
             if existing_oh_user is None:
                 # The Keycloak user exists but the OpenHands DB has
                 # not yet caught up (the concurrent winner is still

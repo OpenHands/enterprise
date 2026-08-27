@@ -93,3 +93,7 @@ class WebClientConfig(DiscriminatedUnionMixin):
     jira_dc_service_account_managed: bool = False
     jira_dc_service_account_email: str | None = None
     jira_dc_service_account_config_error: str | None = None
+    # False when the install links Jira Cloud users by email match instead of
+    # Atlassian OAuth; drives direct-save + manual-webhook UI in the configure
+    # flow instead of the OAuth redirect.
+    jira_oauth_enabled: bool = True

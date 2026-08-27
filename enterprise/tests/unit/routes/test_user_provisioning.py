@@ -194,10 +194,14 @@ class TestProvisionUserHandler:
         add_user_to_org_mock = AsyncMock()
 
         # If a pre-existing User row was supplied, return it from
-        # ``UserStore.get_user_by_email``; otherwise return None
-        # (i.e. "no existing local user"). The ``UserStore.create_user``
-        # mock returns ``new_user`` on the create path; the recover
-        # path reuses it idempotently.
+        # ``UserStore.get_user_by_id`` and ``UserStore.get_user_by_email``;
+        # otherwise return None (i.e. "no existing local user"). The
+        # production pre-flight resolves the OpenHands user by the Keycloak
+        # sub first (``get_user_by_id``) and only falls back to email when
+        # that returns nothing, so both mocks share the same fixture. The
+        # ``UserStore.create_user`` mock returns ``new_user`` on the create
+        # path; the recover path reuses it idempotently.
+        get_user_by_id_mock = AsyncMock(return_value=existing_oh_user)
         get_user_by_email_mock = AsyncMock(return_value=existing_oh_user)
 
         get_org_member_mock = AsyncMock(return_value=existing_org_member)
@@ -220,6 +224,10 @@ class TestProvisionUserHandler:
             patch(
                 'server.routes.user_provisioning.UserStore.get_user_by_email',
                 get_user_by_email_mock,
+            ),
+            patch(
+                'server.routes.user_provisioning.UserStore.get_user_by_id',
+                get_user_by_id_mock,
             ),
             patch(
                 'server.routes.user_provisioning._set_user_provisioned_flags',
@@ -267,6 +275,7 @@ class TestProvisionUserHandler:
             'set_flags': set_flags_mock,
             'add_user_to_org': add_user_to_org_mock,
             'get_user_by_email': get_user_by_email_mock,
+            'get_user_by_id': get_user_by_id_mock,
             'get_org_member': get_org_member_mock,
             'role_store': role_store_mock,
             'remove_member': remove_member_mock,

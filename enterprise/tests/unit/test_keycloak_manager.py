@@ -1,10 +1,10 @@
 from unittest.mock import MagicMock, patch
 
 from server.auth import keycloak_manager
-from server.auth.constants import KEYCLOAK_REQUEST_TIMEOUT
+from server.auth.constants import KEYCLOAK_MAX_RETRIES, KEYCLOAK_REQUEST_TIMEOUT
 
 
-def test_openid_client_has_bounded_timeout_and_no_hidden_retries():
+def test_openid_client_uses_configured_timeout_and_retries():
     keycloak_manager._keycloak_instances.clear()
 
     with patch('server.auth.keycloak_manager.KeycloakOpenID') as keycloak_openid:
@@ -12,10 +12,10 @@ def test_openid_client_has_bounded_timeout_and_no_hidden_retries():
         keycloak_manager.get_keycloak_openid()
 
     assert keycloak_openid.call_args.kwargs['timeout'] == KEYCLOAK_REQUEST_TIMEOUT
-    assert keycloak_openid.call_args.kwargs['max_retries'] == 0
+    assert keycloak_openid.call_args.kwargs['max_retries'] == KEYCLOAK_MAX_RETRIES
 
 
-def test_admin_client_has_bounded_timeout_and_no_hidden_retries():
+def test_admin_client_uses_configured_timeout_and_retries():
     keycloak_manager._keycloak_admin_instances.clear()
 
     with patch('server.auth.keycloak_manager.KeycloakAdmin') as keycloak_admin:
@@ -23,4 +23,4 @@ def test_admin_client_has_bounded_timeout_and_no_hidden_retries():
         keycloak_manager.get_keycloak_admin()
 
     assert keycloak_admin.call_args.kwargs['timeout'] == KEYCLOAK_REQUEST_TIMEOUT
-    assert keycloak_admin.call_args.kwargs['max_retries'] == 0
+    assert keycloak_admin.call_args.kwargs['max_retries'] == KEYCLOAK_MAX_RETRIES

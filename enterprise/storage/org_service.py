@@ -15,6 +15,7 @@ from server.constants import (
 from server.routes.org_models import (
     LiteLLMIntegrationError,
     OrgAuthorizationError,
+    OrgCreditsResult,
     OrgDatabaseError,
     OrgNameExistsError,
     OrgNotFoundError,
@@ -605,32 +606,22 @@ class OrgService:
             raise OrgDatabaseError('Failed to update organization') from e
 
     @staticmethod
-    async def get_org_credits(user_id: str, org_id: UUID) -> float | None:
-        """
-        Get organization credits from LiteLLM team.
-
-        Args:
-            user_id: User ID
-            org_id: Organization ID
-
-        Returns:
-            float | None: Credits (max_budget - spend) or None if LiteLLM not configured
-        """
+    async def get_org_credits(user_id: str, org_id: UUID) -> OrgCreditsResult:
+        """Get organization credits and their availability from LiteLLM."""
         try:
             user_team_info = await LiteLlmManager.get_user_team_info(
                 user_id, str(org_id)
             )
             if not user_team_info:
-                logger.warning(
-                    'No team info available from LiteLLM',
-                    extra={'user_id': user_id, 'org_id': str(org_id)},
-                )
-                return None
+                return OrgCreditsResult()
 
-            max_budget, spend = LiteLlmManager.get_budget_from_team_info(
+            budget_info = LiteLlmManager.get_budget_from_team_info(
                 user_team_info, user_id, str(org_id)
             )
-            credits = max(max_budget - spend, 0)
+            if budget_info is None:
+                return OrgCreditsResult()
+            max_budget, spend = budget_info
+            credits = None if max_budget is None else max(max_budget - spend, 0)
 
             logger.debug(
                 'Retrieved organization credits',
@@ -643,14 +634,13 @@ class OrgService:
                 },
             )
 
-            return credits
-
+            return OrgCreditsResult(credits=credits, available=True)
         except Exception as e:
             logger.warning(
                 'Failed to retrieve organization credits',
                 extra={'user_id': user_id, 'org_id': str(org_id), 'error': str(e)},
             )
-            return None
+            return OrgCreditsResult()
 
     @staticmethod
     async def get_user_orgs_paginated(
@@ -871,8 +861,12 @@ class OrgService:
         if org.byor_export_enabled:
             return True
 
-        credits = await OrgService.get_org_credits(user_id, org_id)
-        if credits is None or credits <= 0:
+        credit_result = await OrgService.get_org_credits(user_id, org_id)
+        if (
+            not credit_result.available
+            or credit_result.credits is None
+            or credit_result.credits <= 0
+        ):
             return False
 
         org = await OrgStore.enable_byor_export(org_id)

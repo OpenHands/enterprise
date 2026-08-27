@@ -13,6 +13,7 @@ to JiraFactory, keeping the orchestration logic clean and traceable.
 
 import httpx
 from integrations.jira.jira_payload import (
+    JiraEventType,
     JiraPayloadError,
     JiraPayloadParser,
     JiraPayloadSkipped,
@@ -36,7 +37,7 @@ from integrations.utils import (
     get_session_expired_message,
 )
 from jinja2 import Environment, FileSystemLoader
-from server.auth.constants import JIRA_HTTP_TIMEOUT
+from server.auth.constants import JIRA_ENABLE_OAUTH, JIRA_HTTP_TIMEOUT
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
 from storage.jira_integration_store import JiraIntegrationStore
@@ -75,6 +76,9 @@ class JiraManager(Manager[JiraViewInterface]):
             oh_label=OH_LABEL,
             inline_oh_label=INLINE_OH_LABEL,
         )
+        # Service-account accountId per workspace.id, resolved lazily from
+        # /myself for matching picker mentions.
+        self._svc_mention_cache: dict[int, str] = {}
 
     async def receive_message(self, message: Message):
         """Process incoming Jira webhook message.
@@ -124,6 +128,20 @@ class JiraManager(Manager[JiraViewInterface]):
         workspace = await self._get_active_workspace(payload)
         if not workspace:
             return
+
+        # A picker mention ([~accountid:...]) only counts when it targets the
+        # service account; the literal inline label always counts.
+        if (
+            payload.event_type == JiraEventType.COMMENT_MENTION
+            and not payload.literal_mention
+        ):
+            bot_id = await self._get_bot_account_id(workspace)
+            if not bot_id or bot_id not in payload.mention_ids:
+                logger.info(
+                    '[Jira] Comment mentions users but not the service account',
+                    extra={'issue_key': payload.issue_key},
+                )
+                return
 
         # Step 3: Authenticate user
         jira_user, saas_user_auth = await self._authenticate_user(payload, workspace)
@@ -215,13 +233,90 @@ class JiraManager(Manager[JiraViewInterface]):
 
         return workspace
 
+    async def _get_bot_account_id(self, workspace: JiraWorkspace) -> str | None:
+        """Service account's accountId, for matching picker mentions.
+
+        Cached per workspace; failures are not cached, so a later comment
+        re-attempts resolution (this event is dropped, not retried).
+        """
+        cached = self._svc_mention_cache.get(workspace.id)
+        if cached:
+            return cached
+        try:
+            api_key = self.token_manager.decrypt_text(workspace.svc_acc_api_key)
+            url = f'{JIRA_CLOUD_API_URL}/{workspace.jira_cloud_id}/rest/api/2/myself'
+            async with httpx.AsyncClient(
+                verify=httpx_verify_option(), timeout=JIRA_HTTP_TIMEOUT
+            ) as client:
+                response = await client.get(
+                    url, auth=(workspace.svc_acc_email, api_key)
+                )
+                response.raise_for_status()
+                account_id = (response.json().get('accountId') or '').strip().lower()
+        except Exception as e:
+            logger.warning(f'[Jira] Could not resolve bot account id: {str(e)}')
+            return None
+        if account_id:
+            self._svc_mention_cache[workspace.id] = account_id
+        return account_id or None
+
     async def _authenticate_user(
         self, payload: JiraWebhookPayload, workspace: JiraWorkspace
     ) -> tuple[JiraUser | None, UserAuth | None]:
         """Authenticate the Jira user and get OpenHands auth."""
-        jira_user = await self.integration_store.get_active_user(
-            payload.account_id, workspace.id
-        )
+        # In email-match mode (OAuth disabled) users never OAuth-link, so the
+        # webhook's Atlassian account id can never match a stored row. Resolve
+        # the user by matching their Jira email to their OpenHands email and
+        # auto-enroll them. In OAuth mode we resolve strictly by the verified
+        # account id, preserving the verification guarantee.
+        if not JIRA_ENABLE_OAUTH:
+            if not payload.user_email:
+                # Atlassian omits the email unless the user's profile
+                # visibility allows it, and email is the only identity we can
+                # match in this mode.
+                logger.warning(
+                    '[Jira] No user email in webhook payload; cannot match user',
+                    extra={
+                        'account_id': payload.account_id,
+                        'workspace_id': workspace.id,
+                    },
+                )
+                await self._send_error_from_payload(
+                    payload,
+                    workspace,
+                    'Could not determine your Jira email address. In your '
+                    'Atlassian account settings (Profile and visibility > '
+                    'Contact), set your email address visibility to "Anyone", '
+                    'then try again. This change can take 15 minutes or more '
+                    'to take effect.',
+                )
+                return None, None
+
+            jira_user = None
+            keycloak_user_id = await self.token_manager.get_user_id_from_user_email(
+                payload.user_email
+            )
+            if not keycloak_user_id:
+                logger.warning(
+                    f'[Jira] No OpenHands user found for email: {payload.user_email}'
+                )
+            else:
+                jira_user = await self.integration_store.get_active_user_by_keycloak_id_and_workspace(
+                    keycloak_user_id, workspace.id
+                )
+                # Email mode is itself the admin's opt-in: a user whose Jira email
+                # matches an OpenHands account is auto-enrolled, no manual link
+                # step. Never in OAuth mode, which requires a verified identity.
+                if not jira_user:
+                    jira_user = (
+                        await self.integration_store.get_or_create_active_email_link(
+                            keycloak_user_id, workspace.id
+                        )
+                    )
+        else:
+            jira_user = await self.integration_store.get_active_user(
+                payload.account_id, workspace.id
+            )
 
         if not jira_user:
             logger.warning(

@@ -206,6 +206,18 @@ describe("Manage Org Route", () => {
     });
   });
 
+  it("should render no limit when the organization has no configured cap", async () => {
+    vi.spyOn(BillingService, "getBalance").mockResolvedValueOnce(null);
+    renderManageOrg();
+    await screen.findByTestId("manage-org-screen");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("available-credits")).toHaveTextContent(
+        "CONVERSATION$NO_BUDGET_LIMIT",
+      );
+    });
+  });
+
   it("should render account details", async () => {
     renderManageOrg();
     await screen.findByTestId("manage-org-screen");
