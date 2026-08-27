@@ -40,7 +40,6 @@ export function MetricsModal({ isOpen, onOpenChange }: MetricsModalProps) {
     if (sandboxMetrics) {
       return {
         cost: sandboxMetrics.accumulated_cost,
-        max_budget_per_task: sandboxMetrics.max_budget_per_task,
         usage: sandboxMetrics.accumulated_token_usage
           ? {
               prompt_tokens:
@@ -74,10 +73,7 @@ export function MetricsModal({ isOpen, onOpenChange }: MetricsModalProps) {
           {(metrics?.cost !== null || metrics?.usage !== null) && (
             <div className="rounded-md p-3">
               <div className="grid gap-3">
-                <CostSection
-                  cost={metrics?.cost ?? null}
-                  maxBudgetPerTask={metrics?.max_budget_per_task ?? null}
-                />
+                <CostSection cost={metrics?.cost ?? null} />
 
                 {metrics?.usage !== null && (
                   <>
