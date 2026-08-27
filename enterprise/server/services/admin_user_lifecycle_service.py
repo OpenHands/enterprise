@@ -127,6 +127,21 @@ class AdminUserLifecycleService:
 
     async def _set_disabled(self, user_id: str, disabled: bool) -> None:
         async with a_session_maker() as session:
+            if disabled:
+                active_admins = await session.execute(
+                    text("""
+                        SELECT u.id
+                        FROM "user" u
+                        JOIN role r ON r.id = u.role_id
+                        WHERE r.name = 'admin' AND u.is_disabled = false
+                        FOR UPDATE OF u
+                    """)
+                )
+                active_admin_ids = {str(row[0]) for row in active_admins}
+                if user_id in active_admin_ids and len(active_admin_ids) <= 1:
+                    raise LastSuperAdminError(
+                        'Cannot disable or delete the last active superadmin'
+                    )
             await session.execute(
                 update(User)
                 .where(User.id == UUID(user_id))
@@ -180,6 +195,9 @@ class AdminUserLifecycleService:
             )
             statements = (
                 'DELETE FROM conversation_metadata_saas WHERE user_id = :uuid',
+                'DELETE FROM daily_conversation_usage WHERE user_id = :uuid',
+                'UPDATE quota_increase_request SET approved_by_user_id = NULL WHERE approved_by_user_id = :uuid',
+                'DELETE FROM quota_increase_request WHERE user_id = :uuid',
                 'DELETE FROM conversation_work WHERE user_id = :uid',
                 'DELETE FROM app_conversation_start_task WHERE created_by_user_id = :uid',
                 'DELETE FROM jira_workspaces WHERE admin_user_id = :uid',
