@@ -27,6 +27,12 @@ BYOR_KEY_ALIAS_PATTERN = os.getenv(
     'BYOR_KEY_ALIAS_PATTERN', 'BYOR Key - user {user_id}, org {org_id}'
 )
 
+# When true, LLM API key export (BYOR) is enabled for every org regardless of
+# billing/credits. Used by self-hosted/enterprise deployments that don't run
+# the Stripe billing flow but still want to expose the managed LLM key.
+# Accepts both 'true' and '1' (older Helm charts default to '1').
+ENABLE_BYOR_EXPORT = os.getenv('ENABLE_BYOR_EXPORT', 'false').lower() in ('true', '1')
+
 
 # Explicit OH_DEPLOYMENT_MODE wins; _is_all_hands_managed_domain() is the host fallback.
 def _is_all_hands_managed_domain(host: str) -> bool:
@@ -75,6 +81,7 @@ PERSONAL_WORKSPACE_VERSION_TO_MODEL = {
     6: 'minimax-m2.7',
     7: 'glm-5.2',
     8: 'kimi-k3',
+    9: 'deepseek-v4-flash',
 }
 
 LITELLM_DEFAULT_MODEL = os.getenv('LITELLM_DEFAULT_MODEL')

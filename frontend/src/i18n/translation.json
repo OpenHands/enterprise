@@ -11015,6 +11015,23 @@
     "uk": "Купити зараз",
     "ca": "Compra ara"
   },
+  "SETTINGS$LLM_API_KEY_DISABLED_MESSAGE": {
+    "en": "LLM API key export is disabled on this deployment. Contact your administrator to enable it.",
+    "zh-CN": "此部署已禁用 LLM API 密钥导出。请联系管理员启用。",
+    "zh-TW": "此部署已停用 LLM API 金鑰匯出。請聯絡管理員啟用。",
+    "de": "Der Export des LLM-API-Schlüssels ist für diese Bereitstellung deaktiviert. Wenden Sie sich an Ihren Administrator, um ihn zu aktivieren.",
+    "ko-KR": "이 배포에서는 LLM API 키 내보내기가 비활성화되어 있습니다. 활성화하려면 관리자에게 문의하세요.",
+    "no": "Eksport av LLM-API-nøkkel er deaktivert på denne distribusjonen. Kontakt administratoren din for å aktivere den.",
+    "it": "L'esportazione della chiave API LLM è disabilitata su questa distribuzione. Contatta l'amministratore per abilitarla.",
+    "pt": "A exportação da chave de API LLM está desativada nesta implantação. Entre em contato com o administrador para ativá-la.",
+    "es": "La exportación de la clave de API LLM está desactivada en esta implementación. Póngase en contacto con su administrador para activarla.",
+    "ar": "تم تعطيل تصدير مفتاح LLM API في هذا النشر. اتصل بالمسؤول لتمكينه.",
+    "fr": "L'exportation de la clé API LLM est désactivée sur ce déploiement. Contactez votre administrateur pour l'activer.",
+    "tr": "LLM API anahtarı dışa aktarma bu dağıtımda devre dışı. Etkinleştirmek için yöneticinize başvurun.",
+    "ja": "このデプロイでは、LLM APIキーのエクスポートが無効になっています。有効にするには管理者にお問い合わせください。",
+    "uk": "Експорт ключа API LLM вимкнено у цьому розгортанні. Зверніться до адміністратора, щоб увімкнути його.",
+    "ca": "L'exportació de la clau API LLM està desactivada en aquesta implementació. Poseu-vos en contacte amb l'administrador per activar-la."
+  },
   "SETTINGS$CONFIRMATION_MODE": {
     "en": "Enable Confirmation Mode",
     "de": "Bestätigungsmodus aktivieren",

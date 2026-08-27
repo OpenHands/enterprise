@@ -664,11 +664,18 @@ class OrgAppSettingsResponse(BaseModel):
 
 
 class OrgAppSettingsUpdate(BaseModel):
-    """Request model for updating organization app settings."""
+    """Request model for updating organization app settings.
+
+    ``agent_settings_diff`` is a sparse diff applied to the org-wide
+    ``agent_settings`` defaults, so admins/owners can set the harness every
+    member starts from. It is admin/owner-only on the route (see
+    ``update_org_app_settings``) because those defaults apply to every member.
+    """
 
     enable_proactive_conversation_starters: bool | None = None
     max_budget_per_task: float | None = None
     registered_marketplaces: list[MarketplaceRegistration] | None = None
+    agent_settings_diff: dict[str, Any] | None = None
     # Optimistic locking: client echoes back the server-generated updated_at it
     # last read. If it no longer matches the DB, someone else modified the record
     # and a 409 conflict is raised. (Server-generated, so clock skew is irrelevant.)
@@ -680,6 +687,19 @@ class OrgAppSettingsUpdate(BaseModel):
         if v is not None and v <= 0:
             raise ValueError('max_budget_per_task must be greater than 0')
         return v
+
+    @model_validator(mode='after')
+    def _strip_member_private_agent_keys(self) -> 'OrgAppSettingsUpdate':
+        """Keep member-private keys out of the org-wide defaults.
+
+        Mirrors ``OrgUpdate._normalize_agent_settings_diff``: an org default
+        must never carry one member's ``mcp_config``, or every joiner would
+        inherit it from the org row.
+        """
+        if self.agent_settings_diff is not None:
+            for key in MEMBER_PRIVATE_AGENT_KEYS:
+                self.agent_settings_diff.pop(key, None)
+        return self
 
 
 VALID_GIT_PROVIDERS = {

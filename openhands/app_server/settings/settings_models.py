@@ -803,6 +803,10 @@ class Settings(BaseModel):
         if not self.llm_profiles.has(active):
             self.llm_profiles.active = None
             return
+        # An ACP harness picks its model via ``acp_model`` and leaves ``llm`` at
+        # SDK defaults, so syncing it would overwrite the profile with junk.
+        if self.agent_settings.agent_kind != 'openhands':
+            return
         if self.llm_profiles.require(active) != self.agent_settings.llm:
             self.llm_profiles.save(active, self.agent_settings.llm)
 
