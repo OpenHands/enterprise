@@ -147,7 +147,6 @@ async def test_disable_user_allows_already_disabled_superadmin(user):
         await service._ensure_not_last_active_superadmin(user)
 
 
-
 @pytest.mark.asyncio
 async def test_delete_user_reports_litellm_http_failure(user):
     token_manager = MagicMock()
