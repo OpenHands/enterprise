@@ -28,6 +28,14 @@ class _CacheEntry:
     fetched_at: float
 
 
+@dataclass
+class _GlobalCacheEntry:
+    """Cached snapshot of the global (rule-less) flags -> enabled map."""
+
+    value: dict[str, bool]
+    fetched_at: float
+
+
 class FeatureFlagService:
     """Evaluates feature flags for a request context.
 
@@ -38,6 +46,7 @@ class FeatureFlagService:
     """
 
     _cache: dict[str, _CacheEntry] = {}
+    _global_cache: dict[str, _GlobalCacheEntry] = {}
 
     def __init__(self, cache_ttl_seconds: int = _DEFAULT_CACHE_TTL_SECONDS) -> None:
         self._cache_ttl = cache_ttl_seconds
@@ -46,8 +55,12 @@ class FeatureFlagService:
         """Drop a single flag (or all flags) from the cache."""
         if key is None:
             self._cache.clear()
+            self._global_cache.clear()
         else:
             self._cache.pop(key, None)
+            # A per-flag change may move it in/out of the global set, so drop
+            # the global snapshot too; it is cheap to rebuild.
+            self._global_cache.pop('snapshot', None)
 
     async def is_enabled(
         self,
@@ -88,6 +101,10 @@ class FeatureFlagService:
                         return True
                     # In bucket-fail: this rule does not grant; continue.
                     continue
+                # No user_id, or no percentage on this rule: the bucket check
+                # is skipped and the include applies directly. This branch is
+                # only reachable for rules whose targeting dimensions are all
+                # NULL (a targeted rule cannot match an anonymous context).
                 return True
 
         # No include rule granted the flag. If there are no include rules at
@@ -115,6 +132,38 @@ class FeatureFlagService:
         self._cache[key] = _CacheEntry(flag, all_rules, now)
         return flag, list(all_rules)
 
+    async def get_global_flags(self) -> dict[str, bool]:
+        """Return the subset of flags that are safe for an anonymous context.
+
+        Only flags with **no rules at all** are returned: their value is the
+        flag's global ``enabled`` switch, independent of any user/org/email
+        targeting. Flags that carry rules (include or exclude) are inherently
+        context-dependent and must NOT be exposed to unauthenticated callers
+        such as the web-client config endpoint -- per-user excludes would
+        otherwise leak "who is excluded" and per-user includes would leak
+        targeting state.
+
+        The result is cached for the same TTL as ``is_enabled``. Callers that
+        need the per-user value for a targeted flag must use ``is_enabled``
+        with an explicit context.
+        """
+        import time
+
+        now = time.monotonic()
+        cached = self._global_cache.get('snapshot')
+        if cached is not None and (now - cached.fetched_at) < self._cache_ttl:
+            return dict(cached.value)
+
+        flags = await FeatureFlagStore.list_flags()
+        # Gather rules per flag in one pass; flags with no rules are global.
+        result: dict[str, bool] = {}
+        for flag in flags:
+            rules = await FeatureFlagStore.list_rules(flag.key)
+            if not rules:
+                result[flag.key] = bool(flag.enabled)
+        self._global_cache['snapshot'] = _GlobalCacheEntry(result, now)
+        return dict(result)
+
 
 def _rule_matches_context(
     rule: FeatureFlagRule,
@@ -125,10 +174,23 @@ def _rule_matches_context(
     """Pure-Python mirror of the store's SQL match conditions.
 
     Used to re-filter cached rule lists without a DB round-trip.
+
+    A populated rule dimension requires a populated context value to match:
+    an anonymous context (no user/org/email) can only match fully-blank
+    rules. This prevents a per-user exclude rule from silently excluding
+    anonymous callers (and a per-user include from silently granting them),
+    so only genuinely global flags reach unauthenticated paths such as the
+    web-client config endpoint.
     """
-    if rule.user_id is not None and user_id is not None and rule.user_id != user_id:
+    if rule.user_id is not None and user_id is None:
         return False
-    if rule.org_id is not None and org_id is not None and rule.org_id != org_id:
+    if rule.org_id is not None and org_id is None:
+        return False
+    if rule.email_pattern is not None and email is None:
+        return False
+    if rule.user_id is not None and rule.user_id != user_id:
+        return False
+    if rule.org_id is not None and rule.org_id != org_id:
         return False
     if rule.email_pattern is not None and email is not None:
         if not _sql_like_match(rule.email_pattern, email):

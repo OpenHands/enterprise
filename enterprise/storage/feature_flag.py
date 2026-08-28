@@ -58,10 +58,17 @@ class FeatureFlagRule(Base):
     dimension. A rule matches a given context only when *every* populated
     dimension matches. ``effect`` then includes or excludes matched contexts.
 
+    A populated dimension requires a populated context value to match: an
+    anonymous context (no user/org/email) can only match fully-blank rules.
+    This keeps per-user/per-org/per-email targeting from silently applying to
+    unauthenticated callers, so only genuinely global flags (rules-less
+    flags) are safe to expose on anonymous paths.
+
     ``percentage`` (0-100, inclusive) enables deterministic rollout: a context
     is in the bucket when ``hash(flag_key + user_id) % 100 < percentage``. A
-    NULL ``user_id`` cannot participate in percentage rollout and always falls
-    back to "in bucket" (i.e. the percentage constraint is skipped).
+    NULL ``user_id`` cannot participate in percentage rollout: the bucket
+    check is skipped and the rule's ``effect`` applies directly (so an
+    include-only percentage rule grants an anonymous caller).
     """
 
     __tablename__ = "feature_flag_rules"

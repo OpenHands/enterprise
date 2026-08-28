@@ -294,26 +294,47 @@ class FeatureFlagStore:
         - org_id is NULL OR rule.org_id == org_id
         - email_pattern is NULL OR email LIKE email_pattern (case-insensitive)
         Percentage is not a match filter -- it is applied during evaluation.
+
+        When the context is anonymous (user_id/org_id/email all None), only
+        fully-blank rules can match: a populated dimension requires a
+        populated context value. This mirrors ``_rule_matches_context`` so the
+        cached read-path and this DB pre-filter agree.
         """
         conditions = [FeatureFlagRule.flag_id == flag_id]
-        if user_id is not None:
+        if user_id is None:
+            # Anonymous context: only fully-blank rules can match.
+            conditions.append(FeatureFlagRule.user_id.is_(None))
+            conditions.append(FeatureFlagRule.org_id.is_(None))
+            conditions.append(FeatureFlagRule.email_pattern.is_(None))
+        else:
             conditions.append(
                 or_(
                     FeatureFlagRule.user_id.is_(None),
                     FeatureFlagRule.user_id == user_id,
                 )
             )
-        if org_id is not None:
-            conditions.append(
-                or_(FeatureFlagRule.org_id.is_(None), FeatureFlagRule.org_id == org_id)
-            )
-        if email is not None:
-            conditions.append(
-                or_(
-                    FeatureFlagRule.email_pattern.is_(None),
-                    func.lower(email).like(func.lower(FeatureFlagRule.email_pattern)),
+            if org_id is not None:
+                conditions.append(
+                    or_(
+                        FeatureFlagRule.org_id.is_(None),
+                        FeatureFlagRule.org_id == org_id,
+                    )
                 )
-            )
+            else:
+                # org_id context is None: rule must not target a specific org.
+                conditions.append(FeatureFlagRule.org_id.is_(None))
+            if email is not None:
+                conditions.append(
+                    or_(
+                        FeatureFlagRule.email_pattern.is_(None),
+                        func.lower(email).like(
+                            func.lower(FeatureFlagRule.email_pattern)
+                        ),
+                    )
+                )
+            else:
+                # email context is None: rule must not target an email pattern.
+                conditions.append(FeatureFlagRule.email_pattern.is_(None))
         result = await session.execute(
             select(FeatureFlagRule)
             .where(*conditions)

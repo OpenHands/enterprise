@@ -200,3 +200,70 @@ class TestRules:
                 fetched = await FeatureFlagStore.get_flag("my_flag", session=session)
                 assert fetched is not None
                 assert fetched.key == "my_flag"
+
+
+class TestGetMatchingRules:
+    """``_get_matching_rules`` must agree with the service's Python mirror.
+
+    An anonymous context (no user/org/email) may only match fully-blank rules;
+    a populated rule dimension requires a populated context value.
+    """
+
+    @pytest.mark.asyncio
+    async def test_anonymous_excludes_targeted_rules(self, async_session_maker):
+        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
+            await FeatureFlagStore.create_flag(key="f", enabled=True)
+            await FeatureFlagStore.create_rule(
+                flag_key="f",
+                effect=FeatureFlagRuleEffect.EXCLUDE,
+                user_id="u1",
+            )
+            await FeatureFlagStore.create_rule(
+                flag_key="f",
+                effect=FeatureFlagRuleEffect.INCLUDE,
+                org_id="org1",
+            )
+            await FeatureFlagStore.create_rule(
+                flag_key="f",
+                effect=FeatureFlagRuleEffect.INCLUDE,
+                email_pattern="%@x.com",
+            )
+            # Anonymous context -> no targeted rule matches.
+            async with async_session_maker() as session:
+                flag = await FeatureFlagStore._get_flag("f", session)
+                matched = await FeatureFlagStore._get_matching_rules(
+                    flag.id, None, None, None, session
+                )
+            assert matched == []
+
+    @pytest.mark.asyncio
+    async def test_anonymous_matches_fully_blank_rule(self, async_session_maker):
+        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
+            await FeatureFlagStore.create_flag(key="f", enabled=True)
+            await FeatureFlagStore.create_rule(
+                flag_key="f", effect=FeatureFlagRuleEffect.EXCLUDE
+            )
+            async with async_session_maker() as session:
+                flag = await FeatureFlagStore._get_flag("f", session)
+                matched = await FeatureFlagStore._get_matching_rules(
+                    flag.id, None, None, None, session
+                )
+            assert len(matched) == 1
+            assert matched[0].user_id is None
+
+    @pytest.mark.asyncio
+    async def test_user_context_matches_user_rule(self, async_session_maker):
+        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
+            await FeatureFlagStore.create_flag(key="f", enabled=True)
+            await FeatureFlagStore.create_rule(
+                flag_key="f",
+                effect=FeatureFlagRuleEffect.INCLUDE,
+                user_id="u1",
+            )
+            async with async_session_maker() as session:
+                flag = await FeatureFlagStore._get_flag("f", session)
+                matched = await FeatureFlagStore._get_matching_rules(
+                    flag.id, "u1", None, None, session
+                )
+            assert len(matched) == 1
+            assert matched[0].user_id == "u1"

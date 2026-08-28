@@ -912,3 +912,69 @@ class TestGetJiraOauthEnabled:
 
         with patch.dict(os.environ, {'JIRA_ENABLE_OAUTH': '0'}):
             assert _get_jira_oauth_enabled() is False
+
+
+class TestGetDbFeatureFlags:
+    """Tests for _get_db_feature_flags.
+
+    The helper must degrade gracefully when the enterprise feature-flag service
+    is absent (OSS) or errors, returning an empty map so the unauthenticated
+    config endpoint never breaks.
+    """
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_enterprise_service_absent(self):
+        """When the enterprise service module cannot be imported, return {}."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        # Force the lazy import to fail by patching __import__ for the module.
+        with patch(
+            'builtins.__import__',
+            side_effect=ImportError('no enterprise package'),
+        ):
+            result = await mod._get_db_feature_flags()
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_returns_global_flags_when_available(self):
+        """When the enterprise service is present, return its global flags."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def get_global_flags(self):
+                return {'new_global_thing': True}
+
+        # Patch the lazy import target that the helper uses.
+        import sys
+        import types
+
+        fake_module = types.ModuleType('server.services.feature_flag_service')
+        fake_module.feature_flag_service = _FakeService()
+        with patch.dict(sys.modules, {'server.services.feature_flag_service': fake_module}):
+            result = await mod._get_db_feature_flags()
+        assert result == {'new_global_thing': True}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_db_error(self):
+        """A runtime error from the service must not break the endpoint."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _BrokenService:
+            async def get_global_flags(self):
+                raise RuntimeError('db down')
+
+        import sys
+        import types
+
+        fake_module = types.ModuleType('server.services.feature_flag_service')
+        fake_module.feature_flag_service = _BrokenService()
+        with patch.dict(sys.modules, {'server.services.feature_flag_service': fake_module}):
+            result = await mod._get_db_feature_flags()
+        assert result == {}
+
