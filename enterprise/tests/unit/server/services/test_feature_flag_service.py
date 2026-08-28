@@ -41,6 +41,37 @@ def service() -> FeatureFlagService:
     return svc
 
 
+@pytest.fixture(autouse=True)
+def _isolate_env_flag_defaults(monkeypatch):
+    """Run each test against a clean env-flag registry + environment.
+
+    The service consults a process-global ``_ENV_FLAG_DEFAULTS`` map and live
+    ``os.environ`` for the env-var fallback. Without isolation, the seeded
+    ``ENABLE_BILLING`` entry leaks into every ``get_global_flags`` assertion
+    (it is absent from the mocked DB sets, so the fallback adds it) and one
+    test mutating the registry via ``register_env_default`` would poison the
+    rest of the suite. Snapshot the registry and the relevant env vars, run
+    the test, then restore.
+    """
+    import server.services.feature_flag_service as ff_svc
+
+    saved = dict(ff_svc._ENV_FLAG_DEFAULTS)
+    saved_env = {k: os.environ.get(k) for k in list(saved) + ['ALLOW_BY_DEFAULT']}
+    # Start from a clean registry so DB-only tests are unaffected; feature
+    # tests re-register what they need.
+    ff_svc._ENV_FLAG_DEFAULTS.clear()
+    for k in saved_env:
+        os.environ.pop(k, None)
+    yield
+    ff_svc._ENV_FLAG_DEFAULTS.clear()
+    ff_svc._ENV_FLAG_DEFAULTS.update(saved)
+    for k, v in saved_env.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
 def _patch_store(flag=None, rules=None):
     """Patch FeatureFlagStore.get_flag and list_rules with AsyncMocks."""
     return (
@@ -390,6 +421,14 @@ class TestEnvFallback:
     exists the database is authoritative and the env fallback is ignored.
     """
 
+    @pytest.fixture(autouse=True)
+    def _seed_enable_billing(self, _isolate_env_flag_defaults):
+        # The module autouse fixture clears the registry for DB-only tests;
+        # re-seed the built-in ENABLE_BILLING entry for these feature tests.
+        FeatureFlagService.register_env_default(
+            'ENABLE_BILLING', 'ENABLE_BILLING', False
+        )
+
     @pytest.mark.asyncio
     async def test_missing_registered_flag_uses_env_true(self, service):
         # No DB row for ENABLE_BILLING; env says true -> allow all.
@@ -489,6 +528,14 @@ class TestEnvFallback:
 
 class TestGetGlobalFlagsEnvFallback:
     """Env-fallback flags with no DB row appear in the global set."""
+
+    @pytest.fixture(autouse=True)
+    def _seed_enable_billing(self, _isolate_env_flag_defaults):
+        # Re-seed the built-in ENABLE_BILLING entry after the module autouse
+        # fixture clears the registry.
+        FeatureFlagService.register_env_default(
+            'ENABLE_BILLING', 'ENABLE_BILLING', False
+        )
 
     @pytest.mark.asyncio
     async def test_env_fallback_flag_absent_from_db_is_included(self, service):
