@@ -113,11 +113,9 @@ class OrgAppSettingsService:
             extra={'user_id': user_id, 'org_id': str(org.id)},
         )
 
-        # Check if any fields are provided
         update_dict = update_data.model_dump(exclude_unset=True)
 
         if not update_dict:
-            # No fields to update, just return current settings
             logger.info(
                 'No fields to update in app settings',
                 extra={'user_id': user_id, 'org_id': str(org.id)},
