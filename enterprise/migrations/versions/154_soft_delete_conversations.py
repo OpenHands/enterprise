@@ -20,8 +20,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "154"
-down_revision: Union[str, None] = "153"
+revision: str = '154'
+down_revision: Union[str, None] = '153'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -29,34 +29,34 @@ depends_on: Union[str, Sequence[str], None] = None
 def _add_deleted_at(table: str, index_name: str) -> None:
     op.add_column(
         table,
-        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index(
         index_name,
         table,
-        ["deleted_at"],
+        ['deleted_at'],
         unique=False,
-        postgresql_where=sa.text("deleted_at IS NOT NULL"),
+        postgresql_where=sa.text('deleted_at IS NOT NULL'),
     )
 
 
 def _drop_deleted_at(table: str, index_name: str) -> None:
     op.drop_index(index_name, table_name=table)
-    op.drop_column(table, "deleted_at")
+    op.drop_column(table, 'deleted_at')
 
 
 def upgrade() -> None:
     """Upgrade schema: add soft-delete markers."""
-    _add_deleted_at("conversation_metadata", "ix_conversation_metadata_deleted_at")
+    _add_deleted_at('conversation_metadata', 'ix_conversation_metadata_deleted_at')
     _add_deleted_at(
-        "app_conversation_start_task",
-        "ix_app_conversation_start_task_deleted_at",
+        'app_conversation_start_task',
+        'ix_app_conversation_start_task_deleted_at',
     )
 
 
 def downgrade() -> None:
     """Downgrade schema: drop soft-delete markers."""
     _drop_deleted_at(
-        "app_conversation_start_task", "ix_app_conversation_start_task_deleted_at"
+        'app_conversation_start_task', 'ix_app_conversation_start_task_deleted_at'
     )
-    _drop_deleted_at("conversation_metadata", "ix_conversation_metadata_deleted_at")
+    _drop_deleted_at('conversation_metadata', 'ix_conversation_metadata_deleted_at')
