@@ -225,7 +225,7 @@ class TestGithubOrgRouting(TestCase):
     async def test_no_claim_passes_none_resolver_org_id(
         self, mock_resolve_org, mock_get_service
     ):
-        """When no claim exists, resolver_org_id is None (falls back to personal workspace)."""
+        """When no claim exists and personal workspaces enabled, resolver_org_id is None."""
         # Arrange
         mock_resolve_org.return_value = None
 
@@ -235,4 +235,99 @@ class TestGithubOrgRouting(TestCase):
         await github_issue.initialize_new_conversation()
 
         # Assert
+        assert github_issue.resolved_org_id is None
+
+    @pytest.mark.asyncio
+    @patch('integrations.github.github_view.resolve_org_for_repo')
+    @patch('integrations.github.github_view.UserStore')
+    @patch('integrations.github.github_view.OrgStore')
+    @patch.dict('os.environ', {'HIDE_PERSONAL_WORKSPACES': 'true'})
+    async def test_unclaimed_repo_with_hidden_personal_workspace_redirects_to_default_org(
+        self, mock_org_store, mock_user_store, mock_resolve_org
+    ):
+        """When personal workspaces are hidden and user is on personal workspace, redirect to default org."""
+        from uuid import uuid4
+
+        # Arrange
+        mock_resolve_org.return_value = None  # No org claimed
+
+        user_id = 'test-keycloak-id'
+        default_org_id = uuid4()
+
+        # Mock user's current org is their personal workspace (current_org_id == user_id)
+        mock_user = MagicMock()
+        mock_user.current_org_id = UUID(user_id)  # Personal workspace has same ID as user
+        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+
+        # Mock default org
+        mock_default_org = MagicMock()
+        mock_default_org.id = default_org_id
+        mock_org_store.get_default_org = AsyncMock(return_value=mock_default_org)
+
+        github_issue = self._create_github_issue()
+        github_issue.user_info.keycloak_user_id = user_id
+
+        # Act
+        await github_issue.initialize_new_conversation()
+
+        # Assert - should redirect to default org
+        assert github_issue.resolved_org_id == default_org_id
+
+    @pytest.mark.asyncio
+    @patch('integrations.github.github_view.resolve_org_for_repo')
+    @patch('integrations.github.github_view.UserStore')
+    @patch('integrations.github.github_view.OrgStore')
+    @patch.dict('os.environ', {'HIDE_PERSONAL_WORKSPACES': 'true'})
+    async def test_unclaimed_repo_user_not_on_personal_workspace_keeps_none(
+        self, mock_org_store, mock_user_store, mock_resolve_org
+    ):
+        """When personal workspaces are hidden but user is on team org, resolver_org_id stays None."""
+        from uuid import uuid4
+
+        # Arrange
+        mock_resolve_org.return_value = None
+
+        user_id = 'test-keycloak-id'
+        team_org_id = uuid4()  # Different from user_id
+
+        # Mock user's current org is a team org (current_org_id != user_id)
+        mock_user = MagicMock()
+        mock_user.current_org_id = team_org_id
+        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+
+        github_issue = self._create_github_issue()
+        github_issue.user_info.keycloak_user_id = user_id
+
+        # Act
+        await github_issue.initialize_new_conversation()
+
+        # Assert - should NOT redirect, stays None (falls back to current_org_id which is valid team org)
+        assert github_issue.resolved_org_id is None
+
+    @pytest.mark.asyncio
+    @patch('integrations.github.github_view.resolve_org_for_repo')
+    @patch('integrations.github.github_view.UserStore')
+    @patch('integrations.github.github_view.OrgStore')
+    @patch.dict('os.environ', {'HIDE_PERSONAL_WORKSPACES': 'false'})
+    async def test_unclaimed_repo_personal_workspaces_enabled_keeps_none(
+        self, mock_org_store, mock_user_store, mock_resolve_org
+    ):
+        """When personal workspaces are NOT hidden, resolver_org_id stays None even for personal workspace."""
+        # Arrange
+        mock_resolve_org.return_value = None
+
+        user_id = 'test-keycloak-id'
+
+        # Mock user's current org is their personal workspace
+        mock_user = MagicMock()
+        mock_user.current_org_id = UUID(user_id)
+        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+
+        github_issue = self._create_github_issue()
+        github_issue.user_info.keycloak_user_id = user_id
+
+        # Act
+        await github_issue.initialize_new_conversation()
+
+        # Assert - should NOT redirect because HIDE_PERSONAL_WORKSPACES is false
         assert github_issue.resolved_org_id is None

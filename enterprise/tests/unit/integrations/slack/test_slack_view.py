@@ -3,13 +3,16 @@
 Focuses on V1 conversation scenarios:
 1. V1 conversation creation
 2. Paused sandbox resumption for V1 conversations
+3. Personal workspace fallback handling
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 from integrations.slack.slack_view import (
     SlackNewConversationView,
+    SlackNewConversationFromRepoFormView,
     SlackUpdateExistingConversationView,
 )
 from jinja2 import DictLoader, Environment
@@ -293,3 +296,156 @@ class TestPausedSandboxResumption:
         mock_sandbox_service.resume_sandbox.assert_called_once_with('sandbox-123')
         mock_httpx_client.post.assert_called_once()
         mock_response.raise_for_status.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Test: Personal Workspace Fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def slack_view_for_fallback(mock_slack_user, mock_user_auth):
+    """Create a SlackNewConversationView instance for fallback testing."""
+    return SlackNewConversationView(
+        bot_access_token='xoxb-test-token',
+        user_msg='Hello OpenHands!',
+        slack_user_id='U1234567890',
+        slack_to_openhands_user=mock_slack_user,
+        saas_user_auth=mock_user_auth,
+        channel_id='C1234567890',
+        message_ts='1234567890.123456',
+        thread_ts=None,
+        selected_repo=None,  # No repo selected
+        should_extract=True,
+        send_summary_instruction=True,
+        conversation_id='',
+        team_id='T1234567890',
+    )
+
+
+class TestPersonalWorkspaceFallback:
+    """Test personal workspace fallback in Slack resolver."""
+
+    @pytest.mark.asyncio
+    @patch('integrations.slack.slack_view.OrgStore')
+    @patch('integrations.slack.slack_view.UserStore')
+    @patch.dict('os.environ', {'HIDE_PERSONAL_WORKSPACES': 'true'})
+    async def test_no_repo_hidden_personal_workspace_redirects_to_default(
+        self, mock_user_store, mock_org_store, slack_view_for_fallback
+    ):
+        """When no repo selected and personal workspaces are hidden, redirect to default org."""
+        from uuid import uuid4
+
+        # Arrange
+        user_id = 'test-user-123'
+        default_org_id = uuid4()
+
+        # Mock user's current org is their personal workspace (current_org_id == user_id)
+        mock_user = MagicMock()
+        mock_user.current_org_id = UUID(user_id)
+        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+
+        # Mock default org
+        mock_default_org = MagicMock()
+        mock_default_org.id = default_org_id
+        mock_org_store.get_default_org = AsyncMock(return_value=mock_default_org)
+
+        slack_view_for_fallback.slack_to_openhands_user.keycloak_user_id = user_id
+
+        # Act
+        result = await slack_view_for_fallback._get_fallback_org_for_no_repo()
+
+        # Assert - should redirect to default org
+        assert result == default_org_id
+
+    @pytest.mark.asyncio
+    @patch('integrations.slack.slack_view.OrgStore')
+    @patch('integrations.slack.slack_view.UserStore')
+    @patch.dict('os.environ', {'HIDE_PERSONAL_WORKSPACES': 'true'})
+    async def test_no_repo_user_not_on_personal_workspace_returns_none(
+        self, mock_user_store, mock_org_store, slack_view_for_fallback
+    ):
+        """When no repo selected and user is on team org, returns None."""
+        from uuid import uuid4
+
+        # Arrange
+        user_id = 'test-user-123'
+        team_org_id = uuid4()  # Different from user_id
+
+        mock_user = MagicMock()
+        mock_user.current_org_id = team_org_id
+        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+
+        slack_view_for_fallback.slack_to_openhands_user.keycloak_user_id = user_id
+
+        # Act
+        result = await slack_view_for_fallback._get_fallback_org_for_no_repo()
+
+        # Assert - should NOT redirect
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch('integrations.slack.slack_view.OrgStore')
+    @patch('integrations.slack.slack_view.UserStore')
+    @patch.dict('os.environ', {'HIDE_PERSONAL_WORKSPACES': 'false'})
+    async def test_no_repo_personal_workspaces_enabled_returns_none(
+        self, mock_user_store, mock_org_store, slack_view_for_fallback
+    ):
+        """When personal workspaces are NOT hidden, returns None even for personal workspace."""
+        # Arrange
+        user_id = 'test-user-123'
+
+        mock_user = MagicMock()
+        mock_user.current_org_id = UUID(user_id)  # Personal workspace
+        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+
+        slack_view_for_fallback.slack_to_openhands_user.keycloak_user_id = user_id
+
+        # Act
+        result = await slack_view_for_fallback._get_fallback_org_for_no_repo()
+
+        # Assert - should NOT redirect because HIDE_PERSONAL_WORKSPACES is false
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch('integrations.slack.slack_view.OrgStore')
+    @patch('integrations.slack.slack_view.UserStore')
+    @patch.dict('os.environ', {'HIDE_PERSONAL_WORKSPACES': 'true'})
+    async def test_no_repo_user_not_found_returns_none(
+        self, mock_user_store, mock_org_store, slack_view_for_fallback
+    ):
+        """When user is not found, returns None."""
+        # Arrange
+        mock_user_store.get_user_by_id = AsyncMock(return_value=None)
+
+        slack_view_for_fallback.slack_to_openhands_user.keycloak_user_id = 'unknown-user'
+
+        # Act
+        result = await slack_view_for_fallback._get_fallback_org_for_no_repo()
+
+        # Assert
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch('integrations.slack.slack_view.OrgStore')
+    @patch('integrations.slack.slack_view.UserStore')
+    @patch.dict('os.environ', {'HIDE_PERSONAL_WORKSPACES': 'true'})
+    async def test_no_repo_no_default_org_returns_none(
+        self, mock_user_store, mock_org_store, slack_view_for_fallback
+    ):
+        """When personal workspaces are hidden but no default org exists, returns None."""
+        # Arrange
+        user_id = 'test-user-123'
+
+        mock_user = MagicMock()
+        mock_user.current_org_id = UUID(user_id)
+        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+        mock_org_store.get_default_org = AsyncMock(return_value=None)
+
+        slack_view_for_fallback.slack_to_openhands_user.keycloak_user_id = user_id
+
+        # Act
+        result = await slack_view_for_fallback._get_fallback_org_for_no_repo()
+
+        # Assert
+        assert result is None

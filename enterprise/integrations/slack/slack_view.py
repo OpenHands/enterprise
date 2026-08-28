@@ -244,9 +244,57 @@ class SlackNewConversationView(SlackViewInterface):
                 keycloak_user_id=self.slack_to_openhands_user.keycloak_user_id,
             )
 
+        # Fallback: if no org resolved and personal workspaces are hidden,
+        # redirect to the default org to avoid creating conversations in
+        # disabled personal workspaces
+        if self.resolved_org_id is None:
+            self.resolved_org_id = await self._get_fallback_org_for_no_repo()
+
         # V0 conversation path has been removed - all conversations use V1 app conversation service
         await self._create_v1_conversation(jinja)
         return self.conversation_id
+
+    async def _get_fallback_org_for_no_repo(self) -> UUID | None:
+        """Get the fallback org when no repo is selected.
+
+        When personal workspaces are hidden and the user's current_org_id points
+        to their personal workspace, redirect to the default org instead.
+        This prevents conversations from being created in disabled personal workspaces.
+        """
+        from storage.default_org_service import get_default_org_config
+        from storage.org_store import OrgStore
+
+        config = get_default_org_config()
+        if not config.hide_personal_workspaces:
+            return None
+
+        # Get user's current org
+        user_id = self.slack_to_openhands_user.keycloak_user_id
+        user = await self._get_user_by_id(user_id)
+        if user is None:
+            return None
+
+        # Check if current_org_id is the user's personal workspace
+        # Personal workspaces have org_id == user_id
+        if str(user.current_org_id) == user_id:
+            # Try to get the default org
+            default_org = await OrgStore.get_default_org()
+            if default_org is not None:
+                logger.info(
+                    '[Slack] Redirecting resolver conversation from personal workspace '
+                    'to default org %s for user %s',
+                    default_org.id,
+                    user_id,
+                )
+                return default_org.id
+
+        return None
+
+    async def _get_user_by_id(self, user_id: str):
+        """Get user by ID."""
+        from storage.user_store import UserStore
+
+        return await UserStore.get_user_by_id(user_id)
 
     async def _create_v1_conversation(self, jinja: Environment) -> None:
         """Create conversation using the new V1 app conversation system."""
