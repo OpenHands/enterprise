@@ -139,22 +139,17 @@ class GitlabIssue(ResolverViewInterface):
             jinja_env
         )
 
-        # Create the initial message request
         initial_message = SendMessageRequest(
             role='user', content=[TextContent(text=user_instructions)]
         )
 
-        # Create the GitLab V1 callback processor
         gitlab_callback_processor = self._create_gitlab_v1_callback_processor()
 
-        # Get the app conversation service and start the conversation
         injector_state = InjectorState()
 
-        # Determine the title based on whether it's an MR or issue
         title_prefix = 'GitLab MR' if self.is_mr else 'GitLab Issue'
         title = f'{title_prefix} #{self.issue_number}: {self.title}'
 
-        # Create the V1 conversation start request with the callback processor
         start_request = AppConversationStartRequest(
             conversation_id=conversation_id,
             system_message_suffix=conversation_instructions,
@@ -164,12 +159,9 @@ class GitlabIssue(ResolverViewInterface):
             git_provider=ProviderType.GITLAB,
             title=title,
             trigger=ConversationTrigger.RESOLVER,
-            processors=[
-                gitlab_callback_processor
-            ],  # Pass the callback processor directly
+            processors=[gitlab_callback_processor],
         )
 
-        # Set up the GitLab user context for the V1 system
         gitlab_user_context = ResolverUserContext(
             saas_user_auth=saas_user_auth,
             resolver_org_id=self.resolved_org_id,

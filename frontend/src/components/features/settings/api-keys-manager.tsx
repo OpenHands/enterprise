@@ -18,6 +18,7 @@ import { useApiKeys } from "#/hooks/query/use-api-keys";
 import { useLlmApiKey } from "#/hooks/query/use-llm-api-key";
 import { useRefreshLlmApiKey } from "#/hooks/mutation/use-refresh-llm-api-key";
 import { useOrganizations } from "#/hooks/query/use-organizations";
+import { useConfig } from "#/hooks/query/use-config";
 import {
   settingsListIconActionButtonClassName,
   settingsListScrollContainerClassName,
@@ -40,6 +41,23 @@ interface LlmApiKeyManagerProps {
   isLoadingLlmKey: boolean;
   isPaymentRequired: boolean;
   refreshLlmApiKey: ReturnType<typeof useRefreshLlmApiKey>;
+}
+
+function LlmApiKeyDisabled() {
+  const { t } = useTranslation();
+
+  return (
+    <div className="border-b border-gray-200 pb-6 mb-6 flex flex-col gap-6">
+      <h3 className="text-xl font-medium text-white">
+        {t(I18nKey.SETTINGS$LLM_API_KEY)}
+      </h3>
+      <div className="bg-base-tertiary rounded-md p-4 flex flex-col gap-4">
+        <p className="text-sm text-gray-300">
+          {t(I18nKey.SETTINGS$LLM_API_KEY_DISABLED_MESSAGE)}
+        </p>
+      </div>
+    </div>
+  );
 }
 
 function LlmApiKeyPaywall() {
@@ -431,6 +449,7 @@ function ApiKeysTable({ apiKeys, isLoading, onDeleteKey }: ApiKeysTableProps) {
 
 export function ApiKeysManager() {
   const { t } = useTranslation();
+  const { data: config } = useConfig();
   const { data: apiKeys = [], isLoading, error } = useApiKeys();
   const {
     data: llmApiKey,
@@ -444,6 +463,17 @@ export function ApiKeysManager() {
   const [newlyCreatedKey, setNewlyCreatedKey] =
     useState<CreateApiKeyResponse | null>(null);
   const [showNewKeyModal, setShowNewKeyModal] = useState(false);
+
+  // LLM API key export is available when:
+  //  - billing is enabled (the SaaS buy-credits / org-flagged path), OR
+  //  - the deployment set ENABLE_BYOR_EXPORT (self-hosted installs that don't
+  //    run Stripe but still want the managed LLM key exposed).
+  // When neither holds, the API keys page shows a "disabled" message instead
+  // of the buy-credits paywall, since there is no way for the user to enable
+  // export on a non-billing deployment.
+  const billingEnabled = !!config?.feature_flags?.enable_billing;
+  const byorExportEnabled = !!config?.feature_flags?.enable_byor_export;
+  const llmKeyExportAvailable = billingEnabled || byorExportEnabled;
 
   // Display error toast if the query fails (but not for payment required)
   if (error && !isPaymentRequired) {
@@ -478,12 +508,16 @@ export function ApiKeysManager() {
   return (
     <>
       <div className="flex flex-col gap-6">
-        <LlmApiKeyManager
-          llmApiKey={llmApiKey}
-          isLoadingLlmKey={isLoadingLlmKey}
-          isPaymentRequired={isPaymentRequired}
-          refreshLlmApiKey={refreshLlmApiKey}
-        />
+        {llmKeyExportAvailable ? (
+          <LlmApiKeyManager
+            llmApiKey={llmApiKey}
+            isLoadingLlmKey={isLoadingLlmKey}
+            isPaymentRequired={isPaymentRequired}
+            refreshLlmApiKey={refreshLlmApiKey}
+          />
+        ) : (
+          <LlmApiKeyDisabled />
+        )}
 
         <div className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6">
           <div className="flex items-start justify-between gap-4">

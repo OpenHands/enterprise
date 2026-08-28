@@ -121,7 +121,6 @@ class GitlabManager(Manager[GitlabViewType]):
         logger.info(
             f'[GitLab]: {username} access in {selected_project}: {has_write_access}'
         )
-        # Check if the user has write access to the repository
         return has_write_access
 
     async def send_message(self, message: str, gitlab_view: ResolverViewInterface):
@@ -208,7 +207,6 @@ class GitlabManager(Manager[GitlabViewType]):
                     )
                 )
 
-                # Initialize conversation and get UUID
                 conversation_id = await gitlab_view.initialize_new_conversation()
 
                 saas_user_auth = await get_saas_user_auth(
@@ -254,7 +252,6 @@ class GitlabManager(Manager[GitlabViewType]):
 
                 msg_info = get_session_expired_message(user_info.username)
 
-            # Send the acknowledgment message
             await self.send_message(msg_info, gitlab_view)
 
         except Exception:
