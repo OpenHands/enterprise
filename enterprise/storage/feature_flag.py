@@ -20,8 +20,8 @@ from storage.base import Base
 class FeatureFlagRuleEffect(str, Enum):
     """Whether a rule turns the flag on or off for matched targets."""
 
-    INCLUDE = "include"
-    EXCLUDE = "exclude"
+    INCLUDE = 'include'
+    EXCLUDE = 'exclude'
 
 
 class FeatureFlag(Base):
@@ -32,7 +32,7 @@ class FeatureFlag(Base):
     who actually receives the flag (include/exclude + percentage rollout).
     """
 
-    __tablename__ = "feature_flags"
+    __tablename__ = 'feature_flags'
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     key: Mapped[str] = mapped_column(String, unique=True, nullable=False)
@@ -71,12 +71,12 @@ class FeatureFlagRule(Base):
     include-only percentage rule grants an anonymous caller).
     """
 
-    __tablename__ = "feature_flag_rules"
+    __tablename__ = 'feature_flag_rules'
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     flag_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("feature_flags.id", ondelete="CASCADE"),
+        ForeignKey('feature_flags.id', ondelete='CASCADE'),
         nullable=False,
     )
     effect: Mapped[str] = mapped_column(String, nullable=False)

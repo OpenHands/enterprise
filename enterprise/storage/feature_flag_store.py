@@ -80,14 +80,14 @@ class FeatureFlagStore:
         if session is not None:
             existing = await FeatureFlagStore._get_flag(key, session)
             if existing is not None:
-                raise ValueError(f"Flag with key {key!r} already exists")
+                raise ValueError(f'Flag with key {key!r} already exists')
             return await FeatureFlagStore._create_flag(
                 key, description, enabled, session
             )
         async with a_session_maker() as new_session:
             existing = await FeatureFlagStore._get_flag(key, new_session)
             if existing is not None:
-                raise ValueError(f"Flag with key {key!r} already exists")
+                raise ValueError(f'Flag with key {key!r} already exists')
             flag = await FeatureFlagStore._create_flag(
                 key, description, enabled, new_session
             )
@@ -251,7 +251,7 @@ class FeatureFlagStore:
         if session is not None:
             flag = await FeatureFlagStore._get_flag(flag_key, session)
             if flag is None:
-                raise ValueError(f"Flag with key {flag_key!r} does not exist")
+                raise ValueError(f'Flag with key {flag_key!r} does not exist')
             return await FeatureFlagStore._create_rule(
                 flag.id,
                 effect,
@@ -265,7 +265,7 @@ class FeatureFlagStore:
         async with a_session_maker() as new_session:
             flag = await FeatureFlagStore._get_flag(flag_key, new_session)
             if flag is None:
-                raise ValueError(f"Flag with key {flag_key!r} does not exist")
+                raise ValueError(f'Flag with key {flag_key!r} does not exist')
             rule = await FeatureFlagStore._create_rule(
                 flag.id,
                 effect,

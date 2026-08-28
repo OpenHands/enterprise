@@ -17,7 +17,7 @@ from server.services.feature_flag_service import feature_flag_service
 from storage.feature_flag import FeatureFlagRuleEffect
 from storage.feature_flag_store import FeatureFlagStore
 
-feature_flag_router = APIRouter(prefix="/api/admin/feature-flags", tags=["Admin"])
+feature_flag_router = APIRouter(prefix='/api/admin/feature-flags', tags=['Admin'])
 
 
 class FlagRuleModel(BaseModel):
@@ -61,7 +61,7 @@ class CreateRuleRequest(BaseModel):
         description='SQL LIKE pattern for email matching, e.g. "%@openhands.dev".',
     )
     percentage: float | None = Field(
-        default=None, ge=0, le=100, description="0-100 inclusive rollout bucket."
+        default=None, ge=0, le=100, description='0-100 inclusive rollout bucket.'
     )
     priority: int = 0
 
@@ -94,7 +94,7 @@ async def _flag_to_model(key: str) -> FlagModel:
     flag = await FeatureFlagStore.get_flag(key)
     if flag is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Flag not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail='Flag not found'
         )
     rules = await FeatureFlagStore.list_rules(key)
     return FlagModel(
@@ -105,7 +105,7 @@ async def _flag_to_model(key: str) -> FlagModel:
     )
 
 
-@feature_flag_router.get("", response_model=list[FlagModel])
+@feature_flag_router.get('', response_model=list[FlagModel])
 async def list_flags(
     _: str = Depends(require_permission(Permission.MANAGE_FEATURE_FLAGS)),
 ) -> list[FlagModel]:
@@ -125,7 +125,7 @@ async def list_flags(
     return out
 
 
-@feature_flag_router.get("/{key}", response_model=FlagModel)
+@feature_flag_router.get('/{key}', response_model=FlagModel)
 async def get_flag(
     key: str,
     _: str = Depends(require_permission(Permission.MANAGE_FEATURE_FLAGS)),
@@ -135,7 +135,7 @@ async def get_flag(
 
 
 @feature_flag_router.post(
-    "", response_model=FlagModel, status_code=status.HTTP_201_CREATED
+    '', response_model=FlagModel, status_code=status.HTTP_201_CREATED
 )
 async def create_flag(
     body: CreateFlagRequest,
@@ -154,7 +154,7 @@ async def create_flag(
     return await _flag_to_model(body.key)
 
 
-@feature_flag_router.patch("/{key}", response_model=FlagModel)
+@feature_flag_router.patch('/{key}', response_model=FlagModel)
 async def update_flag(
     key: str,
     body: UpdateFlagRequest,
@@ -166,13 +166,13 @@ async def update_flag(
     )
     if updated is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Flag not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail='Flag not found'
         )
     feature_flag_service.invalidate(key)
     return await _flag_to_model(key)
 
 
-@feature_flag_router.delete("/{key}", status_code=status.HTTP_204_NO_CONTENT)
+@feature_flag_router.delete('/{key}', status_code=status.HTTP_204_NO_CONTENT)
 async def delete_flag(
     key: str,
     _: str = Depends(require_permission(Permission.MANAGE_FEATURE_FLAGS)),
@@ -181,13 +181,13 @@ async def delete_flag(
     deleted = await FeatureFlagStore.delete_flag(key)
     if not deleted:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Flag not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail='Flag not found'
         )
     feature_flag_service.invalidate(key)
 
 
 @feature_flag_router.post(
-    "/{key}/rules", response_model=FlagModel, status_code=status.HTTP_201_CREATED
+    '/{key}/rules', response_model=FlagModel, status_code=status.HTTP_201_CREATED
 )
 async def create_rule(
     key: str,
@@ -213,7 +213,7 @@ async def create_rule(
     return await _flag_to_model(key)
 
 
-@feature_flag_router.delete("/{key}/rules/{rule_id}", response_model=FlagModel)
+@feature_flag_router.delete('/{key}/rules/{rule_id}', response_model=FlagModel)
 async def delete_rule(
     key: str,
     rule_id: int,
@@ -223,13 +223,13 @@ async def delete_rule(
     deleted = await FeatureFlagStore.delete_rule(rule_id)
     if not deleted:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Rule not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail='Rule not found'
         )
     feature_flag_service.invalidate(key)
     return await _flag_to_model(key)
 
 
-@feature_flag_router.post("/{key}/evaluate", response_model=EvaluateResponse)
+@feature_flag_router.post('/{key}/evaluate', response_model=EvaluateResponse)
 async def evaluate_flag(
     key: str,
     body: EvaluateRequest,

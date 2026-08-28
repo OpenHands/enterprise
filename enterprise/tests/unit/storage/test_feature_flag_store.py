@@ -14,9 +14,9 @@ from storage.feature_flag_store import FeatureFlagStore
 async def async_engine():
     """Create an async SQLite engine for testing."""
     engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+        'sqlite+aiosqlite:///:memory:',
         poolclass=StaticPool,
-        connect_args={"check_same_thread": False},
+        connect_args={'check_same_thread': False},
     )
     return engine
 
@@ -37,169 +37,169 @@ async def async_session_maker(async_engine):
 class TestCreateAndGetFlag:
     @pytest.mark.asyncio
     async def test_create_flag_defaults_disabled(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            flag = await FeatureFlagStore.create_flag(key="my_flag")
-            assert flag.key == "my_flag"
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            flag = await FeatureFlagStore.create_flag(key='my_flag')
+            assert flag.key == 'my_flag'
             assert flag.enabled is False
             assert flag.description is None
 
     @pytest.mark.asyncio
     async def test_create_flag_with_description_and_enabled(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
             flag = await FeatureFlagStore.create_flag(
-                key="my_flag", description="A flag", enabled=True
+                key='my_flag', description='A flag', enabled=True
             )
-            assert flag.description == "A flag"
+            assert flag.description == 'A flag'
             assert flag.enabled is True
 
     @pytest.mark.asyncio
     async def test_create_duplicate_flag_raises(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            await FeatureFlagStore.create_flag(key="my_flag")
-            with pytest.raises(ValueError, match="already exists"):
-                await FeatureFlagStore.create_flag(key="my_flag")
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            await FeatureFlagStore.create_flag(key='my_flag')
+            with pytest.raises(ValueError, match='already exists'):
+                await FeatureFlagStore.create_flag(key='my_flag')
 
     @pytest.mark.asyncio
     async def test_get_flag_returns_none_for_missing(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            flag = await FeatureFlagStore.get_flag("nope")
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            flag = await FeatureFlagStore.get_flag('nope')
             assert flag is None
 
     @pytest.mark.asyncio
     async def test_get_flag_returns_flag(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            await FeatureFlagStore.create_flag(key="my_flag", enabled=True)
-            flag = await FeatureFlagStore.get_flag("my_flag")
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            await FeatureFlagStore.create_flag(key='my_flag', enabled=True)
+            flag = await FeatureFlagStore.get_flag('my_flag')
             assert flag is not None
-            assert flag.key == "my_flag"
+            assert flag.key == 'my_flag'
             assert flag.enabled is True
 
 
 class TestListAndUpdateAndDeleteFlag:
     @pytest.mark.asyncio
     async def test_list_flags(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            await FeatureFlagStore.create_flag(key="a")
-            await FeatureFlagStore.create_flag(key="b")
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            await FeatureFlagStore.create_flag(key='a')
+            await FeatureFlagStore.create_flag(key='b')
             flags = await FeatureFlagStore.list_flags()
-            assert {f.key for f in flags} == {"a", "b"}
+            assert {f.key for f in flags} == {'a', 'b'}
 
     @pytest.mark.asyncio
     async def test_update_flag_fields(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            await FeatureFlagStore.create_flag(key="my_flag")
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            await FeatureFlagStore.create_flag(key='my_flag')
             updated = await FeatureFlagStore.update_flag(
-                key="my_flag", description="desc", enabled=True
+                key='my_flag', description='desc', enabled=True
             )
             assert updated is not None
-            assert updated.description == "desc"
+            assert updated.description == 'desc'
             assert updated.enabled is True
 
     @pytest.mark.asyncio
     async def test_update_flag_partial_only_provided(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
             await FeatureFlagStore.create_flag(
-                key="my_flag", description="keep", enabled=False
+                key='my_flag', description='keep', enabled=False
             )
-            updated = await FeatureFlagStore.update_flag(key="my_flag", enabled=True)
+            updated = await FeatureFlagStore.update_flag(key='my_flag', enabled=True)
             assert updated is not None
-            assert updated.description == "keep"
+            assert updated.description == 'keep'
             assert updated.enabled is True
 
     @pytest.mark.asyncio
     async def test_update_flag_missing_returns_none(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            assert await FeatureFlagStore.update_flag(key="nope", enabled=True) is None
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            assert await FeatureFlagStore.update_flag(key='nope', enabled=True) is None
 
     @pytest.mark.asyncio
     async def test_delete_flag(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            await FeatureFlagStore.create_flag(key="my_flag")
-            assert await FeatureFlagStore.delete_flag("my_flag") is True
-            assert await FeatureFlagStore.get_flag("my_flag") is None
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            await FeatureFlagStore.create_flag(key='my_flag')
+            assert await FeatureFlagStore.delete_flag('my_flag') is True
+            assert await FeatureFlagStore.get_flag('my_flag') is None
 
     @pytest.mark.asyncio
     async def test_delete_flag_missing_returns_false(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            assert await FeatureFlagStore.delete_flag("nope") is False
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            assert await FeatureFlagStore.delete_flag('nope') is False
 
 
 class TestRules:
     @pytest.mark.asyncio
     async def test_create_rule_for_missing_flag_raises(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            with pytest.raises(ValueError, match="does not exist"):
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            with pytest.raises(ValueError, match='does not exist'):
                 await FeatureFlagStore.create_rule(
-                    flag_key="nope", effect=FeatureFlagRuleEffect.INCLUDE
+                    flag_key='nope', effect=FeatureFlagRuleEffect.INCLUDE
                 )
 
     @pytest.mark.asyncio
     async def test_list_rules_empty(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            await FeatureFlagStore.create_flag(key="my_flag")
-            rules = await FeatureFlagStore.list_rules("my_flag")
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            await FeatureFlagStore.create_flag(key='my_flag')
+            rules = await FeatureFlagStore.list_rules('my_flag')
             assert rules == []
 
     @pytest.mark.asyncio
     async def test_create_and_list_rules(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            await FeatureFlagStore.create_flag(key="my_flag")
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            await FeatureFlagStore.create_flag(key='my_flag')
             await FeatureFlagStore.create_rule(
-                flag_key="my_flag",
+                flag_key='my_flag',
                 effect=FeatureFlagRuleEffect.INCLUDE,
-                user_id="u1",
+                user_id='u1',
             )
             await FeatureFlagStore.create_rule(
-                flag_key="my_flag",
+                flag_key='my_flag',
                 effect=FeatureFlagRuleEffect.EXCLUDE,
-                email_pattern="%@blocked.com",
+                email_pattern='%@blocked.com',
                 priority=10,
             )
-            rules = await FeatureFlagStore.list_rules("my_flag")
+            rules = await FeatureFlagStore.list_rules('my_flag')
             assert len(rules) == 2
             # Higher priority first
             assert rules[0].effect == FeatureFlagRuleEffect.EXCLUDE.value
             assert rules[0].priority == 10
-            assert rules[1].user_id == "u1"
+            assert rules[1].user_id == 'u1'
 
     @pytest.mark.asyncio
     async def test_delete_rule(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            await FeatureFlagStore.create_flag(key="my_flag")
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            await FeatureFlagStore.create_flag(key='my_flag')
             rule = await FeatureFlagStore.create_rule(
-                flag_key="my_flag", effect=FeatureFlagRuleEffect.INCLUDE
+                flag_key='my_flag', effect=FeatureFlagRuleEffect.INCLUDE
             )
             assert await FeatureFlagStore.delete_rule(rule.id) is True
-            assert await FeatureFlagStore.list_rules("my_flag") == []
+            assert await FeatureFlagStore.list_rules('my_flag') == []
 
     @pytest.mark.asyncio
     async def test_delete_rule_missing_returns_false(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
             assert await FeatureFlagStore.delete_rule(99999) is False
 
     @pytest.mark.asyncio
     async def test_delete_flag_cascades_rules(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            await FeatureFlagStore.create_flag(key="my_flag")
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            await FeatureFlagStore.create_flag(key='my_flag')
             await FeatureFlagStore.create_rule(
-                flag_key="my_flag", effect=FeatureFlagRuleEffect.INCLUDE
+                flag_key='my_flag', effect=FeatureFlagRuleEffect.INCLUDE
             )
-            await FeatureFlagStore.delete_flag("my_flag")
-            await FeatureFlagStore.create_flag(key="my_flag")
+            await FeatureFlagStore.delete_flag('my_flag')
+            await FeatureFlagStore.create_flag(key='my_flag')
             # Re-created flag should have no rules.
-            assert await FeatureFlagStore.list_rules("my_flag") == []
+            assert await FeatureFlagStore.list_rules('my_flag') == []
 
     @pytest.mark.asyncio
     async def test_provided_session_works(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
             async with async_session_maker() as session:
                 flag = await FeatureFlagStore.create_flag(
-                    key="my_flag", enabled=True, session=session
+                    key='my_flag', enabled=True, session=session
                 )
                 assert flag.id is not None
-                fetched = await FeatureFlagStore.get_flag("my_flag", session=session)
+                fetched = await FeatureFlagStore.get_flag('my_flag', session=session)
                 assert fetched is not None
-                assert fetched.key == "my_flag"
+                assert fetched.key == 'my_flag'
 
 
 class TestGetMatchingRules:
@@ -211,26 +211,26 @@ class TestGetMatchingRules:
 
     @pytest.mark.asyncio
     async def test_anonymous_excludes_targeted_rules(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            await FeatureFlagStore.create_flag(key="f", enabled=True)
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            await FeatureFlagStore.create_flag(key='f', enabled=True)
             await FeatureFlagStore.create_rule(
-                flag_key="f",
+                flag_key='f',
                 effect=FeatureFlagRuleEffect.EXCLUDE,
-                user_id="u1",
+                user_id='u1',
             )
             await FeatureFlagStore.create_rule(
-                flag_key="f",
+                flag_key='f',
                 effect=FeatureFlagRuleEffect.INCLUDE,
-                org_id="org1",
+                org_id='org1',
             )
             await FeatureFlagStore.create_rule(
-                flag_key="f",
+                flag_key='f',
                 effect=FeatureFlagRuleEffect.INCLUDE,
-                email_pattern="%@x.com",
+                email_pattern='%@x.com',
             )
             # Anonymous context -> no targeted rule matches.
             async with async_session_maker() as session:
-                flag = await FeatureFlagStore._get_flag("f", session)
+                flag = await FeatureFlagStore._get_flag('f', session)
                 matched = await FeatureFlagStore._get_matching_rules(
                     flag.id, None, None, None, session
                 )
@@ -238,13 +238,13 @@ class TestGetMatchingRules:
 
     @pytest.mark.asyncio
     async def test_anonymous_matches_fully_blank_rule(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            await FeatureFlagStore.create_flag(key="f", enabled=True)
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            await FeatureFlagStore.create_flag(key='f', enabled=True)
             await FeatureFlagStore.create_rule(
-                flag_key="f", effect=FeatureFlagRuleEffect.EXCLUDE
+                flag_key='f', effect=FeatureFlagRuleEffect.EXCLUDE
             )
             async with async_session_maker() as session:
-                flag = await FeatureFlagStore._get_flag("f", session)
+                flag = await FeatureFlagStore._get_flag('f', session)
                 matched = await FeatureFlagStore._get_matching_rules(
                     flag.id, None, None, None, session
                 )
@@ -253,17 +253,17 @@ class TestGetMatchingRules:
 
     @pytest.mark.asyncio
     async def test_user_context_matches_user_rule(self, async_session_maker):
-        with patch("storage.feature_flag_store.a_session_maker", async_session_maker):
-            await FeatureFlagStore.create_flag(key="f", enabled=True)
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            await FeatureFlagStore.create_flag(key='f', enabled=True)
             await FeatureFlagStore.create_rule(
-                flag_key="f",
+                flag_key='f',
                 effect=FeatureFlagRuleEffect.INCLUDE,
-                user_id="u1",
+                user_id='u1',
             )
             async with async_session_maker() as session:
-                flag = await FeatureFlagStore._get_flag("f", session)
+                flag = await FeatureFlagStore._get_flag('f', session)
                 matched = await FeatureFlagStore._get_matching_rules(
-                    flag.id, "u1", None, None, session
+                    flag.id, 'u1', None, None, session
                 )
             assert len(matched) == 1
-            assert matched[0].user_id == "u1"
+            assert matched[0].user_id == 'u1'

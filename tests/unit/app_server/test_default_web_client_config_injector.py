@@ -6,6 +6,8 @@ This module tests environment variable handling in DefaultWebClientConfigInjecto
 import os
 from unittest.mock import patch
 
+import pytest
+
 
 class TestGetPosthogClientKey:
     """Test cases for _get_posthog_client_key helper function."""
@@ -954,7 +956,9 @@ class TestGetDbFeatureFlags:
 
         fake_module = types.ModuleType('server.services.feature_flag_service')
         fake_module.feature_flag_service = _FakeService()
-        with patch.dict(sys.modules, {'server.services.feature_flag_service': fake_module}):
+        with patch.dict(
+            sys.modules, {'server.services.feature_flag_service': fake_module}
+        ):
             result = await mod._get_db_feature_flags()
         assert result == {'new_global_thing': True}
 
@@ -974,7 +978,8 @@ class TestGetDbFeatureFlags:
 
         fake_module = types.ModuleType('server.services.feature_flag_service')
         fake_module.feature_flag_service = _BrokenService()
-        with patch.dict(sys.modules, {'server.services.feature_flag_service': fake_module}):
+        with patch.dict(
+            sys.modules, {'server.services.feature_flag_service': fake_module}
+        ):
             result = await mod._get_db_feature_flags()
         assert result == {}
-

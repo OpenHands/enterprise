@@ -221,13 +221,13 @@ def _sql_like_match(pattern: str, value: str) -> bool:
     # Escape regex specials, then translate SQL wildcards.
     parts = []
     for ch in pattern.lower():
-        if ch == "%":
-            parts.append(".*")
-        elif ch == "_":
-            parts.append(".")
+        if ch == '%':
+            parts.append('.*')
+        elif ch == '_':
+            parts.append('.')
         else:
             parts.append(re.escape(ch))
-    regex = re.compile("".join(parts), re.IGNORECASE)
+    regex = re.compile(''.join(parts), re.IGNORECASE)
     return regex.fullmatch(value.lower()) is not None
 
 
@@ -237,8 +237,8 @@ def _in_percentage_bucket(flag_key: str, user_id: str, percentage: float) -> boo
     Same (flag_key, user_id) always maps to the same bucket, so a user does
     not flicker in/out of a rollout across calls.
     """
-    digest = hashlib.sha256(f"{flag_key}:{user_id}".encode()).digest()
-    bucket = int.from_bytes(digest[:4], "big") % 100
+    digest = hashlib.sha256(f'{flag_key}:{user_id}'.encode()).digest()
+    bucket = int.from_bytes(digest[:4], 'big') % 100
     return bucket < percentage
 
 
