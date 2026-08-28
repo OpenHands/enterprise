@@ -1,7 +1,7 @@
 """Add is_free and is_default to verified_models.
 
-Revision ID: 144
-Revises: 143
+Revision ID: 154
+Revises: 153
 Create Date: 2026-08-13 00:00:00.000000
 
 """
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '144'
-down_revision: Union[str, None] = '143'
+revision: str = '154'
+down_revision: Union[str, None] = '153'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -25,8 +25,8 @@ _DEFAULT_INDEX = 'uq_verified_model_default_per_provider'
 # "Free" badge identical the moment the client switches to the DB-driven flag.
 _FREE_MODELS = ('glm-5.2', 'deepseek-v4-flash', 'minimax-m2.7')
 
-# The provider default surfaced on onboarding and for new OpenHands models.
-_DEFAULT_MODEL = 'glm-5.2'
+# Keep the database-seeded default aligned with the current code default.
+_DEFAULT_MODEL = 'deepseek-v4-flash'
 
 
 def upgrade() -> None:
