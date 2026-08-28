@@ -88,6 +88,20 @@ export function GpgKeyModal({ onClose, onSaved }: GpgKeyModalProps) {
             <BaseModalDescription>
               {t(I18nKey.SETTINGS$GPG_KEY_MODAL_DESCRIPTION)}
             </BaseModalDescription>
+            <div className="flex flex-col gap-1.5 w-full">
+              <span className="text-xs text-modal-muted">
+                {t(I18nKey.SETTINGS$GPG_KEY_EXPORT_STEP_1)}
+              </span>
+              <code className="self-start break-all bg-tertiary border border-[#717888] rounded-sm p-2 text-xs font-mono w-full">
+                {t(I18nKey.SETTINGS$GPG_KEY_LIST_COMMAND)}
+              </code>
+              <span className="text-xs text-modal-muted mt-1">
+                {t(I18nKey.SETTINGS$GPG_KEY_EXPORT_STEP_2)}
+              </span>
+              <code className="self-start break-all bg-tertiary border border-[#717888] rounded-sm p-2 text-xs font-mono w-full">
+                {t(I18nKey.SETTINGS$GPG_KEY_EXPORT_COMMAND)}
+              </code>
+            </div>
           </div>
 
           <label className="flex flex-col gap-2.5 w-full">
