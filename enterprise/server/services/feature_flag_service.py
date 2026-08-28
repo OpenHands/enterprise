@@ -8,6 +8,7 @@ rollout -> default. This mirrors the "whitelist beats blacklist" precedence of
 
 import hashlib
 import logging
+import os
 from dataclasses import dataclass
 
 from storage.feature_flag import FeatureFlag, FeatureFlagRule, FeatureFlagRuleEffect
@@ -27,6 +28,32 @@ _DEFAULT_CACHE_TTL_SECONDS = 5
 # ``invalidate`` to drop the snapshot immediately. This caps the DB load at
 # roughly one refresh per minute per worker process.
 _DEFAULT_GLOBAL_CACHE_TTL_SECONDS = 60
+
+
+@dataclass
+class _EnvFlagDefault:
+    """Env-var fallback for a flag that has no database row yet.
+
+    When a flag key has no ``FeatureFlag`` row, its value is resolved from the
+    environment variable ``env_var`` (defaulting to ``default_bool``). This
+    lets an operator toggle a known flag (e.g. ``ENABLE_BILLING``) via env
+    before/without promoting it to a DB-managed flag. Once a DB row exists the
+    database is authoritative and the env fallback is ignored.
+    """
+
+    env_var: str
+    default_bool: bool
+
+
+# Known flag keys that fall back to an environment variable when they have no
+# database row. Each entry maps flag_key -> (env_var_name, default_value). To
+# register a new env-backed flag, add it here (or call
+# ``FeatureFlagService.register_env_default`` at import time). Keep this the
+# minimal set of flags that already have an env-var contract; arbitrary flag
+# keys default to False when missing and unmapped.
+_ENV_FLAG_DEFAULTS: dict[str, _EnvFlagDefault] = {
+    'ENABLE_BILLING': _EnvFlagDefault('ENABLE_BILLING', False),
+}
 
 
 @dataclass
@@ -55,6 +82,18 @@ class FeatureFlagService:
 
     _cache: dict[str, _CacheEntry] = {}
     _global_cache: dict[str, _GlobalCacheEntry] = {}
+
+    @classmethod
+    def register_env_default(cls, key: str, env_var: str, default_bool: bool) -> None:
+        """Register an env-var fallback for a flag key with no DB row.
+
+        Lets callers (e.g. enterprise config bootstrap) declare additional
+        env-backed flags beyond the built-in ``_ENV_FLAG_DEFAULTS``. Replaces
+        any existing registration for ``key``. This is global state by design
+        -- it is meant to be set once at process startup, before any request
+        is served.
+        """
+        _ENV_FLAG_DEFAULTS[key] = _EnvFlagDefault(env_var, default_bool)
 
     def __init__(
         self,
@@ -85,16 +124,22 @@ class FeatureFlagService:
         """Evaluate whether ``key`` is on for the given context.
 
         Precedence:
-        1. Flag missing or globally disabled -> False.
-        2. Any matching EXCLUDE rule -> False.
-        3. Any matching INCLUDE rule -> True.
-        4. A matching INCLUDE rule with a percentage bucket -> deterministic
+        1. Flag missing -> env-var fallback if registered, else False. (Once a
+           DB row exists the database is authoritative.)
+        2. Flag globally disabled -> False.
+        3. Any matching EXCLUDE rule -> False.
+        4. Any matching INCLUDE rule -> True.
+        5. A matching INCLUDE rule with a percentage bucket -> deterministic
            hash check; True if in bucket.
-        5. Otherwise the flag's global ``enabled`` state (True if on with no
+        6. Otherwise the flag's global ``enabled`` state (True if on with no
            rules at all; False if rules exist but none matched).
         """
         flag, all_rules = await self._load(key)
-        if flag is None or not flag.enabled:
+        if flag is None:
+            # No DB row: fall back to the env-var default (allow-all / deny-all)
+            # for registered keys; unknown keys stay off.
+            return _env_fallback(key)
+        if not flag.enabled:
             return False
 
         matching = [
@@ -156,6 +201,12 @@ class FeatureFlagService:
         otherwise leak "who is excluded" and per-user includes would leak
         targeting state.
 
+        Env-var-backed flags (see ``_ENV_FLAG_DEFAULTS``) that have NO database
+        row are also included, resolved from their env var, since they are
+        inherently global (allow-all / deny-all). This lets the web-client
+        config endpoint surface flags like ``ENABLE_BILLING`` before an admin
+        promotes them to a DB-managed flag.
+
         The result is cached for a longer TTL than ``is_enabled`` (default 60s)
         because the global set changes rarely and the web-client config
         endpoint is hit on every page load; admin mutations call
@@ -173,12 +224,35 @@ class FeatureFlagService:
         flags = await FeatureFlagStore.list_flags()
         # Gather rules per flag in one pass; flags with no rules are global.
         result: dict[str, bool] = {}
+        db_keys: set[str] = set()
         for flag in flags:
+            db_keys.add(flag.key)
             rules = await FeatureFlagStore.list_rules(flag.key)
             if not rules:
                 result[flag.key] = bool(flag.enabled)
+        # Env-var-backed flags with no DB row are global by definition.
+        for key in _ENV_FLAG_DEFAULTS:
+            if key not in db_keys:
+                result[key] = _env_fallback(key)
         self._global_cache['snapshot'] = _GlobalCacheEntry(result, now)
         return dict(result)
+
+
+def _env_fallback(key: str) -> bool:
+    """Resolve a flag with no DB row from its registered env-var fallback.
+
+    When the env var is set, its truthiness wins (``true`` -> allow-all, any
+    other value -> deny-all). When the env var is unset, the registered
+    ``default_bool`` is used. Unknown/unregistered keys return ``False`` so the
+    absence of a DB row never implicitly grants anything.
+    """
+    entry = _ENV_FLAG_DEFAULTS.get(key)
+    if entry is None:
+        return False
+    val = os.getenv(entry.env_var)
+    if val is None:
+        return entry.default_bool
+    return val.lower() == 'true'
 
 
 def _rule_matches_context(

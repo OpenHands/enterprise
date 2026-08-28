@@ -1,5 +1,6 @@
 """Unit tests for FeatureFlagService evaluation logic."""
 
+import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -378,3 +379,157 @@ class TestGetGlobalFlags:
             assert await svc.get_global_flags() == {'global_on': True}
             # global_cache_ttl_seconds=0 -> no reuse -> rebuilt both times.
             assert mock_list_flags.call_count == 2
+
+
+class TestEnvFallback:
+    """Env-var fallback for flags that have no database row.
+
+    A registered flag with no DB row resolves from its env var (allow-all when
+    ``true``, deny-all otherwise, defaulting to the registered default when the
+    env var is unset). Unknown flags with no DB row stay off. Once a DB row
+    exists the database is authoritative and the env fallback is ignored.
+    """
+
+    @pytest.mark.asyncio
+    async def test_missing_registered_flag_uses_env_true(self, service):
+        # No DB row for ENABLE_BILLING; env says true -> allow all.
+        p1, p2 = _patch_store(flag=None, rules=[])
+        with (
+            p1,
+            p2,
+            patch.dict('os.environ', {'ENABLE_BILLING': 'true'}, clear=False),
+        ):
+            assert await service.is_enabled('ENABLE_BILLING') is True
+
+    @pytest.mark.asyncio
+    async def test_missing_registered_flag_uses_env_false(self, service):
+        # No DB row; env says false -> deny all.
+        p1, p2 = _patch_store(flag=None, rules=[])
+        with (
+            p1,
+            p2,
+            patch.dict('os.environ', {'ENABLE_BILLING': 'false'}, clear=False),
+        ):
+            assert await service.is_enabled('ENABLE_BILLING') is False
+
+    @pytest.mark.asyncio
+    async def test_missing_registered_flag_uses_default_when_unset(self, service):
+        # No DB row; env unset -> registered default (False for ENABLE_BILLING).
+        p1, p2 = _patch_store(flag=None, rules=[])
+        with (
+            p1,
+            p2,
+            patch.dict('os.environ', {}, clear=False),
+        ):
+            os.environ.pop('ENABLE_BILLING', None)
+            assert await service.is_enabled('ENABLE_BILLING') is False
+
+    @pytest.mark.asyncio
+    async def test_missing_unregistered_flag_is_false(self, service):
+        # Unknown flag with no DB row -> False (no env fallback).
+        p1, p2 = _patch_store(flag=None, rules=[])
+        with p1, p2:
+            assert await service.is_enabled('UNKNOWN_FLAG') is False
+
+    @pytest.mark.asyncio
+    async def test_db_row_overrides_env_fallback(self, service):
+        # A DB row exists and is disabled -> DB wins, env is ignored even when
+        # the env var says true.
+        p1, p2 = _patch_store(
+            flag=_make_flag('ENABLE_BILLING', enabled=False), rules=[]
+        )
+        with (
+            p1,
+            p2,
+            patch.dict('os.environ', {'ENABLE_BILLING': 'true'}, clear=False),
+        ):
+            assert await service.is_enabled('ENABLE_BILLING') is False
+
+    @pytest.mark.asyncio
+    async def test_registered_default_true_when_unset(self, service):
+        # A flag registered with default_bool=True returns True when the env var
+        # is unset (allow all by default).
+        FeatureFlagService.register_env_default(
+            'ALLOW_BY_DEFAULT', 'ALLOW_BY_DEFAULT', True
+        )
+        try:
+            p1, p2 = _patch_store(flag=None, rules=[])
+            with (
+                p1,
+                p2,
+                patch.dict('os.environ', {}, clear=False),
+            ):
+                os.environ.pop('ALLOW_BY_DEFAULT', None)
+                assert await service.is_enabled('ALLOW_BY_DEFAULT') is True
+        finally:
+            # Clean up the global registration so it doesn't leak into other tests.
+            from server.services.feature_flag_service import _ENV_FLAG_DEFAULTS
+
+            _ENV_FLAG_DEFAULTS.pop('ALLOW_BY_DEFAULT', None)
+
+    @pytest.mark.asyncio
+    async def test_env_overrides_registered_default_true(self, service):
+        # default_bool=True but env says false -> deny all.
+        FeatureFlagService.register_env_default(
+            'ALLOW_BY_DEFAULT', 'ALLOW_BY_DEFAULT', True
+        )
+        try:
+            p1, p2 = _patch_store(flag=None, rules=[])
+            with (
+                p1,
+                p2,
+                patch.dict('os.environ', {'ALLOW_BY_DEFAULT': 'false'}, clear=False),
+            ):
+                assert await service.is_enabled('ALLOW_BY_DEFAULT') is False
+        finally:
+            from server.services.feature_flag_service import _ENV_FLAG_DEFAULTS
+
+            _ENV_FLAG_DEFAULTS.pop('ALLOW_BY_DEFAULT', None)
+
+
+class TestGetGlobalFlagsEnvFallback:
+    """Env-fallback flags with no DB row appear in the global set."""
+
+    @pytest.mark.asyncio
+    async def test_env_fallback_flag_absent_from_db_is_included(self, service):
+        # ENABLE_BILLING has no DB row; env=true -> appears as global True.
+        flags: list = []
+        rules_by_key: dict = {}
+        with (
+            patch(
+                'server.services.feature_flag_service.FeatureFlagStore.list_flags',
+                new_callable=AsyncMock,
+                return_value=flags,
+            ),
+            patch(
+                'server.services.feature_flag_service.FeatureFlagStore.list_rules',
+                new_callable=AsyncMock,
+                side_effect=lambda key: rules_by_key.get(key, []),
+            ),
+            patch.dict('os.environ', {'ENABLE_BILLING': 'true'}, clear=False),
+        ):
+            result = await service.get_global_flags()
+        assert result.get('ENABLE_BILLING') is True
+
+    @pytest.mark.asyncio
+    async def test_env_fallback_flag_in_db_is_not_duplicated(self, service):
+        # ENABLE_BILLING has a DB row (enabled=False) -> DB wins; the env
+        # fallback is NOT layered on top.
+        flags = [_make_flag('ENABLE_BILLING', enabled=False)]
+        rules_by_key = {'ENABLE_BILLING': []}
+        with (
+            patch(
+                'server.services.feature_flag_service.FeatureFlagStore.list_flags',
+                new_callable=AsyncMock,
+                return_value=flags,
+            ),
+            patch(
+                'server.services.feature_flag_service.FeatureFlagStore.list_rules',
+                new_callable=AsyncMock,
+                side_effect=lambda key: rules_by_key[key],
+            ),
+            patch.dict('os.environ', {'ENABLE_BILLING': 'true'}, clear=False),
+        ):
+            result = await service.get_global_flags()
+        # DB row disabled -> False, not overridden by env=true.
+        assert result.get('ENABLE_BILLING') is False
