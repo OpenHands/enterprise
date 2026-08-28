@@ -34,6 +34,7 @@ export function GpgKeyModal({ onClose, onSaved }: GpgKeyModalProps) {
   const { data: secrets } = useSearchSecrets();
 
   const [error, setError] = React.useState<string | null>(null);
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 
   const existingSecret = secrets?.find(
     (secret) => secret.name === GPG_SECRET_NAME,
@@ -44,10 +45,8 @@ export function GpgKeyModal({ onClose, onSaved }: GpgKeyModalProps) {
     queryClient.invalidateQueries({ queryKey: ["secrets", organizationId] });
   };
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget);
-    const value = formData.get("gpg-key-value")?.toString().trim();
+  const handleSubmit = () => {
+    const value = textareaRef.current?.value.trim();
 
     if (!value) {
       setError(t(I18nKey.SECRETS$SECRET_VALUE_REQUIRED));
@@ -77,11 +76,7 @@ export function GpgKeyModal({ onClose, onSaved }: GpgKeyModalProps) {
 
   return (
     <ModalBackdrop onClose={onClose}>
-      <form
-        data-testid="gpg-key-modal"
-        onSubmit={handleSubmit}
-        className="flex flex-col gap-2"
-      >
+      <div data-testid="gpg-key-modal" className="flex flex-col gap-2">
         <ModalBody className="border border-tertiary" width="medium">
           <div className="flex flex-col gap-2 self-start w-full">
             <BaseModalTitle title={t(I18nKey.SETTINGS$GPG_KEY)} />
@@ -109,8 +104,8 @@ export function GpgKeyModal({ onClose, onSaved }: GpgKeyModalProps) {
               {t(I18nKey.SETTINGS$GPG_KEY_VALUE_LABEL)}
             </span>
             <textarea
+              ref={textareaRef}
               data-testid="gpg-key-value"
-              name="gpg-key-value"
               required
               className={cn(
                 "resize-none",
@@ -140,9 +135,10 @@ export function GpgKeyModal({ onClose, onSaved }: GpgKeyModalProps) {
             </BrandButton>
             <BrandButton
               testId="gpg-key-save-button"
-              type="submit"
+              type="button"
               variant="primary"
               isDisabled={isPending}
+              onClick={handleSubmit}
             >
               {isPending
                 ? t(I18nKey.SETTINGS$GPG_KEY_SAVING)
@@ -150,7 +146,7 @@ export function GpgKeyModal({ onClose, onSaved }: GpgKeyModalProps) {
             </BrandButton>
           </div>
         </ModalBody>
-      </form>
+      </div>
     </ModalBackdrop>
   );
 }
