@@ -10,8 +10,8 @@ gone.
 This mirrors the OSS app-lifespan soft-delete concept; the enterprise deployment
 maintains its own migration chain and therefore needs this parallel migration.
 
-Revision ID: 144
-Revises: 143
+Revision ID: 154
+Revises: 153
 Create Date: 2026-08-13 00:00:00.000000
 """
 
@@ -20,8 +20,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '144'
-down_revision: Union[str, None] = '143'
+revision: str = "154"
+down_revision: Union[str, None] = "153"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -53,9 +53,10 @@ def upgrade() -> None:
         "ix_app_conversation_start_task_deleted_at",
     )
 
+
 def downgrade() -> None:
     """Downgrade schema: drop soft-delete markers."""
     _drop_deleted_at(
-        'app_conversation_start_task', 'ix_app_conversation_start_task_deleted_at'
+        "app_conversation_start_task", "ix_app_conversation_start_task_deleted_at"
     )
-    _drop_deleted_at('conversation_metadata', 'ix_conversation_metadata_deleted_at')
+    _drop_deleted_at("conversation_metadata", "ix_conversation_metadata_deleted_at")
