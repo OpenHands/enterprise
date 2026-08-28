@@ -49,10 +49,8 @@ class SlackV1CallbackProcessor(EventCallbackProcessor):
         if event.key != 'execution_status':
             return None
 
-        # Log ALL terminal states for monitoring (finished, error, stuck)
         _logger.info('[Slack V1] Callback agent state was %s', event)
 
-        # Only post the final response when execution has finished successfully
         if event.value != 'finished':
             return None
 
@@ -228,7 +226,6 @@ class SlackV1CallbackProcessor(EventCallbackProcessor):
             USER_CONTEXT_ATTR,
         )
 
-        # Create injector state for dependency injection
         state = InjectorState()
         setattr(state, USER_CONTEXT_ATTR, ADMIN)
 

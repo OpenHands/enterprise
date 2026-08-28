@@ -88,7 +88,6 @@ class GithubManager(Manager[GithubViewType]):
         """
         with Github(auth=Auth.Token(installation_token)) as github_client:
             repo = github_client.get_repo(github_view.full_repo_name)
-            # Add reaction based on view type
             if isinstance(github_view, GithubInlinePRComment):
                 pr = repo.get_pull(github_view.issue_number)
                 inline_comment = pr.get_review_comment(github_view.comment_id)
@@ -112,7 +111,6 @@ class GithubManager(Manager[GithubViewType]):
         ) as repos:
             repository = repos.get_repo(full_repo_name)
 
-            # Check if the user is a collaborator
             try:
                 collaborator = repository.get_collaborator_permission(username)
                 if collaborator in ['admin', 'write']:
@@ -180,10 +178,8 @@ class GithubManager(Manager[GithubViewType]):
         repo_obj = payload['repository']
         full_repo_name = self._get_full_repo_name(repo_obj)
 
-        # Get installation token to post the comment
         installation_token = self._get_installation_access_token(installation_id)
 
-        # Determine the issue/PR number based on the event type
         issue_number = self._get_issue_number_from_payload(message)
 
         if not issue_number:
@@ -193,7 +189,6 @@ class GithubManager(Manager[GithubViewType]):
             )
             return
 
-        # Post the comment
         try:
             with Github(auth=Auth.Token(installation_token)) as github_client:
                 repo = github_client.get_repo(full_repo_name)
@@ -276,7 +271,6 @@ class GithubManager(Manager[GithubViewType]):
                 user_id, ProviderType.GITHUB
             )
 
-            # Check if the user has an OpenHands account
             if not keycloak_user_id:
                 logger.warning(
                     f'[GitHub] User {username} (id={user_id}) not found in Keycloak. '
@@ -291,15 +285,12 @@ class GithubManager(Manager[GithubViewType]):
             logger.info(
                 f'[GitHub] Creating job for {github_view.user_info.username} in {github_view.full_repo_name}#{github_view.issue_number}'
             )
-            # Get the installation token
             installation_token = self._get_installation_access_token(
                 github_view.installation_id
             )
-            # Store the installation token
             await self.token_manager.store_org_token(
                 github_view.installation_id, installation_token
             )
-            # Add eyes reaction to acknowledge we've read the request
             self._add_reaction(github_view, 'eyes', installation_token)
             await self.start_job(github_view)
 
@@ -356,7 +347,6 @@ class GithubManager(Manager[GithubViewType]):
                     f'[GitHub] Starting job for user {user_info.username} (id={user_info.user_id})'
                 )
 
-                # Create conversation
                 user_token = await self.token_manager.get_idp_token_from_idp_user_id(
                     str(user_info.user_id), ProviderType.GITHUB
                 )
@@ -401,9 +391,6 @@ class GithubManager(Manager[GithubViewType]):
                     f'[GitHub] Created conversation {conversation_id_hex} for user {user_info.username}'
                 )
 
-                # V1 callback processors are registered by the view during conversation creation
-
-                # Send message with conversation link
                 conversation_link = CONVERSATION_URL.format(conversation_id_hex)
                 msg_info = f"I'm on it! {user_info.username} can [track my progress at all-hands.dev]({conversation_link})"
 
