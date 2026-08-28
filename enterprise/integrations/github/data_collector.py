@@ -221,7 +221,6 @@ class GitHubDataCollector:
         title = isssue_details.get('title', '')
         body = isssue_details.get('body', '')
 
-        # Get comments for the issue
         comments = self._get_issue_comments(
             github_view.installation_id,
             github_view.full_repo_name,
@@ -319,7 +318,6 @@ class GitHubDataCollector:
         """Process reviews and review comments from a single GraphQL page"""
         review_nodes = pr_data.get('reviews', {}).get('nodes', [])
         for review in review_nodes:
-            # Add the review itself if it has a body
             if review.get('body', '').strip():
                 review_data = {
                     'author': review.get('author', {}).get('login'),
@@ -330,7 +328,6 @@ class GitHubDataCollector:
                 }
                 review_comments.append(review_data)
 
-            # Add individual review comments
             review_comment_nodes = review.get('comments', {}).get('nodes', [])
             for review_comment in review_comment_nodes:
                 review_comment_data = {
@@ -349,7 +346,6 @@ class GitHubDataCollector:
         openhands_review_comment_count = 0
         openhands_general_comment_count = 0
 
-        # Count commits by OpenHands (check both name and login)
         for commit in commits:
             author = commit.get('author', {})
             author_name = author.get('name', '').lower()
@@ -362,7 +358,6 @@ class GitHubDataCollector:
             if self._check_openhands_author(author_name, author_login):
                 openhands_commit_count += 1
 
-        # Count review comments by OpenHands
         for review_comment in review_comments:
             author_login = (
                 review_comment.get('author', '').lower()
@@ -373,7 +368,6 @@ class GitHubDataCollector:
             if self._check_openhands_author(author_name, author_login):
                 openhands_review_comment_count += 1
 
-        # Count general PR comments by OpenHands
         for pr_comment in pr_comments:
             author_login = (
                 pr_comment.get('author', '').lower() if pr_comment.get('author') else ''
@@ -454,7 +448,6 @@ class GitHubDataCollector:
         installation_id = int(openhands_pr.installation_id)
         repo_id = openhands_pr.repo_id
 
-        # Get installation token and create Github client
         # This will fail if the user decides to revoke OpenHands' access to their repo
         # In this case, we will simply return when the exception occurs
         # This will not lead to infinite loops when processing PRs as we log number of attempts and cap max attempts independently from this
@@ -468,22 +461,18 @@ class GitHubDataCollector:
 
         gh_client = GithubServiceImpl(token=SecretStr(installation_token))
 
-        # Get the new format GraphQL node ID
         node_id = await self._get_repo_node_id(repo_id, gh_client)
 
-        # Initialize data structures
         commits: list[dict] = []
         pr_comments: list[dict] = []
         review_comments: list[dict] = []
         pr_data = None
         repo_data = None
 
-        # Pagination cursors
         commits_after = None
         comments_after = None
         reviews_after = None
 
-        # Fetch all data with pagination
         while True:
             variables = {
                 'nodeId': node_id,
@@ -503,12 +492,10 @@ class GitHubDataCollector:
                 pr_data = result['data']['node']['pullRequest']
                 repo_data = result['data']['node']
 
-                # Process data from this page using modular methods
                 self._process_commits_page(pr_data, commits)
                 self._process_pr_comments_page(pr_data, pr_comments)
                 self._process_review_comments_page(pr_data, review_comments)
 
-                # Check pagination for all three types
                 has_more_commits = (
                     pr_data.get('commits', {})
                     .get('pageInfo', {})
@@ -525,7 +512,6 @@ class GitHubDataCollector:
                     .get('hasNextPage', False)
                 )
 
-                # Update cursors
                 if has_more_commits:
                     commits_after = (
                         pr_data.get('commits', {}).get('pageInfo', {}).get('endCursor')
@@ -558,7 +544,6 @@ class GitHubDataCollector:
         if not pr_data or not repo_data:
             return
 
-        # Count OpenHands activity using modular method
         (
             openhands_commit_count,
             openhands_review_comment_count,
@@ -572,7 +557,6 @@ class GitHubDataCollector:
             f'[Github]: PR #{pr_number} - Total collected: {len(commits)} commits, {len(pr_comments)} PR comments, {len(review_comments)} review comments'
         )
 
-        # Build final data structure using modular method
         data = self._build_final_data_structure(
             repo_data,
             pr_data or {},
@@ -584,11 +568,9 @@ class GitHubDataCollector:
             openhands_general_comment_count,
         )
 
-        # Update the OpenhandsPR object with OpenHands statistics
         store = OpenhandsPRStore.get_instance()
         openhands_helped_author = openhands_commit_count > 0
 
-        # Update the PR with OpenHands statistics
         update_success = await store.update_pr_openhands_stats(
             repo_id=repo_id,
             pr_number=pr_number,
@@ -604,7 +586,6 @@ class GitHubDataCollector:
                 f'[Github]: Failed to update OpenHands stats for PR #{pr_number} in repo {repo_id} - PR may have been modified concurrently'
             )
 
-        # Save to file
         file_name = self._create_file_name(
             path=self.full_saved_pr_path,
             repo_id=repo_id,
@@ -645,7 +626,6 @@ class GitHubDataCollector:
 
         pr_data = payload['pull_request']
 
-        # Extract PR metrics
         num_reviewers = len(pr_data.get('requested_reviewers', []))
         num_commits = pr_data.get('commits', 0)
         num_review_comments = pr_data.get('review_comments', 0)
@@ -658,12 +638,9 @@ class GitHubDataCollector:
         # Extract timestamps. Example: "closed_at":"2025-06-19T21:19:36Z".
         # Both are normalized to naive UTC so they can be bound to the naive
         # TIMESTAMP columns on openhands_prs (see _github_ts_to_naive_utc).
-        # Previously created_at was passed as a raw string; it is now
-        # consistently a naive-UTC datetime like closed_at.
         closed_at = _github_ts_to_naive_utc(pr_data.get('closed_at'))
         created_at = _github_ts_to_naive_utc(pr_data.get('created_at'))
 
-        # Determine status based on whether it was merged
         status = PRStatus.MERGED if merged else PRStatus.CLOSED
 
         store = OpenhandsPRStore.get_instance()

@@ -167,11 +167,9 @@ class ApiKeyStore:
         Returns:
             The API key (existing or newly created)
         """
-        # Create system key name with prefix
         system_key_name = self.make_system_key_name(name)
 
         async with a_session_maker() as session:
-            # Check if key already exists for this user/org/name
             result = await session.execute(
                 select(ApiKey).filter(
                     ApiKey.user_id == user_id,
@@ -182,13 +180,11 @@ class ApiKeyStore:
             existing_key = result.scalars().first()
 
             if existing_key:
-                # Check if expired
                 if existing_key.expires_at:
                     now = datetime.now(UTC)
                     expires_at = _as_utc_aware(existing_key.expires_at)
 
                     if expires_at and expires_at < now:
-                        # Key is expired, delete it and create new one
                         logger.info(
                             'System API key expired, re-issuing',
                             extra={
@@ -200,7 +196,6 @@ class ApiKeyStore:
                         await session.delete(existing_key)
                         await session.commit()
                     else:
-                        # Key exists and is not expired, return it
                         logger.debug(
                             'Returning existing system API key',
                             extra={
@@ -211,7 +206,6 @@ class ApiKeyStore:
                         )
                         return existing_key.key
                 else:
-                    # Key exists and has no expiration, return it
                     logger.debug(
                         'Returning existing system API key',
                         extra={
@@ -222,7 +216,6 @@ class ApiKeyStore:
                     )
                     return existing_key.key
 
-        # Create new key (no expiration)
         api_key = self.generate_api_key()
 
         async with a_session_maker() as session:
@@ -412,7 +405,6 @@ class ApiKeyStore:
                 if key.name != 'MCP_API_KEY' and not self.is_system_key_name(key.name)
             ]
 
-            # Set timezones
             for key in keys:
                 key.created_at = _as_utc_aware(key.created_at)
                 key.last_used_at = _as_utc_aware(key.last_used_at)
@@ -471,7 +463,6 @@ class ApiKeyStore:
             True if the key was deleted, False if not found or is a protected system key
         """
         async with a_session_maker() as session:
-            # Build the query filters
             filters = [ApiKey.user_id == user_id, ApiKey.name == name]
             if org_id is not None:
                 filters.append(ApiKey.org_id == org_id)

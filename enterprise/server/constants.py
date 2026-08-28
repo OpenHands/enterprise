@@ -1,10 +1,8 @@
 import os
 import re
 
-# Get the host from environment variable
 HOST = os.getenv('WEB_HOST', 'app.all-hands.dev').strip()
 
-# Check if this is a feature environment
 # Feature environments have a host format like {some-text}.staging.all-hands.dev
 # or {some-text}.staging.openhands.dev (the domain the staging/feature stack is
 # migrating to), or {some-text}.ohe-staging.platform-team.all-hands.dev (for the
