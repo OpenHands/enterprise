@@ -51,6 +51,7 @@ from server.routes.org_invitations import (  # noqa: E402
 from server.routes.org_invitations import (  # noqa: E402
     invitation_router,
 )
+from server.routes.org_migrations import org_migration_router  # noqa: E402
 from server.routes.org_profiles import router as org_profiles_router  # noqa: E402
 from server.routes.orgs import org_router  # noqa: E402
 from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
@@ -159,6 +160,7 @@ base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(
     super_admin_router
 )  # Add routes for instance-level super-admin management
+base_app.include_router(org_migration_router)
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value

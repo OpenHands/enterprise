@@ -111,6 +111,8 @@ dependencies = [
 urls.Homepage = "https://github.com/OpenHands/OpenHands"
 urls.Repository = "https://github.com/OpenHands/OpenHands"
 
+scripts.openhands = "openhands.cli.main:main"
+
 [dependency-groups]
 dev = [
   "build",
