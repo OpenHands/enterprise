@@ -1373,9 +1373,8 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
         org = session.query(Org).filter(Org.id == org_id).first()
         assert org is not None
 
-        # This should NOT raise IntegrityError with passive_deletes=True
-        # Previously this would fail with:
-        # "NOT NULL constraint failed: org_invitation.org_id"
+        # Verify the delete cascades to the invitation without raising
+        # (passive_deletes=True handles the FK constraint).
         session.delete(org)
         session.commit()  # Success indicates passive_deletes=True is working
 

@@ -1227,10 +1227,9 @@ async def test_store_keeps_mcp_config_private_to_acting_member(
             'user1': {'url': 'https://user1-mcp-server.com', 'transport': 'sse'}
         },
     }
-    # The SDK 1.31.x wire format stores ``mcp_config`` as a flat server
-    # map; ``Settings.update`` still accepts the legacy wrapper for
-    # backwards compatibility, but ``model_dump(mode='json')`` — which is
-    # what ``_get_persisted_agent_settings`` uses — no longer wraps.
+    # ``mcp_config`` is stored as a flat server map (no ``mcpServers`` wrapper);
+    # ``model_dump(mode='json')`` used by ``_get_persisted_agent_settings``
+    # produces this flat shape.
     persisted_mcp_config = {
         'user1': {'url': 'https://user1-mcp-server.com', 'transport': 'sse'},
     }
@@ -2068,9 +2067,8 @@ async def test_store_replaces_mcp_config_on_delete(
             .all()
         }
 
-    # The persisted ``mcp_config`` is the SDK 1.31.x flat server map (no
-    # ``mcpServers`` wrapper), so reach directly into it instead of going
-    # through the legacy wrapper key.
+    # ``mcp_config`` is stored as a flat server map (no ``mcpServers``
+    # wrapper); reach directly into it.
     admin_servers = members[admin_user_id].mcp_config or {}
     assert set(admin_servers.keys()) == {'server1', 'server2'}
     assert 'mcp_config' not in members[admin_user_id].agent_settings_diff
