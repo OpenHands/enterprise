@@ -1,10 +1,8 @@
 # Development Guide
 
 This guide is for people working on OpenHands and editing the source code.
-If you wish to contribute your changes, check out the
-[CONTRIBUTING.md](https://github.com/OpenHands/OpenHands/blob/main/CONTRIBUTING.md)
-on how to clone and setup the project initially before moving on. Otherwise,
-you can clone the OpenHands project directly.
+For contribution guidelines, see the [contributing section on our website](https://www.openhands.dev/contact).
+Otherwise, you can clone the OpenHands project directly.
 
 ## Choose Your Setup
 
@@ -321,7 +319,6 @@ make help
 
 - [/README.md](./README.md): Main project overview, features, and basic setup instructions
 - [/Development.md](./Development.md) (this file): Comprehensive guide for developers working on OpenHands
-- [/CONTRIBUTING.md](./CONTRIBUTING.md): Guidelines for contributing to the project, including code style and PR process
 - [DOC_STYLE_GUIDE.md](https://github.com/OpenHands/docs/blob/main/openhands/DOC_STYLE_GUIDE.md): Standards for writing and maintaining project documentation
 - [/openhands/app_server/README.md](./openhands/app_server/README.md): Current V1 application server implementation and REST API modules
 - [/frontend/README.md](./frontend/README.md): Frontend React application setup and development guide
