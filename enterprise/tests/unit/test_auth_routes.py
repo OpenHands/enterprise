@@ -162,11 +162,6 @@ async def test_keycloak_callback_connection_failure_is_retryable(
     assert 'temporarily unavailable' in exc_info.value.detail
 
 
-# Note: test_keycloak_callback_missing_user_info was removed as part of the
-# user authorization refactor. The "Missing user ID or username" check has been
-# removed from keycloak_callback - authorization is now handled by UserAuthorizer.
-
-
 @pytest.mark.asyncio
 async def test_keycloak_callback_user_not_authorized(
     mock_request, mock_background_tasks, create_keycloak_user_info
@@ -1186,17 +1181,6 @@ async def test_keycloak_callback_blocked_email_domain(
         # Assert
         assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
         assert exc_info.value.detail == 'blocked'
-
-
-# Note: test_keycloak_callback_allowed_email_domain was simplified as part of
-# the user authorization refactor. The email domain authorization logic is now
-# in DefaultUserAuthorizer and tested in test_user_authorization_store.py.
-# The keycloak_callback test only needs to verify it proceeds when authorized.
-
-
-# Note: test_keycloak_callback_domain_blocking_inactive was removed as part of
-# the user authorization refactor. The concept of "domain blocking inactive" no
-# longer applies - authorization is always performed by UserAuthorizer.
 
 
 @pytest.mark.asyncio
