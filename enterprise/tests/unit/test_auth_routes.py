@@ -2582,6 +2582,66 @@ async def test_accept_tos_stores_timezone_naive_datetime(mock_request):
 
 
 @pytest.mark.asyncio
+async def test_accept_tos_links_signup_analytics_to_posthog_session(mock_request):
+    """accept_tos forwards the frontend PostHog session ID to signup analytics."""
+    test_user_id = '12345678-1234-5678-1234-567812345678'
+
+    mock_user = MagicMock()
+    mock_user.id = test_user_id
+    mock_user.current_org_id = None
+    mock_user.email = 'user@example.com'
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_user
+
+    mock_session = AsyncMock()
+    mock_session.execute.return_value = mock_result
+    mock_session.commit = AsyncMock()
+
+    mock_session_context = AsyncMock()
+    mock_session_context.__aenter__.return_value = mock_session
+    mock_session_context.__aexit__.return_value = None
+
+    mock_user_auth = MagicMock(spec=SaasUserAuth)
+    mock_user_auth.get_access_token = AsyncMock(
+        return_value=SecretStr('test_access_token')
+    )
+    mock_user_auth.refresh_token = SecretStr('test_refresh_token')
+    mock_user_auth.get_user_id = AsyncMock(return_value=test_user_id)
+
+    mock_request.json = AsyncMock(return_value={'redirect_url': 'http://example.com'})
+    mock_request.state = MagicMock(posthog_session_id='session-123')
+    mock_analytics = MagicMock()
+
+    with (
+        patch(
+            'server.routes.auth.get_user_auth',
+            AsyncMock(return_value=mock_user_auth),
+        ),
+        patch(
+            'server.routes.auth.a_session_maker', return_value=mock_session_context
+        ),
+        patch('server.routes.auth.set_response_cookie'),
+        patch(
+            'server.routes.auth.get_analytics_service', return_value=mock_analytics
+        ),
+        patch(
+            'server.routes.auth._get_post_auth_redirect',
+            AsyncMock(return_value='http://example.com'),
+        ),
+    ):
+        result = await accept_tos(mock_request)
+
+    assert isinstance(result, JSONResponse)
+    mock_analytics.track_user_signed_up.assert_called_once()
+    assert (
+        mock_analytics.track_user_signed_up.call_args.kwargs['session_id']
+        == 'session-123'
+    )
+
+
+
+@pytest.mark.asyncio
 async def test_accept_tos_preserves_offline_flow_redirect(mock_request):
     """Test that accept_tos does not override redirect_url when it's the offline token flow."""
     # Arrange

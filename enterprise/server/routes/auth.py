@@ -1056,10 +1056,16 @@ async def accept_tos(request: Request):
                     org_id=org_id_str,
                     user=user,
                 )
+                posthog_session_id = getattr(
+                    getattr(request, 'state', None), 'posthog_session_id', None
+                )
                 analytics.track_user_signed_up(
                     ctx=ctx,
                     email_domain=email.split('@')[1]
                     if email and '@' in email
+                    else None,
+                    session_id=posthog_session_id
+                    if isinstance(posthog_session_id, str)
                     else None,
                 )
                 analytics.set_person_properties(
