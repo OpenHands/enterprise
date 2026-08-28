@@ -418,10 +418,8 @@ class TestLiteLlmManager:
         response.is_success = True
         response.status_code = 200
         response.json.return_value = {
-            'user_info': {
-                'max_budget': 50.0,
-                'spend': 10.0,
-            }
+            'max_budget': 50.0,
+            'spend': 10.0,
         }
         response.raise_for_status = MagicMock()
         return response
@@ -521,9 +519,7 @@ class TestLiteLlmManager:
         # Mock user exists check response
         mock_user_exists_response = MagicMock()
         mock_user_exists_response.is_success = True
-        mock_user_exists_response.json.return_value = {
-            'user_info': {'user_id': 'test-user-id'}
-        }
+        mock_user_exists_response.json.return_value = {'user_id': 'test-user-id'}
 
         mock_token_manager = MagicMock()
         mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
@@ -625,9 +621,7 @@ class TestLiteLlmManager:
         # Mock user exists check response
         mock_user_exists_response = MagicMock()
         mock_user_exists_response.is_success = True
-        mock_user_exists_response.json.return_value = {
-            'user_info': {'user_id': 'test-user-id'}
-        }
+        mock_user_exists_response.json.return_value = {'user_id': 'test-user-id'}
 
         mock_token_manager = MagicMock()
         mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
@@ -691,9 +685,7 @@ class TestLiteLlmManager:
         # Mock user exists check response
         mock_user_exists_response = MagicMock()
         mock_user_exists_response.is_success = True
-        mock_user_exists_response.json.return_value = {
-            'user_info': {'user_id': 'test-user-id'}
-        }
+        mock_user_exists_response.json.return_value = {'user_id': 'test-user-id'}
 
         mock_client = AsyncMock()
         # First GET is for _get_team (404), second GET is for _user_exists (success)
@@ -745,9 +737,7 @@ class TestLiteLlmManager:
         # Mock user exists check response
         mock_user_exists_response = MagicMock()
         mock_user_exists_response.is_success = True
-        mock_user_exists_response.json.return_value = {
-            'user_info': {'user_id': 'test-user-id'}
-        }
+        mock_user_exists_response.json.return_value = {'user_id': 'test-user-id'}
 
         mock_token_manager = MagicMock()
         mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
@@ -1070,7 +1060,7 @@ class TestLiteLlmManager:
         # _user_exists: orphan present on the pre-check and after recreate.
         mock_user_exists = MagicMock()
         mock_user_exists.is_success = True
-        mock_user_exists.json.return_value = {'user_info': {'user_id': 'test-user-id'}}
+        mock_user_exists.json.return_value = {'user_id': 'test-user-id'}
 
         mock_token_manager = MagicMock()
         mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
@@ -1220,10 +1210,8 @@ class TestLiteLlmManager:
     ):
         """Test migrate_entries when user is already migrated (no max_budget)."""
         mock_user_response.json.return_value = {
-            'user_info': {
-                'max_budget': None,  # Already migrated
-                'spend': 10.0,
-            }
+            'max_budget': None,  # Already migrated
+            'spend': 10.0,
         }
 
         with patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}):
@@ -1568,7 +1556,8 @@ class TestLiteLlmManager:
         user_response = MagicMock()
         user_response.is_success = True
         user_response.json.return_value = {
-            'user_info': {'user_id': 'test-user-id', 'email': 'test@example.com'}
+            'user_id': 'test-user-id',
+            'email': 'test@example.com',
         }
         mock_http_client.get.return_value = user_response
 
@@ -1587,6 +1576,7 @@ class TestLiteLlmManager:
         # Arrange
         user_response = MagicMock()
         user_response.is_success = False
+        user_response.status_code = 404
         mock_http_client.get.return_value = user_response
 
         # Act
@@ -1605,9 +1595,7 @@ class TestLiteLlmManager:
         # Arrange
         user_response = MagicMock()
         user_response.is_success = True
-        user_response.json.return_value = {
-            'user_info': {'user_id': 'different-user-id'}
-        }
+        user_response.json.return_value = {'user_id': 'different-user-id'}
         mock_http_client.get.return_value = user_response
 
         # Act
@@ -1637,9 +1625,7 @@ class TestLiteLlmManager:
 
         user_exists_response = MagicMock()
         user_exists_response.is_success = True
-        user_exists_response.json.return_value = {
-            'user_info': {'user_id': 'test-user-id'}
-        }
+        user_exists_response.json.return_value = {'user_id': 'test-user-id'}
 
         mock_http_client.post.side_effect = [first_response, second_response]
         mock_http_client.get.return_value = user_exists_response
@@ -1756,9 +1742,7 @@ class TestLiteLlmManager:
 
         user_exists_response = MagicMock()
         user_exists_response.is_success = True
-        user_exists_response.json.return_value = {
-            'user_info': {'user_id': 'test-user-id'}
-        }
+        user_exists_response.json.return_value = {'user_id': 'test-user-id'}
 
         mock_http_client.post.side_effect = [first_response, second_response]
         mock_http_client.get.return_value = user_exists_response
@@ -1796,9 +1780,7 @@ class TestLiteLlmManager:
 
         user_exists_response = MagicMock()
         user_exists_response.is_success = True
-        user_exists_response.json.return_value = {
-            'user_info': {'user_id': 'test-user-id'}
-        }
+        user_exists_response.json.return_value = {'user_id': 'test-user-id'}
 
         mock_http_client.post.side_effect = [first_response, second_response]
         mock_http_client.get.return_value = user_exists_response
@@ -3740,3 +3722,61 @@ class TestGetTeamMembersFinancialData:
             'max_budget': 100.0,
             'uses_shared_budget': False,
         }
+
+
+class TestGetUser:
+    """Tests for _get_user / _user_exists against /v2/user/info."""
+
+    @staticmethod
+    def _response(status_code: int, payload: dict | None = None) -> MagicMock:
+        response = MagicMock()
+        response.status_code = status_code
+        response.is_success = 200 <= status_code < 300
+        response.json.return_value = payload or {}
+        response.raise_for_status = MagicMock()
+        if not response.is_success:
+            response.raise_for_status.side_effect = httpx.HTTPStatusError(
+                message=str(status_code), request=MagicMock(), response=response
+            )
+        return response
+
+    @pytest.fixture
+    def mock_client(self):
+        return AsyncMock(spec=httpx.AsyncClient)
+
+    @pytest.fixture(autouse=True)
+    def litellm_config(self):
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-api-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+        ):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_uses_v2_endpoint(self, mock_client):
+        """The user row comes from /v2/user/info, which omits keys and teams."""
+        mock_client.get.return_value = self._response(
+            200, {'user_id': 'test-user-id', 'max_budget': 50.0, 'spend': 10.0}
+        )
+
+        result = await LiteLlmManager._get_user(mock_client, 'test-user-id')
+
+        assert result == {'user_id': 'test-user-id', 'max_budget': 50.0, 'spend': 10.0}
+        mock_client.get.assert_awaited_once_with(
+            'http://test.com/v2/user/info', params={'user_id': 'test-user-id'}
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_unknown_user(self, mock_client):
+        """A 404 means the user does not exist."""
+        mock_client.get.return_value = self._response(404, {'detail': 'User not found'})
+
+        assert await LiteLlmManager._get_user(mock_client, 'missing-user') is None
+
+    @pytest.mark.asyncio
+    async def test_raises_on_server_error(self, mock_client):
+        """Any other failure surfaces to the caller."""
+        mock_client.get.return_value = self._response(500)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await LiteLlmManager._get_user(mock_client, 'test-user-id')
