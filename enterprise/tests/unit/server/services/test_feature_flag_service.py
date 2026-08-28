@@ -337,3 +337,50 @@ class TestGetGlobalFlags:
             service.invalidate("global_on")
             assert await service.get_global_flags() == {"global_on": True}
             assert mock_list_flags.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_global_cache_ttl_defaults_to_60s_and_is_independent(self):
+        """The global snapshot TTL defaults to 60s and is independent of the
+        per-flag ``is_enabled`` cache TTL (which defaults to 5s)."""
+        from server.services.feature_flag_service import (
+            _DEFAULT_CACHE_TTL_SECONDS,
+            _DEFAULT_GLOBAL_CACHE_TTL_SECONDS,
+            FeatureFlagService,
+        )
+
+        assert _DEFAULT_CACHE_TTL_SECONDS == 5
+        assert _DEFAULT_GLOBAL_CACHE_TTL_SECONDS == 60
+        svc = FeatureFlagService()
+        assert svc._cache_ttl == 5
+        assert svc._global_cache_ttl == 60
+        # The two TTLs can be configured independently.
+        svc2 = FeatureFlagService(
+            cache_ttl_seconds=1, global_cache_ttl_seconds=30
+        )
+        assert svc2._cache_ttl == 1
+        assert svc2._global_cache_ttl == 30
+
+    @pytest.mark.asyncio
+    async def test_global_cache_respects_its_own_ttl(self):
+        """A 0s global TTL means the snapshot is rebuilt on every call."""
+        svc = FeatureFlagService(
+            cache_ttl_seconds=5, global_cache_ttl_seconds=0
+        )
+        flags = [_make_flag("global_on", enabled=True)]
+        rules_by_key = {"global_on": []}
+        with (
+            patch(
+                "server.services.feature_flag_service.FeatureFlagStore.list_flags",
+                new_callable=AsyncMock,
+                return_value=flags,
+            ) as mock_list_flags,
+            patch(
+                "server.services.feature_flag_service.FeatureFlagStore.list_rules",
+                new_callable=AsyncMock,
+                side_effect=lambda key: rules_by_key[key],
+            ),
+        ):
+            assert await svc.get_global_flags() == {"global_on": True}
+            assert await svc.get_global_flags() == {"global_on": True}
+            # global_cache_ttl_seconds=0 -> no reuse -> rebuilt both times.
+            assert mock_list_flags.call_count == 2

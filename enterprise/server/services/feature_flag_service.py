@@ -15,10 +15,18 @@ from storage.feature_flag_store import FeatureFlagStore
 
 logger = logging.getLogger(__name__)
 
-# Cache TTL (seconds) for the read-path. A short in-memory cache keeps hot
-# ``is_enabled`` checks off the database without making flag updates take
+# Cache TTL (seconds) for the per-flag read-path. A short in-memory cache keeps
+# hot ``is_enabled`` checks off the database without making flag updates take
 # minutes to propagate.
 _DEFAULT_CACHE_TTL_SECONDS = 5
+
+# Cache TTL (seconds) for the global-flags snapshot used by unauthenticated
+# paths (e.g. the web-client config endpoint). Longer than the per-flag TTL
+# because the global set is only the rule-less flags -- it changes rarely, the
+# endpoint is called on every page load, and admin mutations call
+# ``invalidate`` to drop the snapshot immediately. This caps the DB load at
+# roughly one refresh per minute per worker process.
+_DEFAULT_GLOBAL_CACHE_TTL_SECONDS = 60
 
 
 @dataclass
@@ -48,8 +56,13 @@ class FeatureFlagService:
     _cache: dict[str, _CacheEntry] = {}
     _global_cache: dict[str, _GlobalCacheEntry] = {}
 
-    def __init__(self, cache_ttl_seconds: int = _DEFAULT_CACHE_TTL_SECONDS) -> None:
+    def __init__(
+        self,
+        cache_ttl_seconds: int = _DEFAULT_CACHE_TTL_SECONDS,
+        global_cache_ttl_seconds: int = _DEFAULT_GLOBAL_CACHE_TTL_SECONDS,
+    ) -> None:
         self._cache_ttl = cache_ttl_seconds
+        self._global_cache_ttl = global_cache_ttl_seconds
 
     def invalidate(self, key: str | None = None) -> None:
         """Drop a single flag (or all flags) from the cache."""
@@ -143,15 +156,18 @@ class FeatureFlagService:
         otherwise leak "who is excluded" and per-user includes would leak
         targeting state.
 
-        The result is cached for the same TTL as ``is_enabled``. Callers that
-        need the per-user value for a targeted flag must use ``is_enabled``
-        with an explicit context.
+        The result is cached for a longer TTL than ``is_enabled`` (default 60s)
+        because the global set changes rarely and the web-client config
+        endpoint is hit on every page load; admin mutations call
+        ``invalidate`` to drop the snapshot immediately. Callers that need the
+        per-user value for a targeted flag must use ``is_enabled`` with an
+        explicit context.
         """
         import time
 
         now = time.monotonic()
         cached = self._global_cache.get('snapshot')
-        if cached is not None and (now - cached.fetched_at) < self._cache_ttl:
+        if cached is not None and (now - cached.fetched_at) < self._global_cache_ttl:
             return dict(cached.value)
 
         flags = await FeatureFlagStore.list_flags()
