@@ -424,7 +424,9 @@ async def batch_get_app_conversations(
     return app_conversations
 
 
-async def _reserve_daily_conversation_quota(user_id: str | None) -> bool:
+async def _reserve_daily_conversation_quota(
+    user_id: str | None, org_id: UUID | None = None
+) -> bool:
     """SaaS-only: reserve one slot of the user's daily conversation quota.
 
     Runs on its own short-lived session so quota commits and rollbacks never
@@ -449,7 +451,7 @@ async def _reserve_daily_conversation_quota(user_id: str | None) -> bool:
         return False
 
     async with a_session_maker() as session:
-        return await DailyConversationQuotaService(session).reserve(user_id)
+        return await DailyConversationQuotaService(session).reserve(user_id, org_id)
 
 
 async def _release_daily_conversation_quota(user_id: str) -> None:
@@ -485,7 +487,13 @@ async def start_app_conversation(
     await _validate_codex_credentials(start_request, user_context, secrets_store)
 
     quota_user_id = await user_context.get_user_id()
-    quota_reserved = await _reserve_daily_conversation_quota(quota_user_id)
+    get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
+    quota_org_id = (
+        await get_effective_org_id() if get_effective_org_id is not None else None
+    )
+    quota_reserved = await _reserve_daily_conversation_quota(
+        quota_user_id, quota_org_id
+    )
 
     # Because we are processing after the request finishes, keep the db connection open
     set_db_session_keep_open(request.state, True)

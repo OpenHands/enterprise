@@ -4,11 +4,18 @@ This module provides a single source of truth for parsing and validating
 Jira webhook payloads, replacing scattered parsing logic throughout the codebase.
 """
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from urllib.parse import urlparse
 
 from openhands.app_server.utils.logger import openhands_logger as logger
+
+# A Jira [~id] / [~accountid:id] mention token; captures the inner identifier.
+# {1,256} bounds the run so a long '[~[~...' body can't cause O(n^2) backtracking.
+_JIRA_MENTION_RE = re.compile(
+    r'\[~\s*(?:accountid:)?\s*([^\]\s]{1,256})\s*\]', re.IGNORECASE
+)
 
 
 class JiraEventType(Enum):
@@ -45,20 +52,15 @@ class JiraWebhookPayload:
 
     # Event-specific data
     comment_body: str = ''  # For comment events
+    # Comment events: True when the literal inline label (@openhands) is in the
+    # body; mention_ids carries the ids from [~...] picker tokens for bot matching.
+    literal_mention: bool = True
+    mention_ids: tuple[str, ...] = ()
 
     @property
     def user_msg(self) -> str:
         """Alias for comment_body for backward compatibility."""
         return self.comment_body
-
-
-class JiraPayloadParseError(Exception):
-    """Raised when payload parsing fails."""
-
-    def __init__(self, reason: str, event_type: str | None = None):
-        self.reason = reason
-        self.event_type = event_type
-        super().__init__(reason)
 
 
 @dataclass(frozen=True)
@@ -163,7 +165,14 @@ class JiraPayloadParser:
         comment_data = payload.get('comment', {})
         comment_body = comment_data.get('body', '')
 
-        if not self._has_mention(comment_body):
+        literal_mention = self._has_mention(comment_body)
+        # Jira's mention picker serializes @openhands as wiki markup
+        # ([~accountid:...]), so accept mention tokens too; the manager checks
+        # the id against the service account (that needs workspace credentials).
+        mention_ids = tuple(
+            m.group(1).strip().lower() for m in _JIRA_MENTION_RE.finditer(comment_body)
+        )
+        if not literal_mention and not mention_ids:
             return JiraPayloadSkipped(
                 f"Comment does not mention '{self.inline_oh_label}'"
             )
@@ -176,6 +185,8 @@ class JiraPayloadParser:
             event_type=JiraEventType.COMMENT_MENTION,
             webhook_event=webhook_event,
             comment_body=comment_body,
+            literal_mention=literal_mention,
+            mention_ids=mention_ids,
         )
 
     def _has_mention(self, text: str) -> bool:
@@ -191,6 +202,8 @@ class JiraPayloadParser:
         event_type: JiraEventType,
         webhook_event: str,
         comment_body: str,
+        literal_mention: bool = True,
+        mention_ids: tuple[str, ...] = (),
     ) -> JiraPayloadParseResult:
         """Extract common fields and validate required data is present."""
         issue_data = payload.get('issue', {})
@@ -235,6 +248,8 @@ class JiraPayloadParser:
                 workspace_name=workspace_name,
                 base_api_url=base_api_url,
                 comment_body=comment_body,
+                literal_mention=literal_mention,
+                mention_ids=mention_ids,
             )
         )
 

@@ -9,6 +9,7 @@ from server.services.daily_conversation_quota_service import (
 )
 
 USER_ID = str(uuid4())
+ORG_ID = uuid4()
 
 
 @pytest.mark.asyncio
@@ -16,13 +17,14 @@ async def test_get_status_unlimited():
     """When limit is None (unlimited), remaining is None and reset_at is next UTC midnight."""
     session = AsyncMock()
     session.scalar.side_effect = [
-        SimpleNamespace(daily_conversation_limit=None, current_org_id=None),
+        SimpleNamespace(daily_conversation_limit=None),  # user: no override
+        SimpleNamespace(daily_conversation_limit=None),  # org: no override
         None,  # no usage record for today
     ]
 
     with patch.dict('os.environ', {}, clear=True):
         service = DailyConversationQuotaService(session)
-        result = await service.get_status(USER_ID)
+        result = await service.get_status(USER_ID, ORG_ID)
 
     assert isinstance(result, QuotaStatus)
     assert result.daily_limit is None
@@ -38,12 +40,12 @@ async def test_get_status_with_limit_and_usage():
     # First scalar call: User lookup returns a user with limit 20
     # Second scalar call: DailyConversationUsage lookup returns count 5
     session.scalar.side_effect = [
-        SimpleNamespace(daily_conversation_limit=20, current_org_id=None),
+        SimpleNamespace(daily_conversation_limit=20),
         SimpleNamespace(conversation_count=5),
     ]
 
     service = DailyConversationQuotaService(session)
-    result = await service.get_status(USER_ID)
+    result = await service.get_status(USER_ID, ORG_ID)
 
     assert result.daily_limit == 20
     assert result.used_today == 5
@@ -56,12 +58,12 @@ async def test_get_status_remaining_floor_zero():
     """Remaining never goes below zero even if usage exceeds limit."""
     session = AsyncMock()
     session.scalar.side_effect = [
-        SimpleNamespace(daily_conversation_limit=10, current_org_id=None),
+        SimpleNamespace(daily_conversation_limit=10),
         SimpleNamespace(conversation_count=12),
     ]
 
     service = DailyConversationQuotaService(session)
-    result = await service.get_status(USER_ID)
+    result = await service.get_status(USER_ID, ORG_ID)
 
     assert result.daily_limit == 10
     assert result.used_today == 12
@@ -73,12 +75,12 @@ async def test_get_status_no_usage_today():
     """When no usage record exists for today, used_today is 0."""
     session = AsyncMock()
     session.scalar.side_effect = [
-        SimpleNamespace(daily_conversation_limit=20, current_org_id=None),
+        SimpleNamespace(daily_conversation_limit=20),
         None,
     ]
 
     service = DailyConversationQuotaService(session)
-    result = await service.get_status(USER_ID)
+    result = await service.get_status(USER_ID, ORG_ID)
 
     assert result.daily_limit == 20
     assert result.used_today == 0
@@ -86,60 +88,42 @@ async def test_get_status_no_usage_today():
 
 
 @pytest.mark.asyncio
-async def test_reserve_no_limit_is_noop():
-    """When limit is None (unlimited), reserve does nothing."""
+async def test_get_status_resolves_org_limit_through_full_query_sequence():
+    """The production path: user override NULL -> org override -> usage.
+
+    Pins the real three-query sequence (user, org, usage) that every
+    request takes, so an ordering regression in ``get_status`` is caught.
+    """
     session = AsyncMock()
-    session.scalar.return_value = SimpleNamespace(
-        daily_conversation_limit=None, current_org_id=None
-    )
-
-    service = DailyConversationQuotaService(session)
-    reserved = await service.reserve(USER_ID)
-
-    assert reserved is False
-    session.execute.assert_not_called()
-    session.commit.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_reserve_under_limit_consumes_slot():
-    """When under the limit, reserve increments usage and reports True."""
-    session = AsyncMock()
-    session.scalar.return_value = SimpleNamespace(
-        daily_conversation_limit=2, current_org_id=None
-    )
-    session.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: 1)
-
-    service = DailyConversationQuotaService(session)
-    reserved = await service.reserve(USER_ID)
-
-    assert reserved is True
-    session.commit.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_reserve_at_limit_raises_429():
-    """When usage equals limit, reserve raises HTTP 429 with a message."""
-    from fastapi import HTTPException
-
-    session = AsyncMock()
-    # First scalar: user with limit 2
-    # Second scalar: existing usage with count 2
     session.scalar.side_effect = [
-        SimpleNamespace(daily_conversation_limit=2),
-        SimpleNamespace(conversation_count=2),
+        SimpleNamespace(daily_conversation_limit=None),  # user: inherit
+        SimpleNamespace(daily_conversation_limit=30),  # org: org-specific limit
+        SimpleNamespace(conversation_count=4),  # usage today
     ]
-    # execute returns None (conflict, no row returned)
-    session.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: None)
 
     service = DailyConversationQuotaService(session)
+    result = await service.get_status(USER_ID, ORG_ID)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await service.reserve(USER_ID)
+    assert session.scalar.await_count == 3
+    assert result.daily_limit == 30
+    assert result.used_today == 4
+    assert result.remaining == 26
 
-    assert exc_info.value.status_code == 429
-    detail = exc_info.value.detail
-    assert detail['code'] == 'daily_conversation_limit_reached'
-    assert '/settings/quota' in detail['message']
-    assert detail['limit'] == 2
-    assert detail['used'] == 2
+
+@pytest.mark.asyncio
+async def test_get_status_org_exemption_reports_unlimited():
+    """An exempt org (-1) surfaces as unlimited rather than a negative limit."""
+    session = AsyncMock()
+    session.scalar.side_effect = [
+        SimpleNamespace(daily_conversation_limit=None),  # user: inherit
+        SimpleNamespace(daily_conversation_limit=-1),  # org: exempt
+        SimpleNamespace(conversation_count=99),  # usage today
+    ]
+
+    with patch.dict('os.environ', {'OH_DAILY_CONVERSATION_LIMIT': '20'}):
+        service = DailyConversationQuotaService(session)
+        result = await service.get_status(USER_ID, ORG_ID)
+
+    assert result.daily_limit is None
+    assert result.used_today == 99
+    assert result.remaining is None

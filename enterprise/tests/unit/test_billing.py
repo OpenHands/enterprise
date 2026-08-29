@@ -206,7 +206,8 @@ async def test_get_credits_success():
 
 
 @pytest.mark.asyncio
-async def test_get_credits_returns_unconfigured_for_unlimited_personal_org():
+async def test_get_credits_returns_zero_for_personal_org_without_budget():
+    """A personal org with no max_budget has 0 credits, not an unlimited cap."""
     user_id = str(uuid.uuid4())
     with (
         patch('integrations.stripe_service.STRIPE_API_KEY', 'mock_key'),
@@ -220,11 +221,12 @@ async def test_get_credits_returns_unconfigured_for_unlimited_personal_org():
     ):
         result = await get_credits(user_id, uuid.UUID(user_id))
 
-    assert result.credits is None
+    assert result.credits == Decimal('0.00')
 
 
 @pytest.mark.asyncio
-async def test_get_credits_returns_unconfigured_for_unlimited_team_org():
+async def test_get_credits_returns_zero_for_team_org_without_budget():
+    """A team org with no max_budget has 0 credits, not an unlimited cap."""
     user_id = str(uuid.uuid4())
     org_id = uuid.uuid4()
     with (
@@ -236,7 +238,7 @@ async def test_get_credits_returns_unconfigured_for_unlimited_team_org():
     ):
         result = await get_credits(user_id, org_id)
 
-    assert result.credits is None
+    assert result.credits == Decimal('0.00')
 
 
 @pytest.mark.asyncio
@@ -249,7 +251,8 @@ async def test_get_credits_rejects_missing_stripe_configuration():
 
 
 @pytest.mark.asyncio
-async def test_get_credits_rejects_unavailable_litellm_data():
+async def test_get_credits_returns_zero_when_budget_info_unavailable():
+    """When budget info is unavailable, return 0 credits instead of 503."""
     with (
         patch('integrations.stripe_service.STRIPE_API_KEY', 'mock_key'),
         patch(
@@ -257,10 +260,9 @@ async def test_get_credits_rejects_unavailable_litellm_data():
             return_value=None,
         ),
     ):
-        with pytest.raises(HTTPException) as exc_info:
-            await get_credits('mock-user', uuid.uuid4())
+        result = await get_credits('mock-user', uuid.uuid4())
 
-    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert result.credits == Decimal('0.00')
 
 
 @pytest.mark.asyncio

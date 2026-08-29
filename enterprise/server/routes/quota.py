@@ -1,11 +1,14 @@
-"""Quota status and increase request API for the settings page."""
+"""Quota status, increase requests, and org-level quota management API."""
 
 import os
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+from server.auth.authorization import Permission, require_permission
+from server.auth.org_context import EFFECTIVE_ORG_ID, REJECT_X_ORG_ID_PATH_MISMATCH
 from server.services.daily_conversation_quota_service import (
+    EXEMPT_LIMIT,
     DailyConversationQuotaService,
 )
 from server.services.quota_increase_request_service import (
@@ -13,6 +16,7 @@ from server.services.quota_increase_request_service import (
 )
 from sqlalchemy import select
 from storage.database import a_session_maker
+from storage.org import Org
 from storage.user import User
 
 from openhands.app_server.user_auth import get_user_id
@@ -22,8 +26,12 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 quota_router = APIRouter(
     prefix='/api/quota', tags=['Quota'], dependencies=get_dependencies()
 )
+# REJECT_X_ORG_ID_PATH_MISMATCH is a no-op on the routes here that carry no
+# ``{org_id}`` segment, so it can be attached once at the router level.
 quota_admin_router = APIRouter(
-    prefix='/api/admin/quota', tags=['Admin'], dependencies=get_dependencies()
+    prefix='/api/admin/quota',
+    tags=['Admin'],
+    dependencies=[*get_dependencies(), REJECT_X_ORG_ID_PATH_MISMATCH],
 )
 
 
@@ -60,11 +68,19 @@ class VerifyQuotaIncreaseResponse(BaseModel):
 
 
 @quota_router.get('/status', response_model=QuotaStatusResponse)
-async def get_quota_status(user_id: str = Depends(get_user_id)) -> QuotaStatusResponse:
-    """Return the authenticated user's daily conversation quota status."""
+async def get_quota_status(
+    user_id: str = Depends(get_user_id),
+    effective_org_id: UUID = EFFECTIVE_ORG_ID,
+) -> QuotaStatusResponse:
+    """Return the authenticated user's daily conversation quota status.
+
+    Scoped to the request's effective org (``X-Org-Id`` / API-key binding),
+    so a user in several orgs sees the quota of the org they are actually
+    working in.
+    """
     async with a_session_maker() as session:
         quota_service = DailyConversationQuotaService(session)
-        status_result = await quota_service.get_status(user_id)
+        status_result = await quota_service.get_status(user_id, effective_org_id)
 
         request_service = QuotaIncreaseRequestService(session)
         latest = await request_service.get_latest_for_user(user_id)
@@ -93,12 +109,14 @@ async def get_quota_status(user_id: str = Depends(get_user_id)) -> QuotaStatusRe
 async def create_quota_increase_request(
     body: CreateQuotaIncreaseRequest,
     user_id: str = Depends(get_user_id),
+    effective_org_id: UUID = EFFECTIVE_ORG_ID,
 ) -> QuotaIncreaseRequestResponse:
     """Create a quota increase request and send a verification email."""
     async with a_session_maker() as session:
         service = QuotaIncreaseRequestService(session)
         request = await service.create_request(
             user_id=user_id,
+            org_id=effective_org_id,
             work_email=body.work_email,
             requested_limit=body.requested_limit,
             reason=body.reason,
@@ -151,10 +169,9 @@ async def verify_quota_increase(token: str) -> VerifyQuotaIncreaseResponse:
 
 @quota_admin_router.get('/requests', response_model=list[QuotaIncreaseRequestResponse])
 async def list_pending_quota_requests(
-    user_id: str = Depends(get_user_id),
+    _: str = Depends(require_permission(Permission.MANAGE_ORG_QUOTA)),
 ) -> list[QuotaIncreaseRequestResponse]:
     """List all pending quota increase requests (admin only)."""
-    await _require_admin(user_id)
     async with a_session_maker() as session:
         service = QuotaIncreaseRequestService(session)
         requests = await service.list_pending_requests()
@@ -178,15 +195,14 @@ async def list_pending_quota_requests(
 )
 async def approve_quota_request(
     request_id: int,
-    user_id: str = Depends(get_user_id),
+    caller_user_id: str = Depends(require_permission(Permission.MANAGE_ORG_QUOTA)),
 ) -> QuotaIncreaseRequestResponse:
     """Approve a quota increase request (admin only)."""
-    await _require_admin(user_id)
     async with a_session_maker() as session:
         service = QuotaIncreaseRequestService(session)
         request = await service.approve_request(
             request_id=request_id,
-            approved_by_user_id=user_id,
+            approved_by_user_id=caller_user_id,
         )
 
     return QuotaIncreaseRequestResponse(
@@ -205,14 +221,13 @@ async def approve_quota_request(
 )
 async def reject_quota_request(
     request_id: int,
-    user_id: str = Depends(get_user_id),
+    _: str = Depends(require_permission(Permission.MANAGE_ORG_QUOTA)),
 ) -> QuotaIncreaseRequestResponse:
     """Reject a pending quota increase request (admin only).
 
     Gives admins a way to clear a pending request without granting it,
     unblocking the user to submit a new one.
     """
-    await _require_admin(user_id)
     async with a_session_maker() as session:
         service = QuotaIncreaseRequestService(session)
         request = await service.reject_request(request_id=request_id)
@@ -326,20 +341,31 @@ async def _capture_quota_event(
         logger.exception('Failed to capture quota increase analytics event')
 
 
-async def _require_admin(user_id: str) -> None:
-    """Check that the user is an admin (has superadmin role)."""
-    from server.auth.authorization import get_user_super_role
-
-    role = await get_user_super_role(user_id)
-    if role is None or role.name != 'admin':
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail='Admin access required',
-        )
-
-
 class OrgQuotaUpdateRequest(BaseModel):
-    daily_conversation_limit: int | None
+    daily_conversation_limit: int | None = Field(
+        description=(
+            'NULL to inherit the deployment default, -1 to exempt the org '
+            'entirely, or a positive integer for an org-specific limit.'
+        ),
+    )
+
+    @field_validator('daily_conversation_limit')
+    @classmethod
+    def _reject_meaningless_limits(cls, value: int | None) -> int | None:
+        """Allow only NULL, the exemption sentinel, and positive limits.
+
+        0 and values below -1 are rejected rather than stored: they are not
+        meaningful quotas, but they resolve to a limit the org can never
+        satisfy, silently blocking every member with no error anywhere. A
+        mistyped '-11' for '-1' would otherwise do the exact opposite of the
+        intended exemption.
+        """
+        if value is None or value == EXEMPT_LIMIT or value > 0:
+            return value
+        raise ValueError(
+            f'daily_conversation_limit must be null (inherit), {EXEMPT_LIMIT} '
+            f'(exempt), or a positive integer; got {value}'
+        )
 
 
 class OrgQuotaResponse(BaseModel):
@@ -350,23 +376,24 @@ class OrgQuotaResponse(BaseModel):
 
 @quota_admin_router.put('/orgs/{org_id}/quota', response_model=OrgQuotaResponse)
 async def set_org_quota(
-    org_id: str,
+    org_id: UUID,
     body: OrgQuotaUpdateRequest,
-    user_id: str = Depends(get_user_id),
+    caller_user_id: str = Depends(require_permission(Permission.MANAGE_ORG_QUOTA)),
 ) -> OrgQuotaResponse:
     """Set or clear an org-level daily conversation limit override.
 
-    Admin only. Set to -1 to exempt the org entirely (unlimited).
+    Requires the instance-level ``MANAGE_ORG_QUOTA`` permission, which is
+    granted only to the superadmin super role. Going through
+    ``require_permission`` (rather than checking the super role inline) also
+    enforces the API-key organization binding, so a key bound to one org
+    cannot edit another org's quota.
+
+    Set to -1 to exempt the org entirely (unlimited).
     Set to NULL to inherit the deployment default.
     Set to a positive integer for an org-specific limit.
     """
-    await _require_admin(user_id)
-    from uuid import UUID
-
-    from storage.org import Org
-
     async with a_session_maker() as session:
-        org = await session.scalar(select(Org).where(Org.id == UUID(org_id)))
+        org = await session.scalar(select(Org).where(Org.id == org_id))
         if org is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -374,6 +401,16 @@ async def set_org_quota(
             )
         org.daily_conversation_limit = body.daily_conversation_limit
         await session.commit()
+
+        logger.info(
+            'org_quota:set',
+            extra={
+                'caller_user_id': caller_user_id,
+                'org_id': str(org.id),
+                'daily_conversation_limit': org.daily_conversation_limit,
+                'exempt': org.daily_conversation_limit == EXEMPT_LIMIT,
+            },
+        )
 
         return OrgQuotaResponse(
             org_id=str(org.id),

@@ -105,14 +105,11 @@ async def get_credits(
         user_team_info, user_id, str(effective_org_id)
     )
     if budget_info is None:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='Credit balance is temporarily unavailable',
-        )
+        return GetCreditsResponse(credits=Decimal('0.00'))
     max_budget, spend = budget_info
     credits = calculate_credits({'max_budget': max_budget, 'spend': spend})
     if credits is None:
-        return GetCreditsResponse()
+        return GetCreditsResponse(credits=Decimal('0.00'))
     return GetCreditsResponse(credits=Decimal('{:.2f}'.format(credits)))
 
 
@@ -250,7 +247,6 @@ async def create_checkout_session(
     return CreateBillingSessionResponse(redirect_url=checkout_session.url)  # type: ignore[arg-type]
 
 
-# Callback endpoint for successful Stripe payments - updates user credits and billing session status
 @billing_router.get('/success')
 async def success_callback(session_id: str, request: Request):
     # We can't use the auth cookie because of SameSite=strict
@@ -310,15 +306,13 @@ async def success_callback(session_id: str, request: Request):
             str(user.current_org_id), new_max_budget
         )
 
-        # Enable BYOR export for the org now that they've purchased credits
         if org:
             org.byor_export_enabled = True
 
-        # Store transaction status
         billing_session.status = 'completed'
         billing_session.price = add_credits
         billing_session.updated_at = datetime.now(UTC)
-        session.merge(billing_session)
+        await session.merge(billing_session)
         logger.info(
             'stripe_checkout_success',
             extra={
@@ -357,7 +351,6 @@ async def success_callback(session_id: str, request: Request):
     )
 
 
-# Callback endpoint for cancelled Stripe payments - updates billing session status
 @billing_router.get('/cancel')
 async def cancel_callback(session_id: str, request: Request):
     async with a_session_maker() as session:

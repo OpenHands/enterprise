@@ -13,9 +13,11 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from storage.daily_conversation_usage import DailyConversationUsage
+from storage.org import Org
 from storage.user import User
 
-DEFAULT_ENV_VAR = 'OH_DAILY_CONVERSATION_LIMIT'
+DEFAULT_ENV_VAR = "OH_DAILY_CONVERSATION_LIMIT"
+EXEMPT_LIMIT = -1
 
 
 def configured_daily_limit() -> int | None:
@@ -41,8 +43,8 @@ class DailyConversationQuotaService:
 
     db_session: AsyncSession
 
-    async def get_status(self, user_id: str) -> QuotaStatus:
-        limit = await self.get_limit(user_id)
+    async def get_status(self, user_id: str, org_id: UUID | None = None) -> QuotaStatus:
+        limit = await self.get_limit(user_id, org_id)
         used = await self._used(user_id, datetime.now(UTC).date())
         remaining = None if limit is None else max(limit - used, 0)
         reset_at = self._next_reset_iso()
@@ -53,7 +55,7 @@ class DailyConversationQuotaService:
             reset_at=reset_at,
         )
 
-    async def get_limit(self, user_id: str) -> int | None:
+    async def get_limit(self, user_id: str, org_id: UUID | None = None) -> int | None:
         """Resolve the effective daily conversation limit.
 
         Precedence (first non-None wins):
@@ -68,47 +70,32 @@ class DailyConversationQuotaService:
         user = await self.db_session.scalar(
             select(User).where(User.id == UUID(user_id))
         )
-        if user is None:
-            return configured_daily_limit()
-
-        # User-level override takes precedence.
-        if user.daily_conversation_limit is not None:
-            return user.daily_conversation_limit
-
-        return await self.get_default_limit(user)
-
-    async def get_default_limit(self, user: User) -> int | None:
-        """Effective limit ignoring any user-level override.
-
-        Resolves the org-level override, then the deployment default.
-        Returns None when the user is unlimited at this level (org
-        exemption via -1, or no deployment default configured). Quota
-        increase requests cap against this value so self-service grants
-        cannot compound on top of previously granted increases.
-        """
-        # Org-level override: NULL means inherit deployment default,
-        # -1 means exempt (unlimited, for paying SaaS orgs),
-        # any other integer is the org-specific limit.
-        if user.current_org_id is not None:
-            from storage.org import Org
-
-            org = await self.db_session.scalar(
-                select(Org).where(Org.id == user.current_org_id)
+        if user is not None and user.daily_conversation_limit is not None:
+            return (
+                None
+                if user.daily_conversation_limit == EXEMPT_LIMIT
+                else user.daily_conversation_limit
             )
-            if org is not None and org.daily_conversation_limit is not None:
-                if org.daily_conversation_limit == -1:
-                    return None  # exempt — unlimited
-                return org.daily_conversation_limit
 
+        return await self.get_default_limit(
+            org_id or (user.current_org_id if user else None)
+        )
+
+    async def get_default_limit(self, org_id: UUID | None) -> int | None:
+        """Resolve the org-level limit and deployment default."""
+        if org_id is not None:
+            org = await self.db_session.scalar(select(Org).where(Org.id == org_id))
+            if org is not None and org.daily_conversation_limit is not None:
+                return (
+                    None
+                    if org.daily_conversation_limit == EXEMPT_LIMIT
+                    else org.daily_conversation_limit
+                )
         return configured_daily_limit()
 
-    async def reserve(self, user_id: str) -> bool:
-        """Atomically increment today's usage, raising HTTP 429 if at limit.
-
-        Returns True when a slot was consumed (so callers know a failed
-        start must be released) and False for unlimited users.
-        """
-        limit = await self.get_limit(user_id)
+    async def reserve(self, user_id: str, org_id: UUID | None = None) -> bool:
+        """Atomically increment today's usage, raising HTTP 429 if at limit."""
+        limit = await self.get_limit(user_id, org_id)
         if limit is None:
             return False
 
@@ -128,10 +115,10 @@ class DailyConversationQuotaService:
                 updated_at=now,
             )
             .on_conflict_do_update(
-                index_elements=['user_id', 'usage_date'],
+                index_elements=["user_id", "usage_date"],
                 set_={
-                    'conversation_count': DailyConversationUsage.conversation_count + 1,
-                    'updated_at': now,
+                    "conversation_count": DailyConversationUsage.conversation_count + 1,
+                    "updated_at": now,
                 },
                 where=DailyConversationUsage.conversation_count < limit,
             )
@@ -150,12 +137,12 @@ class DailyConversationQuotaService:
         today = datetime.now(UTC).date()
         await self.db_session.execute(
             text(
-                'UPDATE daily_conversation_usage '
-                'SET conversation_count = GREATEST(conversation_count - 1, 0), '
-                'updated_at = CURRENT_TIMESTAMP '
-                'WHERE user_id = :user_id AND usage_date = :usage_date'
+                "UPDATE daily_conversation_usage "
+                "SET conversation_count = GREATEST(conversation_count - 1, 0), "
+                "updated_at = CURRENT_TIMESTAMP "
+                "WHERE user_id = :user_id AND usage_date = :usage_date"
             ),
-            {'user_id': UUID(user_id), 'usage_date': today},
+            {"user_id": UUID(user_id), "usage_date": today},
         )
         await self.db_session.commit()
 
@@ -167,14 +154,14 @@ class DailyConversationQuotaService:
         return HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={
-                'code': 'daily_conversation_limit_reached',
-                'message': (
-                    f'Daily conversation limit of {limit} reached. '
-                    'Request a quota increase at /settings/quota.'
+                "code": "daily_conversation_limit_reached",
+                "message": (
+                    f"Daily conversation limit of {limit} reached. "
+                    "Request a quota increase at /settings/quota."
                 ),
-                'limit': limit,
-                'used': used,
-                'reset_at': reset_at.isoformat(),
+                "limit": limit,
+                "used": used,
+                "reset_at": reset_at.isoformat(),
             },
         )
 
