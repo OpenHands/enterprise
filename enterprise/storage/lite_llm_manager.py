@@ -35,7 +35,6 @@ KEY_VERIFICATION_TIMEOUT = 5.0
 # A very large number to represent "unlimited" until LiteLLM fixes their unlimited update bug.
 UNLIMITED_BUDGET_SETTING = 1000000000.0
 
-# Check if billing is enabled (defaults to false for enterprise deployments)
 ENABLE_BILLING = os.environ.get('ENABLE_BILLING', 'false').lower() == 'true'
 
 
@@ -182,7 +181,6 @@ class LiteLlmManager:
         local_deploy = os.environ.get('LOCAL_DEPLOYMENT', None)
         key = LITE_LLM_API_KEY
         if not local_deploy:
-            # Get user info to add to litellm
             token_manager = TokenManager()
             keycloak_user_info = (
                 await token_manager.get_user_info_from_user_id(keycloak_user_id) or {}
@@ -353,7 +351,6 @@ class LiteLlmManager:
             return None
         local_deploy = os.environ.get('LOCAL_DEPLOYMENT', None)
         if not local_deploy:
-            # Get user info to add to litellm
             async with httpx.AsyncClient(
                 headers={
                     'x-goog-api-key': LITE_LLM_API_KEY,
@@ -401,13 +398,12 @@ class LiteLlmManager:
                     max_budget *= billing_margin
                     spend *= billing_margin
 
-                # Check if max_budget is None (not 0.0) or set to unlimited to determine if already migrated
-                # A user with max_budget=0.0 is different from max_budget=None
+                # max_budget=None or UNLIMITED means the user was already migrated.
+                # Note: max_budget=0.0 (free tier) is distinct from None (no enforcement).
                 if (
                     original_max_budget is None
                     or original_max_budget == UNLIMITED_BUDGET_SETTING
                 ):
-                    # if max_budget is None or UNLIMITED, then we've already migrated the User
                     logger.info(
                         'LiteLlmManager:migrate_lite_llm_entries:already_migrated',
                         extra={
@@ -419,7 +415,6 @@ class LiteLlmManager:
                     return None
                 credits = max(max_budget - spend, 0.0)
 
-                # Log calculated migration values before performing updates
                 logger.info(
                     'LiteLlmManager:migrate_lite_llm_entries:calculated_values',
                     extra={
@@ -467,11 +462,10 @@ class LiteLlmManager:
                     team_id=org_id,
                 )
 
-                # Check if the database key exists in LiteLLM
-                # If not, generate a new key to prevent verification failures later
+                # If the database key doesn't exist in LiteLLM, generate a new one
+                # to prevent verification failures later.
                 db_key = None
                 llm_base_url = None
-                # agent_settings is a JSON column (dict) on UserSettings
                 llm_cfg = (
                     (user_settings.agent_settings or {}).get('llm', {})
                     if user_settings
@@ -484,7 +478,6 @@ class LiteLlmManager:
                         db_key = db_key.get_secret_value()
 
                 if db_key:
-                    # Verify the database key exists in LiteLLM
                     key_valid = await LiteLlmManager.verify_key(
                         db_key, keycloak_user_id
                     )
@@ -499,7 +492,6 @@ class LiteLlmManager:
                                 else db_key,
                             },
                         )
-                        # Generate a new key for the user
                         new_key = await LiteLlmManager._generate_key(
                             client,
                             keycloak_user_id,
@@ -511,7 +503,6 @@ class LiteLlmManager:
                             'LiteLlmManager:migrate_lite_llm_entries:generated_new_key',
                             extra={'org_id': org_id, 'user_id': keycloak_user_id},
                         )
-                        # Update user_settings with the new key so it gets stored in org_member
                         # agent_settings is a non-nullable JSON column (dict) on UserSettings
                         user_settings.agent_settings.setdefault('llm', {})[
                             'api_key'
@@ -579,17 +570,14 @@ class LiteLlmManager:
                     )
                     return None
 
-                # Get team budget (max_budget) and spend to calculate current credits
                 team_data = team_info.get('team_info', {})
                 max_budget = team_data.get('max_budget', 0.0)
                 spend = team_data.get('spend', 0.0)
 
-                # Get user membership info for budget in team
                 user_membership = await LiteLlmManager._get_user_team_info(
                     client, keycloak_user_id, org_id
                 )
                 if user_membership:
-                    # Use user's budget in team if available
                     user_max_budget_in_team = user_membership.get('max_budget_in_team')
                     user_spend_in_team = user_membership.get('spend', 0.0)
                     if user_max_budget_in_team is not None:
@@ -863,7 +851,6 @@ class LiteLlmManager:
             )
             if response.is_success:
                 user_data = response.json()
-                # Check that user_info exists and has the user_id
                 user_info = user_data.get('user_info', {})
                 return user_info.get('user_id') == user_id
             return False
@@ -1318,11 +1305,20 @@ class LiteLlmManager:
         if not user_membership:
             return None
 
+        team_info = team_response.get('team_info', {})
         if keycloak_user_id != team_id:
-            team_info = team_response.get('team_info', {})
             if 'max_budget' not in team_info or 'spend' not in team_info:
                 return None
             user_membership['max_budget_in_team'] = team_info['max_budget']
+            user_membership['spend'] = team_info['spend']
+        elif 'spend' not in user_membership:
+            # A personal workspace belongs to one user, so the team's budget is
+            # that user's balance; store it the way a per-member budget would.
+            if 'max_budget' not in team_info or 'spend' not in team_info:
+                return None
+            user_membership['litellm_budget_table'] = {
+                'max_budget': team_info['max_budget']
+            }
             user_membership['spend'] = team_info['spend']
 
         return user_membership
@@ -1513,7 +1509,6 @@ class LiteLlmManager:
                 verify=httpx_verify_option(),
                 timeout=KEY_VERIFICATION_TIMEOUT,
             ) as client:
-                # Make a lightweight request to verify the key
                 # Using /v1/models endpoint as it's lightweight and requires authentication
                 response = await client.get(
                     f'{LITE_LLM_API_URL}/v1/models',
@@ -1522,7 +1517,6 @@ class LiteLlmManager:
                     },
                 )
 
-                # Only 200 status code indicates valid key
                 if response.status_code == 200:
                     logger.debug(
                         'Key verification successful',
@@ -1859,7 +1853,6 @@ class LiteLlmManager:
         members: dict[str, dict] = {}
         team_memberships = LiteLlmManager._team_member_rows(team_info)
 
-        # Get team-level budget info (shared across all members in team orgs)
         team_data = team_info.get('team_info', {})
         team_max_budget = team_data.get('max_budget')
         team_spend = team_data.get('spend', 0) or 0
@@ -1869,7 +1862,6 @@ class LiteLlmManager:
             if not user_id or user_id == 'default_user_id':
                 continue
 
-            # Use individual max_budget_in_team if set, otherwise fall back to team budget
             member_max_budget = membership.get('max_budget_in_team')
             uses_shared_budget = member_max_budget is None
             if uses_shared_budget:

@@ -76,7 +76,8 @@ from storage.org_store import OrgStore
 from storage.user_store import UserStore
 
 from openhands.analytics import get_analytics_service
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.settings.settings_store import SettingsStore
+from openhands.app_server.user_auth import get_user_id, get_user_settings_store
 from openhands.app_server.utils.logger import openhands_logger as logger
 
 # Initialize API router
@@ -98,6 +99,35 @@ _org_conversation_service_injector = OrgConversationServiceInjector()
 org_conversation_service_dependency = Depends(
     _org_conversation_service_injector.depends
 )
+
+
+async def _maybe_rotate_managed_key_for_org_update(
+    settings_store: SettingsStore,
+    user_id: str,
+) -> None:
+    """Verify and rotate the acting user's managed LLM key after an org-defaults save.
+
+    Delegates to ``_maybe_rotate_stale_managed_key`` (the same helper used by
+    the personal settings endpoints) so org settings updates get the same
+    transparent key rotation when the managed key is stale.
+    """
+    try:
+        from openhands.app_server.settings.settings_router import (
+            _maybe_rotate_stale_managed_key,
+        )
+
+        loaded = await settings_store.load()
+        if loaded is None:
+            return
+        await _maybe_rotate_stale_managed_key(
+            loaded.agent_settings.llm, settings_store, user_id
+        )
+    except Exception:
+        logger.warning(
+            'org_settings:managed_key_rotation_failed',
+            exc_info=True,
+            extra={'user_id': user_id},
+        )
 
 
 @org_router.get('', response_model=OrgPage)
@@ -306,6 +336,7 @@ async def update_org_defaults_settings(
     org_id: UUID,
     settings: OrgUpdate,
     user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
+    settings_store: SettingsStore | None = Depends(get_user_settings_store),
 ) -> OrgDefaultsSettingsResponse:
     """Update org-default settings for a specific organization."""
     try:
@@ -330,6 +361,15 @@ async def update_org_defaults_settings(
             update_data=settings,
             user_id=user_id,
         )
+
+        # Best-effort rotation of a stale managed key for the acting user,
+        # mirroring the personal settings endpoints (store_settings,
+        # save_profile, activate_profile). The org-defaults save may have
+        # changed the LLM model/base_url; verify the member's existing key
+        # still authenticates and rotate if not.
+        if settings_store is not None and user_id is not None:
+            await _maybe_rotate_managed_key_for_org_update(settings_store, user_id)
+
         return OrgDefaultsSettingsResponse.from_org(updated_org)
     except OrgNotFoundError as e:
         raise HTTPException(
@@ -492,13 +532,14 @@ async def update_org_app_settings(
     """Update organization app settings for the user's current organization.
 
     Base access requires MANAGE_APPLICATION_SETTINGS (all members). Editing
-    org-wide ``registered_marketplaces`` additionally requires EDIT_ORG_SETTINGS
-    (admin/owner), since those defaults apply to every member.
+    org-wide ``registered_marketplaces`` or ``agent_settings_diff``
+    additionally requires EDIT_ORG_SETTINGS (admin/owner), since those defaults
+    apply to every member.
 
     Args:
         update_data: App settings update data
         request: The incoming request (used to resolve the target org for the
-            marketplace permission check)
+            org-wide permission checks)
         service: OrgAppSettingsService (injected by dependency)
         user_id: Authenticated user ID (injected by ``require_permission``)
 
@@ -514,9 +555,12 @@ async def update_org_app_settings(
         HTTPException: 500 if update fails
     """
     try:
-        # Org-wide marketplaces are admin/owner-only, even though the other
+        # Org-wide defaults are admin/owner-only, even though the other
         # settings on this endpoint are member-editable.
-        if update_data.registered_marketplaces is not None:
+        if (
+            update_data.registered_marketplaces is not None
+            or update_data.agent_settings_diff is not None
+        ):
             await authorize_permission(request, user_id, Permission.EDIT_ORG_SETTINGS)
         return await service.update_org_app_settings(update_data)
     except OrgConcurrentModificationError as e:
@@ -776,6 +820,7 @@ async def update_org(
     org_id: UUID,
     update_data: OrgUpdate,
     user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
+    settings_store: SettingsStore | None = Depends(get_user_settings_store),
 ) -> OrgResponse:
     """Update an existing organization.
 
@@ -813,6 +858,12 @@ async def update_org(
             update_data=update_data,
             user_id=user_id,
         )
+
+        # Best-effort rotation of a stale managed key for the acting user,
+        # mirroring update_org_defaults_settings and the personal settings
+        # endpoints.
+        if settings_store is not None and user_id is not None:
+            await _maybe_rotate_managed_key_for_org_update(settings_store, user_id)
 
         # Retrieve credits from LiteLLM (following same pattern as create endpoint)
         credits = await OrgService.get_org_credits(user_id, updated_org.id)

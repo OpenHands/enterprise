@@ -152,16 +152,9 @@ class SetAuthCookieMiddleware:
             # The user will accept the TOS the next time they login.
             accepted_tos = True
 
-        # TODO: This explicitly checks for "False" so it doesn't logout anyone
-        # that has logged in prior to this change:
-        # accepted_tos is "None" means the user has not re-logged in since this TOS change.
-        # accepted_tos is "False" means the user was shown the TOS but has not accepted.
-        # accepted_tos is "True" means the user has accepted the TOS
-        #
-        # Once the initial deploy is complete and every user has been logged out
-        # after this change (12 hrs max), this should be changed to check
-        # "if accepted_tos is not None" as there should not be any users with
-        # accepted_tos equal to "None"
+        # Reject only an explicit False (shown the TOS, declined). Users who
+        # have not re-logged in since the last TOS change (accepted_tos is
+        # None) are not logged out.
         if accepted_tos is False and request.url.path != '/api/accept_tos':
             logger.warning('User has not accepted the terms of service')
             raise TosNotAcceptedError
@@ -179,6 +172,10 @@ class SetAuthCookieMiddleware:
             '/api/billing/customer-setup-success',
             '/api/billing/stripe-webhook',
             '/api/email/resend',
+            # Quota-increase verification is opened from the user's work
+            # email client, often without an app session; the signed JWS
+            # token in the query string is the credential.
+            '/api/quota/verify',
             '/api/organizations/members/invite/accept',
             '/oauth/device/authorize',
             '/oauth/device/token',

@@ -44,7 +44,6 @@ class GithubV1CallbackProcessor(EventCallbackProcessor):
         event: Event,
     ) -> EventCallbackResult | None:
         """Process events for GitHub V1 integration."""
-        # Only handle ConversationStateUpdateEvent for execution_status
         if not isinstance(event, ConversationStateUpdateEvent):
             return None
 
@@ -84,7 +83,6 @@ class GithubV1CallbackProcessor(EventCallbackProcessor):
                 detail=final_response,
             )
         except Exception as e:
-            # Check if we have installation ID and credentials before posting
             can_post_error = bool(
                 self.github_view_data.get('installation_id')
                 and GITHUB_APP_CLIENT_ID
@@ -247,7 +245,6 @@ class GithubV1CallbackProcessor(EventCallbackProcessor):
             USER_CONTEXT_ATTR,
         )
 
-        # Create injector state for dependency injection
         state = InjectorState()
         setattr(state, USER_CONTEXT_ATTR, ADMIN)
 
