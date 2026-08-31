@@ -3,9 +3,6 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from server.verified_models.default_model_replacement import (
-    replace_openhands_default_model_references,
-)
 from server.verified_models.verified_model_models import (
     VerifiedModel,
     VerifiedModelPage,
@@ -25,7 +22,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 from storage.base import Base
 
 from openhands.app_server.services.db_session import depends_db_session
-from openhands.app_server.utils.llm import DEFAULT_OPENHANDS_MODEL
 from openhands.app_server.utils.logger import openhands_logger as logger
 
 
@@ -196,29 +192,6 @@ class VerifiedModelService:
         except Exception:
             logger.warning('Failed to sync LiteLLM free-model allowlists')
 
-    async def _replace_default_references(
-        self,
-        provider: str,
-        previous_default: StoredVerifiedModel | None,
-        new_model_name: str,
-    ) -> None:
-        if provider != 'openhands':
-            return
-
-        old_model_name = (
-            previous_default.model_name
-            if previous_default is not None
-            else DEFAULT_OPENHANDS_MODEL.removeprefix('openhands/')
-        )
-        if old_model_name == new_model_name:
-            return
-
-        await replace_openhands_default_model_references(
-            self.db_session,
-            old_model_name=old_model_name,
-            new_model_name=new_model_name,
-        )
-
     async def _clear_default_for_provider(
         self, provider: str, except_id: int | None = None
     ) -> None:
@@ -274,9 +247,6 @@ class VerifiedModelService:
         if existing:
             raise ValueError(f'Model {provider}/{model_name} already exists')
 
-        previous_default = (
-            await self._get_default_for_provider(provider) if is_default else None
-        )
         sync_free_allowlists = provider == 'openhands' and is_enabled and is_free
         previous_free_models = (
             await self._list_openhands_enabled_free_model_names()
@@ -295,10 +265,6 @@ class VerifiedModelService:
             is_default=is_default,
         )
         self.db_session.add(model)
-        if is_default:
-            await self._replace_default_references(
-                provider, previous_default, model_name
-            )
         await self.db_session.commit()
         await self.db_session.refresh(model)
         if sync_free_allowlists:
@@ -340,9 +306,6 @@ class VerifiedModelService:
         if not model:
             return None
 
-        previous_default = (
-            await self._get_default_for_provider(provider) if is_default else None
-        )
         sync_free_allowlists = provider == 'openhands' and (
             is_enabled is not None or is_free is not None
         )
@@ -362,10 +325,6 @@ class VerifiedModelService:
             if is_default:
                 await self._clear_default_for_provider(provider, except_id=model.id)
             model.is_default = is_default
-            if is_default:
-                await self._replace_default_references(
-                    provider, previous_default, model_name
-                )
 
         await self.db_session.commit()
         await self.db_session.refresh(model)

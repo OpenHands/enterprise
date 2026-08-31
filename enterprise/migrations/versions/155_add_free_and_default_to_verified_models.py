@@ -1,21 +1,21 @@
 """Add is_free and is_default to verified_models.
 
-Revision ID: 154
-Revises: 153
+Revision ID: 155
+Revises: 154
 Create Date: 2026-08-13 00:00:00.000000
 
 """
 
-from typing import Sequence, Union
+from typing import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '154'
-down_revision: Union[str, None] = '153'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+revision: str = '155'
+down_revision: str | None = '154'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 # One default per provider is enforced by a partial unique index rather than a
 # per-row flag alone, so the invariant cannot be violated by concurrent writes.
