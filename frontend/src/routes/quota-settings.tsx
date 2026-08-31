@@ -145,11 +145,6 @@ function QuotaSettingsScreen() {
         {t(I18nKey.SETTINGS$QUOTA_REQUEST_TITLE)}
       </a>
 
-      <QuotaIncreaseRequestForm
-        dailyLimit={quota.daily_limit}
-        latestRequestStatus={quota.latest_request_status}
-        latestRequestedLimit={quota.latest_request_requested_limit}
-      />
     </div>
   );
 }
