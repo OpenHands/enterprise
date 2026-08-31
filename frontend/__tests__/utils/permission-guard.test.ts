@@ -101,9 +101,9 @@ describe("createPermissionGuard", () => {
       const guard = createPermissionGuard("view_billing");
       const result = await guard(createMockRequest("/settings/billing"));
 
-      // Assert: should not redirect, return null
+      // Assert: should not redirect; return concrete loader data
       expect(redirect).not.toHaveBeenCalled();
-      expect(result).toBeNull();
+      expect(result).toEqual({});
     });
 
     it("should redirect when user is undefined (no org selected)", async () => {
@@ -168,14 +168,14 @@ describe("createPermissionGuard", () => {
       );
 
       // Assert: guard steps aside so the param survives the loader's redirect
-      expect(result).toBeNull();
+      expect(result).toEqual({});
       expect(redirect).not.toHaveBeenCalled();
       expect(getActiveOrganizationUser).not.toHaveBeenCalled();
     });
   });
 
   describe("infinite loop prevention", () => {
-    it("should return null instead of redirecting when fallback path equals current path", async () => {
+    it("should return empty data instead of redirecting when fallback path equals current path", async () => {
       // Arrange: no user
       vi.mocked(getActiveOrganizationUser).mockResolvedValue(undefined);
 
@@ -185,7 +185,22 @@ describe("createPermissionGuard", () => {
 
       // Assert: should NOT redirect to avoid infinite loop
       expect(redirect).not.toHaveBeenCalled();
-      expect(result).toBeNull();
+      expect(result).toEqual({});
+    });
+  });
+
+  describe("config fetch failures", () => {
+    it("should allow access when config fetch fails instead of throwing", async () => {
+      const { queryClient } = await import("#/query-client-config");
+      vi.mocked(queryClient.fetchQuery).mockRejectedValueOnce(
+        new Error("Request failed with status code 500"),
+      );
+
+      const guard = createPermissionGuard("manage_integrations");
+      const result = await guard(createMockRequest("/settings/integrations"));
+
+      expect(redirect).not.toHaveBeenCalled();
+      expect(result).toEqual({});
     });
   });
 });

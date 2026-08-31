@@ -1,21 +1,18 @@
 import { InputSkeleton } from "../input-skeleton";
-import { SubtextSkeleton } from "../subtext-skeleton";
-import { SwitchSkeleton } from "../switch-skeleton";
 
+/** Schema-style field grid used by LLM / condenser / verification SdkSection pages. */
 export function LlmSettingsInputsSkeleton() {
   return (
     <div
-      data-testid="app-settings-skeleton"
-      className="px-11 py-9 flex flex-col gap-6"
+      data-testid="llm-settings-skeleton"
+      className="skeleton-stagger flex flex-col gap-6"
+      aria-hidden
     >
-      <SwitchSkeleton />
-      <InputSkeleton />
-      <InputSkeleton />
-      <InputSkeleton />
-      <SubtextSkeleton />
-      <SwitchSkeleton />
-      <SwitchSkeleton />
-      <InputSkeleton />
+      <div className="grid gap-4 xl:grid-cols-2">
+        {Array.from({ length: 6 }, (_, index) => (
+          <InputSkeleton key={`sdk-settings-skeleton-${index}`} />
+        ))}
+      </div>
     </div>
   );
 }

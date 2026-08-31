@@ -5,6 +5,15 @@ import { useCreateQuotaIncreaseRequest } from "#/hooks/mutation/use-create-quota
 import { useConfig } from "#/hooks/query/use-config";
 import { I18nKey } from "#/i18n/declaration";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
+import { SettingsInput } from "#/components/features/settings/settings-input";
+import { BrandButton } from "#/components/features/settings/brand-button";
+import { cn } from "#/utils/utils";
+import {
+  formControlBorderClassName,
+  formControlMultilineFieldClassName,
+  formControlRadiusClassName,
+  formControlSurfaceClassName,
+} from "#/utils/form-control-classes";
 
 function useCountdown(resetAt: string | null) {
   const [remaining, setRemaining] = useState<string>("");
@@ -81,19 +90,24 @@ function QuotaIncreaseRequestForm({
 
   return (
     <div
-      className="flex flex-col gap-4 rounded-lg border border-tertiary p-4"
+      className={cn(
+        formControlBorderClassName,
+        formControlRadiusClassName,
+        formControlSurfaceClassName,
+        "flex flex-col gap-4 p-4",
+      )}
       data-testid="quota-increase-form"
     >
-      <h2 className="text-base font-semibold">
+      <h2 className="text-base font-semibold text-white">
         {t(I18nKey.SETTINGS$QUOTA_REQUEST_TITLE)}
       </h2>
-      <p className="text-sm text-tertiary">
+      <p className="text-sm text-muted">
         {t(I18nKey.SETTINGS$QUOTA_REQUEST_DESCRIPTION)}
       </p>
 
       {latestRequestStatus === "approved" && latestRequestedLimit && (
         <div
-          className="rounded-sm border border-green-500 bg-green-100 px-3 py-2 text-sm text-green-700"
+          className="rounded bg-emerald-500/20 px-3 py-2 text-sm text-[var(--oh-status-success)]"
           data-testid="quota-request-approved"
         >
           {t(I18nKey.SETTINGS$QUOTA_REQUEST_APPROVED)} ({latestRequestedLimit})
@@ -102,7 +116,7 @@ function QuotaIncreaseRequestForm({
 
       {hasPending && (
         <div
-          className="rounded-sm border border-yellow-500 bg-yellow-100 px-3 py-2 text-sm text-yellow-700"
+          className="rounded bg-[var(--oh-interactive-hover)] px-3 py-2 text-sm text-[var(--oh-muted)]"
           data-testid="quota-request-pending"
         >
           {t(I18nKey.SETTINGS$QUOTA_REQUEST_PENDING)}
@@ -110,70 +124,58 @@ function QuotaIncreaseRequestForm({
       )}
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-        <div className="flex flex-col gap-1">
-          <label className="text-sm text-tertiary">
-            {t(I18nKey.SETTINGS$QUOTA_WORK_EMAIL)}
-          </label>
-          <input
-            type="email"
-            value={workEmail}
-            onChange={(e) => setWorkEmail(e.target.value)}
-            className="text-base text-white p-2 bg-base-tertiary rounded-sm border border-tertiary"
-            placeholder="you@company.com"
-            data-testid="quota-work-email-input"
-            disabled={hasPending}
-          />
-        </div>
+        <SettingsInput
+          testId="quota-work-email-input"
+          type="email"
+          label={t(I18nKey.SETTINGS$QUOTA_WORK_EMAIL)}
+          value={workEmail}
+          onChange={setWorkEmail}
+          placeholder="you@company.com"
+          isDisabled={hasPending}
+        />
 
-        <div className="flex flex-col gap-1">
-          <label className="text-sm text-tertiary">
-            {t(I18nKey.SETTINGS$QUOTA_REQUESTED_LIMIT)}
-          </label>
-          <input
-            type="number"
-            value={requestedLimit}
-            min={dailyLimit}
-            max={maxLimit}
-            onChange={(e) => setRequestedLimit(Number(e.target.value))}
-            className="text-base text-white p-2 bg-base-tertiary rounded-sm border border-tertiary"
-            data-testid="quota-requested-limit-input"
-            disabled={hasPending}
-          />
-          <span className="text-xs text-tertiary">
-            {t(I18nKey.SETTINGS$QUOTA_MAX_ALLOWED)}: {maxLimit}
-          </span>
-        </div>
+        <SettingsInput
+          testId="quota-requested-limit-input"
+          type="number"
+          label={t(I18nKey.SETTINGS$QUOTA_REQUESTED_LIMIT)}
+          value={String(requestedLimit)}
+          min={dailyLimit}
+          max={maxLimit}
+          onChange={(value) => setRequestedLimit(Number(value))}
+          isDisabled={hasPending}
+          hint={`${t(I18nKey.SETTINGS$QUOTA_MAX_ALLOWED)}: ${maxLimit}`}
+        />
 
-        <div className="flex flex-col gap-1">
-          <label className="text-sm text-tertiary">
+        <label className="flex flex-col gap-2.5">
+          <span className="text-sm">
             {t(I18nKey.SETTINGS$QUOTA_REASON)} (
             {t(I18nKey.SETTINGS$QUOTA_OPTIONAL)})
-          </label>
+          </span>
           <textarea
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            className="text-base text-white p-2 bg-base-tertiary rounded-sm border border-tertiary"
+            className={cn(formControlMultilineFieldClassName, "resize-none")}
             rows={3}
             data-testid="quota-reason-input"
             disabled={hasPending}
           />
-        </div>
+        </label>
 
-        <button
+        <BrandButton
+          testId="quota-submit-request"
           type="submit"
-          disabled={
+          variant="primary"
+          isDisabled={
             createRequest.isPending ||
             hasPending ||
             !workEmail.trim() ||
             !requestedLimit
           }
-          className="px-4 py-2 rounded-sm bg-primary text-white hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed"
-          data-testid="quota-submit-request"
         >
           {createRequest.isPending
             ? t(I18nKey.SETTINGS$QUOTA_SUBMITTING)
             : t(I18nKey.SETTINGS$QUOTA_SUBMIT)}
-        </button>
+        </BrandButton>
       </form>
     </div>
   );
@@ -183,14 +185,15 @@ function QuotaSettingsScreen() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
   const { data: quota, isLoading } = useQuotaStatus();
-  const countdown = useCountdown(quota?.reset_at ?? null);
+  const unlimited = quota?.daily_limit === null;
+  const countdown = useCountdown(unlimited ? null : (quota?.reset_at ?? null));
 
   const isSaas = config?.app_mode === "saas";
 
   if (!isSaas) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-tertiary">{t(I18nKey.SETTINGS$QUOTA_SALES_ONLY)}</p>
+        <p className="text-muted">{t(I18nKey.SETTINGS$QUOTA_SALES_ONLY)}</p>
       </div>
     );
   }
@@ -199,14 +202,13 @@ function QuotaSettingsScreen() {
     return (
       <div className="flex h-full items-center justify-center">
         <div
-          className="h-6 w-6 animate-spin rounded-full border-2 border-tertiary border-t-primary"
+          className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--oh-border)] border-t-primary"
           data-testid="quota-loading"
         />
       </div>
     );
   }
 
-  const unlimited = quota.daily_limit === null;
   const limit = quota.daily_limit ?? 0;
   const pct =
     unlimited || limit === 0
@@ -214,17 +216,18 @@ function QuotaSettingsScreen() {
       : Math.min((quota.used_today / limit) * 100, 100);
 
   return (
-    <div className="flex flex-col gap-6 p-4 max-w-2xl">
-      <h1 className="text-xl font-bold" data-testid="quota-title">
-        {t(I18nKey.SETTINGS$NAV_QUOTA)}
-      </h1>
-
+    <div className="flex flex-col gap-6">
       <div
-        className="flex flex-col gap-3 rounded-lg border border-tertiary p-4"
+        className={cn(
+          formControlBorderClassName,
+          formControlRadiusClassName,
+          formControlSurfaceClassName,
+          "flex flex-col gap-3 p-4",
+        )}
         data-testid="quota-status-card"
       >
         <div className="flex items-baseline justify-between">
-          <span className="text-sm text-tertiary">
+          <span className="text-sm text-muted">
             {t(I18nKey.SETTINGS$QUOTA_DAILY_LIMIT)}
           </span>
           <span className="text-lg font-semibold" data-testid="quota-limit">
@@ -235,7 +238,7 @@ function QuotaSettingsScreen() {
         </div>
 
         <div className="flex items-baseline justify-between">
-          <span className="text-sm text-tertiary">
+          <span className="text-sm text-muted">
             {t(I18nKey.SETTINGS$QUOTA_USED_TODAY)}
           </span>
           <span className="text-lg font-semibold" data-testid="quota-used">
@@ -244,7 +247,7 @@ function QuotaSettingsScreen() {
         </div>
 
         <div className="flex items-baseline justify-between">
-          <span className="text-sm text-tertiary">
+          <span className="text-sm text-muted">
             {t(I18nKey.SETTINGS$QUOTA_REMAINING)}
           </span>
           <span className="text-lg font-semibold" data-testid="quota-remaining">
@@ -253,7 +256,7 @@ function QuotaSettingsScreen() {
         </div>
 
         {!unlimited && (
-          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-base-tertiary">
+          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-[var(--oh-interactive-hover-low)]">
             <div
               className="h-full rounded-full bg-primary transition-all"
               style={{ width: `${pct}%` }}
@@ -263,18 +266,20 @@ function QuotaSettingsScreen() {
         )}
       </div>
 
-      <div
-        className="flex items-center gap-2 text-sm text-tertiary"
-        data-testid="quota-reset-countdown"
-      >
-        <span>{t(I18nKey.SETTINGS$QUOTA_RESETS_IN)}</span>
-        <span
-          className="font-mono font-semibold text-primary"
-          data-testid="quota-countdown"
+      {!unlimited && (
+        <div
+          className="flex items-center gap-2 text-sm text-muted"
+          data-testid="quota-reset-countdown"
         >
-          {countdown}
-        </span>
-      </div>
+          <span>{t(I18nKey.SETTINGS$QUOTA_RESETS_IN)}</span>
+          <span
+            className="font-mono font-semibold text-primary"
+            data-testid="quota-countdown"
+          >
+            {countdown}
+          </span>
+        </div>
+      )}
 
       <QuotaIncreaseRequestForm
         dailyLimit={quota.daily_limit}

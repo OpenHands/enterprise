@@ -14,8 +14,17 @@ import { I18nKey } from "#/i18n/declaration";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { LoadingSpinner } from "#/components/shared/loading-spinner";
+import { Typography } from "#/ui/typography";
+import { cn } from "#/utils/utils";
+import {
+  settingsListScrollContainerClassName,
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+} from "#/utils/settings-list-classes";
 
 export const clientLoader = createPermissionGuard("manage_secrets");
+
+export const handle = { hideTitle: true };
 
 function SecretsSettingsScreen() {
   const queryClient = useQueryClient();
@@ -85,7 +94,31 @@ function SecretsSettingsScreen() {
   };
 
   return (
-    <div data-testid="secrets-settings-screen" className="flex flex-col gap-5">
+    <div data-testid="secrets-settings-screen" className="flex flex-col gap-6">
+      <div className="flex items-start justify-between gap-4">
+        <header className="min-w-0 space-y-1">
+          <Typography.H2>{t(I18nKey.SETTINGS$NAV_SECRETS)}</Typography.H2>
+          <p
+            data-testid="settings-page-subtitle"
+            className="text-sm leading-5 text-muted"
+          >
+            {t(I18nKey.SETTINGS$PAGE_SECRETS_SUBLINE)}
+          </p>
+        </header>
+        {view === "list" ? (
+          <BrandButton
+            testId="add-secret-button"
+            type="button"
+            variant="primary"
+            className="shrink-0 whitespace-nowrap"
+            onClick={() => setView("add-secret-form")}
+            isDisabled={isLoadingSecrets}
+          >
+            {t(I18nKey.SECRETS$ADD_NEW_SECRET)}
+          </BrandButton>
+        ) : null}
+      </div>
+
       {isLoadingSecrets && view === "list" && (
         <ul>
           <SecretListItemSkeleton />
@@ -94,34 +127,31 @@ function SecretsSettingsScreen() {
         </ul>
       )}
 
-      {view === "list" && (
-        <BrandButton
-          testId="add-secret-button"
-          type="button"
-          variant="primary"
-          onClick={() => setView("add-secret-form")}
-          isDisabled={isLoadingSecrets}
-        >
-          {t("SECRETS$ADD_NEW_SECRET")}
-        </BrandButton>
-      )}
-
       {view === "list" && !isLoadingSecrets && (
         <div
           ref={tableContainerRef}
-          className="border border-tertiary rounded-md overflow-auto max-h-[60vh]"
+          className={settingsListScrollContainerClassName}
           onScroll={handleScroll}
         >
           <table className="w-full min-w-full table-fixed">
-            <thead className="bg-base-tertiary sticky top-0">
+            <thead className={settingsListTableHeadClassName}>
               <tr>
-                <th className="w-1/4 text-left p-3 text-sm font-medium">
+                <th
+                  className={cn(settingsListTableHeaderCellClassName, "w-1/4")}
+                >
                   {t(I18nKey.SETTINGS$NAME)}
                 </th>
-                <th className="w-1/2 text-left p-3 text-sm font-medium">
+                <th
+                  className={cn(settingsListTableHeaderCellClassName, "w-1/2")}
+                >
                   {t(I18nKey.SECRETS$DESCRIPTION)}
                 </th>
-                <th className="w-1/4 text-right p-3 text-sm font-medium">
+                <th
+                  className={cn(
+                    settingsListTableHeaderCellClassName,
+                    "w-1/4 text-right",
+                  )}
+                >
                   {t(I18nKey.SETTINGS$ACTIONS)}
                 </th>
               </tr>
@@ -164,7 +194,7 @@ function SecretsSettingsScreen() {
 
       {confirmationModalIsVisible && (
         <ConfirmationModal
-          text={t("SECRETS$CONFIRM_DELETE_KEY")}
+          text={t(I18nKey.SECRETS$CONFIRM_DELETE_KEY)}
           onConfirm={onConfirmDeleteSecret}
           onCancel={onCancelDeleteSecret}
         />

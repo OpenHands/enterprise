@@ -151,7 +151,9 @@ describe("Budgets", () => {
 
     await screen.findByText("User One");
 
-    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.click(
+      screen.getByRole("button", { name: "Edit budget for User One" }),
+    );
 
     const overrideInput = screen.getByRole("spinbutton");
     await user.clear(overrideInput);

@@ -12,12 +12,15 @@ import { I18nKey } from "#/i18n/declaration";
 import i18n from "#/i18n";
 import { useIsAuthed } from "#/hooks/query/use-is-authed";
 import { useConfig } from "#/hooks/query/use-config";
-import { Sidebar } from "#/components/features/sidebar/sidebar";
 import { ReauthModal } from "#/components/features/waitlist/reauth-modal";
 import { AnalyticsConsentFormModal } from "#/components/features/analytics/analytics-consent-form-modal";
+import { SettingsModal } from "#/components/shared/modals/settings/settings-modal";
 import { useSettings } from "#/hooks/query/use-settings";
 import { useMigrateUserConsent } from "#/hooks/use-migrate-user-consent";
-import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import {
+  displayErrorToast,
+  displaySuccessToast,
+} from "#/utils/custom-toast-handlers";
 import { useIsOnIntermediatePage } from "#/hooks/use-is-on-intermediate-page";
 import { useAutoLogin } from "#/hooks/use-auto-login";
 import { useAuthCallback } from "#/hooks/use-auth-callback";
@@ -73,7 +76,12 @@ export default function MainApp() {
   const { pathname } = useLocation();
   const [searchParams] = useSearchParams();
   const isOnIntermediatePage = useIsOnIntermediatePage();
-  const { data: settings } = useSettings();
+  const {
+    data: settings,
+    error: settingsError,
+    isError: settingsIsError,
+    isFetching: isFetchingSettings,
+  } = useSettings();
   const { migrateUserConsent } = useMigrateUserConsent();
   const { t } = useTranslation();
 
@@ -86,6 +94,7 @@ export default function MainApp() {
   } = useIsAuthed();
 
   const [consentFormIsOpen, setConsentFormIsOpen] = React.useState(false);
+  const [settingsModalIsOpen, setSettingsModalIsOpen] = React.useState(false);
 
   // Accept a pending invitation token once authenticated
   useAutoAcceptInvitation();
@@ -142,6 +151,34 @@ export default function MainApp() {
       displaySuccessToast(t(I18nKey.BILLING$YOURE_IN));
     }
   }, [settings?.is_new_user, config.data?.app_mode]);
+
+  // OSS first-run: prompt for LLM settings when none exist yet.
+  React.useEffect(() => {
+    if (pathname === "/settings") {
+      setSettingsModalIsOpen(false);
+    } else if (
+      !isFetchingSettings &&
+      settingsIsError &&
+      settingsError?.status !== 404
+    ) {
+      displayErrorToast(
+        "Something went wrong while fetching settings. Please reload the page.",
+      );
+    } else if (
+      config.data?.app_mode === "oss" &&
+      settingsError?.status === 404 &&
+      !config.data?.feature_flags?.hide_llm_settings
+    ) {
+      setSettingsModalIsOpen(true);
+    }
+  }, [
+    pathname,
+    isFetchingSettings,
+    settingsIsError,
+    settingsError,
+    config.data?.app_mode,
+    config.data?.feature_flags?.hide_llm_settings,
+  ]);
 
   // Function to check if login method exists in local storage
   const checkLoginMethodExists = React.useCallback(() => {
@@ -229,18 +266,21 @@ export default function MainApp() {
     config.data?.app_mode === "saas" &&
     loginMethodExists;
 
+  // Settings owns its own gutters (aside pl-8 + main pr-[14px]), matching
+  // agent-canvas. Other non-home routes keep the legacy md:p-3 shell padding.
+  const isSettingsRoute = pathname.startsWith("/settings");
+
   return (
     <div
       data-testid="root-layout"
       className={cn(
-        "h-screen lg:min-w-5xl flex flex-col md:flex-row bg-base overflow-hidden",
-        pathname === "/" ? "p-0" : "p-0 md:p-3 md:pl-0",
+        "h-screen lg:min-w-5xl flex flex-col bg-base overflow-hidden",
+        pathname === "/" || isSettingsRoute ? "p-0" : "p-0 md:p-3",
       )}
     >
       <title>{appTitle}</title>
-      <Sidebar />
 
-      <div className="flex flex-col w-full min-w-0 h-[calc(100%-50px)] md:h-full gap-3">
+      <div className="flex flex-col w-full min-w-0 h-full gap-3">
         {config.data &&
           (config.data.maintenance_start_time ||
             (config.data.faulty_models &&
@@ -271,6 +311,12 @@ export default function MainApp() {
           onClose={() => {
             setConsentFormIsOpen(false);
           }}
+        />
+      )}
+      {settingsModalIsOpen && (
+        <SettingsModal
+          settings={settings}
+          onClose={() => setSettingsModalIsOpen(false)}
         />
       )}
     </div>

@@ -2,6 +2,7 @@ import {
   Links,
   Meta,
   MetaFunction,
+  LinksFunction,
   Outlet,
   Scripts,
   ScrollRestoration,
@@ -11,6 +12,17 @@ import "./index.css";
 import React from "react";
 import { Toaster } from "react-hot-toast";
 import { useInvitation } from "#/hooks/use-invitation";
+import { AgentServerUIRoot } from "#/components/providers/agent-server-ui-root";
+import { applyColorTheme } from "#/themes/color-themes";
+import { TOAST_OPTIONS } from "#/utils/custom-toast-handlers";
+
+/** Applies the OpenHands-Neo palette on mount (no theme switcher). */
+function ColorThemeApplier() {
+  React.useEffect(() => {
+    applyColorTheme("openhands-neo");
+  }, []);
+  return null;
+}
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
@@ -21,16 +33,27 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Meta />
         <Links />
       </head>
-      <body>
-        {children}
+      <body data-agent-server-ui="" className="m-0">
+        <AgentServerUIRoot contentClassName="min-h-screen">
+          <ColorThemeApplier />
+          {children}
+          <Toaster toastOptions={TOAST_OPTIONS} />
+          <div id="modal-portal-exit" />
+        </AgentServerUIRoot>
         <ScrollRestoration />
         <Scripts />
-        <Toaster />
-        <div id="modal-portal-exit" />
       </body>
     </html>
   );
 }
+
+export const links: LinksFunction = () => [
+  {
+    rel: "icon",
+    type: "image/svg+xml",
+    href: "/favicon.svg",
+  },
+];
 
 export const meta: MetaFunction = () => [
   { title: "OpenHands" },

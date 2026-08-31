@@ -36,7 +36,6 @@ export function ConfirmRemoveMemberModal({
       isLoading={isLoading}
       primaryButtonTestId="confirm-button"
       secondaryButtonTestId="cancel-button"
-      fullWidthButtons
     />
   );
 }

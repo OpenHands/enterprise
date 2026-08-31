@@ -241,7 +241,7 @@ describe("UserActions", () => {
       useSelectedOrganizationStore.setState({ organizationId: null });
     });
 
-    it("should reset org selector search text when context menu hides and reappears", async () => {
+    it("should reset org selector selected label when context menu hides and reappears", async () => {
       renderUserActions();
       const userActions = screen.getByTestId("user-actions");
 
@@ -255,33 +255,22 @@ describe("UserActions", () => {
         );
       });
 
-      // Open dropdown and type search text
+      // Open dropdown (org selector is non-searchable / readonly)
       const trigger = screen.getByTestId("dropdown-trigger");
       await user.click(trigger);
-      const input = screen.getByRole("combobox");
-      await user.clear(input);
-      await user.type(input, "search text");
-      expect(input).toHaveValue("search text");
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
 
       // Unhover to trigger hide timeout, then wait for the 500ms delay to complete
       await user.unhover(userActions);
 
       // Wait for the 500ms hide delay to complete and menu to actually hide
-      await waitFor(
-        () => {
-          // The menu resets when it actually hides (after 500ms delay)
-          // After hiding, hovering again should show a fresh menu
-        },
-        { timeout: 600 },
-      );
-
-      // Wait a bit more for the timeout to fire
       await new Promise((resolve) => setTimeout(resolve, 550));
 
       // Now hover again to show the menu
       await user.hover(userActions);
 
-      // Org selector should be reset — showing selected org name, not search text
+      // Org selector should be reset — showing selected org name
       await waitFor(() => {
         expect(screen.getByRole("combobox")).toHaveValue(
           MOCK_PERSONAL_ORG.name,
@@ -303,13 +292,10 @@ describe("UserActions", () => {
         );
       });
 
-      // Open dropdown and type to change its state
+      // Open dropdown
       const trigger = screen.getByTestId("dropdown-trigger");
       await user.click(trigger);
-      const input = screen.getByRole("combobox");
-      await user.clear(input);
-      await user.type(input, "Acme");
-      expect(input).toHaveValue("Acme");
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
 
       // Unhover to trigger hide timeout
       await user.unhover(userActions);

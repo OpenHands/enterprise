@@ -13,7 +13,6 @@ import { useConfig } from "#/hooks/query/use-config";
 import { useMe } from "#/hooks/query/use-me";
 import { useSettings } from "#/hooks/query/use-settings";
 import { I18nKey } from "#/i18n/declaration";
-import { Typography } from "#/ui/typography";
 import { Settings, SettingsSchema, SettingsScope } from "#/types/settings";
 import {
   displayErrorToast,
@@ -32,6 +31,8 @@ import {
   type SettingsValueSource,
   type SettingsView,
 } from "#/utils/sdk-settings-schema";
+import { settingsListContainerClassName } from "#/utils/settings-list-classes";
+import { cn } from "#/utils/utils";
 import { SchemaField } from "./schema-field";
 import { ViewToggle } from "./view-toggle";
 
@@ -151,6 +152,7 @@ export function SdkSectionPage({
   allowAllView = true,
   trailingActions,
   testId = "sdk-section-settings-screen",
+  loadingSkeleton,
 }: {
   settingsSources: SettingsSourceConfig[];
   scope?: SettingsScope;
@@ -204,6 +206,8 @@ export function SdkSectionPage({
   allowAdvancedView?: boolean;
   allowAllView?: boolean;
   testId?: string;
+  /** Override the default LLM-style input grid while settings/schema load. */
+  loadingSkeleton?: React.ReactNode;
 }) {
   const { t } = useTranslation();
   const { mutate: saveSettings, isPending } = useSaveSettings(scope);
@@ -499,7 +503,7 @@ export function SdkSectionPage({
   };
 
   if (isLoading || isFetching || isSchemaLoading) {
-    return <LlmSettingsInputsSkeleton />;
+    return loadingSkeleton ?? <LlmSettingsInputsSkeleton />;
   }
 
   const hasAnyVisibleSection = resolvedSources.some(
@@ -508,14 +512,22 @@ export function SdkSectionPage({
 
   if (!hasAnyVisibleSection) {
     return (
-      <Typography.Paragraph className="text-tertiary-alt">
-        {t(I18nKey.SETTINGS$SDK_SCHEMA_UNAVAILABLE)}
-      </Typography.Paragraph>
+      <div
+        data-testid="sdk-schema-unavailable"
+        className={cn(
+          settingsListContainerClassName,
+          "flex items-center justify-center p-8 text-center",
+        )}
+      >
+        <p className="text-sm text-[var(--oh-muted)]">
+          {t(I18nKey.SETTINGS$SDK_SCHEMA_UNAVAILABLE)}
+        </p>
+      </div>
     );
   }
 
   if (Object.keys(flatValues).length === 0) {
-    return <LlmSettingsInputsSkeleton />;
+    return loadingSkeleton ?? <LlmSettingsInputsSkeleton />;
   }
 
   const isDirty = Object.keys(flatDirty).length > 0;
@@ -538,7 +550,7 @@ export function SdkSectionPage({
         trailing={trailingActions}
       />
 
-      <div className="flex flex-col gap-8 pb-20">
+      <div className="flex flex-col gap-6">
         {header?.({
           values: flatValues,
           isDisabled: isReadOnly,

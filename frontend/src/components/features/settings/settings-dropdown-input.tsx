@@ -3,6 +3,8 @@ import React, { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { OptionalTag } from "./optional-tag";
 import { cn } from "#/utils/utils";
+import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
+import { heroUiAutocompleteSelectorButtonClassName } from "#/ui/combobox-caret";
 
 interface SettingsDropdownInputProps {
   testId: string;
@@ -52,7 +54,9 @@ export function SettingsDropdownInput({
   const { t } = useTranslation();
 
   return (
-    <label className={cn("flex flex-col gap-2.5", wrapperClassName)}>
+    <label
+      className={cn("flex flex-col gap-2.5 w-full min-w-0", wrapperClassName)}
+    >
       {label && (
         <div className="flex items-center gap-1">
           <span className="text-sm">{label}</span>
@@ -76,12 +80,14 @@ export function SettingsDropdownInput({
         isRequired={required}
         className="w-full"
         classNames={{
-          popoverContent: "bg-tertiary rounded-xl",
+          popoverContent: "bg-content1 rounded-xl",
+          selectorButton: heroUiAutocompleteSelectorButtonClassName,
         }}
+        selectorButtonProps={{ disableRipple: true }}
         inputProps={{
           classNames: {
             inputWrapper: cn(
-              "bg-tertiary border border-[#717888] h-10 w-full max-w-[680px] rounded-sm p-2 placeholder:italic",
+              formControlSettingsFieldClassName,
               inputWrapperClassName,
             ),
             input: inputClassName,

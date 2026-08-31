@@ -1,6 +1,13 @@
-import { FaPencil, FaTrash } from "react-icons/fa6";
 import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
+import {
+  settingsListIconActionButtonClassName,
+  settingsListTableCellClassName,
+  settingsListTableRowClassName,
+} from "#/utils/settings-list-classes";
+import { cn } from "#/utils/utils";
+import EditIcon from "#/icons/u-edit.svg?react";
+import DeleteIcon from "#/icons/u-delete.svg?react";
 
 interface MCPServerConfig {
   id: string;
@@ -58,53 +65,61 @@ export function MCPServerListItem({
     return "";
   };
 
-  const serverName = server.type === "stdio" ? server.name : server.url;
+  const serverName = server.name || server.url || "";
   const serverDescription = getServerDescription(server);
 
   return (
-    <tr
-      data-testid="mcp-server-item"
-      className="grid grid-cols-[minmax(0,0.25fr)_120px_minmax(0,1fr)_120px] gap-4 items-start border-t border-tertiary"
-    >
+    <tr data-testid="mcp-server-item" className={settingsListTableRowClassName}>
       <td
-        className="p-3 text-sm text-content-2 truncate min-w-0"
+        className={cn(
+          settingsListTableCellClassName,
+          "truncate text-content-2",
+        )}
         title={serverName}
       >
         {serverName}
       </td>
 
-      <td className="p-3 text-sm text-content-2 whitespace-nowrap">
+      <td
+        className={cn(
+          settingsListTableCellClassName,
+          "whitespace-nowrap text-content-2",
+        )}
+      >
         {getServerTypeLabel(server.type)}
       </td>
 
       <td
-        className="p-3 text-sm text-content-2 opacity-80 italic min-w-0 truncate"
+        className={cn(
+          settingsListTableCellClassName,
+          "truncate text-content-2 opacity-80",
+        )}
         title={serverDescription}
       >
-        <span className="inline-block max-w-full align-bottom">
-          {serverDescription}
-        </span>
+        {serverDescription}
       </td>
 
-      <td className="p-3 flex items-start justify-end gap-4 whitespace-nowrap">
-        <button
-          data-testid="edit-mcp-server-button"
-          type="button"
-          onClick={onEdit}
-          aria-label={`Edit ${serverName}`}
-          className="cursor-pointer hover:text-content-1 transition-colors"
-        >
-          <FaPencil size={16} />
-        </button>
-        <button
-          data-testid="delete-mcp-server-button"
-          type="button"
-          onClick={onDelete}
-          aria-label={`Delete ${serverName}`}
-          className="cursor-pointer hover:text-content-1 transition-colors"
-        >
-          <FaTrash size={16} />
-        </button>
+      <td className={cn(settingsListTableCellClassName, "text-right")}>
+        <div className="ml-auto flex w-fit items-center justify-end gap-0.5">
+          <button
+            data-testid="edit-mcp-server-button"
+            type="button"
+            onClick={onEdit}
+            aria-label={`Edit ${serverName}`}
+            className={settingsListIconActionButtonClassName}
+          >
+            <EditIcon width={16} height={16} />
+          </button>
+          <button
+            data-testid="delete-mcp-server-button"
+            type="button"
+            onClick={onDelete}
+            aria-label={`Delete ${serverName}`}
+            className={settingsListIconActionButtonClassName}
+          >
+            <DeleteIcon width={16} height={16} />
+          </button>
+        </div>
       </td>
     </tr>
   );

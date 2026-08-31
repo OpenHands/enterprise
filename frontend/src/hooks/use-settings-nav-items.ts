@@ -25,13 +25,17 @@ export type SettingsNavRenderedItem =
       disabled?: boolean;
       disabledAgentName?: string;
     }
-  | { type: "header"; text: I18nKey }
+  | { type: "header"; text: I18nKey; chip?: I18nKey }
   | { type: "divider" };
 
 // Section header text mapping
 const SECTION_HEADERS: Partial<Record<SettingsNavSection, I18nKey>> = {
   org: I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
   personal: I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER,
+};
+
+const SECTION_CHIPS: Partial<Record<SettingsNavSection, I18nKey>> = {
+  personal: I18nKey.SETTINGS$THIS_ORG_CHIP,
 };
 
 /**
@@ -72,6 +76,11 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   // Hide billing when billing is not accessible OR when in team org
   if (shouldHideBilling || isTeamOrg) {
     items = items.filter((item) => item.to !== "/settings/billing");
+  }
+
+  // Credits is the team-org counterpart to personal Billing
+  if (shouldHideBilling || !organizationId || !isTeamOrg) {
+    items = items.filter((item) => item.to !== "/settings/credits");
   }
 
   // Hide org routes for personal orgs, missing permissions, or no org selected
@@ -157,6 +166,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
         renderedItems.push({
           type: "header",
           text: SECTION_HEADERS[itemSection]!,
+          chip: SECTION_CHIPS[itemSection],
         });
       }
 

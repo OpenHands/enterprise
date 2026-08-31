@@ -1,19 +1,23 @@
+import { useTranslation } from "react-i18next";
 import { cn } from "#/utils/utils";
+import { I18nKey } from "#/i18n/declaration";
 
 export interface LoadingSpinnerProps {
   className?: string;
 }
 
 export function LoadingSpinner({ className }: LoadingSpinnerProps) {
+  const { t } = useTranslation();
+
   return (
     <div className="flex items-center justify-center">
       <div
         className={cn(
-          "animate-spin rounded-full border-4 border-gray-200 border-t-blue-500",
+          "animate-spin rounded-full border-4 border-transparent border-t-white",
           className,
         )}
         role="status"
-        aria-label="Loading"
+        aria-label={t(I18nKey.HOME$LOADING)}
       />
     </div>
   );
