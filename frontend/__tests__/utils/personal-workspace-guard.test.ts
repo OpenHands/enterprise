@@ -85,4 +85,14 @@ describe("requirePersonalWorkspaceLoader", () => {
     expect(result).toBeNull();
     expect(redirect).not.toHaveBeenCalled();
   });
+
+  it("does not redirect while the settings loader is consuming a pending ?org= switch", async () => {
+    storeOrgId = "team-org";
+    const guard = requirePersonalWorkspaceLoader("/settings/org-defaults");
+
+    const result = await guard(createRequest("/settings?org=personal-org"));
+
+    expect(result).toBeNull();
+    expect(redirect).not.toHaveBeenCalled();
+  });
 });
