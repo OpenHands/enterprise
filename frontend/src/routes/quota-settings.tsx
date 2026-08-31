@@ -144,7 +144,6 @@ function QuotaSettingsScreen() {
       >
         {t(I18nKey.SETTINGS$QUOTA_REQUEST_TITLE)}
       </a>
-
     </div>
   );
 }
