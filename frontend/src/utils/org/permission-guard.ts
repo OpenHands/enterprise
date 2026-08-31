@@ -4,6 +4,7 @@ import OptionService from "#/api/option-service/option-service.api";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 import { getFirstAvailablePath } from "#/utils/settings-utils";
+import { hasPendingOrgSwitch } from "./org-url-param";
 import { getActiveOrganizationUser } from "./permission-checks";
 import { PermissionKey, rolePermissions } from "./permissions";
 
@@ -57,6 +58,10 @@ const PERMISSION_GRANTED = {} as const;
 export const createPermissionGuard =
   (requiredPermission: PermissionKey, customRedirectPath?: string) =>
   async ({ request }: { request: Request }) => {
+    // The settings loader is consuming a pending `?org=` switch on this pass
+    // and will redirect without the param; redirecting here would drop it.
+    if (hasPendingOrgSwitch(request)) return PERMISSION_GRANTED;
+
     // Get config to check app_mode. A failed config fetch (e.g. mock mode
     // proxying to a down backend) must not throw into ErrorBoundary.
     let config: WebClientConfig | undefined;

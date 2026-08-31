@@ -1303,3 +1303,100 @@ describe("clientLoader redirect behavior", () => {
     expect(result.headers.get("Location")).toBe("/settings");
   });
 });
+
+describe("clientLoader ?org= deep link", () => {
+  const seedConfig = (appMode: "saas" | "oss") => {
+    mockQueryClient.setQueryData(["web-client-config"], {
+      app_mode: appMode,
+      feature_flags: {
+        enable_billing: false,
+        hide_llm_settings: false,
+        enable_jira: false,
+        enable_jira_dc: false,
+        enable_linear: false,
+        hide_users_page: false,
+        hide_billing_page: false,
+        hide_integrations_page: false,
+      },
+    });
+  };
+
+  beforeEach(() => {
+    mockQueryClient.clear();
+    useSelectedOrganizationStore.setState({ organizationId: null });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("switches to the requested org and redirects to the same page without the param", async () => {
+    // Arrange: the cloud's current org is the personal workspace
+    seedConfig("saas");
+    mockQueryClient.setQueryData(["organizations"], {
+      items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_PERSONAL_ORG.id,
+    });
+    const switchSpy = vi
+      .spyOn(organizationService, "switchOrganization")
+      .mockResolvedValue(MOCK_TEAM_ORG_ACME);
+
+    // Act: open settings deep-linked to the team org
+    const request = new Request(
+      `http://localhost/settings?org=${MOCK_TEAM_ORG_ACME.id}`,
+    );
+    // @ts-expect-error - test only needs request and params, not full loader args
+    const result = (await clientLoader({ request, params: {} })) as Response;
+
+    // Assert: org switched locally and server-side, param stripped
+    expect(switchSpy).toHaveBeenCalledWith({ orgId: MOCK_TEAM_ORG_ACME.id });
+    expect(useSelectedOrganizationStore.getState().organizationId).toBe(
+      MOCK_TEAM_ORG_ACME.id,
+    );
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings");
+  });
+
+  it("keeps the param and does not redirect when organizations cannot be fetched", async () => {
+    // Arrange: e.g. no cloud session yet, so the org list request fails
+    seedConfig("saas");
+    vi.spyOn(organizationService, "getOrganizations").mockRejectedValue(
+      new Error("Unauthorized"),
+    );
+    const switchSpy = vi.spyOn(organizationService, "switchOrganization");
+
+    // Act
+    const request = new Request(
+      `http://localhost/settings?org=${MOCK_TEAM_ORG_ACME.id}`,
+    );
+    // @ts-expect-error - test only needs request and params, not full loader args
+    const result = await clientLoader({ request, params: {} });
+
+    // Assert: nothing switched; the page renders so the login redirect can
+    // carry the param in returnTo
+    expect(switchSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({});
+  });
+
+  it("ignores the param in OSS mode", async () => {
+    // Arrange
+    seedConfig("oss");
+    const getOrganizationsSpy = vi.spyOn(
+      organizationService,
+      "getOrganizations",
+    );
+    const switchSpy = vi.spyOn(organizationService, "switchOrganization");
+
+    // Act
+    const request = new Request(
+      `http://localhost/settings?org=${MOCK_TEAM_ORG_ACME.id}`,
+    );
+    // @ts-expect-error - test only needs request and params, not full loader args
+    const result = await clientLoader({ request, params: {} });
+
+    // Assert
+    expect(getOrganizationsSpy).not.toHaveBeenCalled();
+    expect(switchSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({});
+  });
+});

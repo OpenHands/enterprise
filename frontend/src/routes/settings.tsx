@@ -21,6 +21,10 @@ import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organizati
 import { rolePermissions } from "#/utils/org/permissions";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
 import {
+  ORG_QUERY_PARAM,
+  switchOrganizationFromUrl,
+} from "#/utils/org/org-url-param";
+import {
   ADMIN_ONLY_SETTINGS_PATHS,
   isSettingsPageHidden,
   getFirstAvailablePath,
@@ -80,6 +84,19 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
 
   const isSaas = config?.app_mode === "saas";
   const featureFlags = config?.feature_flags;
+
+  // Honor `?org=<id>` deep links (e.g. agent-canvas "All Cloud Settings"):
+  // switch the current org before any settings guard runs, then strip the
+  // param so the next loader pass evaluates the guards against the new org.
+  // Child route guards skip their redirects while the param is present.
+  const orgIdFromUrl = url.searchParams.get(ORG_QUERY_PARAM);
+  if (isSaas && orgIdFromUrl) {
+    const handled = await switchOrganizationFromUrl(orgIdFromUrl, featureFlags);
+    if (handled) {
+      url.searchParams.delete(ORG_QUERY_PARAM);
+      return redirect(`${pathname}${url.search}`);
+    }
+  }
 
   if (pathname === "/settings/admin-dashboard") {
     return redirect(isSaas ? "/settings/usage-monitoring" : "/settings");

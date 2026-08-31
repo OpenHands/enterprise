@@ -156,6 +156,24 @@ describe("createPermissionGuard", () => {
     });
   });
 
+  describe("pending org switch", () => {
+    it("should not redirect or check permissions while the settings loader is consuming ?org=", async () => {
+      // Arrange: a member who lacks view_billing would normally be redirected
+      vi.mocked(getActiveOrganizationUser).mockResolvedValue(undefined);
+
+      // Act: the request still carries the org param the settings loader owns
+      const guard = createPermissionGuard("view_billing");
+      const result = await guard(
+        createMockRequest("/settings/billing?org=org-2"),
+      );
+
+      // Assert: guard steps aside so the param survives the loader's redirect
+      expect(result).toEqual({});
+      expect(redirect).not.toHaveBeenCalled();
+      expect(getActiveOrganizationUser).not.toHaveBeenCalled();
+    });
+  });
+
   describe("infinite loop prevention", () => {
     it("should return empty data instead of redirecting when fallback path equals current path", async () => {
       // Arrange: no user
