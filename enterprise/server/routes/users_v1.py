@@ -7,12 +7,23 @@ user endpoints with organization context (org_id, org_name, role, permissions).
 import logging
 from types import MappingProxyType
 from typing import Any, cast
+from uuid import UUID
+
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from server.auth.saas_user_auth import SaasUserAuth
 from server.constants import LITE_LLM_API_URL
 from server.models.user_models import GitOrganizationsResponse, SaasUserInfo
+from server.routes.org_models import OrgNotFoundError
+from storage.agent_profile_resolution import load_provider_connections
+from storage.org_service import OrgService
+
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnectionNotFoundError,
+    ProviderConnections,
+)
+
 
 from openhands.app_server.config import (
     depends_user_context,
@@ -82,6 +93,42 @@ def _resolve_exposed_llm_profiles(user_info: SaasUserInfo) -> None:
             managed_proxy_url=LITE_LLM_API_URL,
             fallback_api_key=fallback_api_key,
         )
+
+
+async def _load_provider_connections_for_user(
+    user_info: SaasUserInfo, user_context: UserContext
+) -> ProviderConnections:
+    if not user_info.org_id:
+        return ProviderConnections()
+    try:
+        org_id = UUID(user_info.org_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid organization id: {user_info.org_id}",
+        ) from exc
+
+    user_id = await user_context.get_user_id()
+    if user_id is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail='Not authenticated')
+
+    try:
+        org = await OrgService.get_org_by_id(org_id=org_id, user_id=user_id)
+    except OrgNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return load_provider_connections(org)
+
+
+def _provider_connection_422(exc: ProviderConnectionNotFoundError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=(
+            f"Profile references provider connection '{exc.connection_id}', "
+            'which does not exist. Update the profile or recreate the connection.'
+        ),
+    )
 
 
 @saas_users_v1_router.get('/me')
