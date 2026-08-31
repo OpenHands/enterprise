@@ -136,4 +136,5 @@ def test_limit_reached_includes_quota_request_links():
     assert error.status_code == 429
     assert error.detail['code'] == 'daily_conversation_limit_reached'
     assert '/settings/quota' in error.detail['message']
-    assert QUOTA_INCREASE_REQUEST_URL in error.detail['message']
+    assert error.detail['message'].endswith(QUOTA_INCREASE_REQUEST_URL)
+    assert not error.detail['message'].endswith(f'{QUOTA_INCREASE_REQUEST_URL}.')

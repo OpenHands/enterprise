@@ -159,7 +159,7 @@ class DailyConversationQuotaService:
             detail={
                 'code': 'daily_conversation_limit_reached',
                 'message': (
-                    f'Daily conversation limit of {limit} reached. Request a quota increase at /settings/quota or {QUOTA_INCREASE_REQUEST_URL}.'
+                    f'Daily conversation limit of {limit} reached. Request a quota increase at /settings/quota or {QUOTA_INCREASE_REQUEST_URL}'
                 ),
                 'limit': limit,
                 'used': used,
