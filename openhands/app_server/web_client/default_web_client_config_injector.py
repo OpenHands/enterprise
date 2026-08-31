@@ -227,6 +227,33 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     )
 
 
+async def _get_db_feature_flags() -> dict[str, bool]:
+    """Return database-backed global feature flags for an anonymous context.
+
+    Only flags with NO targeting rules are returned (see
+    ``FeatureFlagService.get_global_flags``); per-user/per-org/per-email flags
+    require an authenticated context and are intentionally absent here. This
+    endpoint is one of the first invoked and does not require authentication,
+    so it must not leak targeted flag state.
+
+    The import is lazy and best-effort: OSS installs (and SaaS installs that
+    have not applied the feature-flag migration) simply get an empty map, so
+    this path degrades gracefully and never blocks the config endpoint.
+    """
+    try:
+        from server.services.feature_flag_service import (
+            feature_flag_service,
+        )
+    except Exception:
+        return {}
+    try:
+        return await feature_flag_service.get_global_flags()
+    except Exception:
+        # Never let a DB hiccup take down the unauthenticated config
+        # endpoint; fall back to an empty map.
+        return {}
+
+
 class DefaultWebClientConfigInjector(WebClientConfigInjector):
     posthog_client_key: str = Field(default_factory=_get_posthog_client_key)
     feature_flags: WebClientFeatureFlags = Field(default_factory=_get_feature_flags)
@@ -296,6 +323,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             app_mode=config.app_mode,
             posthog_client_key=self.posthog_client_key,
             feature_flags=self.feature_flags,
+            db_feature_flags=await _get_db_feature_flags(),
             providers_configured=self.providers_configured,
             maintenance_start_time=self.maintenance_start_time,
             auth_url=self.auth_url,
