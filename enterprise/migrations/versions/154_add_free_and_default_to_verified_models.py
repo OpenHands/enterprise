@@ -21,9 +21,9 @@ depends_on: Union[str, Sequence[str], None] = None
 # per-row flag alone, so the invariant cannot be violated by concurrent writes.
 _DEFAULT_INDEX = 'uq_verified_model_default_per_provider'
 
-# The models the frontend previously hard-coded as free. Seeding them keeps the
+# The model the frontend previously hard-coded as free. Seeding it keeps the
 # "Free" badge identical the moment the client switches to the DB-driven flag.
-_FREE_MODELS = ('glm-5.2', 'deepseek-v4-flash', 'minimax-m2.7')
+_FREE_MODELS = ('deepseek-v4-flash',)
 
 # Keep the database-seeded default aligned with the current code default.
 _DEFAULT_MODEL = 'deepseek-v4-flash'
@@ -56,25 +56,34 @@ def upgrade() -> None:
         postgresql_where=sa.text('is_default'),
     )
 
-    # Seed free flags for existing rows only (no-op where the model is absent).
     for model_name in _FREE_MODELS:
         op.execute(
             sa.text(
                 """
-                UPDATE verified_models
-                SET is_free = true, updated_at = CURRENT_TIMESTAMP
-                WHERE model_name = :model_name AND provider = 'openhands'
+                INSERT INTO verified_models (
+                    model_name, provider, is_enabled, is_free, is_default
+                )
+                VALUES (:model_name, 'openhands', true, true, false)
+                ON CONFLICT (model_name, provider) DO UPDATE
+                SET is_enabled = true,
+                    is_free = true,
+                    updated_at = CURRENT_TIMESTAMP
                 """
             ).bindparams(model_name=model_name)
         )
 
-    # Seed the default; guarded by the partial unique index above.
     op.execute(
         sa.text(
             """
-            UPDATE verified_models
-            SET is_default = true, updated_at = CURRENT_TIMESTAMP
-            WHERE model_name = :model_name AND provider = 'openhands'
+            INSERT INTO verified_models (
+                model_name, provider, is_enabled, is_free, is_default
+            )
+            VALUES (:model_name, 'openhands', true, true, true)
+            ON CONFLICT (model_name, provider) DO UPDATE
+            SET is_enabled = true,
+                is_free = true,
+                is_default = true,
+                updated_at = CURRENT_TIMESTAMP
             """
         ).bindparams(model_name=_DEFAULT_MODEL)
     )

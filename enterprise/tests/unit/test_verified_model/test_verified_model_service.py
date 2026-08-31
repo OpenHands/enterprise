@@ -1,6 +1,7 @@
 """Unit tests for VerifiedModelService."""
 
 import uuid
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from server.verified_models.default_model_replacement import (
@@ -19,6 +20,8 @@ from storage.org_member import OrgMember
 from storage.role import Role
 from storage.user import User
 from storage.user_settings import UserSettings
+
+from openhands.app_server.utils.llm import DEFAULT_OPENHANDS_MODEL
 
 
 @pytest.fixture
@@ -265,6 +268,44 @@ class TestFreeFlag:
             # Unrelated flags are untouched.
             assert updated.is_enabled is True
 
+    async def test_update_free_flag_syncs_litellm_allowlists(
+        self, _seed_models, async_session_maker
+    ):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            with patch.object(
+                service,
+                '_sync_litellm_free_model_allowlists',
+                new=AsyncMock(),
+            ) as sync_allowlists:
+                updated = await service.update_verified_model(
+                    model_name='claude-sonnet',
+                    provider='openhands',
+                    is_free=True,
+                )
+
+            assert updated is not None
+            sync_allowlists.assert_awaited_once_with([])
+
+    async def test_delete_free_model_syncs_litellm_allowlists(
+        self, async_session_maker
+    ):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            with patch.object(
+                service,
+                '_sync_litellm_free_model_allowlists',
+                new=AsyncMock(),
+            ) as sync_allowlists:
+                await service.create_verified_model(
+                    model_name='free-model', provider='openhands', is_free=True
+                )
+                sync_allowlists.reset_mock()
+
+                await service.delete_verified_model('free-model', 'openhands')
+
+            sync_allowlists.assert_awaited_once_with(['free-model'])
+
 
 class TestVerifiedFlag:
     async def test_create_defaults_to_verified(self, async_session_maker):
@@ -350,7 +391,7 @@ class TestDefaultModelReplacement:
 
         assert replacements == {
             'openhands/old-model': 'openhands/new-model',
-            'litellm_proxy/old-model': 'litellm_proxy/new-model',
+            'litellm_proxy/old-model': 'openhands/new-model',
         }
         assert 'old-model' not in replacements
         assert 'anthropic/old-model' not in replacements
@@ -372,7 +413,7 @@ class TestDefaultModelReplacement:
 
         assert changed is True
         assert replaced['llm']['model'] == 'openhands/new-model'
-        assert replaced['profiles']['Default']['model'] == 'litellm_proxy/new-model'
+        assert replaced['profiles']['Default']['model'] == 'openhands/new-model'
         assert replaced['profiles']['Pinned']['model'] == 'anthropic/old-model'
         assert replaced['profiles']['Bare']['model'] == 'old-model'
         assert payload['llm']['model'] == 'openhands/old-model'
@@ -468,13 +509,46 @@ class TestDefaultModelReplacement:
             )
             assert org.llm_profiles['profiles']['Pinned']['model'] == 'old-model'
             assert user.llm_profiles['profiles']['Default']['model'] == (
-                'litellm_proxy/new-model'
+                'openhands/new-model'
             )
-            assert member.agent_settings_diff['llm']['model'] == (
-                'litellm_proxy/new-model'
-            )
+            assert member.agent_settings_diff['llm']['model'] == ('openhands/new-model')
             assert user_settings.agent_settings['llm']['model'] == (
                 'openhands/new-model'
+            )
+
+    async def test_openhands_default_change_without_db_previous_rewrites_platform_default(
+        self, async_session_maker
+    ):
+        org_id = uuid.uuid4()
+        old_model_name = DEFAULT_OPENHANDS_MODEL.removeprefix('openhands/')
+        async with async_session_maker() as session:
+            session.add(Role(id=1, name='admin', rank=1))
+            session.add(
+                Org(
+                    id=org_id,
+                    name='test-org',
+                    agent_settings={
+                        'llm': {'model': f'openhands/{old_model_name}'},
+                    },
+                    llm_profiles={
+                        'profiles': {
+                            'Default': {'model': f'litellm_proxy/{old_model_name}'},
+                        },
+                        'active': 'Default',
+                    },
+                )
+            )
+            service = VerifiedModelService(session)
+            await service.create_verified_model(
+                model_name='gpt-5.2', provider='openhands', is_default=True
+            )
+
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org is not None
+            assert org.agent_settings['llm']['model'] == 'openhands/gpt-5.2'
+            assert org.llm_profiles['profiles']['Default']['model'] == (
+                'openhands/gpt-5.2'
             )
 
     async def test_non_openhands_default_does_not_rewrite_settings(

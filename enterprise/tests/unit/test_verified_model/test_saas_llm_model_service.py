@@ -1,5 +1,7 @@
 """Tests for SaaS DB-backed model discovery."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from server.verified_models.verified_model_router import SaaSLLMModelService
 from server.verified_models.verified_model_service import VerifiedModelService
@@ -76,3 +78,30 @@ class TestSaaSLLMModelService:
         assert service._cached_response.verified_models == ['db-added-model']
         assert openai_by_name['db-openai-model'].verified is True
         assert 'disabled-db-model' not in openai_by_name
+
+    async def test_db_free_and_default_flags_surface_in_model_search(
+        self, async_session_maker
+    ):
+        async with async_session_maker() as session:
+            verified_service = VerifiedModelService(session)
+            with patch.object(
+                verified_service,
+                '_sync_litellm_free_model_allowlists',
+                new=AsyncMock(),
+            ):
+                await verified_service.create_verified_model(
+                    model_name='gpt-5.2',
+                    provider='openhands',
+                    is_free=True,
+                    is_default=True,
+                )
+
+            service = SaaSLLMModelService(session)
+            page = await service.search_llm_models(
+                query='gpt-5.2', provider_eq='openhands', limit=100
+            )
+
+        models_by_name = {m.name: m for m in page.items}
+        assert models_by_name['gpt-5.2'].free is True
+        assert models_by_name['gpt-5.2'].default is True
+        assert models_by_name['gpt-5.2'].verified is True

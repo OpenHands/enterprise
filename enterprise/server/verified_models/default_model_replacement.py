@@ -19,9 +19,10 @@ _LITELLM_PROXY_PREFIX = 'litellm_proxy/'
 def _build_default_model_replacements(
     old_model_name: str, new_model_name: str
 ) -> dict[str, str]:
+    new_model = f'{_OPENHANDS_PREFIX}{new_model_name}'
     return {
-        f'{_OPENHANDS_PREFIX}{old_model_name}': f'{_OPENHANDS_PREFIX}{new_model_name}',
-        f'{_LITELLM_PROXY_PREFIX}{old_model_name}': f'{_LITELLM_PROXY_PREFIX}{new_model_name}',
+        f'{_OPENHANDS_PREFIX}{old_model_name}': new_model,
+        f'{_LITELLM_PROXY_PREFIX}{old_model_name}': new_model,
     }
 
 

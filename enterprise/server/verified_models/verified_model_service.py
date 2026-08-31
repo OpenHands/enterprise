@@ -25,6 +25,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from storage.base import Base
 
 from openhands.app_server.services.db_session import depends_db_session
+from openhands.app_server.utils.llm import DEFAULT_OPENHANDS_MODEL
 from openhands.app_server.utils.logger import openhands_logger as logger
 
 
@@ -169,21 +170,52 @@ class VerifiedModelService:
         )
         return result.scalars().first()
 
+    async def _list_openhands_enabled_free_model_names(self) -> list[str]:
+        result = await self.db_session.execute(
+            select(StoredVerifiedModel.model_name)
+            .where(
+                and_(
+                    StoredVerifiedModel.provider == 'openhands',
+                    StoredVerifiedModel.is_enabled.is_(True),
+                    StoredVerifiedModel.is_free.is_(True),
+                )
+            )
+            .order_by(StoredVerifiedModel.model_name)
+        )
+        return list(result.scalars().all())
+
+    async def _sync_litellm_free_model_allowlists(
+        self, previous_free_models: list[str]
+    ) -> None:
+        try:
+            from storage.lite_llm_manager import LiteLlmManager
+
+            await LiteLlmManager.sync_free_model_allowlists(
+                self.db_session, previous_free_models=previous_free_models
+            )
+        except Exception:
+            logger.warning('Failed to sync LiteLLM free-model allowlists')
+
     async def _replace_default_references(
         self,
         provider: str,
         previous_default: StoredVerifiedModel | None,
         new_model_name: str,
     ) -> None:
-        if (
-            provider != 'openhands'
-            or previous_default is None
-            or previous_default.model_name == new_model_name
-        ):
+        if provider != 'openhands':
             return
+
+        old_model_name = (
+            previous_default.model_name
+            if previous_default is not None
+            else DEFAULT_OPENHANDS_MODEL.removeprefix('openhands/')
+        )
+        if old_model_name == new_model_name:
+            return
+
         await replace_openhands_default_model_references(
             self.db_session,
-            old_model_name=previous_default.model_name,
+            old_model_name=old_model_name,
             new_model_name=new_model_name,
         )
 
@@ -245,6 +277,12 @@ class VerifiedModelService:
         previous_default = (
             await self._get_default_for_provider(provider) if is_default else None
         )
+        sync_free_allowlists = provider == 'openhands' and is_enabled and is_free
+        previous_free_models = (
+            await self._list_openhands_enabled_free_model_names()
+            if sync_free_allowlists
+            else []
+        )
         if is_default:
             await self._clear_default_for_provider(provider)
 
@@ -263,6 +301,8 @@ class VerifiedModelService:
             )
         await self.db_session.commit()
         await self.db_session.refresh(model)
+        if sync_free_allowlists:
+            await self._sync_litellm_free_model_allowlists(previous_free_models)
         logger.info(f'Created verified model: {provider}/{model_name}')
         return verified_model(model)
 
@@ -303,6 +343,14 @@ class VerifiedModelService:
         previous_default = (
             await self._get_default_for_provider(provider) if is_default else None
         )
+        sync_free_allowlists = provider == 'openhands' and (
+            is_enabled is not None or is_free is not None
+        )
+        previous_free_models = (
+            await self._list_openhands_enabled_free_model_names()
+            if sync_free_allowlists
+            else []
+        )
 
         if is_enabled is not None:
             model.is_enabled = is_enabled
@@ -321,6 +369,8 @@ class VerifiedModelService:
 
         await self.db_session.commit()
         await self.db_session.refresh(model)
+        if sync_free_allowlists:
+            await self._sync_litellm_free_model_allowlists(previous_free_models)
         logger.info(f'Updated verified model: {provider}/{model_name}')
         return verified_model(model)
 
@@ -345,8 +395,18 @@ class VerifiedModelService:
         if not model:
             raise ValueError('Unknown model')
 
+        sync_free_allowlists = (
+            provider == 'openhands' and model.is_enabled and model.is_free
+        )
+        previous_free_models = (
+            await self._list_openhands_enabled_free_model_names()
+            if sync_free_allowlists
+            else []
+        )
         await self.db_session.delete(model)
         await self.db_session.commit()
+        if sync_free_allowlists:
+            await self._sync_litellm_free_model_allowlists(previous_free_models)
         logger.info(f'Deleted verified model: {provider}/{model_name}')
 
 
