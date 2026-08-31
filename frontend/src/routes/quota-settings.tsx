@@ -179,6 +179,9 @@ function QuotaIncreaseRequestForm({
   );
 }
 
+const QUOTA_INCREASE_REQUEST_URL =
+  "https://u8mk1.share.hsforms.com/2lXOvoRtHRfeWEmba8CdOGw";
+
 function QuotaSettingsScreen() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
@@ -275,6 +278,16 @@ function QuotaSettingsScreen() {
           {countdown}
         </span>
       </div>
+
+      <a
+        href={QUOTA_INCREASE_REQUEST_URL}
+        target="_blank"
+        rel="noreferrer"
+        className="text-sm text-primary underline hover:opacity-80"
+        data-testid="quota-increase-request-link"
+      >
+        {t(I18nKey.SETTINGS$QUOTA_REQUEST_TITLE)}
+      </a>
 
       <QuotaIncreaseRequestForm
         dailyLimit={quota.daily_limit}

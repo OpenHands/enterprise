@@ -1,9 +1,11 @@
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
 from server.services.daily_conversation_quota_service import (
+    QUOTA_INCREASE_REQUEST_URL,
     DailyConversationQuotaService,
     QuotaStatus,
 )
@@ -22,14 +24,14 @@ async def test_get_status_unlimited():
         None,  # no usage record for today
     ]
 
-    with patch.dict('os.environ', {}, clear=True):
+    with patch.dict("os.environ", {}, clear=True):
         service = DailyConversationQuotaService(session)
         result = await service.get_status(USER_ID, ORG_ID)
 
     assert isinstance(result, QuotaStatus)
     assert result.daily_limit is None
     assert result.remaining is None
-    assert result.reset_at.endswith('T00:00:00+00:00')
+    assert result.reset_at.endswith("T00:00:00+00:00")
 
 
 @pytest.mark.asyncio
@@ -50,7 +52,7 @@ async def test_get_status_with_limit_and_usage():
     assert result.daily_limit == 20
     assert result.used_today == 5
     assert result.remaining == 15
-    assert result.reset_at.endswith('T00:00:00+00:00')
+    assert result.reset_at.endswith("T00:00:00+00:00")
 
 
 @pytest.mark.asyncio
@@ -120,10 +122,18 @@ async def test_get_status_org_exemption_reports_unlimited():
         SimpleNamespace(conversation_count=99),  # usage today
     ]
 
-    with patch.dict('os.environ', {'OH_DAILY_CONVERSATION_LIMIT': '20'}):
+    with patch.dict("os.environ", {"OH_DAILY_CONVERSATION_LIMIT": "20"}):
         service = DailyConversationQuotaService(session)
         result = await service.get_status(USER_ID, ORG_ID)
 
     assert result.daily_limit is None
     assert result.used_today == 99
     assert result.remaining is None
+
+
+def test_limit_reached_includes_quota_request_links():
+    error = DailyConversationQuotaService._limit_reached(20, 20, date.today())
+    assert error.status_code == 429
+    assert error.detail["code"] == "daily_conversation_limit_reached"
+    assert "/settings/quota" in error.detail["message"]
+    assert QUOTA_INCREASE_REQUEST_URL in error.detail["message"]
