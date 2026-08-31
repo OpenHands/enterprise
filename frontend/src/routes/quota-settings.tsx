@@ -185,7 +185,8 @@ function QuotaSettingsScreen() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
   const { data: quota, isLoading } = useQuotaStatus();
-  const countdown = useCountdown(quota?.reset_at ?? null);
+  const unlimited = quota?.daily_limit === null;
+  const countdown = useCountdown(unlimited ? null : (quota?.reset_at ?? null));
 
   const isSaas = config?.app_mode === "saas";
 
@@ -208,7 +209,6 @@ function QuotaSettingsScreen() {
     );
   }
 
-  const unlimited = quota.daily_limit === null;
   const limit = quota.daily_limit ?? 0;
   const pct =
     unlimited || limit === 0
@@ -266,18 +266,20 @@ function QuotaSettingsScreen() {
         )}
       </div>
 
-      <div
-        className="flex items-center gap-2 text-sm text-muted"
-        data-testid="quota-reset-countdown"
-      >
-        <span>{t(I18nKey.SETTINGS$QUOTA_RESETS_IN)}</span>
-        <span
-          className="font-mono font-semibold text-primary"
-          data-testid="quota-countdown"
+      {!unlimited && (
+        <div
+          className="flex items-center gap-2 text-sm text-muted"
+          data-testid="quota-reset-countdown"
         >
-          {countdown}
-        </span>
-      </div>
+          <span>{t(I18nKey.SETTINGS$QUOTA_RESETS_IN)}</span>
+          <span
+            className="font-mono font-semibold text-primary"
+            data-testid="quota-countdown"
+          >
+            {countdown}
+          </span>
+        </div>
+      )}
 
       <QuotaIncreaseRequestForm
         dailyLimit={quota.daily_limit}
