@@ -36,25 +36,25 @@ class StoredVerifiedModel(Base):
     both 'openhands' and 'anthropic').
     """
 
-    __tablename__ = "verified_models"
+    __tablename__ = 'verified_models'
     __table_args__ = (
-        UniqueConstraint("model_name", "provider", name="uq_verified_model_provider"),
+        UniqueConstraint('model_name', 'provider', name='uq_verified_model_provider'),
     )
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     model_name: Mapped[str] = mapped_column(String(255), nullable=False)
     provider: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     is_enabled: Mapped[bool] = mapped_column(
-        nullable=False, default=True, server_default=text("true")
+        nullable=False, default=True, server_default=text('true')
     )
     is_verified: Mapped[bool] = mapped_column(
-        nullable=False, default=True, server_default=text("true")
+        nullable=False, default=True, server_default=text('true')
     )
     is_free: Mapped[bool] = mapped_column(
-        nullable=False, default=False, server_default=text("false")
+        nullable=False, default=False, server_default=text('false')
     )
     is_default: Mapped[bool] = mapped_column(
-        nullable=False, default=False, server_default=text("false")
+        nullable=False, default=False, server_default=text('false')
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
@@ -123,7 +123,7 @@ class VerifiedModelService:
         )
 
         # Fetch limit + 1 to check if there are more results
-        offset = int(page_id or "0")
+        offset = int(page_id or '0')
         query = query.offset(offset).limit(limit + 1)
 
         result = await self.db_session.execute(query)
@@ -176,7 +176,7 @@ class VerifiedModelService:
         new_model_name: str,
     ) -> None:
         if (
-            provider != "openhands"
+            provider != 'openhands'
             or previous_default is None
             or previous_default.model_name == new_model_name
         ):
@@ -240,7 +240,7 @@ class VerifiedModelService:
         result = await self.db_session.execute(existing_query)
         existing = result.scalars().first()
         if existing:
-            raise ValueError(f"Model {provider}/{model_name} already exists")
+            raise ValueError(f'Model {provider}/{model_name} already exists')
 
         previous_default = (
             await self._get_default_for_provider(provider) if is_default else None
@@ -263,7 +263,7 @@ class VerifiedModelService:
             )
         await self.db_session.commit()
         await self.db_session.refresh(model)
-        logger.info(f"Created verified model: {provider}/{model_name}")
+        logger.info(f'Created verified model: {provider}/{model_name}')
         return verified_model(model)
 
     async def update_verified_model(
@@ -321,7 +321,7 @@ class VerifiedModelService:
 
         await self.db_session.commit()
         await self.db_session.refresh(model)
-        logger.info(f"Updated verified model: {provider}/{model_name}")
+        logger.info(f'Updated verified model: {provider}/{model_name}')
         return verified_model(model)
 
     async def delete_verified_model(self, model_name: str, provider: str):
@@ -343,11 +343,11 @@ class VerifiedModelService:
         result = await self.db_session.execute(query)
         model = result.scalars().first()
         if not model:
-            raise ValueError("Unknown model")
+            raise ValueError('Unknown model')
 
         await self.db_session.delete(model)
         await self.db_session.commit()
-        logger.info(f"Deleted verified model: {provider}/{model_name}")
+        logger.info(f'Deleted verified model: {provider}/{model_name}')
 
 
 def verified_model_store_dependency(db_session: AsyncSession = depends_db_session()):

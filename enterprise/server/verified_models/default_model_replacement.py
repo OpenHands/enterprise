@@ -12,16 +12,16 @@ from storage.org_member import OrgMember
 from storage.user import User
 from storage.user_settings import UserSettings
 
-_OPENHANDS_PREFIX = "openhands/"
-_LITELLM_PROXY_PREFIX = "litellm_proxy/"
+_OPENHANDS_PREFIX = 'openhands/'
+_LITELLM_PROXY_PREFIX = 'litellm_proxy/'
 
 
 def _build_default_model_replacements(
     old_model_name: str, new_model_name: str
 ) -> dict[str, str]:
     return {
-        f"{_OPENHANDS_PREFIX}{old_model_name}": f"{_OPENHANDS_PREFIX}{new_model_name}",
-        f"{_LITELLM_PROXY_PREFIX}{old_model_name}": f"{_LITELLM_PROXY_PREFIX}{new_model_name}",
+        f'{_OPENHANDS_PREFIX}{old_model_name}': f'{_OPENHANDS_PREFIX}{new_model_name}',
+        f'{_LITELLM_PROXY_PREFIX}{old_model_name}': f'{_LITELLM_PROXY_PREFIX}{new_model_name}',
     }
 
 
@@ -31,7 +31,7 @@ def replace_model_values(value: Any, replacements: dict[str, str]) -> tuple[Any,
         changed = False
         replaced = {}
         for key, item in value.items():
-            if key == "model" and isinstance(item, str) and item in replacements:
+            if key == 'model' and isinstance(item, str) and item in replacements:
                 replaced[key] = replacements[item]
                 changed = True
                 continue
@@ -59,7 +59,7 @@ async def _replace_json_column(
     column_name: str,
     replacements: dict[str, str],
 ) -> int:
-    result = await db_session.execute(select(model_cls))
+    result: Any = await db_session.execute(select(model_cls))
     updated = 0
     for row in result.scalars().all():
         current = getattr(row, column_name)
@@ -89,11 +89,11 @@ async def replace_openhands_default_model_references(
     replacements = _build_default_model_replacements(old_model_name, new_model_name)
     updated = 0
     for model_cls, column_name in (
-        (UserSettings, "agent_settings"),
-        (Org, "agent_settings"),
-        (OrgMember, "agent_settings_diff"),
-        (User, "llm_profiles"),
-        (Org, "llm_profiles"),
+        (UserSettings, 'agent_settings'),
+        (Org, 'agent_settings'),
+        (OrgMember, 'agent_settings_diff'),
+        (User, 'llm_profiles'),
+        (Org, 'llm_profiles'),
     ):
         updated += await _replace_json_column(
             db_session, model_cls, column_name, replacements

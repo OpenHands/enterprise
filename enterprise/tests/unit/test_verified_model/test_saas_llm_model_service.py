@@ -11,9 +11,9 @@ from storage.base import Base
 @pytest.fixture
 async def async_engine():
     engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+        'sqlite+aiosqlite:///:memory:',
         poolclass=StaticPool,
-        connect_args={"check_same_thread": False},
+        connect_args={'check_same_thread': False},
         echo=False,
     )
     async with engine.begin() as conn:
@@ -36,43 +36,43 @@ class TestSaaSLLMModelService:
         async with async_session_maker() as session:
             verified_service = VerifiedModelService(session)
             await verified_service.create_verified_model(
-                model_name="deepseek-v4-flash",
-                provider="openhands",
+                model_name='deepseek-v4-flash',
+                provider='openhands',
                 is_verified=False,
             )
             await verified_service.create_verified_model(
-                model_name="db-added-model",
-                provider="openhands",
+                model_name='db-added-model',
+                provider='openhands',
                 is_verified=True,
                 is_default=True,
             )
             await verified_service.create_verified_model(
-                model_name="db-openai-model",
-                provider="openai",
+                model_name='db-openai-model',
+                provider='openai',
                 is_verified=True,
             )
             await verified_service.create_verified_model(
-                model_name="disabled-db-model",
-                provider="openai",
+                model_name='disabled-db-model',
+                provider='openai',
                 is_enabled=False,
                 is_verified=True,
             )
 
             service = SaaSLLMModelService(session)
             openhands_page = await service.search_llm_models(
-                provider_eq="openhands", limit=10000
+                provider_eq='openhands', limit=10000
             )
             openai_page = await service.search_llm_models(
-                provider_eq="openai", limit=10000
+                provider_eq='openai', limit=10000
             )
 
         openhands_by_name = {m.name: m for m in openhands_page.items}
         openai_by_name = {m.name: m for m in openai_page.items}
 
-        assert openhands_by_name["deepseek-v4-flash"].verified is False
-        assert openhands_by_name["db-added-model"].verified is True
-        assert openhands_by_name["db-added-model"].default is True
+        assert openhands_by_name['deepseek-v4-flash'].verified is False
+        assert openhands_by_name['db-added-model'].verified is True
+        assert openhands_by_name['db-added-model'].default is True
         assert service._cached_response is not None
-        assert service._cached_response.verified_models == ["db-added-model"]
-        assert openai_by_name["db-openai-model"].verified is True
-        assert "disabled-db-model" not in openai_by_name
+        assert service._cached_response.verified_models == ['db-added-model']
+        assert openai_by_name['db-openai-model'].verified is True
+        assert 'disabled-db-model' not in openai_by_name
