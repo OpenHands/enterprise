@@ -214,9 +214,10 @@ def get_openhands_models(
 ) -> list[str]:
     """Return the list of OpenHands-provider model strings.
 
-    In self-hosted mode *verified_models* is ``None`` (or empty) and the
-    hardcoded ``OPENHANDS_MODELS`` list is used.  In SaaS mode the caller
-    passes the database-backed list which takes precedence.
+    In self-hosted mode *verified_models* is ``None`` and the hardcoded
+    ``OPENHANDS_MODELS`` list is used. In SaaS mode the caller passes the
+    database-backed list, including an empty list when no OpenHands models are
+    enabled.
 
     Args:
         verified_models: Optional list of ``"openhands/<name>"`` strings
@@ -225,7 +226,7 @@ def get_openhands_models(
     Returns:
         A list such as ``["openhands/claude-opus-4-6", ...]``.
     """
-    return verified_models if verified_models else OPENHANDS_MODELS
+    return verified_models if verified_models is not None else OPENHANDS_MODELS
 
 
 def _assign_provider(model: str) -> str:
@@ -270,6 +271,7 @@ def get_supported_llm_models(
     extra_models: list[str] | None = None,
     free_models: list[str] | None = None,
     default_model: str | None = None,
+    verified_openhands_models: list[str] | None = None,
 ) -> ModelsResponse:
     """Collect every model available to this server and return structured data.
 
@@ -292,6 +294,9 @@ def get_supported_llm_models(
             database). Surfaced verbatim in ``ModelsResponse.free_models``.
         default_model: Optional recommended default model id. When ``None``
             the hardcoded ``DEFAULT_OPENHANDS_MODEL`` is used.
+        verified_openhands_models: Optional list of OpenHands-provider model ids
+            that should be returned in the legacy ``verified_models`` field.
+            Defaults to the full OpenHands model list.
     """
     litellm_model_list = litellm.model_list + list(litellm.model_cost.keys())
     model_list = remove_error_modelId(litellm_model_list)
@@ -300,6 +305,11 @@ def get_supported_llm_models(
         model_list = model_list + extra_models
 
     openhands_models = get_openhands_models(verified_models)
+    legacy_verified_openhands_models = (
+        verified_openhands_models
+        if verified_openhands_models is not None
+        else openhands_models
+    )
 
     # Assign canonical provider prefixes to bare LiteLLM names, then dedupe.
     all_models = (
@@ -309,7 +319,7 @@ def get_supported_llm_models(
 
     return ModelsResponse(
         models=unique_models,
-        verified_models=_derive_verified_models(openhands_models),
+        verified_models=_derive_verified_models(legacy_verified_openhands_models),
         verified_providers=VERIFIED_PROVIDERS,
         default_model=default_model or DEFAULT_OPENHANDS_MODEL,
         free_models=free_models or [],

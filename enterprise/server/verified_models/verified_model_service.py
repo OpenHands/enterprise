@@ -3,6 +3,9 @@
 from dataclasses import dataclass
 from datetime import datetime
 
+from server.verified_models.default_model_replacement import (
+    replace_openhands_default_model_references,
+)
 from server.verified_models.verified_model_models import (
     VerifiedModel,
     VerifiedModelPage,
@@ -33,22 +36,25 @@ class StoredVerifiedModel(Base):
     both 'openhands' and 'anthropic').
     """
 
-    __tablename__ = 'verified_models'
+    __tablename__ = "verified_models"
     __table_args__ = (
-        UniqueConstraint('model_name', 'provider', name='uq_verified_model_provider'),
+        UniqueConstraint("model_name", "provider", name="uq_verified_model_provider"),
     )
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     model_name: Mapped[str] = mapped_column(String(255), nullable=False)
     provider: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     is_enabled: Mapped[bool] = mapped_column(
-        nullable=False, default=True, server_default=text('true')
+        nullable=False, default=True, server_default=text("true")
+    )
+    is_verified: Mapped[bool] = mapped_column(
+        nullable=False, default=True, server_default=text("true")
     )
     is_free: Mapped[bool] = mapped_column(
-        nullable=False, default=False, server_default=text('false')
+        nullable=False, default=False, server_default=text("false")
     )
     is_default: Mapped[bool] = mapped_column(
-        nullable=False, default=False, server_default=text('false')
+        nullable=False, default=False, server_default=text("false")
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
@@ -64,6 +70,7 @@ def verified_model(result: StoredVerifiedModel) -> VerifiedModel:
         model_name=result.model_name,
         provider=result.provider,
         is_enabled=result.is_enabled,
+        is_verified=result.is_verified,
         is_free=result.is_free,
         is_default=result.is_default,
         created_at=result.created_at,
@@ -116,7 +123,7 @@ class VerifiedModelService:
         )
 
         # Fetch limit + 1 to check if there are more results
-        offset = int(page_id or '0')
+        offset = int(page_id or "0")
         query = query.offset(offset).limit(limit + 1)
 
         result = await self.db_session.execute(query)
@@ -149,6 +156,37 @@ class VerifiedModelService:
         stored = result.scalars().first()
         return verified_model(stored) if stored else None
 
+    async def _get_default_for_provider(
+        self, provider: str
+    ) -> StoredVerifiedModel | None:
+        result = await self.db_session.execute(
+            select(StoredVerifiedModel).where(
+                and_(
+                    StoredVerifiedModel.provider == provider,
+                    StoredVerifiedModel.is_default.is_(True),
+                )
+            )
+        )
+        return result.scalars().first()
+
+    async def _replace_default_references(
+        self,
+        provider: str,
+        previous_default: StoredVerifiedModel | None,
+        new_model_name: str,
+    ) -> None:
+        if (
+            provider != "openhands"
+            or previous_default is None
+            or previous_default.model_name == new_model_name
+        ):
+            return
+        await replace_openhands_default_model_references(
+            self.db_session,
+            old_model_name=previous_default.model_name,
+            new_model_name=new_model_name,
+        )
+
     async def _clear_default_for_provider(
         self, provider: str, except_id: int | None = None
     ) -> None:
@@ -175,6 +213,7 @@ class VerifiedModelService:
         model_name: str,
         provider: str,
         is_enabled: bool = True,
+        is_verified: bool = True,
         is_free: bool = False,
         is_default: bool = False,
     ) -> VerifiedModel:
@@ -184,6 +223,7 @@ class VerifiedModelService:
             model_name: The model identifier
             provider: The provider name
             is_enabled: Whether the model is enabled (default True)
+            is_verified: Whether the model should be marked verified
             is_free: Whether the model is free on the OpenHands provider
             is_default: Whether the model is the provider's default. Setting
                 this clears any existing default for the same provider.
@@ -200,8 +240,11 @@ class VerifiedModelService:
         result = await self.db_session.execute(existing_query)
         existing = result.scalars().first()
         if existing:
-            raise ValueError(f'Model {provider}/{model_name} already exists')
+            raise ValueError(f"Model {provider}/{model_name} already exists")
 
+        previous_default = (
+            await self._get_default_for_provider(provider) if is_default else None
+        )
         if is_default:
             await self._clear_default_for_provider(provider)
 
@@ -209,13 +252,18 @@ class VerifiedModelService:
             model_name=model_name,
             provider=provider,
             is_enabled=is_enabled,
+            is_verified=is_verified,
             is_free=is_free,
             is_default=is_default,
         )
         self.db_session.add(model)
+        if is_default:
+            await self._replace_default_references(
+                provider, previous_default, model_name
+            )
         await self.db_session.commit()
         await self.db_session.refresh(model)
-        logger.info(f'Created verified model: {provider}/{model_name}')
+        logger.info(f"Created verified model: {provider}/{model_name}")
         return verified_model(model)
 
     async def update_verified_model(
@@ -223,6 +271,7 @@ class VerifiedModelService:
         model_name: str,
         provider: str,
         is_enabled: bool | None = None,
+        is_verified: bool | None = None,
         is_free: bool | None = None,
         is_default: bool | None = None,
     ) -> VerifiedModel | None:
@@ -232,6 +281,7 @@ class VerifiedModelService:
             model_name: The model name to update
             provider: The provider name
             is_enabled: New enabled state (optional)
+            is_verified: New verified state (optional)
             is_free: New free state (optional)
             is_default: New default state (optional). Setting it to ``True``
                 clears any existing default for the same provider.
@@ -250,18 +300,28 @@ class VerifiedModelService:
         if not model:
             return None
 
+        previous_default = (
+            await self._get_default_for_provider(provider) if is_default else None
+        )
+
         if is_enabled is not None:
             model.is_enabled = is_enabled
+        if is_verified is not None:
+            model.is_verified = is_verified
         if is_free is not None:
             model.is_free = is_free
         if is_default is not None:
             if is_default:
                 await self._clear_default_for_provider(provider, except_id=model.id)
             model.is_default = is_default
+            if is_default:
+                await self._replace_default_references(
+                    provider, previous_default, model_name
+                )
 
         await self.db_session.commit()
         await self.db_session.refresh(model)
-        logger.info(f'Updated verified model: {provider}/{model_name}')
+        logger.info(f"Updated verified model: {provider}/{model_name}")
         return verified_model(model)
 
     async def delete_verified_model(self, model_name: str, provider: str):
@@ -283,11 +343,11 @@ class VerifiedModelService:
         result = await self.db_session.execute(query)
         model = result.scalars().first()
         if not model:
-            raise ValueError('Unknown model')
+            raise ValueError("Unknown model")
 
         await self.db_session.delete(model)
         await self.db_session.commit()
-        logger.info(f'Deleted verified model: {provider}/{model_name}')
+        logger.info(f"Deleted verified model: {provider}/{model_name}")
 
 
 def verified_model_store_dependency(db_session: AsyncSession = depends_db_session()):

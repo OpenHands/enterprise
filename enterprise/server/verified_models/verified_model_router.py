@@ -18,6 +18,7 @@ from server.verified_models.verified_model_service import (
 
 from openhands.app_server.config_api.default_llm_model_service import (
     DefaultLLMModelService,
+    _VERIFIED_MODEL_SET,
 )
 from openhands.app_server.config_api.llm_model_service import (
     LLMModelService,
@@ -29,18 +30,18 @@ from openhands.app_server.utils.llm import ModelsResponse, get_supported_llm_mod
 
 _logger = logging.getLogger(__name__)
 
-api_router = APIRouter(prefix='/api/admin/verified-models', tags=['Verified Models'])
+api_router = APIRouter(prefix="/api/admin/verified-models", tags=["Verified Models"])
 
 
-@api_router.get('')
+@api_router.get("")
 async def search_verified_models(
     provider: str | None = None,
     page_id: Annotated[
         str | None,
-        Query(title='Optional next_page_id from the previously returned page'),
+        Query(title="Optional next_page_id from the previously returned page"),
     ] = None,
     limit: Annotated[
-        int, Query(title='The max number of results in the page', gt=0, le=100)
+        int, Query(title="The max number of results in the page", gt=0, le=100)
     ] = 100,
     user_id: str = Depends(get_admin_user_id),
     verified_model_service: VerifiedModelService = Depends(
@@ -58,7 +59,7 @@ async def search_verified_models(
     return result
 
 
-@api_router.post('', status_code=201)
+@api_router.post("", status_code=201)
 async def create_verified_model(
     data: VerifiedModelCreate,
     user_id: str = Depends(get_admin_user_id),
@@ -72,6 +73,7 @@ async def create_verified_model(
             model_name=data.model_name,
             provider=data.provider,
             is_enabled=data.is_enabled,
+            is_verified=data.is_verified,
             is_free=data.is_free,
             is_default=data.is_default,
         )
@@ -83,7 +85,7 @@ async def create_verified_model(
         ) from ex
 
 
-@api_router.put('/{provider}/{model_name:path}')
+@api_router.put("/{provider}/{model_name:path}")
 async def update_verified_model(
     provider: str,
     model_name: str,
@@ -98,18 +100,19 @@ async def update_verified_model(
         model_name=model_name,
         provider=provider,
         is_enabled=data.is_enabled,
+        is_verified=data.is_verified,
         is_free=data.is_free,
         is_default=data.is_default,
     )
     if not model:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f'Model {provider}/{model_name} not found',
+            detail=f"Model {provider}/{model_name} not found",
         )
     return model
 
 
-@api_router.delete('/{provider}/{model_name:path}')
+@api_router.delete("/{provider}/{model_name:path}")
 async def delete_verified_model(
     provider: str,
     model_name: str,
@@ -141,6 +144,14 @@ class SaaSLLMModelService(DefaultLLMModelService):
     def __init__(self, db_session) -> None:
         super().__init__()
         self._db_session = db_session
+        self._verified_model_ids: set[str] | None = None
+
+    def _is_model_verified(
+        self, model_name: str, name: str, models_response: ModelsResponse
+    ) -> bool:
+        if self._verified_model_ids is None:
+            return super()._is_model_verified(model_name, name, models_response)
+        return model_name in self._verified_model_ids
 
     async def _get_models_response(
         self,
@@ -150,31 +161,56 @@ class SaaSLLMModelService(DefaultLLMModelService):
             return self._cached_response
 
         verified_model_service = VerifiedModelService(self._db_session)
-        page = await verified_model_service.search_verified_models(enabled_only=True)
+        page = await verified_model_service.search_verified_models(enabled_only=False)
         if page.next_page_id:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail='Too many models defined in database',
+                detail="Too many models defined in database",
             )
-        db_verified = [f'{m.provider}/{m.model_name}' for m in page.items]
+        enabled_items = [m for m in page.items if m.is_enabled]
+        openhands_models = [
+            f"{m.provider}/{m.model_name}"
+            for m in enabled_items
+            if m.provider == "openhands"
+        ]
+        extra_models = [
+            f"{m.provider}/{m.model_name}"
+            for m in enabled_items
+            if m.provider != "openhands"
+        ]
+        verified_model_ids = set(_VERIFIED_MODEL_SET)
+        for model in page.items:
+            model_id = f"{model.provider}/{model.model_name}"
+            if model.is_enabled and model.is_verified:
+                verified_model_ids.add(model_id)
+            else:
+                verified_model_ids.discard(model_id)
+        self._verified_model_ids = verified_model_ids
+        verified_openhands_models = [
+            f"{m.provider}/{m.model_name}"
+            for m in enabled_items
+            if m.provider == "openhands" and m.is_verified
+        ]
         free_models = [
-            f'{m.provider}/{m.model_name}' for m in page.items if m.is_free
+            f"{m.provider}/{m.model_name}" for m in enabled_items if m.is_free
         ]
         # At most one row per provider carries is_default (DB-enforced). The
         # openhands provider's default drives the app-wide default model shown
         # on onboarding and when creating a new OpenHands model.
         default_model = next(
             (
-                f'{m.provider}/{m.model_name}'
-                for m in page.items
-                if m.is_default and m.provider == 'openhands'
+                f"{m.provider}/{m.model_name}"
+                for m in enabled_items
+                if m.is_default and m.provider == "openhands"
             ),
             None,
         )
         self._cached_response = get_supported_llm_models(
-            db_verified,
+            openhands_models,
+            extra_models=extra_models or None,
             free_models=free_models,
             default_model=default_model,
+            verified_openhands_models=verified_openhands_models,
         )
         return self._cached_response
 
