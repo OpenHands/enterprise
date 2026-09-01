@@ -321,9 +321,7 @@ class TestLiveStatusAppConversationService:
     async def test_start_app_conversation_consumes_reserved_quota(self):
         self.mock_user_context.get_user_id = AsyncMock(return_value='user-id')
         self.mock_user_context._daily_quota_reserved = True
-        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = (
-            AsyncMock()
-        )
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock()
         tasks = [
             AppConversationStartTaskStatus.WORKING,
             AppConversationStartTaskStatus.READY,
@@ -352,9 +350,7 @@ class TestLiveStatusAppConversationService:
         self.mock_user_context.get_user_id = AsyncMock(return_value='user-id')
         self.service._reserve_daily_conversation_quota = AsyncMock(return_value=True)
         self.service._release_daily_conversation_quota = AsyncMock()
-        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = (
-            AsyncMock()
-        )
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock()
 
         async def start(_request):
             yield SimpleNamespace(status=AppConversationStartTaskStatus.ERROR)
@@ -398,7 +394,6 @@ class TestLiveStatusAppConversationService:
         self.service._release_daily_conversation_quota.assert_awaited_once_with(
             'user-id'
         )
-
 
     @pytest.mark.asyncio
     async def test_seed_sandbox_profiles_upserts_resolved_keys_and_prunes(self):
