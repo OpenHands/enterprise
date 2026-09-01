@@ -59,7 +59,7 @@ dependencies = [
   "numpy==2.4.4",
   "openai==2.33.0",
   "openhands-agent-server==1.43.1",
-  "openhands-sdk @ git+https://github.com/OpenHands/software-agent-sdk.git@58ba3d4cbbff26842155f3f9471a898c1a464aee#subdirectory=openhands-sdk",
+  "openhands-sdk @ git+https://github.com/OpenHands/software-agent-sdk.git@jmj/pareto-prompt-meta-profiles#subdirectory=openhands-sdk",
   "openhands-tools==1.43.1",
   "opentelemetry-api==1.39.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
@@ -250,7 +250,7 @@ pybase62 = "1.0.0"
 
 # V1 dependencies
 # TEMPORARY: use the Model Router SDK branch until its changes are released.
-openhands-sdk = { git = "https://github.com/OpenHands/software-agent-sdk.git", subdirectory = "openhands-sdk", rev = "58ba3d4cbbff26842155f3f9471a898c1a464aee" }
+openhands-sdk = { git = "https://github.com/OpenHands/software-agent-sdk.git", subdirectory = "openhands-sdk", branch = "jmj/pareto-prompt-meta-profiles" }
 openhands-agent-server = "==1.43.1"
 openhands-tools = "==1.43.1"
 joserfc = ">=1.0.0"

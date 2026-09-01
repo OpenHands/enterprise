@@ -5968,7 +5968,7 @@ memory-profiler = "0.61.0"
 numpy = "2.4.4"
 openai = "2.33.0"
 openhands-agent-server = "1.43.1"
-openhands-sdk = {git = "https://github.com/OpenHands/software-agent-sdk.git", rev = "58ba3d4cbbff26842155f3f9471a898c1a464aee", subdirectory = "openhands-sdk"}
+openhands-sdk = {git = "https://github.com/OpenHands/software-agent-sdk.git", rev = "jmj/pareto-prompt-meta-profiles", subdirectory = "openhands-sdk"}
 openhands-tools = "1.43.1"
 opentelemetry-api = "1.39.1"
 opentelemetry-exporter-otlp-proto-grpc = "1.39.1"
@@ -14582,4 +14582,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12,<3.14"
-content-hash = "851426ecaf9d32165adb33c8975effb11730a517fbd218b09ccb2630c8760376"
+content-hash = "2e7215f4895f640f0733ce7b076066c9d70f30ec39cb5345102958e2de905fa3"
