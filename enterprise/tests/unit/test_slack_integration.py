@@ -1392,6 +1392,102 @@ class TestStaleConversationRecovery:
         mock_store.delete_slack_conversation.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_sandbox_without_session_api_key_is_recovered(self):
+        """A running sandbox with no session API key is unusable, not a crash.
+
+        This replaced an `assert`, which would be stripped under `python -O`
+        and leave the None to fail somewhere less obvious downstream.
+        """
+        from integrations.slack.slack_errors import SlackError, SlackErrorCode
+
+        view = self._build_view()
+
+        info_service = AsyncMock()
+        info_service.get_app_conversation_info = AsyncMock(
+            return_value=MagicMock(sandbox_id='sandbox-1')
+        )
+
+        sandbox_service = AsyncMock()
+        sandbox_service.get_sandbox = AsyncMock(return_value=None)
+        sandbox_service.wait_for_sandbox_running = AsyncMock(
+            return_value=MagicMock(id='sandbox-1', session_api_key=None)
+        )
+
+        with (
+            patch(
+                'integrations.slack.slack_view.slack_conversation_store'
+            ) as mock_store,
+            patch(
+                'openhands.app_server.config.get_app_conversation_info_service'
+            ) as mock_info_ctx,
+            patch(
+                'openhands.app_server.config.get_sandbox_service'
+            ) as mock_sandbox_ctx,
+            patch('openhands.app_server.config.get_httpx_client') as mock_httpx_ctx,
+        ):
+            mock_store.delete_slack_conversation = AsyncMock(return_value=1)
+            mock_info_ctx.return_value.__aenter__.return_value = info_service
+            mock_sandbox_ctx.return_value.__aenter__.return_value = sandbox_service
+            mock_httpx_ctx.return_value.__aenter__.return_value = AsyncMock()
+
+            with pytest.raises(SlackError) as exc_info:
+                await view.send_message_to_v1_conversation(MagicMock())
+
+        assert exc_info.value.code == SlackErrorCode.CONVERSATION_UNAVAILABLE
+        mock_store.delete_slack_conversation.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_paused_sandbox_that_cannot_resume_is_recovered(self):
+        """A paused sandbox that fails to resume also heals the thread.
+
+        The resume call sits inside the guarded block, so a failure there must
+        clear the mapping rather than escaping as an unexpected error.
+        """
+        from integrations.slack.slack_errors import SlackError, SlackErrorCode
+
+        from openhands.app_server.errors import SandboxError
+        from openhands.app_server.sandbox.sandbox_models import SandboxStatus
+
+        view = self._build_view()
+
+        info_service = AsyncMock()
+        info_service.get_app_conversation_info = AsyncMock(
+            return_value=MagicMock(sandbox_id='sandbox-1')
+        )
+
+        sandbox_service = AsyncMock()
+        sandbox_service.get_sandbox = AsyncMock(
+            return_value=MagicMock(status=SandboxStatus.PAUSED)
+        )
+        sandbox_service.resume_sandbox = AsyncMock(
+            side_effect=SandboxError('Sandbox cannot be resumed: sandbox-1')
+        )
+
+        with (
+            patch(
+                'integrations.slack.slack_view.slack_conversation_store'
+            ) as mock_store,
+            patch(
+                'openhands.app_server.config.get_app_conversation_info_service'
+            ) as mock_info_ctx,
+            patch(
+                'openhands.app_server.config.get_sandbox_service'
+            ) as mock_sandbox_ctx,
+            patch('openhands.app_server.config.get_httpx_client') as mock_httpx_ctx,
+        ):
+            mock_store.delete_slack_conversation = AsyncMock(return_value=1)
+            mock_info_ctx.return_value.__aenter__.return_value = info_service
+            mock_sandbox_ctx.return_value.__aenter__.return_value = sandbox_service
+            mock_httpx_ctx.return_value.__aenter__.return_value = AsyncMock()
+
+            with pytest.raises(SlackError) as exc_info:
+                await view.send_message_to_v1_conversation(MagicMock())
+
+        sandbox_service.resume_sandbox.assert_awaited_once_with('sandbox-1')
+        assert exc_info.value.code == SlackErrorCode.CONVERSATION_UNAVAILABLE
+        mock_store.delete_slack_conversation.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_cleanup_uses_message_ts_when_not_in_thread(self):
         """parent_id falls back to message_ts for a root-level mention."""
         view = self._build_view(thread_ts=None)
