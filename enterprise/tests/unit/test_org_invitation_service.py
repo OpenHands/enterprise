@@ -7,6 +7,7 @@ import pytest
 from pydantic import SecretStr
 from server.routes.org_invitation_models import (
     EmailMismatchError,
+    InsufficientPermissionError,
     InvitationInvalidError,
     UserAlreadyMemberError,
 )
@@ -448,6 +449,264 @@ class TestAcceptInvitationEmailValidation:
             call_kwargs = mock_add_user.call_args.kwargs
             assert call_kwargs['llm_api_key'] == 'test-key'
             assert call_kwargs['agent_settings_diff'] == {}
+
+
+class TestAuthorizeInviterSuperRole:
+    """Authorization of the inviter, including the superadmin seeding path.
+
+    Covers OHE-2769: a superadmin (instance-level super role holding
+    ``INVITE_USER_TO_ORGANIZATION``) can invite the initial owner/admin
+    into an org it created via the normal invitation flow, without being a
+    member of that org. Non-super callers keep their existing boundaries.
+    """
+
+    ORG_ID = UUID('12345678-1234-5678-1234-567812345678')
+    INVITER_ID = UUID('87654321-4321-8765-4321-876543218765')
+
+    @staticmethod
+    def _role(name):
+        role = MagicMock()
+        role.id = {'owner': 1, 'admin': 2, 'member': 3}[name]
+        role.name = name
+        return role
+
+    def _member(self, role_name):
+        member = MagicMock()
+        member.user_id = self.INVITER_ID
+        member.role_id = self._role(role_name).id
+        return member
+
+    async def _authorize(self, role_name_lower):
+        await OrgInvitationService._authorize_inviter(
+            self.ORG_ID, self.INVITER_ID, role_name_lower
+        )
+
+    @pytest.mark.asyncio
+    async def test_superadmin_non_member_can_invite_member(self):
+        """A superadmin who is not a member may invite a regular member."""
+        with (
+            patch(
+                'server.services.org_invitation_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.services.org_invitation_service.get_user_super_role',
+                new_callable=AsyncMock,
+                return_value=self._role('admin'),
+            ),
+        ):
+            # Should not raise.
+            await self._authorize('member')
+
+    @pytest.mark.asyncio
+    async def test_superadmin_non_member_can_invite_owner(self):
+        """A superadmin may seed the *initial owner* despite not being one."""
+        with (
+            patch(
+                'server.services.org_invitation_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.services.org_invitation_service.get_user_super_role',
+                new_callable=AsyncMock,
+                return_value=self._role('admin'),
+            ),
+        ):
+            # Should not raise even though the caller holds no org owner role.
+            await self._authorize('owner')
+
+    @pytest.mark.asyncio
+    async def test_non_member_without_super_role_is_rejected(self):
+        """A plain non-member with no super role still cannot invite."""
+        with (
+            patch(
+                'server.services.org_invitation_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.services.org_invitation_service.get_user_super_role',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            with pytest.raises(InsufficientPermissionError, match='not a member'):
+                await self._authorize('member')
+
+    @pytest.mark.asyncio
+    async def test_super_role_without_invite_permission_is_rejected(self):
+        """A super role lacking the invite permission does not bypass checks.
+
+        ``member`` has an empty ``SUPER_ROLE_PERMISSIONS`` entry, so a
+        (hypothetical) super-member must not be able to seed an org.
+        """
+        with (
+            patch(
+                'server.services.org_invitation_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.services.org_invitation_service.get_user_super_role',
+                new_callable=AsyncMock,
+                return_value=self._role('member'),
+            ),
+        ):
+            with pytest.raises(InsufficientPermissionError, match='not a member'):
+                await self._authorize('member')
+
+    @pytest.mark.asyncio
+    async def test_org_member_without_invite_role_is_rejected(self):
+        """A regular member (no super role) keeps the owners/admins boundary."""
+        with (
+            patch(
+                'server.services.org_invitation_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=self._member('member'),
+            ),
+            patch(
+                'server.services.org_invitation_service.RoleStore.get_role_by_id',
+                new_callable=AsyncMock,
+                return_value=self._role('member'),
+            ),
+            patch(
+                'server.services.org_invitation_service.get_user_super_role',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            with pytest.raises(InsufficientPermissionError, match='owners and admins'):
+                await self._authorize('member')
+
+    @pytest.mark.asyncio
+    async def test_org_admin_cannot_invite_owner(self):
+        """An org admin (no super role) still cannot invite with owner role."""
+        with (
+            patch(
+                'server.services.org_invitation_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=self._member('admin'),
+            ),
+            patch(
+                'server.services.org_invitation_service.RoleStore.get_role_by_id',
+                new_callable=AsyncMock,
+                return_value=self._role('admin'),
+            ),
+            patch(
+                'server.services.org_invitation_service.get_user_super_role',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            with pytest.raises(
+                InsufficientPermissionError, match='Only owners can invite'
+            ):
+                await self._authorize('owner')
+
+    @pytest.mark.asyncio
+    async def test_org_owner_can_invite_owner(self):
+        """An org owner may invite another owner (unchanged behavior)."""
+        with (
+            patch(
+                'server.services.org_invitation_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=self._member('owner'),
+            ),
+            patch(
+                'server.services.org_invitation_service.RoleStore.get_role_by_id',
+                new_callable=AsyncMock,
+                return_value=self._role('owner'),
+            ),
+            patch(
+                'server.services.org_invitation_service.get_user_super_role',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            # Should not raise.
+            await self._authorize('owner')
+
+
+class TestCreateInvitationSuperadminSeeding:
+    """End-to-end ``create_invitation`` for the superadmin seeding path."""
+
+    ORG_ID = UUID('12345678-1234-5678-1234-567812345678')
+    SUPERADMIN_ID = UUID('87654321-4321-8765-4321-876543218765')
+
+    @pytest.mark.asyncio
+    async def test_superadmin_creates_owner_invitation_without_membership(self):
+        """A superadmin non-member successfully creates an owner invitation."""
+        org = MagicMock()
+        org.id = self.ORG_ID
+        org.name = 'Fresh Org'
+
+        super_role = MagicMock()
+        super_role.name = 'admin'
+
+        owner_role = MagicMock()
+        owner_role.id = 1
+        owner_role.name = 'owner'
+
+        created_invitation = MagicMock(spec=OrgInvitation)
+        created_invitation.id = 42
+        created_invitation.token = 'inv-token-superadmin'
+
+        with (
+            patch(
+                'server.services.org_invitation_service.OrgStore.get_org_by_id',
+                new_callable=AsyncMock,
+                return_value=org,
+            ),
+            patch(
+                'server.services.org_invitation_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.services.org_invitation_service.get_user_super_role',
+                new_callable=AsyncMock,
+                return_value=super_role,
+            ),
+            patch(
+                'server.services.org_invitation_service.RoleStore.get_role_by_name',
+                new_callable=AsyncMock,
+                return_value=owner_role,
+            ),
+            patch(
+                'server.services.org_invitation_service.UserStore.get_user_by_email',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.services.org_invitation_service.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.services.org_invitation_service.OrgInvitationStore.create_invitation',
+                new_callable=AsyncMock,
+                return_value=created_invitation,
+            ) as mock_create,
+            patch(
+                'server.services.org_invitation_service.SMTPEmailService.send_invitation_email',
+            ),
+        ):
+            result = await OrgInvitationService.create_invitation(
+                org_id=self.ORG_ID,
+                email='founder@example.com',
+                role_name='owner',
+                inviter_id=self.SUPERADMIN_ID,
+            )
+
+        assert result is created_invitation
+        mock_create.assert_awaited_once()
+        kwargs = mock_create.await_args.kwargs
+        assert kwargs['org_id'] == self.ORG_ID
+        assert kwargs['email'] == 'founder@example.com'
+        assert kwargs['role_id'] == owner_role.id
+        assert kwargs['inviter_id'] == self.SUPERADMIN_ID
 
 
 class TestCreateInvitationsBatch:
