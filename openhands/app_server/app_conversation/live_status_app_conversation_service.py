@@ -400,9 +400,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         if quota_reserved:
             setattr(self.user_context, '_daily_quota_reserved', False)
         elif quota_user_id:
-            quota_reserved = await self._reserve_daily_conversation_quota(
-                quota_user_id
-            )
+            quota_reserved = await self._reserve_daily_conversation_quota(quota_user_id)
 
         try:
             async for task in self._start_app_conversation(request):
