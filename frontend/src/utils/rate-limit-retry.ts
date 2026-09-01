@@ -36,9 +36,11 @@ function getHeaderValue(headers: unknown, name: string): string | undefined {
 }
 
 export function isRateLimitError(error: unknown): boolean {
-  const axiosError = error as AxiosError<{
-    detail?: { code?: string };
-  }> | undefined;
+  const axiosError = error as
+    | AxiosError<{
+        detail?: { code?: string };
+      }>
+    | undefined;
   const detail = axiosError?.response?.data?.detail;
   return (
     (axiosError?.response?.status === 429 || axiosError?.status === 429) &&
