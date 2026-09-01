@@ -62,6 +62,46 @@ from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 
+class _AsyncSessionContext:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, *args):
+        return None
+
+
+def _quota_modules(reserve_result=True, release_error=None):
+    session = object()
+    reserve = AsyncMock(return_value=reserve_result)
+    release = AsyncMock(side_effect=release_error)
+
+    class DailyConversationQuotaService:
+        def __init__(self, actual_session):
+            assert actual_session is session
+
+        async def reserve(self, user_id, org_id):
+            return await reserve(user_id, org_id)
+
+        async def release(self, user_id):
+            await release(user_id)
+
+    quota_module = types.ModuleType('server.services.daily_conversation_quota_service')
+    quota_module.DailyConversationQuotaService = DailyConversationQuotaService
+    database_module = types.ModuleType('storage.database')
+    database_module.a_session_maker = lambda: _AsyncSessionContext(session)
+    modules = {
+        'server': types.ModuleType('server'),
+        'server.services': types.ModuleType('server.services'),
+        'server.services.daily_conversation_quota_service': quota_module,
+        'storage': types.ModuleType('storage'),
+        'storage.database': database_module,
+    }
+    return modules, reserve, release
+
+
 def _async_iter(items):
     async def iter_items():
         for item in items:
@@ -394,6 +434,104 @@ class TestLiveStatusAppConversationService:
         self.service._release_daily_conversation_quota.assert_awaited_once_with(
             'user-id'
         )
+
+    @pytest.mark.asyncio
+    async def test_reserve_daily_quota_noops_without_enterprise_modules(self):
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        with patch.dict(
+            sys.modules,
+            {
+                'server.services.daily_conversation_quota_service': None,
+                'storage.database': None,
+            },
+        ):
+            result = await self.service._reserve_daily_conversation_quota('user-id')
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_reserve_daily_quota_noops_without_org(self):
+        modules, reserve, _ = _quota_modules()
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=None)
+        with (
+            patch.dict(sys.modules, modules),
+            patch(
+                'openhands.app_server.shared.server_config.app_mode',
+                SimpleNamespace(value='saas'),
+            ),
+        ):
+            result = await self.service._reserve_daily_conversation_quota('user-id')
+
+        assert result is False
+        reserve.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reserve_daily_quota_uses_enterprise_service(self):
+        modules, reserve, _ = _quota_modules(reserve_result=True)
+        org_id = uuid4()
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+        with (
+            patch.dict(sys.modules, modules),
+            patch(
+                'openhands.app_server.shared.server_config.app_mode',
+                SimpleNamespace(value='saas'),
+            ),
+        ):
+            result = await self.service._reserve_daily_conversation_quota('user-id')
+
+        assert result is True
+        reserve.assert_awaited_once_with('user-id', org_id)
+
+    @pytest.mark.asyncio
+    async def test_release_daily_quota_noops_without_user(self):
+        await self.service._release_daily_conversation_quota(None)
+
+    @pytest.mark.asyncio
+    async def test_release_daily_quota_uses_service_and_swallows_errors(self):
+        modules, _, release = _quota_modules()
+        with patch.dict(sys.modules, modules):
+            await self.service._release_daily_conversation_quota('user-id')
+        release.assert_awaited_once_with('user-id')
+
+        modules, _, release = _quota_modules(release_error=RuntimeError('db failed'))
+        with patch.dict(sys.modules, modules):
+            await self.service._release_daily_conversation_quota('user-id')
+        release.assert_awaited_once_with('user-id')
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_without_user_skips_quota(self):
+        self.mock_user_context.get_user_id = AsyncMock(return_value=None)
+        self.service._reserve_daily_conversation_quota = AsyncMock()
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock()
+
+        async def start(_request):
+            yield SimpleNamespace(status=AppConversationStartTaskStatus.READY)
+
+        self.service._start_app_conversation = start
+        result = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+
+        assert len(result) == 1
+        self.service._reserve_daily_conversation_quota.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reserve_daily_quota_noops_outside_saas(self):
+        modules, reserve, _ = _quota_modules()
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        with (
+            patch.dict(sys.modules, modules),
+            patch(
+                'openhands.app_server.shared.server_config.app_mode',
+                SimpleNamespace(value='oss'),
+            ),
+        ):
+            result = await self.service._reserve_daily_conversation_quota('user-id')
+
+        assert result is False
+        reserve.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_seed_sandbox_profiles_upserts_resolved_keys_and_prunes(self):
