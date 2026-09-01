@@ -11,7 +11,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-08-25T15:11:30.208425Z"
+exclude-newer = "2026-08-25T15:17:41.20491Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -3408,7 +3408,7 @@ requires-dist = [
     { name = "numpy", specifier = "==2.4.4" },
     { name = "openai", specifier = "==2.33.0" },
     { name = "openhands-agent-server", specifier = "==1.43.1" },
-    { name = "openhands-sdk", git = "https://github.com/OpenHands/software-agent-sdk.git?subdirectory=openhands-sdk&rev=517d310c61f0522c8e47b315a4d90f4b3f4874b3" },
+    { name = "openhands-sdk", git = "https://github.com/OpenHands/software-agent-sdk.git?subdirectory=openhands-sdk&rev=58ba3d4cbbff26842155f3f9471a898c1a464aee" },
     { name = "openhands-tools", specifier = "==1.43.1" },
     { name = "opentelemetry-api", specifier = "==1.39.1" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = "==1.39.1" },
@@ -3489,7 +3489,7 @@ test = [
 [[package]]
 name = "openhands-sdk"
 version = "1.44.1"
-source = { git = "https://github.com/OpenHands/software-agent-sdk.git?subdirectory=openhands-sdk&rev=517d310c61f0522c8e47b315a4d90f4b3f4874b3#517d310c61f0522c8e47b315a4d90f4b3f4874b3" }
+source = { git = "https://github.com/OpenHands/software-agent-sdk.git?subdirectory=openhands-sdk&rev=58ba3d4cbbff26842155f3f9471a898c1a464aee#58ba3d4cbbff26842155f3f9471a898c1a464aee" }
 dependencies = [
     { name = "agent-client-protocol" },
     { name = "deprecation" },

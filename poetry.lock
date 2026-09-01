@@ -5747,8 +5747,8 @@ vertex = ["google-cloud-aiplatform (>=1.38)"]
 [package.source]
 type = "git"
 url = "https://github.com/OpenHands/software-agent-sdk.git"
-reference = "517d310c61f0522c8e47b315a4d90f4b3f4874b3"
-resolved_reference = "517d310c61f0522c8e47b315a4d90f4b3f4874b3"
+reference = "58ba3d4cbbff26842155f3f9471a898c1a464aee"
+resolved_reference = "58ba3d4cbbff26842155f3f9471a898c1a464aee"
 subdirectory = "openhands-sdk"
 
 [[package]]
@@ -14000,4 +14000,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12,<3.14"
-content-hash = "3a54c4ee64b56a3f31cf5199becb4d0d21079622a4e1b07e4f9b1c1e827f8ad0"
+content-hash = "09b2486d2dbb5c77c2234c6fc45ab7622f512a9fdc2848c576f1be136dabfd3d"

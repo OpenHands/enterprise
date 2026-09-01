@@ -5968,7 +5968,7 @@ memory-profiler = "0.61.0"
 numpy = "2.4.4"
 openai = "2.33.0"
 openhands-agent-server = "1.43.1"
-openhands-sdk = {git = "https://github.com/OpenHands/software-agent-sdk.git", rev = "517d310c61f0522c8e47b315a4d90f4b3f4874b3", subdirectory = "openhands-sdk"}
+openhands-sdk = {git = "https://github.com/OpenHands/software-agent-sdk.git", rev = "58ba3d4cbbff26842155f3f9471a898c1a464aee", subdirectory = "openhands-sdk"}
 openhands-tools = "1.43.1"
 opentelemetry-api = "1.39.1"
 opentelemetry-exporter-otlp-proto-grpc = "1.39.1"
@@ -6058,8 +6058,8 @@ vertex = ["google-cloud-aiplatform (>=1.38)"]
 [package.source]
 type = "git"
 url = "https://github.com/OpenHands/software-agent-sdk.git"
-reference = "517d310c61f0522c8e47b315a4d90f4b3f4874b3"
-resolved_reference = "517d310c61f0522c8e47b315a4d90f4b3f4874b3"
+reference = "58ba3d4cbbff26842155f3f9471a898c1a464aee"
+resolved_reference = "58ba3d4cbbff26842155f3f9471a898c1a464aee"
 subdirectory = "openhands-sdk"
 
 [[package]]
@@ -14582,4 +14582,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12,<3.14"
-content-hash = "ae97c8724f93896e946f5ae7b8e3817edb45e7eb197d8db3971e6503d91b3e13"
+content-hash = "851426ecaf9d32165adb33c8975effb11730a517fbd218b09ccb2630c8760376"
