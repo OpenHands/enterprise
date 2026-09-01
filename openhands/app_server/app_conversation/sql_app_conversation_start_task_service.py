@@ -270,6 +270,29 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
         # Return True if any rows were affected
         return result.rowcount > 0
 
+    async def delete_start_tasks_older_than(self, cutoff: datetime) -> int:
+        """Delete all start tasks older than the given cutoff, regardless of user.
+
+        This is intended for the periodic cleanup CronJob that purges stale
+        start-task rows. It deliberately ignores ``user_id`` so it can run
+        unscoped.
+
+        Args:
+            cutoff: Rows with ``created_at`` strictly before this value are deleted.
+
+        Returns:
+            The number of rows deleted.
+        """
+        from sqlalchemy import delete
+
+        delete_query = delete(StoredAppConversationStartTask).where(
+            StoredAppConversationStartTask.created_at < cutoff
+        )
+
+        result = cast(CursorResult, await self.session.execute(delete_query))
+        await self.session.commit()
+        return result.rowcount
+
 
 class SQLAppConversationStartTaskServiceInjector(
     AppConversationStartTaskServiceInjector
