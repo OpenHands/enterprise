@@ -195,8 +195,8 @@ def _get_feature_flags() -> WebClientFeatureFlags:
 
     Reads ENABLE_BILLING, HIDE_LLM_SETTINGS, ENABLE_JIRA, ENABLE_JIRA_DC,
     ENABLE_LINEAR, HIDE_USERS_PAGE, HIDE_BILLING_PAGE, HIDE_INTEGRATIONS_PAGE,
-    HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, and
-    ENABLE_AGENT_CANVAS_BANNER from environment.
+    HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, ENABLE_AGENT_CANVAS_BANNER,
+    and ENABLE_BYOR_EXPORT from environment.
 
     OH_ALLOW_USER_LLM_CONFIGURATION and ENABLE_ACP are the exceptions: they
     default to 'true' when unset. OH_ALLOW_USER_LLM_CONFIGURATION keeps the
@@ -223,7 +223,35 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_onboarding=os.getenv('OH_ENABLE_ONBOARDING', 'false') == 'true',
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
+        enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),
     )
+
+
+async def _get_db_feature_flags() -> dict[str, bool]:
+    """Return database-backed global feature flags for an anonymous context.
+
+    Only flags with NO targeting rules are returned (see
+    ``FeatureFlagService.get_global_flags``); per-user/per-org/per-email flags
+    require an authenticated context and are intentionally absent here. This
+    endpoint is one of the first invoked and does not require authentication,
+    so it must not leak targeted flag state.
+
+    The import is lazy and best-effort: OSS installs (and SaaS installs that
+    have not applied the feature-flag migration) simply get an empty map, so
+    this path degrades gracefully and never blocks the config endpoint.
+    """
+    try:
+        from server.services.feature_flag_service import (
+            feature_flag_service,
+        )
+    except Exception:
+        return {}
+    try:
+        return await feature_flag_service.get_global_flags()
+    except Exception:
+        # Never let a DB hiccup take down the unauthenticated config
+        # endpoint; fall back to an empty map.
+        return {}
 
 
 class DefaultWebClientConfigInjector(WebClientConfigInjector):
@@ -295,6 +323,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             app_mode=config.app_mode,
             posthog_client_key=self.posthog_client_key,
             feature_flags=self.feature_flags,
+            db_feature_flags=await _get_db_feature_flags(),
             providers_configured=self.providers_configured,
             maintenance_start_time=self.maintenance_start_time,
             auth_url=self.auth_url,

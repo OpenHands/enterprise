@@ -63,15 +63,6 @@ class JiraWebhookPayload:
         return self.comment_body
 
 
-class JiraPayloadParseError(Exception):
-    """Raised when payload parsing fails."""
-
-    def __init__(self, reason: str, event_type: str | None = None):
-        self.reason = reason
-        self.event_type = event_type
-        super().__init__(reason)
-
-
 @dataclass(frozen=True)
 class JiraPayloadSuccess:
     """Result when parsing succeeds."""

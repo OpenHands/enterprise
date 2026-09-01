@@ -1,10 +1,8 @@
 import os
 import re
 
-# Get the host from environment variable
 HOST = os.getenv('WEB_HOST', 'app.all-hands.dev').strip()
 
-# Check if this is a feature environment
 # Feature environments have a host format like {some-text}.staging.all-hands.dev
 # or {some-text}.staging.openhands.dev (the domain the staging/feature stack is
 # migrating to), or {some-text}.ohe-staging.platform-team.all-hands.dev (for the
@@ -26,6 +24,12 @@ IS_LOCAL_ENV = bool(HOST == 'localhost')
 BYOR_KEY_ALIAS_PATTERN = os.getenv(
     'BYOR_KEY_ALIAS_PATTERN', 'BYOR Key - user {user_id}, org {org_id}'
 )
+
+# When true, LLM API key export (BYOR) is enabled for every org regardless of
+# billing/credits. Used by self-hosted/enterprise deployments that don't run
+# the Stripe billing flow but still want to expose the managed LLM key.
+# Accepts both 'true' and '1' (older Helm charts default to '1').
+ENABLE_BYOR_EXPORT = os.getenv('ENABLE_BYOR_EXPORT', 'false').lower() in ('true', '1')
 
 
 # Explicit OH_DEPLOYMENT_MODE wins; _is_all_hands_managed_domain() is the host fallback.

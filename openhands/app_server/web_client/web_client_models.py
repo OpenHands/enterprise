@@ -41,6 +41,10 @@ class WebClientFeatureFlags(BaseModel):
     enable_onboarding: bool = False
     enable_automations: bool = True
     enable_agent_canvas_banner: bool = False
+    # When true, LLM API key export (BYOR) is enabled for every org regardless of
+    # billing/credits. Mirrors the ENABLE_BYOR_EXPORT env var so the frontend can
+    # distinguish "export disabled on this deployment" from "buy credits to enable".
+    enable_byor_export: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')
@@ -69,6 +73,12 @@ class WebClientConfig(DiscriminatedUnionMixin):
     app_mode: AppMode
     posthog_client_key: str | None
     feature_flags: WebClientFeatureFlags
+    # Database-backed feature flags that are safe to expose to anonymous
+    # callers: only flags with NO targeting rules (global on/off) ever land
+    # here. Per-user/per-org/per-email flags require an authenticated context
+    # and are fetched via a separate path. Defaults to empty so OSS and
+    # pre-migration installs are unaffected.
+    db_feature_flags: dict[str, bool] = Field(default_factory=dict)
     providers_configured: list[ProviderType]
     maintenance_start_time: datetime | None
     auth_url: str | None

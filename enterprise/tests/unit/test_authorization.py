@@ -1473,6 +1473,7 @@ class TestSuperRolePermissions:
                 Permission.CREATE_ORGANIZATION,
                 Permission.PROVISION_USER,
                 Permission.MANAGE_SUPER_ADMINS,
+                Permission.MANAGE_FEATURE_FLAGS,
                 Permission.MANAGE_ORG_QUOTA,
             ]
         )
