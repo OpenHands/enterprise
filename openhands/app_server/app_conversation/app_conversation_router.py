@@ -487,15 +487,6 @@ async def start_app_conversation(
 ) -> AppConversationStartTask:
     await _validate_codex_credentials(start_request, user_context, secrets_store)
 
-    quota_user_id = await user_context.get_user_id()
-    get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
-    quota_org_id = (
-        await get_effective_org_id() if get_effective_org_id is not None else None
-    )
-    quota_reserved = await _reserve_daily_conversation_quota(
-        quota_user_id, quota_org_id
-    )
-
     # Because we are processing after the request finishes, keep the db connection open
     set_db_session_keep_open(request.state, True)
     set_httpx_client_keep_open(request.state, True)
@@ -524,15 +515,9 @@ async def start_app_conversation(
         except Exception:
             logger.exception('analytics:conversation_requested:failed', stack_info=True)
 
-        asyncio.create_task(
-            _consume_remaining(
-                async_iter, db_session, httpx_client, quota_user_id, quota_reserved
-            )
-        )
+        asyncio.create_task(_consume_remaining(async_iter, db_session, httpx_client))
         return result
     except Exception:
-        if quota_reserved and quota_user_id:
-            await _release_daily_conversation_quota(quota_user_id)
         await db_session.close()
         await httpx_client.aclose()
         raise
@@ -1166,6 +1151,15 @@ async def stream_app_conversation_start(
     Leaves the connection open until either the conversation starts or there was an error
     """
     await _validate_codex_credentials(request, user_context, secrets_store)
+    quota_user_id = await user_context.get_user_id()
+    get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
+    quota_org_id = (
+        await get_effective_org_id() if get_effective_org_id is not None else None
+    )
+    quota_reserved = await _reserve_daily_conversation_quota(
+        quota_user_id, quota_org_id
+    )
+    setattr(user_context, '_daily_quota_reserved', quota_reserved)
     response = StreamingResponse(
         _stream_app_conversation_start(request, user_context),
         media_type='application/json',
