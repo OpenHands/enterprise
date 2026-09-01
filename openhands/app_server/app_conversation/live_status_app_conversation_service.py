@@ -98,8 +98,7 @@ from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.settings.llm_profiles import resolve_profile_llm
 from openhands.app_server.settings.marketplace_composition import (
-    load_composed_marketplaces,
-    marketplace_plugin_loading_enabled,
+    resolve_registered_marketplaces,
 )
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
@@ -2267,27 +2266,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     ) -> list[MarketplaceRegistration] | None:
         """Compose instance + org + user marketplaces for conversation start.
 
-        Enabled by default; returns ``None`` (feature inert) when
-        ENABLE_MARKETPLACE_PLUGIN_LOADING is explicitly disabled. Never raises:
-        any failure degrades to no marketplaces so it can never block
-        conversation creation.
+        Kept as a method over the shared resolver so tests can patch it by
+        name.
         """
-        if not marketplace_plugin_loading_enabled():
-            return None
-        try:
-            from openhands.app_server.shared import SettingsStoreImpl
-
-            user_id = await self.user_context.get_user_id()
-            settings_store = await SettingsStoreImpl.get_instance(user_id)
-            composed = await load_composed_marketplaces(
-                user_id, user.registered_marketplaces, settings_store
-            )
-            return composed.all or None
-        except Exception as e:
-            _logger.warning(
-                'Failed to compose marketplaces for conversation start: %s', e
-            )
-            return None
+        return await resolve_registered_marketplaces(self.user_context, user)
 
     async def _load_skills_onto_request(
         self,
