@@ -21,26 +21,26 @@ class TestSaasUserInfoModel:
         from server.models.user_models import SaasUserInfo
 
         user_info = SaasUserInfo(
-            id="user-123",
-            org_id="org-456",
-            org_name="Test Organization",
-            role="admin",
-            permissions=["read", "write", "delete"],
+            id='user-123',
+            org_id='org-456',
+            org_name='Test Organization',
+            role='admin',
+            permissions=['read', 'write', 'delete'],
         )
 
-        assert user_info.id == "user-123"
-        assert user_info.org_id == "org-456"
-        assert user_info.org_name == "Test Organization"
-        assert user_info.role == "admin"
-        assert user_info.permissions == ["read", "write", "delete"]
+        assert user_info.id == 'user-123'
+        assert user_info.org_id == 'org-456'
+        assert user_info.org_name == 'Test Organization'
+        assert user_info.role == 'admin'
+        assert user_info.permissions == ['read', 'write', 'delete']
 
     def test_saas_user_info_without_org_fields(self):
         """SaasUserInfo should work without org fields (fallback mode)."""
         from server.models.user_models import SaasUserInfo
 
-        user_info = SaasUserInfo(id="user-123")
+        user_info = SaasUserInfo(id='user-123')
 
-        assert user_info.id == "user-123"
+        assert user_info.id == 'user-123'
         assert user_info.org_id is None
         assert user_info.org_name is None
         assert user_info.role is None
@@ -51,15 +51,15 @@ class TestSaasUserInfoModel:
         from server.models.user_models import SaasUserInfo
 
         user_info = SaasUserInfo(
-            id="user-123",
-            org_id="org-456",
-            org_name="Test Organization",
+            id='user-123',
+            org_id='org-456',
+            org_name='Test Organization',
             role=None,
             permissions=[],
         )
 
-        assert user_info.org_id == "org-456"
-        assert user_info.org_name == "Test Organization"
+        assert user_info.org_id == 'org-456'
+        assert user_info.org_name == 'Test Organization'
         assert user_info.role is None
         assert user_info.permissions == []
 
@@ -68,18 +68,18 @@ class TestSaasUserInfoModel:
         from server.models.user_models import SaasUserInfo
 
         user_info = SaasUserInfo(
-            id="user-123",
-            org_id="org-456",
-            org_name="Test Organization",
-            role="member",
-            permissions=["read"],
+            id='user-123',
+            org_id='org-456',
+            org_name='Test Organization',
+            role='member',
+            permissions=['read'],
         )
 
         data = user_info.model_dump()
-        assert data["org_id"] == "org-456"
-        assert data["org_name"] == "Test Organization"
-        assert data["role"] == "member"
-        assert data["permissions"] == ["read"]
+        assert data['org_id'] == 'org-456'
+        assert data['org_name'] == 'Test Organization'
+        assert data['role'] == 'member'
+        assert data['permissions'] == ['read']
 
     def test_saas_user_info_extends_base_user_info(self):
         """SaasUserInfo should inherit from UserInfo base class."""
@@ -105,10 +105,10 @@ class TestGetOrgInfoFromContext:
         mock_user_auth = MagicMock(spec=SaasUserAuth)
         mock_user_auth.get_org_info = AsyncMock(
             return_value={
-                "org_id": "org-456",
-                "org_name": "Test Organization",
-                "role": "admin",
-                "permissions": ["read", "write"],
+                'org_id': 'org-456',
+                'org_name': 'Test Organization',
+                'role': 'admin',
+                'permissions': ['read', 'write'],
             }
         )
 
@@ -119,9 +119,9 @@ class TestGetOrgInfoFromContext:
         org_info = await _get_org_info_from_context(context)
 
         assert org_info is not None
-        assert org_info["org_id"] == "org-456"
-        assert org_info["org_name"] == "Test Organization"
-        assert org_info["role"] == "admin"
+        assert org_info['org_id'] == 'org-456'
+        assert org_info['org_name'] == 'Test Organization'
+        assert org_info['role'] == 'admin'
         mock_user_auth.get_org_info.assert_called_once()
 
     @pytest.mark.asyncio
@@ -177,19 +177,19 @@ class TestGetCurrentUserSaasEndpoint:
         from openhands.app_server.user.user_models import UserInfo
 
         # Mock base user info
-        base_user_info = UserInfo(id="user-123")
+        base_user_info = UserInfo(id='user-123')
         mock_user_context.get_user_info = AsyncMock(return_value=base_user_info)
 
         # Mock _get_org_info_from_context to return org info
         org_info = {
-            "org_id": "org-456",
-            "org_name": "Test Organization",
-            "role": "member",
-            "permissions": ["read", "write"],
+            'org_id': 'org-456',
+            'org_name': 'Test Organization',
+            'role': 'member',
+            'permissions': ['read', 'write'],
         }
 
         with patch(
-            "server.routes.users_v1._get_org_info_from_context",
+            'server.routes.users_v1._get_org_info_from_context',
             return_value=org_info,
         ):
             result = await get_current_user_saas(
@@ -198,11 +198,11 @@ class TestGetCurrentUserSaasEndpoint:
 
         assert isinstance(result, JSONResponse)
         data = json.loads(result.body)
-        assert data["id"] == "user-123"
-        assert data["org_id"] == "org-456"
-        assert data["org_name"] == "Test Organization"
-        assert data["role"] == "member"
-        assert data["permissions"] == ["read", "write"]
+        assert data['id'] == 'user-123'
+        assert data['org_id'] == 'org-456'
+        assert data['org_name'] == 'Test Organization'
+        assert data['role'] == 'member'
+        assert data['permissions'] == ['read', 'write']
 
     @pytest.mark.asyncio
     async def test_endpoint_returns_saas_user_info_without_org_fields(
@@ -217,12 +217,12 @@ class TestGetCurrentUserSaasEndpoint:
         from openhands.app_server.user.user_models import UserInfo
 
         # Mock base user info
-        base_user_info = UserInfo(id="user-123")
+        base_user_info = UserInfo(id='user-123')
         mock_user_context.get_user_info = AsyncMock(return_value=base_user_info)
 
         # Mock _get_org_info_from_context to return None
         with patch(
-            "server.routes.users_v1._get_org_info_from_context",
+            'server.routes.users_v1._get_org_info_from_context',
             return_value=None,
         ):
             result = await get_current_user_saas(
@@ -231,11 +231,11 @@ class TestGetCurrentUserSaasEndpoint:
 
         assert isinstance(result, JSONResponse)
         data = json.loads(result.body)
-        assert data["id"] == "user-123"
-        assert data.get("org_id") is None
-        assert data.get("org_name") is None
-        assert data.get("role") is None
-        assert data.get("permissions") is None
+        assert data['id'] == 'user-123'
+        assert data.get('org_id') is None
+        assert data.get('org_name') is None
+        assert data.get('role') is None
+        assert data.get('permissions') is None
 
     @pytest.mark.asyncio
     async def test_endpoint_raises_401_when_user_info_is_none(self, mock_user_context):
@@ -251,7 +251,7 @@ class TestGetCurrentUserSaasEndpoint:
             )
 
         assert exc_info.value.status_code == 401
-        assert exc_info.value.detail == "Not authenticated"
+        assert exc_info.value.detail == 'Not authenticated'
 
 
 class TestSdkCompatFields:
@@ -276,15 +276,15 @@ class TestSdkCompatFields:
         from openhands.sdk.settings import OpenHandsAgentSettings
 
         base_user_info = UserInfo(
-            id="user-123",
+            id='user-123',
             agent_settings=OpenHandsAgentSettings(
-                llm=LLM(model="test-model", base_url="https://test.com")
+                llm=LLM(model='test-model', base_url='https://test.com')
             ),
         )
         mock_user_context.get_user_info = AsyncMock(return_value=base_user_info)
 
         with patch(
-            "server.routes.users_v1._get_org_info_from_context",
+            'server.routes.users_v1._get_org_info_from_context',
             return_value=None,
         ):
             result = await get_current_user_saas(
@@ -292,9 +292,9 @@ class TestSdkCompatFields:
             )
 
         data = json.loads(result.body)
-        assert data["llm_model"] == "test-model"
-        assert data["llm_base_url"] == "https://test.com"
-        assert "llm_api_key" not in data
+        assert data['llm_model'] == 'test-model'
+        assert data['llm_base_url'] == 'https://test.com'
+        assert 'llm_api_key' not in data
 
     @pytest.mark.asyncio
     async def test_expose_secrets_response_contains_llm_api_key(
@@ -310,12 +310,12 @@ class TestSdkCompatFields:
         from openhands.sdk.settings import OpenHandsAgentSettings
 
         base_user_info = UserInfo(
-            id="user-123",
+            id='user-123',
             agent_settings=OpenHandsAgentSettings(
                 llm=LLM(
-                    model="test-model",
-                    api_key="sk-test-secret",
-                    base_url="https://test.com",
+                    model='test-model',
+                    api_key='sk-test-secret',
+                    base_url='https://test.com',
                 )
             ),
         )
@@ -323,24 +323,24 @@ class TestSdkCompatFields:
 
         with (
             patch(
-                "server.routes.users_v1._get_org_info_from_context",
+                'server.routes.users_v1._get_org_info_from_context',
                 return_value=None,
             ),
             patch(
-                "server.routes.users_v1.validate_session_key_ownership",
+                'server.routes.users_v1.validate_session_key_ownership',
                 new_callable=AsyncMock,
             ),
         ):
             result = await get_current_user_saas(
                 user_context=mock_user_context,
                 expose_secrets=True,
-                x_session_api_key="session-key",
+                x_session_api_key='session-key',
             )
 
         data = json.loads(result.body)
-        assert data["llm_model"] == "test-model"
-        assert data["llm_api_key"] == "sk-test-secret"
-        assert data["llm_base_url"] == "https://test.com"
+        assert data['llm_model'] == 'test-model'
+        assert data['llm_api_key'] == 'sk-test-secret'
+        assert data['llm_base_url'] == 'https://test.com'
 
     @pytest.mark.asyncio
     async def test_expose_secrets_resolves_keyless_profile_with_effective_key(
@@ -364,13 +364,13 @@ class TestSdkCompatFields:
         # validator nulls at load — so the masked literal is the faithful
         # arrangement of a stored managed profile.
         base_user_info = UserInfo(
-            id="user-123",
+            id='user-123',
             agent_settings=OpenHandsAgentSettings(
-                llm=LLM(model="openhands/test-model", api_key="sk-effective-key")
+                llm=LLM(model='openhands/test-model', api_key='sk-effective-key')
             ),
             llm_profiles=LLMProfiles(
                 profiles={
-                    "opus8": LLM(model="openhands/test-model", api_key="**********")
+                    'opus8': LLM(model='openhands/test-model', api_key='**********')
                 }
             ),
         )
@@ -378,23 +378,23 @@ class TestSdkCompatFields:
 
         with (
             patch(
-                "server.routes.users_v1._get_org_info_from_context",
+                'server.routes.users_v1._get_org_info_from_context',
                 return_value=None,
             ),
             patch(
-                "server.routes.users_v1.validate_session_key_ownership",
+                'server.routes.users_v1.validate_session_key_ownership',
                 new_callable=AsyncMock,
             ),
         ):
             result = await get_current_user_saas(
                 user_context=mock_user_context,
                 expose_secrets=True,
-                x_session_api_key="session-key",
+                x_session_api_key='session-key',
             )
 
-        profile = json.loads(result.body)["llm_profiles"]["profiles"]["opus8"]
-        assert profile["api_key"] == "sk-effective-key"
-        assert profile["base_url"] == LITE_LLM_API_URL
+        profile = json.loads(result.body)['llm_profiles']['profiles']['opus8']
+        assert profile['api_key'] == 'sk-effective-key'
+        assert profile['base_url'] == LITE_LLM_API_URL
 
     @pytest.mark.asyncio
     async def test_expose_secrets_keeps_byor_profile_own_key(self, mock_user_context):
@@ -409,13 +409,13 @@ class TestSdkCompatFields:
         from openhands.sdk.settings import OpenHandsAgentSettings
 
         base_user_info = UserInfo(
-            id="user-123",
+            id='user-123',
             agent_settings=OpenHandsAgentSettings(
-                llm=LLM(model="openhands/test-model", api_key="sk-effective-key")
+                llm=LLM(model='openhands/test-model', api_key='sk-effective-key')
             ),
             llm_profiles=LLMProfiles(
                 profiles={
-                    "byor": LLM(model="anthropic/test-model", api_key="sk-byor-key")
+                    'byor': LLM(model='anthropic/test-model', api_key='sk-byor-key')
                 }
             ),
         )
@@ -423,22 +423,22 @@ class TestSdkCompatFields:
 
         with (
             patch(
-                "server.routes.users_v1._get_org_info_from_context",
+                'server.routes.users_v1._get_org_info_from_context',
                 return_value=None,
             ),
             patch(
-                "server.routes.users_v1.validate_session_key_ownership",
+                'server.routes.users_v1.validate_session_key_ownership',
                 new_callable=AsyncMock,
             ),
         ):
             result = await get_current_user_saas(
                 user_context=mock_user_context,
                 expose_secrets=True,
-                x_session_api_key="session-key",
+                x_session_api_key='session-key',
             )
 
-        profile = json.loads(result.body)["llm_profiles"]["profiles"]["byor"]
-        assert profile["api_key"] == "sk-byor-key"
+        profile = json.loads(result.body)['llm_profiles']['profiles']['byor']
+        assert profile['api_key'] == 'sk-byor-key'
 
     @pytest.mark.asyncio
     async def test_non_expose_response_does_not_resolve_profile_keys(
@@ -455,28 +455,28 @@ class TestSdkCompatFields:
         from openhands.sdk.settings import OpenHandsAgentSettings
 
         base_user_info = UserInfo(
-            id="user-123",
+            id='user-123',
             agent_settings=OpenHandsAgentSettings(
-                llm=LLM(model="openhands/test-model", api_key="sk-effective-key")
+                llm=LLM(model='openhands/test-model', api_key='sk-effective-key')
             ),
             llm_profiles=LLMProfiles(
                 profiles={
-                    "opus8": LLM(model="openhands/test-model", api_key="**********")
+                    'opus8': LLM(model='openhands/test-model', api_key='**********')
                 }
             ),
         )
         mock_user_context.get_user_info = AsyncMock(return_value=base_user_info)
 
         with patch(
-            "server.routes.users_v1._get_org_info_from_context",
+            'server.routes.users_v1._get_org_info_from_context',
             return_value=None,
         ):
             result = await get_current_user_saas(
                 user_context=mock_user_context, expose_secrets=False
             )
 
-        profile = json.loads(result.body)["llm_profiles"]["profiles"]["opus8"]
-        assert profile.get("api_key") is None
+        profile = json.loads(result.body)['llm_profiles']['profiles']['opus8']
+        assert profile.get('api_key') is None
 
     @pytest.mark.asyncio
     async def test_response_contains_mcp_config_at_top_level(self, mock_user_context):
@@ -487,11 +487,11 @@ class TestSdkCompatFields:
 
         from openhands.app_server.user.user_models import UserInfo
 
-        base_user_info = UserInfo(id="user-123")
+        base_user_info = UserInfo(id='user-123')
         mock_user_context.get_user_info = AsyncMock(return_value=base_user_info)
 
         with patch(
-            "server.routes.users_v1._get_org_info_from_context",
+            'server.routes.users_v1._get_org_info_from_context',
             return_value=None,
         ):
             result = await get_current_user_saas(
@@ -499,7 +499,7 @@ class TestSdkCompatFields:
             )
 
         data = json.loads(result.body)
-        assert "mcp_config" in data
+        assert 'mcp_config' in data
 
     @pytest.mark.asyncio
     async def test_nested_agent_settings_still_present(self, mock_user_context):
@@ -513,13 +513,13 @@ class TestSdkCompatFields:
         from openhands.sdk.settings import OpenHandsAgentSettings
 
         base_user_info = UserInfo(
-            id="user-123",
-            agent_settings=OpenHandsAgentSettings(llm=LLM(model="test-model")),
+            id='user-123',
+            agent_settings=OpenHandsAgentSettings(llm=LLM(model='test-model')),
         )
         mock_user_context.get_user_info = AsyncMock(return_value=base_user_info)
 
         with patch(
-            "server.routes.users_v1._get_org_info_from_context",
+            'server.routes.users_v1._get_org_info_from_context',
             return_value=None,
         ):
             result = await get_current_user_saas(
@@ -527,8 +527,8 @@ class TestSdkCompatFields:
             )
 
         data = json.loads(result.body)
-        assert "agent_settings" in data
-        assert data["agent_settings"]["llm"]["model"] == "test-model"
+        assert 'agent_settings' in data
+        assert data['agent_settings']['llm']['model'] == 'test-model'
 
 
 class TestOverrideUsersEndpoint:
@@ -542,23 +542,23 @@ class TestOverrideUsersEndpoint:
         # Create a minimal app with a mock OSS route
         app = FastAPI()
 
-        @app.get("/api/v1/users/me")
+        @app.get('/api/v1/users/me')
         def mock_oss_endpoint():
-            return {"source": "oss"}
+            return {'source': 'oss'}
 
         # Verify OSS route exists
         oss_routes = [
-            r for r in app.routes if hasattr(r, "path") and r.path == "/api/v1/users/me"
+            r for r in app.routes if hasattr(r, 'path') and r.path == '/api/v1/users/me'
         ]
         assert len(oss_routes) == 1
-        assert oss_routes[0].endpoint.__name__ == "mock_oss_endpoint"
+        assert oss_routes[0].endpoint.__name__ == 'mock_oss_endpoint'
 
         # Apply the override
         override_users_me_endpoint(app)
 
         # Verify SAAS route exists and OSS route is gone
         saas_routes = [
-            r for r in app.routes if hasattr(r, "path") and r.path == "/api/v1/users/me"
+            r for r in app.routes if hasattr(r, 'path') and r.path == '/api/v1/users/me'
         ]
         assert len(saas_routes) == 1
-        assert saas_routes[0].endpoint.__name__ == "get_current_user_saas"
+        assert saas_routes[0].endpoint.__name__ == 'get_current_user_saas'

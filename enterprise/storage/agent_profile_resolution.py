@@ -41,7 +41,7 @@ def load_agent_profiles(org: Org) -> AgentProfiles:
     try:
         return AgentProfiles.model_validate(org.agent_profiles)
     except ValidationError as exc:
-        logger.warning("Failed to load org agent profiles for %s: %s", org.id, exc)
+        logger.warning('Failed to load org agent profiles for %s: %s', org.id, exc)
         return AgentProfiles()
 
 
@@ -52,7 +52,7 @@ def load_llm_profiles(org: Org) -> LLMProfiles:
     try:
         return LLMProfiles.model_validate(org.llm_profiles)
     except ValidationError as exc:
-        logger.warning("Failed to load org LLM profiles for %s: %s", org.id, exc)
+        logger.warning('Failed to load org LLM profiles for %s: %s', org.id, exc)
         return LLMProfiles()
 
 
@@ -71,7 +71,7 @@ class OrgLLMProfileLoader:
         llm = self._profiles.get(name)
         if llm is None:
             # The resolver maps this to ProfileNotFound (HTTP 4xx).
-            raise FileNotFoundError(f"LLM profile {name!r} not found")
+            raise FileNotFoundError(f'LLM profile {name!r} not found')
         return llm
 
 
@@ -103,5 +103,5 @@ def member_mcp_config(member: OrgMember) -> dict[str, MCPServer]:
         # Catch broadly, not just ValidationError: MCP normalization can also
         # raise on fastmcp contract drift, and a malformed member config must
         # resolve to "no servers" rather than 500 the materialize endpoint.
-        logger.warning("Failed to parse member MCP config for resolve: %s", exc)
+        logger.warning('Failed to parse member MCP config for resolve: %s', exc)
         return {}
