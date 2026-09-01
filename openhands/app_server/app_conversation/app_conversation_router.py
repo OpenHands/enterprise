@@ -465,6 +465,7 @@ async def start_app_conversation(
                         else None,
                         agent_type='default',
                         has_repository=start_request.selected_repository is not None,
+                        session_id=getattr(request.state, 'posthog_session_id', None),
                     )
         except Exception:
             logger.exception('analytics:conversation_requested:failed', stack_info=True)

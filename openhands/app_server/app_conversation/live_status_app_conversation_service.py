@@ -21,6 +21,7 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     TextContent,
 )
+from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
 )
@@ -658,6 +659,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # Update the start task
             task.status = AppConversationStartTaskStatus.READY
             task.app_conversation_id = info.id
+            try:
+                analytics = get_analytics_service()
+                if analytics and user_id:
+                    ctx = await resolve_analytics_context(user_id)
+                    analytics.track_conversation_ready(
+                        ctx=ctx, conversation_id=str(info.id), request_id=str(task.id)
+                    )
+            except Exception:
+                _logger.exception(
+                    'analytics:conversation_ready:failed', stack_info=True
+                )
             yield task
 
             # Process any pending messages queued while waiting for conversation
@@ -675,6 +687,18 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             task.detail = redact_text_secrets(
                 redact_api_key_literals(_exception_detail(exc))
             )
+            try:
+                analytics = get_analytics_service()
+                if analytics and user_id:
+                    ctx = await resolve_analytics_context(user_id)
+                    analytics.track_conversation_provisioning_failed(
+                        ctx=ctx, request_id=str(task.id)
+                    )
+            except Exception:
+                _logger.exception(
+                    'analytics:conversation_provisioning_failed:failed',
+                    stack_info=True,
+                )
             yield task
 
     async def _build_app_conversations(

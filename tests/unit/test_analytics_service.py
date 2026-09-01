@@ -15,6 +15,8 @@ from openhands.analytics.analytics_constants import (
     CONVERSATION_DELETED,
     CONVERSATION_ERRORED,
     CONVERSATION_FINISHED,
+    CONVERSATION_PROVISIONING_FAILED,
+    CONVERSATION_READY,
     CONVERSATION_REQUESTED,
     CREDIT_LIMIT_REACHED,
     CREDIT_PURCHASED,
@@ -687,6 +689,89 @@ class TestTypedEventMethods:
         assert props['trigger'] == 'ui'
         assert props['agent_type'] == 'CodeActAgent'
         assert props['has_repository'] is True
+
+    def test_track_conversation_ready_is_retry_safe_and_session_linked(
+        self, saas_service
+    ):
+        service, mock_client = saas_service
+        service.track_conversation_ready(
+            make_ctx(org_id='org-1'),
+            conversation_id='conv-1',
+            request_id='task-1',
+            session_id='sess-1',
+        )
+        first = mock_client.capture.call_args.kwargs
+        mock_client.reset_mock()
+        service.track_conversation_ready(
+            make_ctx(org_id='org-1'),
+            conversation_id='conv-1',
+            request_id='task-1',
+            session_id='sess-2',
+        )
+        second = mock_client.capture.call_args.kwargs
+        assert first['event'] == CONVERSATION_READY
+        assert first['uuid'] == second['uuid']
+        assert first['properties']['$' + 'session_id'] == 'sess-1'
+        assert first['properties']['conversation_id'] == 'conv-1'
+
+    def test_track_conversation_provisioning_failed_is_bounded_and_retry_safe(
+        self, saas_service
+    ):
+        service, mock_client = saas_service
+        service.track_conversation_provisioning_failed(make_ctx(), request_id='task-1')
+        first = mock_client.capture.call_args.kwargs
+        mock_client.reset_mock()
+        service.track_conversation_provisioning_failed(make_ctx(), request_id='task-1')
+        second = mock_client.capture.call_args.kwargs
+        assert first['event'] == CONVERSATION_PROVISIONING_FAILED
+        assert first['uuid'] == second['uuid']
+        assert first['properties']['request_id'] == 'task-1'
+        assert 'detail' not in first['properties']
+
+    def test_first_agent_response_failure_is_bounded_and_outcome_deduplicated(
+        self, saas_service
+    ):
+        service, mock_client = saas_service
+        service.track_first_agent_response(
+            make_ctx(),
+            conversation_id='conv-1',
+            outcome='failed',
+            failure_kind='quota',
+            retryable=False,
+        )
+        failure = mock_client.capture.call_args.kwargs
+        mock_client.reset_mock()
+        service.track_first_agent_response(
+            make_ctx(), conversation_id='conv-1', outcome='completed'
+        )
+        completed = mock_client.capture.call_args.kwargs
+        assert failure['uuid'] == completed['uuid']
+        assert failure['properties'] == {
+            'app_mode': 'saas',
+            'is_feature_env': False,
+            'failure_kind': 'quota',
+            'retryable': False,
+            'conversation_id': 'conv-1',
+        }
+
+    def test_first_agent_response_coerces_unexpected_failure_kind(self, saas_service):
+        service, mock_client = saas_service
+        service.track_first_agent_response(
+            make_ctx(),
+            conversation_id='conv-1',
+            outcome='failed',
+            failure_kind='provider error containing secrets',
+        )
+        assert mock_client.capture.call_args.kwargs['properties']['failure_kind'] == (
+            'unknown'
+        )
+
+    def test_first_agent_response_rejects_unknown_outcome(self, saas_service):
+        service, _ = saas_service
+        with pytest.raises(ValueError, match='Unsupported first response outcome'):
+            service.track_first_agent_response(
+                make_ctx(), conversation_id='conv-1', outcome='unknown'
+            )
 
     def test_track_conversation_finished(self, saas_service):
         """track_conversation_finished calls capture with CONVERSATION_FINISHED and correct properties."""
