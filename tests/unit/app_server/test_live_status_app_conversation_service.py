@@ -3806,6 +3806,32 @@ class TestPluginHandling:
         )
         assert '- api_key: test123' in result.initial_message.content[0].text
 
+    @pytest.mark.asyncio
+    async def test_resolve_registered_marketplaces_uses_shared_resolver(self):
+        """Conversation start composes marketplaces through the shared resolver."""
+        from openhands.app_server.settings.settings_models import (
+            MarketplaceRegistration,
+        )
+
+        # Arrange
+        marketplaces = [
+            MarketplaceRegistration(
+                name='team', source='github:owner/plugins', auto_load=True
+            )
+        ]
+
+        # Act
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.'
+            'resolve_registered_marketplaces',
+            AsyncMock(return_value=marketplaces),
+        ) as mock_resolve:
+            result = await self.service._resolve_registered_marketplaces(self.mock_user)
+
+        # Assert
+        mock_resolve.assert_awaited_once_with(self.mock_user_context, self.mock_user)
+        assert result == marketplaces
+
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
         return_value=[],

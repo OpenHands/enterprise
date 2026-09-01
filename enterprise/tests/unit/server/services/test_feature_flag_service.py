@@ -43,7 +43,7 @@ def service() -> FeatureFlagService:
 
 @pytest.fixture(autouse=True)
 def _isolate_env_flag_defaults(monkeypatch):
-    """Run each test against a clean env-flag registry + environment.
+    """Run each test against a clean env-flag registry, environment, and caches.
 
     The service consults a process-global ``_ENV_FLAG_DEFAULTS`` map and live
     ``os.environ`` for the env-var fallback. Without isolation, the seeded
@@ -52,6 +52,12 @@ def _isolate_env_flag_defaults(monkeypatch):
     test mutating the registry via ``register_env_default`` would poison the
     rest of the suite. Snapshot the registry and the relevant env vars, run
     the test, then restore.
+
+    The service also uses class-level ``_cache`` and ``_global_cache`` dicts
+    that persist across instances and tests within a process. Without
+    ``--forked`` (which gave each test its own process), the global snapshot
+    cached by one test leaks into the next via the 60-second TTL. Clear both
+    caches before and after each test.
     """
     import server.services.feature_flag_service as ff_svc
 
@@ -62,6 +68,9 @@ def _isolate_env_flag_defaults(monkeypatch):
     ff_svc._ENV_FLAG_DEFAULTS.clear()
     for k in saved_env:
         os.environ.pop(k, None)
+    # Clear class-level caches so snapshots from prior tests don't leak in.
+    FeatureFlagService._cache.clear()
+    FeatureFlagService._global_cache.clear()
     yield
     ff_svc._ENV_FLAG_DEFAULTS.clear()
     ff_svc._ENV_FLAG_DEFAULTS.update(saved)
@@ -70,6 +79,9 @@ def _isolate_env_flag_defaults(monkeypatch):
             os.environ.pop(k, None)
         else:
             os.environ[k] = v
+    # Clear caches again so mutations from this test don't leak forward.
+    FeatureFlagService._cache.clear()
+    FeatureFlagService._global_cache.clear()
 
 
 def _patch_store(flag=None, rules=None):

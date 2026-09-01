@@ -84,6 +84,9 @@ from openhands.app_server.services.httpx_client_injector import (
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.settings.llm_profiles import resolve_profile_llm
+from openhands.app_server.settings.marketplace_composition import (
+    resolve_registered_marketplaces,
+)
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
@@ -1773,6 +1776,7 @@ async def get_conversation_skills(
     - User skills (~/.openhands/skills/)
     - Organization skills (org/.openhands repository)
     - Repository skills (repo .agents/skills/, .openhands/microagents/, and legacy .openhands/skills/)
+    - Registered marketplaces (auto-load plugins from instance/org/user settings)
 
     Returns:
         JSONResponse: A JSON response containing the list of skills.
@@ -1800,11 +1804,18 @@ async def get_conversation_skills(
             project_dir = get_project_dir(
                 ctx.sandbox_spec.working_dir, ctx.conversation.selected_repository
             )
+            # Same marketplaces conversation start hands to the agent-server, so
+            # the listing includes auto-loaded marketplace plugin skills.
+            user = await app_conversation_service.user_context.get_user_info()
+            registered_marketplaces = await resolve_registered_marketplaces(
+                app_conversation_service.user_context, user
+            )
             all_skills = await app_conversation_service.load_and_merge_all_skills(
                 ctx.sandbox,
                 ctx.conversation.selected_repository,
                 project_dir,
                 ctx.agent_server_url,
+                registered_marketplaces=registered_marketplaces,
             )
 
         logger.info(
