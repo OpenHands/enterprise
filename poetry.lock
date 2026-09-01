@@ -5747,8 +5747,8 @@ vertex = ["google-cloud-aiplatform (>=1.38)"]
 [package.source]
 type = "git"
 url = "https://github.com/OpenHands/software-agent-sdk.git"
-reference = "58ba3d4cbbff26842155f3f9471a898c1a464aee"
-resolved_reference = "58ba3d4cbbff26842155f3f9471a898c1a464aee"
+reference = "jmj/pareto-prompt-meta-profiles"
+resolved_reference = "f87603e8f32b422530d3db15a1a8ba74035888c2"
 subdirectory = "openhands-sdk"
 
 [[package]]

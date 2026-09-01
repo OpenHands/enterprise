@@ -11,7 +11,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-08-25T15:20:18.791639Z"
+exclude-newer = "2026-08-25T15:38:56.779904Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -3489,7 +3489,7 @@ test = [
 [[package]]
 name = "openhands-sdk"
 version = "1.44.1"
-source = { git = "https://github.com/OpenHands/software-agent-sdk.git?subdirectory=openhands-sdk&rev=jmj%2Fpareto-prompt-meta-profiles#58ba3d4cbbff26842155f3f9471a898c1a464aee" }
+source = { git = "https://github.com/OpenHands/software-agent-sdk.git?subdirectory=openhands-sdk&rev=jmj%2Fpareto-prompt-meta-profiles#f87603e8f32b422530d3db15a1a8ba74035888c2" }
 dependencies = [
     { name = "agent-client-protocol" },
     { name = "deprecation" },
