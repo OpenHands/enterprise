@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -490,10 +491,22 @@ async def start_app_conversation(
 ) -> AppConversationStartTask:
     await _validate_codex_credentials(start_request, user_context, secrets_store)
 
-    quota_user_id = await user_context.get_user_id()
+    quota_user_id_result = user_context.get_user_id()
+    quota_user_id = (
+        await quota_user_id_result
+        if inspect.isawaitable(quota_user_id_result)
+        else quota_user_id_result
+    )
     get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
+    quota_org_id_result = (
+        get_effective_org_id()
+        if quota_user_id and get_effective_org_id is not None
+        else None
+    )
     quota_org_id = (
-        await get_effective_org_id() if get_effective_org_id is not None else None
+        await quota_org_id_result
+        if inspect.isawaitable(quota_org_id_result)
+        else quota_org_id_result
     )
     quota_reserved = await _reserve_daily_conversation_quota(
         quota_user_id, quota_org_id
@@ -1167,8 +1180,15 @@ async def stream_app_conversation_start(
     await _validate_codex_credentials(request, user_context, secrets_store)
     quota_user_id = await user_context.get_user_id()
     get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
+    quota_org_id_result = (
+        get_effective_org_id()
+        if quota_user_id and get_effective_org_id is not None
+        else None
+    )
     quota_org_id = (
-        await get_effective_org_id() if get_effective_org_id is not None else None
+        await quota_org_id_result
+        if inspect.isawaitable(quota_org_id_result)
+        else quota_org_id_result
     )
     quota_reserved = await _reserve_daily_conversation_quota(
         quota_user_id, quota_org_id
@@ -2130,8 +2150,15 @@ async def _stream_app_conversation_start(
     """Stream a json list, item by item."""
     quota_user_id = await user_context.get_user_id()
     get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
+    quota_org_id_result = (
+        get_effective_org_id()
+        if quota_user_id and get_effective_org_id is not None
+        else None
+    )
     quota_org_id = (
-        await get_effective_org_id() if get_effective_org_id is not None else None
+        await quota_org_id_result
+        if inspect.isawaitable(quota_org_id_result)
+        else quota_org_id_result
     )
     quota_reserved = await _reserve_daily_conversation_quota(
         quota_user_id, quota_org_id
