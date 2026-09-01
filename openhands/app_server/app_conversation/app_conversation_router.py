@@ -32,6 +32,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartTask,
     AppConversationStartTaskPage,
     AppConversationStartTaskSortOrder,
+    AppConversationStartTaskStatus,
     AppConversationUpdateRequest,
     AppSendMessageRequest,
     AppSendMessageResponse,
@@ -523,7 +524,11 @@ async def start_app_conversation(
         except Exception:
             logger.exception('analytics:conversation_requested:failed', stack_info=True)
 
-        asyncio.create_task(_consume_remaining(async_iter, db_session, httpx_client))
+        asyncio.create_task(
+            _consume_remaining(
+                async_iter, db_session, httpx_client, quota_user_id, quota_reserved
+            )
+        )
         return result
     except Exception:
         if quota_reserved and quota_user_id:
@@ -2075,14 +2080,28 @@ async def export_conversation(
 
 
 async def _consume_remaining(
-    async_iter, db_session: AsyncSession, httpx_client: httpx.AsyncClient
+    async_iter,
+    db_session: AsyncSession,
+    httpx_client: httpx.AsyncClient,
+    quota_user_id: str | None = None,
+    quota_reserved: bool = False,
 ):
     """Consume the remaining items from an async iterator"""
     try:
         while True:
-            await anext(async_iter)
+            task = await anext(async_iter)
+            if quota_reserved and quota_user_id:
+                if task.status == AppConversationStartTaskStatus.ERROR:
+                    await _release_daily_conversation_quota(quota_user_id)
+                    quota_reserved = False
+                elif task.status == AppConversationStartTaskStatus.READY:
+                    quota_reserved = False
     except StopAsyncIteration:
         return
+    except BaseException:
+        if quota_reserved and quota_user_id:
+            await _release_daily_conversation_quota(quota_user_id)
+        raise
     finally:
         await db_session.close()
         await httpx_client.aclose()
@@ -2093,17 +2112,37 @@ async def _stream_app_conversation_start(
     user_context: UserContext,
 ) -> AsyncGenerator[str, None]:
     """Stream a json list, item by item."""
+    quota_user_id = await user_context.get_user_id()
+    get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
+    quota_org_id = (
+        await get_effective_org_id() if get_effective_org_id is not None else None
+    )
+    quota_reserved = await _reserve_daily_conversation_quota(
+        quota_user_id, quota_org_id
+    )
+
     # Because the original dependencies are closed after the method returns, we need
-    # a new dependency context which will continue intil the stream finishes.
+    # a new dependency context which will continue until the stream finishes.
     state = InjectorState()
     setattr(state, USER_CONTEXT_ATTR, user_context)
     async with get_app_conversation_service(state) as app_conversation_service:
         yield '[\n'
         comma = False
-        async for task in app_conversation_service.start_app_conversation(request):
-            chunk = task.model_dump_json()
-            if comma:
-                chunk = ',\n' + chunk
-            comma = True
-            yield chunk
-        yield ']'
+        try:
+            async for task in app_conversation_service.start_app_conversation(request):
+                if quota_reserved and quota_user_id:
+                    if task.status == AppConversationStartTaskStatus.ERROR:
+                        await _release_daily_conversation_quota(quota_user_id)
+                        quota_reserved = False
+                    elif task.status == AppConversationStartTaskStatus.READY:
+                        quota_reserved = False
+                chunk = task.model_dump_json()
+                if comma:
+                    chunk = ',\n' + chunk
+                comma = True
+                yield chunk
+            yield ']'
+        except BaseException:
+            if quota_reserved and quota_user_id:
+                await _release_daily_conversation_quota(quota_user_id)
+            raise

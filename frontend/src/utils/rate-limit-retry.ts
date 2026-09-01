@@ -37,7 +37,11 @@ function getHeaderValue(headers: unknown, name: string): string | undefined {
 
 export function isRateLimitError(error: unknown): boolean {
   const axiosError = error as AxiosError | undefined;
-  return axiosError?.response?.status === 429 || axiosError?.status === 429;
+  const detail = axiosError?.response?.data?.detail;
+  return (
+    (axiosError?.response?.status === 429 || axiosError?.status === 429) &&
+    detail?.code !== "daily_conversation_limit_reached"
+  );
 }
 
 function getRetryAfterDelayMs(error: unknown): number | undefined {
