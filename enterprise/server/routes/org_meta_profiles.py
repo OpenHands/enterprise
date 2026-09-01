@@ -19,7 +19,7 @@ from openhands.sdk.llm.meta_profile_store import MetaProfile
 
 from ..auth.authorization import Permission, require_permission
 
-router = APIRouter(tags=['Organization Model Routers'])
+router = APIRouter(tags=["Organization Model Routers"])
 MAX_META_PROFILES = 50
 
 
@@ -63,7 +63,7 @@ def _load_meta_profiles(org: Org) -> OrgMetaProfiles:
     except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail='Stored organization Model Router data is invalid.',
+            detail="Stored organization Model Router data is invalid.",
         ) from exc
 
 
@@ -89,11 +89,11 @@ async def _org_meta_profiles_transaction(
         if org is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f'Organization {org_id} not found',
+                detail=f"Organization {org_id} not found",
             )
         meta_profiles = _load_meta_profiles(org)
         yield session, org, meta_profiles
-        org.meta_profiles = meta_profiles.model_dump(mode='json')
+        org.meta_profiles = meta_profiles.model_dump(mode="json")
         await session.commit()
 
 
@@ -102,13 +102,13 @@ def _apply_active_router(
 ) -> None:
     settings = dict(org.agent_settings or {})
     if name is None:
-        settings['enable_classify_and_switch_llm_tool'] = False
-        settings['active_meta_profile'] = None
-        settings['meta_profile'] = None
+        settings["enable_classify_and_switch_llm_tool"] = False
+        settings["active_meta_profile"] = None
+        settings["meta_profile"] = None
     else:
-        settings['enable_classify_and_switch_llm_tool'] = True
-        settings['active_meta_profile'] = name
-        settings['meta_profile'] = config.model_dump(mode='json') if config else None
+        settings["enable_classify_and_switch_llm_tool"] = True
+        settings["active_meta_profile"] = name
+        settings["meta_profile"] = config.model_dump(mode="json") if config else None
     org.agent_settings = settings
 
 
@@ -131,7 +131,7 @@ def _validate_profile_references(org: Org, config: MetaProfile) -> None:
         _resolve_provider_connection(org, llm)
 
 
-@router.get('/{org_id}/meta-profiles', response_model=MetaProfileListResponse)
+@router.get("/{org_id}/meta-profiles", response_model=MetaProfileListResponse)
 async def list_meta_profiles(
     org_id: UUID,
     user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
@@ -151,9 +151,7 @@ async def list_meta_profiles(
     )
 
 
-@router.get(
-    '/{org_id}/meta-profiles/{name}', response_model=MetaProfileDetailResponse
-)
+@router.get("/{org_id}/meta-profiles/{name}", response_model=MetaProfileDetailResponse)
 async def get_meta_profile(
     org_id: UUID,
     name: str = Path(..., pattern=PROFILE_NAME_PATTERN),
@@ -167,7 +165,7 @@ async def get_meta_profile(
 
 
 @router.post(
-    '/{org_id}/meta-profiles/{name}',
+    "/{org_id}/meta-profiles/{name}",
     response_model=MetaProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -182,17 +180,24 @@ async def save_meta_profile(
         org,
         profiles,
     ):
-        if name not in profiles.profiles and len(profiles.profiles) >= MAX_META_PROFILES:
-            raise HTTPException(status_code=409, detail='Meta-profile limit reached (50).')
+        if (
+            name not in profiles.profiles
+            and len(profiles.profiles) >= MAX_META_PROFILES
+        ):
+            raise HTTPException(
+                status_code=409, detail="Meta-profile limit reached (50)."
+            )
         _validate_profile_references(org, body)
         profiles.profiles[name] = body
         if profiles.active == name:
             _apply_active_router(org, name, body)
-    return MetaProfileMutationResponse(name=name, message=f"Meta-profile '{name}' saved")
+    return MetaProfileMutationResponse(
+        name=name, message=f"Meta-profile '{name}' saved"
+    )
 
 
 @router.delete(
-    '/{org_id}/meta-profiles/{name}', response_model=MetaProfileMutationResponse
+    "/{org_id}/meta-profiles/{name}", response_model=MetaProfileMutationResponse
 )
 async def delete_meta_profile(
     org_id: UUID,
@@ -214,7 +219,7 @@ async def delete_meta_profile(
 
 
 @router.post(
-    '/{org_id}/meta-profiles/{name}/activate',
+    "/{org_id}/meta-profiles/{name}/activate",
     response_model=ActivateMetaProfileResponse,
 )
 async def activate_meta_profile(
@@ -229,7 +234,9 @@ async def activate_meta_profile(
     ):
         config = profiles.profiles.get(name)
         if config is None:
-            raise HTTPException(status_code=404, detail=f"Meta-profile '{name}' not found")
+            raise HTTPException(
+                status_code=404, detail=f"Meta-profile '{name}' not found"
+            )
         profiles.active = name
         _apply_active_router(org, name, config)
     return ActivateMetaProfileResponse(
