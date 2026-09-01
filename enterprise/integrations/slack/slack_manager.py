@@ -846,6 +846,11 @@ class SlackManager(Manager[SlackViewInterface]):
 
             await self.send_message(msg_info, slack_view)
 
+        except SlackError:
+            # Handled centrally by receive_message so the user gets the
+            # message for the specific error code.
+            raise
+
         except Exception:
             logger.exception('[Slack]: Error starting job', stack_info=True)
             await self.send_message(
