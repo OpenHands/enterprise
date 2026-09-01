@@ -55,6 +55,9 @@ from server.routes.org_invitations import (  # noqa: E402
     invitation_router,
 )
 from server.routes.org_profiles import router as org_profiles_router  # noqa: E402
+from server.routes.org_provider_connections import (  # noqa: E402
+    router as org_provider_connections_router,
+)
 from server.routes.orgs import org_router  # noqa: E402
 from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
@@ -175,6 +178,9 @@ if USER_PROVISIONING_ENABLED:
 base_app.include_router(
     org_profiles_router, prefix='/api/organizations'
 )  # Add routes for org LLM profiles
+base_app.include_router(
+    org_provider_connections_router, prefix='/api/organizations'
+)  # Add routes for org LLM provider connections
 base_app.include_router(
     agent_profiles_router
 )  # Add flat /api/agent-profiles routes for org Agent Profiles
