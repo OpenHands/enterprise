@@ -23,6 +23,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AgentType,
     AppConversationInfo,
     AppConversationStartRequest,
+    AppConversationStartTaskStatus,
     ConversationTrigger,
 )
 from openhands.app_server.app_conversation.app_conversation_service import (
@@ -315,6 +316,89 @@ class TestLiveStatusAppConversationService:
         # Default mock for hooks loading - returns None (no hooks found)
         # Tests that specifically test hooks loading can override this mock
         self.service._load_hooks_from_workspace = AsyncMock(return_value=None)
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_consumes_reserved_quota(self):
+        self.mock_user_context.get_user_id = AsyncMock(return_value='user-id')
+        self.mock_user_context._daily_quota_reserved = True
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = (
+            AsyncMock()
+        )
+        tasks = [
+            AppConversationStartTaskStatus.WORKING,
+            AppConversationStartTaskStatus.READY,
+        ]
+
+        async def start(_request):
+            for status in tasks:
+                yield SimpleNamespace(status=status)
+
+        self.service._start_app_conversation = start
+        self.service._release_daily_conversation_quota = AsyncMock()
+
+        result = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+
+        assert len(result) == 2
+        assert self.mock_user_context._daily_quota_reserved is False
+        self.service._release_daily_conversation_quota.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_releases_quota_on_error_task(self):
+        self.mock_user_context.get_user_id = AsyncMock(return_value='user-id')
+        self.service._reserve_daily_conversation_quota = AsyncMock(return_value=True)
+        self.service._release_daily_conversation_quota = AsyncMock()
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = (
+            AsyncMock()
+        )
+
+        async def start(_request):
+            yield SimpleNamespace(status=AppConversationStartTaskStatus.ERROR)
+
+        self.service._start_app_conversation = start
+        result = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+
+        assert len(result) == 1
+        self.service._reserve_daily_conversation_quota.assert_awaited_once_with(
+            'user-id'
+        )
+        self.service._release_daily_conversation_quota.assert_awaited_once_with(
+            'user-id'
+        )
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_releases_quota_on_start_failure(self):
+        self.mock_user_context.get_user_id = AsyncMock(return_value='user-id')
+        self.service._reserve_daily_conversation_quota = AsyncMock(return_value=True)
+        self.service._release_daily_conversation_quota = AsyncMock()
+
+        async def start(_request):
+            raise RuntimeError('start failed')
+            yield  # pragma: no cover
+
+        self.service._start_app_conversation = start
+
+        with pytest.raises(RuntimeError, match='start failed'):
+            [
+                task
+                async for task in self.service.start_app_conversation(
+                    AppConversationStartRequest()
+                )
+            ]
+
+        self.service._release_daily_conversation_quota.assert_awaited_once_with(
+            'user-id'
+        )
+
 
     @pytest.mark.asyncio
     async def test_seed_sandbox_profiles_upserts_resolved_keys_and_prunes(self):
