@@ -52,7 +52,7 @@ from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
 
 from ..auth.authorization import Permission, require_permission
 
-router = APIRouter(tags=['Organization Profiles'])
+router = APIRouter(tags=["Organization Profiles"])
 
 
 # ── Request/Response Models ────────────────────────────────────────────────
@@ -144,7 +144,7 @@ def _resolve_provider_connection(org: Org, llm: LLM) -> LLM:
     the caller. Rotating a shared key therefore takes effect the next time a
     linked profile is activated — it is not pushed retroactively.
     """
-    connection_id = getattr(llm, 'provider_connection_id', None)
+    connection_id = getattr(llm, "provider_connection_id", None)
     if not connection_id:
         return llm
 
@@ -154,14 +154,14 @@ def _resolve_provider_connection(org: Org, llm: LLM) -> LLM:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
                 f"Profile references provider connection '{connection_id}', "
-                'which does not exist. Update the profile or recreate the '
-                'connection.'
+                "which does not exist. Update the profile or recreate the "
+                "connection."
             ),
         )
-    updates: dict[str, Any] = {'base_url': connection.base_url}
+    updates: dict[str, Any] = {"base_url": connection.base_url}
     api_key = connection.api_key_value()
     if api_key is not None:
-        updates['api_key'] = SecretStr(api_key)
+        updates["api_key"] = SecretStr(api_key)
     return llm.model_copy(update=updates)
 
 
@@ -175,7 +175,7 @@ def _load_profiles(org: Org) -> LLMProfiles:
         # Schema drift / partially-invalid stored profiles: degrade to empty
         # rather than 500-ing. Other exceptions (DB decrypt failures, etc.)
         # bubble up so they're surfaced instead of silently masked.
-        logger.warning('Failed to load org profiles for %s: %s', org.id, exc)
+        logger.warning("Failed to load org profiles for %s: %s", org.id, exc)
         return LLMProfiles()
 
 
@@ -213,12 +213,12 @@ async def _org_profiles_transaction(
         if org is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f'Organization {org_id} not found',
+                detail=f"Organization {org_id} not found",
             )
         profiles = _load_profiles(org)
         yield session, org, profiles
         org.llm_profiles = profiles.model_dump(
-            mode='json', context={'expose_secrets': True}
+            mode="json", context={"expose_secrets": True}
         )
         await session.commit()
 
@@ -226,7 +226,7 @@ async def _org_profiles_transaction(
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 
-@router.get('/{org_id}/profiles', response_model=ProfileListResponse)
+@router.get("/{org_id}/profiles", response_model=ProfileListResponse)
 async def list_profiles(
     org_id: UUID,
     user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
@@ -243,7 +243,7 @@ async def list_profiles(
     )
 
 
-@router.get('/{org_id}/profiles/{name}', response_model=ProfileDetailResponse)
+@router.get("/{org_id}/profiles/{name}", response_model=ProfileDetailResponse)
 async def get_profile(
     org_id: UUID,
     name: str = Path(..., min_length=1),
@@ -260,11 +260,11 @@ async def get_profile(
         )
     return ProfileDetailResponse(
         name=name,
-        llm=llm.model_dump(mode='json', context={'expose_secrets': False}),
+        llm=llm.model_dump(mode="json", context={"expose_secrets": False}),
     )
 
 
-@router.post('/{org_id}/profiles/{name}', response_model=ProfileMutationResponse)
+@router.post("/{org_id}/profiles/{name}", response_model=ProfileMutationResponse)
 async def save_profile(
     org_id: UUID,
     name: str = Path(..., min_length=1, max_length=100),
@@ -284,7 +284,7 @@ async def save_profile(
             # round-tripped GET response) — mirrors the personal profiles route.
             if llm.api_key is None and existing is not None:
                 if existing.api_key is not None:
-                    llm = llm.model_copy(update={'api_key': existing.api_key})
+                    llm = llm.model_copy(update={"api_key": existing.api_key})
         else:
             # Snapshot current org LLM settings. Route through the persisted
             # loader so legacy/canonical ``agent_kind`` discriminator values
@@ -293,7 +293,7 @@ async def save_profile(
         if request.preserve_existing_api_key and existing is not None:
             # Caller has no new key: keep the profile's stored key (even "no
             # key") instead of the snapshotted one.
-            llm = llm.model_copy(update={'api_key': existing.api_key})
+            llm = llm.model_copy(update={"api_key": existing.api_key})
         try:
             profiles.save(name, llm, include_secrets=request.include_secrets)
         except ProfileLimitExceededError as exc:
@@ -304,7 +304,7 @@ async def save_profile(
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' saved")
 
 
-@router.delete('/{org_id}/profiles/{name}', response_model=ProfileMutationResponse)
+@router.delete("/{org_id}/profiles/{name}", response_model=ProfileMutationResponse)
 async def delete_profile(
     org_id: UUID,
     name: str = Path(..., min_length=1),
@@ -347,7 +347,7 @@ async def delete_profile(
 
 
 @router.post(
-    '/{org_id}/profiles/{name}/activate', response_model=ActivateProfileResponse
+    "/{org_id}/profiles/{name}/activate", response_model=ActivateProfileResponse
 )
 async def activate_profile(
     org_id: UUID,
@@ -395,7 +395,7 @@ async def activate_profile(
         if member is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail='Organization membership not found',
+                detail="Organization membership not found",
             )
         # Apply the profile to the calling member. The profile's raw api_key
         # must never land in ``agent_settings_diff`` (a plain, unencrypted JSON
@@ -405,20 +405,20 @@ async def activate_profile(
         # effective api_key is resolved from ``_llm_api_key`` /
         # ``has_custom_llm_api_key`` at load time, not from the diff — so a
         # profile's key only takes effect if written there.
-        llm_dump = llm.model_dump(mode='json', context={'expose_secrets': True})
-        profile_api_key = llm_dump.get('api_key')
+        llm_dump = llm.model_dump(mode="json", context={"expose_secrets": True})
+        profile_api_key = llm_dump.get("api_key")
         if profile_api_key and profile_api_key != MASKED_API_KEY:
-            llm_dump['api_key'] = MASKED_API_KEY
+            llm_dump["api_key"] = MASKED_API_KEY
             # Classify managed vs. BYOR exactly as SaasSettingsStore.store() so
             # billing attribution stays correct.
-            base_url = llm_dump.get('base_url')
-            normalized_base_url = base_url.rstrip('/') if base_url else None
-            normalized_managed_base_url = LITE_LLM_API_URL.rstrip('/')
+            base_url = llm_dump.get("base_url")
+            normalized_base_url = base_url.rstrip("/") if base_url else None
+            normalized_managed_base_url = LITE_LLM_API_URL.rstrip("/")
             uses_managed_llm_key = (
                 normalized_base_url == normalized_managed_base_url
                 or (
                     normalized_base_url is None
-                    and is_openhands_model(llm_dump.get('model'))
+                    and is_openhands_model(llm_dump.get("model"))
                 )
             )
             member.llm_api_key = profile_api_key
@@ -429,24 +429,25 @@ async def activate_profile(
             member.has_custom_llm_api_key = False
 
         member_diff = dict(member.agent_settings_diff or {})
-        member_diff['llm'] = llm_dump
+        member_diff["llm"] = llm_dump
         member.agent_settings_diff = member_diff
 
     return ActivateProfileResponse(
         name=name,
         message=f"Profile '{name}' activated",
-        llm=llm.model_dump(mode='json', context={'expose_secrets': False}),
+        llm=llm.model_dump(mode="json", context={"expose_secrets": False}),
     )
 
 
-@router.post('/{org_id}/profiles/{name}/rename', response_model=ProfileMutationResponse)
+@router.post("/{org_id}/profiles/{name}/rename", response_model=ProfileMutationResponse)
 async def rename_profile(
     org_id: UUID,
     name: str = Path(..., min_length=1),
     request: RenameProfileRequest = Body(...),
     user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
 ) -> ProfileMutationResponse:
-    """Rename an LLM profile, cascading the rename to any Agent Profiles that
+    """Rename an LLM profile, cascading the rename to any Agent Profiles that.
+
     reference it.
 
     The SDK ``rename_llm_profile`` renames the LLM profile and repoints every
@@ -465,7 +466,7 @@ async def rename_profile(
         # unconditional write-back would erase a stored profile that merely
         # failed to parse.
         before = agent_profiles.model_dump(
-            mode='json', context={'expose_secrets': True}
+            mode="json", context={"expose_secrets": True}
         )
         try:
             rename_llm_profile(
@@ -488,7 +489,7 @@ async def rename_profile(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
             ) from exc
         # The cascade may have repointed agent-profile refs — persist them too.
-        after = agent_profiles.model_dump(mode='json', context={'expose_secrets': True})
+        after = agent_profiles.model_dump(mode="json", context={"expose_secrets": True})
         if after != before:
             org.agent_profiles = after
         await session.execute(
