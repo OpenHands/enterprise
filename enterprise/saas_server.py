@@ -40,6 +40,9 @@ from server.routes.api_keys import api_router as api_keys_router  # noqa: E402
 from server.routes.auth import api_router, oauth_router  # noqa: E402
 from server.routes.billing import billing_router  # noqa: E402
 from server.routes.email import api_router as email_router  # noqa: E402
+from server.routes.feature_flags import (  # noqa: E402
+    feature_flag_router,
+)
 from server.routes.github_proxy import add_github_proxy_routes  # noqa: E402
 from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
@@ -52,6 +55,9 @@ from server.routes.org_invitations import (  # noqa: E402
     invitation_router,
 )
 from server.routes.org_profiles import router as org_profiles_router  # noqa: E402
+from server.routes.org_provider_connections import (  # noqa: E402
+    router as org_provider_connections_router,
+)
 from server.routes.orgs import org_router  # noqa: E402
 from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
@@ -159,6 +165,9 @@ base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(
     super_admin_router
 )  # Add routes for instance-level super-admin management
+base_app.include_router(
+    feature_flag_router
+)  # Add routes for database-driven feature flags
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value
@@ -169,6 +178,9 @@ if USER_PROVISIONING_ENABLED:
 base_app.include_router(
     org_profiles_router, prefix='/api/organizations'
 )  # Add routes for org LLM profiles
+base_app.include_router(
+    org_provider_connections_router, prefix='/api/organizations'
+)  # Add routes for org LLM provider connections
 base_app.include_router(
     agent_profiles_router
 )  # Add flat /api/agent-profiles routes for org Agent Profiles

@@ -84,6 +84,14 @@ class Org(Base):
     agent_profiles: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
     )
+    # Encrypted column for shared LLM provider connections. Mirrors
+    # llm_profiles: the column is the at-rest encryption boundary, so each
+    # connection's api_key rides in cleartext inside the encrypted blob.
+    # Envelope is ``{connections: {<id>: ProviderConnection}}`` (see
+    # ProviderConnections). NULL reads back as an empty collection.
+    provider_connections: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedJSON, nullable=True
+    )
     # Marks the bootstrapped default org on OHE installs; a partial unique
     # index allows at most one default org per install.
     is_default: Mapped[bool] = mapped_column(nullable=False, default=False)
