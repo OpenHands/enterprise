@@ -57,7 +57,7 @@ jobs:
       - name: Build Environment
         run: make build
       - name: Run Unit Tests
-        run: PYTHONPATH=".:$PYTHONPATH" poetry run pytest -n auto -s ./tests/unit --cov=openhands --cov-branch
+        run: PYTHONPATH=".:$PYTHONPATH" poetry run pytest -n auto -s ./tests/unit --cov=openhands --cov-branch --cov-fail-under=73
         env:
           COVERAGE_FILE: ".coverage.${{ matrix.python_version }}"
       - name: Store coverage file
@@ -89,7 +89,7 @@ jobs:
         run: poetry install --with dev,test
       - name: Run Unit Tests
         # Use base working directory for coverage paths to line up.
-        run: PYTHONPATH=".:$PYTHONPATH" poetry run --project=enterprise pytest -n auto -s -p no:ddtrace -p no:ddtrace.pytest_bdd -p no:ddtrace.pytest_benchmark ./enterprise/tests/unit --cov=enterprise --cov-branch
+        run: PYTHONPATH=".:$PYTHONPATH" poetry run --project=enterprise pytest -n auto -s -p no:ddtrace -p no:ddtrace.pytest_bdd -p no:ddtrace.pytest_benchmark ./enterprise/tests/unit --cov=enterprise --cov-branch --cov-fail-under=73
         env:
           COVERAGE_FILE: ".coverage.enterprise.${{ matrix.python_version }}"
       - name: Store coverage file
