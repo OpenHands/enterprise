@@ -98,8 +98,7 @@ from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.settings.llm_profiles import resolve_profile_llm
 from openhands.app_server.settings.marketplace_composition import (
-    load_composed_marketplaces,
-    marketplace_plugin_loading_enabled,
+    resolve_registered_marketplaces,
 )
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
@@ -393,11 +392,62 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def start_app_conversation(
         self, request: AppConversationStartRequest
     ) -> AsyncGenerator[AppConversationStartTask, None]:
-        async for task in self._start_app_conversation(request):
-            await self.app_conversation_start_task_service.save_app_conversation_start_task(
-                task
+        quota_user_id = await self.user_context.get_user_id()
+        quota_reserved = bool(
+            getattr(self.user_context, '_daily_quota_reserved', False)
+        )
+        if quota_reserved:
+            setattr(self.user_context, '_daily_quota_reserved', False)
+        elif quota_user_id:
+            quota_reserved = await self._reserve_daily_conversation_quota(quota_user_id)
+
+        try:
+            async for task in self._start_app_conversation(request):
+                await self.app_conversation_start_task_service.save_app_conversation_start_task(
+                    task
+                )
+                if quota_reserved:
+                    if task.status == AppConversationStartTaskStatus.ERROR:
+                        await self._release_daily_conversation_quota(quota_user_id)
+                        quota_reserved = False
+                    elif task.status == AppConversationStartTaskStatus.READY:
+                        quota_reserved = False
+                yield task
+        except BaseException:
+            if quota_reserved:
+                await self._release_daily_conversation_quota(quota_user_id)
+            raise
+
+    async def _reserve_daily_conversation_quota(self, user_id: str) -> bool:
+        try:
+            from server.services.daily_conversation_quota_service import (
+                DailyConversationQuotaService,
             )
-            yield task
+            from storage.database import a_session_maker
+
+            from openhands.app_server.shared import server_config
+        except ImportError:
+            return False
+        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
+        org_id = await get_effective_org_id() if get_effective_org_id else None
+        if server_config.app_mode.value != 'saas' or org_id is None:
+            return False
+        async with a_session_maker() as session:
+            return await DailyConversationQuotaService(session).reserve(user_id, org_id)
+
+    async def _release_daily_conversation_quota(self, user_id: str | None) -> None:
+        if not user_id:
+            return
+        try:
+            from server.services.daily_conversation_quota_service import (
+                DailyConversationQuotaService,
+            )
+            from storage.database import a_session_maker
+
+            async with a_session_maker() as session:
+                await DailyConversationQuotaService(session).release(user_id)
+        except Exception:
+            _logger.exception('Failed to release daily conversation quota reservation')
 
     async def _start_app_conversation(
         self, request: AppConversationStartRequest
@@ -2267,27 +2317,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     ) -> list[MarketplaceRegistration] | None:
         """Compose instance + org + user marketplaces for conversation start.
 
-        Enabled by default; returns ``None`` (feature inert) when
-        ENABLE_MARKETPLACE_PLUGIN_LOADING is explicitly disabled. Never raises:
-        any failure degrades to no marketplaces so it can never block
-        conversation creation.
+        Kept as a method over the shared resolver so tests can patch it by
+        name.
         """
-        if not marketplace_plugin_loading_enabled():
-            return None
-        try:
-            from openhands.app_server.shared import SettingsStoreImpl
-
-            user_id = await self.user_context.get_user_id()
-            settings_store = await SettingsStoreImpl.get_instance(user_id)
-            composed = await load_composed_marketplaces(
-                user_id, user.registered_marketplaces, settings_store
-            )
-            return composed.all or None
-        except Exception as e:
-            _logger.warning(
-                'Failed to compose marketplaces for conversation start: %s', e
-            )
-            return None
+        return await resolve_registered_marketplaces(self.user_context, user)
 
     async def _load_skills_onto_request(
         self,

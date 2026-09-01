@@ -346,8 +346,10 @@ class TestSdkCompatFields:
     async def test_expose_secrets_resolves_keyless_profile_with_effective_key(
         self, mock_user_context
     ):
-        """Expose-secrets response should overlay a keyless managed profile with
-        the effective settings key and the managed proxy base_url."""
+        """Expose-secrets response should overlay a keyless managed profile with.
+
+        the effective settings key and the managed proxy base_url.
+        """
         from unittest.mock import patch
 
         from server.constants import LITE_LLM_API_URL

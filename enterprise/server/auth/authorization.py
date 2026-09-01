@@ -107,6 +107,10 @@ class Permission(str, Enum):
     # granted only to the ``superadmin`` super role.
     MANAGE_SUPER_ADMINS = 'manage_super_admins'
 
+    # Instance-level feature flag administration: create/update/delete flags
+    # and their targeting rules. Granted only to the ``superadmin`` super role.
+    MANAGE_FEATURE_FLAGS = 'manage_feature_flags'
+
     # Instance-level quota administration: set or clear an organization's
     # daily conversation limit. Like MANAGE_SUPER_ADMINS this is an explicit
     # instance-admin capability -- it is NOT implied by any org-scoped role,
@@ -249,6 +253,7 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.CREATE_ORGANIZATION,
             Permission.PROVISION_USER,
             Permission.MANAGE_SUPER_ADMINS,
+            Permission.MANAGE_FEATURE_FLAGS,
             Permission.MANAGE_ORG_QUOTA,
         ]
     ),

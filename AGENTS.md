@@ -186,7 +186,7 @@ The `enterprise/` directory contains additional functionality that extends the o
 **Running Enterprise Tests:**
 ```bash
 # Enterprise unit tests (full suite)
-PYTHONPATH=".:$PYTHONPATH" poetry run --project=enterprise pytest --forked -n auto -s -p no:ddtrace -p no:ddtrace.pytest_bdd -p no:ddtrace.pytest_benchmark ./enterprise/tests/unit --cov=enterprise --cov-branch
+PYTHONPATH=".:$PYTHONPATH" poetry run --project=enterprise pytest -n auto -s -p no:ddtrace -p no:ddtrace.pytest_bdd -p no:ddtrace.pytest_benchmark ./enterprise/tests/unit --cov=enterprise --cov-branch
 
 # Test specific modules (faster for development)
 cd enterprise

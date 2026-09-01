@@ -16,8 +16,9 @@ from storage.daily_conversation_usage import DailyConversationUsage
 from storage.org import Org
 from storage.user import User
 
-DEFAULT_ENV_VAR = 'OH_DAILY_CONVERSATION_LIMIT'
+DEFAULT_ENV_VAR = "OH_DAILY_CONVERSATION_LIMIT"
 EXEMPT_LIMIT = -1
+QUOTA_INCREASE_REQUEST_URL = "https://u8mk1.share.hsforms.com/2lXOvoRtHRfeWEmba8CdOGw"
 
 
 def configured_daily_limit() -> int | None:
@@ -94,16 +95,13 @@ class DailyConversationQuotaService:
         return configured_daily_limit()
 
     async def reserve(self, user_id: str, org_id: UUID | None = None) -> bool:
-        """Atomically increment today's usage, raising HTTP 429 if at limit."""
+        """Atomically increment today's usage, raising HTTP 429 at the limit."""
         limit = await self.get_limit(user_id, org_id)
         if limit is None:
             return False
-
         today = datetime.now(UTC).date()
         if limit <= 0:
-            used = await self._used(user_id, today)
-            raise self._limit_reached(limit, used, today)
-
+            raise self._limit_reached(limit, await self._used(user_id, today), today)
         now = datetime.now(UTC)
         statement = (
             insert(DailyConversationUsage)
@@ -115,10 +113,10 @@ class DailyConversationQuotaService:
                 updated_at=now,
             )
             .on_conflict_do_update(
-                index_elements=['user_id', 'usage_date'],
+                index_elements=["user_id", "usage_date"],
                 set_={
-                    'conversation_count': DailyConversationUsage.conversation_count + 1,
-                    'updated_at': now,
+                    "conversation_count": DailyConversationUsage.conversation_count + 1,
+                    "updated_at": now,
                 },
                 where=DailyConversationUsage.conversation_count < limit,
             )
@@ -127,22 +125,18 @@ class DailyConversationQuotaService:
         count = (await self.db_session.execute(statement)).scalar_one_or_none()
         if count is None:
             await self.db_session.rollback()
-            used = await self._used(user_id, today)
-            raise self._limit_reached(limit, used, today)
+            raise self._limit_reached(limit, await self._used(user_id, today), today)
         await self.db_session.commit()
         return True
 
     async def release(self, user_id: str) -> None:
-        """Release a reservation when the start request was not accepted."""
+        """Release a reservation when conversation startup fails."""
         today = datetime.now(UTC).date()
         await self.db_session.execute(
             text(
-                'UPDATE daily_conversation_usage '
-                'SET conversation_count = GREATEST(conversation_count - 1, 0), '
-                'updated_at = CURRENT_TIMESTAMP '
-                'WHERE user_id = :user_id AND usage_date = :usage_date'
+                "UPDATE daily_conversation_usage SET conversation_count = GREATEST(conversation_count - 1, 0), updated_at = CURRENT_TIMESTAMP WHERE user_id = :user_id AND usage_date = :usage_date"
             ),
-            {'user_id': UUID(user_id), 'usage_date': today},
+            {"user_id": UUID(user_id), "usage_date": today},
         )
         await self.db_session.commit()
 
@@ -154,14 +148,11 @@ class DailyConversationQuotaService:
         return HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={
-                'code': 'daily_conversation_limit_reached',
-                'message': (
-                    f'Daily conversation limit of {limit} reached. '
-                    'Request a quota increase at /settings/quota.'
-                ),
-                'limit': limit,
-                'used': used,
-                'reset_at': reset_at.isoformat(),
+                "code": "daily_conversation_limit_reached",
+                "message": f"Daily conversation limit of {limit} reached. Request a quota increase at /settings/quota or {QUOTA_INCREASE_REQUEST_URL}",
+                "limit": limit,
+                "used": used,
+                "reset_at": reset_at.isoformat(),
             },
         )
 
