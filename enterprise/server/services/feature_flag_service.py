@@ -4,6 +4,23 @@ Determines whether a flag is enabled for a given context, applying the
 precedence: global switch -> exclude rules -> include rules -> percentage
 rollout -> default. This mirrors the "whitelist beats blacklist" precedence of
 ``default_user_authorizer`` generalized to include/exclude + targeting.
+
+Default flags (standard env-var migration pattern): ``_ENV_FLAG_DEFAULTS`` is
+a registry of built-in defaults, each mapping a flag key to an (environment
+variable, default value) pair. It is the starting point for both read paths:
+
+* Listing (``get_global_flags``): the defaults are copied in first, then
+  database rows are overlaid on top, so a flag resolves to its DB value once
+  a row exists and to its env-var/default value before that.
+* Single lookup (``is_enabled``): a flag with no database row falls back to
+  its default entry (env var truthiness, or the registered default when the
+  env var is unset); unregistered keys stay off.
+
+To migrate an env-var toggle to a DB-managed flag, register it via
+``register_env_default`` (or add it to ``_ENV_FLAG_DEFAULTS``). Callers:
+``resolve`` is the fault-tolerant async entry point; ``resolve_env_default``
+is the synchronous half for callers that cannot await ``is_enabled`` (module
+import time, sync helpers).
 """
 
 import hashlib
@@ -32,25 +49,23 @@ _DEFAULT_GLOBAL_CACHE_TTL_SECONDS = 60
 
 @dataclass
 class _EnvFlagDefault:
-    """Env-var fallback for a flag that has no database row yet.
+    """Default for a flag with no database row yet.
 
-    When a flag key has no ``FeatureFlag`` row, its value is resolved from the
-    environment variable ``env_var`` (defaulting to ``default_bool``). This
-    lets an operator toggle a known flag (e.g. ``ENABLE_BILLING``) via env
-    before/without promoting it to a DB-managed flag. Once a DB row exists the
-    database is authoritative and the env fallback is ignored.
+    Each registered flag (flag key -> this entry) resolves from the
+    environment variable ``env_var`` (defaulting to ``default_bool`` when the
+    env var is unset) until a ``FeatureFlag`` row exists; from then on the
+    database is authoritative and the entry is ignored.
     """
 
     env_var: str
     default_bool: bool
 
 
-# Known flag keys that fall back to an environment variable when they have no
-# database row. Each entry maps flag_key -> (env_var_name, default_value). To
-# register a new env-backed flag, add it here (or call
-# ``FeatureFlagService.register_env_default`` at import time). Keep this the
-# minimal set of flags that already have an env-var contract; arbitrary flag
-# keys default to False when missing and unmapped.
+# Default feature flags. Each entry maps flag_key -> (env_var_name,
+# default_value); the env var is consulted only until a DB row exists for the
+# key. To add a new built-in default, add it here or call
+# ``FeatureFlagService.register_env_default`` at import time. Unregistered
+# keys default to False when missing from the database.
 _ENV_FLAG_DEFAULTS: dict[str, _EnvFlagDefault] = {
     'ENABLE_BILLING': _EnvFlagDefault('ENABLE_BILLING', False),
 }
@@ -94,6 +109,18 @@ class FeatureFlagService:
         is served.
         """
         _ENV_FLAG_DEFAULTS[key] = _EnvFlagDefault(env_var, default_bool)
+
+    @classmethod
+    def resolve_env_default(cls, key: str) -> bool:
+        """Resolve a flag's env-var fallback without touching the database.
+
+        This is the synchronous half of the env-fallback pattern: callers that
+        cannot await ``is_enabled`` (module import time, sync helpers) read the
+        same env var with the same truthiness rules. Returns ``False`` for
+        unregistered keys so the absence of a DB row never implicitly grants
+        anything.
+        """
+        return _env_fallback(key)
 
     def __init__(
         self,
@@ -173,6 +200,31 @@ class FeatureFlagService:
             return True
         return False
 
+    async def resolve(
+        self,
+        key: str,
+        user_id: str | None = None,
+        org_id: str | None = None,
+        email: str | None = None,
+    ) -> bool:
+        """Fault-tolerant ``is_enabled``: falls back to the default flag entry.
+
+        This is the standard single-flag access point for callers that must
+        keep working when the database is unavailable: an evaluation error
+        resolves to the registered default (env var / default value) instead
+        of raising. Prefer ``is_enabled`` when a DB error should propagate
+        (e.g. admin paths).
+        """
+        try:
+            return await self.is_enabled(
+                key, user_id=user_id, org_id=org_id, email=email
+            )
+        except Exception:
+            logger.exception(
+                'Failed to evaluate feature flag %r; falling back to default', key
+            )
+            return _env_fallback(key)
+
     async def _load(self, key: str) -> tuple[FeatureFlag | None, list[FeatureFlagRule]]:
         import time
 
@@ -201,11 +253,11 @@ class FeatureFlagService:
         otherwise leak "who is excluded" and per-user includes would leak
         targeting state.
 
-        Env-var-backed flags (see ``_ENV_FLAG_DEFAULTS``) that have NO database
-        row are also included, resolved from their env var, since they are
-        inherently global (allow-all / deny-all). This lets the web-client
-        config endpoint surface flags like ``ENABLE_BILLING`` before an admin
-        promotes them to a DB-managed flag.
+        The result starts from the registered default flags
+        (``_ENV_FLAG_DEFAULTS``), resolved from their env var / default value,
+        and database rows for rule-less flags are overlaid on top -- so every
+        registered default flag is always present, and first-class DB flags
+        replace or remove the corresponding default entry.
 
         The result is cached for a longer TTL than ``is_enabled`` (default 60s)
         because the global set changes rarely and the web-client config
@@ -222,18 +274,20 @@ class FeatureFlagService:
             return dict(cached.value)
 
         flags = await FeatureFlagStore.list_flags()
-        # Gather rules per flag in one pass; flags with no rules are global.
-        result: dict[str, bool] = {}
-        db_keys: set[str] = set()
+        # Start from the default flag entries (env-var / default values);
+        # database rows are then overlaid on top. Flag keys without defaults
+        # only appear if a DB row exists.
+        result: dict[str, bool] = {
+            key: _env_fallback(key) for key in _ENV_FLAG_DEFAULTS
+        }
         for flag in flags:
-            db_keys.add(flag.key)
             rules = await FeatureFlagStore.list_rules(flag.key)
-            if not rules:
-                result[flag.key] = bool(flag.enabled)
-        # Env-var-backed flags with no DB row are global by definition.
-        for key in _ENV_FLAG_DEFAULTS:
-            if key not in db_keys:
-                result[key] = _env_fallback(key)
+            if rules:
+                # Targeted flags are never global; they must not overlay (nor
+                # leave behind) a default entry for the same key.
+                result.pop(flag.key, None)
+                continue
+            result[flag.key] = bool(flag.enabled)
         self._global_cache['snapshot'] = _GlobalCacheEntry(result, now)
         return dict(result)
 
@@ -241,8 +295,8 @@ class FeatureFlagService:
 def _env_fallback(key: str) -> bool:
     """Resolve a flag with no DB row from its registered env-var fallback.
 
-    When the env var is set, its truthiness wins (``true`` -> allow-all, any
-    other value -> deny-all). When the env var is unset, the registered
+    When the env var is set, its truthiness wins (``true``/``1`` -> allow-all,
+    any other value -> deny-all). When the env var is unset, the registered
     ``default_bool`` is used. Unknown/unregistered keys return ``False`` so the
     absence of a DB row never implicitly grants anything.
     """
@@ -252,7 +306,7 @@ def _env_fallback(key: str) -> bool:
     val = os.getenv(entry.env_var)
     if val is None:
         return entry.default_bool
-    return val.lower() == 'true'
+    return val.lower() in ('true', '1')
 
 
 def _rule_matches_context(

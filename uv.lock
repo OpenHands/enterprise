@@ -11,7 +11,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-08-25T15:38:56.779904Z"
+exclude-newer = "2026-08-26T19:49:21.543198Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -3228,7 +3228,7 @@ wheels = [
 
 [[package]]
 name = "openhands-agent-server"
-version = "1.43.1"
+version = "1.44.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
@@ -3243,9 +3243,9 @@ dependencies = [
     { name = "websockets" },
     { name = "wsproto" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/21/07/6fb9faf7f7a7cda382d6f192782d78128377098cef1317f57b114c8af7cd/openhands_agent_server-1.43.1.tar.gz", hash = "sha256:4ee1e69633b59fca4376f8a8a988e5d84a1fa4751510ed2f02f3c5913917ef82", size = 254959, upload-time = "2026-08-21T22:00:53.383Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1c/5f/e403c83ea59258e3a7aca27009204a5dfe434ba3db90c3ca9ebe41907881/openhands_agent_server-1.44.1.tar.gz", hash = "sha256:1b1b638034f3eddd95fb8184466624f4c618d140ff358e0ea556e12db9a4420b", size = 260892, upload-time = "2026-08-28T16:11:13.412Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4b/5a/64cbfe7cf58aa51eafeb3be16e58aa8404903261f998cac147f5a3ad32e4/openhands_agent_server-1.43.1-py3-none-any.whl", hash = "sha256:219fb31903bf244295930d9adc88d586e58daa7008b9d7b4dc74a5fad2221840", size = 292052, upload-time = "2026-08-21T22:00:47.736Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/28/fcec6445a1b903e749e952e742f46c0c69ef8a0619f0bb8e6734364d173c/openhands_agent_server-1.44.1-py3-none-any.whl", hash = "sha256:d1ae8987d017b7ade7afc3b1af50e299126d88e84e84178521b15f52a981e6bd", size = 298940, upload-time = "2026-08-28T16:11:08.175Z" },
 ]
 
 [[package]]
@@ -3407,9 +3407,9 @@ requires-dist = [
     { name = "memory-profiler", specifier = "==0.61.0" },
     { name = "numpy", specifier = "==2.4.4" },
     { name = "openai", specifier = "==2.33.0" },
-    { name = "openhands-agent-server", specifier = "==1.43.1" },
+    { name = "openhands-agent-server", specifier = "==1.44.1" },
     { name = "openhands-sdk", git = "https://github.com/OpenHands/software-agent-sdk.git?subdirectory=openhands-sdk&rev=jmj%2Fpareto-prompt-meta-profiles" },
-    { name = "openhands-tools", specifier = "==1.43.1" },
+    { name = "openhands-tools", specifier = "==1.44.1" },
     { name = "opentelemetry-api", specifier = "==1.39.1" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = "==1.39.1" },
     { name = "orjson", specifier = "==3.11.8" },
@@ -3513,7 +3513,7 @@ dependencies = [
 
 [[package]]
 name = "openhands-tools"
-version = "1.43.1"
+version = "1.44.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "binaryornot" },
@@ -3527,9 +3527,9 @@ dependencies = [
     { name = "tree-sitter" },
     { name = "tree-sitter-bash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4f/43/86ef4df951fc76ef147db50f505620559cef93cca726bea34334b02efe01/openhands_tools-1.43.1.tar.gz", hash = "sha256:8a12973518605146376fc4c684882a4a02d649c144abdf5ecbff9448160b4fea", size = 147372, upload-time = "2026-08-21T22:00:55.855Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2f/fb/dafd50663e54aeda2e3e4396be67b896ee66cbe759ae743964a650a7347b/openhands_tools-1.44.1.tar.gz", hash = "sha256:a5a8d5be02d0a2c47ffb31d154b22049578dd3f9493946ad09fa3da3aca10272", size = 149873, upload-time = "2026-08-28T16:11:15.345Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/49/c40de9265598b568d4fe6e73fdb94f6da0d0a917085421a66926508ef811/openhands_tools-1.43.1-py3-none-any.whl", hash = "sha256:722ecac4ff0a68012fd6eeeb5426f91dc4b7540bd5072165d06f2ddd4cb27f33", size = 193021, upload-time = "2026-08-21T22:00:50.979Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/c0/47c1309737d11fe67b690265496a7dc804bc8bd62950e9876f0ffc14ce0c/openhands_tools-1.44.1-py3-none-any.whl", hash = "sha256:0425070e1787511bdb235100d72fc43806a84e9e5f39aed93df54f8e85f94d5f", size = 196933, upload-time = "2026-08-28T16:11:11.065Z" },
 ]
 
 [[package]]

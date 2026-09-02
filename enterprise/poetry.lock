@@ -5893,14 +5893,14 @@ numpy = {version = ">=2", markers = "python_version >= \"3.9\""}
 
 [[package]]
 name = "openhands-agent-server"
-version = "1.43.1"
+version = "1.44.1"
 description = "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "openhands_agent_server-1.43.1-py3-none-any.whl", hash = "sha256:219fb31903bf244295930d9adc88d586e58daa7008b9d7b4dc74a5fad2221840"},
-    {file = "openhands_agent_server-1.43.1.tar.gz", hash = "sha256:4ee1e69633b59fca4376f8a8a988e5d84a1fa4751510ed2f02f3c5913917ef82"},
+    {file = "openhands_agent_server-1.44.1-py3-none-any.whl", hash = "sha256:d1ae8987d017b7ade7afc3b1af50e299126d88e84e84178521b15f52a981e6bd"},
+    {file = "openhands_agent_server-1.44.1.tar.gz", hash = "sha256:1b1b638034f3eddd95fb8184466624f4c618d140ff358e0ea556e12db9a4420b"},
 ]
 
 [package.dependencies]
@@ -5921,7 +5921,7 @@ posthog = ["posthog (>=6,<7)"]
 
 [[package]]
 name = "openhands-ai"
-version = "1.56.0"
+version = "1.58.0"
 description = "OpenHands: Code Less, Make More"
 optional = false
 python-versions = "^3.12,<3.14"
@@ -5967,9 +5967,9 @@ mcp = ">=1.25"
 memory-profiler = "0.61.0"
 numpy = "2.4.4"
 openai = "2.33.0"
-openhands-agent-server = "1.43.1"
+openhands-agent-server = "1.44.1"
 openhands-sdk = {git = "https://github.com/OpenHands/software-agent-sdk.git", rev = "jmj/pareto-prompt-meta-profiles", subdirectory = "openhands-sdk"}
-openhands-tools = "1.43.1"
+openhands-tools = "1.44.1"
 opentelemetry-api = "1.39.1"
 opentelemetry-exporter-otlp-proto-grpc = "1.39.1"
 orjson = "3.11.8"
@@ -6064,14 +6064,14 @@ subdirectory = "openhands-sdk"
 
 [[package]]
 name = "openhands-tools"
-version = "1.43.1"
+version = "1.44.1"
 description = "OpenHands Tools - Runtime tools for AI agents"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "openhands_tools-1.43.1-py3-none-any.whl", hash = "sha256:722ecac4ff0a68012fd6eeeb5426f91dc4b7540bd5072165d06f2ddd4cb27f33"},
-    {file = "openhands_tools-1.43.1.tar.gz", hash = "sha256:8a12973518605146376fc4c684882a4a02d649c144abdf5ecbff9448160b4fea"},
+    {file = "openhands_tools-1.44.1-py3-none-any.whl", hash = "sha256:0425070e1787511bdb235100d72fc43806a84e9e5f39aed93df54f8e85f94d5f"},
+    {file = "openhands_tools-1.44.1.tar.gz", hash = "sha256:a5a8d5be02d0a2c47ffb31d154b22049578dd3f9493946ad09fa3da3aca10272"},
 ]
 
 [package.dependencies]
