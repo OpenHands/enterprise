@@ -5,6 +5,8 @@ focusing on UUID string parsing, validation, and error handling.
 """
 
 import json
+import sys
+import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -20,22 +22,36 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
     AppConversationPage,
     AppConversationStartRequest,
+    AppConversationStartTask,
+    AppConversationStartTaskStatus,
     SwitchProfileRequest,
 )
 from openhands.app_server.app_conversation.app_conversation_router import (
     AGENT_SERVER,
     AgentServerContext,
+    _consume_remaining,
     _finalize_sandbox_delete,
+    _release_daily_conversation_quota,
+    _reserve_daily_conversation_quota,
     _resolve_file_path,
+    _stream_app_conversation_start,
     _validate_codex_credentials,
     batch_get_app_conversations,
     count_app_conversations,
+    export_conversation,
     get_conversation_git_changes,
     get_conversation_git_diff,
     list_conversation_files,
     read_conversation_file,
     search_app_conversations,
+    start_app_conversation,
+    stream_app_conversation_start,
     switch_conversation_profile,
+)
+from openhands.app_server.app_conversation.app_conversation_service import (
+    ConversationExportAlreadyRunning,
+    ConversationExportLockUnavailable,
+    ConversationExportTooLarge,
 )
 from openhands.app_server.file_store import get_file_store
 from openhands.app_server.integrations.provider import CustomSecret
@@ -94,6 +110,46 @@ def _codex_user_context():
 @pytest.fixture
 def file_secrets_store(tmp_path):
     return FileSecretsStore(get_file_store('local', str(tmp_path)))
+
+
+class _AsyncSessionContext:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, *args):
+        return None
+
+
+def _quota_modules(reserve_result=True, release_error=None):
+    session = object()
+    reserve = AsyncMock(return_value=reserve_result)
+    release = AsyncMock(side_effect=release_error)
+
+    class DailyConversationQuotaService:
+        def __init__(self, actual_session):
+            assert actual_session is session
+
+        async def reserve(self, user_id, org_id):
+            return await reserve(user_id, org_id)
+
+        async def release(self, user_id):
+            await release(user_id)
+
+    quota_module = types.ModuleType('server.services.daily_conversation_quota_service')
+    quota_module.DailyConversationQuotaService = DailyConversationQuotaService
+    database_module = types.ModuleType('storage.database')
+    database_module.a_session_maker = lambda: _AsyncSessionContext(session)
+    modules = {
+        'server': types.ModuleType('server'),
+        'server.services': types.ModuleType('server.services'),
+        'server.services.daily_conversation_quota_service': quota_module,
+        'storage': types.ModuleType('storage'),
+        'storage.database': database_module,
+    }
+    return modules, reserve, release
 
 
 @pytest.mark.parametrize(
@@ -190,6 +246,421 @@ async def test_codex_preflight_allows_request_scoped_auth(file_secrets_store):
         _codex_user_context(),
         file_secrets_store,
     )
+
+
+@pytest.mark.asyncio
+async def test_reserve_quota_noops_without_user_or_in_oss_mode():
+    assert await _reserve_daily_conversation_quota(None) is False
+    assert await _reserve_daily_conversation_quota('user-id') is False
+
+
+@pytest.mark.asyncio
+async def test_reserve_quota_uses_enterprise_service_in_saas_mode():
+    modules, reserve, _ = _quota_modules(reserve_result=True)
+    org_id = uuid4()
+    with (
+        patch.dict(sys.modules, modules),
+        patch(
+            'openhands.app_server.shared.server_config.app_mode',
+            SimpleNamespace(value='saas'),
+        ),
+    ):
+        result = await _reserve_daily_conversation_quota('user-id', org_id)
+
+    assert result is True
+    reserve.assert_awaited_once_with('user-id', org_id)
+
+
+@pytest.mark.asyncio
+async def test_release_quota_uses_enterprise_service_and_swallows_errors():
+    modules, _, release = _quota_modules()
+    with patch.dict(sys.modules, modules):
+        await _release_daily_conversation_quota('user-id')
+    release.assert_awaited_once_with('user-id')
+
+    modules, _, release = _quota_modules(release_error=RuntimeError('db failed'))
+    with patch.dict(sys.modules, modules):
+        await _release_daily_conversation_quota('user-id')
+    release.assert_awaited_once_with('user-id')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('status', 'expected_releases'),
+    [
+        (AppConversationStartTaskStatus.READY, 0),
+        (AppConversationStartTaskStatus.ERROR, 1),
+    ],
+)
+async def test_consume_remaining_handles_terminal_quota_status(
+    status, expected_releases
+):
+    task = AppConversationStartTask(
+        created_by_user_id='user-id',
+        request=AppConversationStartRequest(),
+        status=status,
+    )
+
+    async def tasks():
+        yield task
+
+    db_session = AsyncMock()
+    httpx_client = AsyncMock()
+    with patch(
+        'openhands.app_server.app_conversation.app_conversation_router._release_daily_conversation_quota',
+        new_callable=AsyncMock,
+    ) as release:
+        await _consume_remaining(
+            tasks(),
+            db_session,
+            httpx_client,
+            quota_user_id='user-id',
+            quota_reserved=True,
+        )
+
+    assert release.await_count == expected_releases
+    db_session.close.assert_awaited_once()
+    httpx_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_consume_remaining_releases_quota_on_failure():
+    async def failing_tasks():
+        raise RuntimeError('stream failed')
+        yield  # pragma: no cover
+
+    db_session = AsyncMock()
+    httpx_client = AsyncMock()
+    with patch(
+        'openhands.app_server.app_conversation.app_conversation_router._release_daily_conversation_quota',
+        new_callable=AsyncMock,
+    ) as release:
+        with pytest.raises(RuntimeError, match='stream failed'):
+            await _consume_remaining(
+                failing_tasks(),
+                db_session,
+                httpx_client,
+                quota_user_id='user-id',
+                quota_reserved=True,
+            )
+    release.assert_awaited_once_with('user-id')
+    db_session.close.assert_awaited_once()
+    httpx_client.aclose.assert_awaited_once()
+
+
+class _ServiceContext:
+    def __init__(self, service):
+        self.service = service
+
+    async def __aenter__(self):
+        return self.service
+
+    async def __aexit__(self, *args):
+        return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('status', 'expected_releases'),
+    [
+        (AppConversationStartTaskStatus.READY, 0),
+        (AppConversationStartTaskStatus.ERROR, 1),
+    ],
+)
+async def test_stream_start_handles_terminal_quota_status(status, expected_releases):
+    request = AppConversationStartRequest()
+    task = AppConversationStartTask(
+        created_by_user_id='user-id', request=request, status=status
+    )
+    service = MagicMock()
+
+    async def start(_request):
+        yield task
+
+    service.start_app_conversation = start
+    user_context = MagicMock()
+    user_context.get_user_id = AsyncMock(return_value='user-id')
+    user_context.get_effective_org_id = AsyncMock(return_value=None)
+    with (
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router.get_app_conversation_service',
+            return_value=_ServiceContext(service),
+        ),
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router._reserve_daily_conversation_quota',
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router._release_daily_conversation_quota',
+            new_callable=AsyncMock,
+        ) as release,
+    ):
+        chunks = [
+            chunk
+            async for chunk in _stream_app_conversation_start(request, user_context)
+        ]
+
+    assert chunks[0] == '[\n'
+    assert chunks[-1] == ']'
+    assert status.value in ''.join(chunks)
+    assert release.await_count == expected_releases
+
+
+@pytest.mark.asyncio
+async def test_stream_start_releases_quota_on_failure():
+    async def start(_request):
+        raise RuntimeError('start failed')
+        yield  # pragma: no cover
+
+    service = MagicMock()
+    service.start_app_conversation = start
+    user_context = MagicMock()
+    user_context.get_user_id = AsyncMock(return_value='user-id')
+    user_context.get_effective_org_id = AsyncMock(return_value=None)
+    with (
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router.get_app_conversation_service',
+            return_value=_ServiceContext(service),
+        ),
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router._reserve_daily_conversation_quota',
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router._release_daily_conversation_quota',
+            new_callable=AsyncMock,
+        ) as release,
+    ):
+        with pytest.raises(RuntimeError, match='start failed'):
+            [
+                chunk
+                async for chunk in _stream_app_conversation_start(
+                    AppConversationStartRequest(), user_context
+                )
+            ]
+
+    release.assert_awaited_once_with('user-id')
+
+
+@pytest.mark.asyncio
+async def test_stream_start_endpoint_hands_reservation_to_service():
+    user_context = MagicMock()
+    user_context.get_user_id = AsyncMock(return_value='user-id')
+    user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+    secrets_store = MagicMock()
+    with (
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router._validate_codex_credentials',
+            new_callable=AsyncMock,
+        ),
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router._reserve_daily_conversation_quota',
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as reserve,
+    ):
+        response = await stream_app_conversation_start(
+            AppConversationStartRequest(), user_context, secrets_store
+        )
+
+    assert response.media_type == 'application/json'
+    assert user_context._daily_quota_reserved is True
+    reserve.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_stream_start_serializes_multiple_tasks_with_commas():
+    request = AppConversationStartRequest()
+    tasks = [
+        AppConversationStartTask(
+            created_by_user_id='user-id',
+            request=request,
+            status=AppConversationStartTaskStatus.WORKING,
+        ),
+        AppConversationStartTask(
+            created_by_user_id='user-id',
+            request=request,
+            status=AppConversationStartTaskStatus.READY,
+        ),
+    ]
+    service = MagicMock()
+
+    async def start(_request):
+        for task in tasks:
+            yield task
+
+    service.start_app_conversation = start
+    user_context = MagicMock()
+    user_context.get_user_id = AsyncMock(return_value='user-id')
+    user_context.get_effective_org_id = AsyncMock(return_value=None)
+    with (
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router.get_app_conversation_service',
+            return_value=_ServiceContext(service),
+        ),
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router._reserve_daily_conversation_quota',
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+    ):
+        chunks = [
+            chunk
+            async for chunk in _stream_app_conversation_start(request, user_context)
+        ]
+
+    assert chunks[2].startswith(',\n')
+    assert chunks[-1] == ']'
+
+
+@pytest.mark.asyncio
+async def test_export_conversation_returns_zip_stream():
+    conversation_id = uuid4()
+
+    async def zip_stream():
+        yield b'zip'
+
+    service = MagicMock()
+    service.open_conversation_export = AsyncMock(return_value=zip_stream())
+    user_context = MagicMock()
+    user_context.get_user_id = AsyncMock(return_value=None)
+
+    response = await export_conversation(conversation_id, service, user_context)
+
+    assert response.media_type == 'application/zip'
+    assert response.headers['content-disposition'].endswith(
+        f'conversation_{conversation_id}.zip"'
+    )
+
+
+@pytest.mark.asyncio
+async def test_export_conversation_tracks_download_for_consented_user():
+    conversation_id = uuid4()
+
+    async def zip_stream():
+        yield b'zip'
+
+    service = MagicMock()
+    service.open_conversation_export = AsyncMock(return_value=zip_stream())
+    user_context = MagicMock()
+    user_context.get_user_id = AsyncMock(return_value='user-id')
+    user_context.get_user_info = AsyncMock(
+        return_value=SimpleNamespace(user_consents_to_analytics=True)
+    )
+    analytics = MagicMock()
+
+    with patch(
+        'openhands.app_server.app_conversation.app_conversation_router.get_analytics_service',
+        return_value=analytics,
+    ):
+        await export_conversation(conversation_id, service, user_context)
+
+    analytics.track_trajectory_downloaded.assert_called_once()
+    call = analytics.track_trajectory_downloaded.call_args
+    assert call.kwargs['ctx'].user_id == 'user-id'
+    assert call.kwargs['ctx'].consented is True
+    assert call.kwargs['conversation_id'] == str(conversation_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('error', 'status_code'),
+    [
+        (ValueError('missing'), 404),
+        (ConversationExportAlreadyRunning('busy'), 409),
+        (ConversationExportLockUnavailable('locked'), 503),
+        (ConversationExportTooLarge('large'), 413),
+        (RuntimeError('boom'), 500),
+    ],
+)
+async def test_export_conversation_maps_service_errors(error, status_code):
+    service = MagicMock()
+    service.open_conversation_export = AsyncMock(side_effect=error)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await export_conversation(uuid4(), service, MagicMock())
+
+    assert exc_info.value.status_code == status_code
+
+
+@pytest.mark.asyncio
+async def test_start_app_conversation_returns_first_task_and_schedules_remainder():
+    start_request = AppConversationStartRequest()
+    task = AppConversationStartTask(created_by_user_id='user-id', request=start_request)
+
+    async def tasks():
+        yield task
+
+    service = MagicMock()
+    service.start_app_conversation = MagicMock(return_value=tasks())
+    user_context = MagicMock()
+    user_context.get_user_id = AsyncMock(return_value=None)
+    request = SimpleNamespace(state=SimpleNamespace())
+    db_session = AsyncMock()
+    httpx_client = AsyncMock()
+
+    with (
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router._validate_codex_credentials',
+            new_callable=AsyncMock,
+        ),
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router.set_db_session_keep_open'
+        ) as keep_db_open,
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router.set_httpx_client_keep_open'
+        ) as keep_http_open,
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_router.asyncio.create_task'
+        ) as create_task,
+    ):
+        result = await start_app_conversation(
+            request,
+            start_request,
+            user_context,
+            MagicMock(),
+            db_session,
+            httpx_client,
+            service,
+        )
+
+    assert result is task
+    keep_db_open.assert_called_once_with(request.state, True)
+    keep_http_open.assert_called_once_with(request.state, True)
+    create_task.assert_called_once()
+    create_task.call_args.args[0].close()
+
+
+@pytest.mark.asyncio
+async def test_start_app_conversation_closes_resources_on_failure():
+    async def tasks():
+        raise RuntimeError('start failed')
+        yield
+
+    service = MagicMock()
+    service.start_app_conversation = MagicMock(return_value=tasks())
+    db_session = AsyncMock()
+    httpx_client = AsyncMock()
+
+    with patch(
+        'openhands.app_server.app_conversation.app_conversation_router._validate_codex_credentials',
+        new_callable=AsyncMock,
+    ):
+        with pytest.raises(RuntimeError, match='start failed'):
+            await start_app_conversation(
+                SimpleNamespace(state=SimpleNamespace()),
+                AppConversationStartRequest(),
+                MagicMock(),
+                MagicMock(),
+                db_session,
+                httpx_client,
+                service,
+            )
+
+    db_session.close.assert_awaited_once()
+    httpx_client.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio

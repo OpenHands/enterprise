@@ -1,16 +1,11 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuotaStatus } from "#/hooks/query/use-quota-status";
-import { useCreateQuotaIncreaseRequest } from "#/hooks/mutation/use-create-quota-increase-request";
 import { useConfig } from "#/hooks/query/use-config";
 import { I18nKey } from "#/i18n/declaration";
-import { displayErrorToast } from "#/utils/custom-toast-handlers";
-import { SettingsInput } from "#/components/features/settings/settings-input";
-import { BrandButton } from "#/components/features/settings/brand-button";
 import { cn } from "#/utils/utils";
 import {
   formControlBorderClassName,
-  formControlMultilineFieldClassName,
   formControlRadiusClassName,
   formControlSurfaceClassName,
 } from "#/utils/form-control-classes";
@@ -46,140 +41,8 @@ function useCountdown(resetAt: string | null) {
   return remaining;
 }
 
-function QuotaIncreaseRequestForm({
-  dailyLimit,
-  latestRequestStatus,
-  latestRequestedLimit,
-}: {
-  dailyLimit: number | null;
-  latestRequestStatus: string | null;
-  latestRequestedLimit: number | null;
-}) {
-  const { t } = useTranslation();
-  const createRequest = useCreateQuotaIncreaseRequest();
-  const [workEmail, setWorkEmail] = useState("");
-  const [requestedLimit, setRequestedLimit] = useState<number>(0);
-  const [reason, setReason] = useState("");
-
-  useEffect(() => {
-    if (dailyLimit && !requestedLimit) {
-      setRequestedLimit(dailyLimit * 5);
-    }
-  }, [dailyLimit, requestedLimit]);
-
-  const maxLimit = dailyLimit ? dailyLimit * 10 : 0;
-  const hasPending = latestRequestStatus === "pending";
-
-  if (dailyLimit === null || dailyLimit === 0) {
-    return null;
-  }
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!workEmail.trim() || !requestedLimit) return;
-    if (hasPending) {
-      displayErrorToast(t(I18nKey.SETTINGS$QUOTA_REQUEST_PENDING));
-      return;
-    }
-    createRequest.mutate({
-      work_email: workEmail.trim(),
-      requested_limit: requestedLimit,
-      reason: reason.trim() || undefined,
-    });
-  };
-
-  return (
-    <div
-      className={cn(
-        formControlBorderClassName,
-        formControlRadiusClassName,
-        formControlSurfaceClassName,
-        "flex flex-col gap-4 p-4",
-      )}
-      data-testid="quota-increase-form"
-    >
-      <h2 className="text-base font-semibold text-white">
-        {t(I18nKey.SETTINGS$QUOTA_REQUEST_TITLE)}
-      </h2>
-      <p className="text-sm text-muted">
-        {t(I18nKey.SETTINGS$QUOTA_REQUEST_DESCRIPTION)}
-      </p>
-
-      {latestRequestStatus === "approved" && latestRequestedLimit && (
-        <div
-          className="rounded bg-emerald-500/20 px-3 py-2 text-sm text-[var(--oh-status-success)]"
-          data-testid="quota-request-approved"
-        >
-          {t(I18nKey.SETTINGS$QUOTA_REQUEST_APPROVED)} ({latestRequestedLimit})
-        </div>
-      )}
-
-      {hasPending && (
-        <div
-          className="rounded bg-[var(--oh-interactive-hover)] px-3 py-2 text-sm text-[var(--oh-muted)]"
-          data-testid="quota-request-pending"
-        >
-          {t(I18nKey.SETTINGS$QUOTA_REQUEST_PENDING)}
-        </div>
-      )}
-
-      <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-        <SettingsInput
-          testId="quota-work-email-input"
-          type="email"
-          label={t(I18nKey.SETTINGS$QUOTA_WORK_EMAIL)}
-          value={workEmail}
-          onChange={setWorkEmail}
-          placeholder="you@company.com"
-          isDisabled={hasPending}
-        />
-
-        <SettingsInput
-          testId="quota-requested-limit-input"
-          type="number"
-          label={t(I18nKey.SETTINGS$QUOTA_REQUESTED_LIMIT)}
-          value={String(requestedLimit)}
-          min={dailyLimit}
-          max={maxLimit}
-          onChange={(value) => setRequestedLimit(Number(value))}
-          isDisabled={hasPending}
-          hint={`${t(I18nKey.SETTINGS$QUOTA_MAX_ALLOWED)}: ${maxLimit}`}
-        />
-
-        <label className="flex flex-col gap-2.5">
-          <span className="text-sm">
-            {t(I18nKey.SETTINGS$QUOTA_REASON)} (
-            {t(I18nKey.SETTINGS$QUOTA_OPTIONAL)})
-          </span>
-          <textarea
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            className={cn(formControlMultilineFieldClassName, "resize-none")}
-            rows={3}
-            data-testid="quota-reason-input"
-            disabled={hasPending}
-          />
-        </label>
-
-        <BrandButton
-          testId="quota-submit-request"
-          type="submit"
-          variant="primary"
-          isDisabled={
-            createRequest.isPending ||
-            hasPending ||
-            !workEmail.trim() ||
-            !requestedLimit
-          }
-        >
-          {createRequest.isPending
-            ? t(I18nKey.SETTINGS$QUOTA_SUBMITTING)
-            : t(I18nKey.SETTINGS$QUOTA_SUBMIT)}
-        </BrandButton>
-      </form>
-    </div>
-  );
-}
+const QUOTA_INCREASE_REQUEST_URL =
+  "https://u8mk1.share.hsforms.com/2lXOvoRtHRfeWEmba8CdOGw";
 
 function QuotaSettingsScreen() {
   const { t } = useTranslation();
@@ -281,11 +144,15 @@ function QuotaSettingsScreen() {
         </div>
       )}
 
-      <QuotaIncreaseRequestForm
-        dailyLimit={quota.daily_limit}
-        latestRequestStatus={quota.latest_request_status}
-        latestRequestedLimit={quota.latest_request_requested_limit}
-      />
+      <a
+        href={QUOTA_INCREASE_REQUEST_URL}
+        target="_blank"
+        rel="noreferrer"
+        className="text-sm text-primary underline hover:opacity-80"
+        data-testid="quota-increase-request-link"
+      >
+        {t(I18nKey.SETTINGS$QUOTA_REQUEST_TITLE)}
+      </a>
     </div>
   );
 }
