@@ -270,28 +270,66 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
         # Return True if any rows were affected
         return result.rowcount > 0
 
-    async def delete_start_tasks_older_than(self, cutoff: datetime) -> int:
+    async def delete_start_tasks_older_than(
+        self, cutoff: datetime, batch_size: int | None = None
+    ) -> int:
         """Delete all start tasks older than the given cutoff, regardless of user.
 
         This is intended for the periodic cleanup CronJob that purges stale
         start-task rows. It deliberately ignores ``user_id`` so it can run
         unscoped.
 
+        When ``batch_size`` is set, the delete is performed in batches of that
+        size, each in its own transaction. This bounds the work done per
+        transaction, limits lock-table entry consumption, and allows autovacuum
+        to reclaim dead tuples incrementally — important when purging a large
+        backlog on the first run.
+
         Args:
             cutoff: Rows with ``created_at`` strictly before this value are deleted.
+            batch_size: If set, delete in batches of this many rows per commit.
+                If None, delete all matching rows in a single statement.
 
         Returns:
             The number of rows deleted.
         """
-        from sqlalchemy import delete
+        from sqlalchemy import delete, select
 
-        delete_query = delete(StoredAppConversationStartTask).where(
-            StoredAppConversationStartTask.created_at < cutoff
-        )
+        if batch_size is None:
+            delete_query = delete(StoredAppConversationStartTask).where(
+                StoredAppConversationStartTask.created_at < cutoff
+            )
+            result = cast(CursorResult, await self.session.execute(delete_query))
+            await self.session.commit()
+            return result.rowcount
 
-        result = cast(CursorResult, await self.session.execute(delete_query))
-        await self.session.commit()
-        return result.rowcount
+        total_deleted = 0
+        while True:
+            # Select the IDs of the next batch to delete. Selecting IDs first
+            # (rather than DELETE ... LIMIT) keeps this portable across
+            # SQLite (tests) and PostgreSQL (production).
+            id_query = (
+                select(StoredAppConversationStartTask.id)
+                .where(StoredAppConversationStartTask.created_at < cutoff)
+                .order_by(StoredAppConversationStartTask.created_at)
+                .limit(batch_size)
+            )
+            ids = [row[0] for row in (await self.session.execute(id_query)).all()]
+            if not ids:
+                break
+
+            result = cast(
+                CursorResult,
+                await self.session.execute(
+                    delete(StoredAppConversationStartTask).where(
+                        StoredAppConversationStartTask.id.in_(ids)
+                    )
+                ),
+            )
+            await self.session.commit()
+            total_deleted += result.rowcount
+
+        return total_deleted
 
 
 class SQLAppConversationStartTaskServiceInjector(

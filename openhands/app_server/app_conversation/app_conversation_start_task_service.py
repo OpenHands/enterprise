@@ -70,13 +70,17 @@ class AppConversationStartTaskService(ABC):
         """
 
     @abstractmethod
-    async def delete_start_tasks_older_than(self, cutoff: datetime) -> int:
+    async def delete_start_tasks_older_than(
+        self, cutoff: datetime, batch_size: int | None = None
+    ) -> int:
         """Delete all start tasks older than the given cutoff, regardless of user.
 
         Intended for the periodic cleanup CronJob. Runs unscoped (no user filter).
 
         Args:
             cutoff: Rows with ``created_at`` strictly before this value are deleted.
+            batch_size: If set, delete in batches of this many rows per commit.
+                If None, delete all matching rows in a single statement.
 
         Returns:
             The number of rows deleted.
