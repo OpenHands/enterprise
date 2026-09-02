@@ -38,6 +38,9 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     effective_disabled_skills,
 )
 from openhands.app_server.errors import SandboxError
+from openhands.app_server.event_callback.set_title_callback_processor import (
+    SetTitleCallbackProcessor,
+)
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
 from openhands.app_server.integrations.service_types import SuggestedTask, TaskType
 from openhands.app_server.sandbox.sandbox_models import (
@@ -2778,21 +2781,14 @@ class TestLiveStatusAppConversationService:
 
         self.mock_event_service.iter_events_for_export.assert_not_called()
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
-    )
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
-    )
-    async def test_start_app_conversation_default_title_uses_first_five_characters(
-        self, mock_conversation_info_class, mock_remote_workspace_class
+    def _arrange_start_app_conversation(
+        self,
+        conversation_id,
+        mock_conversation_info_class,
+        mock_remote_workspace_class,
     ):
-        """Test that v1 conversations use first 5 characters of conversation ID for default title."""
-        # Arrange
-        conversation_id = uuid4()
-        conversation_id_hex = conversation_id.hex
-        expected_title = f'Conversation {conversation_id_hex[:5]}'
-
+        """Wire the mocks so ``_start_app_conversation`` runs through saving
+        the conversation info and registering its event callbacks."""
         # Mock user context
         self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
         self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
@@ -2860,6 +2856,27 @@ class TestLiveStatusAppConversationService:
         # Mock event callback service
         self.mock_event_callback_service.save_event_callback = AsyncMock()
 
+        self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock()
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_default_title_uses_first_five_characters(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """Test that v1 conversations use first 5 characters of conversation ID for default title."""
+        # Arrange
+        conversation_id = uuid4()
+        conversation_id_hex = conversation_id.hex
+        expected_title = f'Conversation {conversation_id_hex[:5]}'
+
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+
         # Create request
         request = AppConversationStartRequest()
 
@@ -2881,6 +2898,45 @@ class TestLiveStatusAppConversationService:
             f'but got "{saved_info.title}"'
         )
         assert saved_info.id == conversation_id
+        # The auto-title callback is registered when no title was supplied
+        saved_callbacks = (
+            self.mock_event_callback_service.save_event_callback.await_args_list
+        )
+        saved_processors = [call.args[0].processor for call in saved_callbacks]
+        assert any(isinstance(p, SetTitleCallbackProcessor) for p in saved_processors)
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_keeps_request_title_and_skips_auto_title(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """Test that a caller-supplied title is stored and not auto-titled over."""
+        # Arrange
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        request = AppConversationStartRequest(title='PR-REVIEW APPEVO-1234')
+
+        # Act
+        async for task in self.service._start_app_conversation(request):
+            pass
+
+        # Assert
+        save_call = self.mock_app_conversation_info_service.save_app_conversation_info
+        saved_info = save_call.call_args[0][0]
+        assert saved_info.title == 'PR-REVIEW APPEVO-1234'
+        saved_callbacks = (
+            self.mock_event_callback_service.save_event_callback.await_args_list
+        )
+        saved_processors = [call.args[0].processor for call in saved_callbacks]
+        assert not any(
+            isinstance(p, SetTitleCallbackProcessor) for p in saved_processors
+        )
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
