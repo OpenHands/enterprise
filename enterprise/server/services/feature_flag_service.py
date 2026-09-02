@@ -4,6 +4,14 @@ Determines whether a flag is enabled for a given context, applying the
 precedence: global switch -> exclude rules -> include rules -> percentage
 rollout -> default. This mirrors the "whitelist beats blacklist" precedence of
 ``default_user_authorizer`` generalized to include/exclude + targeting.
+
+Env-var fallback (standard pattern): a flag key registered in
+``_ENV_FLAG_DEFAULTS`` (via ``register_env_default``) resolves to its
+environment variable when no database row exists; once a row exists the
+database is authoritative. This is the standard way to migrate an env-var
+toggle (e.g. ``ENABLE_BILLING``) to a DB-managed feature flag. Sync or
+import-time callers that cannot await ``is_enabled`` can read the same
+fallback via ``FeatureFlagService.resolve_env_default``.
 """
 
 import hashlib
@@ -94,6 +102,18 @@ class FeatureFlagService:
         is served.
         """
         _ENV_FLAG_DEFAULTS[key] = _EnvFlagDefault(env_var, default_bool)
+
+    @classmethod
+    def resolve_env_default(cls, key: str) -> bool:
+        """Resolve a flag's env-var fallback without touching the database.
+
+        This is the synchronous half of the env-fallback pattern: callers that
+        cannot await ``is_enabled`` (module import time, sync helpers) read the
+        same env var with the same truthiness rules. Returns ``False`` for
+        unregistered keys so the absence of a DB row never implicitly grants
+        anything.
+        """
+        return _env_fallback(key)
 
     def __init__(
         self,
@@ -241,8 +261,8 @@ class FeatureFlagService:
 def _env_fallback(key: str) -> bool:
     """Resolve a flag with no DB row from its registered env-var fallback.
 
-    When the env var is set, its truthiness wins (``true`` -> allow-all, any
-    other value -> deny-all). When the env var is unset, the registered
+    When the env var is set, its truthiness wins (``true``/``1`` -> allow-all,
+    any other value -> deny-all). When the env var is unset, the registered
     ``default_bool`` is used. Unknown/unregistered keys return ``False`` so the
     absence of a DB row never implicitly grants anything.
     """
@@ -252,7 +272,7 @@ def _env_fallback(key: str) -> bool:
     val = os.getenv(entry.env_var)
     if val is None:
         return entry.default_bool
-    return val.lower() == 'true'
+    return val.lower() in ('true', '1')
 
 
 def _rule_matches_context(

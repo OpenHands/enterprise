@@ -203,6 +203,10 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     BYOK editing UI visible; ENABLE_ACP keeps the ACP agent configuration UI
     (Settings > Agent) visible on SaaS and existing installs, matching Agent
     Canvas. Set ENABLE_ACP=false to hide it.
+
+    enable_billing here is only the env-var fallback: ``get_web_client_config``
+    re-resolves it against the DB-backed ENABLE_BILLING feature flag on every
+    request (see ``_resolve_billing_enabled``).
     """
     return WebClientFeatureFlags(
         enable_billing=os.getenv('ENABLE_BILLING', 'false') == 'true',
@@ -252,6 +256,28 @@ async def _get_db_feature_flags() -> dict[str, bool]:
         # Never let a DB hiccup take down the unauthenticated config
         # endpoint; fall back to an empty map.
         return {}
+
+
+async def _resolve_billing_enabled(env_default: bool) -> bool:
+    """Resolve the unified ENABLE_BILLING flag: database first, env fallback.
+
+    ``ENABLE_BILLING`` is a DB-managed feature flag whose env var is the
+    pre-migration fallback (see ``FeatureFlagService`` env-default pattern):
+    when a ``FeatureFlag`` row exists it is authoritative; otherwise the
+    ``ENABLE_BILLING`` env var decides. Like ``_get_db_feature_flags``, this
+    is best-effort -- OSS installs and DB hiccups fall back to the env value
+    so the unauthenticated config endpoint never breaks.
+    """
+    try:
+        from server.services.feature_flag_service import (
+            feature_flag_service,
+        )
+    except Exception:
+        return env_default
+    try:
+        return await feature_flag_service.is_enabled('ENABLE_BILLING')
+    except Exception:
+        return env_default
 
 
 class DefaultWebClientConfigInjector(WebClientConfigInjector):
@@ -319,10 +345,20 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         from openhands.app_server.config import get_global_config
 
         config = get_global_config()
+        # enable_billing is unified with the DB-backed ENABLE_BILLING feature
+        # flag: a database row wins, the env var (baked into self.feature_flags
+        # at init) is the fallback.
+        feature_flags = self.feature_flags.model_copy(
+            update={
+                'enable_billing': await _resolve_billing_enabled(
+                    self.feature_flags.enable_billing
+                )
+            }
+        )
         result = WebClientConfig(
             app_mode=config.app_mode,
             posthog_client_key=self.posthog_client_key,
-            feature_flags=self.feature_flags,
+            feature_flags=feature_flags,
             db_feature_flags=await _get_db_feature_flags(),
             providers_configured=self.providers_configured,
             maintenance_start_time=self.maintenance_start_time,

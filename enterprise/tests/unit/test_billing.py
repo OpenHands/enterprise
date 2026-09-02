@@ -119,6 +119,69 @@ def patched_checkout_session_makers(async_session_maker):
         yield
 
 
+class TestValidateBillingEnabled:
+    """Tests for the unified ENABLE_BILLING feature flag guard.
+
+    A database row is authoritative; the ENABLE_BILLING env var is the
+    fallback when no row exists or the flag evaluation fails.
+    """
+
+    @pytest.mark.asyncio
+    async def test_allows_when_flag_enabled(self):
+        with patch(
+            'server.routes.billing.feature_flag_service.is_enabled',
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            await billing.validate_billing_enabled()
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_flag_disabled(self):
+        with (
+            patch(
+                'server.routes.billing.feature_flag_service.is_enabled',
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await billing.validate_billing_enabled()
+        assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_env_on_flag_error(self):
+        with (
+            patch(
+                'server.routes.billing.feature_flag_service.is_enabled',
+                new_callable=AsyncMock,
+                side_effect=RuntimeError('db down'),
+            ),
+            patch(
+                'server.routes.billing.FeatureFlagService.resolve_env_default',
+                return_value=True,
+            ) as mock_resolve,
+        ):
+            await billing.validate_billing_enabled()
+        mock_resolve.assert_called_once_with('ENABLE_BILLING')
+
+    @pytest.mark.asyncio
+    async def test_env_fallback_disabled_rejects_on_flag_error(self):
+        with (
+            patch(
+                'server.routes.billing.feature_flag_service.is_enabled',
+                new_callable=AsyncMock,
+                side_effect=RuntimeError('db down'),
+            ),
+            patch(
+                'server.routes.billing.FeatureFlagService.resolve_env_default',
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await billing.validate_billing_enabled()
+        assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+
+
 @pytest.fixture
 async def test_org(async_session_maker):
     """Create a test org in the database."""

@@ -983,3 +983,112 @@ class TestGetDbFeatureFlags:
         ):
             result = await mod._get_db_feature_flags()
         assert result == {}
+
+
+class TestResolveBillingEnabled:
+    """Tests for _resolve_billing_enabled.
+
+    ENABLE_BILLING is unified with the DB-backed feature flag: a database row
+    is authoritative, the env var is the fallback, and import/DB failures must
+    degrade to the env value so the config endpoint never breaks.
+    """
+
+    def _fake_service_module(self, service):
+        import sys
+        import types
+
+        fake_module = types.ModuleType('server.services.feature_flag_service')
+        fake_module.feature_flag_service = service
+        return patch.dict(
+            sys.modules, {'server.services.feature_flag_service': fake_module}
+        )
+
+    @pytest.mark.asyncio
+    async def test_db_flag_enabled_overrides_env_false(self):
+        """A DB row enabling billing wins over ENABLE_BILLING=false."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def is_enabled(self, key):
+                assert key == 'ENABLE_BILLING'
+                return True
+
+        with self._fake_service_module(_FakeService()):
+            result = await mod._resolve_billing_enabled(env_default=False)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_db_flag_disabled_overrides_env_true(self):
+        """A DB row disabling billing wins over ENABLE_BILLING=true."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def is_enabled(self, key):
+                return False
+
+        with self._fake_service_module(_FakeService()):
+            result = await mod._resolve_billing_enabled(env_default=True)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_env_when_service_absent(self):
+        """OSS installs without the enterprise service use the env value."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        with patch(
+            'builtins.__import__',
+            side_effect=ImportError('no enterprise package'),
+        ):
+            assert await mod._resolve_billing_enabled(env_default=True) is True
+            assert await mod._resolve_billing_enabled(env_default=False) is False
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_env_on_db_error(self):
+        """A runtime error from the service falls back to the env value."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _BrokenService:
+            async def is_enabled(self, key):
+                raise RuntimeError('db down')
+
+        with self._fake_service_module(_BrokenService()):
+            assert await mod._resolve_billing_enabled(env_default=True) is True
+            assert await mod._resolve_billing_enabled(env_default=False) is False
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_applies_resolved_billing_flag(self):
+        """get_web_client_config surfaces the DB-resolved enable_billing."""
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def is_enabled(self, key):
+                return True
+
+            async def get_global_flags(self):
+                return {'ENABLE_BILLING': True}
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        with (
+            self._fake_service_module(_FakeService()),
+            patch.dict(os.environ, {'ENABLE_BILLING': 'false'}),
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.enable_billing is True

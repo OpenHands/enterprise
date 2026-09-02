@@ -35,20 +35,59 @@ KEY_VERIFICATION_TIMEOUT = 5.0
 # A very large number to represent "unlimited" until LiteLLM fixes their unlimited update bug.
 UNLIMITED_BUDGET_SETTING = 1000000000.0
 
-ENABLE_BILLING = os.environ.get('ENABLE_BILLING', 'false').lower() == 'true'
+
+def _env_billing_enabled() -> bool:
+    """Import-time env fallback for the ENABLE_BILLING feature flag.
+
+    Resolved through the feature flag service's standard env-default helper so
+    the truthiness rules ('true'/'1') live in exactly one place. The raw env
+    read is kept as a safety net in case the service cannot be imported.
+    """
+    try:
+        from server.services.feature_flag_service import FeatureFlagService
+
+        return FeatureFlagService.resolve_env_default('ENABLE_BILLING')
+    except Exception:
+        return os.environ.get('ENABLE_BILLING', 'false').lower() in ('true', '1')
 
 
-def _get_default_initial_budget() -> float | None:
+# Import-time snapshot of the env fallback. Runtime checks should prefer
+# ``_is_billing_enabled`` so a DB-managed ENABLE_BILLING flag row wins.
+ENABLE_BILLING = _env_billing_enabled()
+
+
+async def _is_billing_enabled() -> bool:
+    """Resolve the unified ENABLE_BILLING feature flag: DB first, env fallback.
+
+    A ``FeatureFlag`` row is authoritative; when no row exists the service
+    falls back to the ENABLE_BILLING env var itself. On a database error the
+    import-time env snapshot is used so a DB hiccup does not change budget
+    enforcement behavior.
+    """
+    try:
+        from server.services.feature_flag_service import feature_flag_service
+
+        return await feature_flag_service.is_enabled('ENABLE_BILLING')
+    except Exception:
+        logger.warning(
+            'Failed to evaluate ENABLE_BILLING feature flag; '
+            'falling back to environment variable',
+            exc_info=True,
+        )
+        return ENABLE_BILLING
+
+
+def _get_default_initial_budget(billing_enabled: bool) -> float | None:
     """Get the default initial budget for new teams.
 
-    When billing is disabled (ENABLE_BILLING=false), returns None to disable
-    budget enforcement in LiteLLM. When billing is enabled, returns the
-    DEFAULT_INITIAL_BUDGET environment variable value (default 0.0).
+    When billing is disabled (the ENABLE_BILLING feature flag is off), returns
+    None to disable budget enforcement in LiteLLM. When billing is enabled,
+    returns the DEFAULT_INITIAL_BUDGET environment variable value (default 0.0).
 
     Returns:
         float | None: The default budget, or None to disable budget enforcement.
     """
-    if not ENABLE_BILLING:
+    if not billing_enabled:
         return None
 
     try:
@@ -64,7 +103,7 @@ def _get_default_initial_budget() -> float | None:
         ) from e
 
 
-DEFAULT_INITIAL_BUDGET: float | None = _get_default_initial_budget()
+DEFAULT_INITIAL_BUDGET: float | None = _get_default_initial_budget(ENABLE_BILLING)
 
 
 # Models offered at $0 cost in the LiteLLM proxy (see saas-deploy litellm
@@ -194,8 +233,11 @@ class LiteLlmManager:
             ) as client:
                 # Check if team already exists and get its budget
                 # New users joining existing orgs should inherit the team's budget
-                # When billing is disabled, DEFAULT_INITIAL_BUDGET is None
-                team_budget: float | None = DEFAULT_INITIAL_BUDGET
+                # When billing is disabled, the default budget is None (no
+                # budget enforcement)
+                team_budget: float | None = _get_default_initial_budget(
+                    await _is_billing_enabled()
+                )
                 try:
                     existing_team = await LiteLlmManager._get_team(client, org_id)
                     if existing_team:

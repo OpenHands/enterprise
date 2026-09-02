@@ -13,6 +13,10 @@ from pydantic import BaseModel
 from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.constants import STRIPE_API_KEY
 from server.logger import logger
+from server.services.feature_flag_service import (
+    FeatureFlagService,
+    feature_flag_service,
+)
 from server.utils.url_utils import get_web_url
 from sqlalchemy import select
 from storage.billing_session import BillingSession
@@ -23,23 +27,36 @@ from storage.subscription_access import SubscriptionAccess
 from storage.user_store import UserStore
 
 from openhands.analytics import get_analytics_service
-from openhands.app_server.config import get_global_config
 from openhands.app_server.user_auth import get_user_id
 
 stripe.api_key = STRIPE_API_KEY
 billing_router = APIRouter(prefix='/api/billing', tags=['Billing'])
 
 
+async def _is_billing_enabled() -> bool:
+    """Evaluate the unified ENABLE_BILLING feature flag.
+
+    A database row is authoritative; the ENABLE_BILLING env var is the
+    fallback when no row exists (see the FeatureFlagService env-default
+    pattern). On a database error, fall back to the env var so a DB hiccup
+    does not change billing availability.
+    """
+    try:
+        return await feature_flag_service.is_enabled('ENABLE_BILLING')
+    except Exception:
+        logger.exception('Failed to evaluate ENABLE_BILLING feature flag')
+        return FeatureFlagService.resolve_env_default('ENABLE_BILLING')
+
+
 async def validate_billing_enabled() -> None:
     """Validate that the billing feature flag is enabled"""
-    config = get_global_config()
-    web_client_config = await config.web_client.get_web_client_config()
-    if not web_client_config.feature_flags.enable_billing:
+    if not await _is_billing_enabled():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
                 'Billing is disabled in this environment. '
-                'Please set OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_BILLING to enable billing.'
+                'Enable the ENABLE_BILLING feature flag (or set the '
+                'ENABLE_BILLING environment variable) to enable billing.'
             ),
         )
 

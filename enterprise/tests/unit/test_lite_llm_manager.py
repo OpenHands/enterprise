@@ -339,6 +339,65 @@ class TestDefaultInitialBudget:
         assert 'must be non-negative' in str(exc_info.value)
 
 
+class TestIsBillingEnabled:
+    """Runtime resolution of the unified ENABLE_BILLING feature flag.
+
+    A database row is authoritative; the import-time env snapshot
+    (``ENABLE_BILLING`` module constant) is the fallback when the flag
+    evaluation fails.
+    """
+
+    @pytest.mark.asyncio
+    async def test_db_flag_wins(self):
+        from storage import lite_llm_manager as module
+
+        with patch(
+            'server.services.feature_flag_service.feature_flag_service.is_enabled',
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            assert await module._is_billing_enabled() is True
+
+    @pytest.mark.asyncio
+    async def test_db_flag_disabled(self):
+        from storage import lite_llm_manager as module
+
+        with patch(
+            'server.services.feature_flag_service.feature_flag_service.is_enabled',
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            assert await module._is_billing_enabled() is False
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_env_snapshot_on_error(self):
+        from storage import lite_llm_manager as module
+
+        with (
+            patch(
+                'server.services.feature_flag_service.feature_flag_service.is_enabled',
+                new_callable=AsyncMock,
+                side_effect=RuntimeError('db down'),
+            ),
+            patch.object(module, 'ENABLE_BILLING', True),
+        ):
+            assert await module._is_billing_enabled() is True
+
+    @pytest.mark.asyncio
+    async def test_env_snapshot_disabled_on_error(self):
+        from storage import lite_llm_manager as module
+
+        with (
+            patch(
+                'server.services.feature_flag_service.feature_flag_service.is_enabled',
+                new_callable=AsyncMock,
+                side_effect=RuntimeError('db down'),
+            ),
+            patch.object(module, 'ENABLE_BILLING', False),
+        ):
+            assert await module._is_billing_enabled() is False
+
+
 class TestLiteLlmManager:
     """Test cases for LiteLlmManager class."""
 
@@ -564,6 +623,79 @@ class TestLiteLlmManager:
                 mock_client.post.call_count == 4
             )  # create_team, add_user_to_team, delete_key_by_alias, generate_key
 
+    async def _create_entries_with_billing_flag(
+        self, mock_settings, mock_response, billing_enabled: bool
+    ):
+        """Run create_entries with the billing flag stubbed; return team budget."""
+        mock_404_response = MagicMock()
+        mock_404_response.status_code = 404
+        mock_404_response.is_success = False
+        mock_404_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            message='Not Found', request=MagicMock(), response=mock_404_response
+        )
+
+        mock_user_exists_response = MagicMock()
+        mock_user_exists_response.is_success = True
+        mock_user_exists_response.json.return_value = {
+            'user_info': {'user_id': 'test-user-id'}
+        }
+
+        mock_token_manager = MagicMock()
+        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
+            return_value={'email': 'test@example.com'}
+        )
+
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = [mock_404_response, mock_user_exists_response]
+        mock_client.post.return_value = mock_response
+
+        mock_client_class = MagicMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        with (
+            patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('httpx.AsyncClient', mock_client_class),
+            patch(
+                'storage.lite_llm_manager._is_billing_enabled',
+                new_callable=AsyncMock,
+                return_value=billing_enabled,
+            ),
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager._create_team',
+                new_callable=AsyncMock,
+            ) as mock_create_team,
+        ):
+            os.environ.pop('DEFAULT_INITIAL_BUDGET', None)
+            await LiteLlmManager.create_entries(
+                'test-org-id', 'test-user-id', mock_settings, create_user=False
+            )
+
+        # _create_team(client, team_alias, org_id, team_budget)
+        return mock_create_team.call_args.args[3]
+
+    @pytest.mark.asyncio
+    async def test_create_entries_team_budget_when_billing_flag_on(
+        self, mock_settings, mock_response
+    ):
+        """A DB flag enabling billing applies the default budget to new teams."""
+        team_budget = await self._create_entries_with_billing_flag(
+            mock_settings, mock_response, billing_enabled=True
+        )
+        assert team_budget == 0.0
+
+    @pytest.mark.asyncio
+    async def test_create_entries_team_budget_when_billing_flag_off(
+        self, mock_settings, mock_response
+    ):
+        """A DB flag disabling billing disables budget enforcement (None)."""
+        team_budget = await self._create_entries_with_billing_flag(
+            mock_settings, mock_response, billing_enabled=False
+        )
+        assert team_budget is None
+
     @pytest.mark.asyncio
     async def test_create_entries_can_create_team_without_adding_user(
         self, mock_settings, mock_response
@@ -675,7 +807,8 @@ class TestLiteLlmManager:
     async def test_create_entries_new_org_uses_default_initial_budget(
         self, mock_settings, mock_response
     ):
-        """Test that create_entries uses DEFAULT_INITIAL_BUDGET for new org."""
+        """With billing on, create_entries uses the 0.0 default budget for a
+        new org (free tier)."""
         mock_404_response = MagicMock()
         mock_404_response.status_code = 404
         mock_404_response.is_success = False
@@ -709,8 +842,13 @@ class TestLiteLlmManager:
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
             patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
-            patch('storage.lite_llm_manager.DEFAULT_INITIAL_BUDGET', 0.0),
+            patch(
+                'storage.lite_llm_manager._is_billing_enabled',
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
         ):
+            os.environ.pop('DEFAULT_INITIAL_BUDGET', None)
             result = await LiteLlmManager.create_entries(
                 'test-org-id', 'test-user-id', mock_settings, create_user=False
             )
@@ -734,7 +872,8 @@ class TestLiteLlmManager:
     async def test_create_entries_new_org_uses_custom_default_budget(
         self, mock_settings, mock_response
     ):
-        """Test that create_entries uses custom DEFAULT_INITIAL_BUDGET for new org."""
+        """With billing on, create_entries uses the DEFAULT_INITIAL_BUDGET
+        environment variable value for a new org."""
         mock_404_response = MagicMock()
         mock_404_response.status_code = 404
         mock_404_response.is_success = False
@@ -764,12 +903,19 @@ class TestLiteLlmManager:
 
         custom_budget = 50.0
         with (
-            patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
+            patch.dict(
+                os.environ,
+                {'LOCAL_DEPLOYMENT': '', 'DEFAULT_INITIAL_BUDGET': '50.0'},
+            ),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
             patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
-            patch('storage.lite_llm_manager.DEFAULT_INITIAL_BUDGET', custom_budget),
+            patch(
+                'storage.lite_llm_manager._is_billing_enabled',
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
         ):
             result = await LiteLlmManager.create_entries(
                 'test-org-id', 'test-user-id', mock_settings, create_user=False
