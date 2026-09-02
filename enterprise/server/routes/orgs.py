@@ -1203,6 +1203,8 @@ def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
         current_spend_percentage=(
             round(percentage, 1) if percentage is not None else None
         ),
+        unmapped_spend=state['unmapped_spend'],
+        unmapped_member_count=state['unmapped_member_count'],
         thresholds=[
             OrgBudgetThresholdResponse(
                 id=threshold.id,

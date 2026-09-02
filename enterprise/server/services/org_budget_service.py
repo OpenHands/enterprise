@@ -191,6 +191,31 @@ def _litellm_member_cycle_spend(
     return max(member_info.spend - baseline, 0.0)
 
 
+def _litellm_unmapped_cycle_spend(
+    settings: OrgBudgetSettings,
+    snapshot: LiteLlmFinancialSnapshot | None,
+    org_member_ids: set[str],
+) -> tuple[float | None, int | None]:
+    if snapshot is None:
+        return None, None
+
+    unmanaged_member_ids = set(snapshot.members) - org_member_ids
+    if not unmanaged_member_ids:
+        return 0.0, 0
+
+    baselines = settings.user_cycle_start_spend or {}
+    if any(user_id not in baselines for user_id in unmanaged_member_ids):
+        return None, len(unmanaged_member_ids)
+
+    return (
+        sum(
+            max(snapshot.members[user_id].spend - baselines[user_id], 0.0)
+            for user_id in unmanaged_member_ids
+        ),
+        len(unmanaged_member_ids),
+    )
+
+
 def _effective_user_budget_limit(
     override: OrgUserBudgetOverride | None,
     default_limit: float | None,
@@ -291,6 +316,10 @@ class OrgBudgetService:
             org_id, settings, allow_stale=True
         )
         current_spend = _litellm_cycle_spend(settings, snapshot_result.snapshot)
+        org_member_ids = await self._org_member_ids(org_id)
+        unmapped_spend, unmapped_member_count = _litellm_unmapped_cycle_spend(
+            settings, snapshot_result.snapshot, org_member_ids
+        )
         users, users_total = await self._build_user_budget_rows(
             org_id,
             settings,
@@ -312,6 +341,8 @@ class OrgBudgetService:
                 else None
             ),
             'spend_error': snapshot_result.error,
+            'unmapped_spend': unmapped_spend,
+            'unmapped_member_count': unmapped_member_count,
             'users': users,
             'users_total': users_total,
             'users_page': users_page,
@@ -337,7 +368,6 @@ class OrgBudgetService:
             org_id,
             settings,
             allow_stale=False,
-            require_complete_membership=True,
         )
         if snapshot_result.snapshot is None:
             await self._record_litellm_sync(
@@ -354,6 +384,29 @@ class OrgBudgetService:
             }
 
         snapshot = snapshot_result.snapshot
+        next_cycle = _next_cycle_start(settings.cycle_start_at, settings.reset_day)
+        if datetime.now(UTC) >= next_cycle:
+            repair_result = await self._repair_missing_members_for_cycle(
+                org_id, settings, overrides, snapshot
+            )
+            if repair_result.snapshot is None:
+                await self._record_litellm_sync(
+                    settings,
+                    'error',
+                    (
+                        repair_result.error
+                        or 'LiteLLM membership repair failed before cycle rollover.'
+                    )[:500],
+                )
+                return {
+                    'cycle_start_at': cycle.start_at,
+                    'cycle_end_at': cycle.end_at,
+                    'cycle_rolled': False,
+                    'current_spend': _litellm_cycle_spend(settings, snapshot),
+                    'skipped': 'litellm_membership_repair_failed',
+                }
+            snapshot = repair_result.snapshot
+
         cycle_rolled = await self._roll_cycle_if_needed(
             settings, thresholds, overrides, snapshot
         )
@@ -443,6 +496,9 @@ class OrgBudgetService:
                 user_id: member.spend
                 for user_id, member in baseline_snapshot.members.items()
             }
+            settings.litellm_known_member_ids = sorted(
+                await self._org_member_ids(org_id)
+            )
 
         if 'thresholds' in fields_set and update_data.thresholds is not None:
             await self._replace_thresholds(org_id, thresholds, update_data.thresholds)
@@ -469,6 +525,10 @@ class OrgBudgetService:
                 snapshot=snapshot, status='live'
             )
         current_spend = _litellm_cycle_spend(settings, snapshot_result.snapshot)
+        org_member_ids = await self._org_member_ids(org_id)
+        unmapped_spend, unmapped_member_count = _litellm_unmapped_cycle_spend(
+            settings, snapshot_result.snapshot, org_member_ids
+        )
         users, users_total = await self._build_user_budget_rows(
             org_id,
             settings,
@@ -490,6 +550,8 @@ class OrgBudgetService:
                 else None
             ),
             'spend_error': snapshot_result.error,
+            'unmapped_spend': unmapped_spend,
+            'unmapped_member_count': unmapped_member_count,
             'users': users,
             'users_total': users_total,
             'users_page': users_page,
@@ -579,6 +641,7 @@ class OrgBudgetService:
         settings.user_cycle_start_spend = {
             user_id: member.spend for user_id, member in snapshot.members.items()
         }
+        settings.litellm_known_member_ids = sorted(await self._org_member_ids(org_id))
         for threshold in thresholds:
             threshold.last_triggered_at = None
             threshold.last_triggered_cycle_start = None
@@ -872,6 +935,63 @@ class OrgBudgetService:
         )
         return {str(user_id) for user_id in member_result.scalars().all()}
 
+    async def _repair_missing_members_for_cycle(
+        self,
+        org_id: UUID,
+        settings: OrgBudgetSettings,
+        overrides: list[OrgUserBudgetOverride],
+        snapshot: LiteLlmFinancialSnapshot,
+    ) -> BudgetFinancialSnapshotResult:
+        org_member_ids = await self._org_member_ids(org_id)
+        missing_member_ids = sorted(org_member_ids - set(snapshot.members))
+        if not missing_member_ids:
+            return BudgetFinancialSnapshotResult(snapshot=snapshot, status='live')
+
+        override_map = {str(override.user_id): override for override in overrides}
+        try:
+            for user_id in missing_member_ids:
+                if not await LiteLlmManager.user_exists(user_id):
+                    raise RuntimeError(
+                        f'LiteLLM user {user_id} is missing; explicit key repair is required'
+                    )
+
+                effective_limit, is_disabled, _ = _effective_user_budget_limit(
+                    override_map.get(user_id), settings.default_user_monthly_limit
+                )
+                member_budget = None if is_disabled else effective_limit
+                await LiteLlmManager.add_user_to_team(
+                    user_id,
+                    str(org_id),
+                    member_budget,
+                )
+        except Exception as error:
+            logger.warning(
+                'org_budget_litellm_cycle_membership_repair_failed',
+                extra={'org_id': str(org_id), 'error': str(error)},
+            )
+            return BudgetFinancialSnapshotResult(
+                snapshot=None,
+                status='unavailable',
+                error=f'membership_repair_failed: {error}',
+            )
+
+        result = await self._get_financial_snapshot(
+            org_id,
+            settings,
+            allow_stale=False,
+            require_complete_membership=True,
+        )
+        if result.snapshot is None:
+            return BudgetFinancialSnapshotResult(
+                snapshot=None,
+                status='unavailable',
+                error=(
+                    'membership_repair_verification_failed: '
+                    f'{result.error or "unknown"}'
+                ),
+            )
+        return result
+
     async def _sync_litellm_budgets(
         self,
         org_id: UUID,
@@ -899,6 +1019,8 @@ class OrgBudgetService:
 
         org_member_ids = await self._org_member_ids(org_id)
         litellm_member_ids = set(members)
+        known_member_ids = set(settings.litellm_known_member_ids or [])
+        new_member_ids = org_member_ids - known_member_ids
         missing_member_ids = sorted(org_member_ids - litellm_member_ids)
         unmanaged_member_ids = sorted(litellm_member_ids - org_member_ids)
         for user_id in missing_member_ids:
@@ -951,6 +1073,9 @@ class OrgBudgetService:
         for user_id in sorted(org_member_ids & litellm_member_ids):
             info = members[user_id]
             baseline = existing_user_baselines.get(user_id)
+            if baseline is None and settings.enabled and user_id not in new_member_ids:
+                sync_errors.append(f'member_cycle_baseline_missing: {user_id}')
+                continue
             if baseline is None:
                 baseline = info.spend
             active_user_baselines[user_id] = baseline
@@ -993,7 +1118,15 @@ class OrgBudgetService:
             if baseline is not None:
                 active_user_baselines[user_id] = baseline
 
+        for user_id in unmanaged_member_ids:
+            baseline = existing_user_baselines.get(user_id)
+            if baseline is not None:
+                active_user_baselines[user_id] = baseline
+
         settings.user_cycle_start_spend = active_user_baselines
+        settings.litellm_known_member_ids = sorted(
+            (known_member_ids & org_member_ids) | (org_member_ids & litellm_member_ids)
+        )
 
         readback_result = await self._get_financial_snapshot(
             org_id, settings, allow_stale=False

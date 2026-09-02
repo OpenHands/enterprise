@@ -490,6 +490,144 @@ async def test_run_budget_maintenance_uses_cycle_roll_sync(
 
 
 @pytest.mark.asyncio
+async def test_cycle_roll_repairs_missing_litellm_member(
+    async_session_maker, budget_org
+):
+    user_id = uuid4()
+    old_cycle_start = _current_cycle_start(datetime.now(UTC) - timedelta(days=40), 1)
+    initial = _financial_data(team_spend=42.0, team_max_budget=110.0)
+    repaired = _financial_data(
+        team_spend=42.0,
+        team_max_budget=110.0,
+        members={str(user_id): (0.0, 30.0, False)},
+    )
+
+    async with async_session_maker() as session:
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            reset_day=1,
+            monthly_limit=100.0,
+            default_user_monthly_limit=30.0,
+            cycle_start_at=old_cycle_start,
+            cycle_start_spend=10.0,
+            litellm_known_member_ids=[str(user_id)],
+        )
+        session.add_all(
+            [
+                Role(id=1, name='member', rank=1),
+                User(
+                    id=user_id,
+                    current_org_id=budget_org.id,
+                    email='repair@example.com',
+                ),
+                OrgMember(
+                    org_id=budget_org.id,
+                    user_id=user_id,
+                    role_id=1,
+                    llm_api_key='test-api-key',
+                    status='active',
+                ),
+                settings,
+            ]
+        )
+        await session.commit()
+
+        service = OrgBudgetService(session)
+        with (
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+                AsyncMock(side_effect=[initial, repaired]),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.user_exists',
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.create_user',
+                AsyncMock(),
+            ) as create_user,
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.add_user_to_team',
+                AsyncMock(),
+            ) as add_user,
+            patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock,
+        ):
+            result = await service.run_budget_maintenance(budget_org.id)
+
+    assert result['cycle_rolled'] is True
+    create_user.assert_not_awaited()
+    add_user.assert_awaited_once_with(str(user_id), str(budget_org.id), 30.0)
+    assert settings.cycle_start_spend == 42.0
+    assert settings.user_cycle_start_spend == {str(user_id): 0.0}
+    assert settings.litellm_known_member_ids == [str(user_id)]
+    sync_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cycle_roll_does_not_advance_when_membership_repair_fails(
+    async_session_maker, budget_org
+):
+    user_id = uuid4()
+    old_cycle_start = _current_cycle_start(datetime.now(UTC) - timedelta(days=40), 1)
+
+    async with async_session_maker() as session:
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            reset_day=1,
+            monthly_limit=100.0,
+            default_user_monthly_limit=30.0,
+            cycle_start_at=old_cycle_start,
+            cycle_start_spend=10.0,
+            litellm_known_member_ids=[str(user_id)],
+        )
+        session.add_all(
+            [
+                Role(id=1, name='member', rank=1),
+                User(id=user_id, current_org_id=budget_org.id),
+                OrgMember(
+                    org_id=budget_org.id,
+                    user_id=user_id,
+                    role_id=1,
+                    llm_api_key='test-api-key',
+                    status='active',
+                ),
+                settings,
+            ]
+        )
+        await session.commit()
+
+        service = OrgBudgetService(session)
+        with (
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+                AsyncMock(
+                    return_value=_financial_data(team_spend=42.0, team_max_budget=110.0)
+                ),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.user_exists',
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.add_user_to_team',
+                AsyncMock(),
+            ) as add_user,
+            patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock,
+        ):
+            result = await service.run_budget_maintenance(budget_org.id)
+
+    assert result['skipped'] == 'litellm_membership_repair_failed'
+    assert result['cycle_rolled'] is False
+    assert settings.cycle_start_at.replace(tzinfo=UTC) == old_cycle_start
+    assert settings.cycle_start_spend == 10.0
+    assert settings.litellm_last_sync_status == 'error'
+    add_user.assert_not_awaited()
+    sync_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_get_budget_state_uses_litellm_cycle_spend(
     async_session_maker, budget_org
 ):
@@ -539,6 +677,42 @@ async def test_get_budget_state_uses_litellm_cycle_spend(
     assert state['spend_status'] == 'live'
     assert state['users_total'] == 1
     assert state['users'][0]['current_spend'] == 40.0
+
+
+@pytest.mark.asyncio
+async def test_get_budget_state_reports_unmapped_litellm_spend(
+    async_session_maker, budget_org
+):
+    service_account_id = 'sdk-service-account'
+    async with async_session_maker() as session:
+        session.add(
+            OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=True,
+                reset_day=1,
+                monthly_limit=100.0,
+                cycle_start_at=datetime.now(UTC),
+                cycle_start_spend=5.0,
+                user_cycle_start_spend={service_account_id: 2.0},
+            )
+        )
+        await session.commit()
+
+        with patch(
+            'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+            AsyncMock(
+                return_value=_financial_data(
+                    team_spend=17.0,
+                    team_max_budget=105.0,
+                    members={service_account_id: (14.0, 105.0, True)},
+                )
+            ),
+        ):
+            state = await OrgBudgetService(session).get_budget_state(budget_org.id)
+
+    assert state['current_spend'] == 12.0
+    assert state['unmapped_member_count'] == 1
+    assert state['unmapped_spend'] == 12.0
 
 
 @pytest.mark.asyncio
@@ -1054,6 +1228,203 @@ async def test_sync_litellm_budgets_reports_missing_governed_member(
     )
     assert settings.user_cycle_start_spend == {str(user_id): 5.0}
     update_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_preserves_known_member_cap_when_cycle_baseline_is_missing(
+    async_session_maker, budget_org
+):
+    user_id = uuid4()
+    before = _financial_data(
+        team_spend=20.0,
+        team_max_budget=100.0,
+        members={str(user_id): (8.0, 38.0, False)},
+    )
+    after = _financial_data(
+        team_spend=20.0,
+        team_max_budget=120.0,
+        members={str(user_id): (8.0, 38.0, False)},
+    )
+
+    async with async_session_maker() as session:
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            reset_day=1,
+            monthly_limit=100.0,
+            default_user_monthly_limit=30.0,
+            cycle_start_at=datetime.now(UTC),
+            cycle_start_spend=20.0,
+            user_cycle_start_spend={},
+            litellm_known_member_ids=[str(user_id)],
+        )
+        session.add_all(
+            [
+                Role(id=1, name='member', rank=1),
+                User(id=user_id, current_org_id=budget_org.id),
+                OrgMember(
+                    org_id=budget_org.id,
+                    user_id=user_id,
+                    role_id=1,
+                    llm_api_key='test-api-key',
+                    status='active',
+                ),
+                settings,
+            ]
+        )
+        await session.commit()
+
+        with (
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+                AsyncMock(side_effect=[before, after]),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_team',
+                AsyncMock(),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_user_in_team',
+                AsyncMock(),
+            ) as update_user,
+        ):
+            await OrgBudgetService(session)._sync_litellm_budgets(
+                budget_org.id, settings, []
+            )
+
+    update_user.assert_not_awaited()
+    assert settings.user_cycle_start_spend == {}
+    assert settings.litellm_known_member_ids == [str(user_id)]
+    assert settings.litellm_last_sync_status == 'error'
+    assert settings.litellm_last_sync_error is not None
+    assert f'member_cycle_baseline_missing: {user_id}' in (
+        settings.litellm_last_sync_error
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_initializes_baseline_for_member_added_after_migration(
+    async_session_maker, budget_org
+):
+    user_id = uuid4()
+    before = _financial_data(
+        team_spend=20.0,
+        team_max_budget=100.0,
+        members={str(user_id): (8.0, 100.0, True)},
+    )
+    after = _financial_data(
+        team_spend=20.0,
+        team_max_budget=120.0,
+        members={str(user_id): (8.0, 38.0, False)},
+    )
+
+    async with async_session_maker() as session:
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            reset_day=1,
+            monthly_limit=100.0,
+            default_user_monthly_limit=30.0,
+            cycle_start_at=datetime.now(UTC),
+            cycle_start_spend=20.0,
+            user_cycle_start_spend={},
+            litellm_known_member_ids=[],
+        )
+        session.add_all(
+            [
+                Role(id=1, name='member', rank=1),
+                User(id=user_id, current_org_id=budget_org.id),
+                OrgMember(
+                    org_id=budget_org.id,
+                    user_id=user_id,
+                    role_id=1,
+                    llm_api_key='test-api-key',
+                    status='active',
+                ),
+                settings,
+            ]
+        )
+        await session.commit()
+
+        with (
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+                AsyncMock(side_effect=[before, after]),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_team',
+                AsyncMock(),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_user_in_team',
+                AsyncMock(),
+            ) as update_user,
+        ):
+            await OrgBudgetService(session)._sync_litellm_budgets(
+                budget_org.id, settings, []
+            )
+
+    update_user.assert_awaited_once_with(
+        str(user_id),
+        str(budget_org.id),
+        max_budget=38.0,
+        clear_budget=False,
+    )
+    assert settings.user_cycle_start_spend == {str(user_id): 8.0}
+    assert settings.litellm_known_member_ids == [str(user_id)]
+    assert settings.litellm_last_sync_status == 'success'
+
+
+@pytest.mark.asyncio
+async def test_sync_preserves_unmapped_member_cycle_baseline(
+    async_session_maker, budget_org
+):
+    service_account_id = 'sdk-service-account'
+    before = _financial_data(
+        team_spend=20.0,
+        team_max_budget=100.0,
+        members={service_account_id: (8.0, 100.0, True)},
+    )
+    after = _financial_data(
+        team_spend=20.0,
+        team_max_budget=120.0,
+        members={service_account_id: (8.0, 120.0, True)},
+    )
+
+    async with async_session_maker() as session:
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            reset_day=1,
+            monthly_limit=100.0,
+            cycle_start_at=datetime.now(UTC),
+            cycle_start_spend=20.0,
+            user_cycle_start_spend={service_account_id: 3.0},
+        )
+        session.add(settings)
+        await session.commit()
+
+        with (
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+                AsyncMock(side_effect=[before, after]),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_team',
+                AsyncMock(),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_user_in_team',
+                AsyncMock(),
+            ) as update_user,
+        ):
+            await OrgBudgetService(session)._sync_litellm_budgets(
+                budget_org.id, settings, []
+            )
+
+    update_user.assert_not_awaited()
+    assert settings.user_cycle_start_spend == {service_account_id: 3.0}
+    assert settings.litellm_last_sync_status == 'success'
 
 
 @pytest.mark.asyncio

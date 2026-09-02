@@ -824,6 +824,8 @@ class OrgBudgetSettingsResponse(BaseModel):
     spend_observed_at: datetime | None = None
     current_spend: float | None = None
     current_spend_percentage: float | None = None
+    unmapped_spend: float | None = None
+    unmapped_member_count: int | None = None
     thresholds: list[OrgBudgetThresholdResponse] = Field(default_factory=list)
     users: list[OrgBudgetUserResponse] = Field(default_factory=list)
     users_total: int = 0

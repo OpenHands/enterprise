@@ -51,6 +51,9 @@ class OrgBudgetSettings(Base):
     litellm_last_member_spend: Mapped[dict[str, float]] = mapped_column(
         JSON, default=dict, nullable=False
     )
+    litellm_known_member_ids: Mapped[list[str]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

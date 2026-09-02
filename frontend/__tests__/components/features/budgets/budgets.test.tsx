@@ -38,6 +38,9 @@ vi.mock("#/hooks/use-debounce", () => ({
 const budgetResponse = {
   enabled: true,
   monthly_limit: 1000,
+  litellm_last_sync_at: "2024-01-15T12:00:00Z",
+  litellm_last_sync_status: "success",
+  litellm_last_sync_error: null,
   reset_day: 1,
   slack_channel: "alerts",
   slack_team_id: "T123",
@@ -48,6 +51,8 @@ const budgetResponse = {
   spend_observed_at: "2024-01-15T12:00:00Z",
   current_spend: 200,
   current_spend_percentage: 20,
+  unmapped_spend: 12.5,
+  unmapped_member_count: 1,
   thresholds: [
     {
       id: 1,
@@ -194,5 +199,34 @@ describe("Budgets", () => {
       screen.getByText(/Spend data is temporarily unavailable/i),
     ).toBeInTheDocument();
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+  });
+
+  it("explains governed SDK usage and unmapped LiteLLM identities", async () => {
+    await renderBudgets();
+
+    expect(
+      screen.getByText(/SDK requests routed through this deployment/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/1 LiteLLM identity is not mapped/i),
+    ).toHaveTextContent("$12.50 of this cycle's spend");
+  });
+
+  it("shows reconciliation errors without replacing authoritative spend", async () => {
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      litellm_last_sync_status: "error",
+      litellm_last_sync_error: "member cycle baseline is unavailable",
+    });
+
+    await renderBudgets();
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Existing caps are preserved",
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "member cycle baseline is unavailable",
+    );
+    expect(screen.getByText("$200.00")).toBeInTheDocument();
   });
 });

@@ -414,6 +414,10 @@ export function Budgets() {
           percentage={percentage}
           spendStatus={budgetData?.spend_status ?? "unavailable"}
           spendObservedAt={budgetData?.spend_observed_at ?? null}
+          syncStatus={budgetData?.litellm_last_sync_status ?? null}
+          syncError={budgetData?.litellm_last_sync_error ?? null}
+          unmappedSpend={budgetData?.unmapped_spend ?? null}
+          unmappedMemberCount={budgetData?.unmapped_member_count ?? null}
           monthlyLimit={monthlyLimit}
           onMonthlyLimitChange={setMonthlyLimit}
           billingCycle={billingCycle}

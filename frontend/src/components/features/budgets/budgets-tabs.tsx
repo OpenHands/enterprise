@@ -48,6 +48,10 @@ interface OrganizationBudgetTabProps {
   percentage: number | null;
   spendStatus: "live" | "stale" | "unavailable";
   spendObservedAt: string | null;
+  syncStatus: string | null;
+  syncError: string | null;
+  unmappedSpend: number | null;
+  unmappedMemberCount: number | null;
   monthlyLimit: string;
   onMonthlyLimitChange: (value: string) => void;
   billingCycle: string;
@@ -76,6 +80,10 @@ export function OrganizationBudgetTab({
   percentage,
   spendStatus,
   spendObservedAt,
+  syncStatus,
+  syncError,
+  unmappedSpend,
+  unmappedMemberCount,
   monthlyLimit,
   onMonthlyLimitChange,
   billingCycle,
@@ -144,6 +152,34 @@ export function OrganizationBudgetTab({
             </span>
           )}
         </div>
+        {syncStatus === "error" && (
+          <div
+            role="alert"
+            className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"
+          >
+            Budget enforcement reconciliation needs attention. Existing caps are
+            preserved until a verified synchronization succeeds.
+            {syncError ? ` ${syncError}` : ""}
+          </div>
+        )}
+        <p className="mb-4 text-xs text-[#6B6B6B]">
+          Includes app, automation, and SDK requests routed through this
+          deployment&apos;s LiteLLM proxy. Requests sent directly to an external
+          provider are outside this budget.
+        </p>
+        {unmappedMemberCount !== null && unmappedMemberCount > 0 && (
+          <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+            {`${unmappedMemberCount} LiteLLM ${
+              unmappedMemberCount === 1 ? "identity is" : "identities are"
+            } not mapped to organization users. `}
+            {unmappedSpend === null
+              ? "Their cycle-level attribution will become available after the next verified reset."
+              : `$${unmappedSpend.toLocaleString("en-US", {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })} of this cycle's spend is attributed to them.`}
+          </div>
+        )}
         <div className="flex items-baseline justify-between mb-3">
           <div>
             <span className="text-3xl font-bold text-white">
