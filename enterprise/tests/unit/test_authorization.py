@@ -1565,9 +1565,9 @@ class TestSuperRolePermissions:
             Permission.MANAGE_ORG_QUOTA not in SUPER_ROLE_PERMISSIONS[RoleName.MEMBER]
         )
         for role_name, permissions in ROLE_PERMISSIONS.items():
-            assert (
-                Permission.MANAGE_ORG_QUOTA not in permissions
-            ), f'org-scoped role {role_name} must not grant MANAGE_ORG_QUOTA'
+            assert Permission.MANAGE_ORG_QUOTA not in permissions, (
+                f'org-scoped role {role_name} must not grant MANAGE_ORG_QUOTA'
+            )
 
 
 class TestHasPermissionSuper:
