@@ -985,12 +985,13 @@ class TestGetDbFeatureFlags:
         assert result == {}
 
 
-class TestResolveBillingEnabled:
-    """Tests for _resolve_billing_enabled.
+class TestResolveFlag:
+    """Tests for the generic _resolve_flag helper.
 
-    ENABLE_BILLING is unified with the DB-backed feature flag: a database row
-    is authoritative, the env var is the fallback, and import/DB failures must
-    degrade to the env value so the config endpoint never breaks.
+    Flags are unified with the DB-backed default-flag pattern: the feature
+    flag service's ``resolve`` is authoritative (DB row, falling back to the
+    registered default), and imports that fail (OSS installs without the
+    enterprise service) degrade to the env value.
     """
 
     def _fake_service_module(self, service):
@@ -1004,34 +1005,34 @@ class TestResolveBillingEnabled:
         )
 
     @pytest.mark.asyncio
-    async def test_db_flag_enabled_overrides_env_false(self):
-        """A DB row enabling billing wins over ENABLE_BILLING=false."""
+    async def test_resolve_true_overrides_env_false(self):
+        """The service resolution wins over the env-var fallback."""
         from openhands.app_server.web_client import (
             default_web_client_config_injector as mod,
         )
 
         class _FakeService:
-            async def is_enabled(self, key):
-                assert key == 'ENABLE_BILLING'
+            async def resolve(self, key):
+                assert key == 'SOME_FLAG'
                 return True
 
         with self._fake_service_module(_FakeService()):
-            result = await mod._resolve_billing_enabled(env_default=False)
+            result = await mod._resolve_flag('SOME_FLAG', env_fallback=False)
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_db_flag_disabled_overrides_env_true(self):
-        """A DB row disabling billing wins over ENABLE_BILLING=true."""
+    async def test_resolve_false_overrides_env_true(self):
+        """The service resolution wins over the env-var fallback."""
         from openhands.app_server.web_client import (
             default_web_client_config_injector as mod,
         )
 
         class _FakeService:
-            async def is_enabled(self, key):
+            async def resolve(self, key):
                 return False
 
         with self._fake_service_module(_FakeService()):
-            result = await mod._resolve_billing_enabled(env_default=True)
+            result = await mod._resolve_flag('SOME_FLAG', env_fallback=True)
         assert result is False
 
     @pytest.mark.asyncio
@@ -1045,23 +1046,8 @@ class TestResolveBillingEnabled:
             'builtins.__import__',
             side_effect=ImportError('no enterprise package'),
         ):
-            assert await mod._resolve_billing_enabled(env_default=True) is True
-            assert await mod._resolve_billing_enabled(env_default=False) is False
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_env_on_db_error(self):
-        """A runtime error from the service falls back to the env value."""
-        from openhands.app_server.web_client import (
-            default_web_client_config_injector as mod,
-        )
-
-        class _BrokenService:
-            async def is_enabled(self, key):
-                raise RuntimeError('db down')
-
-        with self._fake_service_module(_BrokenService()):
-            assert await mod._resolve_billing_enabled(env_default=True) is True
-            assert await mod._resolve_billing_enabled(env_default=False) is False
+            assert await mod._resolve_flag('SOME_FLAG', env_fallback=True) is True
+            assert await mod._resolve_flag('SOME_FLAG', env_fallback=False) is False
 
     @pytest.mark.asyncio
     async def test_get_web_client_config_applies_resolved_billing_flag(self):
@@ -1072,7 +1058,7 @@ class TestResolveBillingEnabled:
         )
 
         class _FakeService:
-            async def is_enabled(self, key):
+            async def resolve(self, key):
                 return True
 
             async def get_global_flags(self):

@@ -36,44 +36,28 @@ KEY_VERIFICATION_TIMEOUT = 5.0
 UNLIMITED_BUDGET_SETTING = 1000000000.0
 
 
-def _env_billing_enabled() -> bool:
-    """Import-time env fallback for the ENABLE_BILLING feature flag.
-
-    Resolved through the feature flag service's standard env-default helper so
-    the truthiness rules ('true'/'1') live in exactly one place. The raw env
-    read is kept as a safety net in case the service cannot be imported.
-    """
-    try:
-        from server.services.feature_flag_service import FeatureFlagService
-
-        return FeatureFlagService.resolve_env_default('ENABLE_BILLING')
-    except Exception:
-        return os.environ.get('ENABLE_BILLING', 'false').lower() in ('true', '1')
-
-
-# Import-time snapshot of the env fallback. Runtime checks should prefer
-# ``_is_billing_enabled`` so a DB-managed ENABLE_BILLING flag row wins.
-ENABLE_BILLING = _env_billing_enabled()
+# Import-time snapshot of the ENABLE_BILLING env var. Runtime checks prefer
+# ``_is_billing_enabled`` (service ``resolve``), so a DB-managed ENABLE_BILLING
+# flag row wins at runtime; this snapshot is only the emergency fallback when
+# the service cannot even be imported (OSS installs without the enterprise
+# package path) or evaluation fails.
+ENABLE_BILLING = os.environ.get('ENABLE_BILLING', 'false').lower() in ('true', '1')
 
 
 async def _is_billing_enabled() -> bool:
-    """Resolve the unified ENABLE_BILLING feature flag: DB first, env fallback.
+    """Resolve the ENABLE_BILLING default flag at runtime.
 
-    A ``FeatureFlag`` row is authoritative; when no row exists the service
-    falls back to the ENABLE_BILLING env var itself. On a database error the
-    import-time env snapshot is used so a DB hiccup does not change budget
-    enforcement behavior.
+    Goes through the feature flag service's fault-tolerant ``resolve``: a
+    database row wins, the registered env-var default is the fallback, and a
+    failed evaluation falls back to the same default. Import is lazy to avoid
+    a ``storage``-package import cycle; on an import failure the import-time
+    env snapshot is used.
     """
     try:
         from server.services.feature_flag_service import feature_flag_service
 
-        return await feature_flag_service.is_enabled('ENABLE_BILLING')
-    except Exception:
-        logger.warning(
-            'Failed to evaluate ENABLE_BILLING feature flag; '
-            'falling back to environment variable',
-            exc_info=True,
-        )
+        return await feature_flag_service.resolve('ENABLE_BILLING')
+    except ImportError:
         return ENABLE_BILLING
 
 

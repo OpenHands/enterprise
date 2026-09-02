@@ -568,6 +568,48 @@ class TestEnvFallback:
             _ENV_FLAG_DEFAULTS.pop('ALLOW_BY_DEFAULT', None)
 
 
+class TestResolve:
+    """Fault-tolerant single-flag resolution via ``resolve``.
+
+    ``resolve`` is the standard single-flag access point: on success it
+    passes through ``is_enabled``; on evaluation errors it falls back to the
+    registered default (env var / default value) instead of raising.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _seed_enable_billing(self, _isolate_env_flag_defaults):
+        FeatureFlagService.register_env_default(
+            'ENABLE_BILLING', 'ENABLE_BILLING', False
+        )
+
+    @pytest.mark.asyncio
+    async def test_passes_through_is_enabled(self, service):
+        p1, p2 = _patch_store(flag=_make_flag('ENABLE_BILLING', enabled=True), rules=[])
+        with p1, p2:
+            assert await service.resolve('ENABLE_BILLING') is True
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_env_default_on_error(self, service):
+        with (
+            patch(
+                'server.services.feature_flag_service.FeatureFlagStore.get_flag',
+                new_callable=AsyncMock,
+                side_effect=RuntimeError('db down'),
+            ),
+            patch.dict('os.environ', {'ENABLE_BILLING': 'true'}, clear=False),
+        ):
+            assert await service.resolve('ENABLE_BILLING') is True
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_false_for_unregistered_key_on_error(self, service):
+        with patch(
+            'server.services.feature_flag_service.FeatureFlagStore.get_flag',
+            new_callable=AsyncMock,
+            side_effect=RuntimeError('db down'),
+        ):
+            assert await service.resolve('UNREGISTERED') is False
+
+
 class TestGetGlobalFlagsEnvFallback:
     """Env-fallback flags with no DB row appear in the global set."""
 

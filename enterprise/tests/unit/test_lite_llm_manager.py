@@ -340,58 +340,56 @@ class TestDefaultInitialBudget:
 
 
 class TestIsBillingEnabled:
-    """Runtime resolution of the unified ENABLE_BILLING feature flag.
+    """Runtime resolution of the ENABLE_BILLING default flag.
 
-    A database row is authoritative; the import-time env snapshot
-    (``ENABLE_BILLING`` module constant) is the fallback when the flag
-    evaluation fails.
+    Delegates to the feature flag service's fault-tolerant ``resolve``; only
+    an import failure (OSS installs without the enterprise package) falls
+    back to the import-time env snapshot (``ENABLE_BILLING`` module constant).
     """
 
     @pytest.mark.asyncio
-    async def test_db_flag_wins(self):
+    async def test_passes_through_resolve_true(self):
         from storage import lite_llm_manager as module
 
         with patch(
-            'server.services.feature_flag_service.feature_flag_service.is_enabled',
+            'server.services.feature_flag_service.feature_flag_service.resolve',
             new_callable=AsyncMock,
             return_value=True,
         ):
             assert await module._is_billing_enabled() is True
 
     @pytest.mark.asyncio
-    async def test_db_flag_disabled(self):
+    async def test_passes_through_resolve_false(self):
         from storage import lite_llm_manager as module
 
         with patch(
-            'server.services.feature_flag_service.feature_flag_service.is_enabled',
+            'server.services.feature_flag_service.feature_flag_service.resolve',
             new_callable=AsyncMock,
             return_value=False,
         ):
             assert await module._is_billing_enabled() is False
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_env_snapshot_on_error(self):
+    async def test_falls_back_to_env_snapshot_on_import_error(self):
         from storage import lite_llm_manager as module
 
         with (
             patch(
-                'server.services.feature_flag_service.feature_flag_service.is_enabled',
-                new_callable=AsyncMock,
-                side_effect=RuntimeError('db down'),
+                'builtins.__import__',
+                side_effect=ImportError('no enterprise service'),
             ),
             patch.object(module, 'ENABLE_BILLING', True),
         ):
             assert await module._is_billing_enabled() is True
 
     @pytest.mark.asyncio
-    async def test_env_snapshot_disabled_on_error(self):
+    async def test_env_snapshot_false_on_import_error(self):
         from storage import lite_llm_manager as module
 
         with (
             patch(
-                'server.services.feature_flag_service.feature_flag_service.is_enabled',
-                new_callable=AsyncMock,
-                side_effect=RuntimeError('db down'),
+                'builtins.__import__',
+                side_effect=ImportError('no enterprise service'),
             ),
             patch.object(module, 'ENABLE_BILLING', False),
         ):

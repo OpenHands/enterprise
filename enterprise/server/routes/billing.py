@@ -13,10 +13,7 @@ from pydantic import BaseModel
 from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.constants import STRIPE_API_KEY
 from server.logger import logger
-from server.services.feature_flag_service import (
-    FeatureFlagService,
-    feature_flag_service,
-)
+from server.services.feature_flag_service import feature_flag_service
 from server.utils.url_utils import get_web_url
 from sqlalchemy import select
 from storage.billing_session import BillingSession
@@ -33,29 +30,19 @@ stripe.api_key = STRIPE_API_KEY
 billing_router = APIRouter(prefix='/api/billing', tags=['Billing'])
 
 
-async def _is_billing_enabled() -> bool:
-    """Evaluate the unified ENABLE_BILLING feature flag.
-
-    A database row is authoritative; the ENABLE_BILLING env var is the
-    fallback when no row exists (see the FeatureFlagService env-default
-    pattern). On a database error, fall back to the env var so a DB hiccup
-    does not change billing availability.
-    """
-    try:
-        return await feature_flag_service.is_enabled('ENABLE_BILLING')
-    except Exception:
-        logger.exception('Failed to evaluate ENABLE_BILLING feature flag')
-        return FeatureFlagService.resolve_env_default('ENABLE_BILLING')
-
-
 async def validate_billing_enabled() -> None:
-    """Validate that the billing feature flag is enabled"""
-    if not await _is_billing_enabled():
+    """Validate that the ENABLE_BILLING feature flag is enabled.
+
+    Resolution goes through the feature flag service's default-flag pattern:
+    DB row first, the registered env-var default as fallback, and the same
+    fallback if evaluation errors.
+    """
+    if not await feature_flag_service.resolve('ENABLE_BILLING'):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
                 'Billing is disabled in this environment. '
-                'Enable the ENABLE_BILLING feature flag (or set the '
+                'Enable the ENABLE_BILLING feature flag (or the '
                 'ENABLE_BILLING environment variable) to enable billing.'
             ),
         )
