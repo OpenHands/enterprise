@@ -119,6 +119,38 @@ def patched_checkout_session_makers(async_session_maker):
         yield
 
 
+class TestValidateBillingEnabled:
+    """Tests for the ENABLE_BILLING default-flag guard.
+
+    The guard delegates to the feature flag service's fault-tolerant
+    ``resolve`` (DB row first, registered default as fallback), so the test
+    surface is the service resolution, not billing-specific scaffolding.
+    """
+
+    @pytest.mark.asyncio
+    async def test_allows_when_flag_resolves_true(self):
+        with patch(
+            'server.routes.billing.feature_flag_service.resolve',
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_resolve:
+            await billing.validate_billing_enabled()
+        mock_resolve.assert_awaited_once_with('ENABLE_BILLING')
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_flag_resolves_false(self):
+        with (
+            patch(
+                'server.routes.billing.feature_flag_service.resolve',
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await billing.validate_billing_enabled()
+        assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+
+
 @pytest.fixture
 async def test_org(async_session_maker):
     """Create a test org in the database."""

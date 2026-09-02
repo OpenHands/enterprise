@@ -24,7 +24,8 @@ from openhands.app_server.app_conversation.sql_app_conversation_info_service imp
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
 from openhands.app_server.utils.sql_utils import Base
-from openhands.sdk.llm import MetricsSnapshot, TokenUsage
+from openhands.sdk import ConversationStats
+from openhands.sdk.llm import Metrics, MetricsSnapshot, TokenUsage
 
 # Note: org_id column exists but foreign key constraint is not enforced in tests
 
@@ -559,6 +560,58 @@ class TestSQLAppConversationInfoService:
 
         # Verify other fields remain unchanged
         assert retrieved_info.sandbox_id == sample_conversation_info.sandbox_id
+
+    @pytest.mark.asyncio
+    async def test_update_title_keeps_concurrently_updated_columns(
+        self,
+        service: SQLAppConversationInfoService,
+        sample_conversation_info: AppConversationInfo,
+    ):
+        """Test that update_title only touches the title column."""
+        # Arrange: persist the conversation, then let a concurrent writer
+        # advance the statistics after that snapshot was taken.
+        await service.save_app_conversation_info(sample_conversation_info)
+        stats = ConversationStats(
+            usage_to_metrics={
+                'agent': Metrics(
+                    model_name='gpt-4',
+                    accumulated_cost=2.5,
+                    accumulated_token_usage=TokenUsage(
+                        prompt_tokens=100, completion_tokens=50
+                    ),
+                )
+            }
+        )
+        await service.update_conversation_statistics(sample_conversation_info.id, stats)
+
+        # Act
+        await service.update_title(sample_conversation_info.id, 'New Title')
+
+        # Assert
+        retrieved_info = await service.get_app_conversation_info(
+            sample_conversation_info.id
+        )
+        assert retrieved_info is not None
+        assert retrieved_info.title == 'New Title'
+        assert retrieved_info.metrics is not None
+        assert retrieved_info.metrics.accumulated_cost == 2.5
+        assert retrieved_info.metrics.accumulated_token_usage is not None
+        assert retrieved_info.metrics.accumulated_token_usage.prompt_tokens == 100
+        assert retrieved_info.llm_model == sample_conversation_info.llm_model
+
+    @pytest.mark.asyncio
+    async def test_update_title_unknown_conversation_is_noop(
+        self, service: SQLAppConversationInfoService
+    ):
+        """Test that update_title on a missing conversation does not raise."""
+        # Arrange
+        missing_id = uuid4()
+
+        # Act
+        await service.update_title(missing_id, 'New Title')
+
+        # Assert
+        assert await service.get_app_conversation_info(missing_id) is None
 
     @pytest.mark.asyncio
     async def test_search_with_invalid_page_id(
