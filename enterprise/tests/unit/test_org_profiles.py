@@ -441,6 +441,28 @@ class TestProfileLifecycleIntegration:
         )
         member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
         assert member.agent_settings_diff['llm']['model'] == 'openhands/minimax-m2.5'
+        
+    async def test_list_includes_provider_connection_id(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        await save_profile(
+            org_id=org_id,
+            name='linked',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='openai/gpt-4o',
+                    provider_connection_id='conn-1',
+                )
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+
+        assert [p.name for p in listing.profiles] == ['linked']
+        assert listing.profiles[0].provider_connection_id == 'conn-1'
 
     @pytest.mark.asyncio
     async def test_get_profile_returns_details_without_secret(
