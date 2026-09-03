@@ -1,7 +1,8 @@
 """Add agent_kind column to conversation_metadata table.
 
-Stores the agent type ('llm' or 'acp') for each conversation so the
-correct agent-server endpoint can be used when routing requests.
+Stores the agent type for each conversation so the correct agent-server
+endpoint can be used when routing requests. The column is never normalised,
+so readers must accept ``'openhands'``, ``'acp'`` and ``'llm'``.
 
 Revision ID: 110
 Revises: 109
