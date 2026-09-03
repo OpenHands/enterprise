@@ -5,12 +5,10 @@ import { SettingsNavUserMenu } from "#/components/features/settings/settings-nav
 
 const logoutMutate = vi.fn();
 
-vi.mock("#/hooks/query/use-git-user", () => ({
-  useGitUser: () => ({
-    data: { avatar_url: "https://example.com/avatar.png", login: "neo-user" },
-    isFetching: false,
-  }),
+const gitUserMocks = vi.hoisted(() => ({
+  useGitUser: vi.fn(),
 }));
+vi.mock("#/hooks/query/use-git-user", () => gitUserMocks);
 
 vi.mock("#/hooks/query/use-settings", () => ({
   useSettings: () => ({
@@ -29,6 +27,10 @@ vi.mock("#/hooks/use-app-mode", () => ({
 describe("SettingsNavUserMenu", () => {
   beforeEach(() => {
     logoutMutate.mockClear();
+    gitUserMocks.useGitUser.mockReturnValue({
+      data: { avatar_url: "https://example.com/avatar.png", login: "neo-user" },
+      isFetching: false,
+    });
   });
 
   it("renders the user trigger with email", () => {
@@ -58,5 +60,45 @@ describe("SettingsNavUserMenu", () => {
     await user.click(screen.getByText("ACCOUNT_SETTINGS$LOGOUT"));
 
     expect(logoutMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it("displays the user's profile avatar when one is available", () => {
+    render(<SettingsNavUserMenu />);
+
+    expect(screen.getByAltText("AVATAR$ALT_TEXT")).toHaveAttribute(
+      "src",
+      "https://example.com/avatar.png",
+    );
+    expect(
+      screen.queryByLabelText("USER$AVATAR_PLACEHOLDER"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("falls back to the placeholder avatar when no profile picture is available", () => {
+    gitUserMocks.useGitUser.mockReturnValue({
+      data: undefined,
+      isFetching: false,
+    });
+
+    render(<SettingsNavUserMenu />);
+
+    expect(
+      screen.getByLabelText("USER$AVATAR_PLACEHOLDER"),
+    ).toBeInTheDocument();
+    expect(screen.queryByAltText("AVATAR$ALT_TEXT")).not.toBeInTheDocument();
+  });
+
+  it("shows a loading spinner while the user profile is being fetched", () => {
+    gitUserMocks.useGitUser.mockReturnValue({
+      data: undefined,
+      isFetching: true,
+    });
+
+    render(<SettingsNavUserMenu />);
+
+    expect(screen.getByTestId("loading-spinner")).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("USER$AVATAR_PLACEHOLDER"),
+    ).not.toBeInTheDocument();
   });
 });
