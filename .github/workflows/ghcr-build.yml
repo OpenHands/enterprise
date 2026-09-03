@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # One build produces the one image we publish — nothing else is pushed.
+  # Builds and publishes the enterprise-server image.
   build_enterprise:
     name: Enterprise
     uses: ./.github/workflows/_build-image.yml

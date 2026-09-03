@@ -1,22 +1,14 @@
-[build-system]
-build-backend = "hatchling.build"
-requires = [ "hatchling" ]
-
 [project]
 name = "openhands-ai"
 version = "1.58.0"
 description = "OpenHands Enterprise: the OpenHands app server plus the SaaS/enterprise server that runs on top of it"
-readme = "README.md"
-license = "LicenseRef-Polyform-Free-Trial"
-license-files = [ "LICENSE" ]
-authors = [ { name = "OpenHands", email = "contact@all-hands.dev" } ]
 requires-python = ">=3.12,<3.14"
+
 classifiers = [
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
 ]
-
 dependencies = [
   "aiohttp==3.14.1",                                # CVE-2026-54278 (fixed in 3.14.1); keep aiohttp on a fixed-or-newer release
   "alembic==1.18.4",
@@ -122,9 +114,6 @@ dependencies = [
   "zope-interface==7.2",
 ]
 
-urls.Homepage = "https://github.com/OpenHands/enterprise"
-urls.Repository = "https://github.com/OpenHands/enterprise"
-
 [dependency-groups]
 dev = [
   "build",
@@ -153,25 +142,6 @@ runtime = [
   "flake8==7.3.0",
   "jupyterlab",
   "notebook==7.5.6",
-]
-
-# The repo root is the deployable layout: `openhands/` is the app server and the
-# SaaS/enterprise modules (`server/`, `storage/`, ...) sit beside it, exactly as
-# they are laid out in /app inside the Docker image. The wheel only exists so
-# `uv sync` can install the project editable; the image copies the tree directly.
-
-[tool.hatch.build.targets.wheel]
-only-include = [
-  "openhands",
-  "server",
-  "storage",
-  "integrations",
-  "sync",
-  "analytics",
-  "utils",
-  "saas_server.py",
-  "run_maintenance_tasks.py",
-  "run_budget_maintenance.py",
 ]
 
 [tool.ruff]
@@ -231,5 +201,6 @@ source = [
 omit = [ "tests/*", "**/test_*" ]
 
 [tool.uv]
+package = false
 exclude-newer = "7 days"
 exclude-newer-package = { openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false }

@@ -1,8 +1,7 @@
 import asyncio
 
-# Import unqualified: `run_maintenance_tasks` is a top-level module at the
-# repository root (copied to /app in the Docker image) alongside `server/` and
-# `storage/`, matching how `maintenance-tasks-cronjob.yaml` calls
+# `run_maintenance_tasks` is a top-level module beside this file at the repository
+# root (/app in the Docker image); `maintenance-tasks-cronjob.yaml` runs it as
 # `python -m run_maintenance_tasks`.
 import run_maintenance_tasks
 from server.logger import logger

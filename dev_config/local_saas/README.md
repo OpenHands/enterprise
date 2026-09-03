@@ -40,8 +40,7 @@ From the repository root:
 make build
 ```
 
-This runs `uv sync --all-groups` (the app server and the SaaS modules share one
-`pyproject.toml`/`uv.lock`), installs the frontend dependencies and builds the frontend.
+This runs `uv sync --all-groups`, installs the frontend dependencies and builds the frontend.
 
 ### 2. Set up env
 
@@ -99,7 +98,7 @@ export REDIS_PORT=6379
 
 ### 2. Build SAAS Openhands
 
-A single build from the repo root produces the image:
+Build the image from the repository root:
 
 ```
 docker build -f containers/app/Dockerfile -t openhands-saas .

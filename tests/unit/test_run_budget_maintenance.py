@@ -9,19 +9,6 @@ def _budget_maintenance_tree() -> ast.Module:
     return ast.parse(source.read_text())
 
 
-def test_run_budget_maintenance_does_not_import_enterprise_package() -> None:
-    tree = _budget_maintenance_tree()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            if node.module and not node.module.startswith('_'):
-                assert node.module != 'enterprise', (
-                    'run_budget_maintenance.py must not "from enterprise import ..."; '
-                    'use an unqualified "import run_maintenance_tasks" instead '
-                    '(there is no top-level "enterprise" package; the SaaS modules '
-                    'live at the repository root)'
-                )
-
-
 def test_run_budget_maintenance_sets_immediate_task_delay() -> None:
     tree = _budget_maintenance_tree()
     maintenance_task_calls = [

@@ -3,8 +3,7 @@ and a React frontend (in the `frontend` directory). The backend is the OpenHands
 directory) plus the SaaS/enterprise modules that extend it, which sit beside it at the repository root:
 `server/`, `storage/`, `integrations/`, `sync/`, `analytics/`, `utils/`, `migrations/` and the entrypoints
 `saas_server.py`, `run_maintenance_tasks.py`, `run_budget_maintenance.py`. This is the same layout the Docker
-image has in `/app`. Python dependencies are managed with uv (`pyproject.toml` + `uv.lock`); there is no other
-supported package manager.
+image has in `/app`. Python dependencies are managed with uv (`pyproject.toml` + `uv.lock`).
 
 ## General Setup:
 To set up the entire repo, including frontend and backend, run `make build`.
@@ -110,7 +109,7 @@ Backend:
   - All tests are in `tests/unit/test_*.py`
   - To test new code, run `uv run pytest tests/unit/test_xxx.py` where `xxx` is the appropriate file for the current functionality
   - Write all tests with pytest
-  - Tests for the SaaS/enterprise modules live in the same tree (e.g. `tests/unit/server/`, `tests/unit/storage/`, `tests/unit/integrations/`, `tests/unit/sync/`); `tests/unit/conftest.py` provides the SQLite-backed DB fixtures they use
+  - Tests for the SaaS/enterprise modules live in `tests/unit/server/`, `tests/unit/storage/`, `tests/unit/integrations/`, `tests/unit/sync/`, ...; `tests/unit/conftest.py` provides the SQLite-backed DB fixtures they use
 
 
 Frontend:
@@ -165,7 +164,6 @@ The SaaS/enterprise modules extend the OpenHands app server (`openhands/`). They
 
 **Setup Steps:**
 1. Build the project: `make build` (runs `uv sync --all-groups`, installs the frontend and the pre-commit hooks)
-2. That is it: there is a single `pyproject.toml`/`uv.lock` for the app server and the SaaS modules.
 
 **Running Tests:**
 ```bash
@@ -227,8 +225,7 @@ Each integration follows a consistent pattern with service classes, storage mode
 
 **Import Patterns:**
 - The SaaS modules are top-level packages: `from storage.database import a_session_maker`, `from server.auth ...`
-- There is no `enterprise` package; never write `from enterprise.storage ...`
-- The same holds for strings that name classes or patch targets (e.g. `patch('storage.database.session_maker')`, `OPENHANDS_CONFIG_CLS=server.config.SaaSServerConfig`)
+- Strings that name classes or patch targets use the same top-level names, e.g. `patch('storage.database.session_maker')`, `OPENHANDS_CONFIG_CLS=server.config.SaaSServerConfig`
 
 **Test Structure:**
 - Place tests in `tests/unit/` following the same structure as the source code (`tests/unit/server/`, `tests/unit/storage/`, ...)
@@ -239,7 +236,7 @@ Each integration follows a consistent pattern with service classes, storage mode
 **Mocking Strategy:**
 - Use `AsyncMock` for async operations and `MagicMock` for complex objects
 - Mock all external dependencies (databases, APIs, file systems) in unit tests
-- Use `patch` with correct import paths (e.g., `telemetry.registry.logger` not `enterprise.telemetry.registry.logger`)
+- Use `patch` with correct import paths (e.g., `server.routes.billing.logger`)
 - Test both success and failure scenarios with proper error handling
 
 **Coverage Goals:**
