@@ -92,7 +92,8 @@ class Permission(str, Enum):
     # Git organization claims
     MANAGE_ORG_CLAIMS = 'manage_org_claims'
 
-    # Manage Automations
+    # Automations
+    VIEW_AUTOMATIONS = 'view_automations'
     MANAGE_AUTOMATIONS = 'manage_automations'
 
     # User provisioning (create new Keycloak/OpenHands users directly in an org)
@@ -177,7 +178,8 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.DELETE_ORGANIZATION,
             # Git organization claims
             Permission.MANAGE_ORG_CLAIMS,
-            # Manage Automations
+            # Automations
+            Permission.VIEW_AUTOMATIONS,
             Permission.MANAGE_AUTOMATIONS,
             # User provisioning
             Permission.PROVISION_USER,
@@ -208,7 +210,8 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.EDIT_ORG_SETTINGS,
             # Git organization claims
             Permission.MANAGE_ORG_CLAIMS,
-            # Manage Automations
+            # Automations
+            Permission.VIEW_AUTOMATIONS,
             Permission.MANAGE_AUTOMATIONS,
             # User provisioning
             Permission.PROVISION_USER,
@@ -229,7 +232,8 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             # Settings (View only)
             Permission.VIEW_ORG_SETTINGS,
             Permission.VIEW_LLM_SETTINGS,
-            # Manage Automations
+            # Automations
+            Permission.VIEW_AUTOMATIONS,
             Permission.MANAGE_AUTOMATIONS,
         ]
     ),
