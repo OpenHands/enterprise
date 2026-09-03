@@ -5,17 +5,17 @@ MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
     / 'migrations'
     / 'versions'
-    / '156_add_meta_profiles_to_org.py'
+    / '157_add_meta_profiles_to_org.py'
 )
-spec = spec_from_file_location('migration_156', MIGRATION_PATH)
+spec = spec_from_file_location('migration_157', MIGRATION_PATH)
 assert spec is not None and spec.loader is not None
-migration_156 = module_from_spec(spec)
-spec.loader.exec_module(migration_156)
+migration_157 = module_from_spec(spec)
+spec.loader.exec_module(migration_157)
 
 
-def test_revision_chains_off_provider_connections():
-    assert migration_156.revision == '156'
-    assert migration_156.down_revision == '155'
+def test_revision_chains_off_budget_snapshot_migration():
+    assert migration_157.revision == '157'
+    assert migration_157.down_revision == '156'
 
 
 def test_upgrade_and_downgrade(monkeypatch):
@@ -28,9 +28,9 @@ def test_upgrade_and_downgrade(monkeypatch):
         def drop_column(self, table, name):
             calls.append(('drop', table, name))
 
-    monkeypatch.setattr(migration_156, 'op', Op())
-    migration_156.upgrade()
-    migration_156.downgrade()
+    monkeypatch.setattr(migration_157, 'op', Op())
+    migration_157.upgrade()
+    migration_157.downgrade()
 
     assert calls == [
         ('add', 'org', 'meta_profiles', True),
