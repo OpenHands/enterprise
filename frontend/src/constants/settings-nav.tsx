@@ -3,6 +3,7 @@ import {
   FiBriefcase,
   FiBarChart2,
   FiDollarSign,
+  FiShield,
 } from "react-icons/fi";
 import CreditCardIcon from "#/icons/credit-card.svg?react";
 import KeyIcon from "#/icons/key.svg?react";
@@ -21,7 +22,8 @@ export type SettingsNavSection =
   | "personal"
   | "user"
   | "billing"
-  | "other";
+  | "other"
+  | "admin";
 
 export interface SettingsNavItem {
   icon: React.ReactElement;
@@ -213,3 +215,14 @@ export const OSS_NAV_ITEMS: SettingsNavItem[] = [
     text: "SETTINGS$NAV_SECRETS",
   },
 ];
+
+// Injected into the SaaS settings nav for super admins only (self-hosted
+// enterprise). Not part of SAAS_NAV_ITEMS because its visibility is driven by
+// the super-admin status query rather than the org-scoped role, so
+// ``use-settings-nav-items`` appends it explicitly.
+export const SUPER_ADMIN_NAV_ITEM: SettingsNavItem = {
+  icon: <FiShield size={22} />,
+  to: "/settings/super-admin",
+  text: "SUPER_ADMIN$NAV_DASHBOARD",
+  section: "admin",
+};

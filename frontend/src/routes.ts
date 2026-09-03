@@ -46,6 +46,7 @@ export default [
       route("org", "routes/manage-org.tsx"),
       route("usage-monitoring", "routes/usage-monitoring.tsx"),
       route("admin-dashboard", "routes/admin-dashboard.tsx"),
+      route("super-admin", "routes/super-admin-dashboard.tsx"),
       route("budgets", "routes/budgets.tsx"),
       route("quota", "routes/quota-settings.tsx"),
     ]),

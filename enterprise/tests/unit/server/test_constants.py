@@ -327,3 +327,54 @@ class TestOpenOrgCreationEnabled:
 
             importlib.reload(constants_module)
             assert constants_module.OPEN_ORG_CREATION_ENABLED is False
+
+
+class TestSuperAdminDashboardEnabled:
+    """Tests for the super-admin dashboard availability gate."""
+
+    @staticmethod
+    def _reload(env: dict[str, str]):
+        import importlib
+
+        import server.constants as constants_module
+
+        with patch.dict('os.environ', env, clear=True):
+            importlib.reload(constants_module)
+            return constants_module
+
+    def test_enabled_by_default_on_self_hosted(self) -> None:
+        """Self-hosted + no explicit flag -> available (on by default)."""
+        mod = self._reload({'OH_DEPLOYMENT_MODE': 'self_hosted'})
+        try:
+            assert mod.DEPLOYMENT_MODE == 'self_hosted'
+            assert mod.SUPER_ADMIN_DASHBOARD_ENABLED is True
+            assert mod.is_super_admin_dashboard_enabled() is True
+        finally:
+            self._reload({})
+
+    def test_disabled_on_self_hosted_when_flag_off(self) -> None:
+        """Self-hosted operators can turn it off explicitly."""
+        mod = self._reload(
+            {
+                'OH_DEPLOYMENT_MODE': 'self_hosted',
+                'SUPER_ADMIN_DASHBOARD_ENABLED': 'false',
+            }
+        )
+        try:
+            assert mod.is_super_admin_dashboard_enabled() is False
+        finally:
+            self._reload({})
+
+    def test_never_available_on_cloud(self) -> None:
+        """On All-Hands managed (cloud) installs it must be off, flag or not."""
+        mod = self._reload(
+            {
+                'OH_DEPLOYMENT_MODE': 'cloud',
+                'SUPER_ADMIN_DASHBOARD_ENABLED': 'true',
+            }
+        )
+        try:
+            assert mod.DEPLOYMENT_MODE == 'cloud'
+            assert mod.is_super_admin_dashboard_enabled() is False
+        finally:
+            self._reload({})

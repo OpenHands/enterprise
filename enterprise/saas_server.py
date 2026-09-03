@@ -27,6 +27,7 @@ from server.auth.constants import (  # noqa: E402
 from server.constants import (  # noqa: E402
     PERMITTED_CORS_ORIGINS,
     USER_PROVISIONING_ENABLED,
+    is_super_admin_dashboard_enabled,
 )
 from server.logger import logger  # noqa: E402
 from server.middleware import (  # noqa: E402
@@ -34,6 +35,7 @@ from server.middleware import (  # noqa: E402
     SetAuthCookieMiddleware,
 )
 from server.rate_limit import setup_rate_limit_handler  # noqa: E402
+from server.routes.admin_dashboard import admin_dashboard_router  # noqa: E402
 from server.routes.agent_profiles import router as agent_profiles_router  # noqa: E402
 from server.routes.analytics_events import analytics_events_router  # noqa: E402
 from server.routes.api_keys import api_router as api_keys_router  # noqa: E402
@@ -165,6 +167,13 @@ base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(
     super_admin_router
 )  # Add routes for instance-level super-admin management
+if is_super_admin_dashboard_enabled():
+    # Instance-level super-admin dashboard (list all orgs, invite into any
+    # org). Self-hosted only and on by default; operators can disable it via
+    # SUPER_ADMIN_DASHBOARD_ENABLED. Never mounted on All-Hands managed
+    # (cloud/SaaS) installs -- see ``is_super_admin_dashboard_enabled``.
+    base_app.include_router(admin_dashboard_router)
+    logger.info('admin_dashboard_router:enabled')
 base_app.include_router(
     feature_flag_router
 )  # Add routes for database-driven feature flags

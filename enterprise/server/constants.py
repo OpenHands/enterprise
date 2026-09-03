@@ -148,6 +148,35 @@ USER_PROVISIONING_ENABLED = os.getenv('USER_PROVISIONING_ENABLED', 'false').lowe
     '1',
 )
 
+
+# Controls the instance-level super-admin dashboard (list all orgs, invite
+# users into any org). Defaults to ON, but is only ever effective on
+# self-hosted deployments -- see ``is_super_admin_dashboard_enabled``. It is
+# never available on All-Hands managed (cloud/SaaS) installs or local OSS.
+# The env var lets self-hosted operators turn it off explicitly.
+SUPER_ADMIN_DASHBOARD_ENABLED = os.getenv(
+    'SUPER_ADMIN_DASHBOARD_ENABLED', 'true'
+).lower() in (
+    'true',
+    '1',
+)
+
+
+def is_super_admin_dashboard_enabled() -> bool:
+    """Whether the super-admin dashboard surface should be available.
+
+    Gated on two conditions:
+
+    * ``DEPLOYMENT_MODE == 'self_hosted'`` -- the dashboard is a self-hosted
+      instance-administration surface. On All-Hands managed (cloud) installs
+      organizations are provisioned through the billing/SaaS flow, so the
+      instance-wide org list and cross-org invite must not be exposed.
+    * ``SUPER_ADMIN_DASHBOARD_ENABLED`` -- defaults to on, but self-hosted
+      operators can disable it explicitly.
+    """
+    return DEPLOYMENT_MODE == 'self_hosted' and SUPER_ADMIN_DASHBOARD_ENABLED
+
+
 # Controls whether any authenticated user is allowed to create an organization
 # via POST /api/organizations (env: OPEN_ORG_CREATION_ENABLED). When disabled
 # (the default), org creation remains restricted to @openhands.dev admin users.
