@@ -1,7 +1,7 @@
 """Backfill OpenHands free/default verified model row.
 
-Revision ID: 157
-Revises: 156
+Revision ID: 159
+Revises: 158
 Create Date: 2026-08-31 00:00:00.000000
 
 """
@@ -11,8 +11,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '157'
-down_revision: str | None = '156'
+revision: str = '159'
+down_revision: str | None = '158'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

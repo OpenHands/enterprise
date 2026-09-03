@@ -18,11 +18,11 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 from server.constants import LITE_LLM_API_URL
 from server.routes.org_models import OrgNotFoundError
+from server.routes.org_provider_connections import _load_connections
 from server.verified_models.default_profile import (
     get_openhands_default_model_name,
     materialize_default_llm_profile,
 )
-from server.routes.org_provider_connections import _load_connections
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from storage.agent_profile_resolution import (
@@ -142,7 +142,8 @@ async def _load_profiles_with_live_default(
     else:
         model_name = await get_openhands_default_model_name(session)
     return materialize_default_llm_profile(profiles, model_name)
-  
+
+
 def _resolve_provider_connection(org: Org, llm: LLM) -> LLM:
     """Apply a referenced provider connection's credentials to ``llm``.
 

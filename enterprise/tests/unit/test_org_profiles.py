@@ -441,7 +441,7 @@ class TestProfileLifecycleIntegration:
         )
         member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
         assert member.agent_settings_diff['llm']['model'] == 'openhands/minimax-m2.5'
-        
+
     async def test_list_includes_provider_connection_id(
         self, async_session_maker, patch_route_db
     ):

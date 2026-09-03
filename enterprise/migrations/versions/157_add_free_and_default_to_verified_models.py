@@ -1,7 +1,7 @@
 """Add is_free and is_default to verified_models.
 
-Revision ID: 155
-Revises: 154
+Revision ID: 157
+Revises: 156
 Create Date: 2026-08-13 00:00:00.000000
 
 """
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '155'
-down_revision: str | None = '154'
+revision: str = '157'
+down_revision: str | None = '156'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
