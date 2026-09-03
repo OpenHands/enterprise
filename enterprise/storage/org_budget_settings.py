@@ -44,6 +44,16 @@ class OrgBudgetSettings(Base):
     )
     litellm_last_sync_status: Mapped[str | None] = mapped_column(String, nullable=True)
     litellm_last_sync_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    litellm_last_spend_snapshot_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    litellm_last_team_spend: Mapped[float | None] = mapped_column(Float, nullable=True)
+    litellm_last_member_spend: Mapped[dict[str, float]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    litellm_known_member_ids: Mapped[list[str]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
