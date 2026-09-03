@@ -31,6 +31,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     SendMessageRequest,
 )
 from openhands.app_server.config import get_app_conversation_service
+from openhands.app_server.errors import SandboxError
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 from openhands.app_server.services.injector import InjectorState
@@ -344,6 +345,37 @@ class SlackUpdateExistingConversationView(SlackNewConversationView):
 
         return user_message, ''
 
+    async def _discard_stale_conversation_mapping(self) -> None:
+        """Drop the thread -> conversation mapping that is no longer usable.
+
+        Without this the thread keeps resolving to the same dead conversation and
+        every future mention fails the same way.
+        """
+        parent_id = self.thread_ts or self.message_ts
+        try:
+            deleted = await slack_conversation_store.delete_slack_conversation(
+                self.channel_id, parent_id
+            )
+            logger.info(
+                'slack_discarded_stale_conversation',
+                extra={
+                    'channel_id': self.channel_id,
+                    'parent_id': parent_id,
+                    'conversation_id': self.conversation_id,
+                    'deleted_rows': deleted,
+                },
+            )
+        except Exception:
+            # Best effort: the user still gets a clear message even if cleanup fails.
+            logger.exception(
+                'slack_discard_stale_conversation_failed',
+                extra={
+                    'channel_id': self.channel_id,
+                    'parent_id': parent_id,
+                    'conversation_id': self.conversation_id,
+                },
+            )
+
     async def send_message_to_v1_conversation(self, jinja: Environment):
         """Send a message to a v1 conversation using the agent server API."""
         # Import services within the method to avoid circular imports
@@ -371,31 +403,49 @@ class SlackUpdateExistingConversationView(SlackNewConversationView):
             get_sandbox_service(state) as sandbox_service,
             get_httpx_client(state) as httpx_client,
         ):
-            app_conversation_info = ensure_conversation_found(
-                await app_conversation_info_service.get_app_conversation_info(
-                    UUID(self.conversation_id)
-                ),
-                UUID(self.conversation_id),
-            )
+            try:
+                app_conversation_info = ensure_conversation_found(
+                    await app_conversation_info_service.get_app_conversation_info(
+                        UUID(self.conversation_id)
+                    ),
+                    UUID(self.conversation_id),
+                )
 
-            sandbox = await sandbox_service.get_sandbox(
-                app_conversation_info.sandbox_id
-            )
+                sandbox = await sandbox_service.get_sandbox(
+                    app_conversation_info.sandbox_id
+                )
 
-            if sandbox and sandbox.status == SandboxStatus.PAUSED:
-                logger.info('[Slack V1]: Attempting to resume paused sandbox')
-                await sandbox_service.resume_sandbox(app_conversation_info.sandbox_id)
+                if sandbox and sandbox.status == SandboxStatus.PAUSED:
+                    logger.info('[Slack V1]: Attempting to resume paused sandbox')
+                    await sandbox_service.resume_sandbox(
+                        app_conversation_info.sandbox_id
+                    )
 
-            running_sandbox = await sandbox_service.wait_for_sandbox_running(
-                app_conversation_info.sandbox_id,
-                timeout=120,
-                poll_interval=2,
-                httpx_client=httpx_client,
-            )
+                running_sandbox = await sandbox_service.wait_for_sandbox_running(
+                    app_conversation_info.sandbox_id,
+                    timeout=120,
+                    poll_interval=2,
+                    httpx_client=httpx_client,
+                )
+            except (RuntimeError, SandboxError) as e:
+                await self._discard_stale_conversation_mapping()
+                raise SlackError(
+                    SlackErrorCode.CONVERSATION_UNAVAILABLE,
+                    log_context={
+                        'conversation_id': self.conversation_id,
+                        'reason': str(e),
+                    },
+                ) from e
 
-            assert running_sandbox.session_api_key is not None, (
-                f'No session API key for sandbox: {running_sandbox.id}'
-            )
+            if running_sandbox.session_api_key is None:
+                await self._discard_stale_conversation_mapping()
+                raise SlackError(
+                    SlackErrorCode.CONVERSATION_UNAVAILABLE,
+                    log_context={
+                        'conversation_id': self.conversation_id,
+                        'reason': f'No session API key for sandbox: {running_sandbox.id}',
+                    },
+                )
 
             agent_server_url = get_agent_server_url_from_sandbox(running_sandbox)
 

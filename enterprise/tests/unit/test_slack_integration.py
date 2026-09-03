@@ -1275,3 +1275,276 @@ class TestHandleSlackError:
             # Verify message is not empty
             assert message
             assert isinstance(message, str)
+
+
+class TestStaleConversationRecovery:
+    """Follow-up mentions in a thread whose backing conversation is gone.
+
+    Without recovery the thread -> conversation mapping keeps resolving to a dead
+    conversation, so every later mention in that thread fails the same way.
+    """
+
+    def _build_view(self, thread_ts='1234567890.000100'):
+        from integrations.slack.slack_view import SlackUpdateExistingConversationView
+
+        slack_user = SlackUser()
+        slack_user.slack_user_id = 'U1234567890'
+        slack_user.keycloak_user_id = 'test-user-123'
+        slack_user.slack_display_name = 'Test User'
+
+        return SlackUpdateExistingConversationView(
+            bot_access_token='xoxb-test',
+            user_msg='follow up please',
+            slack_user_id='U1234567890',
+            slack_to_openhands_user=slack_user,
+            saas_user_auth=MagicMock(spec=UserAuth),
+            channel_id='C1234567890',
+            message_ts='1234567890.000200',
+            thread_ts=thread_ts,
+            selected_repo=None,
+            should_extract=True,
+            send_summary_instruction=True,
+            conversation_id='6ba7b8109dad11d180b400c04fd430c8',
+            slack_conversation=MagicMock(),
+            team_id='T1234567890',
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_conversation_raises_coded_error_and_clears_mapping(self):
+        """A deleted conversation is reported as CONVERSATION_UNAVAILABLE."""
+        from integrations.slack.slack_errors import SlackError, SlackErrorCode
+
+        view = self._build_view()
+
+        # Conversation lookup returns None -> ensure_conversation_found raises.
+        info_service = AsyncMock()
+        info_service.get_app_conversation_info = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                'integrations.slack.slack_view.slack_conversation_store'
+            ) as mock_store,
+            patch(
+                'openhands.app_server.config.get_app_conversation_info_service'
+            ) as mock_info_ctx,
+            patch(
+                'openhands.app_server.config.get_sandbox_service'
+            ) as mock_sandbox_ctx,
+            patch('openhands.app_server.config.get_httpx_client') as mock_httpx_ctx,
+        ):
+            mock_store.delete_slack_conversation = AsyncMock(return_value=1)
+            mock_info_ctx.return_value.__aenter__.return_value = info_service
+            mock_sandbox_ctx.return_value.__aenter__.return_value = AsyncMock()
+            mock_httpx_ctx.return_value.__aenter__.return_value = AsyncMock()
+
+            with pytest.raises(SlackError) as exc_info:
+                await view.send_message_to_v1_conversation(MagicMock())
+
+        assert exc_info.value.code == SlackErrorCode.CONVERSATION_UNAVAILABLE
+        assert exc_info.value.code.value == 'SLACK_ERR_010'
+
+        # The stale mapping is removed so the next mention starts fresh.
+        mock_store.delete_slack_conversation.assert_awaited_once_with(
+            'C1234567890', '1234567890.000100'
+        )
+
+    @pytest.mark.asyncio
+    async def test_unrecoverable_sandbox_raises_coded_error_and_clears_mapping(self):
+        """A sandbox that never comes back is also a recoverable state."""
+        from integrations.slack.slack_errors import SlackError, SlackErrorCode
+
+        from openhands.app_server.errors import SandboxError
+
+        view = self._build_view()
+
+        info_service = AsyncMock()
+        info_service.get_app_conversation_info = AsyncMock(
+            return_value=MagicMock(sandbox_id='sandbox-1')
+        )
+
+        sandbox_service = AsyncMock()
+        sandbox_service.get_sandbox = AsyncMock(return_value=None)
+        sandbox_service.wait_for_sandbox_running = AsyncMock(
+            side_effect=SandboxError('Sandbox not found: sandbox-1')
+        )
+
+        with (
+            patch(
+                'integrations.slack.slack_view.slack_conversation_store'
+            ) as mock_store,
+            patch(
+                'openhands.app_server.config.get_app_conversation_info_service'
+            ) as mock_info_ctx,
+            patch(
+                'openhands.app_server.config.get_sandbox_service'
+            ) as mock_sandbox_ctx,
+            patch('openhands.app_server.config.get_httpx_client') as mock_httpx_ctx,
+        ):
+            mock_store.delete_slack_conversation = AsyncMock(return_value=1)
+            mock_info_ctx.return_value.__aenter__.return_value = info_service
+            mock_sandbox_ctx.return_value.__aenter__.return_value = sandbox_service
+            mock_httpx_ctx.return_value.__aenter__.return_value = AsyncMock()
+
+            with pytest.raises(SlackError) as exc_info:
+                await view.send_message_to_v1_conversation(MagicMock())
+
+        assert exc_info.value.code == SlackErrorCode.CONVERSATION_UNAVAILABLE
+        mock_store.delete_slack_conversation.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sandbox_without_session_api_key_is_recovered(self):
+        """A running sandbox with no session API key is unusable, not a crash.
+
+        This replaced an `assert`, which would be stripped under `python -O`
+        and leave the None to fail somewhere less obvious downstream.
+        """
+        from integrations.slack.slack_errors import SlackError, SlackErrorCode
+
+        view = self._build_view()
+
+        info_service = AsyncMock()
+        info_service.get_app_conversation_info = AsyncMock(
+            return_value=MagicMock(sandbox_id='sandbox-1')
+        )
+
+        sandbox_service = AsyncMock()
+        sandbox_service.get_sandbox = AsyncMock(return_value=None)
+        sandbox_service.wait_for_sandbox_running = AsyncMock(
+            return_value=MagicMock(id='sandbox-1', session_api_key=None)
+        )
+
+        with (
+            patch(
+                'integrations.slack.slack_view.slack_conversation_store'
+            ) as mock_store,
+            patch(
+                'openhands.app_server.config.get_app_conversation_info_service'
+            ) as mock_info_ctx,
+            patch(
+                'openhands.app_server.config.get_sandbox_service'
+            ) as mock_sandbox_ctx,
+            patch('openhands.app_server.config.get_httpx_client') as mock_httpx_ctx,
+        ):
+            mock_store.delete_slack_conversation = AsyncMock(return_value=1)
+            mock_info_ctx.return_value.__aenter__.return_value = info_service
+            mock_sandbox_ctx.return_value.__aenter__.return_value = sandbox_service
+            mock_httpx_ctx.return_value.__aenter__.return_value = AsyncMock()
+
+            with pytest.raises(SlackError) as exc_info:
+                await view.send_message_to_v1_conversation(MagicMock())
+
+        assert exc_info.value.code == SlackErrorCode.CONVERSATION_UNAVAILABLE
+        mock_store.delete_slack_conversation.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_paused_sandbox_that_cannot_resume_is_recovered(self):
+        """A paused sandbox that fails to resume also heals the thread.
+
+        The resume call sits inside the guarded block, so a failure there must
+        clear the mapping rather than escaping as an unexpected error.
+        """
+        from integrations.slack.slack_errors import SlackError, SlackErrorCode
+
+        from openhands.app_server.errors import SandboxError
+        from openhands.app_server.sandbox.sandbox_models import SandboxStatus
+
+        view = self._build_view()
+
+        info_service = AsyncMock()
+        info_service.get_app_conversation_info = AsyncMock(
+            return_value=MagicMock(sandbox_id='sandbox-1')
+        )
+
+        sandbox_service = AsyncMock()
+        sandbox_service.get_sandbox = AsyncMock(
+            return_value=MagicMock(status=SandboxStatus.PAUSED)
+        )
+        sandbox_service.resume_sandbox = AsyncMock(
+            side_effect=SandboxError('Sandbox cannot be resumed: sandbox-1')
+        )
+
+        with (
+            patch(
+                'integrations.slack.slack_view.slack_conversation_store'
+            ) as mock_store,
+            patch(
+                'openhands.app_server.config.get_app_conversation_info_service'
+            ) as mock_info_ctx,
+            patch(
+                'openhands.app_server.config.get_sandbox_service'
+            ) as mock_sandbox_ctx,
+            patch('openhands.app_server.config.get_httpx_client') as mock_httpx_ctx,
+        ):
+            mock_store.delete_slack_conversation = AsyncMock(return_value=1)
+            mock_info_ctx.return_value.__aenter__.return_value = info_service
+            mock_sandbox_ctx.return_value.__aenter__.return_value = sandbox_service
+            mock_httpx_ctx.return_value.__aenter__.return_value = AsyncMock()
+
+            with pytest.raises(SlackError) as exc_info:
+                await view.send_message_to_v1_conversation(MagicMock())
+
+        sandbox_service.resume_sandbox.assert_awaited_once_with('sandbox-1')
+        assert exc_info.value.code == SlackErrorCode.CONVERSATION_UNAVAILABLE
+        mock_store.delete_slack_conversation.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_uses_message_ts_when_not_in_thread(self):
+        """parent_id falls back to message_ts for a root-level mention."""
+        view = self._build_view(thread_ts=None)
+
+        with patch(
+            'integrations.slack.slack_view.slack_conversation_store'
+        ) as mock_store:
+            mock_store.delete_slack_conversation = AsyncMock(return_value=1)
+
+            await view._discard_stale_conversation_mapping()
+
+            mock_store.delete_slack_conversation.assert_awaited_once_with(
+                'C1234567890', '1234567890.000200'
+            )
+
+    @pytest.mark.asyncio
+    async def test_cleanup_failure_is_swallowed(self):
+        """A failing delete must not replace the user-facing coded error."""
+        view = self._build_view()
+
+        with patch(
+            'integrations.slack.slack_view.slack_conversation_store'
+        ) as mock_store:
+            mock_store.delete_slack_conversation = AsyncMock(
+                side_effect=Exception('db down')
+            )
+
+            await view._discard_stale_conversation_mapping()
+
+    @pytest.mark.asyncio
+    async def test_start_job_lets_slack_error_reach_central_handler(
+        self, slack_manager
+    ):
+        """start_job must not swallow SlackError into the generic message."""
+        from integrations.slack.slack_errors import SlackError, SlackErrorCode
+
+        view = self._build_view()
+        view.create_or_update_conversation = AsyncMock(
+            side_effect=SlackError(SlackErrorCode.CONVERSATION_UNAVAILABLE)
+        )
+
+        with patch.object(
+            SlackManager, 'send_message', new_callable=AsyncMock
+        ) as mock_send:
+            with pytest.raises(SlackError) as exc_info:
+                await slack_manager.start_job(view)
+
+        assert exc_info.value.code == SlackErrorCode.CONVERSATION_UNAVAILABLE
+        for call in mock_send.call_args_list:
+            assert 'unexpected error starting the job' not in str(call)
+
+    def test_conversation_unavailable_message_points_to_new_thread(self):
+        """The message must tell the user what actually works."""
+        from integrations.slack.slack_errors import SlackErrorCode, get_user_message
+
+        message = get_user_message(SlackErrorCode.CONVERSATION_UNAVAILABLE)
+
+        assert 'new thread' in message
+        # The old catch-all told users to retry, which can never succeed here.
+        assert 'try again later' not in message
