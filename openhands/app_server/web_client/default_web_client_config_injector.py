@@ -203,6 +203,10 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     BYOK editing UI visible; ENABLE_ACP keeps the ACP agent configuration UI
     (Settings > Agent) visible on SaaS and existing installs, matching Agent
     Canvas. Set ENABLE_ACP=false to hide it.
+
+    enable_billing here is only the env-var fallback: ``get_web_client_config``
+    re-resolves it against the DB-backed default flag on every request
+    (see ``_resolve_flag``).
     """
     return WebClientFeatureFlags(
         enable_billing=os.getenv('ENABLE_BILLING', 'false') == 'true',
@@ -252,6 +256,22 @@ async def _get_db_feature_flags() -> dict[str, bool]:
         # Never let a DB hiccup take down the unauthenticated config
         # endpoint; fall back to an empty map.
         return {}
+
+
+async def _resolve_flag(key: str, env_fallback: bool) -> bool:
+    """Resolve a flag via the feature flag service with an env-var fallback.
+
+    Uses the service's fault-tolerant ``resolve`` method (DB row first,
+    registered default on failure). Like ``_get_db_feature_flags``, the import
+    is lazy and best-effort: OSS installs without the enterprise service fall
+    back to ``env_fallback`` so the unauthenticated config endpoint never
+    breaks on the feature-flag import.
+    """
+    try:
+        from server.services.feature_flag_service import feature_flag_service
+    except Exception:
+        return env_fallback
+    return await feature_flag_service.resolve(key)
 
 
 class DefaultWebClientConfigInjector(WebClientConfigInjector):
@@ -319,10 +339,20 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         from openhands.app_server.config import get_global_config
 
         config = get_global_config()
+        # enable_billing is a registered default flag (ENABLE_BILLING): the
+        # database overlay wins, the env var baked into self.feature_flags at
+        # init is the fallback.
+        feature_flags = self.feature_flags.model_copy(
+            update={
+                'enable_billing': await _resolve_flag(
+                    'ENABLE_BILLING', self.feature_flags.enable_billing
+                )
+            }
+        )
         result = WebClientConfig(
             app_mode=config.app_mode,
             posthog_client_key=self.posthog_client_key,
-            feature_flags=self.feature_flags,
+            feature_flags=feature_flags,
             db_feature_flags=await _get_db_feature_flags(),
             providers_configured=self.providers_configured,
             maintenance_start_time=self.maintenance_start_time,
