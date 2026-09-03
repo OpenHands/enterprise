@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import logging
 import os
+import re
 from abc import ABC, abstractmethod
 from functools import cache
 
@@ -15,6 +16,7 @@ from openhands.app_server.services.injector import Injector
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 _DEFAULT_REPOSITORY = 'ghcr.io/openhands/agent-server'
+_VERSIONED_PYTHON_TAG_RE = re.compile(r'^\d+\.\d+\.\d+-python$')
 
 
 @cache
@@ -122,9 +124,9 @@ def get_agent_server_image() -> str:
     bundled_version = _bundled_agent_server_version()
     tag = os.getenv('AGENT_SERVER_IMAGE_TAG') or f'{bundled_version}-python'
 
-    if repository == _DEFAULT_REPOSITORY:
+    if repository == _DEFAULT_REPOSITORY and _VERSIONED_PYTHON_TAG_RE.match(tag):
         parts = tag.split('-', 1)
-        if len(parts) == 2 and parts[0] != bundled_version:
+        if parts[0] != bundled_version:
             parts[0] = bundled_version
             updated_tag = '-'.join(parts)
             logging.getLogger(__name__).warning(

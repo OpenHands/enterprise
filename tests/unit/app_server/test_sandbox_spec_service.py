@@ -119,6 +119,26 @@ def test_get_agent_server_image_passes_through_canonical_tag_without_suffix():
             )
 
 
+def test_get_agent_server_image_preserves_sha_python_tags_on_canonical_repo():
+    """Feature previews pin branch-built agent-server images like
+    ``f87603e-python`` on the canonical repository. Those tags are deliberately
+    not semver release tags, so the stale-release auto-correct must not rewrite
+    them to the bundled package version.
+    """
+    with patch.object(importlib.metadata, 'version', return_value='1.44.1'):
+        with patch.dict(
+            'os.environ',
+            {
+                'AGENT_SERVER_IMAGE_REPOSITORY': 'ghcr.io/openhands/agent-server',
+                'AGENT_SERVER_IMAGE_TAG': 'f87603e-python',
+            },
+            clear=False,
+        ):
+            assert get_agent_server_image() == (
+                'ghcr.io/openhands/agent-server:f87603e-python'
+            )
+
+
 def test_get_agent_server_image_passes_through_canonical_repo_with_matching_tag():
     """Canonical repo + already-matching tag must be a no-op (no warning, no
     rewrite) — the most common case for fresh installs."""
