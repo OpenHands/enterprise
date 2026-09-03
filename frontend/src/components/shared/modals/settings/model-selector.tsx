@@ -1,7 +1,8 @@
 import {
   Autocomplete,
-  AutocompleteItem,
-  AutocompleteSection,
+  Header,
+  ListBoxItem,
+  ListBoxSection,
 } from "@heroui/react";
 import React from "react";
 import { useTranslation } from "react-i18next";
@@ -152,58 +153,41 @@ export function ModelSelector({
           <Autocomplete
             data-testid="llm-provider-input"
             isRequired
-            isVirtualized={false}
             name="llm-provider-input"
             isDisabled={isDisabled}
             aria-label={t(I18nKey.LLM$PROVIDER)}
             placeholder={t(I18nKey.LLM$SELECT_PROVIDER_PLACEHOLDER)}
-            isClearable={false}
             onSelectionChange={(e) => {
               if (e?.toString()) handleChangeProvider(e.toString());
             }}
-            onInputChange={(value) => !value && clear()}
             defaultSelectedKey={selectedProvider ?? undefined}
             selectedKey={selectedProvider}
-            classNames={{
-              popoverContent: "bg-tertiary rounded-xl border border-[#717888]",
-            }}
-            inputProps={{
-              classNames: {
-                inputWrapper:
-                  "bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic",
-              },
-            }}
+            className="w-full"
           >
-            <AutocompleteSection
-              title={
-                unverifiedProviders.length > 0
-                  ? t(I18nKey.MODEL_SELECTOR$VERIFIED)
-                  : undefined
-              }
-            >
+            <ListBoxSection>
+              {unverifiedProviders.length > 0 && (
+                <Header>{t(I18nKey.MODEL_SELECTOR$VERIFIED)}</Header>
+              )}
               {verifiedProviders.map((provider) => (
-                <AutocompleteItem
+                <ListBoxItem
                   data-testid={`provider-item-${provider.name}`}
                   key={provider.name}
                 >
                   {mapProvider(provider.name)}
-                </AutocompleteItem>
+                </ListBoxItem>
               ))}
-            </AutocompleteSection>
+            </ListBoxSection>
             {unverifiedProviders.length > 0 ? (
-              <AutocompleteSection
-                title={
-                  verifiedProviders.length > 0
-                    ? t(I18nKey.MODEL_SELECTOR$OTHERS)
-                    : undefined
-                }
-              >
+              <ListBoxSection>
+                {verifiedProviders.length > 0 && (
+                  <Header>{t(I18nKey.MODEL_SELECTOR$OTHERS)}</Header>
+                )}
                 {unverifiedProviders.map((provider) => (
-                  <AutocompleteItem key={provider.name}>
+                  <ListBoxItem key={provider.name}>
                     {mapProvider(provider.name)}
-                  </AutocompleteItem>
+                  </ListBoxItem>
                 ))}
-              </AutocompleteSection>
+              </ListBoxSection>
             ) : null}
           </Autocomplete>
         </fieldset>
@@ -227,56 +211,39 @@ export function ModelSelector({
         <Autocomplete
           data-testid="llm-model-input"
           isRequired
-          isVirtualized={false}
-          isLoading={isLoadingModels}
           name="llm-model-input"
           aria-label={t(I18nKey.LLM$MODEL)}
           placeholder={t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER)}
-          isClearable={false}
           onSelectionChange={(e) => {
             if (e?.toString()) handleChangeModel(e.toString());
           }}
           isDisabled={isDisabled || !selectedProvider}
           selectedKey={selectedModel}
           defaultSelectedKey={selectedModel ?? undefined}
-          classNames={{
-            popoverContent: "bg-tertiary rounded-xl border border-[#717888]",
-          }}
-          inputProps={{
-            classNames: {
-              inputWrapper:
-                "bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic",
-            },
-          }}
+          className="w-full"
         >
-          <AutocompleteSection
-            title={
-              unverifiedModels.length > 0
-                ? t(I18nKey.MODEL_SELECTOR$VERIFIED)
-                : undefined
-            }
-          >
+          <ListBoxSection>
+            {unverifiedModels.length > 0 && (
+              <Header>{t(I18nKey.MODEL_SELECTOR$VERIFIED)}</Header>
+            )}
             {verifiedModels.map((model) => (
-              <AutocompleteItem key={model.name}>{model.name}</AutocompleteItem>
+              <ListBoxItem key={model.name}>{model.name}</ListBoxItem>
             ))}
-          </AutocompleteSection>
+          </ListBoxSection>
           {unverifiedModels.length > 0 ? (
-            <AutocompleteSection
-              title={
-                verifiedModels.length > 0
-                  ? t(I18nKey.MODEL_SELECTOR$OTHERS)
-                  : undefined
-              }
-            >
+            <ListBoxSection>
+              {verifiedModels.length > 0 && (
+                <Header>{t(I18nKey.MODEL_SELECTOR$OTHERS)}</Header>
+              )}
               {unverifiedModels.map((model) => (
-                <AutocompleteItem
+                <ListBoxItem
                   data-testid={`model-item-${model.name}`}
                   key={model.name}
                 >
                   {model.name}
-                </AutocompleteItem>
+                </ListBoxItem>
               ))}
-            </AutocompleteSection>
+            </ListBoxSection>
           ) : null}
         </Autocomplete>
         {modelsError && (

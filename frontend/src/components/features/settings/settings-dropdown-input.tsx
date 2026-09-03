@@ -1,4 +1,4 @@
-import { Autocomplete, AutocompleteItem } from "@heroui/react";
+import { Autocomplete, ListBoxItem } from "@heroui/react";
 import React, { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { OptionalTag } from "./optional-tag";
@@ -63,36 +63,17 @@ export function SettingsDropdownInput({
         aria-label={typeof label === "string" ? label : name}
         data-testid={testId}
         name={name}
-        items={items}
+        items={items as unknown as Iterable<{ key: React.Key; label: string }>}
         defaultSelectedKey={defaultSelectedKey}
         selectedKey={selectedKey}
         onSelectionChange={onSelectionChange}
-        onInputChange={onInputChange}
-        isClearable={isClearable}
         isDisabled={isDisabled || isLoading}
-        isLoading={isLoading}
-        placeholder={isLoading ? t("HOME$LOADING") : placeholder}
-        allowsCustomValue={allowsCustomValue}
         isRequired={required}
         className="w-full"
-        classNames={{
-          popoverContent: "bg-tertiary rounded-xl",
-        }}
-        inputProps={{
-          classNames: {
-            inputWrapper: cn(
-              "bg-tertiary border border-[#717888] h-10 w-full max-w-[680px] rounded-sm p-2 placeholder:italic",
-              inputWrapperClassName,
-            ),
-            input: inputClassName,
-          },
-        }}
-        defaultFilter={defaultFilter}
-        startContent={startContent || null}
       >
-        {(item) => (
-          <AutocompleteItem key={item.key}>{item.label}</AutocompleteItem>
-        )}
+        {((item: { key: React.Key; label: string }) => (
+          <ListBoxItem key={item.key}>{item.label}</ListBoxItem>
+        )) as unknown as React.ReactNode}
       </Autocomplete>
     </label>
   );

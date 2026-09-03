@@ -1,8 +1,7 @@
 @import "tailwindcss";
+@import "@heroui/styles";
 
-@plugin '../hero.ts';
 @config "../tailwind.config.js";
-@source '../node_modules/@heroui/theme/dist/**/*.{js,ts,jsx,tsx}';
 
 @plugin 'tailwind-scrollbar' {
   nocompatible: true;
@@ -22,6 +21,12 @@
   --color-tertiary-light: #b7bdc2;
   --color-content: #ecedee;
   --color-content-2: #f9fbfe;
+}
+
+/* HeroUI v3 dark theme overrides */
+.dark {
+  --accent: #4465DB;
+  --radius: 0.3125rem;
 }
 
 .button-base {
