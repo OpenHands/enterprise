@@ -70,4 +70,4 @@ If you are interested in collaborating with us or contributing to OpenHands Ente
 
 ## Development
 
-See the [Development guide](./Development.md) for setup instructions and development workflows.
+See the [Development guide](./Development.md) for setup instructions, the repository layout, and development workflows. Python dependencies are managed with [uv](https://docs.astral.sh/uv/).

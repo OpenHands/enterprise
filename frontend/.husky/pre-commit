@@ -11,4 +11,4 @@ cd ..
 # unrelated files. The previous ``--files openhands/**/* evaluation/**/* tests/**/*``
 # argument relied on bash globstar which husky's /bin/sh does not enable, so the
 # patterns matched only one directory level deep and silently skipped most files.
-poetry run pre-commit run --show-diff-on-failure --config ./dev_config/python/.pre-commit-config.yaml
+uv run pre-commit run --show-diff-on-failure --config ./dev_config/python/.pre-commit-config.yaml

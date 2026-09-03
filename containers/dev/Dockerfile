@@ -65,9 +65,8 @@ RUN add-apt-repository ppa:deadsnakes/ppa \
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs
 
-# Poetry >= 1.8
-RUN curl -fsSL https://install.python-poetry.org | python3.12 - \
-    && ln -s ~/.local/bin/poetry /usr/local/bin/poetry
+# uv (pinned to the version that generated uv.lock)
+COPY --from=ghcr.io/astral-sh/uv:0.11.32 /uv /uvx /usr/local/bin/
 
 #
 RUN <<EOF
@@ -82,7 +81,7 @@ git --version
 python --version
 echo node `node --version`
 echo npm `npm --version`
-poetry --version
+uv --version
 netcat -h 2>&1 | head -n 1
 " > /version.sh
 chmod a+x /version.sh

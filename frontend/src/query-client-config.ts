@@ -21,7 +21,7 @@ const handle401Error = (error: AxiosError, queryClient: QueryClient) => {
 // is a valid state rather than an actionable error, so it must never surface
 // as a toast. Producers: openhands/app_server/git/git_router.py,
 // openhands/app_server/user/user_router.py,
-// enterprise/server/routes/users_v1.py.
+// server/routes/users_v1.py.
 const isExpectedNoGitProviderError = (error: AxiosError): boolean =>
   error.response?.status === 403 &&
   isAxiosErrorWithDetailField(error) &&
