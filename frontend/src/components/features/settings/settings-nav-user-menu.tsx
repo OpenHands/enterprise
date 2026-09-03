@@ -64,7 +64,11 @@ export function SettingsNavUserMenu() {
         aria-expanded={isOpen}
         aria-haspopup="menu"
       >
-        <UserAvatar interactive={false} />
+        <UserAvatar
+          avatarUrl={user.data?.avatar_url}
+          isLoading={user.isFetching}
+          interactive={false}
+        />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm text-white">{displayName}</p>
           <p className="truncate text-xs text-[var(--oh-muted)]">
