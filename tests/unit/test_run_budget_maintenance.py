@@ -5,11 +5,7 @@ import pathlib
 
 
 def _budget_maintenance_tree() -> ast.Module:
-    source = (
-        pathlib.Path(__file__).parent.parent.parent
-        / 'enterprise'
-        / 'run_budget_maintenance.py'
-    )
+    source = pathlib.Path(__file__).parent.parent.parent / 'run_budget_maintenance.py'
     return ast.parse(source.read_text())
 
 
@@ -21,8 +17,8 @@ def test_run_budget_maintenance_does_not_import_enterprise_package() -> None:
                 assert node.module != 'enterprise', (
                     'run_budget_maintenance.py must not "from enterprise import ..."; '
                     'use an unqualified "import run_maintenance_tasks" instead '
-                    '(the Docker image flattens the enterprise/ source tree, so there '
-                    'is no top-level "enterprise" package in the container)'
+                    '(there is no top-level "enterprise" package; the SaaS modules '
+                    'live at the repository root)'
                 )
 
 

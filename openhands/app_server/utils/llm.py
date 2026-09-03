@@ -128,7 +128,7 @@ def resolve_llm_base_url(
 
     * ``openhands/app_server/settings/settings_router._post_merge_llm_fixups``
       (personal-settings save path).
-    * ``enterprise/server/routes/org_models.OrgLLMSettingsUpdate._normalize_agent_settings``
+    * ``server/routes/org_models.OrgLLMSettingsUpdate._normalize_agent_settings``
       (org-defaults save path).
 
     Semantics:
