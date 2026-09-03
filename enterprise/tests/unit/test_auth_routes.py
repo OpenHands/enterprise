@@ -2946,3 +2946,189 @@ async def test_track_login_analytics_background_handles_member_count_error():
     orgs = identify_kwargs['orgs']
     assert len(orgs) == 1
     assert orgs[0]['member_count'] is None
+
+
+def _create_link_state(redirect_url: str, link_provider: str) -> str:
+    """Build the OAuth state the frontend sends for a post-auth provider link."""
+    return base64.urlsafe_b64encode(
+        json.dumps(
+            {'redirect_url': redirect_url, 'link_provider': link_provider}
+        ).encode()
+    ).decode()
+
+
+def _create_link_callback_mocks(create_keycloak_user_info):
+    """Mocks for the link-return leg: a signed-in user with TOS accepted."""
+    mock_user = MagicMock()
+    mock_user.id = 'test_user_id'
+    mock_user.current_org_id = 'test_org_id'
+    mock_user.accepted_tos = '2025-01-01'
+
+    mock_token_manager = MagicMock()
+    mock_token_manager.get_keycloak_tokens = AsyncMock(
+        return_value=('test_access_token', 'test_refresh_token')
+    )
+    mock_token_manager.get_user_info = AsyncMock(
+        return_value=create_keycloak_user_info(
+            sub='test_user_id',
+            identity_provider='enterprise_sso:saml',
+            email_verified=True,
+        )
+    )
+    mock_token_manager.store_idp_tokens = AsyncMock()
+    mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
+
+    mock_user_store = MagicMock()
+    mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+    mock_user_store.backfill_contact_name = AsyncMock()
+    mock_user_store.backfill_user_email = AsyncMock()
+
+    return mock_token_manager, mock_user_store
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_link_return_stores_provider_tokens(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """A successful idp_link return stores the linked provider's tokens and
+    redirects back without running the login side effects."""
+    # Arrange
+    mock_token_manager, mock_user_store = _create_link_callback_mocks(
+        create_keycloak_user_info
+    )
+    redirect_url = 'https://app.example.com/settings/integrations'
+
+    with (
+        patch('server.routes.auth.token_manager', mock_token_manager),
+        patch('server.routes.auth.UserStore', mock_user_store),
+        patch('server.routes.auth.set_response_cookie') as mock_set_cookie,
+        patch('server.routes.auth.schedule_gitlab_repo_sync') as mock_gitlab_sync,
+    ):
+        # Act
+        result = await keycloak_callback(
+            code='test_code',
+            state=_create_link_state(redirect_url, 'github'),
+            kc_action_status='success',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=create_mock_user_authorizer(),
+        )
+
+    # Assert
+    assert isinstance(result, RedirectResponse)
+    assert result.status_code == 302
+    assert result.headers['location'] == redirect_url
+    mock_token_manager.store_idp_tokens.assert_awaited_once_with(
+        ProviderType.GITHUB, 'test_user_id', 'test_access_token'
+    )
+    mock_gitlab_sync.assert_called_once()
+    cookie_kwargs = mock_set_cookie.call_args.kwargs
+    assert cookie_kwargs['keycloak_access_token'] == 'test_access_token'
+    assert cookie_kwargs['keycloak_refresh_token'] == 'test_refresh_token'
+    assert cookie_kwargs['accepted_tos'] is True
+    # Login side effects are skipped on the link-return leg
+    mock_token_manager.validate_offline_token.assert_not_called()
+    mock_background_tasks.add_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_link_return_cancelled_reports_status(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """A cancelled idp_link return stores nothing and reports the status."""
+    # Arrange
+    mock_token_manager, mock_user_store = _create_link_callback_mocks(
+        create_keycloak_user_info
+    )
+    redirect_url = 'https://app.example.com/settings/integrations'
+
+    with (
+        patch('server.routes.auth.token_manager', mock_token_manager),
+        patch('server.routes.auth.UserStore', mock_user_store),
+        patch('server.routes.auth.set_response_cookie'),
+        patch('server.routes.auth.schedule_gitlab_repo_sync') as mock_gitlab_sync,
+    ):
+        # Act
+        result = await keycloak_callback(
+            code='test_code',
+            state=_create_link_state(redirect_url, 'github'),
+            kc_action_status='cancelled',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=create_mock_user_authorizer(),
+        )
+
+    # Assert
+    assert result.status_code == 302
+    assert result.headers['location'] == f'{redirect_url}?link_status=cancelled'
+    mock_token_manager.store_idp_tokens.assert_not_called()
+    mock_gitlab_sync.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_link_return_reports_token_store_failure(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """A broker token fetch failure redirects with an error instead of a 500."""
+    # Arrange
+    mock_token_manager, mock_user_store = _create_link_callback_mocks(
+        create_keycloak_user_info
+    )
+    mock_token_manager.store_idp_tokens = AsyncMock(
+        side_effect=RuntimeError('broker token unavailable')
+    )
+    redirect_url = 'https://app.example.com/settings/integrations'
+
+    with (
+        patch('server.routes.auth.token_manager', mock_token_manager),
+        patch('server.routes.auth.UserStore', mock_user_store),
+        patch('server.routes.auth.set_response_cookie'),
+        patch('server.routes.auth.schedule_gitlab_repo_sync') as mock_gitlab_sync,
+    ):
+        # Act
+        result = await keycloak_callback(
+            code='test_code',
+            state=_create_link_state(redirect_url, 'github'),
+            kc_action_status='success',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=create_mock_user_authorizer(),
+        )
+
+    # Assert
+    assert result.status_code == 302
+    assert result.headers['location'] == f'{redirect_url}?link_status=error'
+    mock_gitlab_sync.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_link_return_rejects_login_only_provider(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """The login-only enterprise_sso IdP can't be linked as a git provider."""
+    # Arrange
+    mock_token_manager, mock_user_store = _create_link_callback_mocks(
+        create_keycloak_user_info
+    )
+
+    with (
+        patch('server.routes.auth.token_manager', mock_token_manager),
+        patch('server.routes.auth.UserStore', mock_user_store),
+        patch('server.routes.auth.set_response_cookie'),
+    ):
+        # Act / Assert
+        with pytest.raises(HTTPException) as exc_info:
+            await keycloak_callback(
+                code='test_code',
+                state=_create_link_state(
+                    'https://app.example.com/settings/integrations',
+                    'enterprise_sso',
+                ),
+                kc_action_status='success',
+                request=mock_request,
+                background_tasks=mock_background_tasks,
+                user_authorizer=create_mock_user_authorizer(),
+            )
+
+    assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+    mock_token_manager.store_idp_tokens.assert_not_called()
