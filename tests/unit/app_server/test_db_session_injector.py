@@ -19,25 +19,29 @@ from sqlalchemy import Engine
 from sqlalchemy.ext.asyncio.engine import AsyncEngine
 from sqlalchemy.orm import sessionmaker
 
-# Mock the storage.database module to avoid import-time engine creation
+# Mock the storage.database module and the database drivers while importing the
+# module under test, to avoid import-time engine creation and driver imports.
+# The real modules are put back afterwards: they are shared with the rest of the
+# suite, and leaving stubs in sys.modules would break later tests in this worker.
 mock_storage_database = MagicMock()
 mock_storage_database.sessionmaker = sessionmaker
-sys.modules['storage.database'] = mock_storage_database
-
-# Mock database drivers to avoid import errors
-sys.modules['pg8000'] = MagicMock()
-sys.modules['asyncpg'] = MagicMock()
-sys.modules['google.cloud.sql.connector'] = MagicMock()
-
-# Import after mocking to avoid import-time issues
-from openhands.app_server.services.db_session_injector import (  # noqa: E402
-    DbSessionInjector,
-)
-from openhands.db.ssl import (  # noqa: E402
-    build_asyncpg_connect_args,
-    build_db_url_query,
-    build_pg8000_connect_args,
-)
+with patch.dict(
+    sys.modules,
+    {
+        'storage.database': mock_storage_database,
+        'pg8000': MagicMock(),
+        'asyncpg': MagicMock(),
+        'google.cloud.sql.connector': MagicMock(),
+    },
+):
+    from openhands.app_server.services.db_session_injector import (
+        DbSessionInjector,
+    )
+    from openhands.db.ssl import (
+        build_asyncpg_connect_args,
+        build_db_url_query,
+        build_pg8000_connect_args,
+    )
 
 
 class MockRequest:

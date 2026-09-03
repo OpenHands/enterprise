@@ -1,8 +1,11 @@
 # Builds the enterprise-server image, the only image this repo publishes.
 #
-# The `enterprise` stage (bottom of this file) is the default build target and
-# the one CI pushes. `openhands-app` is the plain app image the enterprise
-# layers sit on; build it on its own with `--target openhands-app`.
+# The repository root is the deployable layout: `openhands/` (the app server)
+# and the SaaS/enterprise modules that extend it (`server/`, `storage/`,
+# `integrations/`, `sync/`, ...) sit side by side and are copied into /app
+# as-is, so `uvicorn saas_server:app`, `python -m run_maintenance_tasks`,
+# `python -m sync.<job>` and `alembic upgrade head` all run from /app.
+# Python dependencies are installed with uv from the committed uv.lock.
 ARG OPENHANDS_BUILD_VERSION=dev
 FROM node:25.9-trixie-slim AS frontend-builder
 
@@ -18,29 +21,35 @@ FROM python:3.13.7-slim-trixie AS base
 FROM base AS backend-builder
 
 WORKDIR /app
-ENV PYTHONPATH='/app'
 
-ENV POETRY_NO_INTERACTION=1 \
-    POETRY_VIRTUALENVS_IN_PROJECT=1 \
-    POETRY_VIRTUALENVS_CREATE=1 \
-    POETRY_CACHE_DIR=/tmp/poetry_cache
+# Pin uv to the version that generated uv.lock (see "Lockfile Regeneration" in AGENTS.md).
+COPY --from=ghcr.io/astral-sh/uv:0.11.32 /uv /uvx /bin/
 
-# Pin Poetry version to match the version used to generate poetry.lock
-ARG POETRY_VERSION=2.3.4
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_CACHE_DIR=/tmp/uv_cache
+
 RUN apt-get update -y \
-    && apt-get install -y curl make git build-essential jq gettext \
-    && python3 -m pip install "poetry==${POETRY_VERSION}" --break-system-packages
+    && apt-get install -y curl make git build-essential jq gettext
 
-COPY pyproject.toml poetry.lock ./
-RUN touch README.md
-RUN export POETRY_CACHE_DIR && poetry install --no-root && rm -rf $POETRY_CACHE_DIR
+# Dependencies only. The project itself is never installed as a package: its
+# source is copied into /app below and imported from there via PYTHONPATH=/app.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-install-project --no-dev && rm -rf $UV_CACHE_DIR
 
-FROM base AS openhands-app
+# ── enterprise-server ────────────────────────────────────────────────────────
+FROM base AS enterprise-server
 
 WORKDIR /app
 
 # re-declare for this section
 ARG OPENHANDS_BUILD_VERSION
+
+# Datadog labels
+LABEL com.datadoghq.tags.service="deploy"
+LABEL com.datadoghq.tags.env="${DD_ENV}"
 
 ENV RUN_AS_OPENHANDS=true
 # A random number--we need this to be different from the user's UID on the host machine
@@ -56,8 +65,19 @@ ENV INIT_GIT_IN_EMPTY_WORKSPACE=1
 RUN mkdir -p $FILE_STORE_PATH
 RUN mkdir -p $WORKSPACE_BASE
 
+# System packages, Node.js v20+ and npm (which includes npx), and security
+# updates for packages with available fixes.
 RUN apt-get update -y \
-    && apt-get install -y curl git ssh sudo \
+    && apt-get install -y curl git ssh sudo jq gettext \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get install -y nodejs \
+    && apt-get upgrade -y \
+        libc-bin \
+        libc6 \
+        libgnutls30 \
+        libsqlite3-0 \
+        perl-base \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Default is 1000, but OSX is often 501
@@ -80,20 +100,24 @@ ENV VIRTUAL_ENV=/app/.venv \
 
 COPY --chown=openhands:openhands --chmod=770 --from=backend-builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
 
-# Pin pip to a known-good version (reproducible builds) and fix CVE-2025-8869
-# Pin both venv pip and system pip (Trivy scans both)
-# - `python -m pip` uses the venv because `PATH` is prefixed with `${VIRTUAL_ENV}/bin`
-# - `/usr/local/bin/python3 -m pip` uses the system interpreter regardless of `PATH`
+# Pin the system pip to a known-good version (reproducible builds) and fix
+# CVE-2025-8869. Trivy scans it; the uv-managed venv ships no pip of its own.
 ARG PIP_VERSION=26.0.1
-RUN python -m pip install --no-cache-dir "pip==${PIP_VERSION}"
-
 USER root
 RUN /usr/local/bin/python3 -m pip install --no-cache-dir "pip==${PIP_VERSION}" --break-system-packages
 USER openhands
 
 COPY --chown=openhands:openhands --chmod=770 ./skills ./skills
 COPY --chown=openhands:openhands --chmod=770 ./openhands ./openhands
-COPY --chown=openhands:openhands pyproject.toml poetry.lock README.md MANIFEST.in LICENSE ./
+COPY --chown=openhands:openhands --chmod=770 ./server ./server
+COPY --chown=openhands:openhands --chmod=770 ./storage ./storage
+COPY --chown=openhands:openhands --chmod=770 ./integrations ./integrations
+COPY --chown=openhands:openhands --chmod=770 ./sync ./sync
+COPY --chown=openhands:openhands --chmod=770 ./analytics ./analytics
+COPY --chown=openhands:openhands --chmod=770 ./utils ./utils
+COPY --chown=openhands:openhands --chmod=770 ./migrations ./migrations
+COPY --chown=openhands:openhands --chmod=770 saas_server.py run_maintenance_tasks.py run_budget_maintenance.py ./
+COPY --chown=openhands:openhands pyproject.toml uv.lock alembic.ini README.md LICENSE ./
 
 # Add this line to set group ownership of all files/directories not already in "app" group
 # openhands:openhands -> openhands:openhands
@@ -101,65 +125,6 @@ RUN find /app \! -group openhands -exec chgrp openhands {} +
 
 COPY --chown=openhands:openhands --chmod=770 --from=frontend-builder /app/build ./frontend/build
 COPY --chown=openhands:openhands --chmod=770 ./containers/app/entrypoint.sh /app/entrypoint.sh
-
-USER root
-
-WORKDIR /app
-
-ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["uvicorn", "openhands.server.listen:app", "--host", "0.0.0.0", "--port", "3000"]
-
-# ── enterprise-server ────────────────────────────────────────────────────────
-# Enterprise layers on top of the app image. Keeping them as a stage here (rather
-# than a separate Dockerfile FROM a published app image) means one build produces
-# one image, so enterprise-server is the only image CI has to push.
-FROM openhands-app AS enterprise
-
-# Datadog labels
-LABEL com.datadoghq.tags.service="deploy"
-LABEL com.datadoghq.tags.env="${DD_ENV}"
-
-# Install Node.js v20+ and npm (which includes npx)
-# Apply security updates to fix CVEs
-RUN apt-get update && \
-    apt-get install -y curl && \
-    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
-    apt-get install -y nodejs && \
-    apt-get install -y jq gettext && \
-    # Apply security updates for packages with available fixes
-    apt-get upgrade -y \
-        libc-bin \
-        libc6 \
-        libgnutls30 \
-        libsqlite3-0 \
-        perl-base && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install poetry and export before importing current code.
-RUN /app/.venv/bin/pip install poetry poetry-plugin-export
-
-# Install Python dependencies from poetry.lock for reproducible builds
-# Copy lock files first for better Docker layer caching
-COPY --chown=openhands:openhands enterprise/pyproject.toml enterprise/poetry.lock /tmp/enterprise/
-RUN cd /tmp/enterprise && \
-    # Export only main dependencies with hashes for supply chain security
-    /app/.venv/bin/poetry export --only main -o requirements.txt && \
-    # Drop deps already provided by the base venv from the root `poetry install`:
-    # the openhands-ai local path dep, and the openhands-sdk/agent-server/tools
-    # git deps. pip rejects VCS requirements when other entries carry hashes
-    # ("can't verify hashes for ... version control repositories"), and these
-    # are already installed, so exclude them from the hashed install.
-    sed -i '/^-e /d; /openhands-ai/d; /software-agent-sdk/d' requirements.txt && \
-    # Install pinned dependencies from lock file
-    /app/.venv/bin/pip install -r requirements.txt && \
-    # Cleanup - return to /app before removing /tmp/enterprise
-    cd /app && \
-    rm -rf /tmp/enterprise && \
-    /app/.venv/bin/pip uninstall -y poetry poetry-plugin-export
-
-WORKDIR /app
-COPY --chown=openhands:openhands --chmod=770 enterprise .
 
 # Default the enterprise service-injector kinds in the image (overridable via env).
 # Keeping these next to the classes they name means the chart never references an
@@ -169,5 +134,8 @@ ENV OH_APP_CONVERSATION_INFO_KIND=server.utils.saas_app_conversation_info_inject
 
 USER openhands
 
+WORKDIR /app
+
+ENTRYPOINT ["/app/entrypoint.sh"]
 # Command will be overridden by Kubernetes deployment template
 CMD ["uvicorn", "saas_server:app", "--host", "0.0.0.0", "--port", "3000"]
