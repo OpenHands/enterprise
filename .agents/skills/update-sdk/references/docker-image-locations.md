@@ -50,7 +50,7 @@ These files contain image tags that **must** be updated whenever the SDK version
 - Uses `${SHORT_SHA}` variable at CI runtime, not hardcoded
 
 ### `containers/app/Dockerfile`
-- Builds the enterprise server (`enterprise-server` stage) in one pass; the only pinned tool image is `ghcr.io/astral-sh/uv:<version>`, which must match the uv version used to generate `uv.lock`
+- Builds the enterprise server (`enterprise-server` stage). `ghcr.io/astral-sh/uv:<version>` pins uv; it must match the version used to generate `uv.lock`
 
 ## Image Registries
 

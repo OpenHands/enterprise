@@ -317,8 +317,8 @@ Logs will be saved to `logs/llm/CURRENT_DATE/` for troubleshooting.
 uv run pytest ./tests/unit
 ```
 
-The suite covers the app server (`openhands/`) and the SaaS modules (`server/`, `storage/`, ...) together; the
-SQLite-backed database fixtures live in `tests/unit/conftest.py`.
+The suite covers the app server (`openhands/`) and the SaaS modules (`server/`, `storage/`, ...); the SQLite-backed
+database fixtures live in `tests/unit/conftest.py`.
 
 ---
 
@@ -326,8 +326,6 @@ SQLite-backed database fixtures live in `tests/unit/conftest.py`.
 
 1. Add your dependency with `uv add xxx` (or edit `pyproject.toml` by hand)
 2. Update the lock file if you edited by hand: `uv lock`
-
-uv is the only supported package manager; `uv.lock` is the single lock file for the whole backend.
 
 ---
 

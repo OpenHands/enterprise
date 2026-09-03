@@ -15,7 +15,7 @@ Bump SDK packages (`openhands-sdk`, `openhands-agent-server`, `openhands-tools`)
 | **SDK pin** (unreleased git commit) | 3 | 1 | **4** |
 | **Release commit** (version bump) | 3 | 0 | **3** |
 
-The auto-regenerated file is always `uv.lock` (uv is the only package manager; there is one lock file for the whole backend).
+The auto-regenerated file is always `uv.lock`.
 
 ## SDK Package Bump — 2 Files + 1 Lock File
 

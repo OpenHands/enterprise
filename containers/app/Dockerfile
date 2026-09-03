@@ -34,10 +34,10 @@ ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
 RUN apt-get update -y \
     && apt-get install -y curl make git build-essential jq gettext
 
-# Dependencies only. The project itself is never installed as a package: its
-# source is copied into /app below and imported from there via PYTHONPATH=/app.
+# Install the dependencies. The source tree is copied into /app below and
+# imported from there via PYTHONPATH=/app.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-install-project --no-dev && rm -rf $UV_CACHE_DIR
+RUN uv sync --locked --no-dev && rm -rf $UV_CACHE_DIR
 
 # ── enterprise-server ────────────────────────────────────────────────────────
 FROM base AS enterprise-server
@@ -101,7 +101,7 @@ ENV VIRTUAL_ENV=/app/.venv \
 COPY --chown=openhands:openhands --chmod=770 --from=backend-builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
 
 # Pin the system pip to a known-good version (reproducible builds) and fix
-# CVE-2025-8869. Trivy scans it; the uv-managed venv ships no pip of its own.
+# CVE-2025-8869.
 ARG PIP_VERSION=26.0.1
 USER root
 RUN /usr/local/bin/python3 -m pip install --no-cache-dir "pip==${PIP_VERSION}" --break-system-packages

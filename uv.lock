@@ -3362,7 +3362,7 @@ wheels = [
 [[package]]
 name = "openhands-ai"
 version = "1.58.0"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "alembic" },
