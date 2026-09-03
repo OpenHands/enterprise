@@ -93,6 +93,11 @@ class Permission(str, Enum):
     MANAGE_ORG_CLAIMS = 'manage_org_claims'
 
     # Automations
+    # Members get VIEW_AUTOMATIONS (read-only: list, get, runs).
+    # MANAGE_AUTOMATIONS (create, edit, delete, dispatch) is admin/owner only.
+    # The automation creator also retains edit access to their own automations
+    # via an in-handler ownership check (automation.user_id == user.user_id),
+    # not via a permission string.
     VIEW_AUTOMATIONS = 'view_automations'
     MANAGE_AUTOMATIONS = 'manage_automations'
 
@@ -178,7 +183,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.DELETE_ORGANIZATION,
             # Git organization claims
             Permission.MANAGE_ORG_CLAIMS,
-            # Automations
+            # Automations (full read/write)
             Permission.VIEW_AUTOMATIONS,
             Permission.MANAGE_AUTOMATIONS,
             # User provisioning
@@ -210,7 +215,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.EDIT_ORG_SETTINGS,
             # Git organization claims
             Permission.MANAGE_ORG_CLAIMS,
-            # Automations
+            # Automations (full read/write)
             Permission.VIEW_AUTOMATIONS,
             Permission.MANAGE_AUTOMATIONS,
             # User provisioning
@@ -232,9 +237,10 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             # Settings (View only)
             Permission.VIEW_ORG_SETTINGS,
             Permission.VIEW_LLM_SETTINGS,
-            # Automations
+            # Automations (view only — members can list and read but not
+            # create/edit/delete/dispatch; the creator of an automation
+            # retains edit access via an in-handler ownership check)
             Permission.VIEW_AUTOMATIONS,
-            Permission.MANAGE_AUTOMATIONS,
         ]
     ),
 }
