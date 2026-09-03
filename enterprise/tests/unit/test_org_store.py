@@ -5,12 +5,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 from server.routes.org_models import OrgUpdate
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from storage.org import Org
+from storage.org_budget_settings import OrgBudgetSettings
+from storage.org_budget_threshold import OrgBudgetThreshold
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.org_store import OrgStore
+from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
 from storage.user import User
 
@@ -641,9 +644,6 @@ async def test_persist_org_with_owner_with_multiple_fields(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_success(async_session_maker, mock_litellm_api):
     """
     GIVEN: Valid organization with associated data
@@ -660,8 +660,49 @@ async def test_delete_org_cascade_success(async_session_maker, mock_litellm_api)
         contact_name='John Doe',
         contact_email='john@example.com',
     )
+    other_org_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     async with async_session_maker() as session:
-        session.add(expected_org)
+        # This table is owned by the OpenHands application schema rather than
+        # Enterprise's SQLAlchemy metadata, so the SQLite fixture does not
+        # create it automatically.
+        await session.execute(
+            text(
+                'CREATE TABLE IF NOT EXISTS app_conversation_start_task '
+                '(app_conversation_id TEXT)'
+            )
+        )
+        session.add_all(
+            [
+                expected_org,
+                Org(
+                    id=other_org_id,
+                    name='User Home Organization',
+                    contact_email='owner@example.com',
+                ),
+                User(
+                    id=user_id,
+                    current_org_id=other_org_id,
+                    email='owner@example.com',
+                ),
+                OrgBudgetSettings(
+                    org_id=org_id,
+                    enabled=True,
+                    monthly_limit=100.0,
+                    default_user_monthly_limit=25.0,
+                ),
+                OrgBudgetThreshold(
+                    org_id=org_id,
+                    percentage=80,
+                    email_enabled=True,
+                ),
+                OrgUserBudgetOverride(
+                    org_id=org_id,
+                    user_id=user_id,
+                    monthly_limit=10.0,
+                ),
+            ]
+        )
         await session.commit()
 
     with (
@@ -670,6 +711,10 @@ async def test_delete_org_cascade_success(async_session_maker, mock_litellm_api)
             'storage.org_store.OrgStore._delete_litellm_user_best_effort',
             new=AsyncMock(),
         ) as mock_delete_litellm_user,
+        patch(
+            'storage.org_store.LiteLlmManager.delete_team',
+            new=AsyncMock(),
+        ) as mock_delete_litellm_team,
     ):
         # Act
         result = await OrgStore.delete_org_cascade(org_id)
@@ -680,7 +725,29 @@ async def test_delete_org_cascade_success(async_session_maker, mock_litellm_api)
     assert result.name == 'Test Organization'
     assert result.contact_name == 'John Doe'
     assert result.contact_email == 'john@example.com'
-    mock_delete_litellm_user.assert_not_called()
+    mock_delete_litellm_team.assert_awaited_once_with(str(org_id))
+    mock_delete_litellm_user.assert_not_awaited()
+
+    async with async_session_maker() as session:
+        assert await session.get(Org, org_id) is None
+        assert await session.get(User, user_id) is not None
+        assert (
+            await session.execute(
+                select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+            )
+        ).scalar_one_or_none() is None
+        assert (
+            await session.execute(
+                select(OrgBudgetThreshold).where(OrgBudgetThreshold.org_id == org_id)
+            )
+        ).scalar_one_or_none() is None
+        assert (
+            await session.execute(
+                select(OrgUserBudgetOverride).where(
+                    OrgUserBudgetOverride.org_id == org_id
+                )
+            )
+        ).scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio
