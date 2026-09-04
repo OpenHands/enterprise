@@ -93,6 +93,9 @@ lint.pydocstyle.convention = "google"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# libtmux ships a pytest plugin that applies marks to fixtures, which pytest>=9.1
+# rejects. It is a transitive dependency of openhands-ai and unused by these tests.
+addopts = "-p no:libtmux"
 
 [tool.coverage.run]
 relative_files = true
