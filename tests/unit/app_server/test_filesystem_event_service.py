@@ -11,10 +11,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
 from openhands.agent_server.models import EventPage, EventSortOrder
-from openhands.app_server.event.filesystem_event_service import FilesystemEventService
 from openhands.sdk.event import PauseEvent, TokenEvent
+
+from openhands.app_server.event.filesystem_event_service import FilesystemEventService
 
 
 @pytest.fixture
@@ -467,3 +467,86 @@ class TestFilesystemEventServiceIntegration:
 
         result = await service.search_events(conversation_id)
         assert len(result.items) == 3
+
+
+class TestFilesystemEventServiceIndexCache:
+    """Tests for the per-conversation sorted index cache (OHE-3178).
+
+    Verifies that subsequent page requests do not re-enumerate/reload all events,
+    and that ``save_event`` invalidates the cache so new events are visible.
+    """
+
+    @pytest.mark.asyncio
+    async def test_second_page_does_not_reload_all_events(
+        self, service: FilesystemEventService
+    ):
+        """The first ``search_events`` builds the index; the second must not
+        re-call ``_search_paths``/``_load_events_from_paths`` for all events."""
+        conversation_id = uuid4()
+        for _ in range(5):
+            await service.save_event(conversation_id, create_token_event())
+
+        # Prime the cache with the first page.
+        first = await service.search_events(conversation_id, limit=2)
+        assert first.next_page_id is not None
+
+        # Patch the path enumeration to prove the second page does not scan.
+        original_search_paths = service._search_paths
+        calls = {'count': 0}
+
+        def counting_search_paths(prefix, page_id=None):
+            calls['count'] += 1
+            return original_search_paths(prefix)
+
+        service._search_paths = counting_search_paths  # type: ignore[assignment]
+
+        try:
+            second = await service.search_events(
+                conversation_id, page_id=first.next_page_id, limit=2
+            )
+        finally:
+            service._search_paths = original_search_paths  # type: ignore[assignment]
+
+        # The cached index means no storage enumeration on the second page.
+        assert calls['count'] == 0
+        assert len(second.items) == 2
+        # No overlap between pages.
+        first_ids = {e.id for e in first.items}
+        second_ids = {e.id for e in second.items}
+        assert not (first_ids & second_ids)
+
+    @pytest.mark.asyncio
+    async def test_save_event_invalidates_cache(self, service: FilesystemEventService):
+        """A new event saved after the index was built must be visible."""
+        conversation_id = uuid4()
+        for _ in range(3):
+            await service.save_event(conversation_id, create_token_event())
+
+        first = await service.search_events(conversation_id, limit=100)
+        assert len(first.items) == 3
+
+        new_event = create_token_event()
+        await service.save_event(conversation_id, new_event)
+
+        second = await service.search_events(conversation_id, limit=100)
+        assert len(second.items) == 4
+        assert new_event.id in {e.id for e in second.items}
+
+    @pytest.mark.asyncio
+    async def test_export_reuses_cache_and_is_sorted(
+        self, service: FilesystemEventService
+    ):
+        """``iter_events_for_export`` yields all events once in timestamp order."""
+        conversation_id = uuid4()
+        events = []
+        for _ in range(4):
+            ev = create_token_event()
+            events.append(ev)
+            await service.save_event(conversation_id, ev)
+            time.sleep(0.01)
+
+        exported = [
+            event async for event in service.iter_events_for_export(conversation_id)
+        ]
+        assert [e.id for e in exported] == [e.id for e in events]
+        assert [e.timestamp for e in exported] == sorted(e.timestamp for e in exported)
