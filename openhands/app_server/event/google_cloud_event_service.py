@@ -13,12 +13,12 @@ from google.cloud import storage
 from google.cloud.storage.blob import Blob
 from google.cloud.storage.bucket import Bucket
 from google.cloud.storage.client import Client
+from openhands.sdk import Event
 
 from openhands.app_server.config import get_app_conversation_info_service
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
-from openhands.app_server.event.event_service_base import EventServiceBase
+from openhands.app_server.event.event_service_base import EventPath, EventServiceBase
 from openhands.app_server.services.injector import InjectorState
-from openhands.sdk import Event
 
 _logger = logging.getLogger(__name__)
 
@@ -61,12 +61,22 @@ class GoogleCloudEventService(EventServiceBase):
         with blob.open('w') as f:
             f.write(json.dumps(data, indent=2))
 
-    def _search_paths(self, prefix: Path, page_id: str | None = None) -> list[Path]:
-        """Search paths."""
+    def _search_paths(
+        self, prefix: Path, page_id: str | None = None
+    ) -> list[EventPath]:
+        """Search paths.
+
+        Each listed blob carries an ``updated`` time which we use as the sort
+        key (events are append-only, so this matches event timestamp order).
+        """
         blobs: Iterator[Blob] = self.bucket.list_blobs(
             page_token=page_id, prefix=str(prefix)
         )
-        paths = list(Path(blob.name) for blob in blobs)
+        paths: list[EventPath] = []
+        for blob in blobs:
+            updated = blob.updated
+            mtime = updated.timestamp() if updated is not None else 0.0
+            paths.append(EventPath(path=Path(blob.name), mtime=mtime))
         return paths
 
 

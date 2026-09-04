@@ -469,55 +469,87 @@ class TestFilesystemEventServiceIntegration:
         assert len(result.items) == 3
 
 
-class TestFilesystemEventServiceIndexCache:
-    """Tests for the per-conversation sorted index cache (OHE-3178).
+class TestFilesystemEventServiceLazyPagination:
+    """Tests for the mtime-sorted, lazy-loading pagination (OHE-3178).
 
-    Verifies that subsequent page requests do not re-enumerate/reload all events,
-    and that ``save_event`` invalidates the cache so new events are visible.
+    Verifies that ``search_events`` only loads the events on the requested page
+    (plus any non-matching entries it skips over), never all events in the
+    conversation.
     """
 
     @pytest.mark.asyncio
-    async def test_second_page_does_not_reload_all_events(
-        self, service: FilesystemEventService
-    ):
-        """The first ``search_events`` builds the index; the second must not
-        re-call ``_search_paths``/``_load_events_from_paths`` for all events."""
+    async def test_only_page_events_are_loaded(self, service: FilesystemEventService):
+        """A page request must not load events outside its page.
+
+        We patch ``_load_event`` to count calls. With 6 events and limit=2,
+        page 1 should load at most 2 events (no filter, so exactly the 2 it
+        returns), never all 6.
+        """
         conversation_id = uuid4()
-        for _ in range(5):
+        for _ in range(6):
             await service.save_event(conversation_id, create_token_event())
 
-        # Prime the cache with the first page.
+        original_load_event = service._load_event
+        loads = {'count': 0}
+
+        def counting_load_event(path):
+            loads['count'] += 1
+            return original_load_event(path)
+
+        service._load_event = counting_load_event  # type: ignore[assignment]
+        try:
+            page = await service.search_events(conversation_id, limit=2)
+        finally:
+            service._load_event = original_load_event  # type: ignore[assignment]
+
+        assert len(page.items) == 2
+        assert page.next_page_id is not None
+        # No filter: the scan stops as soon as `limit` matches are collected, so
+        # only 2 event bodies are loaded — not all 6.
+        assert loads['count'] == 2
+
+    @pytest.mark.asyncio
+    async def test_second_page_loads_only_its_events(
+        self, service: FilesystemEventService
+    ):
+        """The second page must not reload events from the first page."""
+        conversation_id = uuid4()
+        for _ in range(6):
+            await service.save_event(conversation_id, create_token_event())
+
         first = await service.search_events(conversation_id, limit=2)
-        assert first.next_page_id is not None
+        first_ids = {e.id for e in first.items}
 
-        # Patch the path enumeration to prove the second page does not scan.
-        original_search_paths = service._search_paths
-        calls = {'count': 0}
+        original_load_event = service._load_event
+        loads = {'count': 0}
 
-        def counting_search_paths(prefix, page_id=None):
-            calls['count'] += 1
-            return original_search_paths(prefix)
+        def counting_load_event(path):
+            loads['count'] += 1
+            return original_load_event(path)
 
-        service._search_paths = counting_search_paths  # type: ignore[assignment]
-
+        service._load_event = counting_load_event  # type: ignore[assignment]
         try:
             second = await service.search_events(
                 conversation_id, page_id=first.next_page_id, limit=2
             )
         finally:
-            service._search_paths = original_search_paths  # type: ignore[assignment]
+            service._load_event = original_load_event  # type: ignore[assignment]
 
-        # The cached index means no storage enumeration on the second page.
-        assert calls['count'] == 0
         assert len(second.items) == 2
-        # No overlap between pages.
-        first_ids = {e.id for e in first.items}
-        second_ids = {e.id for e in second.items}
-        assert not (first_ids & second_ids)
+        # No overlap with the first page.
+        assert not (first_ids & {e.id for e in second.items})
+        # Only the 2 events on this page were loaded.
+        assert loads['count'] == 2
 
     @pytest.mark.asyncio
-    async def test_save_event_invalidates_cache(self, service: FilesystemEventService):
-        """A new event saved after the index was built must be visible."""
+    async def test_save_event_visibility_without_cache(
+        self, service: FilesystemEventService
+    ):
+        """A new event saved after a first page is visible on a fresh search.
+
+        The new design is stateless (no cache), so a subsequent search always
+        re-enumerates storage and sees the new event.
+        """
         conversation_id = uuid4()
         for _ in range(3):
             await service.save_event(conversation_id, create_token_event())
@@ -533,9 +565,7 @@ class TestFilesystemEventServiceIndexCache:
         assert new_event.id in {e.id for e in second.items}
 
     @pytest.mark.asyncio
-    async def test_export_reuses_cache_and_is_sorted(
-        self, service: FilesystemEventService
-    ):
+    async def test_export_is_sorted_by_timestamp(self, service: FilesystemEventService):
         """``iter_events_for_export`` yields all events once in timestamp order."""
         conversation_id = uuid4()
         events = []

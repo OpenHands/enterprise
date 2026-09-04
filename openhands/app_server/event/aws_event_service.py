@@ -15,13 +15,13 @@ import boto3
 import botocore.config
 import botocore.exceptions
 from fastapi import Request
+from openhands.sdk import Event
 from pydantic import Field
 
 from openhands.app_server.config import get_app_conversation_info_service
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
-from openhands.app_server.event.event_service_base import EventServiceBase
+from openhands.app_server.event.event_service_base import EventPath, EventServiceBase
 from openhands.app_server.services.injector import InjectorState
-from openhands.sdk import Event
 
 _logger = logging.getLogger(__name__)
 
@@ -82,13 +82,17 @@ class AwsEventService(EventServiceBase):
             Body=json_str.encode('utf-8'),
         )
 
-    def _search_paths(self, prefix: Path, page_id: str | None = None) -> list[Path]:
+    def _search_paths(
+        self, prefix: Path, page_id: str | None = None
+    ) -> list[EventPath]:
         """Search paths, following continuation tokens.
 
         S3 returns at most 1000 keys per response, so conversations with more
-        events than that would otherwise be silently truncated.
+        events than that would otherwise be silently truncated. Each listed
+        object carries a ``LastModified`` time which we use as the sort key
+        (events are append-only, so this matches event timestamp order).
         """
-        paths: list[Path] = []
+        paths: list[EventPath] = []
         continuation_token = page_id
         while True:
             kwargs: dict[str, Any] = {
@@ -100,7 +104,13 @@ class AwsEventService(EventServiceBase):
 
             response = self.s3_client.list_objects_v2(**kwargs)
             contents = response.get('Contents', [])
-            paths.extend(Path(obj['Key']) for obj in contents)
+            for obj in contents:
+                last_modified = obj.get('LastModified')
+                # LastModified is a datetime; convert to POSIX timestamp for a
+                # uniform sortable key across backends. Fall back to 0.0 if the
+                # field is unexpectedly missing so the object is still listed.
+                mtime = last_modified.timestamp() if last_modified is not None else 0.0
+                paths.append(EventPath(path=Path(obj['Key']), mtime=mtime))
             if not response.get('IsTruncated'):
                 return paths
             continuation_token = response.get('NextContinuationToken')

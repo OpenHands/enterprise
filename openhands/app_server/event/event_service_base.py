@@ -1,7 +1,6 @@
 import asyncio
 import os
 from abc import ABC, abstractmethod
-from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,99 +29,20 @@ def _event_load_concurrency() -> int:
         return 10
 
 
-# Cap the number of conversations whose sorted index is held in memory. Each
-# entry stores only lightweight metadata (timestamp/kind/id/path) per event, so
-# a 5k-event conversation costs a few hundred KB. An LRU-eviction keeps the
-# process-wide cache bounded for multi-tenant servers.
-_EVENT_INDEX_CACHE_MAX_CONVERSATIONS = int(
-    os.getenv('EVENT_SERVICE_INDEX_CACHE_MAX', '256')
-)
+@dataclass(frozen=True, slots=True)
+class EventPath:
+    """A storage-layer path paired with its modification time.
 
-
-@dataclass
-class _EventIndexEntry:
-    """Lightweight per-event metadata kept in the sorted index.
-
-    Holding only the fields needed to filter/sort/paginate avoids keeping full
-    parsed event payloads for every event in memory.
+    ``mtime`` is a sortable POSIX timestamp reported by the storage backend's
+    listing API (filesystem ``st_mtime``, S3 ``LastModified``, GCS ``updated``).
+    It is **not** the event's ``timestamp`` field, but events are append-only
+    and never reordered, so ``mtime`` order matches event ``timestamp`` order.
+    This lets ``search_events`` sort by time and paginate without loading any
+    event bodies — only the events on the requested page are loaded (OHE-3178).
     """
 
-    timestamp: str
-    kind: str
-    event_id: str
     path: Path
-
-
-@dataclass
-class _EventIndex:
-    """A per-conversation sorted index of event metadata.
-
-    The list is sorted ascending by timestamp. ``TIMESTAMP_DESC`` requests walk
-    it backwards. Building it requires loading every event once (to read
-    ``timestamp``/``kind``), but the result is cached per conversation and
-    invalidated on ``save_event`` so subsequent pages are O(limit) instead of
-    O(N) — see OHE-3178.
-    """
-
-    entries: list[_EventIndexEntry]
-
-
-class _EventIndexCache:
-    """Process-wide, per-conversation sorted index cache.
-
-    EventServiceBase instances are created per-request by the injectors, so a
-    per-instance cache would not survive between requests. This module-level
-    cache keyed by conversation path lets the second (and later) page of a
-    large conversation skip reloading and re-sorting all N events.
-
-    The cache is invalidated whenever a new event is saved for a conversation.
-    Concurrent builders are single-flighted per key so that parallel page
-    requests for the same conversation cooperate instead of each loading all
-    events.
-    """
-
-    def __init__(self, max_conversations: int = _EVENT_INDEX_CACHE_MAX_CONVERSATIONS):
-        self._max = max_conversations
-        self._cache: OrderedDict[str, _EventIndex] = OrderedDict()
-        # Single-flight locks: ensures only one request builds the index for a
-        # given conversation; others await the same result.
-        self._locks: dict[str, asyncio.Lock] = {}
-
-    def _lock(self, key: str) -> asyncio.Lock:
-        lock = self._locks.get(key)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._locks[key] = lock
-        return lock
-
-    def get(self, key: str) -> _EventIndex | None:
-        value = self._cache.get(key)
-        if value is not None:
-            # Mark as most-recently used (LRU eviction).
-            self._cache.move_to_end(key)
-        return value
-
-    def set(self, key: str, value: _EventIndex) -> None:
-        self._cache[key] = value
-        self._cache.move_to_end(key)
-        while len(self._cache) > self._max:
-            evicted_key, _ = self._cache.popitem(last=False)
-            # Leave the lock behind; it may be reused for the same conversation
-            # later. Stale locks for never-again-seen conversations are bounded
-            # by the number of distinct conversations ever seen, which is
-            # acceptable.
-            self._locks.pop(evicted_key, None)
-
-    def invalidate(self, key: str) -> None:
-        self._cache.pop(key, None)
-
-    def clear(self) -> None:
-        self._cache.clear()
-        self._locks.clear()
-
-
-# Module-level cache shared across all EventServiceBase instances in the process.
-_event_index_cache = _EventIndexCache()
+    mtime: float
 
 
 @dataclass
@@ -147,8 +67,15 @@ class EventServiceBase(EventService, ABC):
         """Store the event given at the path given."""
 
     @abstractmethod
-    def _search_paths(self, prefix: Path) -> list[Path]:
-        """Search paths."""
+    def _search_paths(self, prefix: Path) -> list[EventPath]:
+        """List event paths under ``prefix`` with their storage mtime.
+
+        Each backend's listing API returns the object's last-modified time for
+        free (filesystem ``st_mtime``, S3 ``LastModified``, GCS ``updated``).
+        Events are append-only and never reordered, so sorting by this mtime
+        yields the same order as sorting by the event's ``timestamp`` field —
+        without loading any event bodies.
+        """
 
     async def _load_events_from_paths(self, paths: list[Path]) -> list[Event | None]:
         loop = asyncio.get_running_loop()
@@ -188,59 +115,6 @@ class EventServiceBase(EventService, ABC):
         event: Event = await loop.run_in_executor(None, self._load_event, path)  # type: ignore[arg-type]
         return event
 
-    async def _get_or_build_event_index(self, conversation_path: Path) -> _EventIndex:
-        """Return the cached sorted index for a conversation, building it if needed.
-
-        The index is keyed by the conversation's storage path (which encodes
-        prefix + user_id + conversation_id), so different users and conversations
-        never share entries. Building it loads every event once to read
-        ``timestamp``/``kind``/``id``; the result is cached per conversation and
-        invalidated on ``save_event`` so subsequent page requests are O(limit)
-        instead of O(N) — see OHE-3178.
-
-        Concurrent builders are single-flighted: parallel page requests for the
-        same conversation cooperate on one index build rather than each loading
-        all events.
-        """
-        key = str(conversation_path)
-        cached = _event_index_cache.get(key)
-        if cached is not None:
-            return cached
-
-        # Single-flight: only one request builds the index for this conversation;
-        # concurrent waiters share the result. The cache itself is checked again
-        # inside the lock to handle the race where another request built it
-        # while we waited for the lock.
-        lock = _event_index_cache._lock(key)
-        async with lock:
-            cached = _event_index_cache.get(key)
-            if cached is not None:
-                return cached
-            loop = asyncio.get_running_loop()
-            paths = await loop.run_in_executor(
-                None, self._search_paths, conversation_path
-            )
-            # _load_events_from_paths preserves input order (asyncio.gather), so
-            # zipping paths with loaded events gives each event its actual storage
-            # path without reconstructing it from the id.
-            events = await self._load_events_from_paths(paths)
-            entries: list[_EventIndexEntry] = []
-            for path, event in zip(paths, events, strict=True):
-                if not event:
-                    continue
-                entries.append(
-                    _EventIndexEntry(
-                        timestamp=event.timestamp,
-                        kind=event.kind,
-                        event_id=str(event.id),
-                        path=path,
-                    )
-                )
-            entries.sort(key=lambda e: e.timestamp)
-            index = _EventIndex(entries=entries)
-            _event_index_cache.set(key, index)
-            return index
-
     async def search_events(
         self,
         conversation_id: UUID,
@@ -254,66 +128,72 @@ class EventServiceBase(EventService, ABC):
         """Search events matching the given filters.
 
         Performance (OHE-3178): instead of loading and re-sorting every event on
-        every page request, this builds (once per conversation, cached and
-        invalidated on save) a sorted index of lightweight per-event metadata
-        (timestamp/kind/id/path). Filtering and pagination run over that in-memory
-        index in pure Python with no I/O, and only the ``limit`` event payloads
-        for the requested page are loaded from storage. The first page for a
-        large conversation still pays a one-time O(N) load to build the index;
-        every subsequent page is O(limit).
+        every page request, this sorts the storage-layer path list by file mtime
+        (which matches event timestamp order since events are append-only) and
+        walks it lazily, loading only one event at a time, applying filters on
+        the fly, and stopping as soon as ``limit`` matching events are collected.
+        ``page_id`` is an integer offset into the mtime-sorted path list — the
+        number of entries to skip before resuming the scan — so each page loads
+        only the events it returns plus any non-matching entries it skips over.
+        No event bodies are loaded for entries before ``page_id``.
         """
-        conversation_path = await self.get_conversation_path(conversation_id)
-        index = await self._get_or_build_event_index(conversation_path)
+        loop = asyncio.get_running_loop()
+        prefix = await self.get_conversation_path(conversation_id)
+        event_paths = await loop.run_in_executor(None, self._search_paths, prefix)
+
+        # Sort by storage mtime (ascending). For TIMESTAMP_DESC we reverse so the
+        # scan proceeds newest-first; page_id is then an offset into this
+        # iteration order.
+        event_paths.sort(key=lambda ep: ep.mtime)
+        if sort_order == EventSortOrder.TIMESTAMP_DESC:
+            event_paths.reverse()
+
+        start_offset = int(page_id) if page_id else 0
+        # Clamp out-of-range offsets (e.g. a stale page_id from before events were
+        # added/removed) to a safe no-op rather than erroring.
+        start_offset = max(0, min(start_offset, len(event_paths)))
 
         timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
-        # Filter the index entries (no I/O, no event-body parsing).
-        filtered: list[_EventIndexEntry] = []
-        for entry in index.entries:
-            if kind__eq and entry.kind != kind__eq:
+        items: list[Event] = []
+        next_page_id: str | None = None
+        # Index of the next entry to scan on a subsequent page. Updated as we go
+        # so a full page records the resume point right after the last examined
+        # entry (whether or not it matched), avoiding re-examining entries.
+        resume_index = start_offset
+        for i in range(start_offset, len(event_paths)):
+            resume_index = i + 1
+            event = await loop.run_in_executor(
+                None, self._load_event, event_paths[i].path
+            )
+            if event is None:
                 continue
-            if timestamp_gte_str and entry.timestamp < timestamp_gte_str:
+            if kind__eq and event.kind != kind__eq:
                 continue
-            if timestamp_lt_str and entry.timestamp >= timestamp_lt_str:
+            if timestamp_gte_str and event.timestamp < timestamp_gte_str:
                 continue
-            filtered.append(entry)
+            if timestamp_lt_str and event.timestamp >= timestamp_lt_str:
+                continue
+            items.append(event)
+            if len(items) >= limit:
+                break
 
-        if sort_order == EventSortOrder.TIMESTAMP_DESC:
-            filtered.reverse()
-
-        # Apply integer-offset pagination (matches the previous page_id semantics
-        # so existing clients keep working). page_id is the offset into the
-        # filtered+sorted list.
-        start_offset = int(page_id) if page_id else 0
-        page_entries = filtered[start_offset : start_offset + limit]
-        next_page_id = None
-        if start_offset + limit < len(filtered):
-            next_page_id = str(start_offset + limit)
-
-        # Load only the event payloads for this page.
-        paths = [entry.path for entry in page_entries]
-        loaded = await self._load_events_from_paths(paths)
-        items: list[Event] = [event for event in loaded if event]
+        if resume_index < len(event_paths):
+            next_page_id = str(resume_index)
 
         return EventPage(items=items, next_page_id=next_page_id)
 
     async def iter_events_for_export(
         self, conversation_id: UUID
     ) -> AsyncGenerator[Event, None]:
-        """Iterate all events once in timestamp order for trajectory export.
-
-        Uses the cached sorted index so repeated exports (and exports following a
-        paginated search) do not reload and re-sort the full event set.
-        """
-        conversation_path = await self.get_conversation_path(conversation_id)
-        index = await self._get_or_build_event_index(conversation_path)
-        # Load all events in index order. Export needs every event, so load them
-        # all, but reuse the cached sort order and (for the common case where a
-        # search already primed the cache) avoid re-enumerating storage.
-        paths = [entry.path for entry in index.entries]
-        loaded = await self._load_events_from_paths(paths)
-        for event in loaded:
+        """Iterate all events once in timestamp order for trajectory export."""
+        loop = asyncio.get_running_loop()
+        prefix = await self.get_conversation_path(conversation_id)
+        event_paths = await loop.run_in_executor(None, self._search_paths, prefix)
+        event_paths.sort(key=lambda ep: ep.mtime)
+        for event_path in event_paths:
+            event = await loop.run_in_executor(None, self._load_event, event_path.path)
             if event:
                 yield event
 
@@ -346,21 +226,19 @@ class EventServiceBase(EventService, ABC):
     async def _count_events_no_filter(self, conversation_path: Path) -> int:
         """Count all event files in the conversation directory without filtering."""
         loop = asyncio.get_running_loop()
-        paths = await loop.run_in_executor(None, self._search_paths, conversation_path)
-        return len(paths)
+        event_paths = await loop.run_in_executor(
+            None, self._search_paths, conversation_path
+        )
+        return len(event_paths)
 
     async def save_event(self, conversation_id: UUID, event: Event):
         if isinstance(event.id, str):
             id_hex = event.id.replace('-', '')
         else:
             id_hex = event.id.hex  # type: ignore[unreachable]
-        conversation_path = await self.get_conversation_path(conversation_id)
-        path = conversation_path / f'{id_hex}.json'
+        path = (await self.get_conversation_path(conversation_id)) / f'{id_hex}.json'
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._store_event, path, event)
-        # Invalidate the cached index so the next search rebuilds it with the
-        # new event included.
-        _event_index_cache.invalidate(str(conversation_path))
 
     async def batch_get_events(
         self, conversation_id: UUID, event_ids: list[UUID]

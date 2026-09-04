@@ -12,13 +12,13 @@ from uuid import uuid4
 
 import botocore.exceptions
 import pytest
+from openhands.sdk.event import PauseEvent, TokenEvent
 
 from openhands.app_server.event import aws_event_service
 from openhands.app_server.event.aws_event_service import (
     AwsEventService,
     AwsEventServiceInjector,
 )
-from openhands.sdk.event import PauseEvent, TokenEvent
 
 
 @pytest.fixture
@@ -145,8 +145,12 @@ class TestAwsEventServiceSearchPaths:
         result = service._search_paths(Path('users/test_user/v1_conversations/abc123'))
 
         assert len(result) == 2
-        assert result[0] == Path('users/test_user/v1_conversations/abc123/event1.json')
-        assert result[1] == Path('users/test_user/v1_conversations/abc123/event2.json')
+        assert result[0].path == Path(
+            'users/test_user/v1_conversations/abc123/event1.json'
+        )
+        assert result[1].path == Path(
+            'users/test_user/v1_conversations/abc123/event2.json'
+        )
 
     def test_search_paths_empty_bucket(self, service: AwsEventService, mock_s3_client):
         """Test that _search_paths handles empty results."""
@@ -190,7 +194,7 @@ class TestAwsEventServiceSearchPaths:
 
         result = service._search_paths(Path('prefix'))
 
-        assert result == [
+        assert [ep.path for ep in result] == [
             Path('event1.json'),
             Path('event2.json'),
             Path('event3.json'),
@@ -212,7 +216,7 @@ class TestAwsEventServiceSearchPaths:
 
         result = service._search_paths(Path('prefix'))
 
-        assert result == [Path('event1.json')]
+        assert [ep.path for ep in result] == [Path('event1.json')]
         mock_s3_client.list_objects_v2.assert_called_once()
 
 
