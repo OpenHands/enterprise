@@ -297,13 +297,13 @@ async def keycloak_callback(
 async def on_event(request: Request, background_tasks: BackgroundTasks):
     if not SLACK_WEBHOOKS_ENABLED:
         return JSONResponse({'success': 'slack_webhooks_disabled'})
-    assert signature_verifier is not None  # required when webhooks are enabled
     body = await request.body()
     payload = json.loads(body.decode())
 
     logger.info('slack_on_event', extra={'payload': payload})
 
     # First verify the signature
+    assert signature_verifier is not None  # required when webhooks are enabled
     if not signature_verifier.is_valid(
         body=body,
         timestamp=request.headers.get('x-slack-request-timestamp'),
@@ -376,7 +376,6 @@ async def on_options_load(request: Request, background_tasks: BackgroundTasks):
     """
     if not SLACK_WEBHOOKS_ENABLED:
         return JSONResponse({'options': []})
-    assert signature_verifier is not None  # required when webhooks are enabled
 
     body = await request.body()
     form = await request.form()
@@ -390,6 +389,7 @@ async def on_options_load(request: Request, background_tasks: BackgroundTasks):
     logger.info('slack_on_options_load', extra={'payload': payload})
 
     # Verify the signature
+    assert signature_verifier is not None  # required when webhooks are enabled
     if not signature_verifier.is_valid(
         body=body,
         timestamp=request.headers.get('X-Slack-Request-Timestamp'),
@@ -485,7 +485,6 @@ async def on_form_interaction(request: Request, background_tasks: BackgroundTask
     """
     if not SLACK_WEBHOOKS_ENABLED:
         return JSONResponse({'success': 'slack_webhooks_disabled'})
-    assert signature_verifier is not None  # required when webhooks are enabled
 
     body = await request.body()
     form = await request.form()
@@ -494,6 +493,7 @@ async def on_form_interaction(request: Request, background_tasks: BackgroundTask
     logger.info('slack_on_form_interaction', extra={'payload': payload})
 
     # Verify the signature
+    assert signature_verifier is not None  # required when webhooks are enabled
     if not signature_verifier.is_valid(
         body=body,
         timestamp=request.headers.get('X-Slack-Request-Timestamp'),
