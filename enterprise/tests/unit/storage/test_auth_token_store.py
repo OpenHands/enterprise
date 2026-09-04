@@ -432,3 +432,35 @@ class TestConstants:
     def test_lock_timeout_seconds_value(self):
         """Test LOCK_TIMEOUT_SECONDS is set to 5 seconds."""
         assert LOCK_TIMEOUT_SECONDS == 5
+
+
+class TestDeleteTokens:
+    """Tests for delete_tokens method."""
+
+    @pytest.mark.asyncio
+    async def test_delete_tokens_removes_only_the_matching_provider(
+        self, async_session_maker
+    ):
+        """Deleting one provider's tokens leaves the user's other providers intact."""
+        with patch('storage.auth_token_store.a_session_maker', async_session_maker):
+            # Arrange
+            github_store = AuthTokenStore(
+                keycloak_user_id='test-user-123', idp=ProviderType.GITHUB
+            )
+            gitlab_store = AuthTokenStore(
+                keycloak_user_id='test-user-123', idp=ProviderType.GITLAB
+            )
+            for store in (github_store, gitlab_store):
+                await store.store_tokens(
+                    access_token='access-token',
+                    refresh_token='refresh-token',
+                    access_token_expires_at=1234567890,
+                    refresh_token_expires_at=1234657890,
+                )
+
+            # Act
+            await github_store.delete_tokens()
+
+            # Assert
+            assert await github_store.load_tokens() is None
+            assert await gitlab_store.load_tokens() is not None
