@@ -551,14 +551,16 @@ class RemoteSandboxService(SandboxService):
         session_api_key and returns it. This invalidates any previously leaked
         keys and ensures that only the new key can be used to access secrets.
         """
-        # Enforce sandbox limits by cleaning up old sandboxes
-        await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
-
         try:
             stored_sandbox = await self._get_stored_sandbox(sandbox_id)
             if not stored_sandbox:
                 return False
             runtime_data = await self._get_runtime(sandbox_id)
+            if (
+                self._get_sandbox_status_from_runtime(runtime_data)
+                == SandboxStatus.PAUSED
+            ):
+                await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
             response = await self._send_runtime_api_request(
                 'POST',
                 '/resume',
