@@ -412,10 +412,56 @@ async def test_ensure_api_key_keeps_valid_key():
 
 
 @pytest.mark.asyncio
+async def test_ensure_api_key_rotates_invalid_fallback_key():
+    from storage.lite_llm_manager import get_openhands_cloud_key_alias
+
+    store = SaasSettingsStore('test-user-id-123')
+    item = _make_settings(model='openhands/gpt-4', api_key='')
+    expected_alias = get_openhands_cloud_key_alias('test-user-id-123', 'org-123')
+
+    with (
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.verify_existing_key',
+            new_callable=AsyncMock,
+            return_value=False,
+        ) as mock_verify,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
+            new_callable=AsyncMock,
+        ) as mock_delete,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.generate_key',
+            new_callable=AsyncMock,
+            return_value='sk-new-key',
+        ) as mock_generate,
+    ):
+        await store._ensure_api_key(
+            item,
+            'org-123',
+            openhands_type=True,
+            fallback_api_key=SecretStr('sk-invalid-key'),
+        )
+
+    mock_verify.assert_awaited_once_with(
+        'sk-invalid-key',
+        'test-user-id-123',
+        'org-123',
+        openhands_type=True,
+    )
+    mock_delete.assert_awaited_once_with(key_alias=expected_alias)
+    mock_generate.assert_awaited_once_with(
+        'test-user-id-123', 'org-123', expected_alias, {'type': 'openhands'}
+    )
+    assert _secret_value(item, 'llm.api_key') == 'sk-new-key'
+
+
+@pytest.mark.asyncio
 async def test_ensure_api_key_generates_new_key_when_verification_fails():
-    """When verification fails, a new managed key is minted under the shared
+    """When verification fails, a new managed key is minted under the shared.
+
     alias after deleting any prior key — symmetric across model types so
-    switching to/from an openhands/* model never orphans a key."""
+    switching to/from an openhands/* model never orphans a key.
+    """
     from storage.lite_llm_manager import get_openhands_cloud_key_alias
 
     store = SaasSettingsStore('test-user-id-123')
@@ -833,7 +879,8 @@ async def test_store_syncs_external_provider_key_without_broadcasting_settings(
 async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """GIVEN: An org whose default harness is ``openhands`` and two members
+    """GIVEN: An org whose default harness is ``openhands`` and two members.
+
         with their own agent settings
     WHEN: One member switches their own agent to ACP/Codex via the per-user
         settings save (``POST /api/v1/settings``, no role gate)
@@ -909,8 +956,10 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
 async def test_store_repropagates_rotated_shared_llm_api_key(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """A replacement shared provider key must reach every member, not just the
-    first one written."""
+    """A replacement shared provider key must reach every member, not just the.
+
+    first one written.
+    """
     from sqlalchemy import select
     from storage.org_member import OrgMember
 
@@ -1044,8 +1093,7 @@ async def test_store_clears_member_custom_key_when_switching_to_managed_profile(
         await store.store(settings)
 
     active_profile = settings.llm_profiles.require('managed')
-    assert active_profile.api_key is not None
-    assert active_profile.api_key.get_secret_value() == 'sk-managed-key'
+    assert active_profile.api_key is None
 
     with session_maker() as session:
         member = (
@@ -1063,6 +1111,69 @@ async def test_store_clears_member_custom_key_when_switching_to_managed_profile(
 
     mock_delete.assert_awaited_once()
     mock_generate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_store_reuses_existing_managed_key_for_blank_openhands_profile(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from sqlalchemy import select
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+    decrypt_value = fixture['decrypt_value']
+    existing_key = 'admin-initial-key'
+
+    store = SaasSettingsStore(str(admin_user_id))
+    settings = _make_settings(
+        model='openhands/gemini-3-pro-preview',
+        api_key='',
+    )
+    settings.llm_profiles.save('managed', settings.agent_settings.llm)
+    settings.switch_to_profile('managed')
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.verify_existing_key',
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_verify,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
+            new_callable=AsyncMock,
+        ) as mock_delete,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.generate_key',
+            new_callable=AsyncMock,
+            return_value='sk-unexpected-rotation',
+        ) as mock_generate,
+    ):
+        await store.store(settings)
+
+    mock_verify.assert_awaited_once_with(
+        existing_key,
+        str(admin_user_id),
+        str(org_id),
+        openhands_type=True,
+    )
+    mock_delete.assert_not_awaited()
+    mock_generate.assert_not_awaited()
+    assert _secret_value(settings, 'llm.api_key') == existing_key
+    assert settings.llm_profiles.require('managed').api_key is None
+
+    with session_maker() as session:
+        member = session.scalar(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == admin_user_id,
+            )
+        )
+        assert member is not None
+        assert member.has_custom_llm_api_key is False
+        assert decrypt_value(member._llm_api_key) == existing_key
 
 
 @pytest.mark.asyncio
@@ -1227,10 +1338,9 @@ async def test_store_keeps_mcp_config_private_to_acting_member(
             'user1': {'url': 'https://user1-mcp-server.com', 'transport': 'sse'}
         },
     }
-    # The SDK 1.31.x wire format stores ``mcp_config`` as a flat server
-    # map; ``Settings.update`` still accepts the legacy wrapper for
-    # backwards compatibility, but ``model_dump(mode='json')`` — which is
-    # what ``_get_persisted_agent_settings`` uses — no longer wraps.
+    # ``mcp_config`` is stored as a flat server map (no ``mcpServers`` wrapper);
+    # ``model_dump(mode='json')`` used by ``_get_persisted_agent_settings``
+    # produces this flat shape.
     persisted_mcp_config = {
         'user1': {'url': 'https://user1-mcp-server.com', 'transport': 'sse'},
     }
@@ -1279,7 +1389,8 @@ async def test_store_keeps_mcp_config_private_to_acting_member(
 async def test_store_skips_ensure_api_key_for_non_openhands_model_without_base_url(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """When saving a non-OpenHands model with no base URL (basic view BYOR),
+    """When saving a non-OpenHands model with no base URL (basic view BYOR).
+
     _ensure_api_key should NOT be called, preserving the user's custom API key.
 
     This is the primary bug fix: users selecting e.g. OpenAI in basic view and
@@ -1537,7 +1648,8 @@ async def test_load_degrades_malformed_detached_mcp_config(
 async def test_load_drops_legacy_org_level_mcp_config(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """Legacy org-level mcp_config (from before the fix) must not leak
+    """Legacy org-level mcp_config (from before the fix) must not leak.
+
     to members on load. Members without their own mcp_config see ``None``
     even if the org row still carries a stale value in the database.
     """
@@ -1593,9 +1705,11 @@ async def test_load_drops_legacy_org_level_mcp_config(
 async def test_store_and_load_llm_profiles_round_trip(
     async_session_maker, org_with_multiple_members_fixture
 ):
-    """Saved llm_profiles must persist on the User row and round-trip through
+    """Saved llm_profiles must persist on the User row and round-trip through.
+
     store → load. Without the user.llm_profiles column they are silently
-    dropped on store and always default to empty on load."""
+    dropped on store and always default to empty on load.
+    """
     from openhands.sdk.llm import LLM
 
     fixture = org_with_multiple_members_fixture
@@ -1779,10 +1893,12 @@ async def test_load_persists_seeded_default_profile_onto_org(
 async def test_llm_profiles_are_encrypted_at_rest(
     async_session_maker, org_with_multiple_members_fixture
 ):
-    """The raw value in the user.llm_profiles column must be ciphertext, not
+    """The raw value in the user.llm_profiles column must be ciphertext, not.
+
     a JSON dict — profile api_keys would otherwise leak in DB dumps,
     replicas, and backups. Mirrors the encryption invariant org and
-    org_member already enforce on _llm_api_key."""
+    org_member already enforce on _llm_api_key.
+    """
     from sqlalchemy import select, text
     from storage.user import User
 
@@ -1994,7 +2110,8 @@ async def test_partial_store_preserves_malformed_legacy_member_mcp_config(
 async def test_store_replaces_mcp_config_on_delete(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """Deleting a server from a member's mcp_config sticks on the acting
+    """Deleting a server from a member's mcp_config sticks on the acting.
+
     member's row and never touches other members' rows.
 
     Combines the APP-1862 wholesale-replacement contract (deletes are not
@@ -2068,9 +2185,8 @@ async def test_store_replaces_mcp_config_on_delete(
             .all()
         }
 
-    # The persisted ``mcp_config`` is the SDK 1.31.x flat server map (no
-    # ``mcpServers`` wrapper), so reach directly into it instead of going
-    # through the legacy wrapper key.
+    # ``mcp_config`` is stored as a flat server map (no ``mcpServers``
+    # wrapper); reach directly into it.
     admin_servers = members[admin_user_id].mcp_config or {}
     assert set(admin_servers.keys()) == {'server1', 'server2'}
     assert 'mcp_config' not in members[admin_user_id].agent_settings_diff
@@ -2219,8 +2335,10 @@ async def test_acp_switch_does_not_overwrite_org_llm_profiles(
 
 
 def test_profile_sync_skips_non_openhands_agent_kind():
-    """sync_active_profile_from_settings must leave the active profile alone
-    for a non-OpenHands agent, whose llm block is an unused placeholder."""
+    """sync_active_profile_from_settings must leave the active profile alone.
+
+    for a non-OpenHands agent, whose llm block is an unused placeholder.
+    """
     from openhands.sdk.llm import LLM
 
     settings = DataSettings()

@@ -92,7 +92,13 @@ class Permission(str, Enum):
     # Git organization claims
     MANAGE_ORG_CLAIMS = 'manage_org_claims'
 
-    # Manage Automations
+    # Automations
+    # Members get VIEW_AUTOMATIONS (read-only: list, get, runs).
+    # MANAGE_AUTOMATIONS (create, edit, delete, dispatch) is admin/owner only.
+    # The automation creator also retains edit access to their own automations
+    # via an in-handler ownership check (automation.user_id == user.user_id),
+    # not via a permission string.
+    VIEW_AUTOMATIONS = 'view_automations'
     MANAGE_AUTOMATIONS = 'manage_automations'
 
     # User provisioning (create new Keycloak/OpenHands users directly in an org)
@@ -106,6 +112,10 @@ class Permission(str, Enum):
     # explicit permission -- it is NOT implied by any org-scoped role and is
     # granted only to the ``superadmin`` super role.
     MANAGE_SUPER_ADMINS = 'manage_super_admins'
+
+    # Instance-level feature flag administration: create/update/delete flags
+    # and their targeting rules. Granted only to the ``superadmin`` super role.
+    MANAGE_FEATURE_FLAGS = 'manage_feature_flags'
 
     # Instance-level quota administration: set or clear an organization's
     # daily conversation limit. Like MANAGE_SUPER_ADMINS this is an explicit
@@ -173,7 +183,8 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.DELETE_ORGANIZATION,
             # Git organization claims
             Permission.MANAGE_ORG_CLAIMS,
-            # Manage Automations
+            # Automations (full read/write)
+            Permission.VIEW_AUTOMATIONS,
             Permission.MANAGE_AUTOMATIONS,
             # User provisioning
             Permission.PROVISION_USER,
@@ -204,7 +215,8 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.EDIT_ORG_SETTINGS,
             # Git organization claims
             Permission.MANAGE_ORG_CLAIMS,
-            # Manage Automations
+            # Automations (full read/write)
+            Permission.VIEW_AUTOMATIONS,
             Permission.MANAGE_AUTOMATIONS,
             # User provisioning
             Permission.PROVISION_USER,
@@ -225,8 +237,10 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             # Settings (View only)
             Permission.VIEW_ORG_SETTINGS,
             Permission.VIEW_LLM_SETTINGS,
-            # Manage Automations
-            Permission.MANAGE_AUTOMATIONS,
+            # Automations (view only — members can list and read but not
+            # create/edit/delete/dispatch; the creator of an automation
+            # retains edit access via an in-handler ownership check)
+            Permission.VIEW_AUTOMATIONS,
         ]
     ),
 }
@@ -239,8 +253,9 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
 SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
     # Only superadmin is functional for now. It can create organizations,
     # provision users into a selected organization without becoming an org
-    # member itself, grant/revoke the super-admin role on other users, and
-    # set org-level conversation quotas.
+    # member itself, invite the initial owner/admin into an org it created
+    # (via the normal invitation flow), grant/revoke the super-admin role on
+    # other users, and set org-level conversation quotas.
     # Additional instance-admin capabilities should be added here explicitly
     # as the corresponding routes are wired to permission checks.
     RoleName.OWNER: frozenset(),
@@ -248,7 +263,9 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
         [
             Permission.CREATE_ORGANIZATION,
             Permission.PROVISION_USER,
+            Permission.INVITE_USER_TO_ORGANIZATION,
             Permission.MANAGE_SUPER_ADMINS,
+            Permission.MANAGE_FEATURE_FLAGS,
             Permission.MANAGE_ORG_QUOTA,
         ]
     ),

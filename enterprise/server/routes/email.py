@@ -63,7 +63,6 @@ async def update_email(
         user = keycloak_admin.get_user(user_id)
         email = email_data.email
 
-        # Additional validation check just to be safe
         if not EMAIL_REGEX.match(email):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid email format'
@@ -112,7 +111,6 @@ async def update_email(
         return response
 
     except ValueError as e:
-        # Handle validation errors from Pydantic
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
         ) from e
@@ -129,7 +127,6 @@ async def resend_email_verification(
     request: Request,
     body: ResendEmailVerificationRequest | None = None,
 ):
-    # Get user_id from body if provided, otherwise from auth
     user_id: str | None = None
     if body and body.user_id:
         user_id = body.user_id
@@ -145,7 +142,6 @@ async def resend_email_verification(
             detail='user_id is required in request body or user must be authenticated',
         )
 
-    # Check rate limit (uses user_id if available, otherwise falls back to IP).
     # Defaults: 30s per user (matches frontend cooldown), 60s per IP (more
     # lenient); configurable via RATE_LIMIT_EMAIL_RESEND_* env vars.
     await check_rate_limit_by_user_id(
@@ -156,7 +152,6 @@ async def resend_email_verification(
         ip_rate_limit_seconds=RATE_LIMIT_EMAIL_RESEND_IP_SECONDS,
     )
 
-    # Get is_auth_flow from body if provided, default to False
     is_auth_flow = body.is_auth_flow if body else False
 
     await verify_email(request=request, user_id=user_id, is_auth_flow=is_auth_flow)

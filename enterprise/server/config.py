@@ -95,7 +95,6 @@ class SaaSServerConfig(ServerConfig):
         if not GITHUB_APP_CLIENT_ID or not GITHUB_APP_PRIVATE_KEY:
             return
 
-        # Generate a JWT for the GitHub App
         now = int(time.time())
         payload = {
             'iat': now - 60,  # Issued at time (backdate 60 seconds for clock skew)
@@ -108,22 +107,18 @@ class SaaSServerConfig(ServerConfig):
 
         encoded_jwt = sign_token(payload, GITHUB_APP_PRIVATE_KEY, algorithm='RS256')  # type: ignore
 
-        # Define the headers for the GitHub API request
         headers = {
             'Authorization': f'Bearer {encoded_jwt}',
             'Accept': 'application/vnd.github+json',
         }
 
-        # Make a request to the GitHub API /app endpoint
         response = requests.get('https://api.github.com/app', headers=headers)
 
-        # Check if the response is successful
         if response.status_code != 200:
             raise ValueError(
                 f'Failed to retrieve app info, status code:{response.status_code}, message:{response.content.decode("utf-8")}'
             )
 
-        # Extract the app slug from the response
         app_data = response.json()
         self.app_slug = app_data.get('slug')
 
@@ -180,7 +175,6 @@ class SaaSServerConfig(ServerConfig):
             'PROVIDERS_CONFIGURED': providers_configured,
         }
 
-        # Add maintenance window if configured
         if self.maintenance_start_time:
             config['MAINTENANCE'] = {
                 'startTime': self.maintenance_start_time,

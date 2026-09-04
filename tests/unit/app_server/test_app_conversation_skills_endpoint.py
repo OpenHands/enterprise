@@ -4,7 +4,7 @@ This module tests the GET /{conversation_id}/skills endpoint functionality,
 following TDD best practices with AAA structure.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -26,7 +26,9 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.user.user_models import UserInfo
 from openhands.sdk.skills import KeywordTrigger, Skill, TaskTrigger
 
 
@@ -563,3 +565,75 @@ class TestGetConversationSkills:
 
         data = json.loads(content)
         assert 'skills' in data
+
+    async def test_get_skills_forwards_registered_marketplaces_to_loader(self):
+        """The listing composes marketplaces the same way conversation start does.
+
+        Arrange: Running sandbox and a resolver yielding a personal marketplace
+        Act: Call get_conversation_skills endpoint
+        Assert: The composed marketplaces reach the shared skill loader
+        """
+        # Arrange
+        conversation_id = uuid4()
+        sandbox_id = str(uuid4())
+        mock_conversation = AppConversation(
+            id=conversation_id,
+            created_by_user_id='test-user',
+            sandbox_id=sandbox_id,
+            selected_repository=None,
+            sandbox_status=SandboxStatus.RUNNING,
+        )
+        mock_sandbox = SandboxInfo(
+            id=sandbox_id,
+            created_by_user_id='test-user',
+            status=SandboxStatus.RUNNING,
+            sandbox_spec_id=str(uuid4()),
+            session_api_key='test-api-key',
+            exposed_urls=[
+                ExposedUrl(name=AGENT_SERVER, url='http://localhost:8000', port=8000)
+            ],
+        )
+        mock_sandbox_spec = SandboxSpecInfo(
+            id=str(uuid4()), command=None, working_dir='/workspace'
+        )
+        user_info = UserInfo(id='test-user')
+        mock_user_context = MagicMock(spec=UserContext)
+        mock_user_context.get_user_info = AsyncMock(return_value=user_info)
+        mock_app_conversation_service = _make_service_mock(
+            user_context=mock_user_context,
+            conversation_return=mock_conversation,
+            skills_return=[],
+        )
+        marketplaces = [
+            MarketplaceRegistration(
+                name='mine', source='github:owner/skills', auto_load=True
+            )
+        ]
+
+        mock_sandbox_service = MagicMock()
+        mock_sandbox_service.get_sandbox = AsyncMock(return_value=mock_sandbox)
+        mock_sandbox_spec_service = MagicMock()
+        mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            return_value=mock_sandbox_spec
+        )
+
+        # Act
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            'resolve_registered_marketplaces',
+            AsyncMock(return_value=marketplaces),
+        ) as mock_resolve:
+            response = await get_conversation_skills(
+                conversation_id=conversation_id,
+                app_conversation_service=mock_app_conversation_service,
+                sandbox_service=mock_sandbox_service,
+                sandbox_spec_service=mock_sandbox_spec_service,
+            )
+
+        # Assert
+        assert response.status_code == status.HTTP_200_OK
+        mock_resolve.assert_awaited_once_with(mock_user_context, user_info)
+        loader_kwargs = (
+            mock_app_conversation_service.load_and_merge_all_skills.call_args.kwargs
+        )
+        assert loader_kwargs['registered_marketplaces'] == marketplaces

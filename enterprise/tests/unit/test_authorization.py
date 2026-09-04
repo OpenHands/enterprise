@@ -66,6 +66,7 @@ class TestPermission:
         assert Permission.DELETE_ORGANIZATION.value == 'delete_organization'
         assert Permission.CREATE_ORGANIZATION.value == 'create_organization'
         assert Permission.MANAGE_AUTOMATIONS.value == 'manage_automations'
+        assert Permission.VIEW_AUTOMATIONS.value == 'view_automations'
         assert Permission.VIEW_ORG_CONVERSATIONS.value == 'view_org_conversations'
 
     def test_permission_from_string(self):
@@ -156,6 +157,7 @@ class TestRolePermissions:
         assert Permission.CHANGE_ORGANIZATION_NAME in owner_perms
         assert Permission.DELETE_ORGANIZATION in owner_perms
         assert Permission.MANAGE_AUTOMATIONS in owner_perms
+        assert Permission.VIEW_AUTOMATIONS in owner_perms
         assert Permission.VIEW_ORG_CONVERSATIONS in owner_perms
         assert Permission.MANAGE_INTEGRATION_PROVIDERS in owner_perms
 
@@ -178,6 +180,7 @@ class TestRolePermissions:
         assert Permission.CHANGE_USER_ROLE_MEMBER in admin_perms
         assert Permission.CHANGE_USER_ROLE_ADMIN in admin_perms
         assert Permission.MANAGE_AUTOMATIONS in admin_perms
+        assert Permission.VIEW_AUTOMATIONS in admin_perms
         assert Permission.VIEW_ORG_CONVERSATIONS in admin_perms
         assert Permission.MANAGE_INTEGRATION_PROVIDERS in admin_perms
         # Admin should NOT have owner-only permissions
@@ -198,7 +201,7 @@ class TestRolePermissions:
         assert Permission.MANAGE_INTEGRATIONS in member_perms
         assert Permission.MANAGE_APPLICATION_SETTINGS in member_perms
         assert Permission.MANAGE_API_KEYS in member_perms
-        assert Permission.MANAGE_AUTOMATIONS in member_perms
+        assert Permission.VIEW_AUTOMATIONS in member_perms
         assert Permission.VIEW_LLM_SETTINGS in member_perms
         assert Permission.VIEW_ORG_SETTINGS in member_perms
         # Member should NOT have admin/owner permissions
@@ -214,6 +217,8 @@ class TestRolePermissions:
         assert Permission.CHANGE_ORGANIZATION_NAME not in member_perms
         assert Permission.DELETE_ORGANIZATION not in member_perms
         assert Permission.VIEW_ORG_CONVERSATIONS not in member_perms
+        # Member has view-only automations access — no create/edit/delete
+        assert Permission.MANAGE_AUTOMATIONS not in member_perms
 
     def test_create_organization_is_not_org_scoped_for_any_role(self):
         """
@@ -265,7 +270,9 @@ class TestGetRolePermissions:
         """
         perms = get_role_permissions('member')
         assert Permission.VIEW_LLM_SETTINGS in perms
+        assert Permission.VIEW_AUTOMATIONS in perms
         assert Permission.EDIT_LLM_SETTINGS not in perms
+        assert Permission.MANAGE_AUTOMATIONS not in perms
 
     def test_get_invalid_role_permissions(self):
         """
@@ -1472,7 +1479,9 @@ class TestSuperRolePermissions:
             [
                 Permission.CREATE_ORGANIZATION,
                 Permission.PROVISION_USER,
+                Permission.INVITE_USER_TO_ORGANIZATION,
                 Permission.MANAGE_SUPER_ADMINS,
+                Permission.MANAGE_FEATURE_FLAGS,
                 Permission.MANAGE_ORG_QUOTA,
             ]
         )
@@ -1520,6 +1529,35 @@ class TestSuperRolePermissions:
         assert Permission.PROVISION_USER not in SUPER_ROLE_PERMISSIONS[RoleName.OWNER]
         assert Permission.PROVISION_USER in SUPER_ROLE_PERMISSIONS[RoleName.ADMIN]
         assert Permission.PROVISION_USER not in SUPER_ROLE_PERMISSIONS[RoleName.MEMBER]
+
+    def test_superadmin_can_invite_to_any_org(self):
+        """
+        GIVEN: SUPER_ROLE_PERMISSIONS mapping
+        WHEN: looking up INVITE_USER_TO_ORGANIZATION
+        THEN: the superadmin super role carries it, so it can seed a
+              freshly-created org with its initial owner/admin via the
+              normal invitation flow (OHE-2769); the other super roles do
+              not. Org-scoped owner/admin roles keep the permission too.
+        """
+        assert (
+            Permission.INVITE_USER_TO_ORGANIZATION
+            in SUPER_ROLE_PERMISSIONS[RoleName.ADMIN]
+        )
+        assert (
+            Permission.INVITE_USER_TO_ORGANIZATION
+            not in SUPER_ROLE_PERMISSIONS[RoleName.OWNER]
+        )
+        assert (
+            Permission.INVITE_USER_TO_ORGANIZATION
+            not in SUPER_ROLE_PERMISSIONS[RoleName.MEMBER]
+        )
+        # The org-scoped owner/admin roles retain the invite permission.
+        assert (
+            Permission.INVITE_USER_TO_ORGANIZATION in ROLE_PERMISSIONS[RoleName.OWNER]
+        )
+        assert (
+            Permission.INVITE_USER_TO_ORGANIZATION in ROLE_PERMISSIONS[RoleName.ADMIN]
+        )
 
     def test_manage_org_quota_is_superadmin_only(self):
         """

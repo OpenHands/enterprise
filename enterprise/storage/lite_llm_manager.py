@@ -3,6 +3,7 @@ Store class for managing organizational settings.
 """
 
 import functools
+import math
 import os
 from typing import Any, Awaitable, Callable
 
@@ -35,21 +36,43 @@ KEY_VERIFICATION_TIMEOUT = 5.0
 # A very large number to represent "unlimited" until LiteLLM fixes their unlimited update bug.
 UNLIMITED_BUDGET_SETTING = 1000000000.0
 
-# Check if billing is enabled (defaults to false for enterprise deployments)
-ENABLE_BILLING = os.environ.get('ENABLE_BILLING', 'false').lower() == 'true'
+
+# Import-time snapshot of the ENABLE_BILLING env var. Runtime checks prefer
+# ``_is_billing_enabled`` (service ``resolve``), so a DB-managed ENABLE_BILLING
+# flag row wins at runtime; this snapshot is only the emergency fallback when
+# the service cannot even be imported (OSS installs without the enterprise
+# package path) or evaluation fails.
+ENABLE_BILLING = os.environ.get('ENABLE_BILLING', 'false').lower() in ('true', '1')
 
 
-def _get_default_initial_budget() -> float | None:
+async def _is_billing_enabled() -> bool:
+    """Resolve the ENABLE_BILLING default flag at runtime.
+
+    Goes through the feature flag service's fault-tolerant ``resolve``: a
+    database row wins, the registered env-var default is the fallback, and a
+    failed evaluation falls back to the same default. Import is lazy to avoid
+    a ``storage``-package import cycle; on an import failure the import-time
+    env snapshot is used.
+    """
+    try:
+        from server.services.feature_flag_service import feature_flag_service
+
+        return await feature_flag_service.resolve('ENABLE_BILLING')
+    except ImportError:
+        return ENABLE_BILLING
+
+
+def _get_default_initial_budget(billing_enabled: bool) -> float | None:
     """Get the default initial budget for new teams.
 
-    When billing is disabled (ENABLE_BILLING=false), returns None to disable
-    budget enforcement in LiteLLM. When billing is enabled, returns the
-    DEFAULT_INITIAL_BUDGET environment variable value (default 0.0).
+    When billing is disabled (the ENABLE_BILLING feature flag is off), returns
+    None to disable budget enforcement in LiteLLM. When billing is enabled,
+    returns the DEFAULT_INITIAL_BUDGET environment variable value (default 0.0).
 
     Returns:
         float | None: The default budget, or None to disable budget enforcement.
     """
-    if not ENABLE_BILLING:
+    if not billing_enabled:
         return None
 
     try:
@@ -65,7 +88,7 @@ def _get_default_initial_budget() -> float | None:
         ) from e
 
 
-DEFAULT_INITIAL_BUDGET: float | None = _get_default_initial_budget()
+DEFAULT_INITIAL_BUDGET: float | None = _get_default_initial_budget(ENABLE_BILLING)
 
 
 # Models offered at $0 cost in the LiteLLM proxy (see saas-deploy litellm
@@ -182,7 +205,6 @@ class LiteLlmManager:
         local_deploy = os.environ.get('LOCAL_DEPLOYMENT', None)
         key = LITE_LLM_API_KEY
         if not local_deploy:
-            # Get user info to add to litellm
             token_manager = TokenManager()
             keycloak_user_info = (
                 await token_manager.get_user_info_from_user_id(keycloak_user_id) or {}
@@ -196,8 +218,11 @@ class LiteLlmManager:
             ) as client:
                 # Check if team already exists and get its budget
                 # New users joining existing orgs should inherit the team's budget
-                # When billing is disabled, DEFAULT_INITIAL_BUDGET is None
-                team_budget: float | None = DEFAULT_INITIAL_BUDGET
+                # When billing is disabled, the default budget is None (no
+                # budget enforcement)
+                team_budget: float | None = _get_default_initial_budget(
+                    await _is_billing_enabled()
+                )
                 try:
                     existing_team = await LiteLlmManager._get_team(client, org_id)
                     if existing_team:
@@ -353,7 +378,6 @@ class LiteLlmManager:
             return None
         local_deploy = os.environ.get('LOCAL_DEPLOYMENT', None)
         if not local_deploy:
-            # Get user info to add to litellm
             async with httpx.AsyncClient(
                 headers={
                     'x-goog-api-key': LITE_LLM_API_KEY,
@@ -401,13 +425,12 @@ class LiteLlmManager:
                     max_budget *= billing_margin
                     spend *= billing_margin
 
-                # Check if max_budget is None (not 0.0) or set to unlimited to determine if already migrated
-                # A user with max_budget=0.0 is different from max_budget=None
+                # max_budget=None or UNLIMITED means the user was already migrated.
+                # Note: max_budget=0.0 (free tier) is distinct from None (no enforcement).
                 if (
                     original_max_budget is None
                     or original_max_budget == UNLIMITED_BUDGET_SETTING
                 ):
-                    # if max_budget is None or UNLIMITED, then we've already migrated the User
                     logger.info(
                         'LiteLlmManager:migrate_lite_llm_entries:already_migrated',
                         extra={
@@ -419,7 +442,6 @@ class LiteLlmManager:
                     return None
                 credits = max(max_budget - spend, 0.0)
 
-                # Log calculated migration values before performing updates
                 logger.info(
                     'LiteLlmManager:migrate_lite_llm_entries:calculated_values',
                     extra={
@@ -467,11 +489,10 @@ class LiteLlmManager:
                     team_id=org_id,
                 )
 
-                # Check if the database key exists in LiteLLM
-                # If not, generate a new key to prevent verification failures later
+                # If the database key doesn't exist in LiteLLM, generate a new one
+                # to prevent verification failures later.
                 db_key = None
                 llm_base_url = None
-                # agent_settings is a JSON column (dict) on UserSettings
                 llm_cfg = (
                     (user_settings.agent_settings or {}).get('llm', {})
                     if user_settings
@@ -484,7 +505,6 @@ class LiteLlmManager:
                         db_key = db_key.get_secret_value()
 
                 if db_key:
-                    # Verify the database key exists in LiteLLM
                     key_valid = await LiteLlmManager.verify_key(
                         db_key, keycloak_user_id
                     )
@@ -499,7 +519,6 @@ class LiteLlmManager:
                                 else db_key,
                             },
                         )
-                        # Generate a new key for the user
                         new_key = await LiteLlmManager._generate_key(
                             client,
                             keycloak_user_id,
@@ -511,7 +530,6 @@ class LiteLlmManager:
                             'LiteLlmManager:migrate_lite_llm_entries:generated_new_key',
                             extra={'org_id': org_id, 'user_id': keycloak_user_id},
                         )
-                        # Update user_settings with the new key so it gets stored in org_member
                         # agent_settings is a non-nullable JSON column (dict) on UserSettings
                         user_settings.agent_settings.setdefault('llm', {})[
                             'api_key'
@@ -579,17 +597,14 @@ class LiteLlmManager:
                     )
                     return None
 
-                # Get team budget (max_budget) and spend to calculate current credits
                 team_data = team_info.get('team_info', {})
                 max_budget = team_data.get('max_budget', 0.0)
                 spend = team_data.get('spend', 0.0)
 
-                # Get user membership info for budget in team
                 user_membership = await LiteLlmManager._get_user_team_info(
                     client, keycloak_user_id, org_id
                 )
                 if user_membership:
-                    # Use user's budget in team if available
                     user_max_budget_in_team = user_membership.get('max_budget_in_team')
                     user_spend_in_team = user_membership.get('spend', 0.0)
                     if user_max_budget_in_team is not None:
@@ -970,7 +985,6 @@ class LiteLlmManager:
             )
             if response.is_success:
                 user_data = response.json()
-                # Check that user_info exists and has the user_id
                 user_info = user_data.get('user_info', {})
                 return user_info.get('user_id') == user_id
             return False
@@ -1377,8 +1391,10 @@ class LiteLlmManager:
             'user_email',
             'role',
             'team_id',
+            'budget_id',
             'spend',
             'max_budget_in_team',
+            'litellm_budget_table',
         ):
             if hasattr(member, field):
                 values[field] = getattr(member, field)
@@ -1629,7 +1645,6 @@ class LiteLlmManager:
                 verify=httpx_verify_option(),
                 timeout=KEY_VERIFICATION_TIMEOUT,
             ) as client:
-                # Make a lightweight request to verify the key
                 # Using /v1/models endpoint as it's lightweight and requires authentication
                 response = await client.get(
                     f'{LITE_LLM_API_URL}/v1/models',
@@ -1638,7 +1653,6 @@ class LiteLlmManager:
                     },
                 )
 
-                # Only 200 status code indicates valid key
                 if response.status_code == 200:
                     logger.debug(
                         'Key verification successful',
@@ -1973,28 +1987,128 @@ class LiteLlmManager:
             return {}
 
         members: dict[str, dict] = {}
-        team_memberships = LiteLlmManager._team_member_rows(team_info)
+        team_memberships = [
+            LiteLlmManager._member_dict(membership)
+            for membership in team_info.get('team_memberships') or []
+        ]
 
         # Get team-level budget info (shared across all members in team orgs)
-        team_data = team_info.get('team_info', {})
-        team_max_budget = team_data.get('max_budget')
-        team_spend = team_data.get('spend', 0) or 0
+        team_data = team_info.get('team_info')
+        if not isinstance(team_data, dict):
+            raise ValueError('LiteLLM team response is missing team_info')
+        if 'max_budget' not in team_data or 'spend' not in team_data:
+            raise ValueError(
+                'LiteLLM team_info is missing required budget fields '
+                '(max_budget, spend)'
+            )
+        team_max_budget = team_data['max_budget']
+        team_spend = team_data['spend']
 
+        metadata = team_data.get('metadata') or {}
+        if not isinstance(metadata, dict):
+            raise ValueError('LiteLLM team_info.metadata must be an object')
+        default_member_budget_id = metadata.get('team_member_budget_id')
+        if default_member_budget_id is not None and not isinstance(
+            default_member_budget_id, str
+        ):
+            raise ValueError(
+                'LiteLLM team_info.metadata.team_member_budget_id must be a string'
+            )
+
+        membership_by_user_id: dict[str, dict[str, Any]] = {}
         for membership in team_memberships:
-            user_id = membership.get('user_id')
-            if not user_id or user_id == 'default_user_id':
-                continue
+            membership_user_id = membership.get('user_id')
+            if (
+                isinstance(membership_user_id, str)
+                and membership_user_id
+                and membership_user_id != 'default_user_id'
+            ):
+                membership_by_user_id[membership_user_id] = membership
 
-            # Use individual max_budget_in_team if set, otherwise fall back to team budget
-            member_max_budget = membership.get('max_budget_in_team')
-            uses_shared_budget = member_max_budget is None
+        role_member_ids: set[str] = set()
+        for role_member in team_data.get('members_with_roles') or []:
+            member_user_id = LiteLlmManager._member_dict(role_member).get('user_id')
+            if (
+                isinstance(member_user_id, str)
+                and member_user_id
+                and member_user_id != 'default_user_id'
+            ):
+                role_member_ids.add(member_user_id)
+
+        # A normal LiteLLM team can contain roster members without a
+        # LiteLLM_TeamMembership row until the first private cap is assigned.
+        # Their key counters are the only authoritative per-user source at that
+        # point. Membership counters take precedence as soon as a row exists.
+        role_only_member_ids = role_member_ids - membership_by_user_id.keys()
+        role_only_spend: dict[str, float] = {}
+        if role_only_member_ids:
+            keys = team_info.get('keys')
+            if not isinstance(keys, list):
+                raise ValueError('LiteLLM team response is missing keys')
+            key_count_by_user: dict[str, int] = {}
+            for key in keys:
+                key_data = LiteLlmManager._member_dict(key)
+                user_id = key_data.get('user_id')
+                if not isinstance(user_id, str) or user_id not in role_only_member_ids:
+                    continue
+                spend = key_data.get('spend')
+                if (
+                    isinstance(spend, bool)
+                    or not isinstance(spend, int | float)
+                    or not math.isfinite(float(spend))
+                    or spend < 0
+                ):
+                    raise ValueError(
+                        f'LiteLLM key for role-only member {user_id} has invalid spend'
+                    )
+                role_only_spend[user_id] = role_only_spend.get(user_id, 0.0) + float(
+                    spend
+                )
+                key_count_by_user[user_id] = key_count_by_user.get(user_id, 0) + 1
+
+            missing_key_spend = role_only_member_ids - key_count_by_user.keys()
+            if missing_key_spend:
+                raise ValueError(
+                    'LiteLLM role-only members have no validated key spend: '
+                    + ', '.join(sorted(missing_key_spend))
+                )
+
+        for user_id, membership in membership_by_user_id.items():
+            if 'spend' not in membership or membership['spend'] is None:
+                raise ValueError(
+                    f'LiteLLM membership {user_id} is missing required spend data'
+                )
+
+            budget_id = membership.get('budget_id')
+            uses_shared_budget = budget_id is None or (
+                default_member_budget_id is not None
+                and budget_id == default_member_budget_id
+            )
             if uses_shared_budget:
                 member_max_budget = team_max_budget
+            else:
+                budget_table = membership.get('litellm_budget_table')
+                if not isinstance(budget_table, dict):
+                    raise ValueError(
+                        f'LiteLLM membership {user_id} is missing its budget table'
+                    )
+                if 'max_budget' not in budget_table:
+                    raise ValueError(
+                        f'LiteLLM membership {user_id} budget table is missing max_budget'
+                    )
+                member_max_budget = budget_table['max_budget']
 
             members[user_id] = {
-                'spend': membership.get('spend', 0) or 0,
+                'spend': membership['spend'],
                 'max_budget': member_max_budget,
                 'uses_shared_budget': uses_shared_budget,
+            }
+
+        for user_id, spend in role_only_spend.items():
+            members[user_id] = {
+                'spend': spend,
+                'max_budget': team_max_budget,
+                'uses_shared_budget': True,
             }
 
         logger.debug(

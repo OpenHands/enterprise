@@ -296,6 +296,29 @@ class TestProfileLifecycleIntegration:
         assert listing.active_profile is None
 
     @pytest.mark.asyncio
+    async def test_list_includes_provider_connection_id(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        await save_profile(
+            org_id=org_id,
+            name='linked',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='openai/gpt-4o',
+                    provider_connection_id='conn-1',
+                )
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+
+        assert [p.name for p in listing.profiles] == ['linked']
+        assert listing.profiles[0].provider_connection_id == 'conn-1'
+
+    @pytest.mark.asyncio
     async def test_get_profile_returns_details_without_secret(
         self, async_session_maker, patch_route_db
     ):
@@ -417,6 +440,28 @@ async def _set_org_agent_settings(async_session_maker, org_id, agent_settings):
 
 class TestSaveApiKeyPreservation:
     """No-new-key saves must not clobber a profile's stored api_key."""
+
+    @pytest.mark.asyncio
+    async def test_managed_profile_does_not_persist_api_key(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        await save_profile(
+            org_id=org_id,
+            name='managed',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='openhands/gemini-3-pro-preview',
+                    api_key='sk-managed-key',
+                ),
+                include_secrets=True,
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        org = await _read_org(async_session_maker, org_id)
+        assert _load_profiles(org).require('managed').api_key is None
 
     @pytest.mark.asyncio
     async def test_snapshot_save_with_preserve_flag_keeps_existing_key(
