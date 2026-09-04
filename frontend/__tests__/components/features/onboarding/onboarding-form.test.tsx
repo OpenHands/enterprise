@@ -11,6 +11,7 @@ import OnboardingForm, {
 } from "#/routes/onboarding-form";
 import AuthService from "#/api/auth-service/auth-service.api";
 import { onboardingService } from "#/api/onboarding-service/onboarding-service.api";
+import translations from "#/i18n/translation.json";
 
 const mockMutate = vi.fn();
 const mockNavigate = vi.fn();
@@ -386,6 +387,12 @@ describe("OnboardingForm - Self-Hosted Mode", () => {
     const orgDomainInput = screen.getByTestId("form-input-org_domain");
     expect(orgNameInput).toBeInTheDocument();
     expect(orgDomainInput).toBeInTheDocument();
+    expect(translations["ONBOARDING$ORG_NAME_INPUT_NAME"].en).toBe(
+      "What's your company name?",
+    );
+    expect(translations["ONBOARDING$ORG_NAME_INPUT_DOMAIN"].en).toBe(
+      "Company domain",
+    );
   });
 
   it("should call submitOnboarding with all selections including org_name when finishing", async () => {
