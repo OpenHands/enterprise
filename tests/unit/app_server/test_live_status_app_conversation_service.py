@@ -543,6 +543,7 @@ class TestLiveStatusAppConversationService:
         the app-server.
         """
         user = SimpleNamespace(
+            id='member-user',
             llm_profiles=LLMProfiles(
                 profiles={
                     'Managed': LLM(model='litellm_proxy/minimax-m2.7', usage_id='p'),
@@ -557,10 +558,20 @@ class TestLiveStatusAppConversationService:
                 }
             ),
             agent_settings=SimpleNamespace(
-                llm=SimpleNamespace(api_key=SecretStr('managed-key'))
+                llm=LLM(
+                    model='openhands/gpt-5.5',
+                    api_key=SecretStr('poisoned-owner-key'),
+                )
             ),
         )
         self.mock_user_context.get_user_info = AsyncMock(return_value=user)
+        refreshed_llm = LLM(
+            model='openhands/gpt-5.5',
+            api_key=SecretStr('managed-key'),
+        )
+        self.service._maybe_refresh_managed_llm_key = AsyncMock(
+            return_value=refreshed_llm
+        )
 
         ok = Mock(raise_for_status=Mock())
         listing = Mock(raise_for_status=Mock())
@@ -574,6 +585,10 @@ class TestLiveStatusAppConversationService:
         self.mock_httpx_client.delete = AsyncMock(return_value=ok)
 
         await self.service._seed_sandbox_profiles('http://agent.test', 'sess-key')
+
+        self.service._maybe_refresh_managed_llm_key.assert_awaited_once_with(
+            user, user.agent_settings.llm
+        )
 
         base = 'http://agent.test/api/profiles'
         pushed = {

@@ -1086,6 +1086,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             user = await self.user_context.get_user_info()
             profiles = user.llm_profiles.profiles
             settings_llm = getattr(user.agent_settings, 'llm', None)
+            if settings_llm is not None:
+                settings_llm = await self._maybe_refresh_managed_llm_key(
+                    user, settings_llm
+                )
             fallback_api_key = getattr(settings_llm, 'api_key', None)
         except Exception:
             _logger.exception(
