@@ -3549,17 +3549,26 @@ class TestGetTeamMembersFinancialData:
         mock_response.is_success = True
         mock_response.status_code = 200
         mock_response.json.return_value = {
-            'team_info': {'team_id': 'test-team', 'max_budget': 500.0, 'spend': 125.5},
+            'team_info': {
+                'team_id': 'test-team',
+                'max_budget': 500.0,
+                'spend': 125.5,
+                'metadata': {'team_member_budget_id': 'shared-default-budget'},
+            },
             'team_memberships': [
                 {
                     'user_id': 'user-1',
+                    'team_id': 'test-team',
+                    'budget_id': 'private-budget-1',
                     'spend': 50.0,
-                    'max_budget_in_team': 200.0,
+                    'litellm_budget_table': {'max_budget': 200.0},
                 },
                 {
                     'user_id': 'user-2',
+                    'team_id': 'test-team',
+                    'budget_id': 'private-budget-2',
                     'spend': 75.5,
-                    'max_budget_in_team': 150.0,
+                    'litellm_budget_table': {'max_budget': 150.0},
                 },
             ],
         }
@@ -3577,7 +3586,7 @@ class TestGetTeamMembersFinancialData:
         assert result['team_max_budget'] == 500.0
         assert result['team_spend'] == 125.5
         assert len(result['members']) == 2
-        # Both users have individual budgets (max_budget_in_team is set)
+        # LiteLLM 1.94.1 returns each private cap on the related budget table.
         assert result['members']['user-1'] == {
             'spend': 50.0,
             'max_budget': 200.0,
@@ -3620,6 +3629,11 @@ class TestGetTeamMembersFinancialData:
                 ],
             },
             'team_memberships': [],
+            'keys': [
+                {'user_id': 'user-1', 'spend': 20.0},
+                {'user_id': 'user-1', 'spend': 30.0},
+                {'user_id': 'user-2', 'spend': 75.5},
+            ],
         }
         mock_response.raise_for_status = MagicMock()
         mock_http_client.get.return_value = mock_response
@@ -3634,16 +3648,90 @@ class TestGetTeamMembersFinancialData:
         assert result['team_spend'] == 125.5
         assert result['members'] == {
             'user-1': {
-                'spend': 0,
+                'spend': 50.0,
                 'max_budget': 500.0,
                 'uses_shared_budget': True,
             },
             'user-2': {
-                'spend': 0,
+                'spend': 75.5,
                 'max_budget': 500.0,
                 'uses_shared_budget': True,
             },
         }
+
+    @pytest.mark.asyncio
+    async def test_membership_spend_wins_over_key_spend_for_mixed_roster(
+        self, mock_http_client
+    ):
+        mock_response = MagicMock()
+        mock_response.is_success = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'team_info': {
+                'team_id': 'test-team',
+                'max_budget': 500.0,
+                'spend': 130.0,
+                'members_with_roles': [
+                    {'user_id': 'member-with-budget', 'role': 'user'},
+                    {'user_id': 'role-only-member', 'role': 'user'},
+                ],
+            },
+            'team_memberships': [
+                {
+                    'user_id': 'member-with-budget',
+                    'team_id': 'test-team',
+                    'budget_id': 'private-budget',
+                    'spend': 80.0,
+                    'litellm_budget_table': {'max_budget': 200.0},
+                }
+            ],
+            'keys': [
+                {'user_id': 'member-with-budget', 'spend': 999.0},
+                {'user_id': 'role-only-member', 'spend': 50.0},
+            ],
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_http_client.get.return_value = mock_response
+
+        with patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'):
+            with patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'):
+                result = await LiteLlmManager._get_team_members_financial_data(
+                    mock_http_client, 'test-team'
+                )
+
+        assert result['members']['member-with-budget']['spend'] == 80.0
+        assert result['members']['role-only-member'] == {
+            'spend': 50.0,
+            'max_budget': 500.0,
+            'uses_shared_budget': True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_rejects_role_only_member_without_validated_key_spend(
+        self, mock_http_client
+    ):
+        mock_response = MagicMock()
+        mock_response.is_success = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'team_info': {
+                'team_id': 'test-team',
+                'max_budget': 500.0,
+                'spend': 0.0,
+                'members_with_roles': [{'user_id': 'role-only-member', 'role': 'user'}],
+            },
+            'team_memberships': [],
+            'keys': [],
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_http_client.get.return_value = mock_response
+
+        with patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'):
+            with patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'):
+                with pytest.raises(ValueError, match='no validated key spend'):
+                    await LiteLlmManager._get_team_members_financial_data(
+                        mock_http_client, 'test-team'
+                    )
 
     @pytest.mark.asyncio
     async def test_returns_empty_dict_when_litellm_not_configured(
@@ -3726,7 +3814,7 @@ class TestGetTeamMembersFinancialData:
         self, mock_http_client
     ):
         """
-        GIVEN: Team with shared budget, members without individual max_budget_in_team
+        GIVEN: Team members using no budget, a private budget, and the shared default
         WHEN: _get_team_members_financial_data is called
         THEN: Falls back to team_info.max_budget for members without individual budget
         """
@@ -3735,22 +3823,28 @@ class TestGetTeamMembersFinancialData:
         mock_response.is_success = True
         mock_response.status_code = 200
         mock_response.json.return_value = {
-            'team_info': {'team_id': 'test-team', 'max_budget': 500.0, 'spend': 150.0},
+            'team_info': {
+                'team_id': 'test-team',
+                'max_budget': 500.0,
+                'spend': 150.0,
+                'metadata': {'team_member_budget_id': 'shared-default-budget'},
+            },
             'team_memberships': [
                 {
                     'user_id': 'user-no-individual-budget',
                     'spend': 50.0,
-                    # No max_budget_in_team - should fall back to team budget
                 },
                 {
                     'user_id': 'user-with-individual-budget',
                     'spend': 75.0,
-                    'max_budget_in_team': 200.0,  # Individual budget set
+                    'budget_id': 'private-budget',
+                    'litellm_budget_table': {'max_budget': 200.0},
                 },
                 {
-                    'user_id': 'user-null-budget',
+                    'user_id': 'user-shared-default-budget',
                     'spend': 25.0,
-                    'max_budget_in_team': None,  # Explicit null - fall back to team
+                    'budget_id': 'shared-default-budget',
+                    'litellm_budget_table': {'max_budget': 100.0},
                 },
             ],
         }
@@ -3778,18 +3872,18 @@ class TestGetTeamMembersFinancialData:
             'max_budget': 200.0,
             'uses_shared_budget': False,
         }
-        assert members['user-null-budget'] == {
+        assert members['user-shared-default-budget'] == {
             'spend': 25.0,
             'max_budget': 500.0,
             'uses_shared_budget': True,
         }
 
     @pytest.mark.asyncio
-    async def test_uses_defaults_when_no_budget_data_available(self, mock_http_client):
+    async def test_rejects_response_when_budget_data_is_missing(self, mock_http_client):
         """
-        GIVEN: Team without budget and members without individual budgets
+        GIVEN: Team without required budget counters
         WHEN: _get_team_members_financial_data is called
-        THEN: Returns default values (spend=0, max_budget=None)
+        THEN: Raises rather than manufacturing zero spend
         """
         # Arrange
         mock_response = MagicMock()
@@ -3813,26 +3907,10 @@ class TestGetTeamMembersFinancialData:
 
         with patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'):
             with patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'):
-                # Act
-                result = await LiteLlmManager._get_team_members_financial_data(
-                    mock_http_client, 'test-team'
-                )
-
-        # Assert
-        assert result['team_max_budget'] is None
-        assert result['team_spend'] == 0
-        members = result['members']
-        # Both users fall back to team budget (which is None)
-        assert members['user-no-data'] == {
-            'spend': 0,
-            'max_budget': None,
-            'uses_shared_budget': True,
-        }
-        assert members['user-null-spend'] == {
-            'spend': 0,
-            'max_budget': None,
-            'uses_shared_budget': True,
-        }
+                with pytest.raises(ValueError, match='required budget fields'):
+                    await LiteLlmManager._get_team_members_financial_data(
+                        mock_http_client, 'test-team'
+                    )
 
     @pytest.mark.asyncio
     async def test_skips_members_without_user_id(self, mock_http_client):
@@ -3851,7 +3929,8 @@ class TestGetTeamMembersFinancialData:
                 {
                     'user_id': 'valid-user',
                     'spend': 25.0,
-                    'max_budget_in_team': 100.0,
+                    'budget_id': 'valid-user-budget',
+                    'litellm_budget_table': {'max_budget': 100.0},
                 },
                 {
                     # Missing user_id
