@@ -1955,6 +1955,100 @@ async def test_partial_store_migrates_legacy_member_mcp_config(
 
 
 @pytest.mark.asyncio
+async def test_load_resolves_active_default_profile_from_verified_model_default(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    from server.verified_models.verified_model_service import StoredVerifiedModel
+    from sqlalchemy import select, update
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+
+    async with async_session_maker() as session:
+        await session.execute(
+            update(Org)
+            .where(Org.id == org_id)
+            .values(
+                llm_profiles={
+                    'profiles': {
+                        'Default': {'model': 'openhands/stale-default'},
+                        'Pinned': {'model': 'anthropic/claude-sonnet-4-5'},
+                    },
+                    'active': 'Default',
+                }
+            )
+        )
+        await session.execute(
+            update(OrgMember)
+            .where(OrgMember.org_id == org_id, OrgMember.user_id == admin_user_id)
+            .values(agent_settings_diff={'llm': {'model': 'openhands/stale-default'}})
+        )
+        session.add(
+            StoredVerifiedModel(
+                model_name='gpt-5.2',
+                provider='openhands',
+                is_enabled=True,
+                is_verified=True,
+                is_free=True,
+                is_default=True,
+            )
+        )
+        await session.commit()
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await SaasSettingsStore(str(admin_user_id)).load()
+
+    assert loaded is not None
+    assert loaded.llm_profiles.require('Default').model == 'openhands/gpt-5.2'
+    assert loaded.llm_profiles.require('Pinned').model == 'anthropic/claude-sonnet-4-5'
+    assert loaded.agent_settings.llm.model == 'openhands/gpt-5.2'
+
+    async with async_session_maker() as session:
+        default_row = (
+            await session.execute(
+                select(StoredVerifiedModel).where(
+                    StoredVerifiedModel.model_name == 'gpt-5.2'
+                )
+            )
+        ).scalar_one()
+        default_row.is_default = False
+        session.add(
+            StoredVerifiedModel(
+                model_name='minimax-m2.5',
+                provider='openhands',
+                is_enabled=True,
+                is_verified=True,
+                is_free=True,
+                is_default=True,
+            )
+        )
+        await session.commit()
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await SaasSettingsStore(str(admin_user_id)).load()
+
+    assert loaded is not None
+    assert loaded.llm_profiles.require('Default').model == 'openhands/minimax-m2.5'
+    assert loaded.llm_profiles.require('Pinned').model == 'anthropic/claude-sonnet-4-5'
+    assert loaded.agent_settings.llm.model == 'openhands/minimax-m2.5'
+
+    async with async_session_maker() as session:
+        org = (await session.execute(select(Org).where(Org.id == org_id))).scalar_one()
+    assert org.llm_profiles['profiles']['Default']['model'] == 'openhands/stale-default'
+
+
+@pytest.mark.asyncio
 async def test_partial_store_preserves_malformed_legacy_member_mcp_config(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):

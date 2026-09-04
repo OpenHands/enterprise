@@ -44,6 +44,15 @@ class StoredVerifiedModel(Base):
     is_enabled: Mapped[bool] = mapped_column(
         nullable=False, default=True, server_default=text('true')
     )
+    is_verified: Mapped[bool] = mapped_column(
+        nullable=False, default=True, server_default=text('true')
+    )
+    is_free: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default=text('false')
+    )
+    is_default: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default=text('false')
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -58,6 +67,9 @@ def verified_model(result: StoredVerifiedModel) -> VerifiedModel:
         model_name=result.model_name,
         provider=result.provider,
         is_enabled=result.is_enabled,
+        is_verified=result.is_verified,
+        is_free=result.is_free,
+        is_default=result.is_default,
         created_at=result.created_at,
         updated_at=result.updated_at,
     )
@@ -141,11 +153,74 @@ class VerifiedModelService:
         stored = result.scalars().first()
         return verified_model(stored) if stored else None
 
+    async def _get_default_for_provider(
+        self, provider: str
+    ) -> StoredVerifiedModel | None:
+        result = await self.db_session.execute(
+            select(StoredVerifiedModel).where(
+                and_(
+                    StoredVerifiedModel.provider == provider,
+                    StoredVerifiedModel.is_default.is_(True),
+                )
+            )
+        )
+        return result.scalars().first()
+
+    async def _list_openhands_enabled_free_model_names(self) -> list[str]:
+        result = await self.db_session.execute(
+            select(StoredVerifiedModel.model_name)
+            .where(
+                and_(
+                    StoredVerifiedModel.provider == 'openhands',
+                    StoredVerifiedModel.is_enabled.is_(True),
+                    StoredVerifiedModel.is_free.is_(True),
+                )
+            )
+            .order_by(StoredVerifiedModel.model_name)
+        )
+        return list(result.scalars().all())
+
+    async def _sync_litellm_free_model_allowlists(
+        self, previous_free_models: list[str]
+    ) -> None:
+        try:
+            from storage.lite_llm_manager import LiteLlmManager
+
+            await LiteLlmManager.sync_free_model_allowlists(
+                self.db_session, previous_free_models=previous_free_models
+            )
+        except Exception:
+            logger.warning('Failed to sync LiteLLM free-model allowlists')
+
+    async def _clear_default_for_provider(
+        self, provider: str, except_id: int | None = None
+    ) -> None:
+        """Unset ``is_default`` on every other row of the same provider.
+
+        Only one model per provider may be the default. A partial unique index
+        enforces this at the DB level; clearing here keeps the write ordering
+        correct so the new default never collides with a stale one.
+        """
+        conditions = [
+            StoredVerifiedModel.provider == provider,
+            StoredVerifiedModel.is_default.is_(True),
+        ]
+        if except_id is not None:
+            conditions.append(StoredVerifiedModel.id != except_id)
+        result = await self.db_session.execute(
+            select(StoredVerifiedModel).where(and_(*conditions))
+        )
+        for row in result.scalars().all():
+            row.is_default = False
+
     async def create_verified_model(
         self,
         model_name: str,
         provider: str,
         is_enabled: bool = True,
+        is_verified: bool = True,
+        is_free: bool = False,
+        is_default: bool = False,
     ) -> VerifiedModel:
         """Create a new verified model.
 
@@ -153,6 +228,10 @@ class VerifiedModelService:
             model_name: The model identifier
             provider: The provider name
             is_enabled: Whether the model is enabled (default True)
+            is_verified: Whether the model should be marked verified
+            is_free: Whether the model is free on the OpenHands provider
+            is_default: Whether the model is the provider's default. Setting
+                this clears any existing default for the same provider.
 
         Raises:
             ValueError: If a model with the same (model_name, provider) already exists
@@ -168,14 +247,28 @@ class VerifiedModelService:
         if existing:
             raise ValueError(f'Model {provider}/{model_name} already exists')
 
+        sync_free_allowlists = provider == 'openhands' and is_enabled and is_free
+        previous_free_models = (
+            await self._list_openhands_enabled_free_model_names()
+            if sync_free_allowlists
+            else []
+        )
+        if is_default:
+            await self._clear_default_for_provider(provider)
+
         model = StoredVerifiedModel(
             model_name=model_name,
             provider=provider,
             is_enabled=is_enabled,
+            is_verified=is_verified,
+            is_free=is_free,
+            is_default=is_default,
         )
         self.db_session.add(model)
         await self.db_session.commit()
         await self.db_session.refresh(model)
+        if sync_free_allowlists:
+            await self._sync_litellm_free_model_allowlists(previous_free_models)
         logger.info(f'Created verified model: {provider}/{model_name}')
         return verified_model(model)
 
@@ -184,6 +277,9 @@ class VerifiedModelService:
         model_name: str,
         provider: str,
         is_enabled: bool | None = None,
+        is_verified: bool | None = None,
+        is_free: bool | None = None,
+        is_default: bool | None = None,
     ) -> VerifiedModel | None:
         """Update an existing verified model.
 
@@ -191,6 +287,10 @@ class VerifiedModelService:
             model_name: The model name to update
             provider: The provider name
             is_enabled: New enabled state (optional)
+            is_verified: New verified state (optional)
+            is_free: New free state (optional)
+            is_default: New default state (optional). Setting it to ``True``
+                clears any existing default for the same provider.
 
         Returns:
             The updated model if found, None otherwise
@@ -206,11 +306,30 @@ class VerifiedModelService:
         if not model:
             return None
 
+        sync_free_allowlists = provider == 'openhands' and (
+            is_enabled is not None or is_free is not None
+        )
+        previous_free_models = (
+            await self._list_openhands_enabled_free_model_names()
+            if sync_free_allowlists
+            else []
+        )
+
         if is_enabled is not None:
             model.is_enabled = is_enabled
+        if is_verified is not None:
+            model.is_verified = is_verified
+        if is_free is not None:
+            model.is_free = is_free
+        if is_default is not None:
+            if is_default:
+                await self._clear_default_for_provider(provider, except_id=model.id)
+            model.is_default = is_default
 
         await self.db_session.commit()
         await self.db_session.refresh(model)
+        if sync_free_allowlists:
+            await self._sync_litellm_free_model_allowlists(previous_free_models)
         logger.info(f'Updated verified model: {provider}/{model_name}')
         return verified_model(model)
 
@@ -235,8 +354,18 @@ class VerifiedModelService:
         if not model:
             raise ValueError('Unknown model')
 
+        sync_free_allowlists = (
+            provider == 'openhands' and model.is_enabled and model.is_free
+        )
+        previous_free_models = (
+            await self._list_openhands_enabled_free_model_names()
+            if sync_free_allowlists
+            else []
+        )
         await self.db_session.delete(model)
         await self.db_session.commit()
+        if sync_free_allowlists:
+            await self._sync_litellm_free_model_allowlists(previous_free_models)
         logger.info(f'Deleted verified model: {provider}/{model_name}')
 
 

@@ -13,6 +13,10 @@ from pydantic import SecretStr
 from server.constants import (
     get_default_litellm_model,
 )
+from server.verified_models.verified_model_service import VerifiedModelService
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+from storage.base import Base
 from storage.lite_llm_manager import (
     FREE_LLM_MODELS,
     LiteLlmManager,
@@ -20,6 +24,7 @@ from storage.lite_llm_manager import (
     get_openhands_cloud_key_alias,
     get_org_team_alias,
 )
+from storage.org import Org
 from storage.user_settings import UserSettings
 
 from openhands.app_server.settings.settings_models import Settings
@@ -3413,6 +3418,133 @@ class TestFreeTierModelRestriction:
     lists are restricted to FREE_LLM_MODELS. Purchased credits (budget > 0)
     must restore the full model list.
     """
+
+    @pytest.fixture
+    async def async_session_maker(self):
+        engine = create_async_engine(
+            'sqlite+aiosqlite:///:memory:',
+            poolclass=StaticPool,
+            connect_args={'check_same_thread': False},
+            echo=False,
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_resolve_free_llm_models_reads_db_is_free_flags(
+        self, async_session_maker
+    ):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            with patch.object(
+                service,
+                '_sync_litellm_free_model_allowlists',
+                new=AsyncMock(),
+            ):
+                await service.create_verified_model(
+                    'free-model', 'openhands', is_free=True
+                )
+                await service.create_verified_model(
+                    'paid-model', 'openhands', is_free=False
+                )
+                await service.create_verified_model(
+                    'disabled-free-model',
+                    'openhands',
+                    is_enabled=False,
+                    is_free=True,
+                )
+                await service.create_verified_model(
+                    'openai-free-model', 'openai', is_free=True
+                )
+
+            free_models = await LiteLlmManager._resolve_free_llm_models(session)
+
+        assert free_models == ['free-model']
+
+    @pytest.mark.asyncio
+    async def test_sync_free_model_allowlists_updates_existing_free_tier_teams(
+        self, async_session_maker
+    ):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            with patch.object(
+                service,
+                '_sync_litellm_free_model_allowlists',
+                new=AsyncMock(),
+            ):
+                await service.create_verified_model(
+                    'current-free-model', 'openhands', is_free=True
+                )
+            org = Org(name='Test Org')
+            session.add(org)
+            await session.commit()
+            org_id = str(org.id)
+
+            team_response = MagicMock()
+            team_response.is_success = True
+            team_response.status_code = 200
+            team_response.json.return_value = {
+                'team_info': {
+                    'max_budget': None,
+                    'models': ['previous-free-model'],
+                }
+            }
+            team_response.raise_for_status = MagicMock()
+
+            update_response = MagicMock()
+            update_response.is_success = True
+            update_response.status_code = 200
+            update_response.raise_for_status = MagicMock()
+
+            mock_client = AsyncMock(spec=httpx.AsyncClient)
+            mock_client.get.return_value = team_response
+            mock_client.post.return_value = update_response
+            mock_client_class = MagicMock()
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            with (
+                patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-api-key'),
+                patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+                patch('httpx.AsyncClient', mock_client_class),
+            ):
+                await LiteLlmManager.sync_free_model_allowlists(
+                    session, previous_free_models=['previous-free-model']
+                )
+
+        mock_client.get.assert_called_once_with(
+            f'http://test.com/team/info?team_id={org_id}'
+        )
+        json_payload = mock_client.post.call_args[1]['json']
+        assert json_payload['team_id'] == org_id
+        assert json_payload['max_budget'] is None
+        assert json_payload['models'] == ['current-free-model']
+
+    @pytest.mark.asyncio
+    async def test_empty_db_free_models_use_blocking_sentinel(self):
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_response = MagicMock()
+        mock_response.is_success = True
+        mock_response.status_code = 200
+        mock_client.post.return_value = mock_response
+
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-api-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+        ):
+            await LiteLlmManager._update_team(
+                mock_client,
+                team_id='test-team-id',
+                team_alias=None,
+                max_budget=0.0,
+                free_models=[],
+            )
+
+        json_payload = mock_client.post.call_args[1]['json']
+        assert json_payload['models'] == ['__openhands_no_free_models__']
 
     @pytest.mark.asyncio
     async def test_create_team_free_tier_restricts_models_and_disables_budget(self):

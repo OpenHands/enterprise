@@ -19,6 +19,10 @@ from pydantic import BaseModel, Field, SecretStr, ValidationError
 from server.constants import LITE_LLM_API_URL
 from server.routes.org_models import OrgNotFoundError
 from server.routes.org_provider_connections import _load_connections
+from server.verified_models.default_profile import (
+    get_openhands_default_model_name,
+    materialize_default_llm_profile,
+)
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from storage.agent_profile_resolution import (
@@ -128,6 +132,18 @@ class RenameProfileRequest(BaseModel):
 # ── Helper Functions ────────────────────────────────────────────────────────
 
 
+async def _load_profiles_with_live_default(
+    org: Org, session: AsyncSession | None = None
+) -> LLMProfiles:
+    profiles = _load_profiles(org)
+    if session is None:
+        async with a_session_maker() as live_session:
+            model_name = await get_openhands_default_model_name(live_session)
+    else:
+        model_name = await get_openhands_default_model_name(session)
+    return materialize_default_llm_profile(profiles, model_name)
+
+
 def _resolve_provider_connection(org: Org, llm: LLM) -> LLM:
     """Apply a referenced provider connection's credentials to ``llm``.
 
@@ -233,7 +249,7 @@ async def list_profiles(
 ) -> ProfileListResponse:
     """List all LLM profiles for this organization."""
     org = await _get_org(org_id, user_id)
-    profiles = _load_profiles(org)
+    profiles = await _load_profiles_with_live_default(org)
     return ProfileListResponse(
         profiles=[
             ProfileInfo(**p)
@@ -251,7 +267,7 @@ async def get_profile(
 ) -> ProfileDetailResponse:
     """Get details of a specific profile."""
     org = await _get_org(org_id, user_id)
-    profiles = _load_profiles(org)
+    profiles = await _load_profiles_with_live_default(org)
     llm = profiles.get(name)
     if llm is None:
         raise HTTPException(
@@ -371,6 +387,10 @@ async def activate_profile(
         _org,
         profiles,
     ):
+        materialize_default_llm_profile(
+            profiles, await get_openhands_default_model_name(session)
+        )
+
         llm = profiles.get(name)
         if llm is None:
             raise HTTPException(

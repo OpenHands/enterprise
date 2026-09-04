@@ -4,7 +4,9 @@ from openhands.app_server.utils import llm as llm_utils
 from openhands.app_server.utils.llm import (
     _assign_provider,
     _derive_verified_models,
+    get_openhands_models,
     get_provider_api_base,
+    get_supported_llm_models,
     is_openhands_model,
 )
 
@@ -125,6 +127,27 @@ class TestDeriveVerifiedModels:
             'claude-opus-4-5-20251101',
             'gpt-5',
         ]
+
+
+class TestGetOpenhandsModels:
+    def test_none_uses_static_openhands_models(self):
+        assert get_openhands_models(None) == llm_utils.OPENHANDS_MODELS
+
+    def test_explicit_empty_list_is_preserved(self):
+        assert get_openhands_models([]) == []
+
+    def test_explicit_model_list_is_preserved(self):
+        assert get_openhands_models(['openhands/custom']) == ['openhands/custom']
+
+    def test_supported_models_can_override_legacy_verified_openhands_list(self):
+        response = get_supported_llm_models(
+            verified_models=['openhands/a', 'openhands/b'],
+            verified_openhands_models=['openhands/b'],
+        )
+
+        assert response.verified_models == ['b']
+        assert 'openhands/a' in response.models
+        assert 'openhands/b' in response.models
 
 
 class TestGetProviderApiBase:

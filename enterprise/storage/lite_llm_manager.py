@@ -91,13 +91,11 @@ def _get_default_initial_budget(billing_enabled: bool) -> float | None:
 DEFAULT_INITIAL_BUDGET: float | None = _get_default_initial_budget(ENABLE_BILLING)
 
 
-# Models offered at $0 cost in the LiteLLM proxy (see saas-deploy litellm
-# model_info: input_cost_per_token/output_cost_per_token == 0). A team with no
-# purchased credits (max_budget == 0) is restricted to this set with budget
-# enforcement disabled, so free users can run free models without credits while
-# still being blocked from paid models. Override per environment via
-# FREE_LLM_MODELS (comma-separated).
+# Fallback models offered at $0 cost in the LiteLLM proxy. The DB-backed
+# verified_models.is_free flag is the runtime source of truth; this env-backed
+# list only covers bootstrap/fallback paths where the DB cannot be queried.
 _DEFAULT_FREE_LLM_MODELS = ['glm-5.2', 'minimax-m2.5', 'minimax-m2.7', 'kimi-k3']
+_NO_FREE_LLM_MODELS = ['__openhands_no_free_models__']
 
 
 def _get_free_llm_models() -> list[str]:
@@ -109,6 +107,17 @@ def _get_free_llm_models() -> list[str]:
 
 
 FREE_LLM_MODELS: list[str] = _get_free_llm_models()
+
+
+def _litellm_free_model_allowlist(free_models: list[str]) -> list[str]:
+    return list(free_models) if free_models else list(_NO_FREE_LLM_MODELS)
+
+
+def _normalize_litellm_model_name(model_name: str) -> str:
+    for prefix in ('openhands/', 'litellm_proxy/'):
+        if model_name.startswith(prefix):
+            return model_name.removeprefix(prefix)
+    return model_name
 
 
 def _is_free_budget(max_budget: float | None) -> bool:
@@ -170,6 +179,131 @@ class LiteLlmManager:
         return max_budget, spend
 
     @staticmethod
+    async def _get_db_free_llm_models(db_session) -> list[str]:
+        from server.verified_models.verified_model_service import StoredVerifiedModel
+        from sqlalchemy import and_, select
+
+        result = await db_session.execute(
+            select(StoredVerifiedModel.model_name)
+            .where(
+                and_(
+                    StoredVerifiedModel.provider == 'openhands',
+                    StoredVerifiedModel.is_enabled.is_(True),
+                    StoredVerifiedModel.is_free.is_(True),
+                )
+            )
+            .order_by(StoredVerifiedModel.model_name)
+        )
+        return [
+            _normalize_litellm_model_name(model_name)
+            for model_name in result.scalars().all()
+        ]
+
+    @staticmethod
+    async def _resolve_free_llm_models(db_session=None) -> list[str]:
+        if db_session is not None:
+            return await LiteLlmManager._get_db_free_llm_models(db_session)
+
+        try:
+            from storage.database import a_session_maker
+
+            async with a_session_maker() as session:
+                return await LiteLlmManager._get_db_free_llm_models(session)
+        except Exception:
+            logger.warning('Falling back to env FREE_LLM_MODELS for LiteLLM allowlist')
+            return list(FREE_LLM_MODELS)
+
+    @staticmethod
+    def _is_free_team_model_allowlist(
+        models: list[str],
+        free_models: list[str],
+        previous_free_models: list[str] | None = None,
+    ) -> bool:
+        if not models:
+            return False
+
+        model_set = {_normalize_litellm_model_name(model) for model in models}
+        candidate_sets = [free_models, FREE_LLM_MODELS, _NO_FREE_LLM_MODELS]
+        if previous_free_models is not None:
+            candidate_sets.append(previous_free_models)
+
+        return any(
+            model_set.issubset(
+                {_normalize_litellm_model_name(model) for model in candidate_set}
+            )
+            for candidate_set in candidate_sets
+            if candidate_set
+        )
+
+    @staticmethod
+    def _is_free_tier_team_info(
+        team_info: dict,
+        free_models: list[str],
+        previous_free_models: list[str] | None = None,
+    ) -> bool:
+        max_budget = team_info.get('max_budget')
+        if _is_free_budget(max_budget):
+            return True
+        if max_budget is not None:
+            return False
+        return LiteLlmManager._is_free_team_model_allowlist(
+            team_info.get('models') or [],
+            free_models,
+            previous_free_models,
+        )
+
+    @staticmethod
+    async def _get_org_ids(db_session) -> list[str]:
+        from sqlalchemy import select
+        from storage.org import Org
+
+        result = await db_session.execute(select(Org.id))
+        return [str(org_id) for org_id in result.scalars().all()]
+
+    @staticmethod
+    async def sync_free_model_allowlists(
+        db_session, previous_free_models: list[str] | None = None
+    ) -> None:
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            logger.warning('LiteLLM API configuration not found')
+            return
+
+        free_models = await LiteLlmManager._resolve_free_llm_models(db_session)
+        org_ids = await LiteLlmManager._get_org_ids(db_session)
+
+        async with httpx.AsyncClient(
+            headers={'x-goog-api-key': LITE_LLM_API_KEY},
+            timeout=httpx.Timeout(LITELLM_MANAGEMENT_TIMEOUT),
+        ) as client:
+            for org_id in org_ids:
+                try:
+                    team = await LiteLlmManager._get_team(client, org_id)
+                    if not team:
+                        continue
+                    team_info = team.get('team_info', {})
+                    if LiteLlmManager._is_free_tier_team_info(
+                        team_info, free_models, previous_free_models
+                    ):
+                        await LiteLlmManager._update_team(
+                            client,
+                            org_id,
+                            None,
+                            0.0,
+                            free_models=free_models,
+                        )
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 404:
+                        logger.warning(
+                            'Failed to sync LiteLLM free-model allowlist',
+                            extra={'org_id': org_id},
+                        )
+                except Exception:
+                    logger.warning(
+                        'Failed to sync LiteLLM free-model allowlist',
+                        extra={'org_id': org_id},
+                    )
+
+    @staticmethod
     async def create_entries(
         org_id: str,
         keycloak_user_id: str,
@@ -216,6 +350,8 @@ class LiteLlmManager:
                 },
                 timeout=httpx.Timeout(LITELLM_MANAGEMENT_TIMEOUT),
             ) as client:
+                free_llm_models = await LiteLlmManager._resolve_free_llm_models()
+
                 # Check if team already exists and get its budget
                 # New users joining existing orgs should inherit the team's budget
                 # When billing is disabled, the default budget is None (no
@@ -230,15 +366,17 @@ class LiteLlmManager:
                         # Preserve None from existing team (no budget enforcement)
                         existing_budget = team_info.get('max_budget')
                         # A free-tier team has its model list restricted to
-                        # FREE_LLM_MODELS with max_budget cleared (None). Re-deriving
-                        # the budget as None would otherwise drop the restriction on
-                        # the next provisioning, so recognize the free tier by its
-                        # non-empty ``models`` allowlist and restore budget 0.0.
+                        # the DB-backed free model set with max_budget cleared
+                        # (None). Re-deriving the budget as None would otherwise
+                        # drop the restriction on the next provisioning, so
+                        # recognize that allowlist and restore budget 0.0.
                         existing_models = team_info.get('models') or []
                         if (
                             existing_budget is None
                             and existing_models
-                            and set(existing_models).issubset(set(FREE_LLM_MODELS))
+                            and LiteLlmManager._is_free_team_model_allowlist(
+                                existing_models, free_llm_models
+                            )
                         ):
                             existing_budget = 0.0
                         team_budget = existing_budget
@@ -263,7 +401,11 @@ class LiteLlmManager:
                     org_id, keycloak_user_id
                 )
                 await LiteLlmManager._create_team(
-                    client, team_alias, org_id, team_budget
+                    client,
+                    team_alias,
+                    org_id,
+                    team_budget,
+                    free_models=free_llm_models,
                 )
 
                 if add_user_to_team:
@@ -737,6 +879,7 @@ class LiteLlmManager:
         team_alias: str,
         team_id: str,
         max_budget: float | None,
+        free_models: list[str] | None = None,
     ):
         """Create a new team in LiteLLM.
 
@@ -763,10 +906,9 @@ class LiteLlmManager:
         }
 
         if _is_free_budget(max_budget):
-            # Free tier: disable budget enforcement and restrict to $0-cost
-            # models so a no-credit team can still run free models (their
-            # calls accrue no spend) while remaining blocked from paid ones.
-            json_data['models'] = list(FREE_LLM_MODELS)
+            if free_models is None:
+                free_models = await LiteLlmManager._resolve_free_llm_models()
+            json_data['models'] = _litellm_free_model_allowlist(free_models)
         elif max_budget is not None:
             json_data['max_budget'] = max_budget
 
@@ -782,8 +924,11 @@ class LiteLlmManager:
                 and 'already exists. Please use a different team id' in response.text
             ):
                 # team already exists, so update, then return
+                kwargs: dict[str, Any] = {}
+                if free_models is not None:
+                    kwargs['free_models'] = free_models
                 await LiteLlmManager._update_team(
-                    client, team_id, team_alias, max_budget
+                    client, team_id, team_alias, max_budget, **kwargs
                 )
                 return
             logger.error(
@@ -816,6 +961,7 @@ class LiteLlmManager:
         team_alias: str | None,
         max_budget: float | None,
         clear_budget: bool = False,
+        free_models: list[str] | None = None,
     ):
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
@@ -829,11 +975,10 @@ class LiteLlmManager:
         }
 
         if _is_free_budget(max_budget):
-            # Free tier: clear budget enforcement and restrict to $0-cost
-            # models. Clears any previously-purchased budget + paid-model
-            # access when a team transitions back to the free tier.
+            if free_models is None:
+                free_models = await LiteLlmManager._resolve_free_llm_models()
             json_data['max_budget'] = None
-            json_data['models'] = list(FREE_LLM_MODELS)
+            json_data['models'] = _litellm_free_model_allowlist(free_models)
         elif max_budget is not None or clear_budget:
             # Paid tier (or explicit clear): (re)open the full model list and
             # set the budget. ``models: []`` is LiteLLM's "all models" sentinel.
