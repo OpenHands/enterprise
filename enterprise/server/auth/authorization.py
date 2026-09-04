@@ -86,6 +86,11 @@ class Permission(str, Enum):
     DELETE_ORGANIZATION = 'delete_organization'
     CREATE_ORGANIZATION = 'create_organization'
 
+    # Instance-level: list every organization in the instance (super-admin
+    # dashboard). Not implied by any org-scoped role -- an org owner can only
+    # see orgs they belong to.
+    VIEW_ALL_ORGANIZATIONS = 'view_all_organizations'
+
     # Temporary permissions until we finish the API updates.
     EDIT_ORG_SETTINGS = 'edit_org_settings'
 
@@ -262,6 +267,7 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
     RoleName.ADMIN: frozenset(
         [
             Permission.CREATE_ORGANIZATION,
+            Permission.VIEW_ALL_ORGANIZATIONS,
             Permission.PROVISION_USER,
             Permission.INVITE_USER_TO_ORGANIZATION,
             Permission.MANAGE_SUPER_ADMINS,

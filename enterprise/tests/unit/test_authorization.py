@@ -1478,6 +1478,7 @@ class TestSuperRolePermissions:
         assert SUPER_ROLE_PERMISSIONS[RoleName.ADMIN] == frozenset(
             [
                 Permission.CREATE_ORGANIZATION,
+                Permission.VIEW_ALL_ORGANIZATIONS,
                 Permission.PROVISION_USER,
                 Permission.INVITE_USER_TO_ORGANIZATION,
                 Permission.MANAGE_SUPER_ADMINS,
@@ -1558,6 +1559,29 @@ class TestSuperRolePermissions:
         assert (
             Permission.INVITE_USER_TO_ORGANIZATION in ROLE_PERMISSIONS[RoleName.ADMIN]
         )
+
+    def test_view_all_organizations_is_superadmin_only(self):
+        """
+        GIVEN: SUPER_ROLE_PERMISSIONS and ROLE_PERMISSIONS
+        WHEN: looking up VIEW_ALL_ORGANIZATIONS (super-admin dashboard org list)
+        THEN: only the superadmin super role carries it -- no org-scoped role
+              does, so an org owner can only see orgs they belong to.
+        """
+        assert (
+            Permission.VIEW_ALL_ORGANIZATIONS in SUPER_ROLE_PERMISSIONS[RoleName.ADMIN]
+        )
+        assert (
+            Permission.VIEW_ALL_ORGANIZATIONS
+            not in SUPER_ROLE_PERMISSIONS[RoleName.OWNER]
+        )
+        assert (
+            Permission.VIEW_ALL_ORGANIZATIONS
+            not in SUPER_ROLE_PERMISSIONS[RoleName.MEMBER]
+        )
+        for role_name, permissions in ROLE_PERMISSIONS.items():
+            assert Permission.VIEW_ALL_ORGANIZATIONS not in permissions, (
+                f'org-scoped role {role_name} must not grant VIEW_ALL_ORGANIZATIONS'
+            )
 
     def test_manage_org_quota_is_superadmin_only(self):
         """

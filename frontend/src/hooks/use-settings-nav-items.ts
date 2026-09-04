@@ -2,6 +2,7 @@ import { useConfig } from "#/hooks/query/use-config";
 import {
   SAAS_NAV_ITEMS,
   OSS_NAV_ITEMS,
+  SUPER_ADMIN_NAV_ITEM,
   SettingsNavItem,
   SettingsNavSection,
 } from "#/constants/settings-nav";
@@ -15,6 +16,7 @@ import { useMe } from "./query/use-me";
 import { usePermission } from "./organizations/use-permissions";
 import { useOrgTypeAndAccess } from "./use-org-type-and-access";
 import { useSettings } from "./query/use-settings";
+import { useSuperAdminStatus } from "./query/use-super-admin-status";
 import { I18nKey } from "#/i18n/declaration";
 
 // Rendered navigation item types
@@ -46,6 +48,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const { data: config } = useConfig();
   const { data: user } = useMe();
   const { data: settings } = useSettings();
+  const { data: superAdminStatus } = useSuperAdminStatus();
   const userRole: OrganizationUserRole = user?.role ?? "member";
   const { hasPermission } = usePermission(userRole);
   const { isPersonalOrg, isTeamOrg, organizationId } = useOrgTypeAndAccess();
@@ -65,6 +68,14 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     : null;
 
   let items = isSaasMode ? [...SAAS_NAV_ITEMS] : [...OSS_NAV_ITEMS];
+
+  // Super-admin dashboard (self-hosted enterprise only). Gated purely on the
+  // super-admin status query, which is only enabled on enterprise self-hosted
+  // installs; appended here so its visibility is independent of the org-scoped
+  // role that drives the rest of the nav.
+  if (isSaasMode && superAdminStatus?.is_super_admin) {
+    items = [...items, SUPER_ADMIN_NAV_ITEM];
+  }
 
   // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));
