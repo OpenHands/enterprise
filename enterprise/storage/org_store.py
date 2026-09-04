@@ -12,7 +12,6 @@ from server.constants import (
     get_default_llm_model,
 )
 from server.routes.org_models import (
-    OrgMemberSettingsUpdate,
     OrgUpdate,
     OrphanedUserError,
 )
@@ -436,21 +435,18 @@ class OrgStore:
 
                 member_updates = update_data.get_member_updates()
                 effective_managed_key = (
-                    await OrgStore._maybe_get_managed_llm_key_for_user(
+                    await OrgStore._ensure_managed_llm_key_for_user(
                         session,
                         org,
                         user_id,
                     )
+                    if update_data.touches_llm_defaults()
+                    else None
                 )
                 should_reset_custom_key_flag = (
                     update_data.llm_api_key is not None
                     or effective_managed_key is not None
                 )
-                if effective_managed_key is not None:
-                    if member_updates is None:
-                        member_updates = OrgMemberSettingsUpdate()
-                    member_updates.llm_api_key = SecretStr(effective_managed_key)
-
                 if member_updates is not None:
                     if should_reset_custom_key_flag:
                         member_updates.has_custom_llm_api_key = False
@@ -829,12 +825,12 @@ class OrgStore:
         return await OrgStore.get_org_by_id(org_id)
 
     @staticmethod
-    async def _maybe_get_managed_llm_key_for_user(
+    async def _ensure_managed_llm_key_for_user(
         session,
         updated_org: Org,
         user_id: str,
     ) -> str | None:
-        """Return the managed LLM key every member row should carry, if any."""
+        """Ensure the acting member has their own managed LLM key."""
         llm_settings = OrgStore.get_agent_settings_from_org(updated_org).llm
         llm_model = llm_settings.model
         llm_base_url = llm_settings.base_url
@@ -858,8 +854,7 @@ class OrgStore:
         if acting_member is None:
             logger.error(
                 'Acting member row not found during managed LLM key '
-                'rotation; skipping managed-key propagation. Members may '
-                'retain stale keys until they save personal settings.',
+                'rotation; skipping managed-key reconciliation.',
                 extra={'user_id': user_id, 'org_id': str(updated_org.id)},
             )
             return None
@@ -891,12 +886,14 @@ class OrgStore:
             'Generated managed LLM key for acting user on org-defaults save',
             extra={'user_id': user_id, 'org_id': str(updated_org.id)},
         )
-        return await LiteLlmManager.generate_key(
+        generated_key = await LiteLlmManager.generate_key(
             user_id,
             str(updated_org.id),
             key_alias,
             {'type': 'openhands'} if openhands_type else None,
         )
+        acting_member.llm_api_key = SecretStr(generated_key)
+        return generated_key
 
     @staticmethod
     async def update_org_defaults_async(

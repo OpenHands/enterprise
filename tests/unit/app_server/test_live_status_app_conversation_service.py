@@ -935,11 +935,17 @@ class TestLiveStatusAppConversationService:
 
     @staticmethod
     def _install_managed_key_refresh_modules(
-        monkeypatch, *, get_key, rotate_key, verify_key
+        monkeypatch, *, get_key, rotate_key, verify_key, verify_existing_key=None
     ):
+        if verify_existing_key is None:
+            verify_existing_key = AsyncMock(return_value=True)
+
         storage_mod = types.ModuleType('storage')
         lite_llm_mod = types.ModuleType('storage.lite_llm_manager')
-        lite_llm_mod.LiteLlmManager = SimpleNamespace(verify_key=verify_key)
+        lite_llm_mod.LiteLlmManager = SimpleNamespace(
+            verify_existing_key=verify_existing_key,
+            verify_key=verify_key,
+        )
 
         store = SimpleNamespace(
             get_current_managed_llm_key=get_key,
@@ -949,6 +955,17 @@ class TestLiveStatusAppConversationService:
         saas_settings_mod.ManagedLlmKeyStatus = SimpleNamespace(ROTATED='rotated')
         saas_settings_mod.SaasSettingsStore = SimpleNamespace(
             get_instance=AsyncMock(return_value=store)
+        )
+
+        def managed_llm_key_config_from_model(model, base_url):
+            is_openhands = bool(model and model.startswith('openhands/'))
+            is_managed_url = bool(base_url and 'all-hands.dev' in base_url.lower())
+            if is_openhands and (base_url is None or is_managed_url):
+                return SimpleNamespace(openhands_type=True)
+            return None
+
+        saas_settings_mod.managed_llm_key_config_from_model = (
+            managed_llm_key_config_from_model
         )
 
         monkeypatch.setitem(sys.modules, 'storage', storage_mod)
@@ -978,9 +995,14 @@ class TestLiveStatusAppConversationService:
         rotate_key = AsyncMock(
             return_value=SimpleNamespace(status='rotated', new_key='sk-new-managed-key')
         )
+        verify_existing_key = AsyncMock(return_value=True)
         verify_key = AsyncMock(return_value=False)
         self._install_managed_key_refresh_modules(
-            monkeypatch, get_key=get_key, rotate_key=rotate_key, verify_key=verify_key
+            monkeypatch,
+            get_key=get_key,
+            rotate_key=rotate_key,
+            verify_key=verify_key,
+            verify_existing_key=verify_existing_key,
         )
 
         llm = LLM(
@@ -995,8 +1017,98 @@ class TestLiveStatusAppConversationService:
 
         assert refreshed.api_key.get_secret_value() == 'sk-new-managed-key'
         get_key.assert_awaited_once_with()
+        verify_existing_key.assert_awaited_once_with(
+            'sk-old-managed-key',
+            'user-123',
+            str(org_id),
+            openhands_type=True,
+        )
         verify_key.assert_awaited_once_with('sk-old-managed-key', 'user-123')
         rotate_key.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_rotates_wrong_user_key(
+        self, monkeypatch
+    ):
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'member-user'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+
+        get_key = AsyncMock(return_value='sk-admin-managed-key')
+        rotate_key = AsyncMock(
+            return_value=SimpleNamespace(status='rotated', new_key='sk-member-key')
+        )
+        verify_existing_key = AsyncMock(return_value=False)
+        verify_key = AsyncMock(return_value=True)
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=get_key,
+            rotate_key=rotate_key,
+            verify_key=verify_key,
+            verify_existing_key=verify_existing_key,
+        )
+
+        llm = LLM(
+            model='openhands/gpt-5.5',
+            base_url='https://llm-proxy.app.all-hands.dev',
+            api_key=SecretStr('sk-admin-managed-key'),
+        )
+
+        refreshed = await self.service._maybe_refresh_managed_llm_key(
+            self.mock_user, llm
+        )
+
+        assert refreshed.api_key.get_secret_value() == 'sk-member-key'
+        verify_existing_key.assert_awaited_once_with(
+            'sk-admin-managed-key',
+            'member-user',
+            str(org_id),
+            openhands_type=True,
+        )
+        verify_key.assert_not_awaited()
+        rotate_key.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_keeps_owned_valid_key(
+        self, monkeypatch
+    ):
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'member-user'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+
+        get_key = AsyncMock(return_value='sk-member-managed-key')
+        rotate_key = AsyncMock()
+        verify_existing_key = AsyncMock(return_value=True)
+        verify_key = AsyncMock(return_value=True)
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=get_key,
+            rotate_key=rotate_key,
+            verify_key=verify_key,
+            verify_existing_key=verify_existing_key,
+        )
+
+        llm = LLM(
+            model='openhands/gpt-5.5',
+            base_url='https://llm-proxy.app.all-hands.dev',
+            api_key=SecretStr('sk-member-managed-key'),
+        )
+
+        refreshed = await self.service._maybe_refresh_managed_llm_key(
+            self.mock_user, llm
+        )
+
+        assert refreshed is llm
+        verify_existing_key.assert_awaited_once_with(
+            'sk-member-managed-key',
+            'member-user',
+            str(org_id),
+            openhands_type=True,
+        )
+        verify_key.assert_awaited_once_with('sk-member-managed-key', 'member-user')
+        rotate_key.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_maybe_refresh_managed_llm_key_skips_non_saas(self, monkeypatch):

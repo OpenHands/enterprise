@@ -30,6 +30,17 @@ def test_org_update_keeps_sparse_diff_dicts():
     assert update_data.conversation_settings_diff == {'security_analyzer': 'llm'}
 
 
+def test_org_update_identifies_only_llm_default_changes():
+    assert OrgUpdate(
+        agent_settings_diff={'llm': {'model': 'openhands/claude-3'}}
+    ).touches_llm_defaults()
+    assert OrgUpdate(llm_api_key='').touches_llm_defaults()
+    assert not OrgUpdate(
+        conversation_settings_diff={'max_iterations': 42}
+    ).touches_llm_defaults()
+    assert not OrgUpdate(search_api_key='search-key').touches_llm_defaults()
+
+
 def test_normalize_agent_settings_masks_api_key_in_json_on_empty_and_real_keys():
     """Nested api_key values are lifted and masked in the JSON patch."""
     real_key = OrgUpdate.model_validate(
