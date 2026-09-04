@@ -47,7 +47,14 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.services.jwt_service import JwtService
 
-signature_verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+# slack-sdk>=3.43 validates that signing_secret is a non-empty str and raises
+# ValueError otherwise, which breaks module import when the secret is unset
+# (e.g. in tests). Construct only when a secret is configured.
+signature_verifier = (
+    SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+    if SLACK_SIGNING_SECRET
+    else None
+)
 slack_router = APIRouter(prefix='/slack')
 
 # Build https://slack.com/oauth/v2/authorize with sufficient query parameters
