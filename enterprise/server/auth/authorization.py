@@ -265,6 +265,10 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.MANAGE_SUPER_ADMINS,
             Permission.MANAGE_FEATURE_FLAGS,
             Permission.MANAGE_ORG_QUOTA,
+            # Cross-org read access used by the SaaS automation proxy. Keep
+            # mutation access org-scoped: this deliberately does not grant
+            # MANAGE_AUTOMATIONS.
+            Permission.VIEW_AUTOMATIONS,
         ]
     ),
     RoleName.MEMBER: frozenset(),

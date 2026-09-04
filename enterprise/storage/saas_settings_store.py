@@ -39,6 +39,7 @@ from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
+from openhands.sdk.llm.meta_profile_store import MetaProfile
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
@@ -124,10 +125,65 @@ _ORG_OWNED_SETTINGS_KEYS = frozenset(
     }
 )
 
+# Model Router activation is an organization-wide choice. Keep these values out
+# of member diffs so stale per-user settings cannot shadow a later activation.
+_ORG_OWNED_AGENT_SETTINGS_KEYS = frozenset(
+    {
+        'enable_classify_and_switch_llm_tool',
+        'active_meta_profile',
+        'meta_profile',
+    }
+)
+
 
 @dataclass
 class SaasSettingsStore(SettingsStore):
     user_id: str
+
+    @staticmethod
+    def _hydrate_model_router_llms(
+        org: Org,
+        agent_settings: dict[str, Any],
+        effective_llm_api_key: SecretStr | str | None,
+    ) -> None:
+        """Resolve a cloud meta-profile's named LLMs into the launch payload."""
+        raw_meta_profile = agent_settings.get('meta_profile')
+        if (
+            not agent_settings.get('enable_classify_and_switch_llm_tool')
+            or not raw_meta_profile
+        ):
+            return
+
+        # Import lazily to avoid a storage -> routes cycle during app startup.
+        from server.routes.org_profiles import _resolve_provider_connection
+
+        meta_profile = MetaProfile.model_validate(raw_meta_profile)
+        referenced_names = {
+            meta_profile.classifier_model,
+            meta_profile.default_model,
+            *(item.model for item in meta_profile.classes),
+        }
+        profiles = load_llm_profiles(org)
+        if meta_profile.prompt_template is not None:
+            referenced_names.update(profiles.profiles)
+        resolved_llms: dict[str, Any] = {}
+        for name in sorted(referenced_names):
+            llm = profiles.get(name)
+            if llm is None:
+                raise ValueError(
+                    f'Model Router references missing LLM profile {name!r}'
+                )
+            llm = _resolve_provider_connection(org, llm)
+            llm = resolve_profile_llm(
+                llm,
+                managed_proxy_url=LITE_LLM_API_URL,
+                fallback_api_key=effective_llm_api_key,
+            )
+            resolved_llms[name] = llm.model_dump(
+                mode='json', context={'expose_secrets': True}
+            )
+        agent_settings['meta_profile_llms'] = resolved_llms
+
     # When set, overrides the user's `current_org_id` for both `load()` and
     # `store()`. Used to honor a request's effective org (api_key_org_id >
     # X-Org-Id header > user.current_org_id) so an API key minted for org A
@@ -374,6 +430,8 @@ class SaasSettingsStore(SettingsStore):
         org_agent_settings = OrgStore.get_agent_settings_from_org(org)
         member_agent_settings_diff = dict(org_member.agent_settings_diff)
         member_agent_settings_diff.pop('mcp_config', None)
+        for org_owned_key in _ORG_OWNED_AGENT_SETTINGS_KEYS:
+            member_agent_settings_diff.pop(org_owned_key, None)
         member_mcp_config = org_member.effective_mcp_config
 
         kwargs = {
@@ -535,6 +593,30 @@ class SaasSettingsStore(SettingsStore):
                 kwargs['active_agent_profile_id'] = resolved_id
                 kwargs['active_agent_profile_revision'] = resolved_revision
 
+            # The router is an org-wide launch policy, so retain it even when an
+            # active Agent Profile replaces the rest of the composed settings.
+            for router_key in _ORG_OWNED_AGENT_SETTINGS_KEYS:
+                if router_key in merged_agent_settings:
+                    kwargs['agent_settings'][router_key] = merged_agent_settings[
+                        router_key
+                    ]
+
+            try:
+                self._hydrate_model_router_llms(
+                    org,
+                    kwargs['agent_settings'],
+                    effective_llm_api_key,
+                )
+            except Exception:
+                logger.warning(
+                    'Failed to hydrate Model Router LLMs for org %s; disabling it '
+                    'for this conversation launch',
+                    org_id,
+                    exc_info=True,
+                )
+                kwargs['agent_settings']['enable_classify_and_switch_llm_tool'] = False
+                kwargs['agent_settings']['meta_profile_llms'] = {}
+
         settings = Settings(**kwargs)
         settings._mcp_config_updated = False
         if resolution_requested:
@@ -690,6 +772,7 @@ class SaasSettingsStore(SettingsStore):
                 key: value
                 for key, value in effective_agent_settings_diff.items()
                 if key not in MEMBER_PRIVATE_AGENT_KEYS
+                and key not in _ORG_OWNED_AGENT_SETTINGS_KEYS
             }
             effective_conversation_diff = item.conversation_settings.model_dump(
                 mode='json'
@@ -751,6 +834,8 @@ class SaasSettingsStore(SettingsStore):
             member_agent_settings_diff = dict(org_member.agent_settings_diff)
             for private_key in MEMBER_PRIVATE_AGENT_KEYS:
                 member_agent_settings_diff.pop(private_key, None)
+            for org_owned_key in _ORG_OWNED_AGENT_SETTINGS_KEYS:
+                member_agent_settings_diff.pop(org_owned_key, None)
             # Single assignment so SQLAlchemy tracks the JSON column change.
             org_member.agent_settings_diff = deep_merge(
                 member_agent_settings_diff,
