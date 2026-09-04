@@ -118,7 +118,6 @@ class SaaSGitLabService(GitLabService):
                 groups_with_admin_access.extend(response)
                 page += 1
 
-                # Check if we've reached the last page
                 link_header = headers.get('Link', '')
                 if 'rel="next"' not in link_header:
                     break

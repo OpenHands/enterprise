@@ -67,6 +67,40 @@ class OrgMemberService:
         return MeResponse.from_org_member(org_member, role, email, super_role)
 
     @staticmethod
+    async def get_org_member(org_id: UUID, user_id: UUID) -> OrgMemberResponse:
+        """Get a single organization member's public record (id, email, role).
+
+        Args:
+            org_id: Organization ID (UUID)
+            user_id: ID of the member to look up (UUID)
+
+        Returns:
+            OrgMemberResponse: The member's public data
+
+        Raises:
+            OrgMemberNotFoundError: If user_id is not a member of the organization
+            RoleNotFoundError: If the role associated with the member is not found
+        """
+        org_member = await OrgMemberStore.get_org_member(org_id, user_id)
+        if org_member is None:
+            raise OrgMemberNotFoundError(str(org_id), str(user_id))
+
+        role = await RoleStore.get_role_by_id(org_member.role_id)
+        if role is None:
+            raise RoleNotFoundError(org_member.role_id)
+
+        user = await UserStore.get_user_by_id(str(user_id))
+
+        return OrgMemberResponse(
+            user_id=str(org_member.user_id),
+            email=user.email if user else None,
+            role_id=org_member.role_id,
+            role=role.name,
+            role_rank=role.rank,
+            status=org_member.status,
+        )
+
+    @staticmethod
     async def get_org_members(
         org_id: UUID,
         current_user_id: UUID,
@@ -86,14 +120,13 @@ class OrgMemberService:
         Returns:
             Tuple of (success, error_code, data). If success is True, error_code is None.
         """
-        # Verify current user is a member of the organization
         requester_membership = await OrgMemberStore.get_org_member(
             org_id, current_user_id
         )
         if not requester_membership:
             return False, 'not_a_member', None
 
-        # Parse page_id to get offset (page_id is offset encoded as string)
+        # page_id is the offset encoded as a string
         offset = 0
         if page_id is not None:
             try:
@@ -103,7 +136,6 @@ class OrgMemberService:
             except ValueError:
                 return False, 'invalid_page_id', None
 
-        # Call store to get paginated members
         members, _ = await OrgMemberStore.get_org_members_paginated(
             org_id=org_id,
             offset=offset,
@@ -111,7 +143,6 @@ class OrgMemberService:
             email_filter=email_filter,
         )
 
-        # Transform data to response format
         items = []
         for member in members:
             # Access user and role relationships (eagerly loaded)
@@ -184,18 +215,15 @@ class OrgMemberService:
         Returns:
             Tuple of (success, error_message). If success is True, error_message is None.
         """
-        # Get current user's membership in the org
         requester_membership = await OrgMemberStore.get_org_member(
             org_id, current_user_id
         )
         if not requester_membership:
             return False, 'not_a_member'
 
-        # Check if trying to remove self
         if str(current_user_id) == str(target_user_id):
             return False, 'cannot_remove_self'
 
-        # Get target user's membership
         target_membership = await OrgMemberStore.get_org_member(org_id, target_user_id)
         if not target_membership:
             return False, 'member_not_found'
@@ -206,29 +234,25 @@ class OrgMemberService:
         if not requester_role or not target_role:
             return False, 'role_not_found'
 
-        # Check permission based on roles
         if not OrgMemberService._can_remove_member(
             requester_role.name, target_role.name
         ):
             return False, 'insufficient_permission'
 
-        # Check if removing the last owner
         if target_role.name == ROLE_OWNER:
             if await OrgMemberService._is_last_owner(org_id, target_user_id):
                 return False, 'cannot_remove_last_owner'
 
-        # Perform the removal
         success = await OrgMemberStore.remove_user_from_org(org_id, target_user_id)
         if not success:
             return False, 'removal_failed'
 
-        # Update user's current_org_id if it points to the org they were removed from
         user = await UserStore.get_user_by_id(str(target_user_id))
         if user and user.current_org_id == org_id:
-            # Set current_org_id to personal workspace (org.id == user.id)
+            # Fall back to the user's personal workspace (org.id == user.id)
             await UserStore.update_current_org(str(target_user_id), target_user_id)
 
-        # If database removal succeeded, also remove from LiteLLM team
+        # DB removal already succeeded; keep LiteLLM eventually consistent even if this fails.
         try:
             await LiteLlmManager.remove_user_from_team(str(target_user_id), str(org_id))
             logger.info(
@@ -239,8 +263,6 @@ class OrgMemberService:
                 },
             )
         except Exception as e:
-            # Log but don't fail the operation - database removal already succeeded
-            # LiteLLM state will be eventually consistent
             logger.warning(
                 'Failed to remove user from LiteLLM team',
                 extra={
@@ -286,23 +308,19 @@ class OrgMemberService:
         """
         new_role_name = update_data.role
 
-        # Get current user's membership in the org
         requester_membership = await OrgMemberStore.get_org_member(
             org_id, current_user_id
         )
         if not requester_membership:
             raise OrgMemberNotFoundError(str(org_id), str(current_user_id))
 
-        # Check if trying to modify self
         if str(current_user_id) == str(target_user_id):
             raise CannotModifySelfError('modify')
 
-        # Get target user's membership
         target_membership = await OrgMemberStore.get_org_member(org_id, target_user_id)
         if not target_membership:
             raise OrgMemberNotFoundError(str(org_id), str(target_user_id))
 
-        # Get roles
         requester_role = await RoleStore.get_role_by_id(requester_membership.role_id)
         target_role = await RoleStore.get_role_by_id(target_membership.role_id)
 
@@ -311,7 +329,6 @@ class OrgMemberService:
         if not target_role:
             raise RoleNotFoundError(target_membership.role_id)
 
-        # If no role change requested, return current state
         if new_role_name is None:
             user = await UserStore.get_user_by_id(str(target_user_id))
             return OrgMemberResponse(
@@ -323,12 +340,10 @@ class OrgMemberService:
                 status=target_membership.status,
             )
 
-        # Validate new role exists
         new_role = await RoleStore.get_role_by_name(new_role_name.lower())
         if not new_role:
             raise InvalidRoleError(new_role_name)
 
-        # Check permission to modify target
         if not OrgMemberService._can_update_member_role(
             requester_role.name, target_role.name, new_role.name
         ):
@@ -336,7 +351,6 @@ class OrgMemberService:
                 'You do not have permission to modify this member'
             )
 
-        # Check if demoting the last owner
         if (
             target_role.name == ROLE_OWNER
             and new_role.name != ROLE_OWNER
@@ -344,14 +358,12 @@ class OrgMemberService:
         ):
             raise LastOwnerError('demote')
 
-        # Perform the update
         updated_member = await OrgMemberStore.update_user_role_in_org(
             org_id, target_user_id, new_role.id
         )
         if not updated_member:
             raise MemberUpdateError('Failed to update member')
 
-        # Get user email for response
         user = await UserStore.get_user_by_id(str(target_user_id))
 
         return OrgMemberResponse(

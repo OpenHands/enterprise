@@ -59,11 +59,9 @@ async def get_user_proactive_conversation_setting(user_id: str | None) -> bool:
         This function checks both the global environment variable kill switch AND
         the user's individual setting. Both must be true for the function to return true.
     """
-    # If no user ID is provided, we can't check user settings
     if not user_id:
         return False
 
-    # Check global setting first - if disabled globally, return False
     if not ENABLE_PROACTIVE_CONVERSATION_STARTERS:
         return False
 
@@ -197,18 +195,14 @@ class GithubIssue(ResolverViewInterface):
 
         initial_user_text = await self._get_v1_initial_user_message(jinja_env)
 
-        # Create the initial message request
         initial_message = SendMessageRequest(
             role='user', content=[TextContent(text=initial_user_text)]
         )
 
-        # Create the GitHub V1 callback processor
         github_callback_processor = self._create_github_v1_callback_processor()
 
-        # Get the app conversation service and start the conversation
         injector_state = InjectorState()
 
-        # Create the V1 conversation start request with the callback processor
         start_request = AppConversationStartRequest(
             conversation_id=conversation_id,
             # NOTE: Resolver instructions are intended to be lower priority than the
@@ -220,12 +214,9 @@ class GithubIssue(ResolverViewInterface):
             git_provider=ProviderType.GITHUB,
             title=f'GitHub Issue #{self.issue_number}: {self.title}',
             trigger=ConversationTrigger.RESOLVER,
-            processors=[
-                github_callback_processor
-            ],  # Pass the callback processor directly
+            processors=[github_callback_processor],
         )
 
-        # Set up the GitHub user context for the V1 system
         github_user_context = ResolverUserContext(
             saas_user_auth=saas_user_auth,
             resolver_org_id=self.resolved_org_id,
@@ -465,7 +456,6 @@ class GithubFailingAction:
     ) -> str:
         issues = []
 
-        # Collect failing actions with their specific names
         if failed_jobs['actions']:
             failing_actions = failed_jobs['actions']
             issues.append(('GitHub Actions are failing:', False))
@@ -475,7 +465,6 @@ class GithubFailingAction:
         if any(failed_jobs['merge conflict']):
             issues.append(('There are merge conflicts', False))
 
-        # Format each line with proper indentation and dashes
         formatted_issues = []
         for issue, is_nested in issues:
             if is_nested:
@@ -484,7 +473,6 @@ class GithubFailingAction:
                 formatted_issues.append(f'- {issue}')
         issues_text = '\n'.join(formatted_issues)
 
-        # Build list of possible suggestions based on actual issues
         suggestions = []
         branch_info = f' at branch `{branch_name}`' if branch_name else ''
 
@@ -497,7 +485,6 @@ class GithubFailingAction:
                 f'@OpenHands please fix the failing actions on PR #{pr_number}{branch_info}'
             )
 
-        # Take at most 2 suggestions
         suggestions = suggestions[:2]
 
         help_text = """If you'd like me to help, just leave a comment, like
@@ -528,10 +515,8 @@ Feel free to include any additional details that might help me get this PR into 
 
         logger.info(f'[GitHub] Found failing jobs for PR #{pr.number}: {failed_jobs}')
 
-        # Get the branch name
         branch_name = pr_obj.head.ref
 
-        # Get suggestions with branch name included
         suggestions = GithubFailingAction.get_suggestions(
             failed_jobs, pr.number, branch_name
         )
@@ -543,11 +528,6 @@ Feel free to include any additional details that might help me get this PR into 
 GithubViewType = (
     GithubInlinePRComment | GithubPRComment | GithubIssueComment | GithubIssue
 )
-
-
-# =================================================
-# SECTION: Factory to create appriorate Github view
-# =================================================
 
 
 class GithubFactory:
@@ -657,7 +637,6 @@ class GithubFactory:
                 f'Failed to get user ID for proactive conversation check: {str(e)}'
             )
 
-        # Check if proactive conversations are enabled for this user
         if not await get_user_proactive_conversation_setting(user_id):
             return False
 
@@ -677,7 +656,6 @@ class GithubFactory:
                     else payload['sender']['login']
                 )
 
-                # See if a pull request is open
                 open_pulls = repo.get_pulls(state='open', head=f'{login}:{head_branch}')
                 if open_pulls.totalCount > 0:
                     prs = open_pulls.get_page(0)
@@ -694,7 +672,6 @@ class GithubFactory:
         incoming_commit = payload['workflow_run']['head_sha']
         latest_sha = GithubFailingAction.get_latest_sha(issue)
         if latest_sha != incoming_commit:
-            # Return as this commit is not the latest
             return False
 
         convo_store = ProactiveConversationStore()

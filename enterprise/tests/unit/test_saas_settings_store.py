@@ -457,9 +457,11 @@ async def test_ensure_api_key_rotates_invalid_fallback_key():
 
 @pytest.mark.asyncio
 async def test_ensure_api_key_generates_new_key_when_verification_fails():
-    """When verification fails, a new managed key is minted under the shared
+    """When verification fails, a new managed key is minted under the shared.
+
     alias after deleting any prior key — symmetric across model types so
-    switching to/from an openhands/* model never orphans a key."""
+    switching to/from an openhands/* model never orphans a key.
+    """
     from storage.lite_llm_manager import get_openhands_cloud_key_alias
 
     store = SaasSettingsStore('test-user-id-123')
@@ -806,19 +808,25 @@ async def test_store_does_not_persist_analytics_consent_override(
 
 
 @pytest.mark.asyncio
-async def test_store_updates_org_defaults_and_all_members_for_shared_keys(
+async def test_store_syncs_external_provider_key_without_broadcasting_settings(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """External provider keys should still sync as an org-wide shared snapshot."""
+    """A BYOR provider key stays org-wide; the settings around it do not.
+
+    The external key is the org's key for the shared provider, so it still
+    fans out to every member row. The agent/conversation settings saved
+    alongside it must land on the acting member only.
+    """
     from sqlalchemy import select
     from storage.org import Org
     from storage.org_member import OrgMember
 
     fixture = org_with_multiple_members_fixture
     org_id = fixture['org_id']
+    admin_user_id = str(fixture['admin_user_id'])
     decrypt_value = fixture['decrypt_value']
 
-    store = SaasSettingsStore(str(fixture['admin_user_id']))
+    store = SaasSettingsStore(admin_user_id)
     new_settings = _make_settings(
         model='anthropic/claude-sonnet-4',
         base_url='https://api.anthropic.com/v1',
@@ -832,9 +840,8 @@ async def test_store_updates_org_defaults_and_all_members_for_shared_keys(
     with session_maker() as session:
         org = session.execute(select(Org).where(Org.id == org_id)).scalars().first()
         assert org is not None
-        assert org.agent_settings['llm']['model'] == 'anthropic/claude-sonnet-4'
-        assert org.agent_settings['llm']['base_url'] == 'https://api.anthropic.com/v1'
-        assert org.conversation_settings['max_iterations'] == 100
+        assert org.agent_settings == {}
+        assert org.conversation_settings == {}
 
         members = {
             str(member.user_id): member
@@ -846,17 +853,204 @@ async def test_store_updates_org_defaults_and_all_members_for_shared_keys(
         }
         assert len(members) == 3
 
+        # The shared provider key still reaches every member row.
         for member in members.values():
-            assert (
-                member.agent_settings_diff['llm']['model']
-                == 'anthropic/claude-sonnet-4'
-            )
-            assert (
-                member.agent_settings_diff['llm']['base_url']
-                == 'https://api.anthropic.com/v1'
-            )
-            assert member.conversation_settings_diff['max_iterations'] == 100
             assert decrypt_value(member._llm_api_key) == 'shared-external-api-key'
+
+        # Only the acting member's settings changed.
+        admin_member = members[admin_user_id]
+        assert admin_member.agent_settings_diff['llm']['model'] == (
+            'anthropic/claude-sonnet-4'
+        )
+        assert admin_member.agent_settings_diff['llm']['base_url'] == (
+            'https://api.anthropic.com/v1'
+        )
+        assert admin_member.conversation_settings_diff['max_iterations'] == 100
+
+        member1 = members[str(fixture['member1_user_id'])]
+        member2 = members[str(fixture['member2_user_id'])]
+        assert member1.agent_settings_diff['llm']['model'] == 'old-model-v2'
+        assert member1.conversation_settings_diff['max_iterations'] == 20
+        assert member2.agent_settings_diff['llm']['model'] == 'old-model-v3'
+        assert member2.conversation_settings_diff['max_iterations'] == 30
+
+
+@pytest.mark.asyncio
+async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """GIVEN: An org whose default harness is ``openhands`` and two members.
+
+        with their own agent settings
+    WHEN: One member switches their own agent to ACP/Codex via the per-user
+        settings save (``POST /api/v1/settings``, no role gate)
+    THEN: Only that member's row changes — the org default and every other
+        member keep the ``openhands`` harness, so members without Codex
+        credentials can still start conversations.
+    """
+    from sqlalchemy import select, update
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    # Arrange - give the org an explicit openhands default to overwrite.
+    fixture = org_with_multiple_members_fixture
+    org_id = fixture['org_id']
+    member1_user_id = fixture['member1_user_id']
+    member2_user_id = fixture['member2_user_id']
+    org_default_agent_settings = {
+        'agent_kind': 'openhands',
+        'llm': {'model': 'openhands/claude-sonnet-4-5', 'base_url': LITE_LLM_API_URL},
+    }
+    with session_maker() as session:
+        session.execute(
+            update(Org)
+            .where(Org.id == org_id)
+            .values(agent_settings=org_default_agent_settings)
+        )
+        session.commit()
+
+    acp_settings = _make_settings(
+        model='anthropic/claude-sonnet-4',
+        base_url='https://api.anthropic.com/v1',
+        api_key='member1-byor-key',
+        agent_kind='acp',
+        acp_server='codex',
+    )
+
+    # Act - member 1 saves their own settings.
+    with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
+        await SaasSettingsStore(str(member1_user_id)).store(acp_settings)
+
+    with session_maker() as session:
+        org = session.execute(select(Org).where(Org.id == org_id)).scalars().first()
+        members = {
+            m.user_id: m
+            for m in session.execute(
+                select(OrgMember).where(OrgMember.org_id == org_id)
+            )
+            .scalars()
+            .all()
+        }
+
+    # Assert - the org default is untouched.
+    assert org is not None
+    assert org.agent_settings == org_default_agent_settings
+    assert org.agent_settings['agent_kind'] == 'openhands'
+
+    # Assert - member 2 never hears about ACP.
+    member2_diff = members[member2_user_id].agent_settings_diff
+    assert 'agent_kind' not in member2_diff
+    assert 'acp_server' not in member2_diff
+    assert member2_diff == {
+        'llm': {'model': 'old-model-v3', 'base_url': 'http://old-url-3.com'},
+    }
+
+    # Assert - the acting member's own save still persisted.
+    member1_diff = members[member1_user_id].agent_settings_diff
+    assert member1_diff['agent_kind'] == 'acp'
+    assert member1_diff['acp_server'] == 'codex'
+    assert member1_diff['llm']['model'] == 'anthropic/claude-sonnet-4'
+
+
+@pytest.mark.asyncio
+async def test_store_repropagates_rotated_shared_llm_api_key(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """A replacement shared provider key must reach every member, not just the.
+
+    first one written.
+    """
+    from sqlalchemy import select
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    org_id = fixture['org_id']
+    decrypt_value = fixture['decrypt_value']
+    store = SaasSettingsStore(str(fixture['admin_user_id']))
+
+    def _byor_settings(api_key: str):
+        return _make_settings(
+            model='anthropic/claude-sonnet-4',
+            base_url='https://api.anthropic.com/v1',
+            api_key=api_key,
+        )
+
+    with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
+        await store.store(_byor_settings('shared-key-v1'))
+        await store.store(_byor_settings('shared-key-v2'))
+
+    with session_maker() as session:
+        members = (
+            session.execute(select(OrgMember).where(OrgMember.org_id == org_id))
+            .scalars()
+            .all()
+        )
+
+    assert len(members) == 3
+    for member in members:
+        assert decrypt_value(member._llm_api_key) == 'shared-key-v2'
+
+
+@pytest.mark.asyncio
+async def test_store_preserves_member_mcp_config_across_scoped_save(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """The dedicated ``mcp_config`` column survives a member-scoped save.
+
+    ``mcp_config`` is a MEMBER_PRIVATE_AGENT_KEY, so it is stripped from the
+    ``agent_settings_diff`` merge and round-trips through its own column
+    instead — a later save that doesn't mention it must not drop it.
+    """
+    from sqlalchemy import select
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    org_id = fixture['org_id']
+    admin_user_id = fixture['admin_user_id']
+    store = SaasSettingsStore(str(admin_user_id))
+
+    with_mcp = _make_settings(
+        model='anthropic/claude-sonnet-4',
+        base_url='https://api.anthropic.com/v1',
+        api_key='byor-key',
+        mcp_config={'integration-hub': {'url': 'https://mcp.example.com'}},
+    )
+    without_mcp = _make_settings(
+        model='anthropic/claude-opus-4-5',
+        base_url='https://api.anthropic.com/v1',
+        api_key='byor-key',
+    )
+
+    with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
+        await store.store(with_mcp)
+        await store.store(without_mcp)
+
+    with session_maker() as session:
+        org = session.execute(select(Org).where(Org.id == org_id)).scalars().first()
+        members = {
+            m.user_id: m
+            for m in session.execute(
+                select(OrgMember).where(OrgMember.org_id == org_id)
+            )
+            .scalars()
+            .all()
+        }
+
+    admin_member = members[admin_user_id]
+    assert admin_member.mcp_config == {
+        'integration-hub': {'url': 'https://mcp.example.com'}
+    }
+    # Stripped from the diff, and the newer save still landed.
+    assert 'mcp_config' not in admin_member.agent_settings_diff
+    assert (
+        admin_member.agent_settings_diff['llm']['model'] == 'anthropic/claude-opus-4-5'
+    )
+    # Never leaks to the org defaults or to other members.
+    assert org is not None
+    assert 'mcp_config' not in org.agent_settings
+    assert members[fixture['member1_user_id']].mcp_config is None
+    assert members[fixture['member2_user_id']].mcp_config is None
 
 
 @pytest.mark.asyncio
@@ -1082,12 +1276,9 @@ async def test_store_keeps_openhands_managed_keys_member_specific(
     with session_maker() as session:
         org = session.execute(select(Org).where(Org.id == org_id)).scalars().first()
         assert org is not None
-        # Settings keeps the public openhands/ provider prefix in persisted data
-        assert (
-            org.agent_settings['llm']['model'] == 'openhands/claude-opus-4-5-20251101'
-        )
-        assert org.agent_settings['llm']['base_url'] == LITE_LLM_API_URL
-        assert org.conversation_settings['max_iterations'] == 75
+        # A member's own save never rewrites the org-wide defaults.
+        assert org.agent_settings == {}
+        assert org.conversation_settings == {}
 
         members = {
             str(member.user_id): member
@@ -1107,13 +1298,18 @@ async def test_store_keeps_openhands_managed_keys_member_specific(
         assert decrypt_value(member1._llm_api_key) == 'member1-initial-key'
         assert decrypt_value(member2._llm_api_key) == 'member2-initial-key'
 
-        for member in members.values():
-            assert (
-                member.agent_settings_diff['llm']['model']
-                == 'openhands/claude-opus-4-5-20251101'
+        # Settings keeps the public openhands/ provider prefix in persisted data
+        assert admin_member.agent_settings_diff['llm']['model'] == (
+            'openhands/claude-opus-4-5-20251101'
+        )
+        assert admin_member.agent_settings_diff['llm']['base_url'] == LITE_LLM_API_URL
+        assert admin_member.conversation_settings_diff['max_iterations'] == 75
+
+        for member in (member1, member2):
+            assert member.agent_settings_diff['llm']['model'] != (
+                'openhands/claude-opus-4-5-20251101'
             )
-            assert member.agent_settings_diff['llm']['base_url'] == LITE_LLM_API_URL
-            assert member.conversation_settings_diff['max_iterations'] == 75
+            assert member.conversation_settings_diff['max_iterations'] != 75
 
 
 @pytest.mark.asyncio
@@ -1142,10 +1338,9 @@ async def test_store_keeps_mcp_config_private_to_acting_member(
             'user1': {'url': 'https://user1-mcp-server.com', 'transport': 'sse'}
         },
     }
-    # The SDK 1.31.x wire format stores ``mcp_config`` as a flat server
-    # map; ``Settings.update`` still accepts the legacy wrapper for
-    # backwards compatibility, but ``model_dump(mode='json')`` — which is
-    # what ``_get_persisted_agent_settings`` uses — no longer wraps.
+    # ``mcp_config`` is stored as a flat server map (no ``mcpServers`` wrapper);
+    # ``model_dump(mode='json')`` used by ``_get_persisted_agent_settings``
+    # produces this flat shape.
     persisted_mcp_config = {
         'user1': {'url': 'https://user1-mcp-server.com', 'transport': 'sse'},
     }
@@ -1194,7 +1389,8 @@ async def test_store_keeps_mcp_config_private_to_acting_member(
 async def test_store_skips_ensure_api_key_for_non_openhands_model_without_base_url(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """When saving a non-OpenHands model with no base URL (basic view BYOR),
+    """When saving a non-OpenHands model with no base URL (basic view BYOR).
+
     _ensure_api_key should NOT be called, preserving the user's custom API key.
 
     This is the primary bug fix: users selecting e.g. OpenAI in basic view and
@@ -1452,7 +1648,8 @@ async def test_load_degrades_malformed_detached_mcp_config(
 async def test_load_drops_legacy_org_level_mcp_config(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """Legacy org-level mcp_config (from before the fix) must not leak
+    """Legacy org-level mcp_config (from before the fix) must not leak.
+
     to members on load. Members without their own mcp_config see ``None``
     even if the org row still carries a stale value in the database.
     """
@@ -1508,9 +1705,11 @@ async def test_load_drops_legacy_org_level_mcp_config(
 async def test_store_and_load_llm_profiles_round_trip(
     async_session_maker, org_with_multiple_members_fixture
 ):
-    """Saved llm_profiles must persist on the User row and round-trip through
+    """Saved llm_profiles must persist on the User row and round-trip through.
+
     store → load. Without the user.llm_profiles column they are silently
-    dropped on store and always default to empty on load."""
+    dropped on store and always default to empty on load.
+    """
     from openhands.sdk.llm import LLM
 
     fixture = org_with_multiple_members_fixture
@@ -1694,10 +1893,12 @@ async def test_load_persists_seeded_default_profile_onto_org(
 async def test_llm_profiles_are_encrypted_at_rest(
     async_session_maker, org_with_multiple_members_fixture
 ):
-    """The raw value in the user.llm_profiles column must be ciphertext, not
+    """The raw value in the user.llm_profiles column must be ciphertext, not.
+
     a JSON dict — profile api_keys would otherwise leak in DB dumps,
     replicas, and backups. Mirrors the encryption invariant org and
-    org_member already enforce on _llm_api_key."""
+    org_member already enforce on _llm_api_key.
+    """
     from sqlalchemy import select, text
     from storage.user import User
 
@@ -1909,7 +2110,8 @@ async def test_partial_store_preserves_malformed_legacy_member_mcp_config(
 async def test_store_replaces_mcp_config_on_delete(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """Deleting a server from a member's mcp_config sticks on the acting
+    """Deleting a server from a member's mcp_config sticks on the acting.
+
     member's row and never touches other members' rows.
 
     Combines the APP-1862 wholesale-replacement contract (deletes are not
@@ -1983,9 +2185,8 @@ async def test_store_replaces_mcp_config_on_delete(
             .all()
         }
 
-    # The persisted ``mcp_config`` is the SDK 1.31.x flat server map (no
-    # ``mcpServers`` wrapper), so reach directly into it instead of going
-    # through the legacy wrapper key.
+    # ``mcp_config`` is stored as a flat server map (no ``mcpServers``
+    # wrapper); reach directly into it.
     admin_servers = members[admin_user_id].mcp_config or {}
     assert set(admin_servers.keys()) == {'server1', 'server2'}
     assert 'mcp_config' not in members[admin_user_id].agent_settings_diff
@@ -2082,3 +2283,74 @@ class TestGetEffectiveLlmApiKey:
         result = SaasSettingsStore._get_effective_llm_api_key(org, member)
 
         assert result is None
+
+
+@pytest.mark.asyncio
+async def test_acp_switch_does_not_overwrite_org_llm_profiles(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """A member switching to an ACP harness must not touch org.llm_profiles.
+
+    On installs where the org's LLM connection lives in a profile rather than
+    in agent_settings, that profile is the only record of the org's model and
+    base_url. Switching to ACP leaves agent_settings.llm at SDK defaults, so
+    letting a member's save reach the org row would overwrite the connection
+    with a placeholder.
+    """
+    from sqlalchemy import select
+    from storage.org import Org
+
+    from openhands.sdk.llm import LLM
+
+    fixture = org_with_multiple_members_fixture
+    org_id = fixture['org_id']
+    member_store = SaasSettingsStore(str(fixture['member1_user_id']))
+
+    good = LLM(
+        model='litellm_proxy/claude-sonnet-4-5-20250929',
+        base_url='http://openhands-litellm.openhands.svc.cluster.local:4000',
+        api_key=SecretStr('org-key'),
+    )
+    async with async_session_maker() as session:
+        org = (await session.execute(select(Org).where(Org.id == org_id))).scalar_one()
+        org.llm_profiles = {
+            'profiles': {'Default': good.model_dump(mode='json')},
+            'active': 'Default',
+        }
+        await session.commit()
+
+    settings = DataSettings()
+    settings.update({'agent_settings_diff': {'agent_kind': 'acp'}})
+    with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
+        await member_store.store(settings)
+
+    async with async_session_maker() as session:
+        org = (await session.execute(select(Org).where(Org.id == org_id))).scalar_one()
+    profile = (org.llm_profiles or {})['profiles']['Default']
+    assert profile['model'] == 'litellm_proxy/claude-sonnet-4-5-20250929'
+    assert (
+        profile['base_url']
+        == 'http://openhands-litellm.openhands.svc.cluster.local:4000'
+    )
+
+
+def test_profile_sync_skips_non_openhands_agent_kind():
+    """sync_active_profile_from_settings must leave the active profile alone.
+
+    for a non-OpenHands agent, whose llm block is an unused placeholder.
+    """
+    from openhands.sdk.llm import LLM
+
+    settings = DataSettings()
+    settings.llm_profiles.save(
+        'Default',
+        LLM(model='litellm_proxy/claude-sonnet-4-5-20250929', base_url='http://x:4000'),
+    )
+    settings.llm_profiles.active = 'Default'
+
+    settings.update({'agent_settings_diff': {'agent_kind': 'acp'}})
+    settings.sync_active_profile_from_settings()
+
+    active = settings.llm_profiles.require('Default')
+    assert active.model == 'litellm_proxy/claude-sonnet-4-5-20250929'
+    assert active.base_url == 'http://x:4000'

@@ -2364,3 +2364,114 @@ class TestOrgMemberServiceGetMe:
 
             # Assert
             assert result.email == ''
+
+
+class TestOrgMemberServiceGetOrgMember:
+    """Test cases for OrgMemberService.get_org_member."""
+
+    @pytest.fixture
+    def target_user(self, target_user_id):
+        """Create a mock User for the looked-up member."""
+        user = MagicMock(spec=User)
+        user.id = target_user_id
+        user.email = 'jdoe@acme.com'
+        return user
+
+    @pytest.mark.asyncio
+    async def test_get_org_member_returns_member_with_email(
+        self,
+        org_id,
+        target_user_id,
+        target_membership_user,
+        target_user,
+        member_role,
+    ):
+        """GIVEN: The target user is a member of the organization
+        WHEN: get_org_member is called
+        THEN: Returns the member's id, email, role and status
+        """
+        # Arrange
+        target_membership_user.status = 'active'
+        with (
+            patch(
+                'server.services.org_member_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+            ) as mock_get_member,
+            patch(
+                'server.services.org_member_service.RoleStore.get_role_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_role,
+            patch(
+                'server.services.org_member_service.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_user,
+        ):
+            mock_get_member.return_value = target_membership_user
+            mock_get_role.return_value = member_role
+            mock_get_user.return_value = target_user
+
+            # Act
+            result = await OrgMemberService.get_org_member(org_id, target_user_id)
+
+            # Assert
+            assert isinstance(result, OrgMemberResponse)
+            assert result.user_id == str(target_user_id)
+            assert result.email == 'jdoe@acme.com'
+            assert result.role == 'member'
+            assert result.role_rank == member_role.rank
+            assert result.status == 'active'
+            mock_get_member.assert_awaited_once_with(org_id, target_user_id)
+
+    @pytest.mark.asyncio
+    async def test_get_org_member_not_a_member_raises_error(
+        self, org_id, target_user_id
+    ):
+        """GIVEN: The target user is not a member of the organization
+        WHEN: get_org_member is called
+        THEN: Raises OrgMemberNotFoundError
+        """
+        # Arrange
+        with patch(
+            'server.services.org_member_service.OrgMemberStore.get_org_member',
+            new_callable=AsyncMock,
+        ) as mock_get_member:
+            mock_get_member.return_value = None
+
+            # Act & Assert
+            with pytest.raises(OrgMemberNotFoundError):
+                await OrgMemberService.get_org_member(org_id, target_user_id)
+
+    @pytest.mark.asyncio
+    async def test_get_org_member_without_user_record_returns_null_email(
+        self, org_id, target_user_id, target_membership_user, member_role
+    ):
+        """GIVEN: The membership exists but the user record cannot be loaded
+        WHEN: get_org_member is called
+        THEN: Returns the member with a null email instead of failing
+        """
+        # Arrange
+        target_membership_user.status = 'active'
+        with (
+            patch(
+                'server.services.org_member_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+            ) as mock_get_member,
+            patch(
+                'server.services.org_member_service.RoleStore.get_role_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_role,
+            patch(
+                'server.services.org_member_service.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_user,
+        ):
+            mock_get_member.return_value = target_membership_user
+            mock_get_role.return_value = member_role
+            mock_get_user.return_value = None
+
+            # Act
+            result = await OrgMemberService.get_org_member(org_id, target_user_id)
+
+            # Assert
+            assert result.user_id == str(target_user_id)
+            assert result.email is None

@@ -211,7 +211,6 @@ class JiraNewConversationView(JiraViewInterface):
         """
         logger.info('[Jira]: Initializing V1 conversation')
 
-        # Generate a conversation ID for V1
         conversation_id = uuid4()
         self.conversation_id = conversation_id.hex
         self.resolved_org_id = await self._get_resolved_org_id()
@@ -228,17 +227,14 @@ class JiraNewConversationView(JiraViewInterface):
 
         initial_user_text = await self._get_v1_initial_user_message(jinja_env)
 
-        # Create the initial message request
         initial_message = SendMessageRequest(
             role='user', content=[TextContent(text=initial_user_text)]
         )
 
-        # Create the Jira V1 callback processor
         jira_callback_processor = self._create_jira_v1_callback_processor()
 
         injector_state = InjectorState()
 
-        # Create the V1 conversation start request
         start_request = AppConversationStartRequest(
             conversation_id=conversation_id,
             system_message_suffix=None,
@@ -251,7 +247,6 @@ class JiraNewConversationView(JiraViewInterface):
             processors=[jira_callback_processor],
         )
 
-        # Set up the Jira user context for the V1 system
         jira_user_context = ResolverUserContext(
             saas_user_auth=self.saas_user_auth,
             resolver_org_id=self.resolved_org_id,
@@ -507,7 +502,6 @@ class JiraFactory:
             },
         )
 
-        # Create the view
         view = JiraNewConversationView(
             payload=payload,
             saas_user_auth=user_auth,
@@ -516,11 +510,10 @@ class JiraFactory:
             _decrypted_api_key=decrypted_api_key,
         )
 
-        # Fetch issue details (needed for repo inference)
         try:
             issue_title, issue_description = await view.get_issue_details()
         except StartingConvoException:
-            raise  # Re-raise with original message
+            raise
         except Exception as e:
             raise StartingConvoException('Failed to fetch issue details') from e
 

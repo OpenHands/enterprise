@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Dict
 
 from server.auth.auth_error import TokenRefreshError
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import OperationalError
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
@@ -99,6 +99,17 @@ class AuthTokenStore:
 
             await session.commit()  # Commit after transaction block
 
+    async def delete_tokens(self) -> None:
+        """Delete the stored auth tokens for this user and identity provider."""
+        async with a_session_maker() as session:
+            await session.execute(
+                delete(AuthTokens).where(
+                    AuthTokens.keycloak_user_id == self.keycloak_user_id,
+                    AuthTokens.identity_provider == self.identity_provider_value,
+                )
+            )
+            await session.commit()
+
     async def load_tokens(
         self,
         check_expiration_and_refresh: Callable[
@@ -148,7 +159,6 @@ class AuthTokenStore:
             if not token_record:
                 return None
 
-            # Check if token needs refresh
             access_expired, _ = self._is_token_expired(
                 token_record.access_token_expires_at,
                 token_record.refresh_token_expires_at,
@@ -263,7 +273,6 @@ class AuthTokenStore:
         access_token_expires_at = tokens['access_token_expires_at']
         current_time = int(time.time())
 
-        # Return True if the token is not expired (with a small buffer)
         return int(access_token_expires_at) > (current_time + 30)
 
     async def is_refresh_token_valid(self) -> bool:
@@ -279,7 +288,6 @@ class AuthTokenStore:
         refresh_token_expires_at = tokens['refresh_token_expires_at']
         current_time = int(time.time())
 
-        # Return True if the token is not expired (with a small buffer)
         return int(refresh_token_expires_at) > (current_time + 30)
 
     @classmethod

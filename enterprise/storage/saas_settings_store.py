@@ -37,10 +37,7 @@ from storage.user_store import UserStore
 from openhands.app_server.settings.llm_profiles import LLMProfiles, resolve_profile_llm
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
-from openhands.app_server.utils.jsonpatch_compat import (
-    deep_merge,
-    deep_merge_with_wholesale_keys,
-)
+from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
@@ -106,6 +103,26 @@ def managed_llm_key_config_from_model(
     if not uses_managed_llm_key:
         return None
     return ManagedLlmKeyConfig(openhands_type=openhands_type)
+
+
+# ``Settings`` fields that are also ``Org`` columns. The save loop below copies
+# matching keys onto the ``Org`` row, so these are held back: they are org-wide
+# defaults, set through the permission-gated ``POST /orgs/app``.
+_ORG_OWNED_SETTINGS_KEYS = frozenset(
+    {
+        'llm_api_key',
+        'agent_settings',
+        'conversation_settings',
+        'llm_profiles',
+        'enable_proactive_conversation_starters',
+        'max_budget_per_task',
+        'remote_runtime_resource_factor',
+        'sandbox_base_container_image',
+        'sandbox_runtime_container_image',
+        'sandbox_grouping_strategy',
+        'v1_enabled',
+    }
+)
 
 
 @dataclass
@@ -186,10 +203,12 @@ class SaasSettingsStore(SettingsStore):
 
     @staticmethod
     def _get_persisted_agent_settings(item: Settings) -> dict[str, Any]:
+        """Dump the agent settings to persist as this member's override."""
         persisted = item.agent_settings.model_dump(
             mode='json',
             exclude={'llm': {'api_key'}},
         )
+        # Lives in its own column.
         persisted.pop('mcp_config', None)
         return persisted
 
@@ -680,36 +699,17 @@ class SaasSettingsStore(SettingsStore):
                 item.sync_active_profile_from_settings()
                 self._strip_managed_profile_api_keys(item)
 
+            # Per-user save (POST /api/v1/settings), callable by any member, so
+            # it writes this member's row only. Org-wide defaults go through the
+            # permission-gated ``POST /orgs/app``.
             effective_agent_settings_diff = self._get_persisted_agent_settings(item)
-            shared_agent_settings_diff = {
+            agent_settings_update = {
                 key: value
                 for key, value in effective_agent_settings_diff.items()
                 if key not in MEMBER_PRIVATE_AGENT_KEYS
             }
-
-            # Strip any pre-existing private keys from the org dump before
-            # merging, so legacy values written by older code paths are
-            # cleaned up on the next save and stop leaking to other members.
-            org_agent_settings_dump = OrgStore.get_agent_settings_from_org(
-                org
-            ).model_dump(mode='json')
-            for private_key in MEMBER_PRIVATE_AGENT_KEYS:
-                org_agent_settings_dump.pop(private_key, None)
-
-            # Single assignment so SQLAlchemy tracks the change
-            org.agent_settings = deep_merge_with_wholesale_keys(
-                org_agent_settings_dump,
-                shared_agent_settings_diff,
-            )
-
             effective_conversation_diff = item.conversation_settings.model_dump(
                 mode='json'
-            )
-            org.conversation_settings = deep_merge(
-                OrgStore.get_conversation_settings_from_org(org).model_dump(
-                    mode='json'
-                ),
-                effective_conversation_diff,
             )
 
             kwargs = item.model_dump(context={'expose_secrets': True})
@@ -734,11 +734,7 @@ class SaasSettingsStore(SettingsStore):
                 if key == 'registered_marketplaces':
                     # Save personal marketplace settings to user_settings table
                     user_settings.registered_marketplaces = value
-                elif hasattr(org, key) and key not in {
-                    'llm_api_key',
-                    'agent_settings',
-                    'conversation_settings',
-                }:
+                elif hasattr(org, key) and key not in _ORG_OWNED_SETTINGS_KEYS:
                     setattr(org, key, value)
 
             current_member_llm_api_key = item.agent_settings.llm.api_key
@@ -754,12 +750,12 @@ class SaasSettingsStore(SettingsStore):
                 else None
             )
 
+            # A non-managed (BYOR) key is the org's key for the shared
+            # provider, so it does reach every member row.
             await OrgMemberStore.update_all_members_settings_async(
                 session,
                 org_id,
                 OrgMemberSettingsUpdate(
-                    agent_settings_diff=shared_agent_settings_diff,
-                    conversation_settings_diff=effective_conversation_diff,
                     llm_api_key=(
                         current_member_llm_api_key_raw  # type: ignore[arg-type]
                         if not uses_managed_llm_key
@@ -772,7 +768,15 @@ class SaasSettingsStore(SettingsStore):
             member_agent_settings_diff = dict(org_member.agent_settings_diff)
             for private_key in MEMBER_PRIVATE_AGENT_KEYS:
                 member_agent_settings_diff.pop(private_key, None)
-            org_member.agent_settings_diff = member_agent_settings_diff
+            # Single assignment so SQLAlchemy tracks the JSON column change.
+            org_member.agent_settings_diff = deep_merge(
+                member_agent_settings_diff,
+                agent_settings_update,
+            )
+            org_member.conversation_settings_diff = deep_merge(
+                dict(org_member.conversation_settings_diff),
+                effective_conversation_diff,
+            )
             org_member.title_llm_profile = item.title_llm_profile
             if item._mcp_config_updated:
                 org_member.mcp_config = self._get_persisted_mcp_config(item)

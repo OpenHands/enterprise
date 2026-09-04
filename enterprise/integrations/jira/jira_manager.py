@@ -55,7 +55,6 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 
 JIRA_CLOUD_API_URL = 'https://api.atlassian.com/ex/jira'
 
-# Get OH labels for this environment
 OH_LABEL, INLINE_OH_LABEL = get_oh_labels(HOST)
 
 
@@ -367,7 +366,6 @@ class JiraManager(Manager[JiraViewInterface]):
                 },
             )
 
-            # Create conversation
             conversation_id = await view.create_or_update_conversation(self.jinja_env)
 
             logger.info(
@@ -378,7 +376,6 @@ class JiraManager(Manager[JiraViewInterface]):
                 },
             )
 
-            # Create success message
             msg_info = view.get_response_msg()
 
         except MissingSettingsError as e:
@@ -419,7 +416,6 @@ class JiraManager(Manager[JiraViewInterface]):
             )
             msg_info = 'Sorry, there was an unexpected error starting the job. Please try again.'
 
-        # Send response comment
         await self._send_comment(view, msg_info)
 
     async def send_message(

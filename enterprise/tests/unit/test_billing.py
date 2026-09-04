@@ -119,6 +119,38 @@ def patched_checkout_session_makers(async_session_maker):
         yield
 
 
+class TestValidateBillingEnabled:
+    """Tests for the ENABLE_BILLING default-flag guard.
+
+    The guard delegates to the feature flag service's fault-tolerant
+    ``resolve`` (DB row first, registered default as fallback), so the test
+    surface is the service resolution, not billing-specific scaffolding.
+    """
+
+    @pytest.mark.asyncio
+    async def test_allows_when_flag_resolves_true(self):
+        with patch(
+            'server.routes.billing.feature_flag_service.resolve',
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_resolve:
+            await billing.validate_billing_enabled()
+        mock_resolve.assert_awaited_once_with('ENABLE_BILLING')
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_flag_resolves_false(self):
+        with (
+            patch(
+                'server.routes.billing.feature_flag_service.resolve',
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await billing.validate_billing_enabled()
+        assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+
+
 @pytest.fixture
 async def test_org(async_session_maker):
     """Create a test org in the database."""
@@ -206,7 +238,8 @@ async def test_get_credits_success():
 
 
 @pytest.mark.asyncio
-async def test_get_credits_returns_unconfigured_for_unlimited_personal_org():
+async def test_get_credits_returns_zero_for_personal_org_without_budget():
+    """A personal org with no max_budget has 0 credits, not an unlimited cap."""
     user_id = str(uuid.uuid4())
     with (
         patch('integrations.stripe_service.STRIPE_API_KEY', 'mock_key'),
@@ -220,11 +253,12 @@ async def test_get_credits_returns_unconfigured_for_unlimited_personal_org():
     ):
         result = await get_credits(user_id, uuid.UUID(user_id))
 
-    assert result.credits is None
+    assert result.credits == Decimal('0.00')
 
 
 @pytest.mark.asyncio
-async def test_get_credits_returns_unconfigured_for_unlimited_team_org():
+async def test_get_credits_returns_zero_for_team_org_without_budget():
+    """A team org with no max_budget has 0 credits, not an unlimited cap."""
     user_id = str(uuid.uuid4())
     org_id = uuid.uuid4()
     with (
@@ -236,7 +270,7 @@ async def test_get_credits_returns_unconfigured_for_unlimited_team_org():
     ):
         result = await get_credits(user_id, org_id)
 
-    assert result.credits is None
+    assert result.credits == Decimal('0.00')
 
 
 @pytest.mark.asyncio

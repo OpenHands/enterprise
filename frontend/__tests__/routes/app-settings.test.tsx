@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 import userEvent from "@testing-library/user-event";
 import AppSettingsScreen, { clientLoader } from "#/routes/app-settings";
 import SettingsService from "#/api/settings-service/settings-service.api";
@@ -21,13 +22,18 @@ afterEach(() => {
 });
 
 const renderAppSettingsScreen = () =>
-  render(<AppSettingsScreen />, {
-    wrapper: ({ children }) => (
-      <QueryClientProvider client={new QueryClient()}>
-        {children}
-      </QueryClientProvider>
-    ),
-  });
+  render(
+    <MemoryRouter>
+      <AppSettingsScreen />
+    </MemoryRouter>,
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={new QueryClient()}>
+          {children}
+        </QueryClientProvider>
+      ),
+    },
+  );
 
 describe("clientLoader permission checks", () => {
   it("should export a clientLoader for route protection", () => {

@@ -101,12 +101,10 @@ class OrgInvitationService:
         if role_name_lower == ROLE_OWNER and inviter_role.name != ROLE_OWNER:
             raise InsufficientPermissionError('Only owners can invite with owner role')
 
-        # Get the target role
         target_role = await RoleStore.get_role_by_name(role_name_lower)
         if not target_role:
             raise ValueError(f'Invalid role: {role_name}')
 
-        # Step 5: Check if user is already a member (by email)
         existing_user = await UserStore.get_user_by_email(email)
         if existing_user:
             existing_member = await OrgMemberStore.get_org_member(
@@ -117,7 +115,6 @@ class OrgInvitationService:
                     'User is already a member of this organization'
                 )
 
-        # Step 6: Create the invitation
         invitation = await OrgInvitationStore.create_invitation(
             org_id=org_id,
             email=email,
@@ -125,9 +122,7 @@ class OrgInvitationService:
             inviter_id=inviter_id,
         )
 
-        # Step 7: Send invitation email
         try:
-            # Get inviter info for the email
             inviter_user = await UserStore.get_user_by_id(str(inviter_member.user_id))
             inviter_name = 'A team member'
             if inviter_user and inviter_user.email:

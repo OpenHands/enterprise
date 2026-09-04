@@ -110,23 +110,18 @@ class JiraDcNewConversationView(JiraDcViewInterface):
 
         instructions, user_msg = await self._get_instructions(jinja_env)
 
-        # Create the initial message request
         initial_message = SendMessageRequest(
             role='user', content=[TextContent(text=user_msg)]
         )
 
-        # Create the Jira DC V1 callback processor
         jira_dc_callback_processor = self._create_jira_dc_v1_callback_processor()
 
-        # Resolve org ID for the V1 system
         self.resolved_org_id = await self._get_resolved_org_id()
 
-        # Determine git provider
         git_provider = await self._get_git_provider()
 
         injector_state = InjectorState()
 
-        # Create the V1 conversation start request
         start_request = AppConversationStartRequest(
             conversation_id=UUID(self.conversation_id),
             system_message_suffix=instructions if instructions else None,
@@ -139,7 +134,6 @@ class JiraDcNewConversationView(JiraDcViewInterface):
             processors=[jira_dc_callback_processor],
         )
 
-        # Set up the Jira DC user context for the V1 system
         jira_dc_user_context = ResolverUserContext(
             saas_user_auth=self.saas_user_auth,
             resolver_org_id=self.resolved_org_id,
@@ -280,7 +274,6 @@ class JiraDcExistingConversationView(JiraDcViewInterface):
 
         _, user_msg = await self._get_instructions(jinja_env)
 
-        # Create injector state for dependency injection
         state = InjectorState()
         setattr(state, USER_CONTEXT_ATTR, ADMIN)
 
@@ -289,7 +282,6 @@ class JiraDcExistingConversationView(JiraDcViewInterface):
             get_sandbox_service(state) as sandbox_service,
             get_httpx_client(state) as httpx_client,
         ):
-            # 1. Conversation lookup
             conversation_uuid = UUID(self.conversation_id)
             app_conversation_info = ensure_conversation_found(
                 await app_conversation_info_service.get_app_conversation_info(
@@ -298,7 +290,6 @@ class JiraDcExistingConversationView(JiraDcViewInterface):
                 conversation_uuid,
             )
 
-            # 2. Sandbox lookup + validation
             sandbox = await sandbox_service.get_sandbox(
                 app_conversation_info.sandbox_id
             )
@@ -315,7 +306,6 @@ class JiraDcExistingConversationView(JiraDcViewInterface):
                 )
                 return
 
-            # 3. Build URL and send message
             agent_server_url = get_agent_server_url_from_sandbox(sandbox)
 
             send_message_request = SendMessageRequest(

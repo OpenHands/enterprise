@@ -101,69 +101,21 @@ async def get_quota_status(
     )
 
 
-@quota_router.post(
-    '/increase-request',
-    response_model=QuotaIncreaseRequestResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_quota_increase_request(
-    body: CreateQuotaIncreaseRequest,
-    user_id: str = Depends(get_user_id),
-    effective_org_id: UUID = EFFECTIVE_ORG_ID,
-) -> QuotaIncreaseRequestResponse:
-    """Create a quota increase request and send a verification email."""
-    async with a_session_maker() as session:
-        service = QuotaIncreaseRequestService(session)
-        request = await service.create_request(
-            user_id=user_id,
-            org_id=effective_org_id,
-            work_email=body.work_email,
-            requested_limit=body.requested_limit,
-            reason=body.reason,
-        )
-
-        # Send verification email
-        token = service.create_verification_token(
-            request_id=request.id,
-            user_id=user_id,
-            work_email=request.work_email,
-        )
-        _send_verification_email(request.work_email, token)
-
-        # PostHog: identify work email and capture event
-        await _capture_quota_event(user_id, request.work_email, request.requested_limit)
-
-    return QuotaIncreaseRequestResponse(
-        id=request.id,
-        status=request.status,
-        work_email=request.work_email,
-        baseline_limit=request.baseline_limit,
-        requested_limit=request.requested_limit,
-        reason=request.reason,
-        created_at=request.created_at.isoformat() if request.created_at else '',
+@quota_router.post('/increase-request', status_code=status.HTTP_410_GONE)
+async def create_quota_increase_request() -> None:
+    """The self-service quota request flow has moved to the external form."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail='Quota increase requests must be submitted through the external form.',
     )
 
 
-@quota_router.get('/verify', response_model=VerifyQuotaIncreaseResponse)
-async def verify_quota_increase(token: str) -> VerifyQuotaIncreaseResponse:
-    """Verify a quota increase request via signed email token.
-
-    This endpoint is unauthenticated (the token itself authenticates the
-    request). On success, the requested limit is applied immediately.
-    """
-    payload = QuotaIncreaseRequestService.verify_token(token)
-    request_id = payload['request_id']
-
-    async with a_session_maker() as session:
-        service = QuotaIncreaseRequestService(session)
-        request = await service.approve_request(
-            request_id=request_id,
-            approved_by_user_id=None,  # self-service via email
-        )
-
-    return VerifyQuotaIncreaseResponse(
-        status=request.status,
-        daily_limit=request.requested_limit,
+@quota_router.get('/verify', status_code=status.HTTP_410_GONE)
+async def verify_quota_increase() -> None:
+    """Legacy self-service verification is no longer available."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail='Quota increase requests must be submitted through the external form.',
     )
 
 
