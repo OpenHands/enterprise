@@ -1479,6 +1479,7 @@ class TestSuperRolePermissions:
             [
                 Permission.CREATE_ORGANIZATION,
                 Permission.PROVISION_USER,
+                Permission.INVITE_USER_TO_ORGANIZATION,
                 Permission.MANAGE_SUPER_ADMINS,
                 Permission.MANAGE_FEATURE_FLAGS,
                 Permission.MANAGE_ORG_QUOTA,
@@ -1528,6 +1529,35 @@ class TestSuperRolePermissions:
         assert Permission.PROVISION_USER not in SUPER_ROLE_PERMISSIONS[RoleName.OWNER]
         assert Permission.PROVISION_USER in SUPER_ROLE_PERMISSIONS[RoleName.ADMIN]
         assert Permission.PROVISION_USER not in SUPER_ROLE_PERMISSIONS[RoleName.MEMBER]
+
+    def test_superadmin_can_invite_to_any_org(self):
+        """
+        GIVEN: SUPER_ROLE_PERMISSIONS mapping
+        WHEN: looking up INVITE_USER_TO_ORGANIZATION
+        THEN: the superadmin super role carries it, so it can seed a
+              freshly-created org with its initial owner/admin via the
+              normal invitation flow (OHE-2769); the other super roles do
+              not. Org-scoped owner/admin roles keep the permission too.
+        """
+        assert (
+            Permission.INVITE_USER_TO_ORGANIZATION
+            in SUPER_ROLE_PERMISSIONS[RoleName.ADMIN]
+        )
+        assert (
+            Permission.INVITE_USER_TO_ORGANIZATION
+            not in SUPER_ROLE_PERMISSIONS[RoleName.OWNER]
+        )
+        assert (
+            Permission.INVITE_USER_TO_ORGANIZATION
+            not in SUPER_ROLE_PERMISSIONS[RoleName.MEMBER]
+        )
+        # The org-scoped owner/admin roles retain the invite permission.
+        assert (
+            Permission.INVITE_USER_TO_ORGANIZATION in ROLE_PERMISSIONS[RoleName.OWNER]
+        )
+        assert (
+            Permission.INVITE_USER_TO_ORGANIZATION in ROLE_PERMISSIONS[RoleName.ADMIN]
+        )
 
     def test_manage_org_quota_is_superadmin_only(self):
         """
