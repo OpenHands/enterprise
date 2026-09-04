@@ -297,6 +297,7 @@ async def keycloak_callback(
 async def on_event(request: Request, background_tasks: BackgroundTasks):
     if not SLACK_WEBHOOKS_ENABLED:
         return JSONResponse({'success': 'slack_webhooks_disabled'})
+    assert signature_verifier is not None  # required when webhooks are enabled
     body = await request.body()
     payload = json.loads(body.decode())
 
@@ -375,6 +376,7 @@ async def on_options_load(request: Request, background_tasks: BackgroundTasks):
     """
     if not SLACK_WEBHOOKS_ENABLED:
         return JSONResponse({'options': []})
+    assert signature_verifier is not None  # required when webhooks are enabled
 
     body = await request.body()
     form = await request.form()
@@ -483,6 +485,7 @@ async def on_form_interaction(request: Request, background_tasks: BackgroundTask
     """
     if not SLACK_WEBHOOKS_ENABLED:
         return JSONResponse({'success': 'slack_webhooks_disabled'})
+    assert signature_verifier is not None  # required when webhooks are enabled
 
     body = await request.body()
     form = await request.form()
