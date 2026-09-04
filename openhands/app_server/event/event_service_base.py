@@ -8,6 +8,9 @@ from typing import AsyncGenerator
 from uuid import UUID
 
 from openhands.agent_server.models import EventPage, EventSortOrder
+from openhands.sdk import Event
+from openhands.sdk.utils.paging import page_iterator
+
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
 )
@@ -17,8 +20,6 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 from openhands.app_server.conversation_paths import V1_CONVERSATIONS_DIR
 from openhands.app_server.event.event_service import EventService
 from openhands.app_server.event_callback.event_callback_models import EventKind
-from openhands.sdk import Event
-from openhands.sdk.utils.paging import page_iterator
 
 
 def _event_load_concurrency() -> int:
@@ -26,6 +27,22 @@ def _event_load_concurrency() -> int:
         return max(1, int(os.getenv('EVENT_SERVICE_LOAD_EVENT_CONCURRENCY', '10')))
     except ValueError:
         return 10
+
+
+@dataclass(frozen=True, slots=True)
+class EventPath:
+    """A storage-layer path paired with its modification time.
+
+    ``mtime`` is a sortable POSIX timestamp reported by the storage backend's
+    listing API (filesystem ``st_mtime``, S3 ``LastModified``, GCS ``updated``).
+    It is **not** the event's ``timestamp`` field, but events are append-only
+    and never reordered, so ``mtime`` order matches event ``timestamp`` order.
+    This lets ``search_events`` sort by time and paginate without loading any
+    event bodies — only the events on the requested page are loaded (OHE-3178).
+    """
+
+    path: Path
+    mtime: float
 
 
 @dataclass
@@ -50,8 +67,15 @@ class EventServiceBase(EventService, ABC):
         """Store the event given at the path given."""
 
     @abstractmethod
-    def _search_paths(self, prefix: Path) -> list[Path]:
-        """Search paths."""
+    def _search_paths(self, prefix: Path) -> list[EventPath]:
+        """List event paths under ``prefix`` with their storage mtime.
+
+        Each backend's listing API returns the object's last-modified time for
+        free (filesystem ``st_mtime``, S3 ``LastModified``, GCS ``updated``).
+        Events are append-only and never reordered, so sorting by this mtime
+        yields the same order as sorting by the event's ``timestamp`` field —
+        without loading any event bodies.
+        """
 
     async def _load_events_from_paths(self, paths: list[Path]) -> list[Event | None]:
         loop = asyncio.get_running_loop()
@@ -101,20 +125,49 @@ class EventServiceBase(EventService, ABC):
         page_id: str | None = None,
         limit: int = 100,
     ) -> EventPage:
-        """Search events matching the given filters."""
+        """Search events matching the given filters.
+
+        Performance (OHE-3178): instead of loading and re-sorting every event on
+        every page request, this sorts the storage-layer path list by file mtime
+        (which matches event timestamp order since events are append-only) and
+        walks it lazily, loading only one event at a time, applying filters on
+        the fly, and stopping as soon as ``limit`` matching events are collected.
+        ``page_id`` is an integer offset into the mtime-sorted path list — the
+        number of entries to skip before resuming the scan — so each page loads
+        only the events it returns plus any non-matching entries it skips over.
+        No event bodies are loaded for entries before ``page_id``.
+        """
         loop = asyncio.get_running_loop()
         prefix = await self.get_conversation_path(conversation_id)
-        paths = await loop.run_in_executor(None, self._search_paths, prefix)
+        event_paths = await loop.run_in_executor(None, self._search_paths, prefix)
 
-        events = await self._load_events_from_paths(paths)
-        # Convert datetime filters to ISO strings so they can be compared
-        # against event.timestamp (which is stored as an ISO 8601 string).
+        # Sort by storage mtime (ascending). For TIMESTAMP_DESC we reverse so the
+        # scan proceeds newest-first; page_id is then an offset into this
+        # iteration order.
+        event_paths.sort(key=lambda ep: ep.mtime)
+        if sort_order == EventSortOrder.TIMESTAMP_DESC:
+            event_paths.reverse()
+
+        start_offset = int(page_id) if page_id else 0
+        # Clamp out-of-range offsets (e.g. a stale page_id from before events were
+        # added/removed) to a safe no-op rather than erroring.
+        start_offset = max(0, min(start_offset, len(event_paths)))
+
         timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
-        items = []
-        for event in events:
-            if not event:
+        items: list[Event] = []
+        next_page_id: str | None = None
+        # Index of the next entry to scan on a subsequent page. Updated as we go
+        # so a full page records the resume point right after the last examined
+        # entry (whether or not it matched), avoiding re-examining entries.
+        resume_index = start_offset
+        for i in range(start_offset, len(event_paths)):
+            resume_index = i + 1
+            event = await loop.run_in_executor(
+                None, self._load_event, event_paths[i].path
+            )
+            if event is None:
                 continue
             if kind__eq and event.kind != kind__eq:
                 continue
@@ -123,22 +176,11 @@ class EventServiceBase(EventService, ABC):
             if timestamp_lt_str and event.timestamp >= timestamp_lt_str:
                 continue
             items.append(event)
+            if len(items) >= limit:
+                break
 
-        if sort_order:
-            items.sort(
-                key=lambda e: e.timestamp,
-                reverse=(sort_order == EventSortOrder.TIMESTAMP_DESC),
-            )
-
-        # Apply pagination to items (not paths)
-        start_offset = 0
-        next_page_id = None
-        if page_id:
-            start_offset = int(page_id)
-            items = items[start_offset:]
-        if len(items) > limit:
-            next_page_id = str(start_offset + limit)
-            items = items[:limit]
+        if resume_index < len(event_paths):
+            next_page_id = str(resume_index)
 
         return EventPage(items=items, next_page_id=next_page_id)
 
@@ -148,12 +190,12 @@ class EventServiceBase(EventService, ABC):
         """Iterate all events once in timestamp order for trajectory export."""
         loop = asyncio.get_running_loop()
         prefix = await self.get_conversation_path(conversation_id)
-        paths = await loop.run_in_executor(None, self._search_paths, prefix)
-        events = await self._load_events_from_paths(paths)
-        items = [event for event in events if event]
-        items.sort(key=lambda event: event.timestamp)
-        for event in items:
-            yield event
+        event_paths = await loop.run_in_executor(None, self._search_paths, prefix)
+        event_paths.sort(key=lambda ep: ep.mtime)
+        for event_path in event_paths:
+            event = await loop.run_in_executor(None, self._load_event, event_path.path)
+            if event:
+                yield event
 
     async def count_events(
         self,
@@ -184,8 +226,10 @@ class EventServiceBase(EventService, ABC):
     async def _count_events_no_filter(self, conversation_path: Path) -> int:
         """Count all event files in the conversation directory without filtering."""
         loop = asyncio.get_running_loop()
-        paths = await loop.run_in_executor(None, self._search_paths, conversation_path)
-        return len(paths)
+        event_paths = await loop.run_in_executor(
+            None, self._search_paths, conversation_path
+        )
+        return len(event_paths)
 
     async def save_event(self, conversation_id: UUID, event: Event):
         if isinstance(event.id, str):

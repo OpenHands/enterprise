@@ -1,15 +1,16 @@
 import glob
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import Request
+from openhands.sdk import Event
 
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
-from openhands.app_server.event.event_service_base import EventServiceBase
+from openhands.app_server.event.event_service_base import EventPath, EventServiceBase
 from openhands.app_server.services.injector import InjectorState
-from openhands.sdk import Event
 
 _logger = logging.getLogger(__name__)
 
@@ -35,11 +36,19 @@ class FilesystemEventService(EventServiceBase):
         content = event.model_dump_json(indent=2)
         path.write_text(content)
 
-    def _search_paths(self, prefix: Path, page_id: str | None = None) -> list[Path]:
+    def _search_paths(self, prefix: Path) -> list[EventPath]:
         search_path = f'{prefix}/*'
         files = glob.glob(str(search_path))
-        paths = [Path(file) for file in files]
-        return paths
+        results: list[EventPath] = []
+        for file in files:
+            p = Path(file)
+            try:
+                mtime = os.stat(p).st_mtime
+            except OSError:
+                # File disappeared between glob and stat; skip it.
+                continue
+            results.append(EventPath(path=p, mtime=mtime))
+        return results
 
 
 class FilesystemEventServiceInjector(EventServiceInjector):
