@@ -118,6 +118,40 @@ describe("OrgSelector", () => {
     });
   });
 
+  it("should not allow typeahead filtering", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+      items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_PERSONAL_ORG.id,
+    });
+
+    renderOrgSelector();
+
+    await waitFor(() => {
+      expect(screen.getByRole("combobox")).toHaveValue("Personal Workspace");
+    });
+
+    const trigger = screen.getByTestId("dropdown-trigger");
+    await user.click(trigger);
+
+    const listbox = await screen.findByRole("listbox");
+    expect(within(listbox).getAllByRole("option")).toHaveLength(2);
+
+    const input = screen.getByRole("combobox");
+    expect(input).toHaveAttribute("readonly");
+    await user.type(input, "Acme");
+
+    // Non-searchable select: typing must not change the selected label.
+    expect(input).toHaveValue("Personal Workspace");
+
+    // Re-open if typing closed the menu, then confirm options are unfiltered.
+    if (screen.queryAllByRole("option").length === 0) {
+      await user.click(trigger);
+    }
+    const openListbox = await screen.findByRole("listbox");
+    expect(within(openListbox).getAllByRole("option")).toHaveLength(2);
+  });
+
   it("should show all options when dropdown is opened", async () => {
     const user = userEvent.setup();
     vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({

@@ -1,4 +1,5 @@
 import React from "react";
+import { cn } from "#/utils/utils";
 
 const SKELETON_PATTERN = [
   { width: "w-[25%]", height: "h-4", align: "justify-end" },
@@ -15,7 +16,7 @@ const SKELETON_PATTERN = [
 function SkeletonBlock({ width, height }: { width: string; height: string }) {
   return (
     <div
-      className={`rounded-md bg-foreground/5 animate-pulse ${width} ${height}`}
+      className={cn("rounded-md bg-foreground/5 animate-pulse", width, height)}
     />
   );
 }
@@ -23,12 +24,12 @@ function SkeletonBlock({ width, height }: { width: string; height: string }) {
 export function ChatMessagesSkeleton() {
   return (
     <div
-      className="flex flex-col gap-6 p-4 w-full h-full overflow-hidden"
+      className="flex h-full w-full flex-col gap-6 overflow-hidden p-4"
       data-testid="chat-messages-skeleton"
       aria-label="Loading conversation"
     >
       {SKELETON_PATTERN.map((item, i) => (
-        <div key={i} className={`flex w-full ${item.align}`}>
+        <div key={i} className={cn("flex w-full", item.align)}>
           <SkeletonBlock width={item.width} height={item.height} />
         </div>
       ))}

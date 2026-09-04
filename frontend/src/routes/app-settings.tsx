@@ -27,6 +27,11 @@ import {
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { useSandboxSpecs } from "#/hooks/query/use-sandbox-specs";
 import { GpgKeyModal } from "#/components/features/settings/git-settings/gpg-key-modal";
+import {
+  formControlSwitchDescriptionClassName,
+  formControlSwitchFieldClassName,
+} from "#/utils/form-control-classes";
+import { cn } from "#/utils/utils";
 
 export const clientLoader = createPermissionGuard(
   "manage_application_settings",
@@ -244,7 +249,7 @@ function AppSettingsScreen() {
     <form
       data-testid="app-settings-screen"
       action={formAction}
-      className="flex flex-col h-full justify-between"
+      className="flex flex-col gap-6"
     >
       {shouldBeLoading && <AppSettingsInputsSkeleton />}
       {!shouldBeLoading && (
@@ -316,7 +321,7 @@ function AppSettingsScreen() {
             }
             isClearable={false}
             onSelectionChange={handleSandboxGroupingStrategyChange}
-            wrapperClassName="w-full max-w-[680px]"
+            wrapperClassName="w-full min-w-0"
           />
 
           <SettingsDropdownInput
@@ -336,35 +341,42 @@ function AppSettingsScreen() {
             isClearable
             isLoading={sandboxSpecsLoading}
             onSelectionChange={handleSandboxSpecIdChange}
-            wrapperClassName="w-full max-w-[680px]"
+            wrapperClassName="w-full min-w-0"
           />
 
-          <div className="border-t border-t-tertiary pt-6 mt-2">
+          <div className="border-t border-[var(--oh-border)] pt-6 mt-2">
             <h3 className="text-lg font-medium mb-2">
               {t(I18nKey.SETTINGS$GIT_SETTINGS)}
             </h3>
-            <p className="text-xs mb-4">
+            <p className="mb-4 text-sm leading-5 text-muted">
               {t(I18nKey.SETTINGS$GIT_SETTINGS_DESCRIPTION)}
             </p>
             <div className="flex flex-col gap-6">
-              <div className="flex flex-col gap-2 max-w-[680px]">
+              <div className="flex flex-col gap-2">
                 <h4 className="text-sm font-medium">
                   {t(I18nKey.SETTINGS$REPOSITORY_CLONING)}
                 </h4>
-                <p className="text-xs">
+                <p className="text-sm leading-5 text-muted">
                   {t(I18nKey.SETTINGS$REPOSITORY_CLONING_DESCRIPTION)}
                 </p>
-                <SettingsSwitch
-                  testId="git-full-clone-switch"
-                  name="git-full-clone-switch"
-                  defaultIsToggled={!!settings.git_full_clone}
-                  onToggle={checkIfGitFullCloneHasChanged}
-                >
-                  {t(I18nKey.SETTINGS$FETCH_FULL_GIT_HISTORY)}
-                </SettingsSwitch>
-                <p className="text-xs">
-                  {t(I18nKey.SETTINGS$FETCH_FULL_GIT_HISTORY_HELPER)}
-                </p>
+                <div className={cn("mt-2", formControlSwitchFieldClassName)}>
+                  <SettingsSwitch
+                    testId="git-full-clone-switch"
+                    name="git-full-clone-switch"
+                    defaultIsToggled={!!settings.git_full_clone}
+                    onToggle={checkIfGitFullCloneHasChanged}
+                  >
+                    {t(I18nKey.SETTINGS$FETCH_FULL_GIT_HISTORY)}
+                  </SettingsSwitch>
+                  <p
+                    className={cn(
+                      formControlSwitchDescriptionClassName,
+                      "text-xs leading-5 text-[var(--oh-muted)]",
+                    )}
+                  >
+                    {t(I18nKey.SETTINGS$FETCH_FULL_GIT_HISTORY_HELPER)}
+                  </p>
+                </div>
               </div>
 
               <SettingsInput
@@ -375,7 +387,7 @@ function AppSettingsScreen() {
                 defaultValue={settings.git_user_name || ""}
                 onChange={checkIfGitUserNameHasChanged}
                 placeholder={t(I18nKey.SETTINGS$GIT_USERNAME_PLACEHOLDER)}
-                className="w-full max-w-[680px]"
+                className="w-full min-w-0"
               />
               <SettingsInput
                 testId="git-user-email-input"
@@ -385,7 +397,7 @@ function AppSettingsScreen() {
                 defaultValue={settings.git_user_email || ""}
                 onChange={checkIfGitUserEmailHasChanged}
                 placeholder={t(I18nKey.SETTINGS$GIT_EMAIL_PLACEHOLDER)}
-                className="w-full max-w-[680px]"
+                className="w-full min-w-0"
               />
               <BrandButton
                 testId="set-gpg-key-button"
@@ -410,7 +422,7 @@ function AppSettingsScreen() {
         />
       )}
 
-      <div className="flex gap-6 p-6 justify-end">
+      <div className="flex justify-start pt-4">
         <BrandButton
           testId="submit-button"
           variant="primary"

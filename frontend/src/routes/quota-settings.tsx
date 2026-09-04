@@ -3,6 +3,12 @@ import { useTranslation } from "react-i18next";
 import { useQuotaStatus } from "#/hooks/query/use-quota-status";
 import { useConfig } from "#/hooks/query/use-config";
 import { I18nKey } from "#/i18n/declaration";
+import { cn } from "#/utils/utils";
+import {
+  formControlBorderClassName,
+  formControlRadiusClassName,
+  formControlSurfaceClassName,
+} from "#/utils/form-control-classes";
 
 function useCountdown(resetAt: string | null) {
   const [remaining, setRemaining] = useState<string>("");
@@ -42,14 +48,15 @@ function QuotaSettingsScreen() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
   const { data: quota, isLoading } = useQuotaStatus();
-  const countdown = useCountdown(quota?.reset_at ?? null);
+  const unlimited = quota?.daily_limit === null;
+  const countdown = useCountdown(unlimited ? null : (quota?.reset_at ?? null));
 
   const isSaas = config?.app_mode === "saas";
 
   if (!isSaas) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="text-tertiary">{t(I18nKey.SETTINGS$QUOTA_SALES_ONLY)}</p>
+        <p className="text-muted">{t(I18nKey.SETTINGS$QUOTA_SALES_ONLY)}</p>
       </div>
     );
   }
@@ -58,14 +65,13 @@ function QuotaSettingsScreen() {
     return (
       <div className="flex h-full items-center justify-center">
         <div
-          className="h-6 w-6 animate-spin rounded-full border-2 border-tertiary border-t-primary"
+          className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--oh-border)] border-t-primary"
           data-testid="quota-loading"
         />
       </div>
     );
   }
 
-  const unlimited = quota.daily_limit === null;
   const limit = quota.daily_limit ?? 0;
   const pct =
     unlimited || limit === 0
@@ -73,17 +79,18 @@ function QuotaSettingsScreen() {
       : Math.min((quota.used_today / limit) * 100, 100);
 
   return (
-    <div className="flex flex-col gap-6 p-4 max-w-2xl">
-      <h1 className="text-xl font-bold" data-testid="quota-title">
-        {t(I18nKey.SETTINGS$NAV_QUOTA)}
-      </h1>
-
+    <div className="flex flex-col gap-6">
       <div
-        className="flex flex-col gap-3 rounded-lg border border-tertiary p-4"
+        className={cn(
+          formControlBorderClassName,
+          formControlRadiusClassName,
+          formControlSurfaceClassName,
+          "flex flex-col gap-3 p-4",
+        )}
         data-testid="quota-status-card"
       >
         <div className="flex items-baseline justify-between">
-          <span className="text-sm text-tertiary">
+          <span className="text-sm text-muted">
             {t(I18nKey.SETTINGS$QUOTA_DAILY_LIMIT)}
           </span>
           <span className="text-lg font-semibold" data-testid="quota-limit">
@@ -94,7 +101,7 @@ function QuotaSettingsScreen() {
         </div>
 
         <div className="flex items-baseline justify-between">
-          <span className="text-sm text-tertiary">
+          <span className="text-sm text-muted">
             {t(I18nKey.SETTINGS$QUOTA_USED_TODAY)}
           </span>
           <span className="text-lg font-semibold" data-testid="quota-used">
@@ -103,7 +110,7 @@ function QuotaSettingsScreen() {
         </div>
 
         <div className="flex items-baseline justify-between">
-          <span className="text-sm text-tertiary">
+          <span className="text-sm text-muted">
             {t(I18nKey.SETTINGS$QUOTA_REMAINING)}
           </span>
           <span className="text-lg font-semibold" data-testid="quota-remaining">
@@ -112,7 +119,7 @@ function QuotaSettingsScreen() {
         </div>
 
         {!unlimited && (
-          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-base-tertiary">
+          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-[var(--oh-interactive-hover-low)]">
             <div
               className="h-full rounded-full bg-primary transition-all"
               style={{ width: `${pct}%` }}
@@ -122,18 +129,20 @@ function QuotaSettingsScreen() {
         )}
       </div>
 
-      <div
-        className="flex items-center gap-2 text-sm text-tertiary"
-        data-testid="quota-reset-countdown"
-      >
-        <span>{t(I18nKey.SETTINGS$QUOTA_RESETS_IN)}</span>
-        <span
-          className="font-mono font-semibold text-primary"
-          data-testid="quota-countdown"
+      {!unlimited && (
+        <div
+          className="flex items-center gap-2 text-sm text-muted"
+          data-testid="quota-reset-countdown"
         >
-          {countdown}
-        </span>
-      </div>
+          <span>{t(I18nKey.SETTINGS$QUOTA_RESETS_IN)}</span>
+          <span
+            className="font-mono font-semibold text-primary"
+            data-testid="quota-countdown"
+          >
+            {countdown}
+          </span>
+        </div>
+      )}
 
       <a
         href={QUOTA_INCREASE_REQUEST_URL}

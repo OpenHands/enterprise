@@ -20,7 +20,6 @@ interface OrgModalProps {
   ariaLabel?: string;
   asForm?: boolean;
   formAction?: (formData: FormData) => void;
-  fullWidthButtons?: boolean;
   hideSecondaryButton?: boolean;
   className?: string;
 }
@@ -41,7 +40,6 @@ export function OrgModal({
   ariaLabel,
   asForm = false,
   formAction,
-  fullWidthButtons = false,
   hideSecondaryButton = false,
   className,
 }: OrgModalProps) {
@@ -63,7 +61,6 @@ export function OrgModal({
         primaryType={primaryButtonType}
         primaryTestId={primaryButtonTestId}
         secondaryTestId={secondaryButtonTestId}
-        fullWidth={fullWidthButtons}
         hideSecondaryButton={hideSecondaryButton}
       />
     </>

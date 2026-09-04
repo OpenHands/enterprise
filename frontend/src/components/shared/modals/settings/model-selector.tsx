@@ -14,6 +14,8 @@ import { PRODUCT_URL } from "#/utils/constants";
 import { useSearchProviders } from "#/hooks/query/use-search-providers";
 import { useProviderModels } from "#/hooks/query/use-provider-models";
 import { useAppMode } from "#/hooks/use-app-mode";
+import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
+import { heroUiAutocompleteSelectorButtonClassName } from "#/ui/combobox-caret";
 
 interface ModelSelectorProps {
   isDisabled?: boolean;
@@ -165,12 +167,13 @@ export function ModelSelector({
             defaultSelectedKey={selectedProvider ?? undefined}
             selectedKey={selectedProvider}
             classNames={{
-              popoverContent: "bg-tertiary rounded-xl border border-[#717888]",
+              popoverContent: "bg-content1 rounded-xl",
+              selectorButton: heroUiAutocompleteSelectorButtonClassName,
             }}
+            selectorButtonProps={{ disableRipple: true }}
             inputProps={{
               classNames: {
-                inputWrapper:
-                  "bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic",
+                inputWrapper: formControlSettingsFieldClassName,
               },
             }}
           >
@@ -240,12 +243,13 @@ export function ModelSelector({
           selectedKey={selectedModel}
           defaultSelectedKey={selectedModel ?? undefined}
           classNames={{
-            popoverContent: "bg-tertiary rounded-xl border border-[#717888]",
+            popoverContent: "bg-content1 rounded-xl",
+            selectorButton: heroUiAutocompleteSelectorButtonClassName,
           }}
+          selectorButtonProps={{ disableRipple: true }}
           inputProps={{
             classNames: {
-              inputWrapper:
-                "bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic",
+              inputWrapper: formControlSettingsFieldClassName,
             },
           }}
         >

@@ -5,6 +5,7 @@ import { organizationService } from "#/api/organization-service/organization-ser
 import { CONFIG_CACHE_OPTIONS, QUERY_KEYS } from "#/hooks/query/query-keys";
 import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organization-store";
 import { OrganizationsQueryData } from "#/types/org";
+import { hasPendingOrgSwitch } from "#/utils/org/org-url-param";
 
 const FALLBACK_REDIRECT_PATH = "/settings/user";
 
@@ -29,6 +30,10 @@ const fetchOrganizations = () =>
 export const requireOrgDefaultsRedirect =
   (redirectPath: string = FALLBACK_REDIRECT_PATH) =>
   async ({ request }: { request: Request }) => {
+    // The settings loader is consuming a pending `?org=` switch on this pass
+    // and will redirect without the param; redirecting here would drop it.
+    if (hasPendingOrgSwitch(request)) return null;
+
     const config = await fetchConfig();
 
     if (config?.app_mode !== "saas") return null;

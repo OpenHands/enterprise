@@ -134,8 +134,15 @@ export function CreateApiKeyModal({
     <>
       <BrandButton
         type="button"
+        variant="secondary"
+        onClick={handleCancel}
+        isDisabled={createApiKeyMutation.isPending}
+      >
+        {t(I18nKey.BUTTON$CANCEL)}
+      </BrandButton>
+      <BrandButton
+        type="button"
         variant="primary"
-        className="grow"
         onClick={handleCreateKey}
         isDisabled={
           createApiKeyMutation.isPending ||
@@ -149,15 +156,6 @@ export function CreateApiKeyModal({
           t(I18nKey.BUTTON$CREATE)
         )}
       </BrandButton>
-      <BrandButton
-        type="button"
-        variant="secondary"
-        className="grow"
-        onClick={handleCancel}
-        isDisabled={createApiKeyMutation.isPending}
-      >
-        {t(I18nKey.BUTTON$CANCEL)}
-      </BrandButton>
     </>
   );
 
@@ -168,7 +166,7 @@ export function CreateApiKeyModal({
       footer={modalFooter}
     >
       <div data-testid="create-api-key-modal">
-        <p className="text-sm text-gray-300">
+        <p className="text-xs leading-5 text-[var(--oh-muted)]">
           {t(I18nKey.SETTINGS$CREATE_API_KEY_DESCRIPTION)}
         </p>
         <SettingsInput
@@ -181,10 +179,7 @@ export function CreateApiKeyModal({
           type="text"
         />
         <div className="mt-6">
-          <label
-            htmlFor="api-key-org-selector"
-            className="text-sm text-gray-300 mb-2 block"
-          >
+          <label htmlFor="api-key-org-selector" className="mb-2 block text-sm">
             {t(I18nKey.SETTINGS$API_KEY_ORG_LABEL)}
           </label>
           <Dropdown
@@ -199,11 +194,11 @@ export function CreateApiKeyModal({
               }
             }}
           />
-          <p className="text-xs text-gray-400 mt-2">
+          <p className="mt-2 text-xs leading-5 text-[var(--oh-muted)]">
             {t(I18nKey.SETTINGS$API_KEY_ORG_HELP)}
           </p>
         </div>
-        <p className="text-sm text-gray-300 mt-6">
+        <p className="mt-6 text-xs leading-5 text-[var(--oh-muted)]">
           {t(I18nKey.SETTINGS$API_KEY_ACTIVE_WINDOW)}
         </p>
         <div className="flex flex-col gap-4 mt-2">

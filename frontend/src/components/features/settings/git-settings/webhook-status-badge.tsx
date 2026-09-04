@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
-import { Typography } from "#/ui/typography";
+import { Text } from "#/ui/typography";
 
 export interface WebhookStatusBadgeProps {
   webhookInstalled: boolean;
@@ -16,31 +16,31 @@ export function WebhookStatusBadge({
   if (installationResult) {
     if (installationResult.success) {
       return (
-        <Typography.Text className="px-2 py-1 text-xs rounded bg-green-500/20 text-green-400">
+        <Text className="rounded bg-emerald-500/20 px-2 py-1 text-xs text-[var(--oh-status-success)]">
           {t(I18nKey.GITLAB$WEBHOOK_STATUS_INSTALLED)}
-        </Typography.Text>
+        </Text>
       );
     }
     return (
       <span title={installationResult.error || undefined}>
-        <Typography.Text className="px-2 py-1 text-xs rounded bg-red-500/20 text-red-400">
+        <Text className="rounded bg-red-500/20 px-2 py-1 text-xs text-[var(--oh-status-error)]">
           {t(I18nKey.GITLAB$WEBHOOK_STATUS_FAILED)}
-        </Typography.Text>
+        </Text>
       </span>
     );
   }
 
   if (webhookInstalled) {
     return (
-      <Typography.Text className="px-2 py-1 text-xs rounded bg-green-500/20 text-green-400">
+      <Text className="rounded bg-emerald-500/20 px-2 py-1 text-xs text-[var(--oh-status-success)]">
         {t(I18nKey.GITLAB$WEBHOOK_STATUS_INSTALLED)}
-      </Typography.Text>
+      </Text>
     );
   }
 
   return (
-    <Typography.Text className="px-2 py-1 text-xs rounded bg-gray-500/20 text-gray-400">
+    <Text className="rounded bg-[var(--oh-interactive-hover)] px-2 py-1 text-xs text-[var(--oh-muted)]">
       {t(I18nKey.GITLAB$WEBHOOK_STATUS_NOT_INSTALLED)}
-    </Typography.Text>
+    </Text>
   );
 }

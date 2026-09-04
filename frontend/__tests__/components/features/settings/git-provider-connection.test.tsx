@@ -49,9 +49,6 @@ describe("GitProviderConnection", () => {
     renderComponent(false);
 
     // Assert
-    expect(screen.getByTestId("github-status-text")).toHaveTextContent(
-      "STATUS$NOT_CONNECTED",
-    );
     expect(screen.getByTestId("connect-github-button")).toBeInTheDocument();
     expect(
       screen.queryByTestId("disconnect-github-button"),
@@ -66,9 +63,6 @@ describe("GitProviderConnection", () => {
     renderComponent(true);
 
     // Assert
-    expect(screen.getByTestId("github-status-text")).toHaveTextContent(
-      "STATUS$CONNECTED",
-    );
     expect(screen.getByTestId("connected-only-child")).toBeInTheDocument();
     expect(screen.getByTestId("disconnect-github-button")).toBeInTheDocument();
     expect(

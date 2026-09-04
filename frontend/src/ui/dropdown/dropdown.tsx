@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useCombobox } from "downshift";
 import { cn } from "#/utils/utils";
 import { DropdownOption } from "./types";
+import { dropdownTriggerShellClassName } from "#/utils/dropdown-classes";
 import { LoadingSpinner } from "./loading-spinner";
 import { ClearButton } from "./clear-button";
 import { ToggleButton } from "./toggle-button";
@@ -19,6 +20,8 @@ interface DropdownProps {
   onChange?: (item: DropdownOption | null) => void;
   testId?: string;
   className?: string;
+  /** When false, the trigger is a select (no typeahead filter). */
+  searchable?: boolean;
 }
 
 export function Dropdown({
@@ -32,18 +35,22 @@ export function Dropdown({
   onChange,
   testId,
   className,
+  searchable = true,
 }: DropdownProps) {
   const [inputValue, setInputValue] = useState(defaultValue?.label ?? "");
   const [searchTerm, setSearchTerm] = useState("");
 
-  const filteredOptions = options.filter((option) =>
-    option.label.toLowerCase().includes(searchTerm.toLowerCase()),
-  );
+  const filteredOptions = searchable
+    ? options.filter((option) =>
+        option.label.toLowerCase().includes(searchTerm.toLowerCase()),
+      )
+    : options;
 
   const {
     isOpen,
     selectedItem,
     selectItem,
+    toggleMenu,
     getToggleButtonProps,
     getMenuProps,
     getItemProps,
@@ -52,12 +59,18 @@ export function Dropdown({
     items: filteredOptions,
     itemToString: (item) => item?.label ?? "",
     inputValue,
+    // Searchable: keep open on input click so users can reposition the caret.
+    // Non-searchable: toggle like a select (click open / click close).
     stateReducer: (state, actionAndChanges) =>
+      searchable &&
       actionAndChanges.type === useCombobox.stateChangeTypes.InputClick &&
       state.isOpen
         ? { ...actionAndChanges.changes, isOpen: true }
         : actionAndChanges.changes,
     onInputValueChange: ({ inputValue: newValue, isOpen: willBeOpen }) => {
+      if (!searchable) {
+        return;
+      }
       setInputValue(newValue ?? "");
       // Selecting an item closes the menu and sets inputValue to the item's
       // label, and downshift fires this after onIsOpenChange — without the
@@ -74,7 +87,9 @@ export function Dropdown({
       selectedItem: currentSelectedItem,
     }) => {
       if (newIsOpen) {
-        setSearchTerm("");
+        if (searchable) {
+          setSearchTerm("");
+        }
       } else {
         setInputValue(currentSelectedItem?.label ?? "");
         setSearchTerm("");
@@ -91,26 +106,46 @@ export function Dropdown({
   const getInputPropsWithCursorFix = (props?: object) =>
     getInputProps({
       ...props,
-      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
-        setInputValue(e.target.value);
-        setSearchTerm(e.target.value);
-      },
+      onChange: searchable
+        ? (e: React.ChangeEvent<HTMLInputElement>) => {
+            setInputValue(e.target.value);
+            setSearchTerm(e.target.value);
+          }
+        : undefined,
     });
+
+  // Padding/gap on the bordered shell is not covered by the input or caret.
+  // Treat those chrome clicks as a toggle so the whole control surface opens.
+  const handleShellClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (isDisabled) {
+      return;
+    }
+    const target = event.target as HTMLElement;
+    if (target.closest("input, button")) {
+      return;
+    }
+    const input = event.currentTarget.querySelector<HTMLInputElement>(
+      'input[role="combobox"]',
+    );
+    input?.focus();
+    toggleMenu();
+  };
 
   return (
     <div className="relative w-full" data-testid={testId}>
       <div
         className={cn(
-          "bg-tertiary border border-[#717888] rounded w-full p-2",
-          "flex items-center gap-2",
-          isDisabled && "cursor-not-allowed opacity-60",
+          dropdownTriggerShellClassName,
+          isDisabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
           className,
         )}
+        onClick={handleShellClick}
       >
         <DropdownInput
           placeholder={placeholder}
           isDisabled={isDisabled}
           getInputProps={getInputPropsWithCursorFix}
+          searchable={searchable}
         />
         {loading && <LoadingSpinner />}
         {clearable && selectedItem && (

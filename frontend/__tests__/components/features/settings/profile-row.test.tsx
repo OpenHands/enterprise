@@ -50,6 +50,12 @@ describe("ProfileRow", () => {
     );
   });
 
+  it("allows the row to grow past the shared fixed list height", () => {
+    renderRow({ isActive: true });
+
+    expect(screen.getByTestId("profile-row")).toHaveClass("h-auto");
+  });
+
   it("opens the actions menu when the trigger is clicked", async () => {
     renderRow();
     const user = userEvent.setup();

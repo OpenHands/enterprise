@@ -9,6 +9,11 @@ import { cn } from "#/utils/utils";
 import { Typography } from "#/ui/typography";
 import { WebhookStatusBadge } from "./webhook-status-badge";
 import { GitLabWebhookManagerState } from "./gitlab-webhook-manager-state";
+import {
+  settingsListContainerClassName,
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+} from "#/utils/settings-list-classes";
 
 interface GitLabWebhookManagerProps {
   className?: string;
@@ -113,20 +118,20 @@ export function GitLabWebhookManager({ className }: GitLabWebhookManagerProps) {
         {t(I18nKey.GITLAB$WEBHOOK_MANAGER_DESCRIPTION)}
       </Typography.Text>
 
-      <div className="border border-neutral-700 rounded-lg overflow-hidden">
+      <div className={settingsListContainerClassName}>
         <table className="w-full">
-          <thead className="bg-neutral-800">
+          <thead className={settingsListTableHeadClassName}>
             <tr>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+              <th className={settingsListTableHeaderCellClassName}>
                 {t(I18nKey.GITLAB$WEBHOOK_COLUMN_RESOURCE)}
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+              <th className={settingsListTableHeaderCellClassName}>
                 {t(I18nKey.GITLAB$WEBHOOK_COLUMN_TYPE)}
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+              <th className={settingsListTableHeaderCellClassName}>
                 {t(I18nKey.GITLAB$WEBHOOK_COLUMN_STATUS)}
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+              <th className={settingsListTableHeaderCellClassName}>
                 {t(I18nKey.GITLAB$WEBHOOK_COLUMN_ACTION)}
               </th>
             </tr>
