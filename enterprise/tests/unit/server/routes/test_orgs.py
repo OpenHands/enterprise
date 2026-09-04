@@ -3965,3 +3965,157 @@ async def test_update_org_app_settings_user_not_member(mock_app_with_get_user_id
         # Assert
         assert response.status_code == status.HTTP_403_FORBIDDEN
         assert 'not a member' in response.json()['detail'].lower()
+
+
+class TestGetOrgMemberEndpoint:
+    """Test cases for GET /api/organizations/{org_id}/members/{user_id}."""
+
+    @pytest.fixture
+    def member_app(self, current_user_id):
+        """Create a test FastAPI app with org routes and mocked auth."""
+        app = FastAPI()
+        app.include_router(org_router)
+        app.dependency_overrides[get_user_id] = lambda: current_user_id
+        return app
+
+    @staticmethod
+    def _member_response(target_user_id):
+        return OrgMemberResponse(
+            user_id=target_user_id,
+            email='jdoe@acme.com',
+            role_id=3,
+            role='member',
+            role_rank=1000,
+            status='active',
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_member_returns_200_for_org_member(
+        self, member_app, org_id, target_user_id, mock_member_role
+    ):
+        """GIVEN: The caller is a view-only member of the organization
+        WHEN: GET /api/organizations/{org_id}/members/{user_id} is called
+        THEN: Returns 200 with the looked-up member's id, email and role
+        """
+        # Arrange
+        with (
+            patch(
+                'server.auth.authorization.get_user_org_role',
+                AsyncMock(return_value=mock_member_role),
+            ),
+            patch(
+                'server.routes.orgs.OrgMemberService.get_org_member',
+                new_callable=AsyncMock,
+                return_value=self._member_response(target_user_id),
+            ) as mock_get_member,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=member_app), base_url='http://test'
+            ) as client:
+                # Act
+                response = await client.get(
+                    f'/api/organizations/{org_id}/members/{target_user_id}'
+                )
+
+        # Assert
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data['user_id'] == target_user_id
+        assert data['email'] == 'jdoe@acme.com'
+        assert data['role'] == 'member'
+        mock_get_member.assert_awaited_once_with(
+            uuid.UUID(org_id), uuid.UUID(target_user_id)
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_member_forbidden_for_non_member(
+        self, member_app, org_id, target_user_id
+    ):
+        """GIVEN: The caller has no role in the organization
+        WHEN: GET /api/organizations/{org_id}/members/{user_id} is called
+        THEN: Returns 403 without looking the member up
+        """
+        # Arrange
+        with (
+            patch(
+                'server.auth.authorization.get_user_org_role',
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                'server.routes.orgs.OrgMemberService.get_org_member',
+                new_callable=AsyncMock,
+            ) as mock_get_member,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=member_app), base_url='http://test'
+            ) as client:
+                # Act
+                response = await client.get(
+                    f'/api/organizations/{org_id}/members/{target_user_id}'
+                )
+
+        # Assert
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        mock_get_member.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_member_not_found_returns_404(
+        self, member_app, org_id, target_user_id, mock_member_role
+    ):
+        """GIVEN: The requested user is not (or no longer) a member of the org
+        WHEN: GET /api/organizations/{org_id}/members/{user_id} is called
+        THEN: Returns 404
+        """
+        # Arrange
+        with (
+            patch(
+                'server.auth.authorization.get_user_org_role',
+                AsyncMock(return_value=mock_member_role),
+            ),
+            patch(
+                'server.routes.orgs.OrgMemberService.get_org_member',
+                new_callable=AsyncMock,
+                side_effect=OrgMemberNotFoundError(org_id, target_user_id),
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=member_app), base_url='http://test'
+            ) as client:
+                # Act
+                response = await client.get(
+                    f'/api/organizations/{org_id}/members/{target_user_id}'
+                )
+
+        # Assert
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    @pytest.mark.asyncio
+    async def test_get_member_invalid_user_id_returns_400(
+        self, member_app, org_id, mock_member_role
+    ):
+        """GIVEN: The user_id path segment is not a UUID
+        WHEN: GET /api/organizations/{org_id}/members/{user_id} is called
+        THEN: Returns 400 without looking the member up
+        """
+        # Arrange
+        with (
+            patch(
+                'server.auth.authorization.get_user_org_role',
+                AsyncMock(return_value=mock_member_role),
+            ),
+            patch(
+                'server.routes.orgs.OrgMemberService.get_org_member',
+                new_callable=AsyncMock,
+            ) as mock_get_member,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=member_app), base_url='http://test'
+            ) as client:
+                # Act
+                response = await client.get(
+                    f'/api/organizations/{org_id}/members/not-a-uuid'
+                )
+
+        # Assert
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        mock_get_member.assert_not_awaited()
