@@ -290,7 +290,11 @@ describe("Content", () => {
     const getSettingsSpy = vi.spyOn(SettingsService, "getSettings");
 
     getConfigSpy.mockResolvedValue(VALID_OSS_CONFIG);
-    getSettingsSpy.mockResolvedValue(MOCK_DEFAULT_USER_SETTINGS);
+    // GitHub must be connected: the Configure button is only offered then
+    getSettingsSpy.mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS,
+      provider_tokens_set: { github: null },
+    });
 
     const { rerender } = renderGitSettingsScreen();
 
@@ -319,7 +323,7 @@ describe("Content", () => {
 
     getConfigSpy.mockResolvedValue({
       ...VALID_SAAS_CONFIG,
-      providers_configured: ["gitlab"],
+      providers_configured: ["github", "gitlab"],
       github_app_slug: "test-slug",
       gitlab_enabled: true,
       slack_enabled: true,
@@ -330,13 +334,18 @@ describe("Content", () => {
     await waitFor(() => {
       button = screen.getByTestId("configure-github-repositories-button");
       expect(button).toBeInTheDocument();
-      expect(button).toHaveClass("bg-primary");
-      expect(button.querySelector("svg")).not.toBeInTheDocument();
-      expect(screen.queryByTestId("github-status-text")).not.toBeInTheDocument();
+      expect(button).toHaveClass("bg-base-secondary");
+      expect(button.querySelector("svg")).toBeInTheDocument();
+      expect(screen.getByTestId("github-status-text")).toHaveTextContent(
+        /Connected|STATUS\$CONNECTED/,
+      );
+      expect(
+        screen.getByTestId("disconnect-github-button"),
+      ).toBeInTheDocument();
       expect(screen.getByTestId("gitlab-status-text")).toHaveTextContent(
         /Not Connected|SETTINGS\$GITLAB_NOT_CONNECTED/,
       );
-      expect(screen.getByTestId("configure-gitlab-button")).toBeInTheDocument();
+      expect(screen.getByTestId("connect-gitlab-button")).toBeInTheDocument();
       expect(screen.getByTestId("install-slack-app-button")).toBeInTheDocument();
       expect(screen.queryByTestId("submit-button")).not.toBeInTheDocument();
       expect(
@@ -354,6 +363,7 @@ describe("Content", () => {
 
     getConfigSpy.mockResolvedValue({
       ...VALID_SAAS_CONFIG,
+      providers_configured: ["github"],
       github_app_slug: "test-slug",
     });
     getSettingsSpy.mockResolvedValue({
@@ -768,5 +778,68 @@ describe("clientLoader permission checks", () => {
   it("should export a clientLoader for route protection", () => {
     expect(clientLoader).toBeDefined();
     expect(typeof clientLoader).toBe("function");
+  });
+});
+
+describe("Git provider connections in SaaS mode", () => {
+  it("should offer to connect each configured provider that is not connected", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+      ...VALID_SAAS_CONFIG,
+      providers_configured: ["github", "gitlab", "bitbucket"],
+      github_app_slug: "test-slug",
+      gitlab_enabled: true,
+    });
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS,
+      provider_tokens_set: {},
+    });
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    await waitFor(() => {
+      expect(screen.getByTestId("connect-github-button")).toBeInTheDocument();
+      expect(screen.getByTestId("connect-gitlab-button")).toBeInTheDocument();
+      expect(
+        screen.getByTestId("connect-bitbucket-button"),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByTestId("configure-github-repositories-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("disconnect-github-button"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("should show an error toast when returning from a failed provider link", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(VALID_SAAS_CONFIG);
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      MOCK_DEFAULT_USER_SETTINGS,
+    );
+    const displayErrorToastSpy = vi.spyOn(ToastHandlers, "displayErrorToast");
+    displayErrorToastSpy.mockClear();
+    window.history.replaceState(
+      null,
+      "",
+      "/settings/integrations?link_status=error",
+    );
+
+    // Act
+    renderGitSettingsScreen();
+    await screen.findByTestId("git-settings-screen");
+
+    // Assert
+    await waitFor(() =>
+      expect(displayErrorToastSpy).toHaveBeenCalledWith(
+        "GIT_PROVIDER$LINK_FAILED",
+      ),
+    );
+    expect(window.location.search).toBe("");
+
+    window.history.replaceState(null, "", "/");
   });
 });

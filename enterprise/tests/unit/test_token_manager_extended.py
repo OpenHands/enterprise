@@ -1,7 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from keycloak.exceptions import KeycloakConnectionError
+from keycloak.exceptions import KeycloakConnectionError, KeycloakDeleteError
 from pydantic import SecretStr
 from server.auth.token_manager import TokenManager
 
@@ -773,3 +773,111 @@ class TestOrgTokenMethods:
             loaded_token = await token_manager.load_org_token(installation_id)
 
         assert loaded_token == original_token
+
+
+@pytest.mark.asyncio
+async def test_get_idp_tokens_from_keycloak_returns_empty_when_user_not_linked(
+    token_manager,
+):
+    """Keycloak's 'not associated with identity provider' 400 means 'no tokens',
+    not an error (e.g. after the user disconnected the provider)."""
+    # Arrange
+    mock_response = MagicMock()
+    mock_response.content = (
+        b'{"error":"User [test_user_id] is not associated with '
+        b'identity provider [github]."}'
+    )
+
+    with patch('httpx.AsyncClient') as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        # Act
+        result = await token_manager.get_idp_tokens_from_keycloak(
+            'kc_access_token', ProviderType.GITHUB
+        )
+
+    # Assert
+    assert result == {}
+    mock_response.raise_for_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unlink_idp_removes_keycloak_link_and_stored_tokens(token_manager):
+    """Disconnecting a provider unlinks it in Keycloak and drops its tokens."""
+    # Arrange
+    mock_admin = MagicMock()
+    mock_admin.a_delete_user_social_login = AsyncMock()
+    mock_store = MagicMock()
+    mock_store.delete_tokens = AsyncMock()
+
+    with (
+        patch('server.auth.token_manager.get_keycloak_admin', return_value=mock_admin),
+        patch(
+            'server.auth.token_manager.AuthTokenStore.get_instance',
+            new=AsyncMock(return_value=mock_store),
+        ) as mock_get_instance,
+    ):
+        # Act
+        await token_manager.unlink_idp('test_user_id', ProviderType.GITHUB)
+
+    # Assert
+    mock_admin.a_delete_user_social_login.assert_awaited_once_with(
+        'test_user_id', 'github'
+    )
+    mock_get_instance.assert_awaited_once_with(
+        keycloak_user_id='test_user_id', idp=ProviderType.GITHUB
+    )
+    mock_store.delete_tokens.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unlink_idp_tolerates_missing_keycloak_link(token_manager):
+    """Tokens are still dropped when Keycloak no longer has the link."""
+    # Arrange
+    mock_admin = MagicMock()
+    mock_admin.a_delete_user_social_login = AsyncMock(
+        side_effect=KeycloakDeleteError(error_message='Not found', response_code=404)
+    )
+    mock_store = MagicMock()
+    mock_store.delete_tokens = AsyncMock()
+
+    with (
+        patch('server.auth.token_manager.get_keycloak_admin', return_value=mock_admin),
+        patch(
+            'server.auth.token_manager.AuthTokenStore.get_instance',
+            new=AsyncMock(return_value=mock_store),
+        ),
+    ):
+        # Act
+        await token_manager.unlink_idp('test_user_id', ProviderType.GITHUB)
+
+    # Assert
+    mock_store.delete_tokens.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unlink_idp_propagates_other_keycloak_errors(token_manager):
+    """Any other Keycloak failure aborts the disconnect and keeps the tokens."""
+    # Arrange
+    mock_admin = MagicMock()
+    mock_admin.a_delete_user_social_login = AsyncMock(
+        side_effect=KeycloakDeleteError(error_message='Server error', response_code=500)
+    )
+    mock_store = MagicMock()
+    mock_store.delete_tokens = AsyncMock()
+
+    with (
+        patch('server.auth.token_manager.get_keycloak_admin', return_value=mock_admin),
+        patch(
+            'server.auth.token_manager.AuthTokenStore.get_instance',
+            new=AsyncMock(return_value=mock_store),
+        ),
+    ):
+        # Act / Assert
+        with pytest.raises(KeycloakDeleteError):
+            await token_manager.unlink_idp('test_user_id', ProviderType.GITHUB)
+
+    mock_store.delete_tokens.assert_not_called()

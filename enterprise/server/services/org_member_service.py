@@ -67,6 +67,40 @@ class OrgMemberService:
         return MeResponse.from_org_member(org_member, role, email, super_role)
 
     @staticmethod
+    async def get_org_member(org_id: UUID, user_id: UUID) -> OrgMemberResponse:
+        """Get a single organization member's public record (id, email, role).
+
+        Args:
+            org_id: Organization ID (UUID)
+            user_id: ID of the member to look up (UUID)
+
+        Returns:
+            OrgMemberResponse: The member's public data
+
+        Raises:
+            OrgMemberNotFoundError: If user_id is not a member of the organization
+            RoleNotFoundError: If the role associated with the member is not found
+        """
+        org_member = await OrgMemberStore.get_org_member(org_id, user_id)
+        if org_member is None:
+            raise OrgMemberNotFoundError(str(org_id), str(user_id))
+
+        role = await RoleStore.get_role_by_id(org_member.role_id)
+        if role is None:
+            raise RoleNotFoundError(org_member.role_id)
+
+        user = await UserStore.get_user_by_id(str(user_id))
+
+        return OrgMemberResponse(
+            user_id=str(org_member.user_id),
+            email=user.email if user else None,
+            role_id=org_member.role_id,
+            role=role.name,
+            role_rank=role.rank,
+            status=org_member.status,
+        )
+
+    @staticmethod
     async def get_org_members(
         org_id: UUID,
         current_user_id: UUID,

@@ -150,8 +150,8 @@ export function Budgets() {
     !orgBudgetEnabled ||
     (typeof monthlyLimitValue === "number" && monthlyLimitValue > 0);
 
-  const currentSpend = budgetData?.current_spend ?? 0;
-  const percentage = budgetData?.current_spend_percentage ?? 0;
+  const currentSpend = budgetData?.current_spend ?? null;
+  const percentage = budgetData?.current_spend_percentage ?? null;
   const cycleLabel = budgetData?.cycle_start_at
     ? new Date(budgetData.cycle_start_at).toLocaleDateString("en-US", {
         month: "long",
@@ -270,11 +270,17 @@ export function Budgets() {
       (budgetData?.users ?? []).map((user) => {
         const limit = user.is_disabled ? null : user.effective_monthly_limit;
         const hasLimit = typeof limit === "number" && limit > 0;
-        const usagePercent = hasLimit ? (user.current_spend / limit) * 100 : 0;
+        const userSpend = user.current_spend;
+        const hasSpend = typeof userSpend === "number";
+        const usagePercent =
+          hasLimit && hasSpend ? (userSpend / limit) * 100 : 0;
         let status = "No cap";
         let statusColor: "green" | "yellow" | "red" = "green";
 
-        if (user.is_disabled) {
+        if (!hasSpend) {
+          status = "Usage unavailable";
+          statusColor = "yellow";
+        } else if (user.is_disabled) {
           status = "Disabled";
         } else if (hasLimit) {
           if (usagePercent > 100) {
@@ -315,7 +321,7 @@ export function Budgets() {
           budgetNote,
           status,
           statusColor,
-          usage: user.current_spend,
+          usage: userSpend,
           maxUsage: limit ?? 0,
         };
       }),
@@ -395,6 +401,12 @@ export function Budgets() {
           monthlyLimitValue={monthlyLimitValue}
           cycleLabel={cycleLabel}
           percentage={percentage}
+          spendStatus={budgetData?.spend_status ?? "unavailable"}
+          spendObservedAt={budgetData?.spend_observed_at ?? null}
+          syncStatus={budgetData?.litellm_last_sync_status ?? null}
+          syncError={budgetData?.litellm_last_sync_error ?? null}
+          unmappedSpend={budgetData?.unmapped_spend ?? null}
+          unmappedMemberCount={budgetData?.unmapped_member_count ?? null}
           monthlyLimit={monthlyLimit}
           onMonthlyLimitChange={setMonthlyLimit}
           billingCycle={billingCycle}

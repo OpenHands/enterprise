@@ -15,8 +15,8 @@ import { AzureDevOpsTokenInput } from "#/components/features/settings/git-settin
 import { AzureDevOpsWebhookManager } from "#/components/features/settings/git-settings/azure-devops-webhook-manager";
 import { ForgejoTokenInput } from "#/components/features/settings/git-settings/forgejo-token-input";
 import { ConfigureGitHubRepositoriesAnchor } from "#/components/features/settings/git-settings/configure-github-repositories-anchor";
+import { GitProviderConnection } from "#/components/features/settings/git-settings/git-provider-connection";
 import { ConfigureAzureDevOpsAnchor } from "#/components/features/settings/git-settings/configure-azure-devops-anchor";
-import { ConfigureGitLabAnchor } from "#/components/features/settings/git-settings/configure-gitlab-anchor";
 import { InstallSlackAppAnchor } from "#/components/features/settings/git-settings/install-slack-app-anchor";
 import { IntegrationProviderCard } from "#/components/features/settings/git-settings/integration-provider-card";
 import { I18nKey } from "#/i18n/declaration";
@@ -68,6 +68,26 @@ function GitSettingsScreen() {
     }
 
     params.delete("jira_dc_webhook");
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}${
+        window.location.hash
+      }`,
+    );
+  }, [t]);
+
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const linkStatus = params.get("link_status");
+    if (!linkStatus) {
+      return;
+    }
+
+    displayErrorToast(t(I18nKey.GIT_PROVIDER$LINK_FAILED));
+
+    params.delete("link_status");
     const query = params.toString();
     window.history.replaceState(
       null,
@@ -226,8 +246,13 @@ function GitSettingsScreen() {
     !bitbucketDCHostInputHasValue &&
     !azureDevOpsHostInputHasValue &&
     !forgejoHostInputHasValue;
-  const shouldRenderGitHubConfigureButton = isSaas && config?.github_app_slug;
+  const shouldRenderGitHubSection =
+    isSaas && Boolean(config?.providers_configured?.includes("github"));
+  const shouldRenderGitHubConfigureButton =
+    shouldRenderGitHubSection && isGitHubTokenSet && config?.github_app_slug;
   const shouldRenderGitLabSection = isSaas && Boolean(config?.gitlab_enabled);
+  const shouldRenderBitbucketSection =
+    isSaas && Boolean(config?.providers_configured?.includes("bitbucket"));
   const shouldRenderBitbucketDCSection =
     isSaas &&
     Boolean(config?.providers_configured?.includes("bitbucket_data_center"));
@@ -239,8 +264,9 @@ function GitSettingsScreen() {
     config?.feature_flags?.enable_jira_dc ||
     config?.feature_flags?.enable_linear;
   const hasSaasProviderCards =
-    shouldRenderGitHubConfigureButton ||
+    shouldRenderGitHubSection ||
     shouldRenderGitLabSection ||
+    shouldRenderBitbucketSection ||
     shouldRenderBitbucketDCSection ||
     shouldRenderAzureDevOpsSection ||
     shouldRenderSlackSection;
@@ -269,20 +295,29 @@ function GitSettingsScreen() {
                   settingsListDividerClassName,
                 )}
               >
-                {shouldRenderGitHubConfigureButton && (
+                {shouldRenderGitHubSection && (
                   <IntegrationProviderCard
                     provider="github"
                     title={t(I18nKey.SETTINGS$GITHUB)}
                     isConnected={isGitHubTokenSet}
                     statusTestId="github-status-text"
-                    statusLabel={
-                      isGitHubTokenSet ? t(I18nKey.STATUS$CONNECTED) : undefined
-                    }
+                    statusLabel={connectedStatusLabel(
+                      isGitHubTokenSet,
+                      I18nKey.STATUS$NOT_CONNECTED,
+                    )}
                     action={
-                      <ConfigureGitHubRepositoriesAnchor
-                        slug={config.github_app_slug!}
-                        isInstalled={isGitHubTokenSet}
-                      />
+                      <GitProviderConnection
+                        provider="github"
+                        providerName={t(I18nKey.SETTINGS$GITHUB)}
+                        isConnected={isGitHubTokenSet}
+                      >
+                        {shouldRenderGitHubConfigureButton && (
+                          <ConfigureGitHubRepositoriesAnchor
+                            slug={config.github_app_slug!}
+                            isInstalled
+                          />
+                        )}
+                      </GitProviderConnection>
                     }
                   />
                 )}
@@ -298,11 +333,35 @@ function GitSettingsScreen() {
                       I18nKey.SETTINGS$GITLAB_NOT_CONNECTED,
                     )}
                     action={
-                      !isGitLabTokenSet ? <ConfigureGitLabAnchor /> : undefined
+                      <GitProviderConnection
+                        provider="gitlab"
+                        providerName={t(I18nKey.SETTINGS$GITLAB)}
+                        isConnected={isGitLabTokenSet}
+                      />
                     }
                   >
                     {isGitLabTokenSet ? <GitLabWebhookManager /> : null}
                   </IntegrationProviderCard>
+                )}
+
+                {shouldRenderBitbucketSection && (
+                  <IntegrationProviderCard
+                    provider="bitbucket"
+                    title={t(I18nKey.SETTINGS$BITBUCKET)}
+                    isConnected={isBitbucketTokenSet}
+                    statusTestId="bitbucket-status-text"
+                    statusLabel={connectedStatusLabel(
+                      isBitbucketTokenSet,
+                      I18nKey.STATUS$NOT_CONNECTED,
+                    )}
+                    action={
+                      <GitProviderConnection
+                        provider="bitbucket"
+                        providerName={t(I18nKey.SETTINGS$BITBUCKET)}
+                        isConnected={isBitbucketTokenSet}
+                      />
+                    }
+                  />
                 )}
 
                 {shouldRenderBitbucketDCSection && (

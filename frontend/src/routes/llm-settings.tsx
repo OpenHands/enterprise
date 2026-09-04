@@ -523,9 +523,8 @@ export function LlmSettingsScreen({
         isSaasMode && activeProvider === "openhands";
 
       const llm = (agentSettings.llm ?? {}) as Record<string, unknown>;
-      if (shouldUseOpenHandsKey && llm.model !== undefined) {
-        llm.api_key = "";
-        agentSettings.llm = llm;
+      if (shouldUseOpenHandsKey) {
+        delete llm.api_key;
       }
 
       if (context.view === "basic" && llm.model !== undefined) {
@@ -547,9 +546,6 @@ export function LlmSettingsScreen({
               : "";
           llm.base_url = baseUrlValue || null;
         }
-        if (shouldUseOpenHandsKey && llm.api_key === undefined) {
-          llm.api_key = "";
-        }
         agentSettings.llm = llm;
       }
 
@@ -560,8 +556,7 @@ export function LlmSettingsScreen({
       // fire on same-value re-saves (e.g. save → delete profile → save
       // again).
       lastSavedModelRef.current = modelValue || null;
-      // OpenHands-managed saves force api_key to "" above — that's not a
-      // user-typed key, so it must not defeat key preservation.
+      // Managed OpenHands keys are omitted from the payload and preserved server-side.
       const typedApiKey =
         typeof context.values["llm.api_key"] === "string"
           ? context.values["llm.api_key"].trim()

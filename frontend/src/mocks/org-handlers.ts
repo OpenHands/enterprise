@@ -608,6 +608,52 @@ export const ORG_HANDLERS = [
     );
   }),
 
+  http.get("/api/organizations/:orgId/budgets", ({ params }) => {
+    const orgId = params.orgId?.toString();
+    if (!orgId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+
+    return HttpResponse.json({
+      enabled: true,
+      monthly_limit: 1000,
+      litellm_last_sync_at: "2026-09-02T19:30:00Z",
+      litellm_last_sync_status: "success",
+      litellm_last_sync_error: null,
+      reset_day: 1,
+      slack_channel: null,
+      slack_team_id: null,
+      default_user_monthly_limit: 250,
+      cycle_start_at: "2026-09-01T00:00:00Z",
+      cycle_end_at: "2026-10-01T00:00:00Z",
+      spend_status: "live",
+      spend_observed_at: "2026-09-02T19:30:00Z",
+      current_spend: 237.42,
+      current_spend_percentage: 23.7,
+      unmapped_spend: 12.5,
+      unmapped_member_count: 1,
+      thresholds: [],
+      users: [
+        {
+          user_id: "budget-user-1",
+          user_email: "budget-user@example.com",
+          user_name: "Budget User",
+          current_spend: 52.25,
+          monthly_limit: null,
+          effective_monthly_limit: 250,
+          is_disabled: false,
+          is_override: false,
+        },
+      ],
+      users_total: 1,
+      users_page: 1,
+      users_per_page: 50,
+    });
+  }),
+
   http.delete("/api/organizations/:orgId", ({ params }) => {
     const orgId = params.orgId?.toString();
 
