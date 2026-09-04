@@ -442,6 +442,28 @@ class TestSaveApiKeyPreservation:
     """No-new-key saves must not clobber a profile's stored api_key."""
 
     @pytest.mark.asyncio
+    async def test_managed_profile_does_not_persist_api_key(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        await save_profile(
+            org_id=org_id,
+            name='managed',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='openhands/gemini-3-pro-preview',
+                    api_key='sk-managed-key',
+                ),
+                include_secrets=True,
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        org = await _read_org(async_session_maker, org_id)
+        assert _load_profiles(org).require('managed').api_key is None
+
+    @pytest.mark.asyncio
     async def test_snapshot_save_with_preserve_flag_keeps_existing_key(
         self, async_session_maker, patch_route_db
     ):

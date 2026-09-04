@@ -196,6 +196,12 @@ class SaasSettingsStore(SettingsStore):
         return None
 
     @staticmethod
+    def _strip_managed_profile_api_keys(item: Settings) -> None:
+        for name, llm in list(item.llm_profiles.profiles.items()):
+            if managed_llm_key_config_from_model(llm.model, llm.base_url) is not None:
+                item.llm_profiles.save(name, llm, include_secrets=False)
+
+    @staticmethod
     def _get_persisted_agent_settings(item: Settings) -> dict[str, Any]:
         """Dump the agent settings to persist as this member's override."""
         persisted = item.agent_settings.model_dump(
@@ -677,10 +683,21 @@ class SaasSettingsStore(SettingsStore):
             )
 
             if uses_managed_llm_key:
+                fallback_api_key = (
+                    org_member.llm_api_key
+                    if not org._llm_api_key
+                    and not org_member.has_custom_llm_api_key
+                    and org_member._llm_api_key
+                    else None
+                )
                 await self._ensure_api_key(
-                    item, str(org_id), openhands_type=is_openhands_model(llm_model)
+                    item,
+                    str(org_id),
+                    openhands_type=is_openhands_model(llm_model),
+                    fallback_api_key=fallback_api_key,
                 )
                 item.sync_active_profile_from_settings()
+                self._strip_managed_profile_api_keys(item)
 
             # Per-user save (POST /api/v1/settings), callable by any member, so
             # it writes this member's row only. Org-wide defaults go through the
@@ -867,14 +884,18 @@ class SaasSettingsStore(SettingsStore):
             return []
 
     async def _ensure_api_key(
-        self, item: Settings, org_id: str, openhands_type: bool = False
+        self,
+        item: Settings,
+        org_id: str,
+        openhands_type: bool = False,
+        fallback_api_key: SecretStr | None = None,
     ) -> None:
         """Generate and set the OpenHands API key for the given settings.
 
         First checks if an existing key exists for the user and verifies it
         is valid in LiteLLM. If valid, reuses it. Otherwise, generates a new key.
         """
-        llm_api_key = item.agent_settings.llm.api_key
+        llm_api_key = item.agent_settings.llm.api_key or fallback_api_key
         logger.info(
             'saas_settings_store:ensure_api_key:evaluate',
             extra={
@@ -882,6 +903,9 @@ class SaasSettingsStore(SettingsStore):
                 'org_id': org_id,
                 'openhands_type': openhands_type,
                 'has_api_key': bool(llm_api_key),
+                'used_fallback_api_key': bool(
+                    fallback_api_key and not item.agent_settings.llm.api_key
+                ),
             },
         )
 
@@ -909,6 +933,7 @@ class SaasSettingsStore(SettingsStore):
             )
             return
 
+        item.agent_settings.llm.api_key = llm_api_key
         existing_key_valid = await LiteLlmManager.verify_existing_key(
             llm_api_key.get_secret_value(),  # type: ignore[union-attr]
             self.user_id,
