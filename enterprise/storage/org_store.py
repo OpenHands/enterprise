@@ -26,9 +26,12 @@ from storage.lite_llm_manager import (
     get_org_team_alias,
 )
 from storage.org import Org
+from storage.org_budget_settings import OrgBudgetSettings
+from storage.org_budget_threshold import OrgBudgetThreshold
 from storage.org_git_claim import OrgGitClaim
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
+from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.user import User
 from storage.user_settings import UserSettings
 
@@ -635,7 +638,7 @@ class OrgStore:
                     text("""
                     DELETE FROM app_conversation_start_task
                     WHERE app_conversation_id IN (
-                        SELECT conversation_id::uuid FROM conversation_metadata_saas WHERE org_id = :org_id
+                        SELECT CAST(conversation_id AS UUID) FROM conversation_metadata_saas WHERE org_id = :org_id
                     )
                     """),
                     {'org_id': str(org_id)},
@@ -671,6 +674,23 @@ class OrgStore:
                 await session.execute(
                     text('DELETE FROM stripe_customers WHERE org_id = :org_id'),
                     {'org_id': str(org_id)},
+                )
+
+                # Budget rows do not use ON DELETE CASCADE. Overrides also
+                # reference user.id, so remove them before the sole-requester
+                # path can delete that user below.
+                await session.execute(
+                    delete(OrgUserBudgetOverride).where(
+                        OrgUserBudgetOverride.org_id == org_id
+                    )
+                )
+                await session.execute(
+                    delete(OrgBudgetThreshold).where(
+                        OrgBudgetThreshold.org_id == org_id
+                    )
+                )
+                await session.execute(
+                    delete(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
                 )
 
                 # 3. Handle users with this as current_org_id BEFORE deleting

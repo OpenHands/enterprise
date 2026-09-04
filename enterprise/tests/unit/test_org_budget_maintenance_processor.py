@@ -51,7 +51,11 @@ async def test_processor_persists_budget_maintenance_updates(async_session_maker
         processor_json='{}',
         delay=0,
     )
-    financial_data = {'team_spend': 900.0, 'members': {}}
+    financial_data = {
+        'team_max_budget': 1900.0,
+        'team_spend': 900.0,
+        'members': {},
+    }
 
     with (
         patch(
