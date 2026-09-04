@@ -1323,6 +1323,68 @@ async def delete_org_budget_override(
     return None
 
 
+@org_router.get(
+    '/{org_id}/members/{user_id}',
+    response_model=OrgMemberResponse,
+)
+async def get_org_member(
+    org_id: UUID,
+    user_id: str,
+    current_user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
+) -> OrgMemberResponse:
+    """Get a single member of an organization.
+
+    Access requires the VIEW_ORG_SETTINGS permission, which is granted to all
+    organization members (member, admin, and owner roles), the same as the
+    members list. Resolves a known user id (e.g. the creator an automation runs
+    as) to a member record without paginating through the members list.
+
+    Args:
+        org_id: Organization ID (UUID)
+        user_id: ID of the member to look up
+        current_user_id: Authenticated user ID (injected by require_permission dependency)
+
+    Returns:
+        OrgMemberResponse: The member's public data (id, email, role, status)
+
+    Raises:
+        HTTPException: 400 if user_id is not a valid UUID
+        HTTPException: 403 if user lacks VIEW_ORG_SETTINGS permission
+        HTTPException: 404 if user_id is not a member of the organization
+        HTTPException: 500 if retrieval fails
+    """
+    try:
+        target_user_id = UUID(user_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Invalid user ID format',
+        )
+
+    try:
+        return await OrgMemberService.get_org_member(org_id, target_user_id)
+    except OrgMemberNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Member not found in this organization',
+        )
+    except RoleNotFoundError as e:
+        logger.exception(
+            'Role not found for org member',
+            extra={
+                'user_id': user_id,
+                'org_id': str(org_id),
+                'role_id': e.role_id,
+                'actor_id': current_user_id,
+            },
+            stack_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='An unexpected error occurred',
+        ) from e
+
+
 @org_router.delete(
     '/{org_id}/members/{user_id}',
 )
