@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.security import APIKeyHeader
 
 from openhands.agent_server.models import Success
-from openhands.app_server.config import depends_sandbox_service, depends_user_context
+from openhands.app_server.config import depends_sandbox_service
 from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxPage,
@@ -19,7 +19,6 @@ from openhands.app_server.sandbox.sandbox_service import (
 )
 from openhands.app_server.sandbox.session_auth import validate_session_key
 from openhands.app_server.user.auth_user_context import AuthUserContext
-from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth.user_auth import (
     get_for_user as get_user_auth_for_user,
 )
@@ -33,7 +32,6 @@ router = APIRouter(
     prefix='/sandboxes', tags=['Sandbox'], dependencies=get_dependencies()
 )
 sandbox_service_dependency = depends_sandbox_service()
-user_context_dependency = depends_user_context()
 
 # Read methods
 
@@ -92,12 +90,22 @@ async def pause_sandbox(
     return Success()
 
 
-@router.post('/{sandbox_id}/resume', responses={404: {'description': 'Item not found'}})
+@router.post(
+    '/{sandbox_id}/resume',
+    responses={
+        404: {'description': 'Sandbox or runtime not found'},
+        409: {'description': 'Runtime exists but cannot be resumed from its state'},
+        502: {'description': 'Runtime API lookup or resume failed'},
+    },
+)
 async def resume_sandbox(
     sandbox_id: str,
-    user_context: UserContext = user_context_dependency,
     sandbox_service: SandboxService = sandbox_service_dependency,
 ) -> Success:
+    """Resume a resumable sandbox or no-op when it is active.
+
+    No-op responses do not expose or rotate the existing session key.
+    """
     exists = await sandbox_service.resume_sandbox(sandbox_id)
     if not exists:
         raise HTTPException(status.HTTP_404_NOT_FOUND)

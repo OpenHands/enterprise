@@ -401,6 +401,25 @@ class TestCleanupOldSandboxes:
         mock_sandbox_service.pause_sandbox_mock.assert_called_once_with('sb1')
 
     @pytest.mark.asyncio
+    async def test_cleanup_excludes_requested_sandbox(self, mock_sandbox_service):
+        now = datetime.now(timezone.utc)
+        sandboxes = [
+            create_sandbox_info('target', SandboxStatus.RUNNING, now),
+            create_sandbox_info('other', SandboxStatus.RUNNING, now),
+        ]
+        mock_sandbox_service.search_sandboxes_mock.return_value = SandboxPage(
+            items=sandboxes, next_page_id=None
+        )
+        mock_sandbox_service.pause_sandbox_mock.return_value = True
+
+        result = await mock_sandbox_service.pause_old_sandboxes(
+            max_num_sandboxes=0, exclude_sandbox_ids={'target'}
+        )
+
+        assert result == ['other']
+        mock_sandbox_service.pause_sandbox_mock.assert_called_once_with('other')
+
+    @pytest.mark.asyncio
     async def test_cleanup_with_pagination(self, mock_sandbox_service):
         """Test cleanup handles pagination correctly."""
         # Setup: Multiple pages of sandboxes
@@ -498,18 +517,21 @@ class TestCleanupOldSandboxes:
         assert mock_sandbox_service.pause_sandbox_mock.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_cleanup_invalid_max_num_sandboxes(self, mock_sandbox_service):
-        """Test cleanup raises ValueError for invalid max_num_sandboxes."""
-        # Test zero
-        with pytest.raises(
-            ValueError, match='max_num_sandboxes must be greater than 0'
-        ):
-            await mock_sandbox_service.pause_old_sandboxes(max_num_sandboxes=0)
+    async def test_cleanup_can_pause_all_running_sandboxes(self, mock_sandbox_service):
+        now = datetime.now(timezone.utc)
+        mock_sandbox_service.search_sandboxes_mock.return_value = SandboxPage(
+            items=[create_sandbox_info('sb1', SandboxStatus.RUNNING, now)],
+            next_page_id=None,
+        )
+        mock_sandbox_service.pause_sandbox_mock.return_value = True
 
-        # Test negative
-        with pytest.raises(
-            ValueError, match='max_num_sandboxes must be greater than 0'
-        ):
+        result = await mock_sandbox_service.pause_old_sandboxes(max_num_sandboxes=0)
+
+        assert result == ['sb1']
+
+    @pytest.mark.asyncio
+    async def test_cleanup_invalid_max_num_sandboxes(self, mock_sandbox_service):
+        with pytest.raises(ValueError, match='max_num_sandboxes must be non-negative'):
             await mock_sandbox_service.pause_old_sandboxes(max_num_sandboxes=-1)
 
     @pytest.mark.asyncio
