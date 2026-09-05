@@ -562,3 +562,62 @@ class TestOverrideUsersEndpoint:
         ]
         assert len(saas_routes) == 1
         assert saas_routes[0].endpoint.__name__ == 'get_current_user_saas'
+
+
+class TestDisconnectGitProvider:
+    """Test suite for DELETE /api/v1/users/git-providers/{provider}."""
+
+    @pytest.fixture
+    def mock_user_context(self):
+        """Create a mock user context for a signed-in user."""
+        context = AsyncMock()
+        context.get_user_id = AsyncMock(return_value='user-123')
+        return context
+
+    @pytest.mark.asyncio
+    async def test_unlinks_the_provider_for_the_current_user(self, mock_user_context):
+        """Disconnecting hands the user's Keycloak id and provider to the unlink."""
+        from unittest.mock import patch
+
+        from server.routes.users_v1 import disconnect_git_provider
+
+        from openhands.app_server.integrations.service_types import ProviderType
+
+        # Arrange
+        with patch('server.routes.users_v1.token_manager') as mock_token_manager:
+            mock_token_manager.unlink_idp = AsyncMock()
+
+            # Act
+            result = await disconnect_git_provider(
+                provider=ProviderType.GITHUB, user_context=mock_user_context
+            )
+
+        # Assert
+        assert result.status_code == 204
+        mock_token_manager.unlink_idp.assert_awaited_once_with(
+            'user-123', ProviderType.GITHUB
+        )
+
+    @pytest.mark.asyncio
+    async def test_rejects_the_login_only_identity_provider(self, mock_user_context):
+        """enterprise_sso is a login IdP, not a git provider, so it can't be disconnected."""
+        from unittest.mock import patch
+
+        from fastapi import HTTPException
+        from server.routes.users_v1 import disconnect_git_provider
+
+        from openhands.app_server.integrations.service_types import ProviderType
+
+        # Arrange
+        with patch('server.routes.users_v1.token_manager') as mock_token_manager:
+            mock_token_manager.unlink_idp = AsyncMock()
+
+            # Act / Assert
+            with pytest.raises(HTTPException) as exc_info:
+                await disconnect_git_provider(
+                    provider=ProviderType.ENTERPRISE_SSO,
+                    user_context=mock_user_context,
+                )
+
+        assert exc_info.value.status_code == 400
+        mock_token_manager.unlink_idp.assert_not_called()

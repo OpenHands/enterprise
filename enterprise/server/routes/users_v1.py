@@ -9,9 +9,18 @@ from types import MappingProxyType
 from typing import Any, cast
 from uuid import UUID
 
-from fastapi import APIRouter, FastAPI, Header, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Response,
+    status,
+)
 from fastapi.responses import JSONResponse
 from server.auth.saas_user_auth import SaasUserAuth
+from server.auth.token_manager import TokenManager
 from server.constants import LITE_LLM_API_URL
 from server.models.user_models import GitOrganizationsResponse, SaasUserInfo
 from server.routes.org_models import OrgNotFoundError
@@ -42,6 +51,7 @@ saas_users_v1_router = APIRouter(
     prefix='/api/v1/users', tags=['User'], dependencies=get_dependencies()
 )
 user_dependency = depends_user_context()
+token_manager = TokenManager()
 
 
 def _inject_sdk_compat_fields(
@@ -218,6 +228,36 @@ async def get_current_user_git_organizations(
         )
 
     return GitOrganizationsResponse(provider=provider, organizations=orgs)
+
+
+@saas_users_v1_router.delete(
+    '/git-providers/{provider}', status_code=status.HTTP_204_NO_CONTENT
+)
+async def disconnect_git_provider(
+    provider: ProviderType,
+    user_context: UserContext = user_dependency,
+) -> Response:
+    """Disconnect a git provider linked to the user's Keycloak account.
+
+    Removes the Keycloak federated identity and the stored provider tokens, so
+    the provider shows as not connected until the user links it again from
+    Settings > Integrations.
+    """
+    if provider == ProviderType.ENTERPRISE_SSO:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Provider {provider.value} can't be disconnected",
+        )
+
+    user_id = await user_context.get_user_id()
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='User is not authenticated',
+        )
+
+    await token_manager.unlink_idp(user_id, provider)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 async def _get_org_info_from_context(user_context: UserContext) -> dict | None:

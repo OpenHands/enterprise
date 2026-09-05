@@ -254,8 +254,9 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
 SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
     # Only superadmin is functional for now. It can create organizations,
     # provision users into a selected organization without becoming an org
-    # member itself, grant/revoke the super-admin role on other users, and
-    # set org-level conversation quotas.
+    # member itself, invite the initial owner/admin into an org it created
+    # (via the normal invitation flow), grant/revoke the super-admin role on
+    # other users, and set org-level conversation quotas.
     # Additional instance-admin capabilities should be added here explicitly
     # as the corresponding routes are wired to permission checks.
     RoleName.OWNER: frozenset(),
@@ -263,6 +264,7 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
         [
             Permission.CREATE_ORGANIZATION,
             Permission.PROVISION_USER,
+            Permission.INVITE_USER_TO_ORGANIZATION,
             Permission.MANAGE_SUPER_ADMINS,
             Permission.MANAGE_FEATURE_FLAGS,
             Permission.MANAGE_ORG_QUOTA,

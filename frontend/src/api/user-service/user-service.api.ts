@@ -1,6 +1,7 @@
 import { openHands } from "../open-hands-axios";
 import { GitUser } from "#/types/git";
 import { UserGitOrganizationsResponse } from "#/types/org";
+import { Provider } from "#/types/settings";
 
 /**
  * User Service API - Handles all user-related API endpoints
@@ -24,6 +25,14 @@ class UserService {
       "/api/v1/users/git-organizations",
     );
     return data;
+  }
+
+  /**
+   * Disconnect a git provider linked to the current user's account (SaaS)
+   * @param provider The git provider to disconnect
+   */
+  static async disconnectGitProvider(provider: Provider): Promise<void> {
+    await openHands.delete(`/api/v1/users/git-providers/${provider}`);
   }
 }
 
