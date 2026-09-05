@@ -137,6 +137,11 @@ Frontend:
 
 - Prerequisites: A recent version of NodeJS / NPM
 - Setup: Run `npm install` in the frontend directory
+- Linting:
+  - ESLint uses flat config (`frontend/eslint.config.js`), not the legacy `.eslintrc`.
+  - ESLint is pinned to 9.x: eslint 10 is runtime-incompatible with the latest `eslint-plugin-react`/`-jsx-a11y`/`-import` (they crash on `context.getFilename`), and the abandoned `eslint-config-airbnb` only supports eslint 8. Do not bump eslint past 9 until those plugins ship eslint-10 support.
+  - `import/no-unresolved` is off (TS compiler checks imports); the `#/` path alias is resolved by tsconfig, not an import resolver.
+  - If `npm install` fails with `Cannot read properties of null (reading 'edgesOut')` (npm 10 arborist bug on this peer tree), regenerate the lockfile with `npx -y -p npm@11 npm install`; the resulting lockfile installs cleanly with plain `npm ci`.
 - Testing:
   - Run tests: `npm run test`
   - To run specific tests: `npm run test -- -t "TestName"`
