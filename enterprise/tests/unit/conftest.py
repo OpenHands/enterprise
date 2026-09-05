@@ -21,6 +21,8 @@ from sqlalchemy.orm import sessionmaker
 from storage.api_key import ApiKey  # noqa: F401
 from storage.base import Base
 from storage.billing_session import BillingSession
+from storage.bitbucket_dc_webhook import BitbucketDCWebhook  # noqa: F401
+from storage.bitbucket_webhook import BitbucketWebhook  # noqa: F401
 from storage.conversation_work import ConversationWork
 from storage.daily_conversation_usage import DailyConversationUsage  # noqa: F401
 from storage.device_code import DeviceCode  # noqa: F401
@@ -44,6 +46,10 @@ from storage.stored_offline_token import StoredOfflineToken
 from storage.stripe_customer import StripeCustomer
 from storage.user import User
 from storage.user_settings import UserSettings  # noqa: F401
+
+from openhands.app_server.app_conversation.sql_app_conversation_start_task_service import (
+    StoredAppConversationStartTask,  # noqa: F401
+)
 
 
 @pytest.fixture(autouse=True)

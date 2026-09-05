@@ -808,6 +808,16 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
         validation_result = await api_key_store.validate_api_key(api_key)
         if not validation_result:
             return None
+        try:
+            UUID(validation_result.user_id)
+        except ValueError:
+            user = None
+        else:
+            user = await UserStore.get_user_by_id(validation_result.user_id)
+            if user is None:
+                return None
+        if user is not None and user.is_disabled:
+            return None
         # API-key auth is intentionally decoupled from the Keycloak offline
         # session: we do NOT load an offline token or refresh here. A valid API
         # key alone authenticates the request. Any provider/access token needed
@@ -859,6 +869,16 @@ async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
     user_id = access_token_payload['sub']
     email = access_token_payload['email']
     email_verified = access_token_payload['email_verified']
+    try:
+        UUID(user_id)
+    except ValueError:
+        user = None
+    else:
+        user = await UserStore.get_user_by_id(user_id)
+        if user is None:
+            raise AuthError('Access denied: user account not found')
+    if user is not None and user.is_disabled:
+        raise AuthError('Access denied: user account is disabled')
 
     # Check if email is blacklisted (whitelist takes precedence)
     if email:
