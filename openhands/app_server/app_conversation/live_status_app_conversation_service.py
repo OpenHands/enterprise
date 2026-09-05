@@ -1534,6 +1534,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                         'openhands_type': getattr(rotation, 'openhands_type', None),
                     },
                 )
+                self.user_context.invalidate_user_info_cache()
                 return llm.model_copy(update={'api_key': SecretStr(rotation.new_key)})
 
             _logger.warning(

@@ -108,6 +108,16 @@ class UserAuth(ABC):
         self._settings = settings
         return settings
 
+    def invalidate_user_settings_cache(self) -> None:
+        """Discard settings views cached for the current request.
+
+        Callers that mutate settings outside ``UserAuth`` (for example, managed
+        LLM key rotation) use this so later launch-stage reads cannot retain a
+        credential that was just replaced in storage.
+        """
+        self._settings = None
+        self._resolved_settings = None
+
     @abstractmethod
     async def get_secrets_store(self) -> SecretsStore:
         """Get secrets store"""

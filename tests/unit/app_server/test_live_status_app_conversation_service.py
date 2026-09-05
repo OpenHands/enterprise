@@ -1040,6 +1040,7 @@ class TestLiveStatusAppConversationService:
         )
         verify_key.assert_awaited_once_with('sk-old-managed-key', 'user-123')
         rotate_key.assert_awaited_once_with()
+        self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_maybe_refresh_managed_llm_key_rotates_wrong_user_key(
@@ -1083,6 +1084,7 @@ class TestLiveStatusAppConversationService:
         )
         verify_key.assert_not_awaited()
         rotate_key.assert_awaited_once_with()
+        self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_maybe_refresh_managed_llm_key_keeps_owned_valid_key(
@@ -1124,6 +1126,7 @@ class TestLiveStatusAppConversationService:
         )
         verify_key.assert_awaited_once_with('sk-member-managed-key', 'member-user')
         rotate_key.assert_not_awaited()
+        self.mock_user_context.invalidate_user_info_cache.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_maybe_refresh_managed_llm_key_skips_non_saas(self, monkeypatch):
