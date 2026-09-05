@@ -35,11 +35,14 @@ export function ContextMenuNavLink({
         })
       : undefined;
     return (
-      <Tooltip content={tooltip} placement="right">
-        <div className="flex items-center gap-2 p-2 opacity-40 cursor-not-allowed rounded w-full text-xs">
-          {iconEl}
-          {t(text as I18nKey)}
-        </div>
+      <Tooltip>
+        <Tooltip.Trigger>
+          <div className="flex items-center gap-2 p-2 opacity-40 cursor-not-allowed rounded w-full text-xs">
+            {iconEl}
+            {t(text as I18nKey)}
+          </div>
+        </Tooltip.Trigger>
+        <Tooltip.Content placement="right">{tooltip}</Tooltip.Content>
       </Tooltip>
     );
   }

@@ -70,10 +70,7 @@ export interface RepositorySelection {
 }
 
 export type ConversationTrigger =
-  | "resolver"
-  | "gui"
-  | "suggested_task"
-  | "microagent_management";
+  "resolver" | "gui" | "suggested_task" | "microagent_management";
 
 export interface Conversation {
   conversation_id: string;

@@ -29,21 +29,24 @@ export function SettingsNavLink({
         })
       : undefined;
     return (
-      <Tooltip content={tooltip} placement="right">
-        <div
-          aria-disabled="true"
-          data-testid={`settings-nav-disabled-${to}`}
-          className="group flex items-center gap-3 p-1 sm:px-3.5 sm:py-2 rounded opacity-40 cursor-not-allowed"
-        >
-          <Typography.Text className="flex h-5 w-5 shrink-0 items-center justify-center text-[#8C8C8C]">
-            {icon}
-          </Typography.Text>
-          <div className="min-w-0 flex-1 overflow-hidden">
-            <Typography.Text className="block truncate whitespace-nowrap text-[#8C8C8C]">
-              {t(text as I18nKey)}
+      <Tooltip>
+        <Tooltip.Trigger>
+          <div
+            aria-disabled="true"
+            data-testid={`settings-nav-disabled-${to}`}
+            className="group flex items-center gap-3 p-1 sm:px-3.5 sm:py-2 rounded opacity-40 cursor-not-allowed"
+          >
+            <Typography.Text className="flex h-5 w-5 shrink-0 items-center justify-center text-[#8C8C8C]">
+              {icon}
             </Typography.Text>
+            <div className="min-w-0 flex-1 overflow-hidden">
+              <Typography.Text className="block truncate whitespace-nowrap text-[#8C8C8C]">
+                {t(text as I18nKey)}
+              </Typography.Text>
+            </div>
           </div>
-        </div>
+        </Tooltip.Trigger>
+        <Tooltip.Content placement="right">{tooltip}</Tooltip.Content>
       </Tooltip>
     );
   }
