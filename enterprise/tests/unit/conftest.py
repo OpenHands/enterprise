@@ -17,10 +17,6 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import sessionmaker
 
-from openhands.app_server.app_conversation.sql_app_conversation_start_task_service import (
-    StoredAppConversationStartTask,  # noqa: F401
-)
-
 # Anything not loaded here may not have a table created for it.
 from storage.api_key import ApiKey  # noqa: F401
 from storage.base import Base
@@ -50,6 +46,10 @@ from storage.stored_offline_token import StoredOfflineToken
 from storage.stripe_customer import StripeCustomer
 from storage.user import User
 from storage.user_settings import UserSettings  # noqa: F401
+
+from openhands.app_server.app_conversation.sql_app_conversation_start_task_service import (
+    StoredAppConversationStartTask,  # noqa: F401
+)
 
 
 @pytest.fixture(autouse=True)

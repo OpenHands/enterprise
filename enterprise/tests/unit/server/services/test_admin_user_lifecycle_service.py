@@ -239,8 +239,7 @@ async def test_delete_user_data_executes_sql_and_clears_quota_references(
         ):
             await session.execute(
                 text(
-                    f'UPDATE "{table}" SET {column} = :uuid '
-                    f'WHERE {column} = :hex_uuid'
+                    f'UPDATE "{table}" SET {column} = :uuid WHERE {column} = :hex_uuid'
                 ),
                 {'uuid': str(target_id), 'hex_uuid': target_id.hex},
             )

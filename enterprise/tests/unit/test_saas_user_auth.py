@@ -1245,6 +1245,7 @@ async def test_saas_user_auth_from_signed_token_rejects_disabled_user(mock_confi
         with pytest.raises(AuthError, match='user account is disabled'):
             await saas_user_auth_from_signed_token(signed_token)
 
+
 @pytest.mark.asyncio
 async def test_saas_user_auth_from_signed_token_blocked_domain(mock_config):
     """Test that saas_user_auth_from_signed_token raises AuthError when email domain is blocked."""
