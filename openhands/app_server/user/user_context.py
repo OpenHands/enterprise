@@ -53,6 +53,13 @@ class UserContext(ABC):
         resolution. Implementations without the concept ignore both.
         """
 
+    def invalidate_user_info_cache(self) -> None:  # noqa: B027
+        """Discard user/settings views cached for the current request.
+
+        Most contexts do not cache and can use this no-op implementation.
+        """
+        pass
+
     @abstractmethod
     async def get_authenticated_git_url(
         self, repository: str, is_optional: bool = False

@@ -402,6 +402,15 @@ class OrgUpdate(BaseModel):
             }
         )
 
+    def touches_llm_defaults(self) -> bool:
+        """Whether this update changes the shared LLM configuration."""
+        if self.llm_api_key is not None:
+            return True
+        return bool(
+            isinstance(self.agent_settings_diff, dict)
+            and 'llm' in self.agent_settings_diff
+        )
+
     def restricted_fields(self) -> set[str]:
         """Return fields that require elevated org settings permissions."""
         return self.updated_fields() & {
