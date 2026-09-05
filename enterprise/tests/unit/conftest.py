@@ -17,10 +17,16 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import sessionmaker
 
+from openhands.app_server.app_conversation.sql_app_conversation_start_task_service import (
+    StoredAppConversationStartTask,  # noqa: F401
+)
+
 # Anything not loaded here may not have a table created for it.
 from storage.api_key import ApiKey  # noqa: F401
 from storage.base import Base
 from storage.billing_session import BillingSession
+from storage.bitbucket_dc_webhook import BitbucketDCWebhook  # noqa: F401
+from storage.bitbucket_webhook import BitbucketWebhook  # noqa: F401
 from storage.conversation_work import ConversationWork
 from storage.daily_conversation_usage import DailyConversationUsage  # noqa: F401
 from storage.device_code import DeviceCode  # noqa: F401

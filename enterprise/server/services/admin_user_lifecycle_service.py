@@ -188,7 +188,8 @@ class AdminUserLifecycleService:
                 text("""
                     DELETE FROM app_conversation_start_task
                     WHERE app_conversation_id IN (
-                        SELECT conversation_id::uuid FROM conversation_metadata_saas
+                        SELECT CAST(conversation_id AS UUID)
+                        FROM conversation_metadata_saas
                         WHERE user_id = :uid
                     )
                 """),
@@ -215,7 +216,6 @@ class AdminUserLifecycleService:
                 'DELETE FROM slack_conversation WHERE keycloak_user_id = :uid',
                 'DELETE FROM slack_users WHERE keycloak_user_id = :uid',
                 'DELETE FROM resend_synced_users WHERE keycloak_user_id = :uid',
-                'DELETE FROM github_app_installations WHERE user_id = :uid',
                 'DELETE FROM org_git_claim WHERE claimed_by = :uid',
                 'DELETE FROM org_invitation WHERE inviter_id = :uid OR accepted_by_user_id = :uid',
                 'DELETE FROM org_user_budget_override WHERE user_id = :uid',

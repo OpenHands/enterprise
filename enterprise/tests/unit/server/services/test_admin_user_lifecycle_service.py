@@ -1,5 +1,6 @@
 """Tests for instance-level user lifecycle orchestration."""
 
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -10,6 +11,11 @@ from server.services.admin_user_lifecycle_service import (
     LastSuperAdminError,
     UserDeletionResult,
 )
+from sqlalchemy import select, text
+from storage.daily_conversation_usage import DailyConversationUsage
+from storage.org import Org
+from storage.quota_increase_request import QuotaIncreaseRequest
+from storage.user import User
 
 
 @pytest.fixture
@@ -176,3 +182,99 @@ async def test_missing_user_is_noop():
         assert await service.disable_user(str(uuid4())) is None
         assert await service.enable_user(str(uuid4())) is None
         assert await service.delete_user(str(uuid4())) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_user_data_executes_sql_and_clears_quota_references(
+    async_session_maker,
+):
+    target_id = uuid4()
+    approver_id = uuid4()
+    org_id = uuid4()
+    now = datetime.now(UTC)
+    org = Org(id=org_id, name='lifecycle-test')
+    target = User(id=target_id, current_org_id=org_id, email='target@example.com')
+    approver = User(id=approver_id, current_org_id=org_id, email='admin@example.com')
+
+    async with async_session_maker() as session:
+        session.add_all(
+            [
+                org,
+                target,
+                approver,
+                DailyConversationUsage(
+                    user_id=target_id,
+                    usage_date=date.today(),
+                    conversation_count=1,
+                    created_at=now,
+                    updated_at=now,
+                ),
+                QuotaIncreaseRequest(
+                    user_id=target_id,
+                    work_email='target@work.example',
+                    baseline_limit=10,
+                    requested_limit=20,
+                    status=QuotaIncreaseRequest.STATUS_PENDING,
+                    created_at=now,
+                    updated_at=now,
+                ),
+                QuotaIncreaseRequest(
+                    user_id=approver_id,
+                    work_email='admin@work.example',
+                    baseline_limit=10,
+                    requested_limit=20,
+                    status=QuotaIncreaseRequest.STATUS_APPROVED,
+                    created_at=now,
+                    updated_at=now,
+                    approved_by_user_id=target_id,
+                ),
+            ]
+        )
+        await session.commit()
+        for table, column in (
+            ('user', 'id'),
+            ('daily_conversation_usage', 'user_id'),
+            ('quota_increase_request', 'user_id'),
+            ('quota_increase_request', 'approved_by_user_id'),
+        ):
+            await session.execute(
+                text(
+                    f'UPDATE "{table}" SET {column} = :uuid '
+                    f'WHERE {column} = :hex_uuid'
+                ),
+                {'uuid': str(target_id), 'hex_uuid': target_id.hex},
+            )
+        await session.commit()
+
+    service = AdminUserLifecycleService(MagicMock())
+    with (
+        patch(
+            'server.services.admin_user_lifecycle_service.a_session_maker',
+            async_session_maker,
+        ),
+        patch(
+            'server.services.admin_user_lifecycle_service.UserStore.get_user_by_id',
+            AsyncMock(return_value=target),
+        ),
+        patch(
+            'server.services.admin_user_lifecycle_service.OrgStore.delete_org_cascade',
+            AsyncMock(),
+        ) as delete_org,
+    ):
+        await service._delete_user_data(str(target_id))
+
+    delete_org.assert_awaited_once_with(target_id, requester_user_id=str(target_id))
+    async with async_session_maker() as session:
+        assert await session.get(User, target_id) is None
+        assert (
+            await session.scalar(
+                select(DailyConversationUsage).where(
+                    DailyConversationUsage.user_id == target_id
+                )
+            )
+            is None
+        )
+        requests = list(await session.scalars(select(QuotaIncreaseRequest)))
+        assert len(requests) == 1
+        assert requests[0].user_id == approver_id
+        assert requests[0].approved_by_user_id is None

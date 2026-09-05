@@ -1223,6 +1223,29 @@ async def test_saas_user_auth_from_bearer_via_api_key_cookie_invalid():
 
 
 @pytest.mark.asyncio
+async def test_saas_user_auth_from_signed_token_rejects_disabled_user(mock_config):
+    user_id = str(uuid.uuid4())
+    access_payload = {
+        'sub': user_id,
+        'exp': int(time.time()) + 3600,
+        'email': 'user@example.com',
+        'email_verified': True,
+    }
+    access_token = jwt.encode(access_payload, 'access_secret', algorithm='HS256')
+    signed_token = jwt.encode(
+        {'access_token': access_token, 'refresh_token': 'test_refresh_token'},
+        'test_secret',
+        algorithm='HS256',
+    )
+
+    with patch(
+        'server.auth.saas_user_auth.UserStore.get_user_by_id',
+        AsyncMock(return_value=MagicMock(is_disabled=True)),
+    ):
+        with pytest.raises(AuthError, match='user account is disabled'):
+            await saas_user_auth_from_signed_token(signed_token)
+
+@pytest.mark.asyncio
 async def test_saas_user_auth_from_signed_token_blocked_domain(mock_config):
     """Test that saas_user_auth_from_signed_token raises AuthError when email domain is blocked."""
     # Arrange
