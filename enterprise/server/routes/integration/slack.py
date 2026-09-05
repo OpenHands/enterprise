@@ -47,7 +47,14 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.services.jwt_service import JwtService
 
-signature_verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+# slack-sdk>=3.43 validates that signing_secret is a non-empty str and raises
+# ValueError otherwise, which breaks module import when the secret is unset
+# (e.g. in tests). Construct only when a secret is configured.
+signature_verifier = (
+    SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+    if SLACK_SIGNING_SECRET
+    else None
+)
 slack_router = APIRouter(prefix='/slack')
 
 # Build https://slack.com/oauth/v2/authorize with sufficient query parameters
@@ -296,6 +303,7 @@ async def on_event(request: Request, background_tasks: BackgroundTasks):
     logger.info('slack_on_event', extra={'payload': payload})
 
     # First verify the signature
+    assert signature_verifier is not None  # required when webhooks are enabled
     if not signature_verifier.is_valid(
         body=body,
         timestamp=request.headers.get('x-slack-request-timestamp'),
@@ -381,6 +389,7 @@ async def on_options_load(request: Request, background_tasks: BackgroundTasks):
     logger.info('slack_on_options_load', extra={'payload': payload})
 
     # Verify the signature
+    assert signature_verifier is not None  # required when webhooks are enabled
     if not signature_verifier.is_valid(
         body=body,
         timestamp=request.headers.get('X-Slack-Request-Timestamp'),
@@ -484,6 +493,7 @@ async def on_form_interaction(request: Request, background_tasks: BackgroundTask
     logger.info('slack_on_form_interaction', extra={'payload': payload})
 
     # Verify the signature
+    assert signature_verifier is not None  # required when webhooks are enabled
     if not signature_verifier.is_valid(
         body=body,
         timestamp=request.headers.get('X-Slack-Request-Timestamp'),
