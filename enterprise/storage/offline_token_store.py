@@ -32,6 +32,21 @@ class OfflineTokenStore:
                 session.add(token_record)
             await session.commit()
 
+    async def delete_token(self) -> bool:
+        """Delete the stored offline token, if present."""
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(StoredOfflineToken).where(
+                    StoredOfflineToken.user_id == self.user_id
+                )
+            )
+            token_record = result.scalar_one_or_none()
+            if token_record is None:
+                return False
+            await session.delete(token_record)
+            await session.commit()
+            return True
+
     async def load_token(self) -> str | None:
         """Load an offline token from the database."""
         async with a_session_maker() as session:
