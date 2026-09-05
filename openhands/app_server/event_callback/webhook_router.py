@@ -398,6 +398,11 @@ async def on_conversation_update(
         sandbox_id=sandbox_record.id,
     )
 
+    # Stamp client source tag from trigger so both the agent-server telemetry
+    # and the enterprise analytics attribute the conversation consistently.
+    if trigger == ConversationTrigger.GUI and not merged_tags.get('clientsource'):
+        merged_tags['clientsource'] = 'agentcanvas'
+
     agent = conversation_info.agent
     if agent.agent_kind == 'acp':
         agent_kind = 'acp'

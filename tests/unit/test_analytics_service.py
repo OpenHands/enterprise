@@ -666,9 +666,40 @@ class TestTypedEventMethods:
         props = kwargs['properties']
         assert props['conversation_id'] == 'conv-abc'
         assert props['trigger'] == 'ui'
+        assert props['conversation_source'] == 'other'
         assert props['llm_model'] == 'gpt-4'
         assert props['agent_type'] == 'CodeActAgent'
         assert props['has_repository'] is True
+
+    def test_track_conversation_created_gui_maps_to_canvas(self, saas_service):
+        """trigger='gui' maps to conversation_source='canvas'."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_conversation_created(
+            ctx=ctx,
+            conversation_id='conv-gui',
+            trigger='gui',
+        )
+        _, kwargs = mock_client.capture.call_args
+        props = kwargs['properties']
+        assert props['trigger'] == 'gui'
+        assert props['conversation_source'] == 'canvas'
+
+    def test_track_conversation_created_automation_maps_to_automation(
+        self, saas_service
+    ):
+        """trigger='automation' maps to conversation_source='automation'."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_conversation_created(
+            ctx=ctx,
+            conversation_id='conv-auto',
+            trigger='automation',
+        )
+        _, kwargs = mock_client.capture.call_args
+        props = kwargs['properties']
+        assert props['trigger'] == 'automation'
+        assert props['conversation_source'] == 'automation'
 
     def test_track_conversation_requested(self, saas_service):
         """track_conversation_requested captures request milestone metadata."""

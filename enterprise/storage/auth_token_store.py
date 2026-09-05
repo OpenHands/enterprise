@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Dict
 
 from server.auth.auth_error import TokenRefreshError
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import OperationalError
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
@@ -98,6 +98,17 @@ class AuthTokenStore:
                     session.add(token_record)
 
             await session.commit()  # Commit after transaction block
+
+    async def delete_tokens(self) -> None:
+        """Delete the stored auth tokens for this user and identity provider."""
+        async with a_session_maker() as session:
+            await session.execute(
+                delete(AuthTokens).where(
+                    AuthTokens.keycloak_user_id == self.keycloak_user_id,
+                    AuthTokens.identity_provider == self.identity_provider_value,
+                )
+            )
+            await session.commit()
 
     async def load_tokens(
         self,

@@ -10,6 +10,7 @@ from jwt.exceptions import DecodeError
 from keycloak.exceptions import (
     KeycloakAuthenticationError,
     KeycloakConnectionError,
+    KeycloakDeleteError,
     KeycloakError,
     KeycloakPostError,
 )
@@ -242,6 +243,11 @@ class TokenManager:
             content_str = response.content.decode('utf-8')
             if (
                 f'Identity Provider [{idp.value}] does not support this operation.'
+                in content_str
+                # The user has no (or no longer any) link to this IdP, e.g. after
+                # disconnecting it from Settings > Integrations while the Keycloak
+                # ``identity_provider`` user attribute still names it.
+                or f'is not associated with identity provider [{idp.value}]'
                 in content_str
             ):
                 return data
@@ -846,6 +852,34 @@ class TokenManager:
                 stack_info=True,
             )
             return False
+
+    @retry(
+        stop=stop_after_attempt(2),
+        retry=retry_if_exception_type(KeycloakConnectionError),
+        before_sleep=_before_sleep_callback,
+    )
+    async def unlink_idp(self, user_id: str, idp: ProviderType) -> None:
+        """Disconnect a git provider from a user.
+
+        Removes the Keycloak federated identity link (so the provider can be
+        linked again, possibly to a different provider account) and drops the
+        stored provider tokens, which ``SaasUserAuth.get_provider_tokens``
+        treats as the set of connected providers.
+        """
+        keycloak_admin = get_keycloak_admin(self.external)
+        try:
+            await keycloak_admin.a_delete_user_social_login(user_id, idp.value)
+        except KeycloakDeleteError as e:
+            if e.response_code != 404:
+                raise
+            logger.info(
+                'keycloak_idp_link_already_removed',
+                extra={'user_id': user_id, 'idp': idp.value},
+            )
+        token_store = await AuthTokenStore.get_instance(
+            keycloak_user_id=user_id, idp=idp
+        )
+        await token_store.delete_tokens()
 
     @retry(
         stop=stop_after_attempt(2),
