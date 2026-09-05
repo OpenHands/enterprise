@@ -10,7 +10,7 @@ interface ErrorDetails {
 
 // PostHog capture removed — error tracking is now handled server-side
 export function trackError(
-  details: ErrorDetails, // eslint-disable-line @typescript-eslint/no-unused-vars
+  details: ErrorDetails, // eslint-disable-line unused-imports/no-unused-vars
 ): void {}
 
 export function showErrorToast({

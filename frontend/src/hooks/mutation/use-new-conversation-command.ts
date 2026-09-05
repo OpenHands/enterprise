@@ -68,7 +68,7 @@ export const useNewConversationCommand = () => {
         attempts += 1;
       }
 
-      if (!task || task.status !== "READY" || !task.app_conversation_id) {
+      if (task?.status !== "READY" || !task?.app_conversation_id) {
         throw new Error(
           task?.detail || "Failed to create new conversation in sandbox",
         );
