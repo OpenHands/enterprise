@@ -13,6 +13,7 @@ from server.auth.user.user_authorizer import (
 )
 from storage.user_authorization import UserAuthorizationType
 from storage.user_authorization_store import UserAuthorizationStore
+from tenacity import RetryError
 
 from openhands.app_server.services.injector import InjectorState
 
@@ -79,6 +80,8 @@ class DefaultUserAuthorizer(UserAuthorizer):
                 return UserAuthorizationResponse(success=False, error_detail='blocked')
 
             return UserAuthorizationResponse(success=True)
+        except RetryError:
+            raise
         except Exception:
             logger.exception(
                 'error authorizing user', extra={'user_id': user_id}, stack_info=True
