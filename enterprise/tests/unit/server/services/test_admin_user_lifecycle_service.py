@@ -13,6 +13,7 @@ from server.services.admin_user_lifecycle_service import (
 )
 from sqlalchemy import select, text
 from storage.daily_conversation_usage import DailyConversationUsage
+from storage.feature_flag import FeatureFlagRule  # noqa: F401  # register table for in-memory schema
 from storage.org import Org
 from storage.quota_increase_request import QuotaIncreaseRequest
 from storage.user import User
