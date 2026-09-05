@@ -1430,3 +1430,65 @@ class TestCreatedAtPreservation:
         stored = await service.get_app_conversation_info(conversation_id)
         assert stored is not None
         assert stored.created_at == created_at
+
+
+class TestSoftDelete:
+    """Soft-delete semantics: delete marks deleted_at, and reads hide the row.
+
+    Production soft-deletes conversations (sets ``deleted_at``) instead of
+    removing the row, so the row/data trail is retained for reconciliation and
+    audit while the API behaves as if the conversation were gone.
+    """
+
+    @pytest.mark.asyncio
+    async def test_delete_marks_deleted_at_and_hides_conversation(
+        self,
+        service: SQLAppConversationInfoService,
+        sample_conversation_info: AppConversationInfo,
+    ):
+        """Delete sets deleted_at; get/search/count hide the conversation."""
+        await service.save_app_conversation_info(sample_conversation_info)
+        cid = sample_conversation_info.id
+
+        deleted = await service.delete_app_conversation_info(cid)
+        assert deleted is True
+
+        # Hidden everywhere.
+        assert await service.get_app_conversation_info(cid) is None
+        page = await service.search_app_conversation_info()
+        assert all(item.id != cid for item in page.items)
+        assert await service.count_app_conversation_info() == 0
+
+        # Deleting an already-deleted conversation reports False (no-op).
+        assert await service.delete_app_conversation_info(cid) is False
+
+    @pytest.mark.asyncio
+    async def test_delete_nonexistent_returns_false(
+        self, service: SQLAppConversationInfoService
+    ):
+        """Deleting a conversation that never existed returns False."""
+        assert await service.delete_app_conversation_info(uuid4()) is False
+
+    @pytest.mark.asyncio
+    async def test_resave_does_not_resurrect_soft_deleted(
+        self,
+        service: SQLAppConversationInfoService,
+        sample_conversation_info: AppConversationInfo,
+    ):
+        """A lifecycle-webhook re-save must not un-delete a soft-deleted row."""
+        await service.save_app_conversation_info(sample_conversation_info)
+        cid = sample_conversation_info.id
+        assert await service.delete_app_conversation_info(cid) is True
+
+        # Simulate the webhook rebuilding the model without deleted_at.
+        rebuilt = AppConversationInfo(
+            id=cid,
+            created_by_user_id=sample_conversation_info.created_by_user_id,
+            sandbox_id=sample_conversation_info.sandbox_id,
+            title='Rebuilt after delete',
+        )
+        saved = await service.save_app_conversation_info(rebuilt)
+        assert saved.id == cid
+
+        # Still hidden --- save preserved deleted_at rather than resurrecting.
+        assert await service.get_app_conversation_info(cid) is None

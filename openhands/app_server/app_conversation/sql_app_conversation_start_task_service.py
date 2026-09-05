@@ -72,6 +72,11 @@ class StoredAppConversationStartTask(Base):
     updated_at: Mapped[datetime | None] = mapped_column(
         UtcDateTime, onupdate=func.now(), index=True
     )
+    # Soft-delete marker: when set, the start task is hidden from all reads but
+    # the row is retained (kept in lock-step with conversation soft-delete).
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        UtcDateTime, nullable=True, index=True
+    )
 
 
 @dataclass
@@ -93,7 +98,9 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
         limit: int = 100,
     ) -> AppConversationStartTaskPage:
         """Search for conversation start tasks."""
-        query = select(StoredAppConversationStartTask)
+        query = select(StoredAppConversationStartTask).where(
+            StoredAppConversationStartTask.deleted_at.is_(None)
+        )
 
         # Apply user filter if user_id is set
         if self.user_id:
@@ -161,7 +168,9 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
         created_at__gte: datetime | None = None,
     ) -> int:
         """Count conversation start tasks."""
-        query = select(func.count(StoredAppConversationStartTask.id))
+        query = select(func.count(StoredAppConversationStartTask.id)).where(
+            StoredAppConversationStartTask.deleted_at.is_(None)
+        )
 
         # Apply user filter if user_id is set
         if self.user_id:
@@ -194,7 +203,8 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
             return []
 
         query = select(StoredAppConversationStartTask).where(
-            StoredAppConversationStartTask.id.in_(task_ids)
+            StoredAppConversationStartTask.id.in_(task_ids),
+            StoredAppConversationStartTask.deleted_at.is_(None),
         )
         if self.user_id:
             query = query.where(
@@ -219,7 +229,8 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
     ) -> AppConversationStartTask | None:
         """Get a single start task, returning None if missing."""
         query = select(StoredAppConversationStartTask).where(
-            StoredAppConversationStartTask.id == task_id
+            StoredAppConversationStartTask.id == task_id,
+            StoredAppConversationStartTask.deleted_at.is_(None),
         )
         if self.user_id:
             query = query.where(
@@ -248,24 +259,33 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
         return task
 
     async def delete_app_conversation_start_tasks(self, conversation_id: UUID) -> bool:
-        """Delete all start tasks associated with a conversation.
+        """Soft-delete all start tasks associated with a conversation.
+
+        Marks ``deleted_at`` (rather than removing rows) to stay in lock-step with
+        conversation soft-delete: rows are retained for audit/reconciliation but
+        hidden from every read path.
 
         Args:
-            conversation_id: The ID of the conversation to delete tasks for.
+            conversation_id: The ID of the conversation to soft-delete tasks for.
         """
-        from sqlalchemy import delete
+        from sqlalchemy import update
 
-        # Build secure delete query with user filter if user_id is set
-        delete_query = delete(StoredAppConversationStartTask).where(
-            StoredAppConversationStartTask.app_conversation_id == conversation_id
+        # Build secure soft-delete query with user filter if user_id is set
+        update_query = (
+            update(StoredAppConversationStartTask)
+            .where(
+                StoredAppConversationStartTask.app_conversation_id == conversation_id,
+                StoredAppConversationStartTask.deleted_at.is_(None),
+            )
+            .values(deleted_at=utc_now())
         )
 
         if self.user_id:
-            delete_query = delete_query.where(
+            update_query = update_query.where(
                 StoredAppConversationStartTask.created_by_user_id == self.user_id
             )
 
-        result = cast(CursorResult, await self.session.execute(delete_query))
+        result = cast(CursorResult, await self.session.execute(update_query))
 
         # Return True if any rows were affected
         return result.rowcount > 0

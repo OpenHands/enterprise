@@ -167,6 +167,27 @@ class TestSharedConversationInfoService:
         assert result.created_by_user_id is None
 
     @pytest.mark.asyncio
+    async def test_get_shared_conversation_info_returns_none_for_deleted_conversation(
+        self,
+        shared_conversation_info_service,
+        app_conversation_service,
+        sample_conversation_info,
+    ):
+        await app_conversation_service.save_app_conversation_info(
+            sample_conversation_info
+        )
+        deleted = await app_conversation_service.delete_app_conversation_info(
+            sample_conversation_info.id
+        )
+
+        result = await shared_conversation_info_service.get_shared_conversation_info(
+            sample_conversation_info.id
+        )
+
+        assert deleted is True
+        assert result is None
+
+    @pytest.mark.asyncio
     async def test_get_shared_conversation_info_returns_none_for_private_conversation(
         self,
         shared_conversation_info_service,
