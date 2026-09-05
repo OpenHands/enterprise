@@ -31,8 +31,7 @@ export const useResendEmailVerification = (
       if (error.response?.status === 429) {
         // FastAPI returns errors in { detail: "..." } format
         const errorData = error.response.data as
-          | { detail?: string }
-          | undefined;
+          { detail?: string } | undefined;
 
         const rateLimitMessage =
           errorData?.detail ||

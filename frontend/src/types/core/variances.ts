@@ -41,7 +41,4 @@ export interface StatusUpdate {
 }
 
 export type OpenHandsVariance =
-  | TokenConfig
-  | InitConfig
-  | LocalUserMessageAction
-  | StatusUpdate;
+  TokenConfig | InitConfig | LocalUserMessageAction | StatusUpdate;
