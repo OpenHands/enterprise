@@ -73,8 +73,8 @@ class AdminUserLifecycleService:
         if user is None:
             return None
 
-        await self.token_manager.enable_keycloak_user(user_id, user.email)
         await self._set_disabled(user_id, False)
+        await self.token_manager.enable_keycloak_user(user_id, user.email)
         logger.info('admin_user_lifecycle:enabled', extra={'user_id': user_id})
         return UserLifecycleResult(user_id=user_id, email=user.email)
 
@@ -196,6 +196,9 @@ class AdminUserLifecycleService:
                 {'uid': user_id_str},
             )
             statements = (
+                'DELETE FROM jira_conversations WHERE jira_user_id IN (SELECT id FROM jira_users WHERE keycloak_user_id = :uid)',
+                'DELETE FROM jira_dc_conversations WHERE jira_dc_user_id IN (SELECT id FROM jira_dc_users WHERE keycloak_user_id = :uid)',
+                'DELETE FROM linear_conversations WHERE linear_user_id IN (SELECT id FROM linear_users WHERE keycloak_user_id = :uid)',
                 'DELETE FROM conversation_metadata_saas WHERE user_id = :uid',
                 'DELETE FROM daily_conversation_usage WHERE user_id = :uid',
                 'UPDATE quota_increase_request SET approved_by_user_id = NULL WHERE approved_by_user_id = :uid',
@@ -203,6 +206,9 @@ class AdminUserLifecycleService:
                 'DELETE FROM conversation_work WHERE user_id = :uid',
                 'DELETE FROM app_conversation_start_task WHERE created_by_user_id = :uid',
                 'DELETE FROM jira_workspaces WHERE admin_user_id = :uid',
+                'DELETE FROM jira_dc_workspaces WHERE admin_user_id = :uid',
+                'DELETE FROM linear_workspaces WHERE admin_user_id = :uid',
+                'DELETE FROM feature_flag_rules WHERE user_id = :uid',
                 'DELETE FROM user_settings WHERE keycloak_user_id = :uid',
                 'DELETE FROM api_keys WHERE user_id = :uid',
                 'DELETE FROM offline_tokens WHERE user_id = :uid',

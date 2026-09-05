@@ -814,6 +814,8 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
             user = None
         else:
             user = await UserStore.get_user_by_id(validation_result.user_id)
+            if user is None:
+                return None
         if user is not None and user.is_disabled:
             return None
         # API-key auth is intentionally decoupled from the Keycloak offline
@@ -873,6 +875,8 @@ async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
         user = None
     else:
         user = await UserStore.get_user_by_id(user_id)
+        if user is None:
+            raise AuthError('Access denied: user account not found')
     if user is not None and user.is_disabled:
         raise AuthError('Access denied: user account is disabled')
 
