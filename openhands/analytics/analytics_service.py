@@ -14,6 +14,7 @@ via constructor args.
 
 from datetime import datetime, timezone
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from posthog import Posthog
 
@@ -22,9 +23,13 @@ from openhands.analytics.analytics_constants import (
     CONVERSATION_DELETED,
     CONVERSATION_ERRORED,
     CONVERSATION_FINISHED,
+    CONVERSATION_PROVISIONING_FAILED,
+    CONVERSATION_READY,
     CONVERSATION_REQUESTED,
     CREDIT_LIMIT_REACHED,
     CREDIT_PURCHASED,
+    FIRST_AGENT_RESPONSE_COMPLETED,
+    FIRST_AGENT_RESPONSE_FAILED,
     GIT_PROVIDER_CONNECTED,
     ONBOARDING_COMPLETED,
     SETTINGS_SAVED,
@@ -36,6 +41,19 @@ from openhands.analytics.analytics_constants import (
 from openhands.analytics.analytics_context import AnalyticsContext
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
+
+_FIRST_RESPONSE_FAILURE_KINDS = frozenset(
+    {
+        'auth',
+        'quota',
+        'rate_limit',
+        'config',
+        'transient',
+        'agent_action',
+        'internal',
+        'unknown',
+    }
+)
 
 # Maps the enterprise ConversationTrigger enum values to the unified
 # ``conversation_source`` property that both the SDK agent-server telemetry
@@ -87,6 +105,7 @@ class AnalyticsService:
         event: str,
         properties: dict[str, Any] | None = None,
         session_id: str | None = None,
+        event_uuid: str | None = None,
     ) -> None:
         """Capture a server-side event.
 
@@ -107,6 +126,7 @@ class AnalyticsService:
                 distinct_id=self._distinct_id(ctx.user_id),
                 event=event,
                 properties=merged,
+                uuid=event_uuid,
             )
         except Exception:
             logger.exception(
@@ -259,6 +279,96 @@ class AnalyticsService:
                 'has_repository': has_repository,
             },
             session_id=session_id,
+        )
+
+    def _track_funnel_event(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        event: str,
+        identity: str,
+        properties: dict[str, Any],
+        session_id: str | None = None,
+    ) -> None:
+        """Capture a lifecycle milestone with a stable PostHog event UUID."""
+        self.capture(
+            ctx,
+            event,
+            properties=properties,
+            session_id=session_id,
+            event_uuid=str(
+                uuid5(NAMESPACE_URL, f'openhands.analytics:{event}:{identity}')
+            ),
+        )
+
+    def track_conversation_ready(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        conversation_id: str,
+        request_id: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        self._track_funnel_event(
+            ctx,
+            event=CONVERSATION_READY,
+            identity=f'conversation:{conversation_id}',
+            properties={'conversation_id': conversation_id, 'request_id': request_id},
+            session_id=session_id,
+        )
+
+    def track_conversation_provisioning_failed(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        request_id: str,
+        session_id: str | None = None,
+    ) -> None:
+        self._track_funnel_event(
+            ctx,
+            event=CONVERSATION_PROVISIONING_FAILED,
+            identity=f'request:{request_id}',
+            properties={'request_id': request_id},
+            session_id=session_id,
+        )
+
+    def track_first_agent_response(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        conversation_id: str,
+        outcome: str,
+        failure_kind: str | None = None,
+        retryable: bool | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        if outcome not in ('completed', 'failed'):
+            raise ValueError(f'Unsupported first response outcome: {outcome}')
+        event = (
+            FIRST_AGENT_RESPONSE_COMPLETED
+            if outcome == 'completed'
+            else FIRST_AGENT_RESPONSE_FAILED
+        )
+        properties: dict[str, Any] = {'conversation_id': conversation_id}
+        if outcome == 'failed':
+            properties['failure_kind'] = (
+                failure_kind
+                if failure_kind in _FIRST_RESPONSE_FAILURE_KINDS
+                else 'unknown'
+            )
+            if retryable is not None:
+                properties['retryable'] = retryable
+        self.capture(
+            ctx,
+            event,
+            properties=properties,
+            session_id=session_id,
+            event_uuid=str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f'openhands.analytics:first-agent-response:{conversation_id}',
+                )
+            ),
         )
 
     def track_conversation_finished(

@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 from server.routes.analytics_events import (
+    CanvasAuthenticatedEvent,
     CreatePrButtonClickedEvent,
     track_frontend_event,
 )
@@ -169,6 +170,50 @@ async def test_accepts_missing_git_provider():
     kwargs = mock_analytics.capture.call_args.kwargs
     assert kwargs['event'] == 'create pr button clicked'
     assert kwargs['properties'] == {'git_provider': None}
+
+
+@pytest.mark.asyncio
+async def test_forwards_canvas_authenticated_event():
+    mock_analytics = MagicMock()
+    mock_ctx = MagicMock(org_id='org-123')
+
+    with (
+        patch(
+            'server.routes.analytics_events.get_analytics_service',
+            return_value=mock_analytics,
+        ),
+        patch(
+            'server.routes.analytics_events.resolve_analytics_context',
+            new_callable=AsyncMock,
+            return_value=mock_ctx,
+        ),
+    ):
+        result = await track_frontend_event(
+            body=CanvasAuthenticatedEvent(
+                event_type='canvas_authenticated',
+                client_version='1.16.0',
+            ),
+            user_id='user-123',
+        )
+
+    assert result.status == 'ok'
+    mock_analytics.capture.assert_called_once_with(
+        ctx=mock_ctx,
+        event='canvas_authenticated',
+        properties={'client_version': '1.16.0'},
+    )
+
+
+def test_canvas_authenticated_requires_bounded_client_version():
+    with pytest.raises(ValidationError):
+        CanvasAuthenticatedEvent.model_validate(
+            {'event_type': 'canvas_authenticated', 'client_version': ''}
+        )
+
+    with pytest.raises(ValidationError):
+        CanvasAuthenticatedEvent.model_validate(
+            {'event_type': 'canvas_authenticated', 'client_version': 'x' * 65}
+        )
 
 
 def test_payload_rejects_unknown_event_type():

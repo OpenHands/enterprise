@@ -5,8 +5,9 @@ updating conversation statistics from ConversationStateUpdateEvent events.
 """
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -31,7 +32,10 @@ from openhands.app_server.user.specifiy_user_context import (
 from openhands.app_server.utils.sql_utils import Base
 from openhands.sdk import ConversationStats
 from openhands.sdk.event import ConversationStateUpdateEvent
-from openhands.sdk.llm import Metrics, TokenUsage
+from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
+from openhands.sdk.event.llm_convertible.message import MessageEvent
+from openhands.sdk.event.llm_convertible.observation import AgentErrorEvent
+from openhands.sdk.llm import Message, Metrics, TextContent, TokenUsage
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -949,6 +953,195 @@ class TestOnEventStatsProcessing:
 
         # Verify stats update was NOT called
         mock_app_conversation_info_service.update_conversation_statistics.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# First-response funnel analytics
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_event_tracks_first_agent_response_completed_once():
+    from openhands.app_server.event_callback.webhook_router import on_event
+
+    conversation_id = uuid4()
+    reply = MessageEvent(
+        source='agent',
+        llm_message=Message(
+            role='assistant', content=[TextContent(text='Completed the task')]
+        ),
+    )
+    info = AppConversationInfo(
+        id=conversation_id, sandbox_id='sb1', created_by_user_id='user_123'
+    )
+    event_service = AsyncMock()
+    event_service.search_events.return_value = SimpleNamespace(items=[reply])
+    analytics = MagicMock()
+
+    background_tasks = BackgroundTasks()
+    with (
+        patch(
+            'openhands.app_server.event_callback.webhook_router.get_analytics_service',
+            return_value=analytics,
+        ),
+        patch(
+            'openhands.app_server.event_callback.webhook_router.resolve_analytics_context',
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            'openhands.app_server.event_callback.webhook_router._run_callbacks_in_bg_and_close'
+        ),
+    ):
+        await on_event(
+            background_tasks=background_tasks,
+            events=[reply],
+            conversation_id=conversation_id,
+            app_conversation_info=info,
+            app_conversation_info_service=AsyncMock(),
+            event_service=event_service,
+        )
+        await background_tasks.tasks[0].func(*background_tasks.tasks[0].args)
+
+    analytics.track_first_agent_response.assert_called_once_with(
+        ctx=ANY,
+        conversation_id=str(conversation_id),
+        outcome='completed',
+        failure_kind=None,
+        retryable=None,
+    )
+    event_service.save_event.assert_awaited_once_with(conversation_id, reply)
+
+
+@pytest.mark.asyncio
+async def test_on_event_tracks_bounded_first_agent_response_failure():
+    from openhands.app_server.event_callback.webhook_router import on_event
+
+    conversation_id = uuid4()
+    error = AgentErrorEvent(
+        tool_name='llm',
+        tool_call_id='call-1',
+        error='secret-bearing provider error',
+        classification=ErrorClassification(kind=FailureKind.QUOTA, retryable=False),
+    )
+    info = AppConversationInfo(
+        id=conversation_id, sandbox_id='sb1', created_by_user_id='user_123'
+    )
+    event_service = AsyncMock()
+    event_service.search_events.return_value = SimpleNamespace(items=[error])
+    analytics = MagicMock()
+    background_tasks = BackgroundTasks()
+
+    with (
+        patch(
+            'openhands.app_server.event_callback.webhook_router.get_analytics_service',
+            return_value=analytics,
+        ),
+        patch(
+            'openhands.app_server.event_callback.webhook_router.resolve_analytics_context',
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            'openhands.app_server.event_callback.webhook_router._run_callbacks_in_bg_and_close'
+        ),
+    ):
+        await on_event(
+            background_tasks=background_tasks,
+            events=[error],
+            conversation_id=conversation_id,
+            app_conversation_info=info,
+            app_conversation_info_service=AsyncMock(),
+            event_service=event_service,
+        )
+        await background_tasks.tasks[0].func(*background_tasks.tasks[0].args)
+
+    analytics.track_first_agent_response.assert_called_once_with(
+        ctx=ANY,
+        conversation_id=str(conversation_id),
+        outcome='failed',
+        failure_kind='quota',
+        retryable=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_event_suppresses_response_after_prior_terminal_event():
+    from openhands.app_server.event_callback.webhook_router import on_event
+
+    conversation_id = uuid4()
+    prior_error = AgentErrorEvent(
+        tool_name='llm', tool_call_id='call-1', error='provider error'
+    )
+    reply = MessageEvent(
+        source='agent',
+        llm_message=Message(role='assistant', content=[TextContent(text='Done')]),
+    )
+    info = AppConversationInfo(
+        id=conversation_id, sandbox_id='sb1', created_by_user_id='user_123'
+    )
+    event_service = AsyncMock()
+    event_service.search_events.return_value = SimpleNamespace(
+        items=[prior_error, reply]
+    )
+    analytics = MagicMock()
+    background_tasks = BackgroundTasks()
+
+    with (
+        patch(
+            'openhands.app_server.event_callback.webhook_router.get_analytics_service',
+            return_value=analytics,
+        ),
+        patch(
+            'openhands.app_server.event_callback.webhook_router._run_callbacks_in_bg_and_close'
+        ),
+    ):
+        await on_event(
+            background_tasks=background_tasks,
+            events=[reply],
+            conversation_id=conversation_id,
+            app_conversation_info=info,
+            app_conversation_info_service=AsyncMock(),
+            event_service=event_service,
+        )
+        await background_tasks.tasks[0].func(*background_tasks.tasks[0].args)
+
+    analytics.track_first_agent_response.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_on_event_analytics_failure_does_not_block_event_persistence():
+    from openhands.app_server.event_callback.webhook_router import on_event
+
+    conversation_id = uuid4()
+    reply = MessageEvent(
+        source='agent',
+        llm_message=Message(role='assistant', content=[TextContent(text='Done')]),
+    )
+    info = AppConversationInfo(
+        id=conversation_id, sandbox_id='sb1', created_by_user_id='user_123'
+    )
+    event_service = AsyncMock()
+    event_service.search_events.side_effect = RuntimeError('analytics lookup failed')
+    background_tasks = BackgroundTasks()
+
+    with (
+        patch(
+            'openhands.app_server.event_callback.webhook_router.get_analytics_service',
+            return_value=MagicMock(),
+        ),
+        patch(
+            'openhands.app_server.event_callback.webhook_router._run_callbacks_in_bg_and_close'
+        ),
+    ):
+        await on_event(
+            background_tasks=background_tasks,
+            events=[reply],
+            conversation_id=conversation_id,
+            app_conversation_info=info,
+            app_conversation_info_service=AsyncMock(),
+            event_service=event_service,
+        )
+        event_service.save_event.assert_awaited_once_with(conversation_id, reply)
+        await background_tasks.tasks[0].func(*background_tasks.tasks[0].args)
 
 
 # ---------------------------------------------------------------------------
