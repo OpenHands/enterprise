@@ -709,6 +709,113 @@ class LiteLlmManager:
                 )
 
     @staticmethod
+    def _free_tier_models_need_update(team: dict) -> bool:
+        """Whether a free-tier team's allowlist has drifted from FREE_LLM_MODELS.
+
+        A free-tier team is one with budget enforcement disabled (max_budget is
+        None) whose ``models`` allowlist is a subset of FREE_LLM_MODELS -- the
+        exact shape ``_update_team`` writes for ``max_budget == 0.0`` (see
+        ``create_entries`` re-derivation). Legacy no-credit teams that predate
+        the free-tier restriction have ``max_budget == 0.0`` with an empty
+        ``models`` list (LiteLLM's "all models" sentinel); those are gated from
+        every model by the 0.0 budget and must also be reconciled.
+
+        Returns True only when the current allowlist differs from the desired
+        FREE_LLM_MODELS set, so callers write to the proxy solely on drift.
+        """
+        max_budget = team.get('max_budget')
+        models = team.get('models') or []
+        desired = set(FREE_LLM_MODELS)
+
+        is_legacy_zero_budget = max_budget == 0.0 and not models
+        is_restricted_free_tier = (
+            max_budget is None and bool(models) and set(models).issubset(desired)
+        )
+        if not (is_legacy_zero_budget or is_restricted_free_tier):
+            return False
+        return set(models) != desired
+
+    @staticmethod
+    async def reconcile_free_tier_models() -> dict:
+        """Sync every free-tier team's model allowlist with FREE_LLM_MODELS.
+
+        FREE_LLM_MODELS only takes effect when a team is (re)provisioned, so a
+        change to the list (e.g. adding ``deepseek-v4-flash``) leaves existing
+        no-credit teams on the old allowlist until some unrelated provisioning
+        pass happens to touch them. This sweep closes that gap: it lists teams
+        and, for each free-tier team whose allowlist has drifted, re-runs the
+        existing ``update_team_and_users_budget(team_id, 0.0)`` backfill (which
+        re-derives the allowlist from the current FREE_LLM_MODELS and clears any
+        member-level budget). Idempotent: teams already in sync are skipped, so
+        it writes to the proxy only when the env-configured list changed.
+        """
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            logger.warning('LiteLLM API configuration not found')
+            return {'checked': 0, 'reconciled': 0, 'errors': 0}
+
+        checked = 0
+        reconciled = 0
+        errors = 0
+        async with httpx.AsyncClient(
+            headers={'x-goog-api-key': LITE_LLM_API_KEY},
+            timeout=httpx.Timeout(LITELLM_MANAGEMENT_TIMEOUT),
+        ) as client:
+            teams = await LiteLlmManager._list_teams(client)
+
+        for team in teams:
+            team_id = team.get('team_id')
+            if not team_id:
+                continue
+            checked += 1
+            if not LiteLlmManager._free_tier_models_need_update(team):
+                continue
+            try:
+                await LiteLlmManager.update_team_and_users_budget(team_id, 0.0)
+                reconciled += 1
+                logger.info(
+                    'LiteLlmManager:reconcile_free_tier_models:updated',
+                    extra={
+                        'team_id': team_id,
+                        'previous_models': team.get('models') or [],
+                        'free_llm_models': list(FREE_LLM_MODELS),
+                    },
+                )
+            except Exception as exc:
+                errors += 1
+                logger.warning(
+                    'LiteLlmManager:reconcile_free_tier_models:failed',
+                    extra={'team_id': team_id, 'error': str(exc)},
+                )
+
+        logger.info(
+            'LiteLlmManager:reconcile_free_tier_models:complete',
+            extra={
+                'checked': checked,
+                'reconciled': reconciled,
+                'errors': errors,
+                'free_llm_models': list(FREE_LLM_MODELS),
+            },
+        )
+        return {'checked': checked, 'reconciled': reconciled, 'errors': errors}
+
+    @staticmethod
+    async def _list_teams(client: httpx.AsyncClient) -> list[dict]:
+        """Return all teams from the LiteLLM proxy (``GET /team/list``).
+
+        Each entry carries ``team_id``, ``max_budget`` and ``models`` at the top
+        level, which is all the free-tier reconciliation inspects.
+        """
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            logger.warning('LiteLLM API configuration not found')
+            return []
+        response = await client.get(f'{LITE_LLM_API_URL}/team/list')
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, dict):
+            return data.get('teams', [])
+        return data or []
+
+    @staticmethod
     async def _team_alias_for_org(org_id: str, keycloak_user_id: str) -> str:
         """Resolve the dashboard-friendly team_alias for an org (its display
         name, or 'Personal Workspace' for the user's personal org). The org
