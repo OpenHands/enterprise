@@ -26,7 +26,7 @@ export const usePostHogIdentify = () => {
   const { data: me } = useMe();
   const { data: gitUser } = useGitUser();
   const { data: settings } = useSettings();
-  const hasIdentifiedRef = React.useRef(false);
+  const identifiedIdRef = React.useRef<string | null>(null);
 
   const consent = settings?.user_consents_to_analytics;
 
@@ -35,22 +35,24 @@ export const usePostHogIdentify = () => {
 
     // Reset on explicit denial to undo any prior identify.
     if (consent === false) {
-      if (hasIdentifiedRef.current) {
+      if (identifiedIdRef.current !== null) {
         posthog.reset();
-        hasIdentifiedRef.current = false;
+        identifiedIdRef.current = null;
       }
       return;
     }
 
     // Wait for an explicit consent decision before identifying.
-    if (consent !== true || hasIdentifiedRef.current) return;
+    if (consent !== true) return;
 
     if (config?.app_mode === "saas" && me?.user_id) {
+      if (identifiedIdRef.current === me.user_id) return;
       posthog.identify(me.user_id, {
         email: me.email,
       });
-      hasIdentifiedRef.current = true;
+      identifiedIdRef.current = me.user_id;
     } else if (config?.app_mode === "oss" && gitUser) {
+      if (identifiedIdRef.current === gitUser.login) return;
       posthog.identify(gitUser.login, {
         company: gitUser.company,
         name: gitUser.name,
@@ -58,7 +60,7 @@ export const usePostHogIdentify = () => {
         user: gitUser.login,
         mode: "oss",
       });
-      hasIdentifiedRef.current = true;
+      identifiedIdRef.current = gitUser.login;
     }
   }, [posthog, config?.app_mode, me, gitUser, consent, settings]);
 };
