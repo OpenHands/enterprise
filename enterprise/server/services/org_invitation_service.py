@@ -3,6 +3,11 @@
 import asyncio
 from uuid import UUID
 
+from server.auth.authorization import (
+    Permission,
+    get_user_super_role,
+    has_permission,
+)
 from server.auth.token_manager import TokenManager
 from server.constants import ROLE_ADMIN, ROLE_OWNER
 from server.routes.org_invitation_models import (
@@ -27,6 +32,74 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 
 class OrgInvitationService:
     """Service for organization invitation operations."""
+
+    @staticmethod
+    async def _authorize_inviter(
+        org_id: UUID,
+        inviter_id: UUID,
+        role_name_lower: str,
+    ) -> None:
+        """Authorize a caller to invite users into ``org_id``.
+
+        Two kinds of caller are allowed:
+
+        * An **org-scoped** ``owner``/``admin`` member of the org (the
+          normal path).
+        * An instance-level **super-role** holder whose super permissions
+          include ``INVITE_USER_TO_ORGANIZATION`` (a ``superadmin``). This
+          lets a superadmin seed a freshly-created org with its initial
+          owner/admin through the normal invitation flow, without first
+          becoming a member of that org. See OHE-2769.
+
+        The owner-role escalation guard is preserved for org-scoped
+        inviters (only an ``owner`` may invite another ``owner``) but does
+        not apply to a super-role inviter, since seeding the first owner is
+        the whole point of the superadmin path.
+
+        Raises:
+            InsufficientPermissionError: If the caller may not invite, or
+                may not invite with the requested role.
+        """
+        inviter_member = await OrgMemberStore.get_org_member(org_id, inviter_id)
+        inviter_role = (
+            await RoleStore.get_role_by_id(inviter_member.role_id)
+            if inviter_member
+            else None
+        )
+        is_org_inviter = bool(
+            inviter_role and inviter_role.name in [ROLE_OWNER, ROLE_ADMIN]
+        )
+
+        # Only consult the (cross-org) super role when the org-scoped check
+        # did not already grant access — keeps the common member path free
+        # of an extra lookup.
+        is_super_inviter = False
+        if not is_org_inviter:
+            super_role = await get_user_super_role(str(inviter_id))
+            is_super_inviter = bool(
+                super_role
+                and has_permission(
+                    super_role,
+                    Permission.INVITE_USER_TO_ORGANIZATION,
+                    is_super=True,
+                )
+            )
+
+        if not (is_org_inviter or is_super_inviter):
+            if inviter_member is None:
+                raise InsufficientPermissionError(
+                    'You are not a member of this organization'
+                )
+            raise InsufficientPermissionError('Only owners and admins can invite users')
+
+        # Only an org owner may invite another owner. A super-role inviter
+        # is exempt: seeding the initial owner is the intended use case.
+        if (
+            role_name_lower == ROLE_OWNER
+            and not (inviter_role and inviter_role.name == ROLE_OWNER)
+            and not is_super_inviter
+        ):
+            raise InsufficientPermissionError('Only owners can invite with owner role')
 
     @staticmethod
     async def create_invitation(
@@ -85,28 +158,17 @@ class OrgInvitationService:
                 'Cannot invite users to a personal workspace'
             )
 
-        # Step 3: Check inviter is a member and has permission
-        inviter_member = await OrgMemberStore.get_org_member(org_id, inviter_id)
-        if not inviter_member:
-            raise InsufficientPermissionError(
-                'You are not a member of this organization'
-            )
-
-        inviter_role = await RoleStore.get_role_by_id(inviter_member.role_id)
-        if not inviter_role or inviter_role.name not in [ROLE_OWNER, ROLE_ADMIN]:
-            raise InsufficientPermissionError('Only owners and admins can invite users')
-
-        # Step 4: Validate role assignment permissions
+        # Step 3 & 4: Authorize the inviter (org owner/admin member, or a
+        # superadmin seeding the org) and validate the requested role.
         role_name_lower = role_name.lower()
-        if role_name_lower == ROLE_OWNER and inviter_role.name != ROLE_OWNER:
-            raise InsufficientPermissionError('Only owners can invite with owner role')
+        await OrgInvitationService._authorize_inviter(
+            org_id, inviter_id, role_name_lower
+        )
 
-        # Get the target role
         target_role = await RoleStore.get_role_by_name(role_name_lower)
         if not target_role:
             raise ValueError(f'Invalid role: {role_name}')
 
-        # Step 5: Check if user is already a member (by email)
         existing_user = await UserStore.get_user_by_email(email)
         if existing_user:
             existing_member = await OrgMemberStore.get_org_member(
@@ -117,7 +179,6 @@ class OrgInvitationService:
                     'User is already a member of this organization'
                 )
 
-        # Step 6: Create the invitation
         invitation = await OrgInvitationStore.create_invitation(
             org_id=org_id,
             email=email,
@@ -125,10 +186,8 @@ class OrgInvitationService:
             inviter_id=inviter_id,
         )
 
-        # Step 7: Send invitation email
         try:
-            # Get inviter info for the email
-            inviter_user = await UserStore.get_user_by_id(str(inviter_member.user_id))
+            inviter_user = await UserStore.get_user_by_id(str(inviter_id))
             inviter_name = 'A team member'
             if inviter_user and inviter_user.email:
                 inviter_name = inviter_user.email.split('@')[0]
@@ -200,19 +259,12 @@ class OrgInvitationService:
                 'Cannot invite users to a personal workspace'
             )
 
-        inviter_member = await OrgMemberStore.get_org_member(org_id, inviter_id)
-        if not inviter_member:
-            raise InsufficientPermissionError(
-                'You are not a member of this organization'
-            )
-
-        inviter_role = await RoleStore.get_role_by_id(inviter_member.role_id)
-        if not inviter_role or inviter_role.name not in [ROLE_OWNER, ROLE_ADMIN]:
-            raise InsufficientPermissionError('Only owners and admins can invite users')
-
+        # Authorize the inviter (org owner/admin member, or a superadmin
+        # seeding the org) and validate the requested role.
         role_name_lower = role_name.lower()
-        if role_name_lower == ROLE_OWNER and inviter_role.name != ROLE_OWNER:
-            raise InsufficientPermissionError('Only owners can invite with owner role')
+        await OrgInvitationService._authorize_inviter(
+            org_id, inviter_id, role_name_lower
+        )
 
         target_role = await RoleStore.get_role_by_name(role_name_lower)
         if not target_role:

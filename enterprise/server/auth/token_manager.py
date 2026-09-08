@@ -10,6 +10,7 @@ from jwt.exceptions import DecodeError
 from keycloak.exceptions import (
     KeycloakAuthenticationError,
     KeycloakConnectionError,
+    KeycloakDeleteError,
     KeycloakError,
     KeycloakPostError,
 )
@@ -129,6 +130,13 @@ class TokenManager:
                 return None, None
 
             return token_response['access_token'], token_response['refresh_token']
+        except KeycloakConnectionError:
+            logger.warning(
+                'Keycloak unavailable when getting tokens',
+                exc_info=True,
+                stack_info=True,
+            )
+            raise
         except Exception:
             logger.exception('Exception when getting Keycloak tokens', stack_info=True)
             return None, None
@@ -178,6 +186,12 @@ class TokenManager:
         user_id: str,
         keycloak_access_token: str,
     ):
+        if idp == ProviderType.ENTERPRISE_SSO:
+            # Login-only IdP: its broker tokens are not git provider tokens
+            # and have no consumers. Storing them creates auth_tokens rows
+            # that surface enterprise_sso as a phantom git provider (see
+            # SaasUserAuth.get_provider_tokens).
+            return
         data = await self.get_idp_tokens_from_keycloak(keycloak_access_token, idp)
         if data:
             await self._store_idp_tokens(
@@ -229,6 +243,11 @@ class TokenManager:
             content_str = response.content.decode('utf-8')
             if (
                 f'Identity Provider [{idp.value}] does not support this operation.'
+                in content_str
+                # The user has no (or no longer any) link to this IdP, e.g. after
+                # disconnecting it from Settings > Integrations while the Keycloak
+                # ``identity_provider`` user attribute still names it.
+                or f'is not associated with identity provider [{idp.value}]'
                 in content_str
             ):
                 return data
@@ -839,6 +858,34 @@ class TokenManager:
         retry=retry_if_exception_type(KeycloakConnectionError),
         before_sleep=_before_sleep_callback,
     )
+    async def unlink_idp(self, user_id: str, idp: ProviderType) -> None:
+        """Disconnect a git provider from a user.
+
+        Removes the Keycloak federated identity link (so the provider can be
+        linked again, possibly to a different provider account) and drops the
+        stored provider tokens, which ``SaasUserAuth.get_provider_tokens``
+        treats as the set of connected providers.
+        """
+        keycloak_admin = get_keycloak_admin(self.external)
+        try:
+            await keycloak_admin.a_delete_user_social_login(user_id, idp.value)
+        except KeycloakDeleteError as e:
+            if e.response_code != 404:
+                raise
+            logger.info(
+                'keycloak_idp_link_already_removed',
+                extra={'user_id': user_id, 'idp': idp.value},
+            )
+        token_store = await AuthTokenStore.get_instance(
+            keycloak_user_id=user_id, idp=idp
+        )
+        await token_store.delete_tokens()
+
+    @retry(
+        stop=stop_after_attempt(2),
+        retry=retry_if_exception_type(KeycloakConnectionError),
+        before_sleep=_before_sleep_callback,
+    )
     async def create_keycloak_user(
         self,
         email: str,
@@ -943,6 +990,26 @@ class TokenManager:
             return None
         github_id = github_ids[0]
         return github_id
+
+    async def enable_keycloak_user(
+        self, user_id: str, email: str | None = None
+    ) -> None:
+        """Enable a Keycloak account while preserving its user attributes."""
+        keycloak_admin = get_keycloak_admin(self.external)
+        user = await keycloak_admin.a_get_user(user_id)
+        if user is None:
+            logger.warning('Keycloak user not found while enabling: %s', user_id)
+            return
+        await keycloak_admin.a_update_user(
+            user_id=user_id,
+            payload={
+                'enabled': True,
+                'username': user.get('username', ''),
+                'email': user.get('email', ''),
+                'emailVerified': user.get('emailVerified', False),
+            },
+        )
+        logger.info('Enabled Keycloak account for user_id: %s', user_id)
 
     async def disable_keycloak_user(
         self, user_id: str, email: str | None = None

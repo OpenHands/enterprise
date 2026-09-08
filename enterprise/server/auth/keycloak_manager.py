@@ -4,7 +4,9 @@ from server.auth.constants import (
     KEYCLOAK_ADMIN_PASSWORD,
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_CLIENT_SECRET,
+    KEYCLOAK_MAX_RETRIES,
     KEYCLOAK_REALM_NAME,
+    KEYCLOAK_REQUEST_TIMEOUT,
     KEYCLOAK_SERVER_URL,
     KEYCLOAK_SERVER_URL_EXT,
 )
@@ -25,6 +27,8 @@ def get_keycloak_openid(external=False) -> KeycloakOpenID:
             realm_name=KEYCLOAK_REALM_NAME,
             client_id=KEYCLOAK_CLIENT_ID,
             client_secret_key=KEYCLOAK_CLIENT_SECRET,
+            timeout=KEYCLOAK_REQUEST_TIMEOUT,
+            max_retries=KEYCLOAK_MAX_RETRIES,
         )
     return _keycloak_instances[external]
 
@@ -42,6 +46,8 @@ def get_keycloak_admin(external=False) -> KeycloakAdmin:
             realm_name='master',
             client_id='admin-cli',
             verify=True,
+            timeout=KEYCLOAK_REQUEST_TIMEOUT,
+            max_retries=KEYCLOAK_MAX_RETRIES,
         )
         keycloak_admin.get_realm(KEYCLOAK_REALM_NAME)
         keycloak_admin.change_current_realm(KEYCLOAK_REALM_NAME)

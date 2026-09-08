@@ -70,6 +70,30 @@ class TestMeResponseFromOrgMember:
         assert 'edit_org_settings' not in viewer.permissions
         assert 'view_org_settings' in viewer.permissions
 
+    def test_from_org_member_adds_super_role_permissions(self):
+        """Super role permissions are included for server-defined client gating."""
+        member = MagicMock(spec=OrgMember)
+        member.org_id = uuid4()
+        member.user_id = uuid4()
+        member.agent_settings_diff = {}
+        member.conversation_settings_diff = {}
+        member.status = 'active'
+        member.has_custom_llm_api_key = False
+        type(member).llm_api_key = PropertyMock(return_value=None)
+        type(member).llm_api_key_for_byor = PropertyMock(return_value=None)
+
+        org_role = MagicMock()
+        org_role.name = RoleName.MEMBER
+        super_role = MagicMock()
+        super_role.name = RoleName.ADMIN
+
+        result = MeResponse.from_org_member(
+            member, org_role, 'admin@example.com', super_role
+        )
+
+        assert 'create_organization' in result.permissions
+        assert 'manage_super_admins' in result.permissions
+
     def test_from_org_member_without_custom_llm_api_key_returns_empty_string(self):
         """When has_custom_llm_api_key is False, returns '' without accessing member.llm_api_key.
 

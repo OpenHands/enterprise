@@ -515,14 +515,12 @@ class SlackManager(Manager[SlackViewInterface]):
         Args:
             slack_payload: The raw Slack interaction payload
         """
-        # Extract fields from the Slack interaction payload
         action = slack_payload['actions'][0]
         slack_user_id = slack_payload['user']['id']
         channel_id = slack_payload['container']['channel_id']
         team_id = slack_payload['team']['id']
         response_url = slack_payload.get('response_url')
 
-        # Parse the action to extract message_ts, thread_ts, and selected value
         parsed = self._parse_form_action(action)
         if parsed is None:
             logger.warning(
@@ -536,7 +534,6 @@ class SlackManager(Manager[SlackViewInterface]):
 
         message_ts, thread_ts, selected_value = parsed
 
-        # Build partial payload for error handling
         payload = {
             'team_id': team_id,
             'channel_id': channel_id,
@@ -545,7 +542,6 @@ class SlackManager(Manager[SlackViewInterface]):
             'thread_ts': thread_ts,
         }
 
-        # Convert "-" (No Repository) to None
         selected_repository = None if selected_value == '-' else selected_value
 
         try:
@@ -559,7 +555,6 @@ class SlackManager(Manager[SlackViewInterface]):
 
         await self._replace_repo_selection_form(response_url, selected_repository)
 
-        # Retrieve the original user message from Redis
         try:
             user_msg = await self._retrieve_user_msg_for_form(message_ts, thread_ts)
         except SlackError as e:
@@ -599,7 +594,6 @@ class SlackManager(Manager[SlackViewInterface]):
             message, slack_user, saas_user_auth
         )
 
-        # Check if this is an unauthenticated user (SlackMessageView but not SlackViewInterface)
         if not isinstance(slack_view, SlackViewInterface):
             login_link = self._generate_login_link_with_state(message)
             raise SlackError(
@@ -627,7 +621,6 @@ class SlackManager(Manager[SlackViewInterface]):
             payload: The Slack payload dict containing channel/user info
             error: The SlackError to handle
         """
-        # Create a minimal view for sending the error message
         view = await SlackMessageView.from_payload(
             payload, self._get_slack_team_store()
         )
@@ -642,7 +635,6 @@ class SlackManager(Manager[SlackViewInterface]):
             )
             return
 
-        # Log the error
         log_level = (
             'exception' if error.code == SlackErrorCode.UNEXPECTED_ERROR else 'warning'
         )
@@ -655,7 +647,6 @@ class SlackManager(Manager[SlackViewInterface]):
             f'slack_error_{error.code.name.lower()}', extra=log_data
         )
 
-        # Send user-facing message
         await self.send_message(error.get_user_message(), view, ephemeral=True)
 
     def _get_slack_team_store(self):
@@ -766,7 +757,6 @@ class SlackManager(Manager[SlackViewInterface]):
             },
         )
 
-        # Store the user message for later retrieval - raises SlackError on failure
         await self._store_user_msg_for_form(
             slack_view.message_ts, slack_view.thread_ts, slack_view.user_msg
         )
@@ -796,13 +786,11 @@ class SlackManager(Manager[SlackViewInterface]):
         Returns:
             True if job should start, False if waiting for user input
         """
-        # Check if view type allows immediate start
         if isinstance(slack_view, SlackUpdateExistingConversationView):
             return True
         if isinstance(slack_view, SlackNewConversationFromRepoFormView):
             return True
 
-        # For new conversations, try to infer/verify repo or show selection form
         if isinstance(slack_view, SlackNewConversationView):
             if await self._try_verify_inferred_repo(slack_view):
                 return True

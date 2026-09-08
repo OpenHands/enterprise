@@ -9,7 +9,7 @@ export default [
   route("login", "routes/login.tsx"),
   route("onboarding", "routes/onboarding-form.tsx"),
   route("information-request", "routes/information-request.tsx"),
-  route("automations/*", "routes/cross-app-redirect.tsx"),
+  route("automations/*", "routes/automations-redirect.tsx"),
   route("canvas/*", "routes/cross-app-redirect.tsx", {
     id: "routes/canvas-cross-app-redirect",
   }),
@@ -47,6 +47,7 @@ export default [
       route("usage-monitoring", "routes/usage-monitoring.tsx"),
       route("admin-dashboard", "routes/admin-dashboard.tsx"),
       route("budgets", "routes/budgets.tsx"),
+      route("quota", "routes/quota-settings.tsx"),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),
     route("oauth/device/verify", "routes/device-verify.tsx"),

@@ -1,4 +1,5 @@
 /* eslint-disable i18next/no-literal-string */
+import { parseDateAsUTC } from "#/utils/format-time-delta";
 
 export const TIME_WINDOWS = [
   { label: "7d", value: "7d" },
@@ -40,7 +41,7 @@ export const formatShortDate = (dateStr: string) => {
 };
 
 export const formatDateTime = (dateStr: string) => {
-  const date = new Date(dateStr);
+  const date = parseDateAsUTC(dateStr);
   return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -116,4 +117,35 @@ export const formatMergedStatus = (merged?: boolean | null) => {
   if (merged === true) return "Yes";
   if (merged === false) return "No";
   return "-";
+};
+
+const escapeCsvField = (value: string | number) => {
+  const stringValue = String(value);
+  if (/[",\n]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
+};
+
+/**
+ * Convert tabular data into a CSV string, escaping fields that contain
+ * commas, quotes, or newlines per RFC 4180.
+ */
+export const rowsToCsv = (
+  headers: string[],
+  rows: (string | number)[][],
+): string => {
+  const lines = [headers, ...rows].map((row) =>
+    row.map(escapeCsvField).join(","),
+  );
+  return lines.join("\n");
+};
+
+export const buildExportFilename = (prefix: string) => {
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\..+/, "")
+    .replace("T", "_");
+  return `${prefix}_${timestamp}.csv`;
 };

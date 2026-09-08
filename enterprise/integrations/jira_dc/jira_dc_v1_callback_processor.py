@@ -119,7 +119,6 @@ class JiraDcV1CallbackProcessor(EventCallbackProcessor):
             USER_CONTEXT_ATTR,
         )
 
-        # Create injector state for dependency injection
         state = InjectorState()
         setattr(state, USER_CONTEXT_ATTR, ADMIN)
 
@@ -128,7 +127,6 @@ class JiraDcV1CallbackProcessor(EventCallbackProcessor):
             get_sandbox_service(state) as sandbox_service,
             get_httpx_client(state) as httpx_client,
         ):
-            # 1. Conversation lookup
             app_conversation_info = ensure_conversation_found(
                 await app_conversation_info_service.get_app_conversation_info(
                     conversation_id
@@ -136,7 +134,6 @@ class JiraDcV1CallbackProcessor(EventCallbackProcessor):
                 conversation_id,
             )
 
-            # 2. Sandbox lookup + validation
             sandbox = ensure_running_sandbox(
                 await sandbox_service.get_sandbox(app_conversation_info.sandbox_id),
                 app_conversation_info.sandbox_id,
@@ -146,13 +143,10 @@ class JiraDcV1CallbackProcessor(EventCallbackProcessor):
                 f'No session API key for sandbox: {sandbox.id}'
             )
 
-            # 3. URL + instruction
             agent_server_url = get_agent_server_url_from_sandbox(sandbox)
 
-            # Prepare message based on agent state
             message_content = get_summary_instruction()
 
-            # Ask the agent and return the response text
             return await self._ask_question(
                 httpx_client=httpx_client,
                 agent_server_url=agent_server_url,

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.models import (
     SendMessageRequest,
@@ -23,6 +23,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AgentType,
     AppConversationInfo,
     AppConversationStartRequest,
+    AppConversationStartTaskStatus,
     ConversationTrigger,
 )
 from openhands.app_server.app_conversation.app_conversation_service import (
@@ -37,6 +38,9 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     effective_disabled_skills,
 )
 from openhands.app_server.errors import SandboxError
+from openhands.app_server.event_callback.set_title_callback_processor import (
+    SetTitleCallbackProcessor,
+)
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
 from openhands.app_server.integrations.service_types import SuggestedTask, TaskType
 from openhands.app_server.sandbox.sandbox_models import (
@@ -59,6 +63,46 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
+
+
+class _AsyncSessionContext:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, *args):
+        return None
+
+
+def _quota_modules(reserve_result=True, release_error=None):
+    session = object()
+    reserve = AsyncMock(return_value=reserve_result)
+    release = AsyncMock(side_effect=release_error)
+
+    class DailyConversationQuotaService:
+        def __init__(self, actual_session):
+            assert actual_session is session
+
+        async def reserve(self, user_id, org_id):
+            return await reserve(user_id, org_id)
+
+        async def release(self, user_id):
+            await release(user_id)
+
+    quota_module = types.ModuleType('server.services.daily_conversation_quota_service')
+    quota_module.DailyConversationQuotaService = DailyConversationQuotaService
+    database_module = types.ModuleType('storage.database')
+    database_module.a_session_maker = lambda: _AsyncSessionContext(session)
+    modules = {
+        'server': types.ModuleType('server'),
+        'server.services': types.ModuleType('server.services'),
+        'server.services.daily_conversation_quota_service': quota_module,
+        'storage': types.ModuleType('storage'),
+        'storage.database': database_module,
+    }
+    return modules, reserve, release
 
 
 def _async_iter(items):
@@ -315,6 +359,182 @@ class TestLiveStatusAppConversationService:
         # Default mock for hooks loading - returns None (no hooks found)
         # Tests that specifically test hooks loading can override this mock
         self.service._load_hooks_from_workspace = AsyncMock(return_value=None)
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_consumes_reserved_quota(self):
+        self.mock_user_context.get_user_id = AsyncMock(return_value='user-id')
+        self.mock_user_context._daily_quota_reserved = True
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock()
+        tasks = [
+            AppConversationStartTaskStatus.WORKING,
+            AppConversationStartTaskStatus.READY,
+        ]
+
+        async def start(_request):
+            for status in tasks:
+                yield SimpleNamespace(status=status)
+
+        self.service._start_app_conversation = start
+        self.service._release_daily_conversation_quota = AsyncMock()
+
+        result = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+
+        assert len(result) == 2
+        assert self.mock_user_context._daily_quota_reserved is False
+        self.service._release_daily_conversation_quota.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_releases_quota_on_error_task(self):
+        self.mock_user_context.get_user_id = AsyncMock(return_value='user-id')
+        self.service._reserve_daily_conversation_quota = AsyncMock(return_value=True)
+        self.service._release_daily_conversation_quota = AsyncMock()
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock()
+
+        async def start(_request):
+            yield SimpleNamespace(status=AppConversationStartTaskStatus.ERROR)
+
+        self.service._start_app_conversation = start
+        result = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+
+        assert len(result) == 1
+        self.service._reserve_daily_conversation_quota.assert_awaited_once_with(
+            'user-id'
+        )
+        self.service._release_daily_conversation_quota.assert_awaited_once_with(
+            'user-id'
+        )
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_releases_quota_on_start_failure(self):
+        self.mock_user_context.get_user_id = AsyncMock(return_value='user-id')
+        self.service._reserve_daily_conversation_quota = AsyncMock(return_value=True)
+        self.service._release_daily_conversation_quota = AsyncMock()
+
+        async def start(_request):
+            raise RuntimeError('start failed')
+            yield  # pragma: no cover
+
+        self.service._start_app_conversation = start
+
+        with pytest.raises(RuntimeError, match='start failed'):
+            [
+                task
+                async for task in self.service.start_app_conversation(
+                    AppConversationStartRequest()
+                )
+            ]
+
+        self.service._release_daily_conversation_quota.assert_awaited_once_with(
+            'user-id'
+        )
+
+    @pytest.mark.asyncio
+    async def test_reserve_daily_quota_noops_without_enterprise_modules(self):
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        with patch.dict(
+            sys.modules,
+            {
+                'server.services.daily_conversation_quota_service': None,
+                'storage.database': None,
+            },
+        ):
+            result = await self.service._reserve_daily_conversation_quota('user-id')
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_reserve_daily_quota_noops_without_org(self):
+        modules, reserve, _ = _quota_modules()
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=None)
+        with (
+            patch.dict(sys.modules, modules),
+            patch(
+                'openhands.app_server.shared.server_config.app_mode',
+                SimpleNamespace(value='saas'),
+            ),
+        ):
+            result = await self.service._reserve_daily_conversation_quota('user-id')
+
+        assert result is False
+        reserve.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reserve_daily_quota_uses_enterprise_service(self):
+        modules, reserve, _ = _quota_modules(reserve_result=True)
+        org_id = uuid4()
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+        with (
+            patch.dict(sys.modules, modules),
+            patch(
+                'openhands.app_server.shared.server_config.app_mode',
+                SimpleNamespace(value='saas'),
+            ),
+        ):
+            result = await self.service._reserve_daily_conversation_quota('user-id')
+
+        assert result is True
+        reserve.assert_awaited_once_with('user-id', org_id)
+
+    @pytest.mark.asyncio
+    async def test_release_daily_quota_noops_without_user(self):
+        await self.service._release_daily_conversation_quota(None)
+
+    @pytest.mark.asyncio
+    async def test_release_daily_quota_uses_service_and_swallows_errors(self):
+        modules, _, release = _quota_modules()
+        with patch.dict(sys.modules, modules):
+            await self.service._release_daily_conversation_quota('user-id')
+        release.assert_awaited_once_with('user-id')
+
+        modules, _, release = _quota_modules(release_error=RuntimeError('db failed'))
+        with patch.dict(sys.modules, modules):
+            await self.service._release_daily_conversation_quota('user-id')
+        release.assert_awaited_once_with('user-id')
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_without_user_skips_quota(self):
+        self.mock_user_context.get_user_id = AsyncMock(return_value=None)
+        self.service._reserve_daily_conversation_quota = AsyncMock()
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock()
+
+        async def start(_request):
+            yield SimpleNamespace(status=AppConversationStartTaskStatus.READY)
+
+        self.service._start_app_conversation = start
+        result = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+
+        assert len(result) == 1
+        self.service._reserve_daily_conversation_quota.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reserve_daily_quota_noops_outside_saas(self):
+        modules, reserve, _ = _quota_modules()
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        with (
+            patch.dict(sys.modules, modules),
+            patch(
+                'openhands.app_server.shared.server_config.app_mode',
+                SimpleNamespace(value='oss'),
+            ),
+        ):
+            result = await self.service._reserve_daily_conversation_quota('user-id')
+
+        assert result is False
+        reserve.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_seed_sandbox_profiles_upserts_resolved_keys_and_prunes(self):
@@ -1151,6 +1371,43 @@ class TestLiveStatusAppConversationService:
         assert 'branch:main' in tags
         assert 'git_provider:github' in tags
 
+    def test_app_conversation_start_request_accepts_observability_fields(self):
+        request = AppConversationStartRequest(
+            observability_span_name='mySpanName',
+            observability_tags=['wb-rubric', 'recall'],
+            observability_metadata={
+                'evaluation': 'wb',
+                'attempt': 1,
+                'replay': False,
+            },
+        )
+
+        assert request.observability_span_name == 'mySpanName'
+        assert request.observability_tags == ['wb-rubric', 'recall']
+        assert request.observability_metadata == {
+            'evaluation': 'wb',
+            'attempt': 1,
+            'replay': False,
+        }
+
+    @pytest.mark.parametrize(
+        'kwargs',
+        [
+            {'observability_metadata': {'scores': [1, 1.5]}},
+            {'observability_metadata': {'nested': {'a': 1}}},
+            {'observability_metadata': {'': 'x'}},
+            {'observability_tags': ['ok', '']},
+            {'observability_tags': 'not-a-list'},
+            {'observability_span_name': 'bad name!'},
+            {'observability_span_name': 'x' * 129},
+        ],
+    )
+    def test_app_conversation_start_request_rejects_invalid_observability_fields(
+        self, kwargs
+    ):
+        with pytest.raises(ValidationError):
+            AppConversationStartRequest(**kwargs)
+
     def test_apply_server_overrides_adds_repo_metadata(self):
         llm = LLM(model='openhands/gpt-4', api_key='k', usage_id='agent')
         agent = Agent(llm=llm, tools=[])
@@ -1480,6 +1737,59 @@ class TestLiveStatusAppConversationService:
         return_value=[],
     )
     @pytest.mark.asyncio
+    async def test_build_request_forwards_api_observability_fields(self, _mock_tools):
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(
+            return_value=(LLM(model='gpt-4', api_key=SecretStr('k')), {})
+        )
+
+        result = await self.service._build_start_conversation_request_for_user(
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=ProviderType.GITHUB,
+            working_dir='/test/dir',
+            remote_workspace=None,
+            selected_repository='test/repo',
+            selected_branch='feature-x',
+            request_observability_span_name='mySpanName',
+            request_observability_tags=['wb-rubric', 'repo:test/repo'],
+            request_observability_metadata={
+                'evaluation': 'wb',
+                'attempt': 1,
+                'repo_name': 'caller/repo',
+            },
+        )
+
+        assert result.observability_span_name == 'mySpanName'
+        assert result.observability_tags == [
+            'app:openhands',
+            'agent_kind:openhands',
+            'repo:test/repo',
+            'branch:feature-x',
+            'git_provider:github',
+            'wb-rubric',
+        ]
+        assert result.observability_metadata == {
+            'app': 'openhands',
+            'conversation_id': str(result.conversation_id),
+            'agent_kind': 'openhands',
+            'repo_name': 'test/repo',
+            'selected_branch': 'feature-x',
+            'repo': 'test/repo',
+            'branch': 'feature-x',
+            'git_provider': 'github',
+            'evaluation': 'wb',
+            'attempt': 1,
+        }
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
     async def test_build_request_observability_metadata_includes_commit(
         self, _mock_tools
     ):
@@ -1642,6 +1952,54 @@ class TestLiveStatusAppConversationService:
             'git_provider': 'github',
             'commit': 'def456sha',
         }
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_forwards_observability_to_acp_builder(
+        self, _mock_tools
+    ):
+        from openhands.sdk.settings import ACPAgentSettings
+
+        self.mock_user.agent_settings = ACPAgentSettings(
+            acp_server='claude-code',
+            llm=LLM(model='claude-sonnet-4-5', api_key=None),
+            agent_context=None,
+        )
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(
+            return_value=(LLM(model='gpt-4', api_key=SecretStr('k')), {})
+        )
+        self.service._resolve_registered_marketplaces = AsyncMock(return_value=None)
+        sentinel = Mock(spec=StartConversationRequest)
+        self.service._build_acp_start_conversation_request = AsyncMock(
+            return_value=sentinel
+        )
+
+        result = await self.service._build_start_conversation_request_for_user(
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=ProviderType.GITHUB,
+            working_dir='/test/dir',
+            remote_workspace=None,
+            selected_repository='test/repo',
+            selected_branch='feature-x',
+            request_observability_span_name='mySpanName',
+            request_observability_tags=['wb-rubric'],
+            request_observability_metadata={'evaluation': 'wb'},
+        )
+
+        assert result is sentinel
+        self.service._build_acp_start_conversation_request.assert_called_once()
+        kwargs = self.service._build_acp_start_conversation_request.call_args.kwargs
+        assert kwargs['request_observability_metadata'] == {'evaluation': 'wb'}
+        assert kwargs['request_observability_tags'] == ['wb-rubric']
+        assert kwargs['request_observability_span_name'] == 'mySpanName'
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
@@ -2423,21 +2781,14 @@ class TestLiveStatusAppConversationService:
 
         self.mock_event_service.iter_events_for_export.assert_not_called()
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
-    )
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
-    )
-    async def test_start_app_conversation_default_title_uses_first_five_characters(
-        self, mock_conversation_info_class, mock_remote_workspace_class
+    def _arrange_start_app_conversation(
+        self,
+        conversation_id,
+        mock_conversation_info_class,
+        mock_remote_workspace_class,
     ):
-        """Test that v1 conversations use first 5 characters of conversation ID for default title."""
-        # Arrange
-        conversation_id = uuid4()
-        conversation_id_hex = conversation_id.hex
-        expected_title = f'Conversation {conversation_id_hex[:5]}'
-
+        """Wire the mocks so ``_start_app_conversation`` runs through saving
+        the conversation info and registering its event callbacks."""
         # Mock user context
         self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
         self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
@@ -2505,6 +2856,27 @@ class TestLiveStatusAppConversationService:
         # Mock event callback service
         self.mock_event_callback_service.save_event_callback = AsyncMock()
 
+        self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock()
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_default_title_uses_first_five_characters(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """Test that v1 conversations use first 5 characters of conversation ID for default title."""
+        # Arrange
+        conversation_id = uuid4()
+        conversation_id_hex = conversation_id.hex
+        expected_title = f'Conversation {conversation_id_hex[:5]}'
+
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+
         # Create request
         request = AppConversationStartRequest()
 
@@ -2526,6 +2898,125 @@ class TestLiveStatusAppConversationService:
             f'but got "{saved_info.title}"'
         )
         assert saved_info.id == conversation_id
+        # The auto-title callback is registered when no title was supplied
+        saved_callbacks = (
+            self.mock_event_callback_service.save_event_callback.await_args_list
+        )
+        saved_processors = [call.args[0].processor for call in saved_callbacks]
+        assert any(isinstance(p, SetTitleCallbackProcessor) for p in saved_processors)
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_keeps_request_title_and_skips_auto_title(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """Test that a caller-supplied title is stored and not auto-titled over."""
+        # Arrange
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        request = AppConversationStartRequest(title='PR-REVIEW APPEVO-1234')
+
+        # Act
+        async for task in self.service._start_app_conversation(request):
+            pass
+
+        # Assert
+        save_call = self.mock_app_conversation_info_service.save_app_conversation_info
+        saved_info = save_call.call_args[0][0]
+        assert saved_info.title == 'PR-REVIEW APPEVO-1234'
+        saved_callbacks = (
+            self.mock_event_callback_service.save_event_callback.await_args_list
+        )
+        saved_processors = [call.args[0].processor for call in saved_callbacks]
+        assert not any(
+            isinstance(p, SetTitleCallbackProcessor) for p in saved_processors
+        )
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_forwards_observability_to_builder(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        conversation_id = uuid4()
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+
+        mock_sandbox_spec = Mock(spec=SandboxSpecInfo)
+        mock_sandbox_spec.working_dir = '/test/workspace'
+        self.mock_sandbox.sandbox_spec_id = str(uuid4())
+        self.mock_sandbox.id = str(uuid4())
+        self.mock_sandbox.session_api_key = 'test_session_key'
+        self.mock_sandbox.exposed_urls = [
+            ExposedUrl(name=AGENT_SERVER, url='http://agent-server:8000', port=60000)
+        ]
+        self.mock_sandbox_service.get_sandbox = AsyncMock(
+            return_value=self.mock_sandbox
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            return_value=mock_sandbox_spec
+        )
+        mock_remote_workspace_class.return_value = Mock()
+
+        async def mock_wait_for_sandbox(task):
+            task.sandbox_id = self.mock_sandbox.id
+            yield task
+
+        async def mock_run_setup_scripts(
+            task, sandbox, workspace, agent_server_url, conversation_id
+        ):
+            yield task
+
+        self.service._wait_for_sandbox_start = mock_wait_for_sandbox
+        self.service.run_setup_scripts = mock_run_setup_scripts
+
+        mock_agent = Mock(spec=Agent)
+        mock_agent.llm = Mock(spec=LLM)
+        mock_agent.llm.model = 'gpt-4'
+        mock_start_request = Mock(spec=StartConversationRequest)
+        mock_start_request.agent = mock_agent
+        mock_start_request.model_dump.return_value = {'test': 'data'}
+        self.service._build_start_conversation_request_for_user = AsyncMock(
+            return_value=mock_start_request
+        )
+
+        mock_conversation_info = Mock()
+        mock_conversation_info.id = conversation_id
+        mock_conversation_info_class.model_validate.return_value = (
+            mock_conversation_info
+        )
+        mock_response = Mock()
+        mock_response.json.return_value = {'id': str(conversation_id)}
+        mock_response.raise_for_status = Mock()
+        self.mock_httpx_client.post = AsyncMock(return_value=mock_response)
+        self.mock_event_callback_service.save_event_callback = AsyncMock()
+
+        request = AppConversationStartRequest(
+            observability_metadata={'evaluation': 'wb'},
+            observability_tags=['wb-rubric'],
+            observability_span_name='mySpanName',
+        )
+
+        async for _ in self.service._start_app_conversation(request):
+            pass
+
+        self.service._build_start_conversation_request_for_user.assert_called_once()
+        kwargs = (
+            self.service._build_start_conversation_request_for_user.call_args.kwargs
+        )
+        assert kwargs['request_observability_metadata'] == {'evaluation': 'wb'}
+        assert kwargs['request_observability_tags'] == ['wb-rubric']
+        assert kwargs['request_observability_span_name'] == 'mySpanName'
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
@@ -3509,6 +4000,82 @@ class TestPluginHandling:
         )
         assert '- api_key: test123' in result.initial_message.content[0].text
 
+    @pytest.mark.asyncio
+    async def test_resolve_registered_marketplaces_uses_shared_resolver(self):
+        """Conversation start composes marketplaces through the shared resolver."""
+        from openhands.app_server.settings.settings_models import (
+            MarketplaceRegistration,
+        )
+
+        # Arrange
+        marketplaces = [
+            MarketplaceRegistration(
+                name='team', source='github:owner/plugins', auto_load=True
+            )
+        ]
+
+        # Act
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.'
+            'resolve_registered_marketplaces',
+            AsyncMock(return_value=marketplaces),
+        ) as mock_resolve:
+            result = await self.service._resolve_registered_marketplaces(self.mock_user)
+
+        # Assert
+        mock_resolve.assert_awaited_once_with(self.mock_user_context, self.mock_user)
+        assert result == marketplaces
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_includes_registered_marketplaces_in_agent_context(
+        self, _mock_tools
+    ):
+        """Registered marketplaces are available to runtime plugin loading."""
+        from openhands.app_server.settings.settings_models import (
+            MarketplaceRegistration,
+        )
+
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._resolve_registered_marketplaces = AsyncMock(
+            return_value=[
+                MarketplaceRegistration(
+                    name='team',
+                    source='github:owner/plugins',
+                    auto_load=True,
+                )
+            ]
+        )
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+
+        result = await self.service._build_start_conversation_request_for_user(
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/workspace',
+        )
+
+        assert result.agent.agent_context is not None
+        assert [
+            marketplace.name
+            for marketplace in result.agent.agent_context.registered_marketplaces
+        ] == ['team']
+        assert result.agent.agent_context.registered_marketplaces[0].source == (
+            'github:owner/plugins'
+        )
+        serialized = result.model_dump(mode='json', context={'expose_secrets': True})
+        assert (
+            serialized['agent']['agent_context']['registered_marketplaces'][0]['name']
+            == 'team'
+        )
+
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
         return_value=[],
@@ -4300,6 +4867,10 @@ class TestBuildAcpStartConversationRequestSecrets:
         selected_repository=None,
         selected_branch=None,
         remote_workspace=None,
+        registered_marketplaces=None,
+        request_observability_metadata=None,
+        request_observability_tags=None,
+        request_observability_span_name=None,
     ):
         """Wire user_context and call _build_acp_start_conversation_request."""
         service.user_context.get_user_info = AsyncMock(return_value=user)
@@ -4316,7 +4887,11 @@ class TestBuildAcpStartConversationRequestSecrets:
             selected_repository=selected_repository,
             selected_branch=selected_branch,
             remote_workspace=remote_workspace,
+            registered_marketplaces=registered_marketplaces,
             plugins=None,
+            request_observability_metadata=request_observability_metadata,
+            request_observability_tags=request_observability_tags,
+            request_observability_span_name=request_observability_span_name,
         )
 
     @pytest.mark.asyncio
@@ -4349,6 +4924,40 @@ class TestBuildAcpStartConversationRequestSecrets:
         request = await self._call_build(service, user, tmp_path)
 
         assert request.title_llm_profile == 'Titles'
+
+    @pytest.mark.asyncio
+    async def test_acp_request_includes_registered_marketplaces(
+        self, service, tmp_path
+    ):
+        """ACP agents retain registered marketplaces for runtime plugin loading."""
+        from openhands.app_server.settings.settings_models import (
+            MarketplaceRegistration,
+        )
+
+        user = self._make_acp_user()
+        marketplaces = [
+            MarketplaceRegistration(
+                name='team',
+                source='github:owner/plugins',
+                auto_load=True,
+            )
+        ]
+
+        request = await self._call_build(
+            service,
+            user,
+            tmp_path,
+            registered_marketplaces=marketplaces,
+        )
+
+        assert request.agent.agent_context is not None
+        assert [
+            marketplace.name
+            for marketplace in request.agent.agent_context.registered_marketplaces
+        ] == ['team']
+        assert request.agent.agent_context.registered_marketplaces[0].source == (
+            'github:owner/plugins'
+        )
 
     @pytest.mark.asyncio
     async def test_lookup_secret_forwarded_as_source(self, service, tmp_path):
@@ -4532,6 +5141,48 @@ class TestBuildAcpStartConversationRequestSecrets:
             'repo': 'test/repo',
             'branch': 'feature-x',
             'git_provider': 'github',
+        }
+
+    @pytest.mark.asyncio
+    async def test_forwards_api_observability_fields(self, service, tmp_path):
+        user = self._make_acp_user()
+
+        request = await self._call_build(
+            service,
+            user,
+            tmp_path,
+            git_provider=ProviderType.GITHUB,
+            selected_repository='test/repo',
+            selected_branch='feature-x',
+            request_observability_span_name='mySpanName',
+            request_observability_tags=['wb-rubric', 'repo:test/repo'],
+            request_observability_metadata={
+                'evaluation': 'wb',
+                'attempt': 1,
+                'repo_name': 'caller/repo',
+            },
+        )
+
+        assert request.observability_span_name == 'mySpanName'
+        assert request.observability_tags == [
+            'app:openhands',
+            'agent_kind:acp',
+            'repo:test/repo',
+            'branch:feature-x',
+            'git_provider:github',
+            'wb-rubric',
+        ]
+        assert request.observability_metadata == {
+            'app': 'openhands',
+            'conversation_id': str(request.conversation_id),
+            'agent_kind': 'acp',
+            'repo_name': 'test/repo',
+            'selected_branch': 'feature-x',
+            'repo': 'test/repo',
+            'branch': 'feature-x',
+            'git_provider': 'github',
+            'evaluation': 'wb',
+            'attempt': 1,
         }
 
     @pytest.mark.asyncio

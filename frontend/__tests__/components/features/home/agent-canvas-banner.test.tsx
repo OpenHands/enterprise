@@ -1,0 +1,60 @@
+import { render, screen } from "@testing-library/react";
+import i18n from "i18next";
+import { I18nextProvider, initReactI18next } from "react-i18next";
+import { beforeAll, describe, expect, it } from "vitest";
+import {
+  AgentCanvasBanner,
+  getAgentCanvasBannerLink,
+} from "#/components/features/home/home-header/agent-canvas-banner";
+
+beforeAll(async () => {
+  await i18n.use(initReactI18next).init({
+    lng: "en",
+    fallbackLng: "en",
+    ns: ["translation"],
+    defaultNS: "translation",
+    resources: {
+      en: {
+        translation: {
+          HOME$AGENT_CANVAS_BANNER:
+            "New User Experience! Please visit <canvasLink>{{agentCanvasLabel}}</canvasLink> to try out OpenHands Cloud with Agent Canvas.",
+        },
+      },
+    },
+    interpolation: {
+      escapeValue: false,
+    },
+  });
+});
+
+describe("getAgentCanvasBannerLink", () => {
+  it("derives the Agent Canvas link from the installation host", () => {
+    expect(
+      getAgentCanvasBannerLink({
+        host: "openhands.example.com",
+        origin: "https://openhands.example.com",
+      }),
+    ).toEqual({
+      label: "openhands.example.com/canvas",
+      url: "https://openhands.example.com/canvas",
+    });
+  });
+});
+
+describe("AgentCanvasBanner", () => {
+  it("renders the Agent Canvas URL as an underlined link", () => {
+    render(
+      <I18nextProvider i18n={i18n}>
+        <AgentCanvasBanner />
+      </I18nextProvider>,
+    );
+
+    const expectedLink = getAgentCanvasBannerLink(window.location);
+    const link = screen.getByRole("link", {
+      name: expectedLink.label,
+    });
+
+    expect(link).toHaveAttribute("href", expectedLink.url);
+    expect(link).toHaveClass("underline", "decoration-2", "underline-offset-4");
+  });
+});

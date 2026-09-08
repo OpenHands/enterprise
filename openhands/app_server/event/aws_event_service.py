@@ -7,10 +7,12 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
 import boto3
+import botocore.config
 import botocore.exceptions
 from fastapi import Request
 from pydantic import Field
@@ -22,6 +24,25 @@ from openhands.app_server.services.injector import InjectorState
 from openhands.sdk import Event
 
 _logger = logging.getLogger(__name__)
+
+# Sized above the per-request event load concurrency (default 10, see
+# EVENT_SERVICE_LOAD_EVENT_CONCURRENCY) so that several concurrent requests
+# can share the client without exhausting the urllib3 connection pool.
+_S3_MAX_POOL_CONNECTIONS = 50
+
+
+@lru_cache(maxsize=None)
+def _get_shared_s3_client(endpoint_url: str | None) -> Any:
+    """Return a process-wide shared S3 client for the given endpoint.
+
+    boto3 clients are thread-safe; creating one per request leads to pool
+    exhaustion under load ("Connection pool is full, discarding connection").
+    """
+    return boto3.client(
+        's3',
+        endpoint_url=endpoint_url,
+        config=botocore.config.Config(max_pool_connections=_S3_MAX_POOL_CONNECTIONS),
+    )
 
 
 @dataclass
@@ -62,18 +83,29 @@ class AwsEventService(EventServiceBase):
         )
 
     def _search_paths(self, prefix: Path, page_id: str | None = None) -> list[Path]:
-        """Search paths."""
-        kwargs: dict[str, Any] = {
-            'Bucket': self.bucket_name,
-            'Prefix': str(prefix),
-        }
-        if page_id:
-            kwargs['ContinuationToken'] = page_id
+        """Search paths, following continuation tokens.
 
-        response = self.s3_client.list_objects_v2(**kwargs)
-        contents = response.get('Contents', [])
-        paths = [Path(obj['Key']) for obj in contents]
-        return paths
+        S3 returns at most 1000 keys per response, so conversations with more
+        events than that would otherwise be silently truncated.
+        """
+        paths: list[Path] = []
+        continuation_token = page_id
+        while True:
+            kwargs: dict[str, Any] = {
+                'Bucket': self.bucket_name,
+                'Prefix': str(prefix),
+            }
+            if continuation_token:
+                kwargs['ContinuationToken'] = continuation_token
+
+            response = self.s3_client.list_objects_v2(**kwargs)
+            contents = response.get('Contents', [])
+            paths.extend(Path(obj['Key']) for obj in contents)
+            if not response.get('IsTruncated'):
+                return paths
+            continuation_token = response.get('NextContinuationToken')
+            if not continuation_token:
+                return paths
 
 
 def _get_default_aws_endpoint_url() -> str | None:
@@ -115,10 +147,7 @@ class AwsEventServiceInjector(EventServiceInjector):
 
             # Use role-based authentication - boto3 will automatically
             # use IAM role credentials when running in AWS
-            s3_client = boto3.client(
-                's3',
-                endpoint_url=self.endpoint_url,
-            )
+            s3_client = _get_shared_s3_client(self.endpoint_url)
 
             yield AwsEventService(
                 prefix=self.prefix,

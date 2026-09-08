@@ -9,7 +9,6 @@ from integrations.jira_dc.jira_dc_user_token import (
     JiraDcUserTokenError,
     get_user_jira_dc_token,
 )
-from pydantic import SecretStr
 from server.auth.constants import JIRA_DC_BASE_URL, JIRA_DC_ENABLE_OAUTH
 from server.auth.token_manager import TokenManager
 from storage.jira_dc_integration_store import JiraDcIntegrationStore
@@ -28,9 +27,14 @@ from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.secret import LookupSecret, SecretSource, StaticSecret
 
-JIRA_DC_SECRET_HINT = """You have credentialed access to the Jira Data Center REST API:
 
-  - Base URL: $JIRA_DC_BASE_URL
+def _jira_dc_secret_hint() -> str:
+    # The base URL is deliberately spelled out (not exposed as a secret/env var):
+    # registered secrets get masked as <secret-hidden> in agent output, which
+    # mangled every Jira link the agent echoed back to the user.
+    return f"""You have credentialed access to the Jira Data Center REST API:
+
+  - Base URL: {JIRA_DC_BASE_URL}
   - Auth:     Authorization: Bearer $JIRA_DC_TOKEN
 
 The token value is supplied only as a sandbox secret/environment variable. Never echo or log the value of $JIRA_DC_TOKEN."""
@@ -72,10 +76,10 @@ def _workspace_matches_configured_jira_dc_host(workspace_name: str) -> bool:
 
 def _append_jira_dc_hint(system_message_suffix: str | None) -> str:
     if not system_message_suffix:
-        return JIRA_DC_SECRET_HINT
+        return _jira_dc_secret_hint()
     if 'JIRA_DC_TOKEN' in system_message_suffix:
         return system_message_suffix
-    return f'{system_message_suffix}\n\n{JIRA_DC_SECRET_HINT}'
+    return f'{system_message_suffix}\n\n{_jira_dc_secret_hint()}'
 
 
 async def _get_effective_org_id(user_context: UserContext) -> UUID | None:
@@ -214,12 +218,7 @@ class JiraDcConversationSecretEnricher(ConversationSecretEnricher):
                 system_message_suffix=system_message_suffix
             )
 
-        secrets: dict[str, SecretSource] = {
-            'JIRA_DC_BASE_URL': StaticSecret(
-                value=SecretStr(JIRA_DC_BASE_URL),
-                description='Jira Data Center base URL',
-            )
-        }
+        secrets: dict[str, SecretSource] = {}
 
         token_manager = TokenManager()
         strict = trigger == ConversationTrigger.JIRA

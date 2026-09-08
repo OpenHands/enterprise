@@ -3,13 +3,17 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import SecretStr
 from server.routes.org_models import OrgUpdate
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from storage.org import Org
+from storage.org_budget_settings import OrgBudgetSettings
+from storage.org_budget_threshold import OrgBudgetThreshold
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.org_store import OrgStore
+from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
 from storage.user import User
 
@@ -640,9 +644,6 @@ async def test_persist_org_with_owner_with_multiple_fields(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_success(async_session_maker, mock_litellm_api):
     """
     GIVEN: Valid organization with associated data
@@ -659,8 +660,49 @@ async def test_delete_org_cascade_success(async_session_maker, mock_litellm_api)
         contact_name='John Doe',
         contact_email='john@example.com',
     )
+    other_org_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     async with async_session_maker() as session:
-        session.add(expected_org)
+        # This table is owned by the OpenHands application schema rather than
+        # Enterprise's SQLAlchemy metadata, so the SQLite fixture does not
+        # create it automatically.
+        await session.execute(
+            text(
+                'CREATE TABLE IF NOT EXISTS app_conversation_start_task '
+                '(app_conversation_id TEXT)'
+            )
+        )
+        session.add_all(
+            [
+                expected_org,
+                Org(
+                    id=other_org_id,
+                    name='User Home Organization',
+                    contact_email='owner@example.com',
+                ),
+                User(
+                    id=user_id,
+                    current_org_id=other_org_id,
+                    email='owner@example.com',
+                ),
+                OrgBudgetSettings(
+                    org_id=org_id,
+                    enabled=True,
+                    monthly_limit=100.0,
+                    default_user_monthly_limit=25.0,
+                ),
+                OrgBudgetThreshold(
+                    org_id=org_id,
+                    percentage=80,
+                    email_enabled=True,
+                ),
+                OrgUserBudgetOverride(
+                    org_id=org_id,
+                    user_id=user_id,
+                    monthly_limit=10.0,
+                ),
+            ]
+        )
         await session.commit()
 
     with (
@@ -669,6 +711,10 @@ async def test_delete_org_cascade_success(async_session_maker, mock_litellm_api)
             'storage.org_store.OrgStore._delete_litellm_user_best_effort',
             new=AsyncMock(),
         ) as mock_delete_litellm_user,
+        patch(
+            'storage.org_store.LiteLlmManager.delete_team',
+            new=AsyncMock(),
+        ) as mock_delete_litellm_team,
     ):
         # Act
         result = await OrgStore.delete_org_cascade(org_id)
@@ -679,7 +725,29 @@ async def test_delete_org_cascade_success(async_session_maker, mock_litellm_api)
     assert result.name == 'Test Organization'
     assert result.contact_name == 'John Doe'
     assert result.contact_email == 'john@example.com'
-    mock_delete_litellm_user.assert_not_called()
+    mock_delete_litellm_team.assert_awaited_once_with(str(org_id))
+    mock_delete_litellm_user.assert_not_awaited()
+
+    async with async_session_maker() as session:
+        assert await session.get(Org, org_id) is None
+        assert await session.get(User, user_id) is not None
+        assert (
+            await session.execute(
+                select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+            )
+        ).scalar_one_or_none() is None
+        assert (
+            await session.execute(
+                select(OrgBudgetThreshold).where(OrgBudgetThreshold.org_id == org_id)
+            )
+        ).scalar_one_or_none() is None
+        assert (
+            await session.execute(
+                select(OrgUserBudgetOverride).where(
+                    OrgUserBudgetOverride.org_id == org_id
+                )
+            )
+        ).scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio
@@ -1372,9 +1440,8 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
         org = session.query(Org).filter(Org.id == org_id).first()
         assert org is not None
 
-        # This should NOT raise IntegrityError with passive_deletes=True
-        # Previously this would fail with:
-        # "NOT NULL constraint failed: org_invitation.org_id"
+        # Verify the delete cascades to the invitation without raising
+        # (passive_deletes=True handles the FK constraint).
         session.delete(org)
         session.commit()  # Success indicates passive_deletes=True is working
 
@@ -1684,3 +1751,116 @@ async def test_count_team_orgs_excludes_personal_workspaces(async_session_maker)
 
     with patch('storage.org_store.a_session_maker', async_session_maker):
         assert await OrgStore.count_team_orgs() == 1
+
+
+# ---------------------------------------------------------------------------
+# _maybe_get_managed_llm_key_for_user: auth-level key verification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_maybe_get_managed_key_returns_existing_when_auth_valid(
+    mock_litellm_api,
+):
+    """When the key is registered AND passes auth verification, return it."""
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    managed_url = 'http://test.url'
+
+    member = MagicMock(spec=OrgMember)
+    member.llm_api_key = SecretStr('existing-managed-key')
+
+    updated_org = MagicMock(spec=Org)
+    updated_org.id = org_id
+    updated_org.agent_settings = OpenHandsAgentSettings(
+        llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+    ).model_dump(mode='json')
+
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(
+                return_value=MagicMock(first=MagicMock(return_value=member))
+            )
+        )
+    )
+
+    with (
+        patch('storage.org_store.LITE_LLM_API_URL', managed_url),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_key',
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.generate_key',
+            new=AsyncMock(return_value='new-key'),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
+            new=AsyncMock(),
+        ),
+    ):
+        result = await OrgStore._maybe_get_managed_llm_key_for_user(
+            session=mock_session,
+            updated_org=updated_org,
+            user_id=str(user_id),
+        )
+
+    assert result == 'existing-managed-key'
+
+
+@pytest.mark.asyncio
+async def test_maybe_get_managed_key_rotates_when_auth_fails(mock_litellm_api):
+    """When the key is registered but fails auth verification, rotate it."""
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    managed_url = 'http://test.url'
+
+    member = MagicMock(spec=OrgMember)
+    member.llm_api_key = SecretStr('stale-managed-key')
+
+    updated_org = MagicMock(spec=Org)
+    updated_org.id = org_id
+    updated_org.agent_settings = OpenHandsAgentSettings(
+        llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+    ).model_dump(mode='json')
+
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(
+                return_value=MagicMock(first=MagicMock(return_value=member))
+            )
+        )
+    )
+
+    with (
+        patch('storage.org_store.LITE_LLM_API_URL', managed_url),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_key',
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
+            new=AsyncMock(),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.generate_key',
+            new=AsyncMock(return_value='fresh-rotated-key'),
+        ),
+    ):
+        result = await OrgStore._maybe_get_managed_llm_key_for_user(
+            session=mock_session,
+            updated_org=updated_org,
+            user_id=str(user_id),
+        )
+
+    assert result == 'fresh-rotated-key'

@@ -20,7 +20,7 @@ def jinja_env() -> Environment:
         loader=FileSystemLoader(
             str(
                 repo_root
-                / 'openhands/app_server/integrations/templates/resolver/bitbucket'
+                / 'openhands/app_server/integrations/templates/resolver/bitbucket_data_center'
             )
         )
     )
@@ -192,3 +192,58 @@ async def test_pr_comment_instructions_include_context_and_actionable_comment(
     assert '@openhands please update the tests' in user_instructions
     assert 'old thread' in user_instructions
     assert 'The comment above is the actionable request' in user_instructions
+
+
+@pytest.mark.asyncio
+async def test_pr_comment_instructions_include_dc_server_repo_and_credential_context(
+    jinja_env, monkeypatch
+):
+    monkeypatch.setattr(
+        'integrations.bitbucket_data_center.bitbucket_dc_view.'
+        'BITBUCKET_DATA_CENTER_HOST',
+        'bitbucket.example.com',
+    )
+    msg = _make_message(body='@openhands please update the tests')
+    view = await BitbucketDCFactory.create_bitbucket_dc_view_from_payload(
+        msg, keycloak_user_id='kc-alice'
+    )
+    view._load_resolver_context = AsyncMock()  # type: ignore[method-assign]
+
+    user_instructions, _ = await view._get_instructions(jinja_env)
+
+    assert 'Server URL: https://bitbucket.example.com' in user_instructions
+    assert (
+        'https://bitbucket.example.com/projects/PROJ/repos/myrepo' in user_instructions
+    )
+    assert (
+        'https://bitbucket.example.com/rest/api/1.0/projects/PROJ/repos/myrepo'
+        in user_instructions
+    )
+    assert '$BITBUCKET_DATA_CENTER_TOKEN' in user_instructions
+
+
+@pytest.mark.asyncio
+async def test_inline_comment_instructions_include_dc_context(jinja_env, monkeypatch):
+    monkeypatch.setattr(
+        'integrations.bitbucket_data_center.bitbucket_dc_view.'
+        'BITBUCKET_DATA_CENTER_HOST',
+        'bitbucket.example.com',
+    )
+    msg = _make_message(
+        body='@openhands rename this',
+        anchor={
+            'path': 'src/x.py',
+            'line': 12,
+            'lineType': 'ADDED',
+            'fileType': 'TO',
+        },
+    )
+    view = await BitbucketDCFactory.create_bitbucket_dc_view_from_payload(
+        msg, keycloak_user_id='kc-alice'
+    )
+    view._load_resolver_context = AsyncMock()  # type: ignore[method-assign]
+
+    user_instructions, _ = await view._get_instructions(jinja_env)
+
+    assert 'Server URL: https://bitbucket.example.com' in user_instructions
+    assert '$BITBUCKET_DATA_CENTER_TOKEN' in user_instructions

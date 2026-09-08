@@ -1,5 +1,6 @@
 """Tests for the Jira DC view factory's conversation-creation strategy."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
@@ -9,11 +10,26 @@ from integrations.jira_dc.jira_dc_view import (
     JiraDcFactory,
     JiraDcNewConversationView,
 )
+from jinja2 import Environment, FileSystemLoader
 
 from openhands.app_server.app_conversation.app_conversation_models import (
     ConversationTrigger,
 )
 from openhands.app_server.integrations.service_types import ProviderType, Repository
+
+
+@pytest.fixture
+def real_jinja_env() -> Environment:
+    """Jinja env over the real resolver templates (mock_jinja_env stubs them)."""
+    repo_root = Path(__file__).resolve().parents[5]
+    return Environment(
+        loader=FileSystemLoader(
+            str(
+                repo_root
+                / 'openhands/app_server/integrations/templates/resolver/jira_dc'
+            )
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -176,6 +192,34 @@ async def test_create_v1_conversation_does_not_fetch_jira_dc_token(
 
     assert len(captured_requests) == 1
     assert captured_requests[0].secrets is None
+
+
+@pytest.mark.asyncio
+async def test_get_instructions_embeds_literal_jira_dc_base_url(
+    new_conversation_view, real_jinja_env
+):
+    """OAuth-mode resolver instructions spell out the configured base URL.
+
+    JIRA_DC_BASE_URL is no longer injected as a sandbox secret (secret values
+    get masked as <secret-hidden> in agent output, which mangled every Jira
+    link the agent echoed back), so the rendered instructions must contain the
+    literal URL and no $JIRA_DC_BASE_URL env var reference. The token stays
+    env-var-only.
+    """
+    with (
+        patch('integrations.jira_dc.jira_dc_view.JIRA_DC_ENABLE_OAUTH', True),
+        patch(
+            'integrations.jira_dc.jira_dc_view.JIRA_DC_BASE_URL',
+            'https://jira.example.com',
+        ),
+    ):
+        instructions, _user_msg = await new_conversation_view._get_instructions(
+            real_jinja_env
+        )
+
+    assert 'https://jira.example.com' in instructions
+    assert '$JIRA_DC_BASE_URL' not in instructions
+    assert '$JIRA_DC_TOKEN' in instructions
 
 
 @pytest.mark.asyncio

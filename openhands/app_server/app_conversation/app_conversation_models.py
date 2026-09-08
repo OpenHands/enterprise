@@ -21,6 +21,11 @@ from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 # Import from new location and re-export for backward compatibility
 from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
 from openhands.sdk.conversation import ConversationExecutionStatus
+from openhands.sdk.conversation.types import (
+    ConversationObservabilityMetadata,
+    ConversationObservabilitySpanName,
+    ConversationObservabilityTags,
+)
 from openhands.sdk.llm import MetricsSnapshot
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.profiles import LaunchedAgentProfile
@@ -249,6 +254,25 @@ class AppConversationStartRequest(OpenHandsModel):
     agent_type: AgentType = Field(default=AgentType.DEFAULT)
 
     public: bool | None = None
+    observability_metadata: ConversationObservabilityMetadata | None = Field(
+        default=None,
+        description=(
+            'Trace-level metadata to attach to observability backends. Values must '
+            'be scalars or homogeneous scalar lists supported by OpenTelemetry.'
+        ),
+    )
+    observability_tags: ConversationObservabilityTags | None = Field(
+        default=None,
+        description='Tags to attach to the conversation root observability span.',
+    )
+    observability_span_name: ConversationObservabilitySpanName | None = Field(
+        default=None,
+        description=(
+            'Optional named child span to emit under the conversation root. Use '
+            'stable, low-cardinality names because observability backends may use '
+            'span names for grouping or signal routing.'
+        ),
+    )
 
     # Plugin parameters - for loading remote plugins into the conversation
     plugins: list[PluginSpec] | None = Field(

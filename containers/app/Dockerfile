@@ -145,8 +145,12 @@ COPY --chown=openhands:openhands enterprise/pyproject.toml enterprise/poetry.loc
 RUN cd /tmp/enterprise && \
     # Export only main dependencies with hashes for supply chain security
     /app/.venv/bin/poetry export --only main -o requirements.txt && \
-    # Remove the local path dependency (openhands-ai is already installed)
-    sed -i '/^-e /d; /openhands-ai/d' requirements.txt && \
+    # Drop deps already provided by the base venv from the root `poetry install`:
+    # the openhands-ai local path dep, and the openhands-sdk/agent-server/tools
+    # git deps. pip rejects VCS requirements when other entries carry hashes
+    # ("can't verify hashes for ... version control repositories"), and these
+    # are already installed, so exclude them from the hashed install.
+    sed -i '/^-e /d; /openhands-ai/d; /software-agent-sdk/d' requirements.txt && \
     # Install pinned dependencies from lock file
     /app/.venv/bin/pip install -r requirements.txt && \
     # Cleanup - return to /app before removing /tmp/enterprise

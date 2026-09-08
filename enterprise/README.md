@@ -29,10 +29,10 @@ Key areas that change on `SAAS` are
 | Aspect                    | OpenHands                                              | Enterprise                                                                                                                                 |
 | ------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
 | **Authentication Method** | User adds a personal access token (PAT) through the UI | User performs OAuth through the UI. The GitHub app provides a short-lived access token and refresh token                            |
-| **Token Storage**         | PAT is stored in **Settings**                          | Token is stored in **GithubTokenManager** (a file store in our backend)                                                             |
+| **Token Storage**         | PAT is stored in **Settings**                          | Token is stored in **TokenManager** (a file store in our backend)                                                             |
 | **Authenticated status**  | We simply check if token exists in `Settings`          | We issue a signed cookie with `github_user_id` during OAuth, so subsequent requests with the cookie can be considered authenticated |
 
-Note that in the future, authentication will happen via keycloak. All modifications for authentication will happen in enterprise.
+Authentication in enterprise uses Keycloak (see `enterprise/server/auth/constants.py` for the `KEYCLOAK_*` configuration).
 
 ### GitHub Service
 
@@ -41,10 +41,10 @@ The github service is responsible for interacting with Github APIs. As a consequ
 | Aspect                    | OpenHands                               | Enterprise                                            |
 | ------------------------- | -------------------------------------- | ---------------------------------------------- |
 | **Class used**            | `GitHubService`                        | `SaaSGitHubService`                            |
-| **Token used**            | User's PAT fetched from `Settings`     | User's token fetched from `GitHubTokenManager` |
-| **Refresh functionality** | **N/A**; user provides PAT for the app | Uses the `GitHubTokenManager` to refresh       |
+| **Token used**            | User's PAT fetched from `Settings`     | User's token fetched from `TokenManager` |
+| **Refresh functionality** | **N/A**; user provides PAT for the app | Uses the `TokenManager` to refresh       |
 
-NOTE: in the future we will simply replace the `GithubTokenManager` with keycloak. The `SaaSGithubService` should interact with keycloack instead.
+NOTE: The `SaaSGitHubService` interacts with Keycloak for authentication.
 
 ### Email delivery (SMTP for invitations & budget alerts)
 

@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 # Only allow dir + A256GCM to prevent cryptographic agility attacks
 _JWE_REGISTRY = jwe.JWERegistry(algorithms=['dir', 'A256GCM'])
+# joserfc defaults ``max_ciphertext_length`` to 64KB. Values above that become
+# silently undecryptable (extract_compact raises ExceededSizeError, which the
+# Fernet fallback then masks). Encrypted DB columns such as ``org.llm_profiles``
+# can legitimately exceed 64KB, so lift the cap to a generous ceiling.
+_JWE_REGISTRY.max_ciphertext_length = 100 * 1024 * 1024  # 100MB
 
 
 class JwtService:

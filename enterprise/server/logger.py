@@ -37,11 +37,9 @@ def format_stack(stack: str) -> list[str]:
 
 def custom_json_serializer(obj, **kwargs):
     if LOG_JSON_FOR_CONSOLE:
-        # Format json output
         kwargs['indent'] = 2
         obj = {'ts': datetime.now().isoformat(), **obj}
 
-        # Format stack traces
         if isinstance(obj, dict):
             exc_info = obj.get('exc_info')
             if isinstance(exc_info, str):
@@ -98,7 +96,6 @@ def setup_all_loggers():
     Leave OpenHands alone since it's already configured.
     """
     if LOG_JSON:
-        # Setup the root logger
         setup_json_logger(logging.getLogger())
 
         for name in logging.root.manager.loggerDict:

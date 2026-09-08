@@ -1,7 +1,7 @@
 import logging
 import re
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -100,6 +100,13 @@ class OrgNotFoundError(Exception):
     def __init__(self, org_id: str):
         self.org_id = org_id
         super().__init__(f'Organization with id "{org_id}" not found')
+
+
+class OrgCreditsResult(BaseModel):
+    """Organization credit balance and its availability."""
+
+    credits: float | None = None
+    available: bool = False
 
 
 class OrgConcurrentModificationError(Exception):
@@ -220,13 +227,24 @@ class OrgResponse(BaseModel):
     max_budget_per_task: float | None = None
     v1_enabled: bool | None = None
     credits: float | None = None
+    credits_available: bool = False
     is_personal: bool = False
 
     @classmethod
     def from_org(
-        cls, org: Org, credits: float | None = None, user_id: str | None = None
+        cls,
+        org: Org,
+        credits: OrgCreditsResult | float | None = None,
+        user_id: str | None = None,
     ) -> 'OrgResponse':
         """Create an OrgResponse from an Org entity."""
+        if isinstance(credits, OrgCreditsResult):
+            credit_balance = credits.credits
+            credits_available = credits.available
+        else:
+            credit_balance = credits
+            credits_available = credits is not None
+
         return cls(
             id=str(org.id),
             name=org.name,
@@ -249,7 +267,8 @@ class OrgResponse(BaseModel):
             sandbox_api_key=None,
             max_budget_per_task=org.max_budget_per_task,
             v1_enabled=org.v1_enabled,
-            credits=credits,
+            credits=credit_balance,
+            credits_available=credits_available,
             is_personal=str(org.id) == user_id if user_id else False,
         )
 
@@ -544,8 +563,8 @@ class MeResponse(BaseModel):
     user_id: str
     email: str
     role: str
-    # The caller's role-derived permissions, so clients can gate UI off a
-    # server-defined permission instead of re-deriving the role mapping.
+    # The caller's server-defined permissions, so clients can gate UI without
+    # re-deriving org-scoped or instance-level role mappings.
     permissions: list[str] = Field(default_factory=list)
     llm_api_key: str
     llm_api_key_for_byor: str | None = None
@@ -571,11 +590,24 @@ class MeResponse(BaseModel):
         member: OrgMember,
         role: Role,
         email: str,
+        super_role: Role | None = None,
     ) -> 'MeResponse':
         """Create a MeResponse from an OrgMember, Role, and user email."""
         # Imported lazily: a module-level import would cycle
         # (org_models -> authorization -> storage.org_member_store -> org_models).
-        from server.auth.authorization import get_role_permissions
+        from server.auth.authorization import (
+            get_role_permissions,
+            get_super_role_permissions,
+        )
+
+        permission_values = {
+            permission.value for permission in get_role_permissions(role.name)
+        }
+        if super_role is not None:
+            permission_values.update(
+                permission.value
+                for permission in get_super_role_permissions(super_role.name)
+            )
 
         # Only access member.llm_api_key when has_custom_llm_api_key is True
         # to avoid decryption errors when the key is not set
@@ -587,9 +619,7 @@ class MeResponse(BaseModel):
             user_id=str(member.user_id),
             email=email,
             role=role.name,
-            permissions=sorted(
-                permission.value for permission in get_role_permissions(role.name)
-            ),
+            permissions=sorted(permission_values),
             llm_api_key=llm_api_key,
             llm_api_key_for_byor=cls._mask_key(member.llm_api_key_for_byor) or None,
             agent_settings_diff=dict(member.agent_settings_diff or {}),
@@ -634,11 +664,18 @@ class OrgAppSettingsResponse(BaseModel):
 
 
 class OrgAppSettingsUpdate(BaseModel):
-    """Request model for updating organization app settings."""
+    """Request model for updating organization app settings.
+
+    ``agent_settings_diff`` is a sparse diff applied to the org-wide
+    ``agent_settings`` defaults, so admins/owners can set the harness every
+    member starts from. It is admin/owner-only on the route (see
+    ``update_org_app_settings``) because those defaults apply to every member.
+    """
 
     enable_proactive_conversation_starters: bool | None = None
     max_budget_per_task: float | None = None
     registered_marketplaces: list[MarketplaceRegistration] | None = None
+    agent_settings_diff: dict[str, Any] | None = None
     # Optimistic locking: client echoes back the server-generated updated_at it
     # last read. If it no longer matches the DB, someone else modified the record
     # and a 409 conflict is raised. (Server-generated, so clock skew is irrelevant.)
@@ -650,6 +687,19 @@ class OrgAppSettingsUpdate(BaseModel):
         if v is not None and v <= 0:
             raise ValueError('max_budget_per_task must be greater than 0')
         return v
+
+    @model_validator(mode='after')
+    def _strip_member_private_agent_keys(self) -> 'OrgAppSettingsUpdate':
+        """Keep member-private keys out of the org-wide defaults.
+
+        Mirrors ``OrgUpdate._normalize_agent_settings_diff``: an org default
+        must never carry one member's ``mcp_config``, or every joiner would
+        inherit it from the org row.
+        """
+        if self.agent_settings_diff is not None:
+            for key in MEMBER_PRIVATE_AGENT_KEYS:
+                self.agent_settings_diff.pop(key, None)
+        return self
 
 
 VALID_GIT_PROVIDERS = {
@@ -750,7 +800,7 @@ class OrgBudgetUserResponse(BaseModel):
     user_id: str
     user_email: str | None = None
     user_name: str | None = None
-    current_spend: float = 0.0
+    current_spend: float | None = None
     monthly_limit: float | None = None
     effective_monthly_limit: float | None = None
     is_disabled: bool = False
@@ -770,8 +820,12 @@ class OrgBudgetSettingsResponse(BaseModel):
     default_user_monthly_limit: float | None = None
     cycle_start_at: datetime
     cycle_end_at: datetime
-    current_spend: float = 0.0
-    current_spend_percentage: float = 0.0
+    spend_status: Literal['live', 'stale', 'unavailable']
+    spend_observed_at: datetime | None = None
+    current_spend: float | None = None
+    current_spend_percentage: float | None = None
+    unmapped_spend: float | None = None
+    unmapped_member_count: int | None = None
     thresholds: list[OrgBudgetThresholdResponse] = Field(default_factory=list)
     users: list[OrgBudgetUserResponse] = Field(default_factory=list)
     users_total: int = 0

@@ -21,7 +21,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 from pydantic import ValidationError
 
@@ -29,6 +29,10 @@ from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
     MarketplaceScope,
 )
+
+if TYPE_CHECKING:
+    from openhands.app_server.user.user_context import UserContext
+    from openhands.app_server.user.user_models import UserInfo
 
 logger = logging.getLogger(__name__)
 
@@ -268,3 +272,30 @@ async def load_composed_marketplaces(
         logger.warning('Failed to load org marketplaces: %s', e)
         org = []
     return compose_marketplaces(instance, org, user_marketplaces)
+
+
+async def resolve_registered_marketplaces(
+    user_context: UserContext, user: UserInfo
+) -> list[MarketplaceRegistration] | None:
+    """Compose instance + org + user marketplaces for plugin loading.
+
+    Shared by conversation start and the conversation skills listing so both
+    hand the agent-server the same marketplaces. Enabled by default; returns
+    ``None`` (feature inert) when ENABLE_MARKETPLACE_PLUGIN_LOADING is
+    explicitly disabled. Never raises: any failure degrades to no marketplaces
+    so it can never block conversation creation or skill listing.
+    """
+    if not marketplace_plugin_loading_enabled():
+        return None
+    try:
+        from openhands.app_server.shared import SettingsStoreImpl
+
+        user_id = await user_context.get_user_id()
+        settings_store = await SettingsStoreImpl.get_instance(user_id)
+        composed = await load_composed_marketplaces(
+            user_id, user.registered_marketplaces, settings_store
+        )
+        return composed.all or None
+    except Exception as e:  # noqa: BLE001 - must never block the caller
+        logger.warning('Failed to compose marketplaces: %s', e)
+        return None

@@ -5,6 +5,7 @@ Tests the async database operations for user app settings.
 """
 
 import uuid
+from datetime import datetime
 
 import pytest
 from server.routes.user_app_settings_models import UserAppSettingsUpdate
@@ -54,7 +55,8 @@ async def test_get_user_by_id_success(async_session_maker):
             id=uuid.uuid4(),
             current_org_id=org.id,
             language='en',
-            user_consents_to_analytics=True,
+            accepted_tos=datetime(2025, 1, 1),
+            user_consents_to_analytics=False,
             enable_sound_notifications=False,
             git_user_name='testuser',
             git_user_email='test@example.com',
@@ -121,7 +123,6 @@ async def test_update_user_app_settings_success(async_session_maker):
 
         update_data = UserAppSettingsUpdate(
             language='es',
-            user_consents_to_analytics=True,
             enable_sound_notifications=True,
             git_user_name='newuser',
             git_user_email='new@example.com',
@@ -134,7 +135,7 @@ async def test_update_user_app_settings_success(async_session_maker):
     # Assert
     assert result is not None
     assert result.language == 'es'
-    assert result.user_consents_to_analytics is True
+    assert result.user_consents_to_analytics is False
     assert result.enable_sound_notifications is True
     assert result.git_user_name == 'newuser'
     assert result.git_user_email == 'new@example.com'
@@ -157,6 +158,7 @@ async def test_update_user_app_settings_partial(async_session_maker):
             id=uuid.uuid4(),
             current_org_id=org.id,
             language='en',
+            accepted_tos=datetime(2025, 1, 1),
             user_consents_to_analytics=True,
             git_user_name='original',
         )
@@ -174,7 +176,7 @@ async def test_update_user_app_settings_partial(async_session_maker):
     # Assert
     assert result is not None
     assert result.language == 'fr'
-    assert result.user_consents_to_analytics is True  # Unchanged
+    assert result.user_consents_to_analytics is True
     assert result.git_user_name == 'original'  # Unchanged
 
 

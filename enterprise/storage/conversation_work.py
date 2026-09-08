@@ -24,7 +24,6 @@ class ConversationWork(Base):
         nullable=False,
     )
 
-    # Create composite index for efficient queries
     __table_args__ = (
         Index('ix_conversation_work_user_conversation', 'user_id', 'conversation_id'),
     )

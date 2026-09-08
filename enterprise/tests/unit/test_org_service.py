@@ -12,6 +12,7 @@ import pytest
 from server.routes.org_models import (
     LiteLLMIntegrationError,
     OrgAuthorizationError,
+    OrgCreditsResult,
     OrgDatabaseError,
     OrgNameExistsError,
     OrgNotFoundError,
@@ -568,10 +569,27 @@ async def test_get_org_credits_success(mock_litellm_api):
         AsyncMock(return_value=mock_team_info),
     ):
         # Act
-        credits = await OrgService.get_org_credits(user_id, org_id)
+        result = await OrgService.get_org_credits(user_id, org_id)
 
         # Assert
-        assert credits == 75.0  # 100 - 25
+        assert result.available is True
+        assert result.credits == 75.0  # 100 - 25
+
+
+@pytest.mark.asyncio
+async def test_get_org_credits_explicit_unlimited_is_available(mock_litellm_api):
+    user_id = 'test-user-123'
+    org_id = uuid.uuid4()
+    mock_team_info = {'max_budget_in_team': None, 'spend': 25.0}
+
+    with patch(
+        'storage.org_service.LiteLlmManager.get_user_team_info',
+        AsyncMock(return_value=mock_team_info),
+    ):
+        result = await OrgService.get_org_credits(user_id, org_id)
+
+    assert result.available is True
+    assert result.credits is None
 
 
 @pytest.mark.asyncio
@@ -590,10 +608,11 @@ async def test_get_org_credits_no_team_info(mock_litellm_api):
         AsyncMock(return_value=None),
     ):
         # Act
-        credits = await OrgService.get_org_credits(user_id, org_id)
+        result = await OrgService.get_org_credits(user_id, org_id)
 
         # Assert
-        assert credits is None
+        assert result.available is False
+        assert result.credits is None
 
 
 @pytest.mark.asyncio
@@ -610,7 +629,7 @@ async def test_get_org_credits_negative_credits_returns_zero(mock_litellm_api):
     spend = 150.0  # Over budget
 
     mock_team_info = {
-        'litellm_budget_table': {'max_budget': max_budget},
+        'max_budget_in_team': max_budget,
         'spend': spend,
     }
 
@@ -619,10 +638,11 @@ async def test_get_org_credits_negative_credits_returns_zero(mock_litellm_api):
         AsyncMock(return_value=mock_team_info),
     ):
         # Act
-        credits = await OrgService.get_org_credits(user_id, org_id)
+        result = await OrgService.get_org_credits(user_id, org_id)
 
         # Assert
-        assert credits == 0.0
+        assert result.available is True
+        assert result.credits == 0.0
 
 
 @pytest.mark.asyncio
@@ -641,10 +661,11 @@ async def test_get_org_credits_api_failure_returns_none(mock_litellm_api):
         AsyncMock(side_effect=Exception('API error')),
     ):
         # Act
-        credits = await OrgService.get_org_credits(user_id, org_id)
+        result = await OrgService.get_org_credits(user_id, org_id)
 
         # Assert
-        assert credits is None
+        assert result.available is False
+        assert result.credits is None
 
 
 @pytest.mark.asyncio
@@ -1963,6 +1984,10 @@ async def test_check_byor_export_enabled_returns_true_when_enabled():
 
     with (
         patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
+        patch(
             'storage.org_service.UserStore.get_user_by_id',
             AsyncMock(return_value=mock_user),
         ),
@@ -1990,6 +2015,42 @@ async def test_check_byor_export_enabled_returns_true_when_enabled():
 
 
 @pytest.mark.asyncio
+async def test_check_byor_export_enabled_returns_true_when_env_var_set():
+    """
+    GIVEN: ENABLE_BYOR_EXPORT env var is set (True)
+    WHEN: check_byor_export_enabled is called
+    THEN: Returns True without touching the DB or billing
+    """
+    user_id = 'test-user-123'
+    org_id = uuid.uuid4()
+
+    with (
+        patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            True,
+        ),
+        patch(
+            'storage.org_service.UserStore.get_user_by_id',
+            AsyncMock(),
+        ) as mock_get_user,
+        patch(
+            'storage.org_service.OrgStore.get_org_by_id',
+            new_callable=AsyncMock,
+        ) as mock_get_org,
+        patch(
+            'storage.org_service.OrgService.get_org_credits',
+            new_callable=AsyncMock,
+        ) as mock_get_credits,
+    ):
+        result = await OrgService.check_byor_export_enabled(user_id, org_id=org_id)
+
+        assert result is True
+        mock_get_user.assert_not_called()
+        mock_get_org.assert_not_called()
+        mock_get_credits.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_check_byor_export_enabled_returns_false_when_disabled_without_credits():
     """
     GIVEN: User has current_org with byor_export_enabled=False and no credits
@@ -2008,6 +2069,10 @@ async def test_check_byor_export_enabled_returns_false_when_disabled_without_cre
 
     with (
         patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
+        patch(
             'storage.org_service.UserStore.get_user_by_id',
             AsyncMock(return_value=mock_user),
         ),
@@ -2018,7 +2083,7 @@ async def test_check_byor_export_enabled_returns_false_when_disabled_without_cre
         ),
         patch(
             'storage.org_service.OrgService.get_org_credits',
-            AsyncMock(return_value=0),
+            AsyncMock(return_value=OrgCreditsResult(credits=0, available=True)),
         ) as mock_get_credits,
         patch(
             'storage.org_service.OrgStore.enable_byor_export',
@@ -2055,6 +2120,10 @@ async def test_check_byor_export_enabled_sets_flag_when_disabled_with_credits():
 
     with (
         patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
+        patch(
             'storage.org_service.UserStore.get_user_by_id',
             AsyncMock(return_value=mock_user),
         ),
@@ -2065,7 +2134,7 @@ async def test_check_byor_export_enabled_sets_flag_when_disabled_with_credits():
         ),
         patch(
             'storage.org_service.OrgService.get_org_credits',
-            AsyncMock(return_value=25.0),
+            AsyncMock(return_value=OrgCreditsResult(credits=25.0, available=True)),
         ) as mock_get_credits,
         patch(
             'storage.org_service.OrgStore.enable_byor_export',
@@ -2091,9 +2160,15 @@ async def test_check_byor_export_enabled_returns_false_when_user_not_found():
     # Arrange
     user_id = 'nonexistent-user'
 
-    with patch(
-        'storage.org_service.UserStore.get_user_by_id',
-        AsyncMock(return_value=None),
+    with (
+        patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
+        patch(
+            'storage.org_service.UserStore.get_user_by_id',
+            AsyncMock(return_value=None),
+        ),
     ):
         # Act
         result = await OrgService.check_byor_export_enabled(user_id)
@@ -2115,9 +2190,15 @@ async def test_check_byor_export_enabled_returns_false_when_no_current_org():
     mock_user = MagicMock()
     mock_user.current_org_id = None
 
-    with patch(
-        'storage.org_service.UserStore.get_user_by_id',
-        AsyncMock(return_value=mock_user),
+    with (
+        patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
+        patch(
+            'storage.org_service.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
     ):
         # Act
         result = await OrgService.check_byor_export_enabled(user_id)
@@ -2141,6 +2222,10 @@ async def test_check_byor_export_enabled_returns_false_when_org_not_found():
     mock_user.current_org_id = org_id
 
     with (
+        patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
         patch(
             'storage.org_service.UserStore.get_user_by_id',
             AsyncMock(return_value=mock_user),

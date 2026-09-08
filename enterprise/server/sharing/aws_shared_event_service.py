@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, AsyncGenerator
 from uuid import UUID
 
-import boto3
 from fastapi import Request
 from pydantic import Field
 from server.sharing.shared_conversation_info_service import (
@@ -33,7 +32,10 @@ from server.sharing.sql_shared_conversation_info_service import (
 )
 
 from openhands.agent_server.models import EventPage, EventSortOrder
-from openhands.app_server.event.aws_event_service import AwsEventService
+from openhands.app_server.event.aws_event_service import (
+    AwsEventService,
+    _get_shared_s3_client,
+)
 from openhands.app_server.event.event_service import EventService
 from openhands.app_server.event_callback.event_callback_models import EventKind
 from openhands.app_server.services.injector import InjectorState
@@ -158,10 +160,7 @@ class AwsSharedEventServiceInjector(SharedEventServiceInjector):
 
             # Use role-based authentication - boto3 will automatically
             # use IAM role credentials when running in AWS
-            s3_client = boto3.client(
-                's3',
-                endpoint_url=os.getenv('AWS_S3_ENDPOINT'),
-            )
+            s3_client = _get_shared_s3_client(os.getenv('AWS_S3_ENDPOINT'))
 
             service = AwsSharedEventService(
                 shared_conversation_info_service=shared_conversation_info_service,

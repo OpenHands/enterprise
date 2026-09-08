@@ -741,6 +741,7 @@ class UserStore:
             )
             user = result.scalars().first()
             if user:
+                user.sync_analytics_consent_with_tos()
                 return user
 
             # Check if we need to migrate from user_settings
@@ -761,6 +762,7 @@ class UserStore:
                 )
                 user = result.scalars().first()
                 if user:
+                    user.sync_analytics_consent_with_tos()
                     return user
 
                 result = await session.execute(
@@ -784,6 +786,8 @@ class UserStore:
                         user_settings,
                         user_info,
                     )
+                    if user:
+                        user.sync_analytics_consent_with_tos()
                     return user
                 else:
                     return None

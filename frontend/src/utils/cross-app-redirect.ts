@@ -1,10 +1,6 @@
 import type { NavigateFunction, NavigateOptions } from "react-router";
 
-const CROSS_APP_PATH_PREFIXES = [
-  "/automations",
-  "/canvas",
-  "/integrations-hub",
-] as const;
+const CROSS_APP_PATH_PREFIXES = ["/canvas", "/integrations-hub"] as const;
 
 export function isCrossAppPath(destination: string): boolean {
   if (!destination.startsWith("/") || destination.startsWith("//")) {

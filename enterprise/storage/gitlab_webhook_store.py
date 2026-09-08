@@ -45,7 +45,6 @@ class GitlabWebhookStore:
 
         async with a_session_maker() as session:
             async with session.begin():
-                # Convert GitlabWebhook objects to dictionaries for the insert
                 # Using __dict__ and filtering out SQLAlchemy internal attributes and 'id'
                 values = [
                     {
@@ -123,7 +122,6 @@ class GitlabWebhookStore:
 
         async with a_session_maker() as session:
             async with session.begin():
-                # Create query based on the identifier provided
                 if resource_type == GitLabResourceType.PROJECT:
                     query = delete(GitlabWebhook).where(
                         GitlabWebhook.project_id == resource_id
@@ -266,7 +264,7 @@ class GitlabWebhookStore:
             project_webhook_map = {}
             group_webhook_map = {}
 
-            # Fetch all project webhooks in one query
+            # Fetch all project webhooks in a single query
             if project_ids:
                 project_query = select(GitlabWebhook).where(
                     GitlabWebhook.project_id.in_(project_ids)
@@ -275,7 +273,7 @@ class GitlabWebhookStore:
                 project_webhooks = result.scalars().all()
                 project_webhook_map = {wh.project_id: wh for wh in project_webhooks}
 
-            # Fetch all group webhooks in one query
+            # Fetch all group webhooks in a single query
             if group_ids:
                 group_query = select(GitlabWebhook).where(
                     GitlabWebhook.group_id.in_(group_ids)

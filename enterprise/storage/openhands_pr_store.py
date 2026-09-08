@@ -16,7 +16,6 @@ class OpenhandsPRStore:
         Insert a new PR or delete and recreate if repo_id and pr_number already exist.
         """
         async with a_session_maker() as session:
-            # Check if PR already exists
             result = await session.execute(
                 select(OpenhandsPR).filter(
                     OpenhandsPR.repo_id == pr.repo_id,
@@ -27,7 +26,6 @@ class OpenhandsPRStore:
             existing_pr = result.scalars().first()
 
             if existing_pr:
-                # Delete existing PR
                 await session.delete(existing_pr)
                 await session.flush()
 
@@ -101,13 +99,11 @@ class OpenhandsPRStore:
                 logger.warning('Did not find PR {pr_number} for repo {repo_id}')
                 return False
 
-            # Check if the updated_at timestamp has changed (indicating concurrent modification)
+            # Concurrent modification guard: abort if updated_at changed
             if pr.updated_at != original_updated_at:
-                # Abort transaction - the PR was modified by another process
                 await session.rollback()
                 return False
 
-            # Update the OpenHands statistics
             pr.openhands_helped_author = openhands_helped_author
             pr.num_openhands_commits = num_openhands_commits
             pr.num_openhands_review_comments = num_openhands_review_comments

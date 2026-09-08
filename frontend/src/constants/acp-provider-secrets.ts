@@ -32,8 +32,7 @@ const ACP_PROVIDER_SECRETS_EXTRA: Record<string, ACPProviderSecretField[]> = {
       name: "CODEX_AUTH_JSON",
       secret: true,
       multiline: true,
-      hint_key: I18nKey.SETTINGS$ACP_SECRET_FILE_BLOB_HINT,
-      hint_values: { file: "~/.codex/auth.json" },
+      hint_key: I18nKey.SETTINGS$ACP_SECRET_CODEX_AUTH_HINT,
     },
   ],
   "gemini-cli": [

@@ -115,17 +115,14 @@ class RecaptchaService:
         action_valid = token_properties.action == action
         reason_codes = [str(r) for r in risk_analysis.reasons]
 
-        # Extract Account Defender labels
         account_defender_labels = []
         if response.account_defender_assessment:
             account_defender_labels = [
                 str(label) for label in response.account_defender_assessment.labels
             ]
 
-        # Check if any suspicious labels are present
         has_suspicious_labels = bool(set(account_defender_labels) & SUSPICIOUS_LABELS)
 
-        # Block if: invalid token, wrong action, low score, OR suspicious Account Defender labels
         allowed = (
             valid
             and action_valid

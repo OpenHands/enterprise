@@ -99,11 +99,16 @@ class RateLimiter:
         )
 
 
-def create_redis_rate_limiter(windows: str) -> RateLimiter:
+def create_redis_rate_limiter(windows: str) -> RateLimiter | None:
     """
     Create a RateLimiter with the Redis backend and "Fixed Window" strategy.
     windows arg example: "10/second; 100/minute"
+
+    An empty windows value disables rate limiting.
     """
+    if windows == '':
+        return None
+
     backend = limits.aio.storage.RedisStorage(f'async+{get_redis_authed_url()}')
     strategy = limits.aio.strategies.FixedWindowRateLimiter(backend)
     return RateLimiter(strategy, windows)

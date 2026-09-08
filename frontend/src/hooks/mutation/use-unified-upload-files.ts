@@ -31,10 +31,18 @@ export const useUnifiedUploadFiles = () => {
     ): Promise<FileUploadSuccessResponse> => {
       const { files } = variables;
 
+      // Check if conversation URL is available - required for V1 file uploads
+      // This prevents 405 errors when trying to upload before the runtime is ready
+      if (!conversation?.conversation_url) {
+        throw new Error(
+          "Conversation is not ready for file uploads. Please wait for the conversation to fully start.",
+        );
+      }
+
       // V1: Use conversation URL and session API key
       return v1Upload.mutateAsync({
-        conversationUrl: conversation?.conversation_url,
-        sessionApiKey: conversation?.session_api_key,
+        conversationUrl: conversation.conversation_url,
+        sessionApiKey: conversation.session_api_key,
         files,
       });
     },

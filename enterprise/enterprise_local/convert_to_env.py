@@ -14,11 +14,9 @@ def convert_yaml_to_env(yaml_file, target_parameters, output_env_file, prefix):
     :param prefix: Prefix for environment variables.
     """
     try:
-        # Load the YAML file
         with open(yaml_file, 'r') as file:
             yaml_data = yaml.safe_load(file)
 
-        # Extract sections
         string_data = yaml_data.get('stringData', None)
         data = yaml_data.get('data', None)
 
@@ -64,7 +62,6 @@ def convert_yaml_to_env(yaml_file, target_parameters, output_env_file, prefix):
                     f"Warning: Parameter '{param}' not found in the selected section."
                 )
 
-        # Write to the .env file
         with open(output_env_file, 'a') as env_file:
             env_file.write('\n'.join(env_lines) + '\n')
 

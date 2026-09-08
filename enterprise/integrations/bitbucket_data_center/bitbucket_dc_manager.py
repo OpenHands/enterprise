@@ -52,11 +52,10 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
     ) -> None:
         self.token_manager = token_manager
         self.webhook_store = BitbucketDCWebhookStore()
-        # Reuse the Bitbucket Cloud Jinja templates — wording is provider-
-        # agnostic and the variables (pr_number, branch_name, comments,
-        # file_location, line_number) match.
         self.jinja_env = Environment(
-            loader=FileSystemLoader(OPENHANDS_RESOLVER_TEMPLATES_DIR + 'bitbucket')
+            loader=FileSystemLoader(
+                OPENHANDS_RESOLVER_TEMPLATES_DIR + 'bitbucket_data_center'
+            )
         )
 
     def _confirm_incoming_source_type(self, message: Message) -> None:

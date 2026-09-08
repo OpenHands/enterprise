@@ -47,7 +47,6 @@ async def get_session_api_key(conversation_id: str) -> str | None:
         USER_CONTEXT_ATTR,
     )
 
-    # Create injector state for dependency injection
     state = InjectorState()
     setattr(state, USER_CONTEXT_ATTR, ADMIN)
 
@@ -55,7 +54,6 @@ async def get_session_api_key(conversation_id: str) -> str | None:
         get_app_conversation_info_service(state) as app_conversation_info_service,
         get_sandbox_service(state) as sandbox_service,
     ):
-        # Get the conversation info to find the sandbox_id
         app_conversation_info = (
             await app_conversation_info_service.get_app_conversation_info(
                 UUID(conversation_id)
@@ -64,7 +62,6 @@ async def get_session_api_key(conversation_id: str) -> str | None:
         if not app_conversation_info:
             return None
 
-        # Get the sandbox to retrieve the session API key
         sandbox = await sandbox_service.get_sandbox(app_conversation_info.sandbox_id)
         if not sandbox:
             return None

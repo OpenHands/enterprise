@@ -15,9 +15,10 @@ from typing import Any, AsyncIterator
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 from server.constants import LITE_LLM_API_URL
 from server.routes.org_models import OrgNotFoundError
+from server.routes.org_provider_connections import _load_connections
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from storage.agent_profile_resolution import (
@@ -28,6 +29,7 @@ from storage.database import a_session_maker
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.org_service import OrgService
+from storage.saas_settings_store import managed_llm_key_config_from_model
 
 from openhands.app_server.settings.llm_profiles import (
     LLMProfiles,
@@ -64,6 +66,7 @@ class ProfileInfo(BaseModel):
     model: str | None
     base_url: str | None
     api_key_set: bool
+    provider_connection_id: str | None = None
 
 
 class ProfileListResponse(BaseModel):
@@ -124,6 +127,43 @@ class RenameProfileRequest(BaseModel):
 
 
 # ── Helper Functions ────────────────────────────────────────────────────────
+
+
+def _resolve_provider_connection(org: Org, llm: LLM) -> LLM:
+    """Apply a referenced provider connection's credentials to ``llm``.
+
+    Read-at-use resolution at the single activation choke point, mirroring the
+    SDK's ``LLMProfileStore._resolve_provider_connection``:
+
+    - no ``provider_connection_id`` -> unchanged (byte-identical old path).
+    - connection found -> its ``api_key`` / ``base_url`` win (``base_url`` is
+      applied as-is, including ``None``).
+    - connection missing -> 422, a resolvable config problem (recreate the
+      connection or edit the profile).
+
+    The resolved key is then snapshotted into the member's active settings by
+    the caller. Rotating a shared key therefore takes effect the next time a
+    linked profile is activated — it is not pushed retroactively.
+    """
+    connection_id = getattr(llm, 'provider_connection_id', None)
+    if not connection_id:
+        return llm
+
+    connection = _load_connections(org).get(connection_id)
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Profile references provider connection '{connection_id}', "
+                'which does not exist. Update the profile or recreate the '
+                'connection.'
+            ),
+        )
+    updates: dict[str, Any] = {'base_url': connection.base_url}
+    api_key = connection.api_key_value()
+    if api_key is not None:
+        updates['api_key'] = SecretStr(api_key)
+    return llm.model_copy(update=updates)
 
 
 def _load_profiles(org: Org) -> LLMProfiles:
@@ -255,8 +295,11 @@ async def save_profile(
             # Caller has no new key: keep the profile's stored key (even "no
             # key") instead of the snapshotted one.
             llm = llm.model_copy(update={'api_key': existing.api_key})
+        include_secrets = request.include_secrets and (
+            managed_llm_key_config_from_model(llm.model, llm.base_url) is None
+        )
         try:
-            profiles.save(name, llm, include_secrets=request.include_secrets)
+            profiles.save(name, llm, include_secrets=include_secrets)
         except ProfileLimitExceededError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
@@ -338,6 +381,9 @@ async def activate_profile(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Profile '{name}' not found",
             )
+        # Resolve a linked provider connection into concrete credentials before
+        # the key is masked/snapshotted below. No-op for unlinked profiles.
+        llm = _resolve_provider_connection(_org, llm)
         profiles.active = name
 
         # Same session as the org write so both side-effects commit atomically.
@@ -404,7 +450,8 @@ async def rename_profile(
     request: RenameProfileRequest = Body(...),
     user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
 ) -> ProfileMutationResponse:
-    """Rename an LLM profile, cascading the rename to any Agent Profiles that
+    """Rename an LLM profile, cascading the rename to any Agent Profiles that.
+
     reference it.
 
     The SDK ``rename_llm_profile`` renames the LLM profile and repoints every

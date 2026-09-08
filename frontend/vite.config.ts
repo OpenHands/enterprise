@@ -59,6 +59,7 @@ export default defineConfig(({ mode }) => {
         "react-icons/io5",
         "react-icons/io", // Added to prevent runtime optimization
         "@monaco-editor/react",
+        "monaco-editor",
         "react-textarea-autosize",
         "react-markdown",
         "remark-gfm",

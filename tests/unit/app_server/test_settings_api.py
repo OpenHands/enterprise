@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from openhands.app_server.app import app
+from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.file_store.memory import InMemoryFileStore
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
 from openhands.app_server.integrations.service_types import UserGitInfo
@@ -225,6 +226,36 @@ async def test_settings_api_endpoints(test_client):
 
 
 @pytest.mark.asyncio
+async def test_store_settings_rejects_cloud_analytics_consent_override(test_client):
+    with patch(
+        'openhands.app_server.settings.settings_router.server_config.app_mode',
+        AppMode.SAAS,
+    ):
+        response = test_client.post(
+            '/api/v1/settings', json={'user_consents_to_analytics': False}
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        'error': 'Analytics consent is controlled by TOS in cloud mode.'
+    }
+
+
+@pytest.mark.asyncio
+async def test_store_settings_ignores_cloud_analytics_consent_true(test_client):
+    with patch(
+        'openhands.app_server.settings.settings_router.server_config.app_mode',
+        AppMode.SAAS,
+    ):
+        response = test_client.post(
+            '/api/v1/settings',
+            json={'language': 'fr', 'user_consents_to_analytics': True},
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_store_settings_rejects_legacy_nested_payload_keys(test_client):
     response = test_client.post(
         '/api/v1/settings',
@@ -352,3 +383,43 @@ def test_store_settings_rejects_duplicate_personal_marketplace_names(test_client
     # Assert
     assert response.status_code == 400
     assert 'dup' in response.json()['error']
+
+
+@pytest.mark.asyncio
+async def test_delete_mcp_server_with_null_entry(test_client):
+    """``mcp_config.<key>: null`` deletes that server and keeps its siblings."""
+    # Arrange: one server without auth next to one with a stored credential
+    response = test_client.post(
+        '/api/v1/settings',
+        json={
+            'agent_settings_diff': {
+                'mcp_config': {
+                    'plain': {'url': 'https://plain.example.com/mcp', 'enabled': False},
+                    'secured': {
+                        'url': 'https://secured.example.com/mcp',
+                        'auth': {'strategy': 'bearer', 'value': 'real-key'},
+                    },
+                }
+            }
+        },
+    )
+    assert response.status_code == 200
+    stored = test_client.get('/api/v1/settings').json()['agent_settings']
+    assert set(stored['mcp_config']) == {'plain', 'secured'}
+
+    # Act
+    response = test_client.post(
+        '/api/v1/settings',
+        json={'agent_settings_diff': {'mcp_config': {'plain': None}}},
+    )
+
+    # Assert
+    assert response.status_code == 200
+    stored = test_client.get('/api/v1/settings').json()['agent_settings']
+    assert set(stored['mcp_config']) == {'secured'}
+    assert stored['mcp_config']['secured']['url'] == 'https://secured.example.com/mcp'
+    # The credential survives: GET masks the value rather than dropping the slot.
+    assert stored['mcp_config']['secured']['auth'] == {
+        'strategy': 'bearer',
+        'value': '**********',
+    }

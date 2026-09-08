@@ -278,7 +278,7 @@ class TestRateLimitEnvConfiguration:
     @pytest.mark.parametrize(
         'const_name,expected_default',
         [
-            ('RATE_LIMIT_AUTH_WINDOWS', '10/second; 100/minute'),
+            ('RATE_LIMIT_AUTH_WINDOWS', ''),
             ('RATE_LIMIT_USER_SECONDS', 120),
             ('RATE_LIMIT_IP_SECONDS', 300),
             ('RATE_LIMIT_AUTH_VERIFY_EMAIL_USER_SECONDS', 60),

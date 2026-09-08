@@ -32,6 +32,7 @@ class User(Base):
     # Instance-level super role; org membership roles live on OrgMember.role_id.
     # Effective permissions are defined by SUPER_ROLE_PERMISSIONS.
     role_id: Mapped[int | None] = mapped_column(ForeignKey('role.id'), nullable=True)
+    is_disabled: Mapped[bool] = mapped_column(nullable=False, default=False)
     accepted_tos: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     first_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -52,6 +53,14 @@ class User(Base):
     onboarding_completed: Mapped[bool | None] = mapped_column(
         nullable=True, default=False
     )
+    # NULL inherits the deployment-wide daily conversation limit.
+    daily_conversation_limit: Mapped[int | None] = mapped_column(nullable=True)
+    # Work email submitted for quota increase requests; verified via
+    # signed email link before the requested limit is applied.
+    work_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    work_email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Relationships
     # Instance-level super-role relationship, not an org-scoped membership role.
@@ -63,3 +72,6 @@ class User(Base):
     stored_conversation_metadata_saas: Mapped[
         list['StoredConversationMetadataSaas']
     ] = relationship('StoredConversationMetadataSaas', back_populates='user')
+
+    def sync_analytics_consent_with_tos(self) -> None:
+        self.user_consents_to_analytics = self.accepted_tos is not None

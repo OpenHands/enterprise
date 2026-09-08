@@ -104,7 +104,6 @@ class SaaSGitHubService(GitHubService):
         params = {'per_page': min(per_page, 100), 'page': page}  # GitHub max is 100
         response, headers = await self._make_request(url, params)
 
-        # Parse pagination info from headers
         has_next_page = 'next' in headers.get('link', '')
         total_count = int(headers.get('total', 0))
 
@@ -188,5 +187,4 @@ class SaaSGitHubService(GitHubService):
             _ = _create_safe_task(
                 store_repositories_in_db(repositories, external_auth_id)
             )
-        # Return repositories immediately
         return repositories

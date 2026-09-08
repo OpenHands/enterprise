@@ -107,13 +107,11 @@ class DeviceCode(Base):
         if last_poll_time.tzinfo is None:
             last_poll_time = last_poll_time.replace(tzinfo=timezone.utc)
 
-        # Calculate time since last poll
         time_since_last_poll = (now - last_poll_time).total_seconds()
 
-        # Check if polling too fast
         if time_since_last_poll < self.current_interval:
-            # Increase interval for slow_down (RFC 8628 section 3.5)
-            new_interval = min(self.current_interval + 5, 60)  # Cap at 60 seconds
+            # RFC 8628 section 3.5: increase interval on slow_down, capped at 60s
+            new_interval = min(self.current_interval + 5, 60)
             return True, new_interval
 
         return False, self.current_interval

@@ -49,7 +49,6 @@ class OrgMemberFinancialService:
             except ValueError as e:
                 raise ValueError(f'Invalid page_id: {page_id}') from e
 
-        # Fetch paginated members from database
         members, total_count = await OrgMemberStore.get_org_members_paginated(
             org_id=org_id,
             offset=offset,
@@ -65,8 +64,6 @@ class OrgMemberFinancialService:
                 next_page_id=None,
             )
 
-        # Fetch financial data from LiteLLM for the entire team
-        # This is a single API call that returns all team members' data
         try:
             financial_data = await LiteLlmManager.get_team_members_financial_data(
                 str(org_id)
@@ -83,7 +80,6 @@ class OrgMemberFinancialService:
                     stack_info=True,
                 )
                 raise
-            # For other HTTP errors (404, 500, etc.), use graceful degradation
             logger.warning(
                 'Failed to fetch financial data from LiteLLM',
                 extra={
@@ -95,7 +91,6 @@ class OrgMemberFinancialService:
             )
             financial_data = {}
         except Exception as e:
-            # For network errors, timeouts, etc., use graceful degradation
             logger.warning(
                 'Failed to fetch financial data from LiteLLM',
                 extra={
@@ -106,28 +101,23 @@ class OrgMemberFinancialService:
             )
             financial_data = {}
 
-        # Extract team-level data for shared budget calculation
         team_spend = financial_data.get('team_spend', 0) or 0
         members_financial = financial_data.get('members', {})
 
-        # Build response items by joining DB members with LiteLLM financial data
         items: list[OrgMemberFinancialResponse] = []
         for member in members:
             user = member.user
             user_id_str = str(member.user_id)
 
-            # Get financial data for this user (or defaults if not found)
             user_financial = members_financial.get(user_id_str, {})
             individual_spend = user_financial.get('spend', 0) or 0
             max_budget = user_financial.get('max_budget')
             uses_shared_budget = user_financial.get('uses_shared_budget', False)
 
-            # Calculate current budget (remaining)
-            # For shared team budgets, use team_spend to calculate remaining budget
-            # This ensures all members see the same remaining budget
+            # For shared team budgets, all members see the same remaining budget,
+            # so calculate using the team's total spend rather than per-user spend.
             if max_budget is not None:
                 if uses_shared_budget:
-                    # Shared budget - use team's total spend
                     current_budget = max(max_budget - team_spend, 0)
                 else:
                     # Individual budget - use individual spend

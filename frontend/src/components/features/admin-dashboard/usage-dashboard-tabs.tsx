@@ -8,6 +8,7 @@ import {
 } from "#/components/shared/icons/inline-icons";
 import { AreaChart, KPICard, PieChart } from "./usage-dashboard-widgets";
 import {
+  buildExportFilename,
   formatAgentLabel,
   formatAssociatedPr,
   formatBudget,
@@ -16,7 +17,9 @@ import {
   formatDuration,
   formatMergedStatus,
   formatTokens,
+  rowsToCsv,
 } from "./usage-dashboard-utils";
+import { downloadBlob } from "#/utils/utils";
 
 export type ChartPoint = { date: string; value: number };
 
@@ -80,7 +83,18 @@ export function OverviewTab({
             </div>
             <button
               type="button"
-              className="flex items-center gap-2 px-3 py-1.5 text-sm text-zinc-400 border border-zinc-700 rounded-lg hover:text-white hover:border-zinc-600 transition-colors"
+              disabled={chartData.length === 0}
+              onClick={() => {
+                const csv = rowsToCsv(
+                  ["date", "conversations_started"],
+                  chartData.map((point) => [point.date, point.value]),
+                );
+                downloadBlob(
+                  new Blob([csv], { type: "text/csv;charset=utf-8;" }),
+                  buildExportFilename("conversations_per_day"),
+                );
+              }}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm text-zinc-400 border border-zinc-700 rounded-lg hover:text-white hover:border-zinc-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <ExportIcon />
               Export CSV
@@ -669,7 +683,32 @@ export function ModelsTab({
         </div>
         <button
           type="button"
-          className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-400 border border-zinc-700 rounded-lg hover:text-white hover:border-zinc-600 transition-colors"
+          disabled={filteredModels.length === 0}
+          onClick={() => {
+            const csv = rowsToCsv(
+              [
+                "model_name",
+                "conversation_count",
+                "total_tokens",
+                "avg_tokens_per_conversation",
+                "avg_cost_per_conversation",
+                "total_cost",
+              ],
+              filteredModels.map((model) => [
+                model.model_name,
+                model.conversation_count,
+                model.total_tokens,
+                model.avgTokens,
+                model.avgCost.toFixed(2),
+                model.total_cost.toFixed(2),
+              ]),
+            );
+            downloadBlob(
+              new Blob([csv], { type: "text/csv;charset=utf-8;" }),
+              buildExportFilename("model_usage"),
+            );
+          }}
+          className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-400 border border-zinc-700 rounded-lg hover:text-white hover:border-zinc-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <ExportIcon />
           Export CSV

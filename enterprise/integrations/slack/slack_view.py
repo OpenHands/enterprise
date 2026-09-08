@@ -228,14 +228,12 @@ class SlackNewConversationView(SlackViewInterface):
 
         provider_tokens = await self.saas_user_auth.get_provider_tokens()
 
-        # Determine git provider from repository (needed for both org routing and conversation creation)
         self._resolved_git_provider = None
         if self.selected_repo and provider_tokens:
             provider_handler = ProviderHandler(provider_tokens)
             repository = await provider_handler.verify_repo_provider(self.selected_repo)
             self._resolved_git_provider = repository.git_provider
 
-        # Resolve target org based on claimed git organizations
         self.resolved_org_id = None
         if self._resolved_git_provider and self.selected_repo:
             self.resolved_org_id = await resolve_org_for_repo(
@@ -244,7 +242,6 @@ class SlackNewConversationView(SlackViewInterface):
                 keycloak_user_id=self.slack_to_openhands_user.keycloak_user_id,
             )
 
-        # V0 conversation path has been removed - all conversations use V1 app conversation service
         await self._create_v1_conversation(jinja)
         return self.conversation_id
 
@@ -254,21 +251,16 @@ class SlackNewConversationView(SlackViewInterface):
             jinja
         )
 
-        # Create the initial message request
         initial_message = SendMessageRequest(
             role='user', content=self._build_message_content(user_instructions)
         )
 
-        # Create the Slack V1 callback processor
         slack_callback_processor = self._create_slack_v1_callback_processor()
 
-        # Use git provider resolved in create_or_update_conversation
         git_provider = self._resolved_git_provider
 
-        # Get the app conversation service and start the conversation
         injector_state = InjectorState()
 
-        # Create the V1 conversation start request with the callback processor
         self.conversation_id = uuid4().hex
         start_request = AppConversationStartRequest(
             conversation_id=UUID(self.conversation_id),
@@ -278,12 +270,9 @@ class SlackNewConversationView(SlackViewInterface):
             git_provider=git_provider,
             title=f'Slack conversation from {self.slack_to_openhands_user.slack_display_name}',
             trigger=ConversationTrigger.SLACK,
-            processors=[
-                slack_callback_processor
-            ],  # Pass the callback processor directly
+            processors=[slack_callback_processor],
         )
 
-        # Set up the Slack user context for the V1 system
         slack_user_context = ResolverUserContext(
             saas_user_auth=self.saas_user_auth,
             resolver_org_id=self.resolved_org_id,
@@ -374,7 +363,6 @@ class SlackUpdateExistingConversationView(SlackNewConversationView):
             USER_CONTEXT_ATTR,
         )
 
-        # Create injector state for dependency injection
         state = InjectorState()
         setattr(state, USER_CONTEXT_ATTR, ADMIN)
 
@@ -383,7 +371,6 @@ class SlackUpdateExistingConversationView(SlackNewConversationView):
             get_sandbox_service(state) as sandbox_service,
             get_httpx_client(state) as httpx_client,
         ):
-            # 1. Conversation lookup
             app_conversation_info = ensure_conversation_found(
                 await app_conversation_info_service.get_app_conversation_info(
                     UUID(self.conversation_id)
@@ -391,17 +378,14 @@ class SlackUpdateExistingConversationView(SlackNewConversationView):
                 UUID(self.conversation_id),
             )
 
-            # 2. Sandbox lookup + validation
             sandbox = await sandbox_service.get_sandbox(
                 app_conversation_info.sandbox_id
             )
 
             if sandbox and sandbox.status == SandboxStatus.PAUSED:
-                # Resume paused sandbox and wait for it to be running
                 logger.info('[Slack V1]: Attempting to resume paused sandbox')
                 await sandbox_service.resume_sandbox(app_conversation_info.sandbox_id)
 
-            # Wait for sandbox to be running (handles both fresh start and resume)
             running_sandbox = await sandbox_service.wait_for_sandbox_running(
                 app_conversation_info.sandbox_id,
                 timeout=120,
@@ -413,18 +397,14 @@ class SlackUpdateExistingConversationView(SlackNewConversationView):
                 f'No session API key for sandbox: {running_sandbox.id}'
             )
 
-            # 3. Get the agent server URL
             agent_server_url = get_agent_server_url_from_sandbox(running_sandbox)
 
-            # 4. Prepare the message content
             user_msg, _ = await self._get_instructions(jinja)
 
-            # 5. Create the message request
             send_message_request = SendMessageRequest(
                 role='user', content=self._build_message_content(user_msg), run=True
             )
 
-            # 6. Send the message to the agent server
             url = f'{agent_server_url.rstrip("/")}/api/conversations/{UUID(self.conversation_id)}/events'
 
             headers = {'X-Session-API-Key': running_sandbox.session_api_key}
@@ -532,8 +512,6 @@ class SlackFactory:
                 team_id=team_id,
             )
 
-        # At this point, we've verified slack_user, saas_user_auth, channel_id, and message_ts are set
-        # user_msg should always be present in Slack payloads
         if not user_msg:
             raise ValueError('user_msg is required but was not provided in payload')
         assert channel_id is not None

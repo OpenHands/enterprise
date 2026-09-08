@@ -7,6 +7,10 @@ from openhands.app_server.sandbox.preset_sandbox_spec_service import (
     PresetSandboxSpecService,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import (
+    DEFAULT_FS_GROUP,
+    DEFAULT_RUN_AS_GROUP,
+    DEFAULT_RUN_AS_USER,
+    RemoteSandboxSpecInfo,
     SandboxSpecInfo,
 )
 from openhands.app_server.sandbox.sandbox_spec_service import (
@@ -20,7 +24,7 @@ from openhands.app_server.services.injector import InjectorState
 
 def get_default_sandbox_specs():
     return [
-        SandboxSpecInfo(
+        RemoteSandboxSpecInfo(
             id=get_agent_server_image(),
             command=['/usr/local/bin/openhands-agent-server', '--port', '60000'],
             initial_env={
@@ -33,6 +37,9 @@ def get_default_sandbox_specs():
                 **get_agent_server_env(),
             },
             working_dir='/workspace/project',
+            run_as_user=DEFAULT_RUN_AS_USER,
+            run_as_group=DEFAULT_RUN_AS_GROUP,
+            fs_group=DEFAULT_FS_GROUP,
         )
     ]
 

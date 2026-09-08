@@ -13,6 +13,7 @@ from server.auth.auth_error import (
     CookieError,
     ExpiredError,
     NoCredentialsError,
+    TokenRefreshError,
 )
 from server.auth.authorization import (
     get_role_permissions,
@@ -35,7 +36,9 @@ from storage.saas_settings_store import SaasSettingsStore
 from storage.user_authorization import UserAuthorizationType
 from storage.user_authorization_store import UserAuthorizationStore
 from storage.user_store import UserStore
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
+from tenacity import (
+    RetryError,
+)
 
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
@@ -51,7 +54,16 @@ from openhands.app_server.user_auth.user_auth import AuthType, UserAuth
 token_manager = TokenManager()
 
 
-rate_limiter: RateLimiter = create_redis_rate_limiter(RATE_LIMIT_AUTH_WINDOWS)
+rate_limiter: RateLimiter | None = create_redis_rate_limiter(RATE_LIMIT_AUTH_WINDOWS)
+
+
+def _is_transient_keycloak_error(exc: BaseException) -> bool:
+    while isinstance(exc, RetryError):
+        retry_exc = exc.last_attempt.exception()
+        if retry_exc is None:
+            return False
+        exc = retry_exc
+    return isinstance(exc, KeycloakConnectionError)
 
 
 @dataclass
@@ -367,14 +379,6 @@ class SaasUserAuth(UserAuth):
                 self.email_verified = user.email_verified
         return self.email
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_fixed(1),
-        # Only retry transient connection failures. A deterministic
-        # ``invalid_grant`` (revoked/expired offline session) is a
-        # ``KeycloakPostError`` and must not be retried 3x.
-        retry=retry_if_exception_type(KeycloakConnectionError),
-    )
     async def refresh(self):
         # API-key (bearer) auth does not carry an offline token. Load it lazily
         # here, and only when a Keycloak access token is genuinely needed, so
@@ -521,13 +525,17 @@ class SaasUserAuth(UserAuth):
             if self.auth_type == AuthType.BEARER:
                 logger.warning('bearer_get_access_token_failed', exc_info=True)
                 return None
+            if _is_transient_keycloak_error(e):
+                raise TokenRefreshError(
+                    'Authentication service temporarily unavailable'
+                ) from e
             raise AuthError() from e
 
     async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         logger.debug('saas_user_auth_get_provider_tokens')
         if self.provider_tokens is not None:
             return self.provider_tokens
-        provider_tokens = {}
+        provider_tokens: dict[ProviderType, ProviderToken] = {}
 
         user_secrets = await self.get_secrets()
 
@@ -543,6 +551,12 @@ class SaasUserAuth(UserAuth):
 
             for token in tokens:
                 idp_type = ProviderType(token.identity_provider)
+                if idp_type == ProviderType.ENTERPRISE_SSO:
+                    # enterprise_sso is a login-only IdP, not a git provider:
+                    # ProviderHandler has no service for it and its tokens
+                    # cannot be refreshed (the row would be deleted and the
+                    # request 401'd). Skip rows minted by older logins.
+                    continue
                 try:
                     host = None
                     if user_secrets and idp_type in user_secrets.provider_tokens:
@@ -744,7 +758,8 @@ class SaasUserAuth(UserAuth):
                 # Ensure requests are only counted once
                 request.state.user_rate_limit_processed = True
                 # Will raise if rate limit is reached.
-                await rate_limiter.hit('auth_uid', user_id)
+                if rate_limiter is not None:
+                    await rate_limiter.hit('auth_uid', user_id)
         return instance
 
     @classmethod
@@ -792,6 +807,16 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
         api_key_store = ApiKeyStore.get_instance()
         validation_result = await api_key_store.validate_api_key(api_key)
         if not validation_result:
+            return None
+        try:
+            UUID(validation_result.user_id)
+        except ValueError:
+            user = None
+        else:
+            user = await UserStore.get_user_by_id(validation_result.user_id)
+            if user is None:
+                return None
+        if user is not None and user.is_disabled:
             return None
         # API-key auth is intentionally decoupled from the Keycloak offline
         # session: we do NOT load an offline token or refresh here. A valid API
@@ -844,6 +869,16 @@ async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
     user_id = access_token_payload['sub']
     email = access_token_payload['email']
     email_verified = access_token_payload['email_verified']
+    try:
+        UUID(user_id)
+    except ValueError:
+        user = None
+    else:
+        user = await UserStore.get_user_by_id(user_id)
+        if user is None:
+            raise AuthError('Access denied: user account not found')
+    if user is not None and user.is_disabled:
+        raise AuthError('Access denied: user account is disabled')
 
     # Check if email is blacklisted (whitelist takes precedence)
     if email:

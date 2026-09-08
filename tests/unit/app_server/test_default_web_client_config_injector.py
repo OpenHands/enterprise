@@ -6,6 +6,8 @@ This module tests environment variable handling in DefaultWebClientConfigInjecto
 import os
 from unittest.mock import patch
 
+import pytest
+
 
 class TestGetPosthogClientKey:
     """Test cases for _get_posthog_client_key helper function."""
@@ -337,6 +339,52 @@ class TestGetFeatureFlags:
         with patch.dict(os.environ, {'ENABLE_ACP': 'true'}):
             result = _get_feature_flags()
             assert result.enable_acp is True
+
+    def test_enable_agent_canvas_banner_false_by_default(self):
+        """When ENABLE_AGENT_CANVAS_BANNER is unset, the banner flag is False."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_feature_flags()
+            assert result.enable_agent_canvas_banner is False
+
+    def test_enable_agent_canvas_banner_true_when_env_var_true(self):
+        """When ENABLE_AGENT_CANVAS_BANNER is 'true', the banner flag is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_AGENT_CANVAS_BANNER': 'true'}):
+            result = _get_feature_flags()
+            assert result.enable_agent_canvas_banner is True
+
+    def test_enable_agent_canvas_banner_true_when_env_var_one(self):
+        """When ENABLE_AGENT_CANVAS_BANNER is '1', the banner flag is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_AGENT_CANVAS_BANNER': '1'}):
+            result = _get_feature_flags()
+            assert result.enable_agent_canvas_banner is True
+
+    def test_enable_agent_canvas_banner_true_from_structured_env(self):
+        """Structured web-client env can enable the Agent Canvas banner flag."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        with patch.dict(
+            os.environ,
+            {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_AGENT_CANVAS_BANNER': 'true'},
+            clear=True,
+        ):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        assert config.feature_flags.enable_agent_canvas_banner is True
 
 
 class TestGetJiraDcServiceAccountConfig:
@@ -803,3 +851,230 @@ class TestGetEmailEnabled:
             ),
         ):
             assert _get_email_enabled() is False
+
+
+class TestEmailChangeEnabled:
+    def test_defaults_to_true(self):
+        from openhands.app_server.web_client.email_change_config import (
+            is_email_change_enabled,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert is_email_change_enabled() is True
+
+    def test_returns_false_when_disabled(self):
+        from openhands.app_server.web_client.email_change_config import (
+            is_email_change_enabled,
+        )
+
+        with patch.dict(os.environ, {'EMAIL_CHANGE_ENABLED': 'false'}):
+            assert is_email_change_enabled() is False
+
+    def test_accepts_one_as_enabled(self):
+        from openhands.app_server.web_client.email_change_config import (
+            is_email_change_enabled,
+        )
+
+        with patch.dict(os.environ, {'EMAIL_CHANGE_ENABLED': '1'}):
+            assert is_email_change_enabled() is True
+
+    def test_structured_web_client_env_disables_ui(self):
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        with patch.dict(
+            os.environ,
+            {'OH_WEB_CLIENT_EMAIL_CHANGE_ENABLED': 'false'},
+            clear=True,
+        ):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        assert config.email_change_enabled is False
+
+
+class TestGetJiraOauthEnabled:
+    """Tests for _get_jira_oauth_enabled."""
+
+    def test_defaults_to_true_when_env_var_unset(self):
+        """OAuth linking is the default so SaaS behavior is unchanged."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_jira_oauth_enabled,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert _get_jira_oauth_enabled() is True
+
+    def test_false_when_env_var_disabled(self):
+        """JIRA_ENABLE_OAUTH=0 signals email-match mode to the web client."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_jira_oauth_enabled,
+        )
+
+        with patch.dict(os.environ, {'JIRA_ENABLE_OAUTH': '0'}):
+            assert _get_jira_oauth_enabled() is False
+
+
+class TestGetDbFeatureFlags:
+    """Tests for _get_db_feature_flags.
+
+    The helper must degrade gracefully when the enterprise feature-flag service
+    is absent (OSS) or errors, returning an empty map so the unauthenticated
+    config endpoint never breaks.
+    """
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_enterprise_service_absent(self):
+        """When the enterprise service module cannot be imported, return {}."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        # Force the lazy import to fail by patching __import__ for the module.
+        with patch(
+            'builtins.__import__',
+            side_effect=ImportError('no enterprise package'),
+        ):
+            result = await mod._get_db_feature_flags()
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_returns_global_flags_when_available(self):
+        """When the enterprise service is present, return its global flags."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def get_global_flags(self):
+                return {'new_global_thing': True}
+
+        # Patch the lazy import target that the helper uses.
+        import sys
+        import types
+
+        fake_module = types.ModuleType('server.services.feature_flag_service')
+        fake_module.feature_flag_service = _FakeService()
+        with patch.dict(
+            sys.modules, {'server.services.feature_flag_service': fake_module}
+        ):
+            result = await mod._get_db_feature_flags()
+        assert result == {'new_global_thing': True}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_db_error(self):
+        """A runtime error from the service must not break the endpoint."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _BrokenService:
+            async def get_global_flags(self):
+                raise RuntimeError('db down')
+
+        import sys
+        import types
+
+        fake_module = types.ModuleType('server.services.feature_flag_service')
+        fake_module.feature_flag_service = _BrokenService()
+        with patch.dict(
+            sys.modules, {'server.services.feature_flag_service': fake_module}
+        ):
+            result = await mod._get_db_feature_flags()
+        assert result == {}
+
+
+class TestResolveFlag:
+    """Tests for the generic _resolve_flag helper.
+
+    Flags are unified with the DB-backed default-flag pattern: the feature
+    flag service's ``resolve`` is authoritative (DB row, falling back to the
+    registered default), and imports that fail (OSS installs without the
+    enterprise service) degrade to the env value.
+    """
+
+    def _fake_service_module(self, service):
+        import sys
+        import types
+
+        fake_module = types.ModuleType('server.services.feature_flag_service')
+        fake_module.feature_flag_service = service
+        return patch.dict(
+            sys.modules, {'server.services.feature_flag_service': fake_module}
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolve_true_overrides_env_false(self):
+        """The service resolution wins over the env-var fallback."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                assert key == 'SOME_FLAG'
+                return True
+
+        with self._fake_service_module(_FakeService()):
+            result = await mod._resolve_flag('SOME_FLAG', env_fallback=False)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_resolve_false_overrides_env_true(self):
+        """The service resolution wins over the env-var fallback."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                return False
+
+        with self._fake_service_module(_FakeService()):
+            result = await mod._resolve_flag('SOME_FLAG', env_fallback=True)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_env_when_service_absent(self):
+        """OSS installs without the enterprise service use the env value."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        with patch(
+            'builtins.__import__',
+            side_effect=ImportError('no enterprise package'),
+        ):
+            assert await mod._resolve_flag('SOME_FLAG', env_fallback=True) is True
+            assert await mod._resolve_flag('SOME_FLAG', env_fallback=False) is False
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_applies_resolved_billing_flag(self):
+        """get_web_client_config surfaces the DB-resolved enable_billing."""
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                return True
+
+            async def get_global_flags(self):
+                return {'ENABLE_BILLING': True}
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        with (
+            self._fake_service_module(_FakeService()),
+            patch.dict(os.environ, {'ENABLE_BILLING': 'false'}),
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.enable_billing is True

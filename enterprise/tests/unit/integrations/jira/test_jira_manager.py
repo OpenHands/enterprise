@@ -2,11 +2,16 @@
 Unit tests for JiraManager.
 """
 
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from integrations.jira.jira_manager import JiraManager
-from integrations.jira.jira_payload import JiraEventType, JiraWebhookPayload
+from integrations.jira.jira_payload import (
+    JiraEventType,
+    JiraPayloadSuccess,
+    JiraWebhookPayload,
+)
 
 from openhands.app_server.types import (
     LLMAuthenticationError,
@@ -190,6 +195,132 @@ class TestAuthenticateUser:
         assert user_auth is None
         jira_manager._send_error_from_payload.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_authenticate_user_email_mode_matches_by_email(
+        self,
+        jira_manager,
+        mock_token_manager,
+        sample_webhook_payload,
+        sample_jira_workspace,
+        sample_jira_user,
+        sample_user_auth,
+    ):
+        """Resolve the user by email when OAuth is disabled (email-match mode).
+
+        Users never OAuth-link in this mode, so the webhook's Atlassian
+        account id can never match a stored row; the accountId lookup must
+        not be used.
+        """
+        mock_token_manager.get_user_id_from_user_email.return_value = 'test_keycloak_id'
+        jira_manager.integration_store.get_active_user = AsyncMock()
+        jira_manager.integration_store.get_active_user_by_keycloak_id_and_workspace = (
+            AsyncMock(return_value=sample_jira_user)
+        )
+
+        with (
+            patch('integrations.jira.jira_manager.JIRA_ENABLE_OAUTH', False),
+            patch(
+                'integrations.jira.jira_manager.get_user_auth_from_keycloak_id',
+                return_value=sample_user_auth,
+            ),
+        ):
+            jira_user, user_auth = await jira_manager._authenticate_user(
+                sample_webhook_payload, sample_jira_workspace
+            )
+
+        assert jira_user == sample_jira_user
+        assert user_auth == sample_user_auth
+        # Resolved by email, NOT by the webhook's Atlassian account id.
+        mock_token_manager.get_user_id_from_user_email.assert_called_once_with(
+            sample_webhook_payload.user_email
+        )
+        jira_manager.integration_store.get_active_user_by_keycloak_id_and_workspace.assert_called_once_with(
+            'test_keycloak_id', sample_jira_workspace.id
+        )
+        jira_manager.integration_store.get_active_user.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_authenticate_user_email_mode_auto_enrolls(
+        self,
+        jira_manager,
+        mock_token_manager,
+        sample_webhook_payload,
+        sample_jira_workspace,
+        sample_jira_user,
+        sample_user_auth,
+    ):
+        """Email mode auto-enrolls a matched user who has no link row yet."""
+        mock_token_manager.get_user_id_from_user_email.return_value = 'kc-id'
+        jira_manager.integration_store.get_active_user_by_keycloak_id_and_workspace = (
+            AsyncMock(return_value=None)
+        )
+        jira_manager.integration_store.get_or_create_active_email_link = AsyncMock(
+            return_value=sample_jira_user
+        )
+
+        with (
+            patch('integrations.jira.jira_manager.JIRA_ENABLE_OAUTH', False),
+            patch(
+                'integrations.jira.jira_manager.get_user_auth_from_keycloak_id',
+                return_value=sample_user_auth,
+            ),
+        ):
+            jira_user, user_auth = await jira_manager._authenticate_user(
+                sample_webhook_payload, sample_jira_workspace
+            )
+
+        assert jira_user == sample_jira_user
+        assert user_auth == sample_user_auth
+        jira_manager.integration_store.get_or_create_active_email_link.assert_called_once_with(
+            'kc-id', sample_jira_workspace.id
+        )
+
+    @pytest.mark.asyncio
+    async def test_authenticate_user_email_mode_no_openhands_account(
+        self,
+        jira_manager,
+        mock_token_manager,
+        sample_webhook_payload,
+        sample_jira_workspace,
+    ):
+        """Email mode posts an error comment when no OpenHands account matches."""
+        mock_token_manager.get_user_id_from_user_email.return_value = None
+        jira_manager._send_error_from_payload = AsyncMock()
+
+        with patch('integrations.jira.jira_manager.JIRA_ENABLE_OAUTH', False):
+            jira_user, user_auth = await jira_manager._authenticate_user(
+                sample_webhook_payload, sample_jira_workspace
+            )
+
+        assert jira_user is None
+        assert user_auth is None
+        jira_manager._send_error_from_payload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_authenticate_user_email_mode_missing_email(
+        self,
+        jira_manager,
+        mock_token_manager,
+        sample_webhook_payload,
+        sample_jira_workspace,
+    ):
+        """Email mode degrades gracefully when Atlassian hides the user's email:
+        an explanatory comment is posted and no lookup is attempted."""
+        payload_without_email = replace(sample_webhook_payload, user_email='')
+        jira_manager._send_error_from_payload = AsyncMock()
+
+        with patch('integrations.jira.jira_manager.JIRA_ENABLE_OAUTH', False):
+            jira_user, user_auth = await jira_manager._authenticate_user(
+                payload_without_email, sample_jira_workspace
+            )
+
+        assert jira_user is None
+        assert user_auth is None
+        mock_token_manager.get_user_id_from_user_email.assert_not_called()
+        jira_manager._send_error_from_payload.assert_called_once()
+        error_msg = jira_manager._send_error_from_payload.call_args.args[2]
+        assert 'email' in error_msg.lower()
+
 
 class TestStartJob:
     """Test job starting functionality."""
@@ -351,3 +482,108 @@ class TestSendComment:
 
         # Should not raise exception
         await jira_manager._send_comment(new_conversation_view, 'Test comment')
+
+
+class TestPickerMentionGate:
+    """Picker mentions only trigger when they target the service account."""
+
+    def _picker_payload(self, sample_webhook_payload, mention_ids):
+        return replace(
+            sample_webhook_payload,
+            comment_body='[~accountid:someone] please fix this',
+            literal_mention=False,
+            mention_ids=mention_ids,
+        )
+
+    @pytest.mark.asyncio
+    async def test_picker_mention_of_other_user_skips(
+        self, jira_manager, sample_jira_workspace, sample_webhook_payload
+    ):
+        payload = self._picker_payload(sample_webhook_payload, ('someone-else',))
+        jira_manager.payload_parser.parse = MagicMock(
+            return_value=JiraPayloadSuccess(payload)
+        )
+        jira_manager._get_active_workspace = AsyncMock(
+            return_value=sample_jira_workspace
+        )
+        jira_manager._get_bot_account_id = AsyncMock(return_value='bot-account-id')
+        jira_manager._authenticate_user = AsyncMock()
+        message = MagicMock()
+        message.message = {'payload': {}}
+
+        await jira_manager.receive_message(message)
+
+        jira_manager._authenticate_user.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_picker_mention_of_bot_proceeds(
+        self, jira_manager, sample_jira_workspace, sample_webhook_payload
+    ):
+        payload = self._picker_payload(sample_webhook_payload, ('bot-account-id',))
+        jira_manager.payload_parser.parse = MagicMock(
+            return_value=JiraPayloadSuccess(payload)
+        )
+        jira_manager._get_active_workspace = AsyncMock(
+            return_value=sample_jira_workspace
+        )
+        jira_manager._get_bot_account_id = AsyncMock(return_value='bot-account-id')
+        jira_manager._authenticate_user = AsyncMock(return_value=(None, None))
+        message = MagicMock()
+        message.message = {'payload': {}}
+
+        await jira_manager.receive_message(message)
+
+        jira_manager._authenticate_user.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_literal_mention_skips_bot_lookup(
+        self, jira_manager, sample_jira_workspace, sample_webhook_payload
+    ):
+        jira_manager.payload_parser.parse = MagicMock(
+            return_value=JiraPayloadSuccess(sample_webhook_payload)
+        )
+        jira_manager._get_active_workspace = AsyncMock(
+            return_value=sample_jira_workspace
+        )
+        jira_manager._get_bot_account_id = AsyncMock()
+        jira_manager._authenticate_user = AsyncMock(return_value=(None, None))
+        message = MagicMock()
+        message.message = {'payload': {}}
+
+        await jira_manager.receive_message(message)
+
+        jira_manager._get_bot_account_id.assert_not_awaited()
+        jira_manager._authenticate_user.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_bot_account_id_fetches_and_caches(
+        self, jira_manager, sample_jira_workspace
+    ):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {'accountId': '712020:BOT-Id'}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch('integrations.jira.jira_manager.httpx.AsyncClient') as mock_client:
+            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                return_value=mock_response
+            )
+
+            first = await jira_manager._get_bot_account_id(sample_jira_workspace)
+            second = await jira_manager._get_bot_account_id(sample_jira_workspace)
+
+        assert first == '712020:bot-id'
+        assert second == '712020:bot-id'
+        mock_client.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_bot_account_id_failure_returns_none(
+        self, jira_manager, sample_jira_workspace
+    ):
+        with patch('integrations.jira.jira_manager.httpx.AsyncClient') as mock_client:
+            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                side_effect=Exception('boom')
+            )
+
+            result = await jira_manager._get_bot_account_id(sample_jira_workspace)
+
+        assert result is None

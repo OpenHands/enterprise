@@ -4,6 +4,7 @@ import json
 from contextlib import asynccontextmanager
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException, Request, status
@@ -14,10 +15,13 @@ from server.routes.integration.jira import (
     JiraLinkCreate,
     JiraWorkspaceCreate,
     _handle_workspace_link_creation,
+    _resolve_jira_cloud_id,
+    _validate_service_account,
     _validate_workspace_update_permissions,
     create_jira_workspace,
     create_workspace_link,
     get_current_workspace_link,
+    get_jira_instance_status,
     jira_callback,
     jira_events,
     unlink_workspace,
@@ -1460,3 +1464,339 @@ class TestJiraOAuthUrlEncoding:
         assert 'scope=read%3Ame+read%3Ajira-user+read%3Ajira-work' in auth_url
         # Verify redirect_uri is properly encoded
         assert 'redirect_uri=https%3A%2F%2F' in auth_url
+
+
+# Tests for org scoping and the non-OAuth (email-match) mode
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.get_user_auth')
+@patch('server.routes.integration.jira.redis_client')
+async def test_create_jira_workspace_oauth_session_includes_org_id(
+    mock_redis, mock_get_auth, mock_request, mock_user_auth
+):
+    """The OAuth session carries the caller's effective org so the callback can
+    stamp it onto the workspace."""
+    org_id = uuid4()
+    mock_user_auth.get_effective_org_id = AsyncMock(return_value=org_id)
+    mock_get_auth.return_value = mock_user_auth
+    mock_redis.setex.return_value = True
+    workspace_data = JiraWorkspaceCreate(
+        workspace_name='test-workspace',
+        webhook_secret='secret',
+        svc_acc_email='svc@test.com',
+        svc_acc_api_key='key',
+        is_active=True,
+    )
+
+    await create_jira_workspace(mock_request, workspace_data)
+
+    session_json = mock_redis.setex.call_args.args[2]
+    assert json.loads(session_json)['org_id'] == str(org_id)
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.get_user_auth')
+@patch('server.routes.integration.jira.jira_manager', new_callable=AsyncMock)
+@patch('server.routes.integration.jira.JIRA_ENABLE_OAUTH', False)
+@patch(
+    'server.routes.integration.jira._handle_workspace_link_creation',
+    new_callable=AsyncMock,
+)
+@patch(
+    'server.routes.integration.jira._validate_service_account',
+    new_callable=AsyncMock,
+)
+@patch(
+    'server.routes.integration.jira._resolve_jira_cloud_id',
+    new_callable=AsyncMock,
+)
+async def test_create_jira_workspace_oauth_disabled_creates_org_scoped_workspace(
+    mock_resolve_cloud_id,
+    mock_validate_svc,
+    mock_handle_link,
+    mock_manager,
+    mock_get_auth,
+    mock_request,
+    mock_user_auth,
+):
+    """With OAuth disabled the workspace is created directly, stamped with the
+    caller's org, and the admin is auto-linked with the email-mode sentinel."""
+    org_id = uuid4()
+    mock_user_auth.get_effective_org_id = AsyncMock(return_value=org_id)
+    mock_get_auth.return_value = mock_user_auth
+    mock_resolve_cloud_id.return_value = 'cloud-123'
+    mock_manager.integration_store.get_workspace_by_name.return_value = None
+    mock_workspace = MagicMock(id=10)
+    mock_workspace.name = 'test.atlassian.net'
+    mock_manager.integration_store.create_workspace.return_value = mock_workspace
+
+    workspace_data = JiraWorkspaceCreate(
+        workspace_name='test.atlassian.net',
+        webhook_secret='secret',
+        svc_acc_email='svc@test.com',
+        svc_acc_api_key='key',
+        is_active=True,
+    )
+
+    with patch('server.routes.integration.jira.token_manager') as mock_token_manager:
+        mock_token_manager.encrypt_text.side_effect = lambda x: f'enc_{x}'
+        response = await create_jira_workspace(mock_request, workspace_data)
+
+    content = json.loads(response.body)
+    assert content['success'] is True
+    assert content['redirect'] is False
+    assert content['eventsUrl'].endswith('/integration/jira/events')
+
+    mock_validate_svc.assert_awaited_once_with('cloud-123', 'svc@test.com', 'key')
+    create_kwargs = mock_manager.integration_store.create_workspace.call_args.kwargs
+    assert create_kwargs['org_id'] == org_id
+    assert create_kwargs['jira_cloud_id'] == 'cloud-123'
+    assert create_kwargs['admin_user_id'] == 'test_user_id'
+    mock_handle_link.assert_awaited_once_with(
+        'test_user_id',
+        'unavailable',
+        'test.atlassian.net',
+        require_active_workspace=True,
+    )
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.get_user_auth')
+@patch('server.routes.integration.jira.jira_manager', new_callable=AsyncMock)
+@patch('server.routes.integration.jira.JIRA_ENABLE_OAUTH', False)
+@patch(
+    'server.routes.integration.jira._handle_workspace_link_creation',
+    new_callable=AsyncMock,
+)
+@patch(
+    'server.routes.integration.jira._validate_service_account',
+    new_callable=AsyncMock,
+)
+@patch(
+    'server.routes.integration.jira._resolve_jira_cloud_id',
+    new_callable=AsyncMock,
+)
+@patch(
+    'server.routes.integration.jira._validate_workspace_update_permissions',
+    new_callable=AsyncMock,
+)
+async def test_create_jira_workspace_oauth_disabled_updates_existing_workspace(
+    mock_validate_update,
+    mock_resolve_cloud_id,
+    mock_validate_svc,
+    mock_handle_link,
+    mock_manager,
+    mock_get_auth,
+    mock_request,
+    mock_user_auth,
+):
+    """An existing workspace is permission-checked and updated in place."""
+    org_id = uuid4()
+    mock_user_auth.get_effective_org_id = AsyncMock(return_value=org_id)
+    mock_get_auth.return_value = mock_user_auth
+    mock_resolve_cloud_id.return_value = 'cloud-123'
+    existing = MagicMock(id=10)
+    existing.name = 'test.atlassian.net'
+    mock_manager.integration_store.get_workspace_by_name.return_value = existing
+    mock_manager.integration_store.update_workspace.return_value = existing
+
+    workspace_data = JiraWorkspaceCreate(
+        workspace_name='test.atlassian.net',
+        webhook_secret='secret',
+        svc_acc_email='svc@test.com',
+        svc_acc_api_key='key',
+        is_active=True,
+    )
+
+    with patch('server.routes.integration.jira.token_manager') as mock_token_manager:
+        mock_token_manager.encrypt_text.side_effect = lambda x: f'enc_{x}'
+        await create_jira_workspace(mock_request, workspace_data)
+
+    mock_validate_update.assert_awaited_once_with('test_user_id', 'test.atlassian.net')
+    mock_manager.integration_store.create_workspace.assert_not_called()
+    update_kwargs = mock_manager.integration_store.update_workspace.call_args.kwargs
+    assert update_kwargs['id'] == 10
+    assert update_kwargs['org_id'] == org_id
+
+
+@pytest.mark.asyncio
+async def test_resolve_jira_cloud_id_success():
+    httpx_mock = create_httpx_mock(get_response={'cloudId': 'cloud-abc'})
+
+    with patch('httpx.AsyncClient', return_value=httpx_mock):
+        cloud_id = await _resolve_jira_cloud_id('test.atlassian.net')
+
+    assert cloud_id == 'cloud-abc'
+
+
+@pytest.mark.asyncio
+async def test_resolve_jira_cloud_id_unresolvable_site_returns_400():
+    httpx_mock = create_httpx_mock(get_response={})
+
+    with patch('httpx.AsyncClient', return_value=httpx_mock):
+        with pytest.raises(HTTPException) as exc_info:
+            await _resolve_jira_cloud_id('unknown.example.com')
+
+    assert exc_info.value.status_code == 400
+    assert 'Could not resolve Jira Cloud site' in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_validate_service_account_success():
+    httpx_mock = create_httpx_mock(get_response={'accountId': 'svc'})
+
+    with patch('httpx.AsyncClient', return_value=httpx_mock):
+        await _validate_service_account('cloud-123', 'svc@test.com', 'key')
+
+    client = httpx_mock.__aenter__.return_value
+    assert client.get.call_args.kwargs['auth'] == ('svc@test.com', 'key')
+
+
+@pytest.mark.asyncio
+async def test_validate_service_account_rejected_returns_400():
+    rejected = MagicMock(status_code=401)
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=rejected)
+    httpx_mock = AsyncMock()
+    httpx_mock.__aenter__ = AsyncMock(return_value=mock_client)
+    httpx_mock.__aexit__ = AsyncMock(return_value=None)
+
+    with patch('httpx.AsyncClient', return_value=httpx_mock):
+        with pytest.raises(HTTPException) as exc_info:
+            await _validate_service_account('cloud-123', 'svc@test.com', 'bad-key')
+
+    assert exc_info.value.status_code == 400
+    assert 'service account' in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.get_user_auth')
+@patch('server.routes.integration.jira.redis_client')
+@patch('server.routes.integration.jira.JIRA_ENABLE_OAUTH', False)
+@patch(
+    'server.routes.integration.jira._handle_workspace_link_creation',
+    new_callable=AsyncMock,
+)
+async def test_create_workspace_link_oauth_disabled_links_directly(
+    mock_handle_link, mock_redis, mock_get_auth, mock_request, mock_user_auth
+):
+    """With OAuth disabled a link is created directly, without an OAuth session."""
+    mock_get_auth.return_value = mock_user_auth
+    link_data = JiraLinkCreate(workspace_name='test-workspace')
+
+    response = await create_workspace_link(mock_request, link_data)
+    content = json.loads(response.body)
+
+    assert content['success'] is True
+    assert content['redirect'] is False
+    mock_handle_link.assert_awaited_once_with(
+        'test_user_id', 'unavailable', 'test-workspace'
+    )
+    mock_redis.setex.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.redis_client')
+@patch('server.routes.integration.jira.jira_manager', new_callable=AsyncMock)
+@patch(
+    'server.routes.integration.jira._handle_workspace_link_creation',
+    new_callable=AsyncMock,
+)
+async def test_jira_callback_passes_org_id_to_workspace_creation(
+    mock_handle_link, mock_manager, mock_redis, mock_request
+):
+    """The org id captured at setup time is stamped onto the created workspace."""
+    org_id = uuid4()
+    state = 'test_state'
+    session_data = {
+        'operation_type': 'workspace_integration',
+        'keycloak_user_id': 'user1',
+        'org_id': str(org_id),
+        'target_workspace': 'test.atlassian.net',
+        'webhook_secret': 'secret',
+        'svc_acc_email': 'email@test.com',
+        'svc_acc_api_key': 'apikey',
+        'is_active': True,
+        'state': state,
+    }
+    mock_redis.get.return_value = json.dumps(session_data)
+    httpx_mock = create_httpx_mock(
+        post_response={'access_token': 'token'},
+        get_responses={
+            'accessible-resources': [{'url': 'https://test.atlassian.net'}],
+            '/me': {'account_id': 'jira_user_123'},
+        },
+    )
+    mock_manager.integration_store.get_workspace_by_name.return_value = None
+
+    with patch('server.routes.integration.jira.token_manager') as mock_token_manager:
+        with patch('httpx.AsyncClient', return_value=httpx_mock):
+            mock_token_manager.encrypt_text.side_effect = lambda x: f'enc_{x}'
+            await jira_callback(mock_request, 'test_code', state)
+
+    create_kwargs = mock_manager.integration_store.create_workspace.call_args.kwargs
+    assert create_kwargs['org_id'] == UUID(str(org_id))
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.get_user_auth')
+@patch('server.routes.integration.jira.jira_manager', new_callable=AsyncMock)
+async def test_get_jira_instance_status_configured(
+    mock_manager, mock_get_auth, mock_request, mock_user_auth
+):
+    org_id = uuid4()
+    mock_user_auth.get_effective_org_id = AsyncMock(return_value=org_id)
+    mock_get_auth.return_value = mock_user_auth
+    mock_workspace = MagicMock()
+    mock_workspace.name = 'test.atlassian.net'
+    mock_manager.integration_store.get_active_workspace_for_org.return_value = (
+        mock_workspace
+    )
+
+    response = await get_jira_instance_status(mock_request)
+
+    assert response.configured is True
+    assert response.host == 'test.atlassian.net'
+    mock_manager.integration_store.get_active_workspace_for_org.assert_awaited_once_with(
+        org_id
+    )
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.get_user_auth')
+@patch('server.routes.integration.jira.jira_manager', new_callable=AsyncMock)
+async def test_get_jira_instance_status_not_configured(
+    mock_manager, mock_get_auth, mock_request, mock_user_auth
+):
+    mock_user_auth.get_effective_org_id = AsyncMock(return_value=uuid4())
+    mock_get_auth.return_value = mock_user_auth
+    mock_manager.integration_store.get_active_workspace_for_org.return_value = None
+
+    response = await get_jira_instance_status(mock_request)
+
+    assert response.configured is False
+    assert response.host is None
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.jira_manager', new_callable=AsyncMock)
+async def test_handle_workspace_link_creation_inactive_workspace_allowed_when_not_required(
+    mock_manager,
+):
+    """Saving an integration as inactive still links the admin: the active-status
+    gate is skipped when require_active_workspace is False."""
+    mock_workspace = MagicMock(id=1, status='inactive')
+    mock_manager.integration_store.get_workspace_by_name.return_value = mock_workspace
+    mock_manager.integration_store.get_user_by_active_workspace.return_value = None
+    mock_manager.integration_store.get_user_by_keycloak_id_and_workspace.return_value = None
+
+    await _handle_workspace_link_creation(
+        'user1', 'unavailable', 'test-workspace', require_active_workspace=False
+    )
+
+    mock_manager.integration_store.create_workspace_link.assert_called_once_with(
+        keycloak_user_id='user1',
+        jira_user_id='unavailable',
+        jira_workspace_id=1,
+    )

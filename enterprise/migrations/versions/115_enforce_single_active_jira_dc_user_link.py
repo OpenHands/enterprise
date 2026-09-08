@@ -46,24 +46,12 @@ def upgrade() -> None:
         )
     )
 
-    dialect_name = op.get_bind().dialect.name
-    kwargs = {}
-    if dialect_name == 'postgresql':
-        kwargs['postgresql_where'] = sa.text("status = 'active'")
-    elif dialect_name == 'sqlite':
-        kwargs['sqlite_where'] = sa.text("status = 'active'")
-    else:
-        raise NotImplementedError(
-            'Partial unique index for jira_dc_users active links is only '
-            f'implemented for postgresql/sqlite, got {dialect_name}'
-        )
-
     op.create_index(
         INDEX_NAME,
         'jira_dc_users',
         ['keycloak_user_id'],
         unique=True,
-        **kwargs,
+        postgresql_where=sa.text("status = 'active'"),
     )
 
 

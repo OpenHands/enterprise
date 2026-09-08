@@ -14,6 +14,7 @@ from integrations.utils import (
     has_exact_mention,
 )
 from jinja2 import Environment
+from server.auth.constants import BITBUCKET_DATA_CENTER_HOST
 
 from openhands.agent_server.models import SendMessageRequest
 from openhands.app_server.app_conversation.app_conversation_models import (
@@ -89,6 +90,19 @@ class BitbucketDCPR(ResolverViewInterface):
     def _get_branch_name(self) -> str | None:
         return self.branch_name
 
+    def _dc_template_context(self) -> dict:
+        """Server/repo/credential context rendered into the resolver templates.
+
+        Unlike github.com/bitbucket.org, the DC host is deployment-specific,
+        so the agent must be told the server URL and repo location explicitly.
+        """
+        return {
+            'bitbucket_base_url': f'https://{BITBUCKET_DATA_CENTER_HOST}',
+            'full_repo_name': self.full_repo_name,
+            'project_key': self.project_key,
+            'repo_slug': self.repo_slug,
+        }
+
     async def _load_resolver_context(self) -> None:
         bitbucket_service = BitbucketDCServiceImpl(
             external_auth_id=self.user_info.keycloak_user_id
@@ -121,6 +135,7 @@ class BitbucketDCPR(ResolverViewInterface):
             pr_title=self.title,
             pr_body=self.description,
             comments=self.previous_comments,
+            **self._dc_template_context(),
         )
         return user_instructions, conversation_instructions
 
@@ -217,6 +232,7 @@ class BitbucketDCPRComment(BitbucketDCPR):
             pr_body=self.description,
             comments=self.previous_comments,
             pr_comment=self.comment_body,
+            **self._dc_template_context(),
         )
         return user_instructions, ''
 
@@ -243,6 +259,7 @@ class BitbucketDCInlinePRComment(BitbucketDCPRComment):
             pr_comment=self.comment_body,
             file_location=self.file_location,
             line_number=self.line_number,
+            **self._dc_template_context(),
         )
         return user_instructions, ''
 

@@ -60,11 +60,52 @@ export function ArchivedConversationView() {
       <div className="flex-1 overflow-y-auto custom-scrollbar-always px-3 md:px-0">
         <div className="h-full bg-base rounded-xl border border-tertiary p-4">
           {renderableEvents.length > 0 ? (
-            <V1Messages messages={renderableEvents} allEvents={v1FullEvents} />
+            <>
+              <V1Messages
+                messages={renderableEvents}
+                allEvents={v1FullEvents}
+              />
+              {conversationWebSocket?.historyLoadFailed && (
+                <div className="flex items-center justify-center gap-3 py-4 text-sm text-neutral-400">
+                  <span>{t(I18nKey.CONVERSATION$HISTORY_LOAD_INCOMPLETE)}</span>
+                  <button
+                    type="button"
+                    className="underline"
+                    onClick={() => conversationWebSocket?.retryHistoryLoad?.()}
+                  >
+                    {t(I18nKey.CONVERSATION$RETRY)}
+                  </button>
+                </div>
+              )}
+              {!conversationWebSocket?.historyLoadFailed &&
+                conversationWebSocket?.isLoadingHistory && (
+                  <div
+                    className="flex justify-center py-4 text-sm text-neutral-400"
+                    data-testid="history-loading-more"
+                  >
+                    {t(I18nKey.CONVERSATION$LOADING_MORE)}
+                  </div>
+                )}
+            </>
           ) : (
             <div className="flex items-center justify-center h-full">
               <div className="text-center text-neutral-400 py-8">
-                {t(I18nKey.CONVERSATION$NO_HISTORY_AVAILABLE)}
+                {conversationWebSocket?.historyLoadFailed ? (
+                  <div className="flex flex-col items-center gap-2">
+                    <span>{t(I18nKey.CONVERSATION$HISTORY_LOAD_FAILED)}</span>
+                    <button
+                      type="button"
+                      className="underline"
+                      onClick={() =>
+                        conversationWebSocket?.retryHistoryLoad?.()
+                      }
+                    >
+                      {t(I18nKey.CONVERSATION$RETRY)}
+                    </button>
+                  </div>
+                ) : (
+                  t(I18nKey.CONVERSATION$NO_HISTORY_AVAILABLE)
+                )}
               </div>
             </div>
           )}

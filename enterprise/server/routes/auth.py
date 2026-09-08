@@ -18,7 +18,9 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse, RedirectResponse
+from keycloak.exceptions import KeycloakConnectionError
 from pydantic import BaseModel, SecretStr
+from server.auth.auth_error import TokenRefreshError
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_REALM_NAME,
@@ -83,6 +85,19 @@ oauth_router = APIRouter(prefix='/oauth')
 token_manager = TokenManager()
 
 
+async def _get_keycloak_tokens_or_unavailable(
+    code: str, redirect_uri: str
+) -> tuple[str | None, str | None]:
+    try:
+        return await token_manager.get_keycloak_tokens(code, redirect_uri)
+    except KeycloakConnectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Authentication service temporarily unavailable',
+            headers={'Retry-After': '1'},
+        ) from exc
+
+
 def create_provider_tokens_object(
     providers_set: list[ProviderType],
 ) -> PROVIDER_TOKEN_TYPE:
@@ -131,15 +146,18 @@ def set_response_cookie(
     )
 
 
-def _extract_oauth_state(state: str | None) -> tuple[str, str | None, str | None]:
-    """Extract redirect URL, reCAPTCHA token, and invitation token from OAuth state.
+def _extract_oauth_state(
+    state: str | None,
+) -> tuple[str, str | None, str | None, str | None]:
+    """Extract redirect URL, reCAPTCHA token, invitation token, and link provider.
 
     Returns:
-        Tuple of (redirect_url, recaptcha_token, invitation_token).
-        Tokens may be None.
+        Tuple of (redirect_url, recaptcha_token, invitation_token, link_provider).
+        Tokens may be None. ``link_provider`` is only set on the return leg of a
+        post-auth git provider link (``kc_action=idp_link:<provider>``).
     """
     if not state:
-        return '', None, None
+        return '', None, None, None
 
     try:
         # Try to decode as JSON (new format with reCAPTCHA and/or invitation)
@@ -148,10 +166,11 @@ def _extract_oauth_state(state: str | None) -> tuple[str, str | None, str | None
             state_data.get('redirect_url', ''),
             state_data.get('recaptcha_token'),
             state_data.get('invitation_token'),
+            state_data.get('link_provider'),
         )
     except Exception:
         # Old format - state is just the redirect URL
-        return state, None, None
+        return state, None, None, None
 
 
 async def _get_user_orgs_with_data(user_id: str, org_member_ids: list) -> list:
@@ -186,7 +205,7 @@ async def _get_user_orgs_with_data(user_id: str, org_member_ids: list) -> list:
 async def _track_login_analytics_background(
     user_id: str,
     email: str | None,
-    idp: str,
+    idp: str | None,
     current_org_id: parse_uuid | None,
     org_member_ids: list,
     consented: bool,
@@ -262,10 +281,13 @@ async def keycloak_callback(
     state: Optional[str] = None,
     error: Optional[str] = None,
     error_description: Optional[str] = None,
+    kc_action_status: Optional[str] = None,
     user_authorizer: UserAuthorizer = depends_user_authorizer(),
 ):
-    # Extract redirect URL, reCAPTCHA token, and invitation token from state
-    redirect_url, recaptcha_token, invitation_token = _extract_oauth_state(state)
+    # Extract redirect URL, reCAPTCHA token, invitation token, and link provider
+    redirect_url, recaptcha_token, invitation_token, link_provider = (
+        _extract_oauth_state(state)
+    )
 
     if redirect_url is None:
         raise HTTPException(
@@ -291,14 +313,21 @@ async def keycloak_callback(
     (
         keycloak_access_token,
         keycloak_refresh_token,
-    ) = await token_manager.get_keycloak_tokens(code, redirect_uri)
+    ) = await _get_keycloak_tokens_or_unavailable(code, redirect_uri)
     if not keycloak_access_token or not keycloak_refresh_token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Problem retrieving Keycloak tokens',
         )
 
-    user_info = await token_manager.get_user_info(keycloak_access_token)
+    try:
+        user_info = await token_manager.get_user_info(keycloak_access_token)
+    except KeycloakConnectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Authentication service temporarily unavailable',
+            headers={'Retry-After': '1'},
+        ) from exc
     logger.debug(f'user_info: {user_info}')
     if ROLE_CHECK_ENABLED and user_info.roles is None:
         raise HTTPException(
@@ -349,6 +378,59 @@ async def keycloak_callback(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f'Failed to authenticate user {user_info.email}',
         )
+
+    # Return leg of a post-auth git provider link: the frontend sent Keycloak
+    # ``kc_action=idp_link:<provider>`` with ``link_provider`` in the state. The
+    # user is already signed in, so skip the login side effects (reCAPTCHA, email
+    # verification, analytics, invitations, TOS/onboarding, offline token) and
+    # only store the newly linked provider's broker tokens.
+    if link_provider:
+        provider = next((p for p in ProviderType if p.value == link_provider), None)
+        if provider is None or provider == ProviderType.ENTERPRISE_SSO:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f'Invalid link provider: {link_provider}',
+            )
+
+        link_status = kc_action_status or 'error'
+        if link_status == 'success':
+            try:
+                await token_manager.store_idp_tokens(
+                    provider, user_id, keycloak_access_token
+                )
+            except Exception:
+                logger.exception(
+                    'git_provider_link_store_failed',
+                    extra={'user_id': user_id, 'provider': provider.value},
+                    stack_info=True,
+                )
+                link_status = 'error'
+            else:
+                # Same post-login hook as below; no-op unless GitLab was linked
+                schedule_gitlab_repo_sync(user_id, SecretStr(keycloak_access_token))
+
+        logger.info(
+            'git_provider_link_completed',
+            extra={
+                'user_id': user_id,
+                'provider': provider.value,
+                'status': link_status,
+            },
+        )
+        if link_status != 'success':
+            separator = '&' if '?' in redirect_url else '?'
+            redirect_url = f'{redirect_url}{separator}link_status={quote(link_status)}'
+
+        response = RedirectResponse(redirect_url, status_code=302)
+        set_response_cookie(
+            request=request,
+            response=response,
+            keycloak_access_token=keycloak_access_token,
+            keycloak_refresh_token=keycloak_refresh_token,
+            secure=True if web_url.startswith('https') else False,
+            accepted_tos=user.accepted_tos is not None,
+        )
+        return response
 
     logger.info(f'Logging in user {str(user.id)} in org {user.current_org_id}')
 
@@ -450,25 +532,23 @@ async def keycloak_callback(
 
     await UserStore.record_login(user_id)
 
-    # default to github IDP for now.
-    # TODO: remove default once Keycloak is updated universally with the new attribute.
-    idp: str = user_info.identity_provider or ProviderType.GITHUB.value
+    idp: str | None = user_info.identity_provider
     logger.info(f'Full IDP is {idp}')
     idp_type = 'oidc'
-    if ':' in idp:
+    if idp and ':' in idp:
         idp, idp_type = idp.rsplit(':', 1)
         idp_type = idp_type.lower()
 
     # Only fetch/store IdP tokens for OAuth-based IdPs (not SAML)
     # SAML IdPs don't have OAuth tokens to retrieve from Keycloak's broker endpoint
-    if idp_type != 'saml':
+    if idp and idp_type != 'saml':
         await token_manager.store_idp_tokens(
             ProviderType(idp), user_id, keycloak_access_token
         )
 
     valid_offline_token = (
         await token_manager.validate_offline_token(user_id=user_info.sub)
-        if idp_type != 'saml'
+        if idp and idp_type != 'saml'
         else True
     )
 
@@ -681,14 +761,21 @@ async def keycloak_offline_callback(code: str, state: str, request: Request):
     (
         keycloak_access_token,
         keycloak_refresh_token,
-    ) = await token_manager.get_keycloak_tokens(code, redirect_uri)
+    ) = await _get_keycloak_tokens_or_unavailable(code, redirect_uri)
     if not keycloak_access_token or not keycloak_refresh_token:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={'error': 'Problem retrieving Keycloak tokens'},
         )
 
-    user_info = await token_manager.get_user_info(keycloak_access_token)
+    try:
+        user_info = await token_manager.get_user_info(keycloak_access_token)
+    except KeycloakConnectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Authentication service temporarily unavailable',
+            headers={'Retry-After': '1'},
+        ) from exc
     logger.debug(f'user_info: {user_info}')
     # sub is a required field in KeycloakUserInfo, validation happens in get_user_info
 
@@ -697,7 +784,7 @@ async def keycloak_offline_callback(code: str, state: str, request: Request):
     )
 
     user = await UserStore.get_user_by_id(user_info.sub)
-    redirect_url, _, _ = _extract_oauth_state(state)
+    redirect_url, _, _, _ = _extract_oauth_state(state)
     default_url = redirect_url if redirect_url else web_url
     final_url = await _get_post_auth_redirect(user_info.sub, default_url, web_url, user)
 
@@ -721,6 +808,11 @@ async def authenticate(request: Request):
         await get_access_token(request)
         return JSONResponse(
             status_code=status.HTTP_200_OK, content={'message': 'User authenticated'}
+        )
+    except TokenRefreshError as e:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={'error': str(e) or e.__class__.__name__},
         )
     except Exception:
         # For any error during authentication, clear the auth cookie and return 401

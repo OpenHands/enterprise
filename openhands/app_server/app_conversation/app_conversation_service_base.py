@@ -1,5 +1,8 @@
+import base64
+import binascii
 import logging
 import os
+import re
 import shlex
 import tempfile
 from abc import ABC
@@ -36,6 +39,7 @@ from openhands.app_server.utils.git import ensure_valid_git_branch_name
 from openhands.sdk import Agent, LLMSummarizingCondenser
 from openhands.sdk.context import AgentContext
 from openhands.sdk.llm import LLM
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.security import (
     AlwaysConfirm,
     ConfirmationPolicyBase,
@@ -51,6 +55,11 @@ _logger = logging.getLogger(__name__)
 
 PRE_COMMIT_HOOK = '.git/hooks/pre-commit'
 PRE_COMMIT_LOCAL = '.git/hooks/pre-commit.local'
+
+# Secret names that carry a user-configured GPG signing key (case-insensitive).
+# The secret value is the ASCII-armored private key (optionally base64-encoded)
+# and must be passphrase-less so signing works headlessly in the sandbox.
+_GPG_SECRET_NAMES = frozenset({'GPG_KEY', 'GPG_PRIVATE_KEY'})
 
 
 def get_project_dir(
@@ -339,6 +348,237 @@ class AppConversationServiceBase(AppConversationService, ABC):
         except Exception as e:
             _logger.warning(f'Failed to configure git user settings: {e}')
 
+    async def _configure_gpg_signing(
+        self,
+        workspace: AsyncRemoteWorkspace,
+    ) -> None:
+        """Configure GPG commit signing from a user-configured signing key.
+
+        If the user has registered a secret named ``GPG_KEY`` or
+        ``GPG_PRIVATE_KEY`` (case-insensitive), the armored private key is
+        imported into the sandbox keyring, signing is enabled, and the commit
+        author identity is pinned to the key's UID so that GitHub (and other
+        hosts) mark commits as "Verified".
+
+        Requirements on the key:
+            - It must be the **private** key (``-----BEGIN PGP PRIVATE KEY
+              BLOCK-----``), not just the public key -- only the private half
+              can sign.
+            - It must have **no passphrase** (empty protection). A passphrase
+              would require a TTY/pinentry that does not exist in the headless
+              sandbox. The standard automated-signing approach is a
+              passphrase-less key.
+            - The secret value may be raw ASCII-armored text **or**
+              base64-encoded; both are accepted.
+
+        How to create a suitable key (run on a trusted workstation)::
+
+            # 1. Generate a passphrase-less signing key.
+            cat > /tmp/keyparam <<'EOF'
+            %no-protection
+            Key-Type: RSA
+            Key-Length: 4096
+            Name-Real: Your Name
+            Name-Email: you@example.com
+            Expire-Date: 1y
+            %commit
+            EOF
+            gpg --batch --generate-key /tmp/keyparam
+
+            # 2. Export the PRIVATE key (NOT --export-secret-subkeys, which
+            #    omits the primary key). The export must NOT prompt.
+            KEY_ID=$(gpg --list-secret-keys --keyid-format=long \\
+                | awk '/^sec/{print $2}' | cut -d/ -f2 | head -1)
+            gpg --export-secret-keys --armor "$KEY_ID" > gpg-private.asc
+
+            # 3. (Optional) base64-encode for single-line storage.
+            base64 -w0 gpg-private.asc > gpg-private.b64
+
+            # 4. Register the value as a secret named GPG_KEY (or
+            #    GPG_PRIVATE_KEY) in the OpenHands Secrets panel.
+
+            # 5. Register the PUBLIC key on GitHub so commits show
+            #    "Verified": Settings -> SSH and GPG keys -> New GPG key,
+            #    paste `gpg --armor --export "$KEY_ID"`.
+
+        Args:
+            workspace: The remote workspace to configure GPG signing in.
+        """
+        try:
+            secrets = await self.user_context.get_secrets()
+            gpg_entry = self._find_gpg_secret(secrets)
+            if gpg_entry is None:
+                return  # No signing key configured -- signing stays off.
+
+            secret_name, secret_source = gpg_entry
+            key_material = secret_source.get_value()
+            if not key_material:
+                _logger.warning(
+                    f'GPG signing key secret {secret_name} is empty; '
+                    'commit signing disabled.'
+                )
+                return
+
+            # Accept base64-encoded or raw ASCII-armored key material.
+            armored = self._decode_key_material(key_material)
+            if armored is None:
+                _logger.warning(
+                    f'GPG signing key {secret_name} is not valid ASCII-armored '
+                    f'or base64-encoded key material; commit signing disabled.'
+                )
+                return
+
+            # Write the key to a temp file in the sandbox, import, then shred.
+            # A file (rather than a heredoc on the command line) keeps the key
+            # material out of the process list.
+            key_path = f'/tmp/.oh-gpg-import-{base62.encodebytes(os.urandom(16))}'
+            result = await workspace.execute_command(
+                f'printf %s {shlex.quote(armored)} > {shlex.quote(key_path)}',
+                workspace.working_dir,
+            )
+            if result.exit_code:
+                _logger.warning(f'Failed to write GPG key file: {result.stderr}')
+                return
+
+            try:
+                # Reload gpg-agent so a stale (possibly passphrase-protected)
+                # cached key cannot shadow the fresh import.
+                await workspace.execute_command(
+                    'gpgconf --kill gpg-agent 2>/dev/null || true',
+                    workspace.working_dir,
+                )
+                import_result = await workspace.execute_command(
+                    f'gpg --batch --import {shlex.quote(key_path)}',
+                    workspace.working_dir,
+                )
+            finally:
+                await workspace.execute_command(
+                    f'rm -f {shlex.quote(key_path)}',
+                    workspace.working_dir,
+                )
+
+            if import_result.exit_code:
+                _logger.warning(
+                    f'GPG key import failed (exit {import_result.exit_code}): '
+                    f'{import_result.stderr}'
+                )
+                return
+
+            # Parse the imported key for the key ID and the UID's email.
+            list_result = await workspace.execute_command(
+                'gpg --list-secret-keys --keyid-format=long --with-colons',
+                workspace.working_dir,
+            )
+            key_id, key_email, key_name = self._parse_gpg_key_info(list_result.stdout)
+            if not key_id:
+                _logger.warning(
+                    'GPG key imported but no usable secret key found. '
+                    'Ensure the secret contains the PRIVATE key (not just the '
+                    'public key) and is passphrase-less.'
+                )
+                return
+
+            # Enable signing and pin the key.
+            await self._run_git_config(workspace, 'commit.gpgsign', 'true')
+            await self._run_git_config(workspace, 'user.signingkey', key_id)
+
+            # Pin the commit author to the key's UID. GitHub marks a commit
+            # "Verified" only when the author email matches the key's UID, so
+            # the key's identity overrides any pre-set git user settings.
+            if key_email:
+                await self._run_git_config(workspace, 'user.email', key_email)
+            if key_name:
+                await self._run_git_config(workspace, 'user.name', key_name)
+
+            _logger.info(
+                f'GPG commit signing enabled with key {key_id} '
+                f'(uid={key_name} <{key_email}>)'
+            )
+        except Exception as e:
+            _logger.warning(f'Failed to configure GPG signing: {e}')
+
+    def _find_gpg_secret(
+        self, secrets: dict[str, SecretSource]
+    ) -> tuple[str, SecretSource] | None:
+        """Return the (name, source) of the configured GPG secret, if any."""
+        for name, source in secrets.items():
+            if name and name.upper() in _GPG_SECRET_NAMES:
+                return name, source
+        return None
+
+    @staticmethod
+    def _decode_key_material(value: str) -> str | None:
+        """Return ASCII-armored key text, accepting raw or base64 input.
+
+        Returns ``None`` if the value is neither valid ASCII-armored PGP key
+        material nor decodable base64 that yields such material.
+        """
+        if 'BEGIN PGP PRIVATE KEY BLOCK' in value:
+            return value
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+        decoded_str = decoded.decode('utf-8', errors='replace')
+        if 'BEGIN PGP PRIVATE KEY BLOCK' in decoded_str:
+            return decoded_str
+        return None
+
+    @staticmethod
+    def _parse_gpg_key_info(
+        colons_output: str,
+    ) -> tuple[str | None, str | None, str | None]:
+        """Extract (key_id, email, name) from ``gpg --with-colons`` output.
+
+        Looks for the first ``sec:`` line (the primary secret key) for the key
+        ID, and the first ``uid:`` line for the user ID string. Returns
+        ``(None, None, None)`` if no secret key is listed.
+        """
+        key_id: str | None = None
+        email: str | None = None
+        name: str | None = None
+        for line in colons_output.splitlines():
+            fields = line.split(':')
+            if fields[0] == 'sec' and not key_id:
+                # Field 5 is the key ID in --keyid-format=long.
+                if len(fields) > 4 and fields[4]:
+                    key_id = fields[4]
+            elif fields[0] == 'uid' and not email:
+                # The user ID string (e.g. "Name <email>") lives in field 10
+                # of the colon format, but some variants place it elsewhere;
+                # scan for the field containing the angle-bracketed address.
+                uid_str = ''
+                for f in fields[1:]:
+                    if '<' in f and '>' in f:
+                        uid_str = f
+                        break
+                if not uid_str:
+                    # Fall back to the last non-empty field.
+                    for f in reversed(fields[1:]):
+                        if f:
+                            uid_str = f
+                            break
+                if uid_str:
+                    match = re.search(r'<([^>]+)>', uid_str)
+                    if match:
+                        email = match.group(1)
+                    name = uid_str.split(' <')[0].strip() or None
+            if key_id and email:
+                break
+        return key_id, email, name
+
+    async def _run_git_config(
+        self,
+        workspace: AsyncRemoteWorkspace,
+        key: str,
+        value: str,
+    ) -> None:
+        """Set a global git config value, logging on failure."""
+        cmd = f'git config --global {shlex.quote(key)} {shlex.quote(value)}'
+        result = await workspace.execute_command(cmd, workspace.working_dir)
+        if result.exit_code:
+            _logger.warning(f'Git config {key} failed: {result.stderr}')
+
     async def clone_or_init_git_repo(
         self,
         task: AppConversationStartTask,
@@ -357,6 +597,11 @@ class AppConversationServiceBase(AppConversationService, ABC):
 
         # Configure git user settings from user preferences
         await self._configure_git_user_settings(workspace)
+
+        # Configure GPG commit signing if the user registered a GPG key secret.
+        # Runs after _configure_git_user_settings so the key's UID can override
+        # the commit author identity for host-side verification.
+        await self._configure_gpg_signing(workspace)
 
         if not request.selected_repository:
             if self.init_git_in_empty_workspace:

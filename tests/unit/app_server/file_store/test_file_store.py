@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import tempfile
 import threading
 from abc import ABC
 from dataclasses import dataclass, field
-from io import BytesIO, StringIO
+from io import StringIO
 from unittest import TestCase
 from unittest.mock import patch
 
-import botocore.exceptions
 from google.api_core.exceptions import NotFound
+from moto import mock_aws
 
 from openhands.app_server.file_store.files import FileStore
 from openhands.app_server.file_store.google_cloud import GoogleCloudFileStore
@@ -83,80 +84,6 @@ class _MockGoogleCloudBlobWriter:
         blob = self.blob
         blob.content = self.content
         blob.bucket.blobs_by_path[blob.name] = blob
-
-
-class _MockS3Client:
-    def __init__(self):
-        self.objects_by_bucket: dict[str, dict[str, '_MockS3Object']] = {}
-
-    def put_object(self, Bucket: str, Key: str, Body: str | bytes) -> None:
-        if Bucket not in self.objects_by_bucket:
-            self.objects_by_bucket[Bucket] = {}
-        self.objects_by_bucket[Bucket][Key] = _MockS3Object(Key, Body)
-
-    def get_object(self, Bucket: str, Key: str) -> dict:
-        if Bucket not in self.objects_by_bucket:
-            raise botocore.exceptions.ClientError(
-                {
-                    'Error': {
-                        'Code': 'NoSuchBucket',
-                        'Message': f"The bucket '{Bucket}' does not exist",
-                    }
-                },
-                'GetObject',
-            )
-        if Key not in self.objects_by_bucket[Bucket]:
-            raise botocore.exceptions.ClientError(
-                {
-                    'Error': {
-                        'Code': 'NoSuchKey',
-                        'Message': f"The specified key '{Key}' does not exist",
-                    }
-                },
-                'GetObject',
-            )
-        content = self.objects_by_bucket[Bucket][Key].content
-        if isinstance(content, bytes):
-            return {'Body': BytesIO(content)}
-        return {'Body': StringIO(content)}
-
-    def list_objects_v2(self, Bucket: str, Prefix: str = '') -> dict:
-        if Bucket not in self.objects_by_bucket:
-            raise botocore.exceptions.ClientError(
-                {
-                    'Error': {
-                        'Code': 'NoSuchBucket',
-                        'Message': f"The bucket '{Bucket}' does not exist",
-                    }
-                },
-                'ListObjectsV2',
-            )
-        objects = self.objects_by_bucket[Bucket]
-        contents = [
-            {'Key': key}
-            for key in objects.keys()
-            if not Prefix or key.startswith(Prefix)
-        ]
-        return {'Contents': contents} if contents else {}
-
-    def delete_object(self, Bucket: str, Key: str) -> None:
-        if Bucket not in self.objects_by_bucket:
-            raise botocore.exceptions.ClientError(
-                {
-                    'Error': {
-                        'Code': 'NoSuchBucket',
-                        'Message': f"The bucket '{Bucket}' does not exist",
-                    }
-                },
-                'DeleteObject',
-            )
-        self.objects_by_bucket[Bucket].pop(Key, None)
-
-
-@dataclass
-class _MockS3Object:
-    key: str
-    content: str | bytes
 
 
 # =============================================================================
@@ -333,7 +260,47 @@ class TestGoogleCloudFileStore(TestCase, _StorageTest):
         self.store = GoogleCloudFileStore(bucket_name='dear-liza')
 
 
-@patch('boto3.client', lambda service, **kwargs: _MockS3Client())
 class TestS3FileStore(TestCase, _StorageTest):
+    """S3 file store tests backed by moto (mock AWS).
+
+    moto intercepts boto3 calls at the wire-protocol level, so the
+    S3FileStore exercises the real boto3 client — including paginators
+    — without hitting AWS.
+    """
+
+    bucket_name = 'dear-liza'
+
     def setUp(self):
-        self.store = S3FileStore(bucket_name='dear-liza')
+        os.environ['AWS_ACCESS_KEY_ID'] = 'testing'
+        os.environ['AWS_SECRET_ACCESS_KEY'] = 'testing'
+        os.environ['AWS_S3_SECURE'] = 'false'
+        self._moto = mock_aws()
+        self._moto.start()
+        self.store = S3FileStore(bucket_name=self.bucket_name)
+        # Force lazy client creation inside the moto context so the
+        # paginator and list_objects_v2 calls are intercepted.
+        self.store.client.create_bucket(Bucket=self.bucket_name)
+
+    def tearDown(self):
+        self._moto.stop()
+        os.environ.pop('AWS_ACCESS_KEY_ID', None)
+        os.environ.pop('AWS_SECRET_ACCESS_KEY', None)
+        os.environ.pop('AWS_S3_SECURE', None)
+
+    def test_list_paginates_beyond_1000_keys(self):
+        """Verify list() returns all keys when a prefix exceeds the
+        1,000-key S3 page limit (OHE-3079)."""
+        store = self.get_store()
+        for i in range(1100):
+            store.write(f'events/{i:04d}.txt', 'x')
+        keys = store.list('events')
+        self.assertEqual(len(keys), 1100)
+
+    def test_delete_removes_all_children_beyond_1000_keys(self):
+        """Verify delete() removes every child object when a prefix
+        exceeds the 1,000-key S3 page limit (OHE-3079)."""
+        store = self.get_store()
+        for i in range(1100):
+            store.write(f'foo/bar/{i:04d}.txt', 'x')
+        store.delete('foo/bar')
+        self.assertEqual(store.list('foo/bar'), [])

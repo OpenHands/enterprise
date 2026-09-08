@@ -49,7 +49,6 @@ class JiraV1CallbackProcessor(EventCallbackProcessor):
         event: Event,
     ) -> EventCallbackResult | None:
         """Process events for Jira V1 integration."""
-        # Only handle ConversationStateUpdateEvent for execution_status
         if not isinstance(event, ConversationStateUpdateEvent):
             return None
 
@@ -58,7 +57,6 @@ class JiraV1CallbackProcessor(EventCallbackProcessor):
 
         _logger.info('[Jira] Callback agent state was %s', event)
 
-        # Only request summary when execution has finished successfully
         if event.value != 'finished':
             return None
 
@@ -109,7 +107,6 @@ class JiraV1CallbackProcessor(EventCallbackProcessor):
             USER_CONTEXT_ATTR,
         )
 
-        # Create injector state for dependency injection
         state = InjectorState()
         setattr(state, USER_CONTEXT_ATTR, ADMIN)
 
@@ -228,7 +225,6 @@ class JiraV1CallbackProcessor(EventCallbackProcessor):
             _logger.warning('[Jira] Missing required data for posting summary')
             return
 
-        # Add a comment to the Jira issue with the summary
         comment_url = (
             f'{JIRA_CLOUD_API_URL}/{self.jira_cloud_id}'
             f'/rest/api/2/issue/{self.issue_key}/comment'

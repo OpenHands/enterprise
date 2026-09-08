@@ -40,6 +40,11 @@ class WebClientFeatureFlags(BaseModel):
     deployment_mode: DeploymentMode | None = None
     enable_onboarding: bool = False
     enable_automations: bool = True
+    enable_agent_canvas_banner: bool = False
+    # When true, LLM API key export (BYOR) is enabled for every org regardless of
+    # billing/credits. Mirrors the ENABLE_BYOR_EXPORT env var so the frontend can
+    # distinguish "export disabled on this deployment" from "buy credits to enable".
+    enable_byor_export: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')
@@ -68,6 +73,12 @@ class WebClientConfig(DiscriminatedUnionMixin):
     app_mode: AppMode
     posthog_client_key: str | None
     feature_flags: WebClientFeatureFlags
+    # Database-backed feature flags that are safe to expose to anonymous
+    # callers: only flags with NO targeting rules (global on/off) ever land
+    # here. Per-user/per-org/per-email flags require an authenticated context
+    # and are fetched via a separate path. Defaults to empty so OSS and
+    # pre-migration installs are unaffected.
+    db_feature_flags: dict[str, bool] = Field(default_factory=dict)
     providers_configured: list[ProviderType]
     maintenance_start_time: datetime | None
     auth_url: str | None
@@ -80,6 +91,7 @@ class WebClientConfig(DiscriminatedUnionMixin):
     provider_default_hosts: dict[str, str] = Field(default_factory=dict)
     slack_enabled: bool = False
     email_enabled: bool = False
+    email_change_enabled: bool = True
     acp_providers: list[ACPProviderConfig] = Field(default_factory=list)
     # Hostname of the Jira Data Center server when DC OAuth is configured, so the
     # configure form can pre-fill and lock the host field (the OAuth callback only
@@ -91,3 +103,7 @@ class WebClientConfig(DiscriminatedUnionMixin):
     jira_dc_service_account_managed: bool = False
     jira_dc_service_account_email: str | None = None
     jira_dc_service_account_config_error: str | None = None
+    # False when the install links Jira Cloud users by email match instead of
+    # Atlassian OAuth; drives direct-save + manual-webhook UI in the configure
+    # flow instead of the OAuth redirect.
+    jira_oauth_enabled: bool = True

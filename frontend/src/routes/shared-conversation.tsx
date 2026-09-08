@@ -31,7 +31,10 @@ export default function SharedConversation() {
   } = useSharedConversationEvents(conversationId);
 
   const isLoading = isLoadingConversation || isLoadingEvents;
-  const error = conversationError || eventsError;
+  // An initial events failure leaves no data at all; a later page failure
+  // keeps the already-fetched pages, which must stay on screen.
+  const initialEventsFailed = !!eventsError && !eventsData;
+  const nextPagesFailed = !!eventsError && !!eventsData;
 
   // Flatten all pages of events into a single array
   const v1Events = React.useMemo(() => {
@@ -53,9 +56,10 @@ export default function SharedConversation() {
 
   // Set up infinite scroll to load more events when user scrolls to bottom
   const scrollContainerRef = useInfiniteScroll({
-    hasNextPage: !!hasNextPage,
+    hasNextPage: !!hasNextPage && !eventsError,
     isFetchingNextPage,
     fetchNextPage,
+    itemCount: v1Events.length,
   });
 
   if (isLoading) {
@@ -66,7 +70,7 @@ export default function SharedConversation() {
     );
   }
 
-  if (error || !conversation) {
+  if (conversationError || initialEventsFailed || !conversation) {
     return (
       <div className="flex items-center justify-center h-screen bg-neutral-900">
         <div className="text-white">{t(I18nKey.CONVERSATION$NOT_FOUND)}</div>
@@ -129,6 +133,18 @@ export default function SharedConversation() {
           {isFetchingNextPage && (
             <div className="flex justify-center py-4">
               <LoadingSpinner size="small" />
+            </div>
+          )}
+          {nextPagesFailed && (
+            <div className="flex items-center justify-center gap-3 py-4 text-sm text-neutral-400">
+              <span>{t(I18nKey.CONVERSATION$HISTORY_LOAD_INCOMPLETE)}</span>
+              <button
+                type="button"
+                className="underline"
+                onClick={() => fetchNextPage()}
+              >
+                {t(I18nKey.CONVERSATION$RETRY)}
+              </button>
             </div>
           )}
         </div>

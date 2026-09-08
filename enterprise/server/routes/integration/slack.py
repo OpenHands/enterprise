@@ -15,6 +15,7 @@ from integrations.slack.slack_manager import SlackManager
 from integrations.utils import (
     HOST_URL,
 )
+from keycloak.exceptions import KeycloakConnectionError
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_REALM_NAME,
@@ -176,10 +177,18 @@ async def keycloak_callback(
 
     # Retrieve the keycloak_user_id
     redirect_uri = f'{HOST_URL}{request.url.path}'
-    (
-        keycloak_access_token,
-        keycloak_refresh_token,
-    ) = await token_manager.get_keycloak_tokens(code, redirect_uri)
+    try:
+        (
+            keycloak_access_token,
+            keycloak_refresh_token,
+        ) = await token_manager.get_keycloak_tokens(code, redirect_uri)
+    except KeycloakConnectionError:
+        logger.warning('keycloak_unavailable_during_slack_auth', exc_info=True)
+        return _html_response(
+            title='Authentication service temporarily unavailable.',
+            description='Please try installing the OpenHands Slack App again.',
+            status_code=503,
+        )
     if not keycloak_access_token or not keycloak_refresh_token:
         logger.warning(
             'problem_retrieving_keycloak_tokens',

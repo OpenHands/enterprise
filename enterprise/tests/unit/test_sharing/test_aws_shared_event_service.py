@@ -388,12 +388,12 @@ class TestAwsSharedEventServiceInjector:
         mock_db_context.__aenter__.return_value = mock_db_session
         mock_db_context.__aexit__.return_value = None
 
-        # Mock boto3.client
+        # Mock the shared S3 client factory
         mock_s3_client = MagicMock()
 
         with (
             patch(
-                'server.sharing.aws_shared_event_service.boto3.client',
+                'server.sharing.aws_shared_event_service._get_shared_s3_client',
                 return_value=mock_s3_client,
             ),
             patch(
@@ -423,12 +423,12 @@ class TestAwsSharedEventServiceInjector:
         mock_db_context.__aenter__.return_value = mock_db_session
         mock_db_context.__aexit__.return_value = None
 
-        # Mock boto3.client
+        # Mock the shared S3 client factory
         mock_s3_client = MagicMock()
 
         with (
             patch(
-                'server.sharing.aws_shared_event_service.boto3.client',
+                'server.sharing.aws_shared_event_service._get_shared_s3_client',
                 return_value=mock_s3_client,
             ),
             patch(
@@ -455,12 +455,12 @@ class TestAwsSharedEventServiceInjector:
         mock_db_context.__aenter__.return_value = mock_db_session
         mock_db_context.__aexit__.return_value = None
 
-        # Mock boto3.client
+        # Mock the shared S3 client factory
         mock_s3_client = MagicMock()
 
         with (
             patch(
-                'server.sharing.aws_shared_event_service.boto3.client',
+                'server.sharing.aws_shared_event_service._get_shared_s3_client',
                 return_value=mock_s3_client,
             ),
             patch(
@@ -496,12 +496,12 @@ class TestAwsSharedEventServiceInjector:
         mock_db_context.__aenter__.return_value = mock_db_session
         mock_db_context.__aexit__.return_value = None
 
-        # Mock boto3.client
+        # Mock the shared S3 client factory
         mock_s3_client = MagicMock()
 
         with (
             patch(
-                'server.sharing.aws_shared_event_service.boto3.client',
+                'server.sharing.aws_shared_event_service._get_shared_s3_client',
                 return_value=mock_s3_client,
             ),
             patch(
@@ -528,14 +528,14 @@ class TestAwsSharedEventServiceInjector:
         mock_db_context.__aenter__.return_value = mock_db_session
         mock_db_context.__aexit__.return_value = None
 
-        # Mock boto3.client
+        # Mock the shared S3 client factory
         mock_s3_client = MagicMock()
 
         with (
             patch(
-                'server.sharing.aws_shared_event_service.boto3.client',
+                'server.sharing.aws_shared_event_service._get_shared_s3_client',
                 return_value=mock_s3_client,
-            ) as mock_boto3_client,
+            ) as mock_get_shared_s3_client,
             patch(
                 'openhands.app_server.config.get_db_session',
                 return_value=mock_db_context,
@@ -546,9 +546,8 @@ class TestAwsSharedEventServiceInjector:
             async for service in injector.inject(mock_state, mock_request):
                 pass
 
-            # Verify boto3.client was called with 's3' and endpoint_url
+            # Verify the shared client factory was called with the endpoint_url
             # but without explicit credentials (role-based auth)
-            mock_boto3_client.assert_called_once_with(
-                's3',
-                endpoint_url='https://s3.example.com',
+            mock_get_shared_s3_client.assert_called_once_with(
+                'https://s3.example.com',
             )

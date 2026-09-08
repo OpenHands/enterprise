@@ -134,7 +134,6 @@ class OrgConversationService:
                     f'{agent_server_url}/api/conversations/{metadata.conversation_id}'
                 )
 
-        # Build metrics
         token_usage = TokenUsage(
             prompt_tokens=metadata.prompt_tokens or 0,
             completion_tokens=metadata.completion_tokens or 0,
@@ -408,7 +407,6 @@ class OrgConversationService:
 
         pr_merge_map = await self._load_pr_merge_map(pr_keys)
 
-        # Build response items
         items: list[OrgConversationResponse] = []
         for metadata, saas_metadata, user in rows:
             sandbox_info = sandbox_info_map.get(metadata.sandbox_id)
@@ -530,7 +528,6 @@ class OrgConversationService:
         running_runtimes = 0
         if self.sandbox_service:
             try:
-                # Get distinct sandbox IDs from active conversations
                 sandbox_ids_query = (
                     select(StoredConversationMetadata.sandbox_id)
                     .select_from(StoredConversationMetadata)
@@ -1076,7 +1073,6 @@ class OrgConversationService:
         count_map = {str(row[0])[:10]: int(row[1] or 0) for row in result.all()}
         daily_tokens = await self._get_daily_token_usage(base_filter, cutoff)
 
-        # Generate entries for all days in range (including days with no data)
         daily_usage = []
         for i in range(days - 1, -1, -1):
             day_start = (now - timedelta(days=i)).replace(
@@ -1396,7 +1392,6 @@ class OrgConversationService:
                 )
         pr_merge_map = await self._load_pr_merge_map(pr_keys)
 
-        # Get sandbox info if available
         sandbox_info = None
         if metadata.sandbox_id and self.sandbox_service:
             try:
@@ -1433,7 +1428,7 @@ class OrgConversationService:
         Returns:
             Dict with success status and message
         """
-        # First, verify the conversation exists and belongs to the org
+        # Verify the conversation belongs to the org
         query = (
             select(StoredConversationMetadata)
             .join(
@@ -1452,7 +1447,6 @@ class OrgConversationService:
         if metadata is None:
             return None
 
-        # Check if there's a sandbox to stop
         if not metadata.sandbox_id:
             return {
                 'success': True,
@@ -1460,7 +1454,6 @@ class OrgConversationService:
                 'conversation_id': conversation_id,
             }
 
-        # Try to stop via sandbox service
         if self.sandbox_service:
             try:
                 sandbox_info = await self.sandbox_service.get_sandbox(
@@ -1485,12 +1478,11 @@ class OrgConversationService:
                         'sandbox_id': metadata.sandbox_id,
                     }
 
-                # Update execution status to indicate stopping
+                # Mark the conversation as deleting before terminating the sandbox
                 previous_status = metadata.execution_status
                 metadata.execution_status = 'deleting'
                 await self.db_session.commit()
 
-                # Actually terminate the sandbox
                 try:
                     deleted = await self.sandbox_service.delete_sandbox(
                         metadata.sandbox_id

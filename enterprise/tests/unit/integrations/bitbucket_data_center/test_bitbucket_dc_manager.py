@@ -1,5 +1,6 @@
 """Tests for BitbucketDCManager.receive_message and send_message dispatch."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -531,3 +532,18 @@ def test_posting_service_raises_when_bot_token_unset():
     ):
         with pytest.raises(RuntimeError):
             manager._posting_service()
+
+
+def test_jinja_env_renders_bitbucket_data_center_templates(monkeypatch):
+    """The manager's prompts must come from the DC-specific templates.
+
+    ``OPENHANDS_RESOLVER_TEMPLATES_DIR`` is cwd-relative, so resolve from the
+    repo root the way the app server does in production.
+    """
+    monkeypatch.chdir(Path(__file__).resolve().parents[5])
+    manager = BitbucketDCManager(AsyncMock())
+
+    rendered = manager.jinja_env.get_template('pr_update_initial_message.j2').render()
+
+    assert 'Bitbucket Data Center' in rendered
+    assert '$BITBUCKET_DATA_CENTER_TOKEN' in rendered

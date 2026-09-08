@@ -5,12 +5,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import jwt
 import pytest
 from fastapi import Request
+from keycloak.exceptions import KeycloakConnectionError
 from pydantic import SecretStr
 from server.auth.auth_error import (
     AuthError,
     BearerTokenError,
     CookieError,
     NoCredentialsError,
+    TokenRefreshError,
 )
 from server.auth.saas_user_auth import (
     SaasUserAuth,
@@ -216,6 +218,34 @@ async def test_get_access_token_with_no_token(mock_token_manager):
 
 
 @pytest.mark.asyncio
+async def test_get_access_token_classifies_keycloak_connection_failure(
+    mock_token_manager,
+):
+    refresh_token = jwt.encode(
+        {
+            'sub': 'test_user_id',
+            'exp': int(time.time()) + 3600,
+        },
+        'secret',
+        algorithm='HS256',
+    )
+    user_auth = SaasUserAuth(
+        user_id='test_user_id',
+        refresh_token=SecretStr(refresh_token),
+    )
+    mock_token_manager.refresh = AsyncMock(
+        side_effect=KeycloakConnectionError('DNS failure')
+    )
+
+    with pytest.raises(
+        TokenRefreshError, match='Authentication service temporarily unavailable'
+    ):
+        await user_auth.get_access_token()
+
+    assert mock_token_manager.refresh.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_get_provider_tokens(mock_token_manager):
     """Test that get_provider_tokens fetches provider tokens."""
     """
@@ -352,6 +382,44 @@ class TestGetProviderTokensBitbucketDCHost:
         assert ProviderType.BITBUCKET_DATA_CENTER in result
         assert result[ProviderType.BITBUCKET_DATA_CENTER].host is None
         mock_session.execute.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_provider_tokens_skips_enterprise_sso_rows():
+    """enterprise_sso auth_tokens rows are a login IdP, not a git provider."""
+    sso_token = MagicMock()
+    sso_token.identity_provider = 'enterprise_sso'
+    sso_token.id = 'token-id-sso'
+    github_token = MagicMock()
+    github_token.identity_provider = 'github'
+    github_token.id = 'token-id-github'
+
+    with (
+        patch('server.auth.saas_user_auth.token_manager') as mock_tm,
+        patch('server.auth.saas_user_auth.a_session_maker') as mock_session_maker,
+    ):
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [sso_token, github_token]
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session_maker.return_value = mock_session
+        mock_tm.get_idp_token_by_user_id = AsyncMock(return_value='github_access_token')
+
+        user_auth = SaasUserAuth(
+            user_id='test_user_id',
+            refresh_token=SecretStr('refresh_token'),
+        )
+        user_auth.get_secrets = AsyncMock(return_value=None)
+
+        result = await user_auth.get_provider_tokens()
+
+    assert ProviderType.ENTERPRISE_SSO not in result
+    assert result[ProviderType.GITHUB].token.get_secret_value() == 'github_access_token'
+    mock_tm.get_idp_token_by_user_id.assert_awaited_once_with(
+        'test_user_id', idp=ProviderType.GITHUB
+    )
 
 
 @pytest.mark.asyncio
@@ -570,6 +638,26 @@ async def test_get_instance_from_bearer(mock_request):
 
 
 @pytest.mark.asyncio
+async def test_get_instance_without_rate_limiter(mock_request):
+    """Authentication succeeds without hitting a disabled rate limiter."""
+    mock_request.state.user_rate_limit_processed = False
+    mock_auth = MagicMock()
+    mock_auth.get_user_id = AsyncMock(return_value='test_user_id')
+
+    with (
+        patch(
+            'server.auth.saas_user_auth.saas_user_auth_from_bearer',
+            return_value=mock_auth,
+        ),
+        patch('server.auth.saas_user_auth.rate_limiter', None),
+    ):
+        result = await SaasUserAuth.get_instance(mock_request)
+
+    assert result == mock_auth
+    mock_auth.get_user_id.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_get_instance_from_cookie(mock_request):
     """Test that get_instance returns auth from cookie if bearer fails."""
     with (
@@ -658,6 +746,53 @@ async def test_saas_user_auth_from_bearer_success():
         # Decoupled from Keycloak: no offline-session load, no refresh.
         mock_token_manager.load_offline_token.assert_not_called()
         mock_token_manager.refresh.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_saas_user_auth_from_bearer_rejects_disabled_user():
+    """A valid API key cannot authenticate a locally disabled user."""
+    user_id = str(uuid.uuid4())
+    request = MagicMock()
+    request.headers = {'Authorization': 'Bearer disabled_key'}
+    validation = ApiKeyValidationResult(
+        user_id=user_id, org_id=uuid.uuid4(), key_id=7, key_name='key'
+    )
+    disabled_user = MagicMock(is_disabled=True)
+
+    with (
+        patch('server.auth.saas_user_auth.ApiKeyStore') as store_cls,
+        patch(
+            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            AsyncMock(return_value=disabled_user),
+        ),
+    ):
+        store = MagicMock()
+        store.validate_api_key = AsyncMock(return_value=validation)
+        store_cls.get_instance.return_value = store
+        assert await saas_user_auth_from_bearer(request) is None
+
+
+@pytest.mark.asyncio
+async def test_saas_user_auth_from_bearer_rejects_deleted_user():
+    """A valid API key whose user has been deleted must not authenticate."""
+    user_id = str(uuid.uuid4())
+    request = MagicMock()
+    request.headers = {'Authorization': 'Bearer deleted_key'}
+    validation = ApiKeyValidationResult(
+        user_id=user_id, org_id=uuid.uuid4(), key_id=8, key_name='key'
+    )
+
+    with (
+        patch('server.auth.saas_user_auth.ApiKeyStore') as store_cls,
+        patch(
+            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            AsyncMock(return_value=None),
+        ),
+    ):
+        store = MagicMock()
+        store.validate_api_key = AsyncMock(return_value=validation)
+        store_cls.get_instance.return_value = store
+        assert await saas_user_auth_from_bearer(request) is None
 
 
 @pytest.mark.asyncio
@@ -1108,6 +1243,55 @@ async def test_saas_user_auth_from_bearer_via_api_key_cookie_invalid():
         mock_api_key_store.validate_api_key.assert_called_once_with(
             'invalid_cookie_key'
         )
+
+
+@pytest.mark.asyncio
+async def test_saas_user_auth_from_signed_token_rejects_disabled_user(mock_config):
+    user_id = str(uuid.uuid4())
+    access_payload = {
+        'sub': user_id,
+        'exp': int(time.time()) + 3600,
+        'email': 'user@example.com',
+        'email_verified': True,
+    }
+    access_token = jwt.encode(access_payload, 'access_secret', algorithm='HS256')
+    signed_token = jwt.encode(
+        {'access_token': access_token, 'refresh_token': 'test_refresh_token'},
+        'test_secret',
+        algorithm='HS256',
+    )
+
+    with patch(
+        'server.auth.saas_user_auth.UserStore.get_user_by_id',
+        AsyncMock(return_value=MagicMock(is_disabled=True)),
+    ):
+        with pytest.raises(AuthError, match='user account is disabled'):
+            await saas_user_auth_from_signed_token(signed_token)
+
+
+@pytest.mark.asyncio
+async def test_saas_user_auth_from_signed_token_rejects_deleted_user(mock_config):
+    """A signed token whose user has been deleted must not authenticate."""
+    user_id = str(uuid.uuid4())
+    access_payload = {
+        'sub': user_id,
+        'exp': int(time.time()) + 3600,
+        'email': 'user@example.com',
+        'email_verified': True,
+    }
+    access_token = jwt.encode(access_payload, 'access_secret', algorithm='HS256')
+    signed_token = jwt.encode(
+        {'access_token': access_token, 'refresh_token': 'test_refresh_token'},
+        'test_secret',
+        algorithm='HS256',
+    )
+
+    with patch(
+        'server.auth.saas_user_auth.UserStore.get_user_by_id',
+        AsyncMock(return_value=None),
+    ):
+        with pytest.raises(AuthError, match='user account not found'):
+            await saas_user_auth_from_signed_token(signed_token)
 
 
 @pytest.mark.asyncio

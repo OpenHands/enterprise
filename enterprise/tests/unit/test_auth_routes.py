@@ -5,8 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import BackgroundTasks, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
+from keycloak.exceptions import KeycloakConnectionError
 from pydantic import SecretStr
-from server.auth.auth_error import AuthError
+from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.user.user_authorizer import UserAuthorizationResponse, UserAuthorizer
 from server.routes.auth import (
@@ -136,9 +137,29 @@ async def test_keycloak_callback_token_retrieval_failure(
         get_keycloak_tokens_mock.assert_called_once()
 
 
-# Note: test_keycloak_callback_missing_user_info was removed as part of the
-# user authorization refactor. The "Missing user ID or username" check has been
-# removed from keycloak_callback - authorization is now handled by UserAuthorizer.
+@pytest.mark.asyncio
+async def test_keycloak_callback_connection_failure_is_retryable(
+    mock_request, mock_background_tasks
+):
+    get_keycloak_tokens_mock = AsyncMock(
+        side_effect=KeycloakConnectionError('DNS failure')
+    )
+    with patch(
+        'server.routes.auth.token_manager.get_keycloak_tokens',
+        get_keycloak_tokens_mock,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await keycloak_callback(
+                code='test_code',
+                state='test_state',
+                request=mock_request,
+                background_tasks=mock_background_tasks,
+                user_authorizer=create_mock_user_authorizer(),
+            )
+
+    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert exc_info.value.headers == {'Retry-After': '1'}
+    assert 'temporarily unavailable' in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -304,6 +325,108 @@ async def test_keycloak_callback_success_with_valid_offline_token(
         assert track_kwargs['ctx'].org_id == 'test_org_id'
         assert track_kwargs['ctx'].consented is True
         assert track_kwargs['idp'] == 'github'
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_direct_login_no_idp_skips_token_storage(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """Direct username/password logins have identity_provider=None.
+
+    Token storage and offline-token validation must be skipped, and the
+    redirect should proceed normally.
+    """
+    mock_analytics = MagicMock()
+    mock_org = MagicMock()
+    mock_org.id = 'test_org_id'
+    mock_org.name = 'Test Org'
+
+    with (
+        patch('server.routes.auth.token_manager') as mock_token_manager,
+        patch('server.routes.auth.set_response_cookie') as mock_set_cookie,
+        patch('server.routes.auth.UserStore') as mock_user_store,
+        patch('server.routes.auth.get_analytics_service', return_value=mock_analytics),
+        patch(
+            'storage.org_store.OrgStore.get_org_by_id',
+            new_callable=AsyncMock,
+            return_value=mock_org,
+        ),
+        patch(
+            'storage.org_store.OrgStore.get_orgs_by_ids',
+            new_callable=AsyncMock,
+            return_value=[mock_org],
+        ),
+        patch(
+            'storage.org_member_store.OrgMemberStore.get_org_members_count',
+            new_callable=AsyncMock,
+            return_value=1,
+        ),
+        patch(
+            'server.routes.auth._should_redirect_to_onboarding',
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+    ):
+        mock_user = MagicMock()
+        mock_user.id = 'test_user_id'
+        mock_user.current_org_id = 'test_org_id'
+        mock_user.accepted_tos = '2025-01-01'
+        mock_user.user_consents_to_analytics = True
+        mock_user.org_members = []
+
+        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+        mock_user_store.create_user = AsyncMock(return_value=mock_user)
+        mock_user_store.migrate_user = AsyncMock(return_value=mock_user)
+        mock_user_store.backfill_contact_name = AsyncMock()
+        mock_user_store.backfill_user_email = AsyncMock()
+        mock_user_store.record_login = AsyncMock()
+
+        mock_token_manager.get_keycloak_tokens = AsyncMock(
+            return_value=('test_access_token', 'test_refresh_token')
+        )
+        # Direct login: no identity_provider
+        mock_token_manager.get_user_info = AsyncMock(
+            return_value=create_keycloak_user_info(
+                sub='test_user_id',
+                preferred_username='test_user',
+                identity_provider=None,
+                email_verified=True,
+            )
+        )
+        mock_token_manager.store_idp_tokens = AsyncMock()
+        mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
+
+        result = await keycloak_callback(
+            code='test_code',
+            state='test_state',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=create_mock_user_authorizer(),
+        )
+
+        assert isinstance(result, RedirectResponse)
+        assert result.status_code == 302
+        assert result.headers['location'] == 'test_state'
+
+        # IdP token storage and offline-token validation must NOT run for direct logins
+        mock_token_manager.store_idp_tokens.assert_not_called()
+        mock_token_manager.validate_offline_token.assert_not_called()
+
+        mock_set_cookie.assert_called_once_with(
+            request=mock_request,
+            response=result,
+            keycloak_access_token='test_access_token',
+            keycloak_refresh_token='test_refresh_token',
+            secure=False,
+            accepted_tos=True,
+        )
+
+        # Background analytics task still runs with idp=None
+        mock_background_tasks.add_task.assert_called_once()
+        background_fn = mock_background_tasks.add_task.call_args[0][0]
+        background_kwargs = mock_background_tasks.add_task.call_args[1]
+        await background_fn(**background_kwargs)
+        assert background_kwargs['idp'] is None
 
 
 @pytest.mark.asyncio
@@ -893,6 +1016,23 @@ async def test_authenticate_failure():
 
 
 @pytest.mark.asyncio
+async def test_authenticate_transient_failure_preserves_cookie():
+    with patch('server.routes.auth.get_access_token') as mock_get_token:
+        mock_get_token.side_effect = TokenRefreshError(
+            'Authentication service temporarily unavailable'
+        )
+        request = MagicMock()
+        request.cookies = {'keycloak_auth': 'some-token'}
+
+        result = await authenticate(request)
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert 'Authentication service temporarily unavailable' in result.body.decode()
+    assert 'set-cookie' not in result.headers
+
+
+@pytest.mark.asyncio
 async def test_logout_with_refresh_token():
     """Test logout with refresh token."""
     mock_request = MagicMock()
@@ -1041,17 +1181,6 @@ async def test_keycloak_callback_blocked_email_domain(
         # Assert
         assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
         assert exc_info.value.detail == 'blocked'
-
-
-# Note: test_keycloak_callback_allowed_email_domain was simplified as part of
-# the user authorization refactor. The email domain authorization logic is now
-# in DefaultUserAuthorizer and tested in test_user_authorization_store.py.
-# The keycloak_callback test only needs to verify it proceeds when authorized.
-
-
-# Note: test_keycloak_callback_domain_blocking_inactive was removed as part of
-# the user authorization refactor. The concept of "domain blocking inactive" no
-# longer applies - authorization is always performed by UserAuthorizer.
 
 
 @pytest.mark.asyncio
@@ -2817,3 +2946,189 @@ async def test_track_login_analytics_background_handles_member_count_error():
     orgs = identify_kwargs['orgs']
     assert len(orgs) == 1
     assert orgs[0]['member_count'] is None
+
+
+def _create_link_state(redirect_url: str, link_provider: str) -> str:
+    """Build the OAuth state the frontend sends for a post-auth provider link."""
+    return base64.urlsafe_b64encode(
+        json.dumps(
+            {'redirect_url': redirect_url, 'link_provider': link_provider}
+        ).encode()
+    ).decode()
+
+
+def _create_link_callback_mocks(create_keycloak_user_info):
+    """Mocks for the link-return leg: a signed-in user with TOS accepted."""
+    mock_user = MagicMock()
+    mock_user.id = 'test_user_id'
+    mock_user.current_org_id = 'test_org_id'
+    mock_user.accepted_tos = '2025-01-01'
+
+    mock_token_manager = MagicMock()
+    mock_token_manager.get_keycloak_tokens = AsyncMock(
+        return_value=('test_access_token', 'test_refresh_token')
+    )
+    mock_token_manager.get_user_info = AsyncMock(
+        return_value=create_keycloak_user_info(
+            sub='test_user_id',
+            identity_provider='enterprise_sso:saml',
+            email_verified=True,
+        )
+    )
+    mock_token_manager.store_idp_tokens = AsyncMock()
+    mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
+
+    mock_user_store = MagicMock()
+    mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+    mock_user_store.backfill_contact_name = AsyncMock()
+    mock_user_store.backfill_user_email = AsyncMock()
+
+    return mock_token_manager, mock_user_store
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_link_return_stores_provider_tokens(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """A successful idp_link return stores the linked provider's tokens and
+    redirects back without running the login side effects."""
+    # Arrange
+    mock_token_manager, mock_user_store = _create_link_callback_mocks(
+        create_keycloak_user_info
+    )
+    redirect_url = 'https://app.example.com/settings/integrations'
+
+    with (
+        patch('server.routes.auth.token_manager', mock_token_manager),
+        patch('server.routes.auth.UserStore', mock_user_store),
+        patch('server.routes.auth.set_response_cookie') as mock_set_cookie,
+        patch('server.routes.auth.schedule_gitlab_repo_sync') as mock_gitlab_sync,
+    ):
+        # Act
+        result = await keycloak_callback(
+            code='test_code',
+            state=_create_link_state(redirect_url, 'github'),
+            kc_action_status='success',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=create_mock_user_authorizer(),
+        )
+
+    # Assert
+    assert isinstance(result, RedirectResponse)
+    assert result.status_code == 302
+    assert result.headers['location'] == redirect_url
+    mock_token_manager.store_idp_tokens.assert_awaited_once_with(
+        ProviderType.GITHUB, 'test_user_id', 'test_access_token'
+    )
+    mock_gitlab_sync.assert_called_once()
+    cookie_kwargs = mock_set_cookie.call_args.kwargs
+    assert cookie_kwargs['keycloak_access_token'] == 'test_access_token'
+    assert cookie_kwargs['keycloak_refresh_token'] == 'test_refresh_token'
+    assert cookie_kwargs['accepted_tos'] is True
+    # Login side effects are skipped on the link-return leg
+    mock_token_manager.validate_offline_token.assert_not_called()
+    mock_background_tasks.add_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_link_return_cancelled_reports_status(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """A cancelled idp_link return stores nothing and reports the status."""
+    # Arrange
+    mock_token_manager, mock_user_store = _create_link_callback_mocks(
+        create_keycloak_user_info
+    )
+    redirect_url = 'https://app.example.com/settings/integrations'
+
+    with (
+        patch('server.routes.auth.token_manager', mock_token_manager),
+        patch('server.routes.auth.UserStore', mock_user_store),
+        patch('server.routes.auth.set_response_cookie'),
+        patch('server.routes.auth.schedule_gitlab_repo_sync') as mock_gitlab_sync,
+    ):
+        # Act
+        result = await keycloak_callback(
+            code='test_code',
+            state=_create_link_state(redirect_url, 'github'),
+            kc_action_status='cancelled',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=create_mock_user_authorizer(),
+        )
+
+    # Assert
+    assert result.status_code == 302
+    assert result.headers['location'] == f'{redirect_url}?link_status=cancelled'
+    mock_token_manager.store_idp_tokens.assert_not_called()
+    mock_gitlab_sync.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_link_return_reports_token_store_failure(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """A broker token fetch failure redirects with an error instead of a 500."""
+    # Arrange
+    mock_token_manager, mock_user_store = _create_link_callback_mocks(
+        create_keycloak_user_info
+    )
+    mock_token_manager.store_idp_tokens = AsyncMock(
+        side_effect=RuntimeError('broker token unavailable')
+    )
+    redirect_url = 'https://app.example.com/settings/integrations'
+
+    with (
+        patch('server.routes.auth.token_manager', mock_token_manager),
+        patch('server.routes.auth.UserStore', mock_user_store),
+        patch('server.routes.auth.set_response_cookie'),
+        patch('server.routes.auth.schedule_gitlab_repo_sync') as mock_gitlab_sync,
+    ):
+        # Act
+        result = await keycloak_callback(
+            code='test_code',
+            state=_create_link_state(redirect_url, 'github'),
+            kc_action_status='success',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=create_mock_user_authorizer(),
+        )
+
+    # Assert
+    assert result.status_code == 302
+    assert result.headers['location'] == f'{redirect_url}?link_status=error'
+    mock_gitlab_sync.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_link_return_rejects_login_only_provider(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """The login-only enterprise_sso IdP can't be linked as a git provider."""
+    # Arrange
+    mock_token_manager, mock_user_store = _create_link_callback_mocks(
+        create_keycloak_user_info
+    )
+
+    with (
+        patch('server.routes.auth.token_manager', mock_token_manager),
+        patch('server.routes.auth.UserStore', mock_user_store),
+        patch('server.routes.auth.set_response_cookie'),
+    ):
+        # Act / Assert
+        with pytest.raises(HTTPException) as exc_info:
+            await keycloak_callback(
+                code='test_code',
+                state=_create_link_state(
+                    'https://app.example.com/settings/integrations',
+                    'enterprise_sso',
+                ),
+                kc_action_status='success',
+                request=mock_request,
+                background_tasks=mock_background_tasks,
+                user_authorizer=create_mock_user_authorizer(),
+            )
+
+    assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+    mock_token_manager.store_idp_tokens.assert_not_called()

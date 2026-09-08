@@ -5,16 +5,18 @@ describe("getSafeReturnTo", () => {
   it("prefers returnTo when present", () => {
     const params = new URLSearchParams({
       returnTo: "/settings",
-      redirect: "/automations",
+      redirect: "/canvas/automations",
     });
 
     expect(getSafeReturnTo(params)).toBe("/settings");
   });
 
   it("accepts legacy redirect for automation login links", () => {
-    const params = new URLSearchParams({ redirect: "/automations?tab=runs" });
+    const params = new URLSearchParams({
+      redirect: "/canvas/automations?tab=runs",
+    });
 
-    expect(getSafeReturnTo(params)).toBe("/automations?tab=runs");
+    expect(getSafeReturnTo(params)).toBe("/canvas/automations?tab=runs");
   });
 
   it("rejects absolute redirect targets", () => {

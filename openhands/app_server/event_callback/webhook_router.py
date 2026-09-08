@@ -396,6 +396,11 @@ async def on_conversation_update(
         sandbox_id=sandbox_record.id,
     )
 
+    # Stamp client source tag from trigger so both the agent-server telemetry
+    # and the enterprise analytics attribute the conversation consistently.
+    if trigger == ConversationTrigger.GUI and not merged_tags.get('clientsource'):
+        merged_tags['clientsource'] = 'agentcanvas'
+
     agent = conversation_info.agent
     if agent.agent_kind == 'acp':
         agent_kind = 'acp'
@@ -463,19 +468,6 @@ async def on_conversation_update(
                     processor=SetTitleCallbackProcessor(),
                 )
             )
-
-    # Analytics: conversation created
-    analytics = get_analytics_service()
-    if analytics and sandbox_record.created_by_user_id:
-        ctx = await resolve_analytics_context(sandbox_record.created_by_user_id)
-        analytics.track_conversation_created(
-            ctx=ctx,
-            conversation_id=str(conversation_info.id),
-            trigger=existing.trigger.value if existing.trigger else None,
-            llm_model=llm_model,
-            agent_type='default',
-            has_repository=existing.selected_repository is not None,
-        )
 
     return Success()
 

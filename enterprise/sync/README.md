@@ -54,7 +54,7 @@ resendSync:
 You can run the sync job manually by executing:
 
 ```bash
-python -m app.sync.resend
+python -m sync.resend_keycloak
 ```
 
 Make sure all required environment variables are set before running the script.

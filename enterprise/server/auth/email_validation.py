@@ -25,7 +25,6 @@ def extract_base_email(email: str) -> str | None:
 
     try:
         local_part, domain = email.rsplit('@', 1)
-        # Extract the part before + if it exists
         base_local = local_part.split('+', 1)[0]
         return f'{base_local}@{domain}'
     except (ValueError, AttributeError):
@@ -69,14 +68,12 @@ def matches_base_email(email: str, base_email: str) -> bool:
     if not email or not base_email:
         return False
 
-    # Extract base from both emails for comparison
     email_base = extract_base_email(email)
     base_email_normalized = extract_base_email(base_email)
 
     if not email_base or not base_email_normalized:
         return False
 
-    # Emails match if they have the same base
     return email_base.lower() == base_email_normalized.lower()
 
 

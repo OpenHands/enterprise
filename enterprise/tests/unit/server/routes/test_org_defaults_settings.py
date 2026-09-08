@@ -347,3 +347,92 @@ class TestUpdateOrgAppSettingsRoute:
             )
         assert exc.value.status_code == 403
         service.update_org_app_settings.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_settings_diff_edit_requires_admin(self, monkeypatch):
+        """A plain member cannot change the org-wide agent defaults (403).
+
+        Members change their *own* harness through POST /api/v1/settings, which
+        only writes their org_member row.
+        """
+        from unittest.mock import AsyncMock
+
+        import server.routes.orgs as orgs_module
+        from fastapi import HTTPException
+        from server.routes.orgs import update_org_app_settings
+
+        # Arrange - deny EDIT_ORG_SETTINGS; the write must not happen.
+        async def _deny(request, user_id, permission):
+            raise HTTPException(status_code=403, detail='forbidden')
+
+        monkeypatch.setattr(orgs_module, 'authorize_permission', _deny)
+        service = MagicMock()
+        service.update_org_app_settings = AsyncMock()
+        update_data = OrgAppSettingsUpdate(
+            agent_settings_diff={'agent_kind': 'acp', 'acp_server': 'codex'}
+        )
+
+        # Act & Assert
+        with pytest.raises(HTTPException) as exc:
+            await update_org_app_settings(
+                update_data, MagicMock(), service=service, user_id='member-1'
+            )
+        assert exc.value.status_code == 403
+        service.update_org_app_settings.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_settings_diff_edit_allowed_for_admin(self, monkeypatch):
+        """With EDIT_ORG_SETTINGS the agent defaults update goes through."""
+        from unittest.mock import AsyncMock
+
+        import server.routes.orgs as orgs_module
+        from server.auth.authorization import Permission
+        from server.routes.orgs import update_org_app_settings
+
+        # Arrange - record what the gate was asked for, then allow it.
+        checked: list[Permission] = []
+
+        async def _allow(request, user_id, permission):
+            checked.append(permission)
+
+        monkeypatch.setattr(orgs_module, 'authorize_permission', _allow)
+        service = MagicMock()
+        service.update_org_app_settings = AsyncMock(return_value='updated')
+        update_data = OrgAppSettingsUpdate(
+            agent_settings_diff={'agent_kind': 'acp', 'acp_server': 'codex'}
+        )
+
+        # Act
+        result = await update_org_app_settings(
+            update_data, MagicMock(), service=service, user_id='admin-1'
+        )
+
+        # Assert
+        assert result == 'updated'
+        assert checked == [Permission.EDIT_ORG_SETTINGS]
+        service.update_org_app_settings.assert_awaited_once_with(update_data)
+
+    @pytest.mark.asyncio
+    async def test_member_editable_fields_skip_the_admin_gate(self, monkeypatch):
+        """The member-editable fields on this route stay ungated."""
+        from unittest.mock import AsyncMock
+
+        import server.routes.orgs as orgs_module
+        from server.routes.orgs import update_org_app_settings
+
+        # Arrange - any gate call would be a regression for these fields.
+        async def _fail(request, user_id, permission):
+            raise AssertionError(f'unexpected permission check: {permission}')
+
+        monkeypatch.setattr(orgs_module, 'authorize_permission', _fail)
+        service = MagicMock()
+        service.update_org_app_settings = AsyncMock(return_value='updated')
+        update_data = OrgAppSettingsUpdate(max_budget_per_task=10.0)
+
+        # Act & Assert
+        assert (
+            await update_org_app_settings(
+                update_data, MagicMock(), service=service, user_id='member-1'
+            )
+            == 'updated'
+        )

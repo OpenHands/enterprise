@@ -266,3 +266,39 @@ class TestWorkspaceExtraction:
         assert isinstance(result, JiraPayloadSuccess)
         assert result.payload.workspace_name == 'test.atlassian.net'
         assert result.payload.base_api_url == 'https://test.atlassian.net'
+
+
+class TestPickerMentions:
+    """Picker mentions ([~...] wiki markup) are accepted for later bot matching."""
+
+    def test_literal_mention_sets_flag(self, parser, valid_comment_payload):
+        result = parser.parse(valid_comment_payload)
+
+        assert isinstance(result, JiraPayloadSuccess)
+        assert result.payload.literal_mention is True
+
+    def test_picker_mention_accepted(self, parser, valid_comment_payload):
+        valid_comment_payload['comment']['body'] = (
+            '[~accountid:712020:ABC-def] please fix this'
+        )
+
+        result = parser.parse(valid_comment_payload)
+
+        assert isinstance(result, JiraPayloadSuccess)
+        assert result.payload.literal_mention is False
+        assert result.payload.mention_ids == ('712020:abc-def',)
+
+    def test_bare_mention_token_accepted(self, parser, valid_comment_payload):
+        valid_comment_payload['comment']['body'] = '[~someuser] please fix this'
+
+        result = parser.parse(valid_comment_payload)
+
+        assert isinstance(result, JiraPayloadSuccess)
+        assert result.payload.mention_ids == ('someuser',)
+
+    def test_comment_without_any_mention_skipped(self, parser, valid_comment_payload):
+        valid_comment_payload['comment']['body'] = 'just a plain comment'
+
+        result = parser.parse(valid_comment_payload)
+
+        assert isinstance(result, JiraPayloadSkipped)

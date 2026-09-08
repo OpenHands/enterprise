@@ -295,6 +295,30 @@ class TestLLMAutoForwarding:
             assert 'Llm_Timeout' not in result
 
 
+class TestTelemetryAutoForwarding:
+    """Test cases for automatic forwarding of OH_TELEMETRY_* variables."""
+
+    def test_auto_forward_prefixes_contains_oh_telemetry(self):
+        """Test that OH_TELEMETRY_ is in the auto-forward prefixes."""
+        assert 'OH_TELEMETRY_' in AUTO_FORWARD_PREFIXES
+
+    def test_oh_telemetry_exporter_auto_forwarded(self):
+        """Test that OH_TELEMETRY_* variables are automatically forwarded."""
+        env_vars = {
+            'OH_TELEMETRY_EXPORTER': 'posthog',
+            'OH_TELEMETRY_POSTHOG_HOST': 'https://z.openhands.dev',
+            'OTHER_TELEMETRY_VAR': 'ignored',
+        }
+
+        with patch.dict(os.environ, env_vars, clear=True):
+            result = get_agent_server_env()
+
+            assert result == {
+                'OH_TELEMETRY_EXPORTER': 'posthog',
+                'OH_TELEMETRY_POSTHOG_HOST': 'https://z.openhands.dev',
+            }
+
+
 class TestLMNRAutoForwarding:
     """Test cases for automatic forwarding of LMNR_* environment variables."""
 

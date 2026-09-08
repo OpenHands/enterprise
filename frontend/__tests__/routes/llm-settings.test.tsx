@@ -2826,6 +2826,62 @@ describe("LlmSettingsScreen", () => {
       expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
     });
 
+    it("omits the managed API key when saving an OpenHands Gemini profile", async () => {
+      server.use(
+        http.get("/api/v1/config/models/search", () =>
+          HttpResponse.json({
+            items: [
+              {
+                provider: "openai",
+                name: "gpt-4o",
+                verified: true,
+              },
+              {
+                provider: "openhands",
+                name: "gemini-3-pro-preview",
+                verified: true,
+              },
+            ],
+            next_page_id: null,
+          }),
+        ),
+      );
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+        buildSettings({
+          llm_model: "openhands/kimi-k3",
+          llm_api_key_set: true,
+          agent_settings: { llm: { model: "openhands/kimi-k3" } },
+        }),
+      );
+      const saveSettingsSpy = vi
+        .spyOn(SettingsService, "saveSettings")
+        .mockResolvedValue(true);
+
+      await renderLlmSettingsScreen({ appMode: "saas", view: "create" });
+      await screen.findByTestId("llm-settings-form-basic");
+      await selectProvider("OpenAI");
+      await selectModel("gpt-4o");
+      await userEvent.type(
+        screen.getByTestId("llm-api-key-input"),
+        "stale-byok-key",
+      );
+      await selectProvider("OpenHands");
+      await selectModel("gemini-3-pro-preview");
+      await userEvent.click(screen.getByTestId("save-button"));
+
+      await waitFor(() => expect(saveSettingsSpy).toHaveBeenCalled());
+      const payload = saveSettingsSpy.mock.calls[0][0] as Record<
+        string,
+        unknown
+      >;
+      const llm = getPayloadAgentSettings(payload).llm as Record<
+        string,
+        unknown
+      >;
+      expect(llm).toMatchObject({ model: "openhands/gemini-3-pro-preview" });
+      expect(llm).not.toHaveProperty("api_key");
+    });
+
     it("keeps Save disabled in the create form until a model is chosen", async () => {
       vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
         buildSettings({

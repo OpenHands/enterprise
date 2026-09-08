@@ -9,11 +9,15 @@ import { RecentConversations } from "#/components/features/home/recent-conversat
 import { HomepageCTA } from "#/components/features/home/homepage-cta";
 import { isCTADismissed } from "#/utils/local-storage";
 import { useAppMode } from "#/hooks/use-app-mode";
+import { useConfig } from "#/hooks/query/use-config";
 
 <PrefetchPageLinks page="/conversations/:conversationId" />;
 
 function HomeScreen() {
   const { isEnterpriseCloud } = useAppMode();
+  const { data: config } = useConfig();
+  const showAgentCanvasBanner =
+    config?.feature_flags?.enable_agent_canvas_banner === true;
   const [selectedRepo, setSelectedRepo] = React.useState<GitRepository | null>(
     null,
   );
@@ -27,7 +31,7 @@ function HomeScreen() {
       data-testid="home-screen"
       className="px-0 pt-4 bg-transparent h-full flex flex-col pt-[35px] overflow-y-auto rounded-xl lg:px-[42px] lg:pt-[42px] custom-scrollbar-always"
     >
-      <HomeHeader />
+      <HomeHeader showAgentCanvasBanner={showAgentCanvasBanner} />
 
       <div className="pt-[25px] flex justify-center">
         <div

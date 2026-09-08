@@ -66,6 +66,7 @@ def upgrade() -> None:
         ('gpt-5.2-codex', 'openhands'),
         ('gpt-5.2', 'openhands'),
         ('minimax-m2.5', 'openhands'),
+        ('glm-5.2', 'openhands'),
         ('gemini-3-pro-preview', 'openhands'),
         ('gemini-3-flash-preview', 'openhands'),
         ('deepseek-chat', 'openhands'),

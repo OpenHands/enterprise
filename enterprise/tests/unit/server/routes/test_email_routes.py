@@ -371,6 +371,26 @@ async def test_update_email_calls_update_user_email(mock_request, mock_user_auth
 
 
 @pytest.mark.asyncio
+async def test_update_email_rejected_when_changes_disabled(mock_request):
+    email_data = EmailUpdate(email='new@example.com')
+
+    with (
+        patch('server.routes.email.is_email_change_enabled', return_value=False),
+        patch('server.routes.email.get_keycloak_admin') as mock_get_keycloak_admin,
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await update_email(
+            email_data=email_data,
+            request=mock_request,
+            user_id='test-user-id',
+        )
+
+    assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+    assert exc_info.value.detail == 'Email changes are disabled for this deployment'
+    mock_get_keycloak_admin.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_verified_email_calls_update_user_email(mock_request, mock_user_auth):
     """GET /api/email/verified should call UserStore.update_user_email with email_verified=True."""
     mock_user_auth.user_id = 'test-user-id'

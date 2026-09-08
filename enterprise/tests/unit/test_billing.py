@@ -119,6 +119,38 @@ def patched_checkout_session_makers(async_session_maker):
         yield
 
 
+class TestValidateBillingEnabled:
+    """Tests for the ENABLE_BILLING default-flag guard.
+
+    The guard delegates to the feature flag service's fault-tolerant
+    ``resolve`` (DB row first, registered default as fallback), so the test
+    surface is the service resolution, not billing-specific scaffolding.
+    """
+
+    @pytest.mark.asyncio
+    async def test_allows_when_flag_resolves_true(self):
+        with patch(
+            'server.routes.billing.feature_flag_service.resolve',
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_resolve:
+            await billing.validate_billing_enabled()
+        mock_resolve.assert_awaited_once_with('ENABLE_BILLING')
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_flag_resolves_false(self):
+        with (
+            patch(
+                'server.routes.billing.feature_flag_service.resolve',
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await billing.validate_billing_enabled()
+        assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+
+
 @pytest.fixture
 async def test_org(async_session_maker):
     """Create a test org in the database."""
@@ -203,6 +235,66 @@ async def test_get_credits_success():
 
         assert isinstance(result, GetCreditsResponse)
         assert result.credits == Decimal('74.50')  # 100.00 - 25.50 = 74.50
+
+
+@pytest.mark.asyncio
+async def test_get_credits_returns_zero_for_personal_org_without_budget():
+    """A personal org with no max_budget has 0 credits, not an unlimited cap."""
+    user_id = str(uuid.uuid4())
+    with (
+        patch('integrations.stripe_service.STRIPE_API_KEY', 'mock_key'),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.get_user_team_info',
+            return_value={
+                'spend': 2843.24,
+                'litellm_budget_table': None,
+            },
+        ),
+    ):
+        result = await get_credits(user_id, uuid.UUID(user_id))
+
+    assert result.credits == Decimal('0.00')
+
+
+@pytest.mark.asyncio
+async def test_get_credits_returns_zero_for_team_org_without_budget():
+    """A team org with no max_budget has 0 credits, not an unlimited cap."""
+    user_id = str(uuid.uuid4())
+    org_id = uuid.uuid4()
+    with (
+        patch('integrations.stripe_service.STRIPE_API_KEY', 'mock_key'),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.get_user_team_info',
+            return_value={'spend': 2843.24, 'max_budget_in_team': None},
+        ),
+    ):
+        result = await get_credits(user_id, org_id)
+
+    assert result.credits == Decimal('0.00')
+
+
+@pytest.mark.asyncio
+async def test_get_credits_rejects_missing_stripe_configuration():
+    with patch('integrations.stripe_service.STRIPE_API_KEY', None):
+        with pytest.raises(HTTPException) as exc_info:
+            await get_credits('mock-user', uuid.uuid4())
+
+    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_get_credits_returns_zero_when_budget_info_unavailable():
+    """When budget info is unavailable, return 0 credits instead of 503."""
+    with (
+        patch('integrations.stripe_service.STRIPE_API_KEY', 'mock_key'),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.get_user_team_info',
+            return_value=None,
+        ),
+    ):
+        result = await get_credits('mock-user', uuid.uuid4())
+
+    assert result.credits == Decimal('0.00')
 
 
 @pytest.mark.asyncio
@@ -364,6 +456,10 @@ async def test_success_callback_stripe_incomplete(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('max_budget', 'spend', 'expected_budget'),
+    [(100.0, 25.5, 125.0), (None, 25.5, 50.5), (10.0, 25.5, 50.5)],
+)
 async def test_success_callback_success(
     async_session_maker,
     test_org,
@@ -371,6 +467,9 @@ async def test_success_callback_success(
     patched_billing_session_maker,
     mock_callback_request,
     mock_stripe_session_retrieve,
+    max_budget,
+    spend,
+    expected_budget,
 ):
     """Test successful payment completion and credit update."""
     session_id = 'test_success_session'
@@ -399,8 +498,8 @@ async def test_success_callback_success(
         patch(
             'storage.lite_llm_manager.LiteLlmManager.get_user_team_info',
             return_value={
-                'spend': 25.50,
-                'max_budget_in_team': 100.00,
+                'spend': spend,
+                'max_budget_in_team': max_budget,
             },
         ),
         patch(
@@ -417,7 +516,7 @@ async def test_success_callback_success(
 
         mock_update_budget.assert_called_once_with(
             str(test_org.id),
-            125.0,  # 100 + 25.00
+            expected_budget,
         )
 
     # Verify database updates
@@ -483,6 +582,59 @@ async def test_success_callback_lite_llm_error(
         )
         billing_session = result.scalar_one_or_none()
         assert billing_session.status == 'in_progress'
+
+
+@pytest.mark.asyncio
+async def test_success_callback_rejects_unavailable_budget_data(
+    async_session_maker,
+    test_org,
+    test_user,
+    patched_billing_session_maker,
+    mock_callback_request,
+    mock_stripe_session_retrieve,
+):
+    session_id = 'test_litellm_unavailable_session'
+    async with async_session_maker() as session:
+        session.add(
+            BillingSession(
+                id=session_id,
+                user_id=str(test_user.id),
+                org_id=test_org.id,
+                status='in_progress',
+                price=25,
+                price_code='NA',
+            )
+        )
+        await session.commit()
+
+    mock_stripe_session_retrieve.return_value = MagicMock(
+        status='complete', amount_subtotal=2500
+    )
+
+    with (
+        patch(
+            'storage.user_store.UserStore.get_user_by_id',
+            new_callable=AsyncMock,
+            return_value=MagicMock(current_org_id=test_org.id),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.get_user_team_info',
+            return_value=None,
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget'
+        ) as update_budget,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await success_callback(session_id, mock_callback_request)
+
+    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    update_budget.assert_not_called()
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(BillingSession).where(BillingSession.id == session_id)
+        )
+        assert result.scalar_one().status == 'in_progress'
 
 
 @pytest.mark.asyncio

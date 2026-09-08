@@ -53,6 +53,9 @@ export const sharedConversationService = {
           limit,
           ...(pageId && { page_id: pageId }),
         },
+        // Surface stalled responses as errors (with a retry affordance in the
+        // UI) instead of hanging the pagination forever.
+        timeout: 60_000,
       },
     );
     return response.data;
