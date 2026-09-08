@@ -771,3 +771,46 @@ class TestEventIndex:
         assert [event.timestamp for event in result] == sorted(
             event.timestamp for event in result
         )
+
+    @pytest.mark.asyncio
+    async def test_rebuild_loads_events_in_batches(
+        self, service: FilesystemEventService, monkeypatch
+    ):
+        """Streaming rebuild loads events in chunks, not all at once.
+
+        With a batch size of 3 and 7 events, _load_events_from_paths should be
+        called 3 times (3 + 3 + 1), never with more than 3 paths at a time.
+        """
+        from openhands.app_server.event import event_service_base
+
+        monkeypatch.setattr(event_service_base, '_index_rebuild_batch_size', lambda: 3)
+
+        conversation_id = uuid4()
+        for _ in range(7):
+            await service.save_event(conversation_id, create_token_event())
+
+        # Spy on _load_events_from_paths to record the batch sizes it receives.
+        call_sizes: list[int] = []
+        original = service._load_events_from_paths
+
+        async def spy(paths: list[Path]) -> list[Event | None]:
+            call_sizes.append(len(paths))
+            return await original(paths)
+
+        service._load_events_from_paths = spy  # type: ignore[assignment]
+        try:
+            result = await service.search_events(conversation_id)
+            assert len(result.items) == 7
+            # The rebuild loads events in batches of 3: [3, 3, 1].
+            # search_events then loads the page events (limit=100 -> all 7).
+            # So the full call sequence is [3, 3, 1, 7].
+            # Verify the rebuild portion (first 3 calls) is batched.
+            rebuild_calls = call_sizes[:3]
+            assert rebuild_calls == [3, 3, 1], (
+                f'Unexpected rebuild batch sizes: {rebuild_calls} '
+                f'(full calls: {call_sizes})'
+            )
+            # No rebuild call exceeded the batch size.
+            assert max(rebuild_calls) <= 3
+        finally:
+            service._load_events_from_paths = original  # type: ignore[assignment]

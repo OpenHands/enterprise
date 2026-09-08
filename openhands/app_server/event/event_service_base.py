@@ -41,6 +41,20 @@ def _event_load_concurrency() -> int:
         return 10
 
 
+def _index_rebuild_batch_size() -> int:
+    """Number of events to load per batch during a streaming index rebuild.
+
+    Bounds transient memory: at most this many event objects are alive at once
+    during a rebuild, regardless of conversation size. The index entries
+    (~300 B each) accumulate in the seeded dict — that is the irreducible
+    memory cost of the index itself.
+    """
+    try:
+        return max(1, int(os.getenv('EVENT_INDEX_REBUILD_BATCH_SIZE', '200')))
+    except ValueError:
+        return 200
+
+
 @dataclass
 class EventServiceBase(EventService, ABC):
     """Event Service for getting events - the only check on permissions for events is
@@ -214,7 +228,8 @@ class EventServiceBase(EventService, ABC):
 
         Seeds from index_stale.json if present, then scans for any event files
         not already in the seed and loads only those. Deduplicates by event id.
-        Writes index.json.
+        Loads missing events in batches so transient memory is bounded by the
+        batch size, not the conversation size. Writes index.json.
         """
         loop = asyncio.get_running_loop()
         stale_path = self._index_stale_path(conversation_path)
@@ -227,8 +242,6 @@ class EventServiceBase(EventService, ABC):
 
         # Scan all event files to find ids missing from the seed.
         paths = await loop.run_in_executor(None, self._search_paths, conversation_path)
-        # Build the set of ids the seed already knows about, and the list of
-        # paths whose events are not yet indexed.
         known_ids = set(seeded.keys())
         # Index files are not events; exclude them by filename.
         missing_paths = [
@@ -238,13 +251,20 @@ class EventServiceBase(EventService, ABC):
             and p.stem not in known_ids
         ]
 
-        if missing_paths:
-            loaded = await self._load_events_from_paths(missing_paths)
+        # Load missing events in batches so we never hold all event objects in
+        # memory at once. Each batch is loaded, converted to index entries
+        # (~300 B each), merged into the seeded dict, then discarded before the
+        # next batch is loaded.
+        batch_size = _index_rebuild_batch_size()
+        for i in range(0, len(missing_paths), batch_size):
+            batch = missing_paths[i : i + batch_size]
+            loaded = await self._load_events_from_paths(batch)
             for event in loaded:
                 if event is None:
                     continue
                 entry = self._entry_for_event(event)
                 seeded[entry[0]] = entry
+            # batch and loaded go out of scope here; event objects are GC-able.
 
         index = list(seeded.values())
         index_path = self._index_path(conversation_path)
