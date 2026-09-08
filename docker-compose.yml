@@ -4,9 +4,12 @@ services:
     build:
       context: ./
       dockerfile: ./containers/app/Dockerfile
-      # The Dockerfile's last stage is the enterprise server; this runs the app.
-      target: openhands-app
     image: openhands:latest
+    # The image's default command is `saas_server:app` running as the `openhands`
+    # user (what Kubernetes deploys). This compose file runs the plain app server,
+    # and the entrypoint needs root to set up the sandbox user.
+    user: root
+    command: ["uvicorn", "openhands.server.listen:app", "--host", "0.0.0.0", "--port", "3000"]
     container_name: openhands-app-${DATE:-}
     environment:
       - AGENT_SERVER_IMAGE_REPOSITORY=${AGENT_SERVER_IMAGE_REPOSITORY:-ghcr.io/openhands/agent-server}

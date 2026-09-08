@@ -983,3 +983,98 @@ class TestGetDbFeatureFlags:
         ):
             result = await mod._get_db_feature_flags()
         assert result == {}
+
+
+class TestResolveFlag:
+    """Tests for the generic _resolve_flag helper.
+
+    Flags are unified with the DB-backed default-flag pattern: the feature
+    flag service's ``resolve`` is authoritative (DB row, falling back to the
+    registered default), and imports that fail (OSS installs without the
+    enterprise service) degrade to the env value.
+    """
+
+    def _fake_service_module(self, service):
+        import sys
+        import types
+
+        fake_module = types.ModuleType('server.services.feature_flag_service')
+        fake_module.feature_flag_service = service
+        return patch.dict(
+            sys.modules, {'server.services.feature_flag_service': fake_module}
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolve_true_overrides_env_false(self):
+        """The service resolution wins over the env-var fallback."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                assert key == 'SOME_FLAG'
+                return True
+
+        with self._fake_service_module(_FakeService()):
+            result = await mod._resolve_flag('SOME_FLAG', env_fallback=False)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_resolve_false_overrides_env_true(self):
+        """The service resolution wins over the env-var fallback."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                return False
+
+        with self._fake_service_module(_FakeService()):
+            result = await mod._resolve_flag('SOME_FLAG', env_fallback=True)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_env_when_service_absent(self):
+        """OSS installs without the enterprise service use the env value."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        with patch(
+            'builtins.__import__',
+            side_effect=ImportError('no enterprise package'),
+        ):
+            assert await mod._resolve_flag('SOME_FLAG', env_fallback=True) is True
+            assert await mod._resolve_flag('SOME_FLAG', env_fallback=False) is False
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_applies_resolved_billing_flag(self):
+        """get_web_client_config surfaces the DB-resolved enable_billing."""
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                return True
+
+            async def get_global_flags(self):
+                return {'ENABLE_BILLING': True}
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        with (
+            self._fake_service_module(_FakeService()),
+            patch.dict(os.environ, {'ENABLE_BILLING': 'false'}),
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.enable_billing is True

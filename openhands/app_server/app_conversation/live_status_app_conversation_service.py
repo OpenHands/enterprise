@@ -420,12 +420,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
     async def _reserve_daily_conversation_quota(self, user_id: str) -> bool:
         try:
+            from openhands.app_server.shared import server_config
             from server.services.daily_conversation_quota_service import (
                 DailyConversationQuotaService,
             )
             from storage.database import a_session_maker
-
-            from openhands.app_server.shared import server_config
         except ImportError:
             return False
         get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
@@ -667,7 +666,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
             app_conversation_info = AppConversationInfo(
                 id=info.id,
-                title=f'Conversation {info.id.hex[:5]}',
+                title=request.title or f'Conversation {info.id.hex[:5]}',
                 sandbox_id=sandbox.id,
                 created_by_user_id=user_id,
                 llm_model=llm_model,
@@ -688,13 +687,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # Setup default processors
             processors = request.processors or []
 
-            # Always ensure SetTitleCallbackProcessor is included
-            has_set_title_processor = any(
-                isinstance(processor, SetTitleCallbackProcessor)
-                for processor in processors
-            )
-            if not has_set_title_processor:
-                processors.append(SetTitleCallbackProcessor())
+            # Auto-title unless the caller supplied a title: the generated
+            # title must not replace the one the caller chose.
+            if not request.title:
+                has_set_title_processor = any(
+                    isinstance(processor, SetTitleCallbackProcessor)
+                    for processor in processors
+                )
+                if not has_set_title_processor:
+                    processors.append(SetTitleCallbackProcessor())
 
             # Save processors
             for processor in processors:
@@ -1397,6 +1398,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             return llm
 
         try:
+            from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
             from storage.lite_llm_manager import (  # type: ignore[import-not-found]
                 LiteLlmManager,
             )
@@ -1404,8 +1406,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 ManagedLlmKeyStatus,
                 SaasSettingsStore,
             )
-
-            from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
         except Exception:
             _logger.warning(
                 'managed_llm_key_refresh:dependency_import_failed',

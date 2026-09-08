@@ -14,7 +14,7 @@ def _write_pyproject(tmp_path: Path, version: str) -> Path:
     pyproject = tmp_path / 'pyproject.toml'
     pyproject.write_text(
         textwrap.dedent(f"""\
-            [tool.poetry]
+            [project]
             name = "test-package"
             version = "{version}"
         """)

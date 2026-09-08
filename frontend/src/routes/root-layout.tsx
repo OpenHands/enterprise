@@ -21,7 +21,6 @@ import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import { useIsOnIntermediatePage } from "#/hooks/use-is-on-intermediate-page";
 import { useAutoLogin } from "#/hooks/use-auto-login";
 import { useAuthCallback } from "#/hooks/use-auth-callback";
-import { useReoTracking } from "#/hooks/use-reo-tracking";
 import { useSyncPostHogConsent } from "#/hooks/use-sync-posthog-consent";
 import { useAutoSelectOrganization } from "#/hooks/use-auto-select-organization";
 import { LOCAL_STORAGE_KEYS } from "#/utils/local-storage";
@@ -80,7 +79,6 @@ export default function MainApp() {
   const config = useConfig();
   const {
     data: isAuthed,
-    isFetching: isFetchingAuth,
     isLoading: isAuthLoading,
     isError: isAuthError,
   } = useIsAuthed();
@@ -95,9 +93,6 @@ export default function MainApp() {
 
   // Handle authentication callback and set login method after successful authentication
   useAuthCallback();
-
-  // Initialize Reo.dev tracking in SaaS mode
-  useReoTracking();
 
   // Sync PostHog opt-in/out state with backend setting on mount
   useSyncPostHogConsent();
@@ -221,13 +216,27 @@ export default function MainApp() {
     );
   }
 
-  const renderReAuthModal =
-    !isAuthed &&
-    !isAuthError &&
-    !isFetchingAuth &&
+  // The session is known to be expired (/api/authenticate answered 401) and a
+  // stored login method means useAutoLogin is about to redirect to the identity
+  // provider. Do NOT mount the app tree in the meantime: every polling hook
+  // under <Outlet /> would otherwise keep hitting the API with 401s behind the
+  // modal. `isAuthed === false` (not `!isAuthed`) keeps the app rendered while
+  // the answer is unknown or a transient error left stale `true` data, and
+  // `isFetching` is deliberately ignored so the gate latches while the auth
+  // query is re-verified after further 401s instead of remounting the tree.
+  const isSessionExpired =
+    isAuthed === false &&
     !isOnIntermediatePage &&
     config.data?.app_mode === "saas" &&
     loginMethodExists;
+
+  if (isSessionExpired) {
+    return (
+      <div className="min-h-screen bg-base">
+        <ReauthModal />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -265,7 +274,6 @@ export default function MainApp() {
         </div>
       </div>
 
-      {renderReAuthModal && <ReauthModal />}
       {config.data?.app_mode === "oss" && consentFormIsOpen && (
         <AnalyticsConsentFormModal
           onClose={() => {
