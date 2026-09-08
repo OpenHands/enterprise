@@ -261,6 +261,20 @@ class TestWaitForSandboxRunning:
             await mock_sandbox_service.wait_for_sandbox_running('sb1', timeout=5)
         assert 'failed to start' in str(ei.value)
 
+    @pytest.mark.asyncio
+    async def test_ingress_tls_error_is_actionable_and_safe(self, mock_sandbox_service):
+        mock_sandbox_service.get_sandbox_mock.return_value = self._sandbox(
+            SandboxStatus.ERROR, 'runtime_ingress:tls_error'
+        )
+
+        with pytest.raises(SandboxError) as ei:
+            await mock_sandbox_service.wait_for_sandbox_running('sb1', timeout=5)
+
+        msg = str(ei.value)
+        assert 'TLS certificate could not be verified' in msg
+        assert 'runtime hostname' in msg
+        assert 'reference: sb1' in msg
+
 
 def test_classify_start_failure_maps_each_class():
     assert 'at capacity' in _classify_start_failure('x Insufficient memory y')
@@ -276,6 +290,22 @@ def test_classify_start_failure_maps_each_class():
     assert 'device or resource' in _classify_start_failure(
         '0/1 nodes: 1 Insufficient nvidia.com/gpu.'
     )
+    ingress_expectations = {
+        'runtime_ingress:dns_error': 'wildcard runtime DNS',
+        'runtime_ingress:tls_error': 'TLS certificate',
+        'runtime_ingress:timeout': 'health-check timeout',
+        'runtime_ingress:connection_error': 'could not connect',
+        'runtime_ingress:request_error': 'before receiving a response',
+        'runtime_ingress:invalid_response': 'invalid response',
+        'runtime_ingress:unexpected_status': 'did not report ready',
+        'runtime_ingress:http_status:503': 'HTTP 503',
+    }
+    for detail, expected in ingress_expectations.items():
+        assert expected in _classify_start_failure(detail)
+
+    # Never reflect malformed or unknown runtime detail into the user message.
+    assert _classify_start_failure('runtime_ingress:http_status:503 secret') is None
+    assert _classify_start_failure('runtime_ingress:unknown') is None
     # unrecognized / empty -> None so the caller uses a generic message
     assert _classify_start_failure('some novel reason') is None
     assert _classify_start_failure(None) is None
