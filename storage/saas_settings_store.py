@@ -82,7 +82,7 @@ def managed_llm_key_config_from_model(
     """Classify an effective LLM config as managed.
 
     Uses the same model/base_url logic as ``store()`` and
-    ``OrgStore._maybe_get_managed_llm_key_for_user``.
+    ``OrgStore._ensure_managed_llm_key_for_user``.
 
     Returns ``None`` when the config is not a managed LiteLLM/OpenHands-provider
     configuration (e.g. member/org BYOK pointing at a third-party base_url).
@@ -1027,7 +1027,7 @@ class SaasSettingsStore(SettingsStore):
         rejected before any key is generated.
 
         The new key is generated under the same deterministic alias as
-        ``_ensure_api_key`` / ``OrgStore._maybe_get_managed_llm_key_for_user``
+        ``_ensure_api_key`` / ``OrgStore._ensure_managed_llm_key_for_user``
         (deleting any prior alias first to avoid orphaned keys) and carries
         ``{'type': 'openhands'}`` metadata when the effective model is an
         ``openhands/*`` model, matching ``verify_existing_key``'s contract.

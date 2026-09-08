@@ -1085,6 +1085,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             user = await self.user_context.get_user_info()
             profiles = user.llm_profiles.profiles
             settings_llm = getattr(user.agent_settings, 'llm', None)
+            if settings_llm is not None:
+                settings_llm = await self._maybe_refresh_managed_llm_key(
+                    user, settings_llm
+                )
             fallback_api_key = getattr(settings_llm, 'api_key', None)
         except Exception:
             _logger.exception(
@@ -1398,13 +1402,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             return llm
 
         try:
-            from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
             from storage.lite_llm_manager import (  # type: ignore[import-not-found]
                 LiteLlmManager,
             )
             from storage.saas_settings_store import (  # type: ignore[import-not-found]
                 ManagedLlmKeyStatus,
                 SaasSettingsStore,
+                managed_llm_key_config_from_model,
             )
         except Exception:
             _logger.warning(
@@ -1414,23 +1418,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             return llm
 
-        normalized_base_url = (llm.base_url or '').strip().rstrip('/')
-        managed_base_url = LITE_LLM_API_URL.rstrip('/')
-        is_openhands_provider = bool(llm.model and llm.model.startswith('openhands/'))
-        uses_openhands_provider_proxy = is_openhands_provider and (
-            not normalized_base_url or 'all-hands.dev' in normalized_base_url.lower()
-        )
-        if (
-            normalized_base_url != managed_base_url
-            and not uses_openhands_provider_proxy
-        ):
+        managed_config = managed_llm_key_config_from_model(llm.model, llm.base_url)
+        if managed_config is None:
             _logger.debug(
                 'managed_llm_key_refresh:skip_non_managed_base_url',
                 extra={
                     'user_id': user.id,
                     'model': llm.model,
-                    'base_url': normalized_base_url or None,
-                    'is_openhands_provider': is_openhands_provider,
+                    'base_url': llm.base_url,
                 },
             )
             return llm
@@ -1475,8 +1470,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     'user_id': user.id,
                     'org_id': str(org_id),
                     'model': llm.model,
-                    'base_url': normalized_base_url or None,
-                    'uses_openhands_provider_proxy': uses_openhands_provider_proxy,
+                    'base_url': llm.base_url,
                 },
             )
             settings_store = await SaasSettingsStore.get_instance(
@@ -1504,7 +1498,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
                 return llm
 
-            key_is_valid = await LiteLlmManager.verify_key(key, user.id)
+            key_belongs_to_user = await LiteLlmManager.verify_existing_key(
+                key,
+                user.id,
+                str(org_id),
+                openhands_type=managed_config.openhands_type,
+            )
+            key_is_valid = key_belongs_to_user and await LiteLlmManager.verify_key(
+                key, user.id
+            )
             if key_is_valid:
                 _logger.debug(
                     'managed_llm_key_refresh:skip_key_still_valid',
@@ -1531,6 +1533,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                         'openhands_type': getattr(rotation, 'openhands_type', None),
                     },
                 )
+                self.user_context.invalidate_user_info_cache()
                 return llm.model_copy(update={'api_key': SecretStr(rotation.new_key)})
 
             _logger.warning(

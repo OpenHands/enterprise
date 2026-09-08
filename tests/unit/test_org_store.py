@@ -141,7 +141,7 @@ async def test_update_org(async_session_maker, mock_litellm_api):
     with (
         patch('storage.org_store.a_session_maker', async_session_maker),
         patch(
-            'storage.org_store.OrgStore._maybe_get_managed_llm_key_for_user',
+            'storage.org_store.OrgStore._ensure_managed_llm_key_for_user',
             new=AsyncMock(return_value=None),
         ),
         patch(
@@ -1517,10 +1517,10 @@ async def test_update_org_defaults_async_with_llm_api_key():
 
 
 @pytest.mark.asyncio
-async def test_update_org_defaults_async_propagates_managed_key_reset():
+async def test_update_org_defaults_async_does_not_propagate_managed_key():
     """GIVEN: A unified OrgUpdate save that resolves to a managed org key
     WHEN: update_org_defaults_async is called
-    THEN: the propagated member update carries that key and resets the custom-key flag
+    THEN: the member update resets the custom-key flag without copying the acting key
     """
     from server.routes.org_models import OrgUpdate
 
@@ -1549,7 +1549,7 @@ async def test_update_org_defaults_async_propagates_managed_key_reset():
     with (
         patch('storage.org_store.a_session_maker', mock_a_session_maker),
         patch(
-            'storage.org_store.OrgStore._maybe_get_managed_llm_key_for_user',
+            'storage.org_store.OrgStore._ensure_managed_llm_key_for_user',
             AsyncMock(return_value='managed-key'),
         ),
         patch(
@@ -1564,7 +1564,7 @@ async def test_update_org_defaults_async_propagates_managed_key_reset():
     assert agent_settings.llm.model == 'openhands/claude-3'
     mock_member_update.assert_called_once()
     member_settings = mock_member_update.call_args[0][2]
-    assert member_settings.llm_api_key.get_secret_value() == 'managed-key'
+    assert member_settings.llm_api_key is None
     assert member_settings.has_custom_llm_api_key is False
 
 
@@ -1600,9 +1600,9 @@ async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags()
     with (
         patch('storage.org_store.a_session_maker', mock_a_session_maker),
         patch(
-            'storage.org_store.OrgStore._maybe_get_managed_llm_key_for_user',
+            'storage.org_store.OrgStore._ensure_managed_llm_key_for_user',
             AsyncMock(return_value=None),
-        ),
+        ) as mock_ensure_managed_key,
         patch(
             'storage.org_member_store.OrgMemberStore.update_all_members_settings_async',
             AsyncMock(),
@@ -1611,9 +1611,94 @@ async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags()
         await OrgStore.update_org_defaults_async(org_id, update_data, user_id)
 
     mock_member_update.assert_called_once()
+    mock_ensure_managed_key.assert_not_awaited()
     member_settings = mock_member_update.call_args[0][2]
     assert member_settings.conversation_settings_diff == {'max_iterations': 42}
     assert member_settings.has_custom_llm_api_key is None
+
+
+@pytest.mark.asyncio
+async def test_managed_org_default_rotation_only_updates_acting_member(
+    async_session_maker,
+):
+    org_id = uuid.uuid4()
+    admin_user_id = uuid.uuid4()
+    member_user_id = uuid.uuid4()
+    managed_url = 'https://litellm.example.com'
+
+    async with async_session_maker() as session:
+        role = Role(name='member', rank=2)
+        org = Org(
+            id=org_id,
+            name='managed-key-scope-test',
+            agent_settings=OpenHandsAgentSettings(
+                llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+            ),
+        )
+        users = [
+            User(id=admin_user_id, current_org_id=org_id),
+            User(id=member_user_id, current_org_id=org_id),
+        ]
+        session.add_all([role, org, *users])
+        await session.flush()
+        session.add_all(
+            [
+                OrgMember(
+                    org_id=org_id,
+                    user_id=admin_user_id,
+                    role_id=role.id,
+                    llm_api_key='sk-stale-admin',
+                ),
+                OrgMember(
+                    org_id=org_id,
+                    user_id=member_user_id,
+                    role_id=role.id,
+                    llm_api_key='sk-member-specific',
+                ),
+            ]
+        )
+        await session.commit()
+
+    update_data = OrgUpdate(
+        agent_settings_diff={
+            'llm': {
+                'model': 'openhands/claude-3',
+                'base_url': managed_url,
+            }
+        }
+    )
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.LITE_LLM_API_URL', managed_url),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
+            new=AsyncMock(),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.generate_key',
+            new=AsyncMock(return_value='sk-fresh-admin'),
+        ),
+    ):
+        await OrgStore.update_org_defaults_async(
+            org_id,
+            update_data,
+            str(admin_user_id),
+        )
+
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(OrgMember).where(OrgMember.org_id == org_id)
+        )
+        members = {row.user_id: row for row in result.scalars().all()}
+
+    assert members[admin_user_id].llm_api_key.get_secret_value() == 'sk-fresh-admin'
+    assert (
+        members[member_user_id].llm_api_key.get_secret_value() == 'sk-member-specific'
+    )
 
 
 @pytest.mark.asyncio
@@ -1675,7 +1760,7 @@ async def test_update_org_defaults_async_does_not_broadcast_mcp_config(
     with (
         patch('storage.org_store.a_session_maker', async_session_maker),
         patch(
-            'storage.org_store.OrgStore._maybe_get_managed_llm_key_for_user',
+            'storage.org_store.OrgStore._ensure_managed_llm_key_for_user',
             AsyncMock(return_value=None),
         ),
     ):
@@ -1754,12 +1839,12 @@ async def test_count_team_orgs_excludes_personal_workspaces(async_session_maker)
 
 
 # ---------------------------------------------------------------------------
-# _maybe_get_managed_llm_key_for_user: auth-level key verification
+# _ensure_managed_llm_key_for_user: ownership and auth verification
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_maybe_get_managed_key_returns_existing_when_auth_valid(
+async def test_ensure_managed_key_returns_existing_when_owner_and_auth_valid(
     mock_litellm_api,
 ):
     """When the key is registered AND passes auth verification, return it."""
@@ -1804,7 +1889,7 @@ async def test_maybe_get_managed_key_returns_existing_when_auth_valid(
             new=AsyncMock(),
         ),
     ):
-        result = await OrgStore._maybe_get_managed_llm_key_for_user(
+        result = await OrgStore._ensure_managed_llm_key_for_user(
             session=mock_session,
             updated_org=updated_org,
             user_id=str(user_id),
@@ -1814,7 +1899,7 @@ async def test_maybe_get_managed_key_returns_existing_when_auth_valid(
 
 
 @pytest.mark.asyncio
-async def test_maybe_get_managed_key_rotates_when_auth_fails(mock_litellm_api):
+async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
     """When the key is registered but fails auth verification, rotate it."""
     user_id = uuid.uuid4()
     org_id = uuid.uuid4()
@@ -1857,10 +1942,11 @@ async def test_maybe_get_managed_key_rotates_when_auth_fails(mock_litellm_api):
             new=AsyncMock(return_value='fresh-rotated-key'),
         ),
     ):
-        result = await OrgStore._maybe_get_managed_llm_key_for_user(
+        result = await OrgStore._ensure_managed_llm_key_for_user(
             session=mock_session,
             updated_org=updated_org,
             user_id=str(user_id),
         )
 
     assert result == 'fresh-rotated-key'
+    assert member.llm_api_key.get_secret_value() == 'fresh-rotated-key'
