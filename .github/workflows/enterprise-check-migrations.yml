@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
@@ -59,6 +59,7 @@ jobs:
             ⚠️ This PR contains **migrations**
 
       - name: Comment warning on PR
+        if: github.actor != 'dependabot[bot]'
         uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -105,7 +106,7 @@ jobs:
       DB_NAME: openhands
       DB_DRIVER: ${{ matrix.db-driver }}  # pg8000 for prod parity, "" for psycopg2
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install poetry via pipx
         run: pipx install poetry
       - name: Set up Python
