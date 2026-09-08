@@ -88,16 +88,23 @@ def create_keycloak_user_info():
 
 
 @pytest.fixture(scope='session')
-def postgres_server() -> Iterator[postgres_testdb.PostgresServer]:
-    """A postgres container, started on first use and removed after the run."""
-    with postgres_testdb.running_server() as server:
-        yield server
+def postgres_server(pytestconfig: pytest.Config) -> postgres_testdb.PostgresServer:
+    """The postgres container this run shares.
+
+    Started here on first use; the root ``conftest.py`` removes it at the end
+    of the run.
+    """
+    return postgres_testdb.server_for_run(postgres_testdb.run_token(pytestconfig))
 
 
 @pytest.fixture(scope='session')
-def postgres_template(postgres_server: postgres_testdb.PostgresServer) -> str:
+def postgres_template(
+    postgres_server: postgres_testdb.PostgresServer, pytestconfig: pytest.Config
+) -> str:
     """Name of the migrated database that per-test databases are cloned from."""
-    return postgres_testdb.create_template_database(postgres_server)
+    return postgres_testdb.template_for_run(
+        postgres_server, postgres_testdb.run_token(pytestconfig)
+    )
 
 
 @pytest.fixture

@@ -1,25 +1,30 @@
 """Postgres databases for tests.
 
-Each pytest process runs a postgres container, migrates one template database
-with ``alembic upgrade head``, then clones that template per test with
+A run starts one postgres container, migrates one template database with
+``alembic upgrade head``, then clones that template per test with
 ``CREATE DATABASE ... TEMPLATE``. Cloning takes about 50ms, so every test can
-have its own database. The container is removed when the process exits.
+have its own database.
+
+The container is started by whichever process first needs a database and is
+removed by the hooks in the root ``conftest.py`` when the run ends.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+import pytest
+from filelock import FileLock
+from sqlalchemy import Connection, create_engine, text
 from sqlalchemy.engine import URL
 from sqlalchemy.pool import NullPool
 
@@ -40,6 +45,13 @@ DB_PASSWORD = 'openhands'
 ADMIN_DB = 'postgres'
 TEMPLATE_DB = 'oh_template'
 TEST_DB_PREFIX = 'oh_test_'
+
+# Every process in a run is handed the same token, so they agree on one
+# container without needing to talk to each other.
+CONTAINER_PREFIX = 'openhands-test-postgres-'
+LOCK_TIMEOUT_SECONDS = 600
+
+RUN_TOKEN = pytest.StashKey[str]()
 
 _IDENTIFIER = re.compile(r'^[a-z0-9_]+$')
 
@@ -121,10 +133,35 @@ def _run_admin_sql(server: PostgresServer, *statements: str) -> None:
         engine.dispose()
 
 
-@contextmanager
-def running_server() -> Iterator[PostgresServer]:
-    """Run a postgres container for the duration of the block."""
+def new_run_token() -> str:
+    """Identifies this run's container. Generated once, by the root conftest."""
+    return uuid.uuid4().hex[:12]
+
+
+def run_token(config: pytest.Config) -> str:
+    """The token every process in this run shares."""
+    worker_input = getattr(config, 'workerinput', None)
+    if worker_input is not None:
+        return worker_input['pg_run_token']
+    return config.stash[RUN_TOKEN]
+
+
+def _state_path(token: str, suffix: str) -> Path:
+    return Path(tempfile.gettempdir()) / f'{CONTAINER_PREFIX}{token}.{suffix}'
+
+
+def _container_name(token: str) -> str:
+    return f'{CONTAINER_PREFIX}{token}'
+
+
+def _start_container(token: str) -> dict:
     from testcontainers.community.postgres import PostgresContainer
+    from testcontainers.core.config import testcontainers_config
+
+    # The root conftest removes this container when the run ends. Ryuk would
+    # race that, and worse, it reaps when the process that started the
+    # container exits, which under xdist is one worker among several.
+    testcontainers_config.ryuk_disabled = True
 
     container = (
         PostgresContainer(
@@ -134,6 +171,7 @@ def running_server() -> Iterator[PostgresServer]:
             dbname=ADMIN_DB,
             driver=None,
         )
+        .with_name(_container_name(token))
         # Test data never needs to outlive the container, and ``size`` is used
         # verbatim as the docker tmpfs option string.
         .with_tmpfs_mount(PGDATA, 'size=2g')
@@ -152,15 +190,67 @@ def running_server() -> Iterator[PostgresServer]:
         raise PostgresUnavailableError(
             'Could not start the Postgres test container. Is Docker running?'
         ) from e
+    return {
+        'host': container.get_container_host_ip(),
+        'port': int(container.get_exposed_port(POSTGRES_PORT)),
+    }
+
+
+def server_for_run(token: str) -> PostgresServer:
+    """The server for this run, starting the container if it isn't up yet."""
+    address = _state_path(token, 'json')
+    with FileLock(str(_state_path(token, 'lock')), timeout=LOCK_TIMEOUT_SECONDS):
+        if not address.exists():
+            address.write_text(json.dumps(_start_container(token)))
+        data = json.loads(address.read_text())
+    return PostgresServer(
+        host=data['host'], port=data['port'], user=DB_USER, password=DB_PASSWORD
+    )
+
+
+def remove_server(token: str) -> None:
+    """Remove the container for a run. Safe to call when none was started."""
+    address = _state_path(token, 'json')
+    _state_path(token, 'lock').unlink(missing_ok=True)
+    if not address.exists():
+        return
+
+    # testcontainers' client, not ``docker.from_env()``: it resolves the
+    # daemon socket for Docker Desktop, OrbStack and remote DOCKER_HOST setups.
+    from testcontainers.core.docker_client import DockerClient
+
+    name = _container_name(token)
     try:
-        yield PostgresServer(
-            host=container.get_container_host_ip(),
-            port=int(container.get_exposed_port(POSTGRES_PORT)),
-            user=DB_USER,
-            password=DB_PASSWORD,
-        )
-    finally:
-        container.stop()
+        DockerClient().client.containers.get(name).remove(force=True)
+    except Exception as e:
+        # Say so loudly and keep the state file as a breadcrumb. A container
+        # outliving the run is the thing this is here to prevent.
+        print(f'Could not remove Postgres test container {name}: {e}', file=sys.stderr)
+        return
+    address.unlink(missing_ok=True)
+
+
+def template_for_run(server: PostgresServer, token: str) -> str:
+    """The migrated template for this run, building it if it isn't there yet."""
+    with FileLock(str(_state_path(token, 'lock')), timeout=LOCK_TIMEOUT_SECONDS):
+        engine = _admin_engine(server)
+        try:
+            with engine.connect() as conn:
+                exists = _database_exists(conn, TEMPLATE_DB)
+        finally:
+            engine.dispose()
+        if not exists:
+            create_template_database(server)
+    return TEMPLATE_DB
+
+
+def _database_exists(conn: Connection, name: str) -> bool:
+    return (
+        conn.execute(
+            text('SELECT 1 FROM pg_database WHERE datname = :name'), {'name': name}
+        ).scalar()
+        is not None
+    )
 
 
 def create_template_database(server: PostgresServer) -> str:
