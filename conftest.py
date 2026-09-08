@@ -21,8 +21,13 @@ def pytest_configure(config: pytest.Config) -> None:
     config.stash[postgres_testdb.TEST_SERVER] = postgres_testdb.start_server()
 
 
+@pytest.hookimpl(optionalhook=True)
 def pytest_configure_node(node) -> None:
-    """Hand each xdist worker the address of this run's postgres."""
+    """Hand each xdist worker the address of this run's postgres.
+
+    ``optionalhook`` because pytest-xdist declares this hook, and without it
+    registered pytest rejects the whole conftest.
+    """
     test_server = node.config.stash.get(postgres_testdb.TEST_SERVER, None)
     if test_server is not None:
         node.workerinput['pg_host'] = test_server.server.host
