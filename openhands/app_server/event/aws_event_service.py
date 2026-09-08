@@ -19,7 +19,11 @@ from pydantic import Field
 
 from openhands.app_server.config import get_app_conversation_info_service
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
-from openhands.app_server.event.event_service_base import EventServiceBase
+from openhands.app_server.event.event_service_base import (
+    EventServiceBase,
+    _parse_batch,
+    _serialize_batch,
+)
 from openhands.app_server.services.injector import InjectorState
 from openhands.sdk import Event
 
@@ -81,6 +85,36 @@ class AwsEventService(EventServiceBase):
             Key=str(path),
             Body=json_str.encode('utf-8'),
         )
+
+    def _load_batch(self, path: Path) -> list[Event] | None:
+        """Load the events contained in a batch file from S3."""
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=str(path))
+            with response['Body'] as stream:
+                content = stream.read().decode('utf-8')
+            return _parse_batch(content)
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchKey':
+                return None
+            _logger.exception(f'Error reading batch from {path}', stack_info=True)
+            return None
+        except Exception:
+            _logger.exception(f'Error reading batch from {path}', stack_info=True)
+            return None
+
+    def _store_batch(self, path: Path, events: list[Event]):
+        """Store a batch of events to S3."""
+        self.s3_client.put_object(
+            Bucket=self.bucket_name,
+            Key=str(path),
+            Body=_serialize_batch(events).encode('utf-8'),
+        )
+
+    def _delete_path(self, path: Path):
+        try:
+            self.s3_client.delete_object(Bucket=self.bucket_name, Key=str(path))
+        except Exception:
+            _logger.exception(f'Error deleting {path}', stack_info=True)
 
     def _search_paths(self, prefix: Path, page_id: str | None = None) -> list[Path]:
         """Search paths, following continuation tokens.

@@ -7,7 +7,12 @@ from typing import AsyncGenerator
 from fastapi import Request
 
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
-from openhands.app_server.event.event_service_base import EventServiceBase
+from openhands.app_server.event.event_service_base import (
+    BATCH_DIR_NAME,
+    EventServiceBase,
+    _parse_batch,
+    _serialize_batch,
+)
 from openhands.app_server.services.injector import InjectorState
 from openhands.sdk import Event
 
@@ -35,11 +40,31 @@ class FilesystemEventService(EventServiceBase):
         content = event.model_dump_json(indent=2)
         path.write_text(content)
 
+    def _load_batch(self, path: Path) -> list[Event] | None:
+        try:
+            return _parse_batch(path.read_text())
+        except Exception:
+            if path.exists():
+                _logger.exception('Error reading batch %s', path, stack_info=True)
+            return None
+
+    def _store_batch(self, path: Path, events: list[Event]):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_serialize_batch(events))
+
+    def _delete_path(self, path: Path):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
     def _search_paths(self, prefix: Path, page_id: str | None = None) -> list[Path]:
-        search_path = f'{prefix}/*'
-        files = glob.glob(str(search_path))
-        paths = [Path(file) for file in files]
-        return paths
+        # ``glob('{prefix}/*')`` does not descend into the ``events_batch``
+        # sub-directory, so we search the conversation directory and the batch
+        # directory separately and merge the results.
+        event_files = glob.glob(str(prefix / '*.json'))
+        batch_files = glob.glob(str(prefix / BATCH_DIR_NAME / '*.json'))
+        return [Path(file) for file in event_files + batch_files]
 
 
 class FilesystemEventServiceInjector(EventServiceInjector):

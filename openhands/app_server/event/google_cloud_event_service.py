@@ -16,7 +16,11 @@ from google.cloud.storage.client import Client
 
 from openhands.app_server.config import get_app_conversation_info_service
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
-from openhands.app_server.event.event_service_base import EventServiceBase
+from openhands.app_server.event.event_service_base import (
+    EventServiceBase,
+    _parse_batch,
+    _serialize_batch,
+)
 from openhands.app_server.services.injector import InjectorState
 from openhands.sdk import Event
 
@@ -60,6 +64,34 @@ class GoogleCloudEventService(EventServiceBase):
         data = event.model_dump(mode='json')
         with blob.open('w') as f:
             f.write(json.dumps(data, indent=2))
+
+    def _load_batch(self, path: Path) -> list[Event] | None:
+        """Load the events contained in a batch file from GCS."""
+        blob: Blob = self.bucket.blob(str(path))
+        try:
+            with blob.open('r') as f:
+                content = f.read()
+            return _parse_batch(content)
+        except NotFound:
+            return None
+        except Exception:
+            _logger.exception(f'Error reading batch from {path}', stack_info=True)
+            return None
+
+    def _store_batch(self, path: Path, events: list[Event]):
+        """Store a batch of events to GCS."""
+        blob: Blob = self.bucket.blob(str(path))
+        with blob.open('w') as f:
+            f.write(_serialize_batch(events))
+
+    def _delete_path(self, path: Path):
+        blob: Blob = self.bucket.blob(str(path))
+        try:
+            blob.delete()
+        except NotFound:
+            pass
+        except Exception:
+            _logger.exception(f'Error deleting {path}', stack_info=True)
 
     def _search_paths(self, prefix: Path, page_id: str | None = None) -> list[Path]:
         """Search paths."""
