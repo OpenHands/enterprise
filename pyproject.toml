@@ -58,7 +58,6 @@ dependencies = [
   "openhands-agent-server==1.45.0",
   "openhands-sdk==1.45.0",
   "openhands-tools==1.45.0",
-  "openhands-workspace==1.45.0",
   "opentelemetry-api==1.39.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
   "orjson==3.11.8",                                 # Pinned to fix CVE-2025-67221
@@ -204,4 +203,4 @@ omit = [ "tests/*", "**/test_*" ]
 [tool.uv]
 package = false
 exclude-newer = "7 days"
-exclude-newer-package = { openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, openhands-workspace = false, litellm = false }
+exclude-newer-package = { openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false }
