@@ -2848,26 +2848,8 @@ class TestDeleteSandboxKeyHandling:
     """The session_api_key_hash is invalidated UP FRONT on delete (a delete is
     often a revoke of a leaked key). When a transient error keeps the row for
     retry, the invalidation is committed first so the DELETE route's rollback
-    cannot resurrect the key. Backed by a real SQLite session so persistence is
-    provable across a rollback."""
-
-    @pytest.fixture
-    async def async_engine(self):
-        from sqlalchemy.ext.asyncio import create_async_engine
-        from sqlalchemy.pool import StaticPool
-
-        from openhands.app_server.utils.sql_utils import Base
-
-        engine = create_async_engine(
-            'sqlite+aiosqlite:///:memory:',
-            poolclass=StaticPool,
-            connect_args={'check_same_thread': False},
-            echo=False,
-        )
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        yield engine
-        await engine.dispose()
+    cannot resurrect the key. Backed by a real database session so persistence
+    is provable across a rollback."""
 
     @pytest.fixture
     async def real_session(self, async_engine):

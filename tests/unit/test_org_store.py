@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from openhands.app_server.settings.settings_models import Settings
@@ -419,7 +419,9 @@ def test_get_kwargs_from_settings():
 
 
 @pytest.mark.asyncio
-async def test_persist_org_with_owner_success(async_session_maker, mock_litellm_api):
+async def test_persist_org_with_owner_success(
+    async_session_maker, mock_litellm_api, create_org
+):
     """
     GIVEN: Valid org and org_member entities
     WHEN: persist_org_with_owner is called
@@ -430,8 +432,12 @@ async def test_persist_org_with_owner_success(async_session_maker, mock_litellm_
     user_id = uuid.uuid4()
 
     # Create user and role first
+    # The owner already belongs to some org: ``org_id`` is the one
+    # persist_org_with_owner is about to create, so it cannot be their home org.
+    home_org_id = create_org().id
+
     async with async_session_maker() as session:
-        user = User(id=user_id, current_org_id=org_id)
+        user = User(id=user_id, current_org_id=home_org_id)
         role = Role(id=1, name='owner', rank=1)
         session.add(user)
         session.add(role)
@@ -478,7 +484,7 @@ async def test_persist_org_with_owner_success(async_session_maker, mock_litellm_
 
 @pytest.mark.asyncio
 async def test_persist_org_with_owner_returns_refreshed_org(
-    async_session_maker, mock_litellm_api
+    async_session_maker, mock_litellm_api, create_org
 ):
     """
     GIVEN: Valid org and org_member entities
@@ -489,8 +495,12 @@ async def test_persist_org_with_owner_returns_refreshed_org(
     org_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
+    # The owner already belongs to some org: ``org_id`` is the one
+    # persist_org_with_owner is about to create, so it cannot be their home org.
+    home_org_id = create_org().id
+
     async with async_session_maker() as session:
-        user = User(id=user_id, current_org_id=org_id)
+        user = User(id=user_id, current_org_id=home_org_id)
         role = Role(id=1, name='owner', rank=1)
         session.add(user)
         session.add(role)
@@ -526,7 +536,7 @@ async def test_persist_org_with_owner_returns_refreshed_org(
 
 @pytest.mark.asyncio
 async def test_persist_org_with_owner_transaction_atomicity(
-    async_session_maker, mock_litellm_api
+    async_session_maker, mock_litellm_api, create_org
 ):
     """
     GIVEN: Valid org but invalid org_member (missing required field)
@@ -537,8 +547,12 @@ async def test_persist_org_with_owner_transaction_atomicity(
     org_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
+    # The owner already belongs to some org: ``org_id`` is the one
+    # persist_org_with_owner is about to create, so it cannot be their home org.
+    home_org_id = create_org().id
+
     async with async_session_maker() as session:
-        user = User(id=user_id, current_org_id=org_id)
+        user = User(id=user_id, current_org_id=home_org_id)
         role = Role(id=1, name='owner', rank=1)
         session.add(user)
         session.add(role)
@@ -579,7 +593,7 @@ async def test_persist_org_with_owner_transaction_atomicity(
 
 @pytest.mark.asyncio
 async def test_persist_org_with_owner_with_multiple_fields(
-    async_session_maker, mock_litellm_api
+    async_session_maker, mock_litellm_api, create_org
 ):
     """
     GIVEN: Org with multiple optional fields populated
@@ -590,8 +604,12 @@ async def test_persist_org_with_owner_with_multiple_fields(
     org_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
+    # The owner already belongs to some org: ``org_id`` is the one
+    # persist_org_with_owner is about to create, so it cannot be their home org.
+    home_org_id = create_org().id
+
     async with async_session_maker() as session:
-        user = User(id=user_id, current_org_id=org_id)
+        user = User(id=user_id, current_org_id=home_org_id)
         role = Role(id=1, name='owner', rank=1)
         session.add(user)
         session.add(role)
@@ -663,15 +681,6 @@ async def test_delete_org_cascade_success(async_session_maker, mock_litellm_api)
     other_org_id = uuid.uuid4()
     user_id = uuid.uuid4()
     async with async_session_maker() as session:
-        # This table is owned by the OpenHands application schema rather than
-        # Enterprise's SQLAlchemy metadata, so the SQLite fixture does not
-        # create it automatically.
-        await session.execute(
-            text(
-                'CREATE TABLE IF NOT EXISTS app_conversation_start_task '
-                '(app_conversation_id TEXT)'
-            )
-        )
         session.add_all(
             [
                 expected_org,
@@ -685,6 +694,13 @@ async def test_delete_org_cascade_success(async_session_maker, mock_litellm_api)
                     current_org_id=other_org_id,
                     email='owner@example.com',
                 ),
+            ]
+        )
+        # Committed separately: the budget tables below have no relationship
+        # back to ``user``, so SQLAlchemy would not order the inserts for us.
+        await session.commit()
+        session.add_all(
+            [
                 OrgBudgetSettings(
                     org_id=org_id,
                     enabled=True,
