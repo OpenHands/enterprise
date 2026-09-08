@@ -420,12 +420,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
     async def _reserve_daily_conversation_quota(self, user_id: str) -> bool:
         try:
+            from openhands.app_server.shared import server_config
             from server.services.daily_conversation_quota_service import (
                 DailyConversationQuotaService,
             )
             from storage.database import a_session_maker
-
-            from openhands.app_server.shared import server_config
         except ImportError:
             return False
         get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
