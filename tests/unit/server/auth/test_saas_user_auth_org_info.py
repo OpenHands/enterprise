@@ -1,4 +1,4 @@
-"""Unit tests for SaasUserAuth.get_org_info() using SQLite in-memory database.
+"""Unit tests for SaasUserAuth.get_org_info() against a real database.
 
 These tests exercise the real `get_org_info()` implementation with actual DB queries
 to catch regressions in the SAAS org lookup logic.
@@ -9,39 +9,12 @@ from unittest.mock import patch
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from server.auth.saas_user_auth import SaasUserAuth
-from storage.base import Base
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.role import Role
 from storage.user import User
-
-
-@pytest.fixture
-async def async_engine():
-    """Create an async SQLite engine for testing."""
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-    )
-    return engine
-
-
-@pytest.fixture
-async def async_session_maker(async_engine):
-    """Create an async session maker bound to the async engine."""
-    session_maker = async_sessionmaker(
-        bind=async_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    return session_maker
 
 
 @pytest.fixture
@@ -241,25 +214,24 @@ class TestGetOrgInfoWithRealDB:
 
     @pytest.mark.asyncio
     async def test_get_org_info_returns_none_when_org_not_found(
-        self, async_session_maker, user_id
+        self, async_session_maker, user_id, org_id
     ):
-        """Test that get_org_info returns None when user's org doesn't exist."""
-        nonexistent_org_id = uuid.uuid4()
+        """Test that get_org_info returns None when the effective org is gone.
 
-        # Create user pointing to nonexistent org
-        async with async_session_maker() as session:
-            user = User(
-                id=uuid.UUID(user_id),
-                current_org_id=nonexistent_org_id,
-                user_consents_to_analytics=True,
-            )
-            session.add(user)
-            await session.commit()
+        ``user.current_org_id`` is a foreign key, so it can never dangle. The
+        effective org can still resolve to a missing row -- it may come from an
+        ``X-Org-Id`` header or an org-bound API key -- so pin the resolved value
+        rather than trying to persist a user pointing at nothing.
+        """
+        await create_org(async_session_maker, org_id, 'Home Org')
+        await create_user(async_session_maker, user_id, org_id)
 
         user_auth = SaasUserAuth(
             user_id=user_id,
             refresh_token=SecretStr('mock_refresh_token'),
         )
+        user_auth._effective_org_id = uuid.uuid4()
+        user_auth._effective_org_id_resolved = True
 
         with (
             patch('storage.user_store.a_session_maker', async_session_maker),
