@@ -57,9 +57,13 @@ export function Dropdown({
       state.isOpen
         ? { ...actionAndChanges.changes, isOpen: true }
         : actionAndChanges.changes,
-    onInputValueChange: ({ inputValue: newValue }) => {
+    onInputValueChange: ({ inputValue: newValue, isOpen: willBeOpen }) => {
       setInputValue(newValue ?? "");
-      setSearchTerm(newValue ?? "");
+      // Selecting an item closes the menu and sets inputValue to the item's
+      // label, and downshift fires this after onIsOpenChange — without the
+      // isOpen guard the label would stick around as a search term and
+      // filter the options on the next open.
+      setSearchTerm(willBeOpen ? (newValue ?? "") : "");
     },
     defaultSelectedItem: defaultValue,
     onSelectedItemChange: ({ selectedItem: newSelectedItem }) => {

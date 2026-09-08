@@ -602,6 +602,31 @@ def _preserve_redacted_mcp_secrets(
     return incoming_value
 
 
+def _apply_mcp_config_update(
+    value: Any,
+    existing: Mapping[str, MCPServer],
+) -> dict[str, MCPServer]:
+    """Resolve the ``mcp_config`` value of an ``agent_settings_diff``.
+
+    A ``null`` map entry deletes that named server — the SDK ``MCPConfigPatch``
+    contract sparse clients (Canvas) send. Such a patch only touches the servers
+    it names: deleted keys are dropped, submitted servers replace their stored
+    entry, and untouched siblings keep their stored config and credentials.
+    A map without deletions keeps the legacy full-catalog replacement the
+    bundled settings UI relies on.
+    """
+    servers = _mcp_server_map(value) or {}
+    deleted = {name for name, server in servers.items() if server is None}
+    if not deleted:
+        return _normalize_mcp_config(_preserve_redacted_mcp_secrets(value, existing))
+    submitted = {name: server for name, server in servers.items() if server is not None}
+    merged = {name: server for name, server in existing.items() if name not in deleted}
+    merged.update(
+        _normalize_mcp_config(_preserve_redacted_mcp_secrets(submitted, existing))
+    )
+    return merged
+
+
 def _load_persisted_agent_settings(
     data: Any,
 ) -> OpenHandsAgentSettings | ACPAgentSettings:
@@ -803,6 +828,10 @@ class Settings(BaseModel):
         if not self.llm_profiles.has(active):
             self.llm_profiles.active = None
             return
+        # An ACP harness picks its model via ``acp_model`` and leaves ``llm`` at
+        # SDK defaults, so syncing it would overwrite the profile with junk.
+        if self.agent_settings.agent_kind != 'openhands':
+            return
         if self.llm_profiles.require(active) != self.agent_settings.llm:
             self.llm_profiles.save(active, self.agent_settings.llm)
 
@@ -830,15 +859,14 @@ class Settings(BaseModel):
                     _coerce_value(value) if not isinstance(value, dict) else value
                 )
 
-            # ``mcp_config`` replaces wholesale rather than deep-merging, so
-            # hold it back from the variant-aware merge and apply it after.
+            # ``mcp_config`` is held back from the variant-aware merge: a
+            # ``null`` entry deletes that server, otherwise the map replaces
+            # the stored catalog wholesale (see ``_apply_mcp_config_update``).
             replace_mcp_config = 'mcp_config' in agent_update
             mcp_config = (
-                _normalize_mcp_config(
-                    _preserve_redacted_mcp_secrets(
-                        coerced.pop('mcp_config', None),
-                        self.agent_settings.mcp_config,
-                    )
+                _apply_mcp_config_update(
+                    coerced.pop('mcp_config', None),
+                    self.agent_settings.mcp_config,
                 )
                 if replace_mcp_config
                 else None

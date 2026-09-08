@@ -136,6 +136,10 @@ interface ConfigureModalProps {
   onUnlink?: (adminApiKey?: string) => void;
   platformName: string;
   platform: "jira" | "jira-dc" | "linear";
+  /** Whether the caller may set up/edit the workspace connection (admin/owner).
+   *  When false, validating an unconfigured workspace shows "ask an admin"
+   *  instead of the setup form; linking still works. Defaults to true. */
+  canConfigure?: boolean;
   integrationData?: {
     id: number;
     keycloak_user_id: string;
@@ -161,6 +165,7 @@ export function ConfigureModal({
   platformName,
   platform,
   integrationData,
+  canConfigure = true,
 }: ConfigureModalProps) {
   const { t } = useTranslation();
   const { data: config } = useConfig();
@@ -170,6 +175,16 @@ export function ConfigureModal({
   const jiraDcOAuthHost = isJiraDc
     ? (config?.jira_dc_oauth_host ?? null)
     : null;
+  // Jira Cloud email-match installs save the workspace directly (no OAuth
+  // redirect), so the admin must register the webhook in Jira by hand; surface
+  // the events URL next to the typed secret.
+  const isJiraEmailMode =
+    platform === "jira" && config?.jira_oauth_enabled === false;
+  const jiraEventsPath = "/integration/jira/events";
+  const jiraEventsUrl =
+    typeof window !== "undefined"
+      ? `${window.location.origin}${jiraEventsPath}`
+      : jiraEventsPath;
   const [workspace, setWorkspace] = useState("");
   const [webhookSecret, setWebhookSecret] = useState("");
   const [serviceAccountEmail, setServiceAccountEmail] = useState("");
@@ -183,6 +198,9 @@ export function ConfigureModal({
   const [manualMode, setManualMode] = useState(false);
   const [manualSecret, setManualSecret] = useState("");
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  // True after a non-admin validates an unconfigured workspace: show "ask an
+  // admin" instead of the setup form (setup is admin/owner-only).
+  const [memberCannotConfigure, setMemberCannotConfigure] = useState(false);
   // True when editing a workspace that already has a stored service-account PAT,
   // so the field shows "saved — leave blank to keep" instead of looking empty.
   const [hasSavedApiKey, setHasSavedApiKey] = useState(false);
@@ -224,6 +242,7 @@ export function ConfigureModal({
     setManualMode(false);
     setManualSecret("");
     setShowRemoveConfirm(false);
+    setMemberCannotConfigure(false);
     setHasSavedApiKey(false);
     setRemoveAdminApiKey("");
     setIsActive(false);
@@ -301,6 +320,17 @@ export function ConfigureModal({
     return I18nKey.PROJECT_MANAGEMENT$SERVICE_ACCOUNT_API_LABEL;
   };
 
+  // Reveal the setup form after validating an unconfigured workspace — unless
+  // the caller may not configure it, in which case show "ask an admin".
+  const revealConfigurationFields = () => {
+    if (!canConfigure) {
+      setMemberCannotConfigure(true);
+      return;
+    }
+    setShowConfigurationFields(true);
+    setIsActive(true);
+  };
+
   const validateMutation = useValidateIntegration(platform, {
     onSuccess: (data) => {
       if (data.data.status === "active") {
@@ -308,19 +338,16 @@ export function ConfigureModal({
         onLink(workspace.trim());
       } else {
         // Show configuration fields for further setup
-        setShowConfigurationFields(true);
-        setIsActive(true);
+        revealConfigurationFields();
       }
     },
     onError: (error) => {
       if (error.response?.status === 404) {
         // Integration not found, show configuration fields
-        setShowConfigurationFields(true);
-        setIsActive(true);
+        revealConfigurationFields();
       } else {
         // Other errors - still show configuration fields as fallback
-        setShowConfigurationFields(true);
-        setIsActive(true);
+        revealConfigurationFields();
       }
     },
   });
@@ -602,6 +629,14 @@ export function ConfigureModal({
             {workspaceError && (
               <p className="text-red-500 text-sm mt-2">{workspaceError}</p>
             )}
+            {memberCannotConfigure && (
+              <p
+                className="text-sm mt-2 text-tertiary-alt"
+                data-testid="member-ask-admin"
+              >
+                {t(I18nKey.PROJECT_MANAGEMENT$JIRA_MEMBER_ASK_ADMIN)}
+              </p>
+            )}
           </div>
 
           {showConfigurationFields && (
@@ -703,21 +738,42 @@ export function ConfigureModal({
                   )}
                 </div>
               ) : (
-                <div>
-                  <SettingsInput
-                    label={t(I18nKey.PROJECT_MANAGEMENT$WEBHOOK_SECRET_LABEL)}
-                    placeholder={t(
-                      I18nKey.PROJECT_MANAGEMENT$WEBHOOK_SECRET_PLACEHOLDER,
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <SettingsInput
+                      label={t(I18nKey.PROJECT_MANAGEMENT$WEBHOOK_SECRET_LABEL)}
+                      placeholder={t(
+                        I18nKey.PROJECT_MANAGEMENT$WEBHOOK_SECRET_PLACEHOLDER,
+                      )}
+                      value={webhookSecret}
+                      onChange={handleWebhookSecretChange}
+                      className="w-full"
+                      type="password"
+                    />
+                    {webhookSecretError && (
+                      <p className="text-red-500 text-sm mt-2">
+                        {webhookSecretError}
+                      </p>
                     )}
-                    value={webhookSecret}
-                    onChange={handleWebhookSecretChange}
-                    className="w-full"
-                    type="password"
-                  />
-                  {webhookSecretError && (
-                    <p className="text-red-500 text-sm mt-2">
-                      {webhookSecretError}
-                    </p>
+                  </div>
+                  {/* Email-match installs save directly (no OAuth redirect), so
+                      the admin registers the webhook in Jira by hand with this
+                      URL and the secret typed above. */}
+                  {isJiraEmailMode && (
+                    <>
+                      <p className="text-xs text-tertiary-alt">
+                        {t(
+                          I18nKey.PROJECT_MANAGEMENT$JIRA_MANUAL_WEBHOOK_INSTRUCTIONS,
+                        )}
+                      </p>
+                      <CopyableValue
+                        testId="jira-webhook-url-value"
+                        label={t(
+                          I18nKey.PROJECT_MANAGEMENT$JIRA_DC_WEBHOOK_URL_LABEL,
+                        )}
+                        value={jiraEventsUrl}
+                      />
+                    </>
                   )}
                 </div>
               )}
@@ -787,24 +843,26 @@ export function ConfigureModal({
           )}
         </div>
         <div className="flex flex-col gap-2 w-full mt-4">
-          {/* Hide the connect/edit button if workspace exists but is not editable */}
-          {(!existingWorkspace || isWorkspaceEditable) && (
-            <BrandButton
-              variant="primary"
-              onClick={handleConnect}
-              testId="connect-button"
-              type="button"
-              className="w-full"
-              isDisabled={isConnectDisabled}
-            >
-              {(() => {
-                if (existingWorkspace && showConfigurationFields) {
-                  return t(I18nKey.PROJECT_MANAGEMENT$UPDATE_BUTTON_LABEL);
-                }
-                return t(I18nKey.PROJECT_MANAGEMENT$CONNECT_BUTTON_LABEL);
-              })()}
-            </BrandButton>
-          )}
+          {/* Hide the connect/edit button if workspace exists but is not editable,
+              or if the caller may not configure an unconfigured workspace */}
+          {(!existingWorkspace || isWorkspaceEditable) &&
+            !memberCannotConfigure && (
+              <BrandButton
+                variant="primary"
+                onClick={handleConnect}
+                testId="connect-button"
+                type="button"
+                className="w-full"
+                isDisabled={isConnectDisabled}
+              >
+                {(() => {
+                  if (existingWorkspace && showConfigurationFields) {
+                    return t(I18nKey.PROJECT_MANAGEMENT$UPDATE_BUTTON_LABEL);
+                  }
+                  return t(I18nKey.PROJECT_MANAGEMENT$CONNECT_BUTTON_LABEL);
+                })()}
+              </BrandButton>
+            )}
           {showAdminRemove && (
             <div className="flex flex-col gap-2">
               <p className="text-xs text-tertiary-alt">

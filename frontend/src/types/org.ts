@@ -19,6 +19,7 @@ export interface Organization {
   enable_solvability_analysis: boolean;
   v1_enabled: boolean;
   credits: number | null;
+  credits_available?: boolean;
   is_personal?: boolean;
 }
 

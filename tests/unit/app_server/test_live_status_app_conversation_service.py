@@ -23,6 +23,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AgentType,
     AppConversationInfo,
     AppConversationStartRequest,
+    AppConversationStartTaskStatus,
     ConversationTrigger,
 )
 from openhands.app_server.app_conversation.app_conversation_service import (
@@ -37,6 +38,9 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     effective_disabled_skills,
 )
 from openhands.app_server.errors import SandboxError
+from openhands.app_server.event_callback.set_title_callback_processor import (
+    SetTitleCallbackProcessor,
+)
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
 from openhands.app_server.integrations.service_types import SuggestedTask, TaskType
 from openhands.app_server.sandbox.sandbox_models import (
@@ -59,6 +63,46 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
+
+
+class _AsyncSessionContext:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, *args):
+        return None
+
+
+def _quota_modules(reserve_result=True, release_error=None):
+    session = object()
+    reserve = AsyncMock(return_value=reserve_result)
+    release = AsyncMock(side_effect=release_error)
+
+    class DailyConversationQuotaService:
+        def __init__(self, actual_session):
+            assert actual_session is session
+
+        async def reserve(self, user_id, org_id):
+            return await reserve(user_id, org_id)
+
+        async def release(self, user_id):
+            await release(user_id)
+
+    quota_module = types.ModuleType('server.services.daily_conversation_quota_service')
+    quota_module.DailyConversationQuotaService = DailyConversationQuotaService
+    database_module = types.ModuleType('storage.database')
+    database_module.a_session_maker = lambda: _AsyncSessionContext(session)
+    modules = {
+        'server': types.ModuleType('server'),
+        'server.services': types.ModuleType('server.services'),
+        'server.services.daily_conversation_quota_service': quota_module,
+        'storage': types.ModuleType('storage'),
+        'storage.database': database_module,
+    }
+    return modules, reserve, release
 
 
 def _async_iter(items):
@@ -315,6 +359,182 @@ class TestLiveStatusAppConversationService:
         # Default mock for hooks loading - returns None (no hooks found)
         # Tests that specifically test hooks loading can override this mock
         self.service._load_hooks_from_workspace = AsyncMock(return_value=None)
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_consumes_reserved_quota(self):
+        self.mock_user_context.get_user_id = AsyncMock(return_value='user-id')
+        self.mock_user_context._daily_quota_reserved = True
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock()
+        tasks = [
+            AppConversationStartTaskStatus.WORKING,
+            AppConversationStartTaskStatus.READY,
+        ]
+
+        async def start(_request):
+            for status in tasks:
+                yield SimpleNamespace(status=status)
+
+        self.service._start_app_conversation = start
+        self.service._release_daily_conversation_quota = AsyncMock()
+
+        result = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+
+        assert len(result) == 2
+        assert self.mock_user_context._daily_quota_reserved is False
+        self.service._release_daily_conversation_quota.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_releases_quota_on_error_task(self):
+        self.mock_user_context.get_user_id = AsyncMock(return_value='user-id')
+        self.service._reserve_daily_conversation_quota = AsyncMock(return_value=True)
+        self.service._release_daily_conversation_quota = AsyncMock()
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock()
+
+        async def start(_request):
+            yield SimpleNamespace(status=AppConversationStartTaskStatus.ERROR)
+
+        self.service._start_app_conversation = start
+        result = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+
+        assert len(result) == 1
+        self.service._reserve_daily_conversation_quota.assert_awaited_once_with(
+            'user-id'
+        )
+        self.service._release_daily_conversation_quota.assert_awaited_once_with(
+            'user-id'
+        )
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_releases_quota_on_start_failure(self):
+        self.mock_user_context.get_user_id = AsyncMock(return_value='user-id')
+        self.service._reserve_daily_conversation_quota = AsyncMock(return_value=True)
+        self.service._release_daily_conversation_quota = AsyncMock()
+
+        async def start(_request):
+            raise RuntimeError('start failed')
+            yield  # pragma: no cover
+
+        self.service._start_app_conversation = start
+
+        with pytest.raises(RuntimeError, match='start failed'):
+            [
+                task
+                async for task in self.service.start_app_conversation(
+                    AppConversationStartRequest()
+                )
+            ]
+
+        self.service._release_daily_conversation_quota.assert_awaited_once_with(
+            'user-id'
+        )
+
+    @pytest.mark.asyncio
+    async def test_reserve_daily_quota_noops_without_enterprise_modules(self):
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        with patch.dict(
+            sys.modules,
+            {
+                'server.services.daily_conversation_quota_service': None,
+                'storage.database': None,
+            },
+        ):
+            result = await self.service._reserve_daily_conversation_quota('user-id')
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_reserve_daily_quota_noops_without_org(self):
+        modules, reserve, _ = _quota_modules()
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=None)
+        with (
+            patch.dict(sys.modules, modules),
+            patch(
+                'openhands.app_server.shared.server_config.app_mode',
+                SimpleNamespace(value='saas'),
+            ),
+        ):
+            result = await self.service._reserve_daily_conversation_quota('user-id')
+
+        assert result is False
+        reserve.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reserve_daily_quota_uses_enterprise_service(self):
+        modules, reserve, _ = _quota_modules(reserve_result=True)
+        org_id = uuid4()
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+        with (
+            patch.dict(sys.modules, modules),
+            patch(
+                'openhands.app_server.shared.server_config.app_mode',
+                SimpleNamespace(value='saas'),
+            ),
+        ):
+            result = await self.service._reserve_daily_conversation_quota('user-id')
+
+        assert result is True
+        reserve.assert_awaited_once_with('user-id', org_id)
+
+    @pytest.mark.asyncio
+    async def test_release_daily_quota_noops_without_user(self):
+        await self.service._release_daily_conversation_quota(None)
+
+    @pytest.mark.asyncio
+    async def test_release_daily_quota_uses_service_and_swallows_errors(self):
+        modules, _, release = _quota_modules()
+        with patch.dict(sys.modules, modules):
+            await self.service._release_daily_conversation_quota('user-id')
+        release.assert_awaited_once_with('user-id')
+
+        modules, _, release = _quota_modules(release_error=RuntimeError('db failed'))
+        with patch.dict(sys.modules, modules):
+            await self.service._release_daily_conversation_quota('user-id')
+        release.assert_awaited_once_with('user-id')
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_without_user_skips_quota(self):
+        self.mock_user_context.get_user_id = AsyncMock(return_value=None)
+        self.service._reserve_daily_conversation_quota = AsyncMock()
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock()
+
+        async def start(_request):
+            yield SimpleNamespace(status=AppConversationStartTaskStatus.READY)
+
+        self.service._start_app_conversation = start
+        result = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+
+        assert len(result) == 1
+        self.service._reserve_daily_conversation_quota.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reserve_daily_quota_noops_outside_saas(self):
+        modules, reserve, _ = _quota_modules()
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        with (
+            patch.dict(sys.modules, modules),
+            patch(
+                'openhands.app_server.shared.server_config.app_mode',
+                SimpleNamespace(value='oss'),
+            ),
+        ):
+            result = await self.service._reserve_daily_conversation_quota('user-id')
+
+        assert result is False
+        reserve.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_seed_sandbox_profiles_upserts_resolved_keys_and_prunes(self):
@@ -2561,21 +2781,14 @@ class TestLiveStatusAppConversationService:
 
         self.mock_event_service.iter_events_for_export.assert_not_called()
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
-    )
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
-    )
-    async def test_start_app_conversation_default_title_uses_first_five_characters(
-        self, mock_conversation_info_class, mock_remote_workspace_class
+    def _arrange_start_app_conversation(
+        self,
+        conversation_id,
+        mock_conversation_info_class,
+        mock_remote_workspace_class,
     ):
-        """Test that v1 conversations use first 5 characters of conversation ID for default title."""
-        # Arrange
-        conversation_id = uuid4()
-        conversation_id_hex = conversation_id.hex
-        expected_title = f'Conversation {conversation_id_hex[:5]}'
-
+        """Wire the mocks so ``_start_app_conversation`` runs through saving
+        the conversation info and registering its event callbacks."""
         # Mock user context
         self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
         self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
@@ -2643,6 +2856,27 @@ class TestLiveStatusAppConversationService:
         # Mock event callback service
         self.mock_event_callback_service.save_event_callback = AsyncMock()
 
+        self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock()
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_default_title_uses_first_five_characters(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """Test that v1 conversations use first 5 characters of conversation ID for default title."""
+        # Arrange
+        conversation_id = uuid4()
+        conversation_id_hex = conversation_id.hex
+        expected_title = f'Conversation {conversation_id_hex[:5]}'
+
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+
         # Create request
         request = AppConversationStartRequest()
 
@@ -2664,6 +2898,45 @@ class TestLiveStatusAppConversationService:
             f'but got "{saved_info.title}"'
         )
         assert saved_info.id == conversation_id
+        # The auto-title callback is registered when no title was supplied
+        saved_callbacks = (
+            self.mock_event_callback_service.save_event_callback.await_args_list
+        )
+        saved_processors = [call.args[0].processor for call in saved_callbacks]
+        assert any(isinstance(p, SetTitleCallbackProcessor) for p in saved_processors)
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_keeps_request_title_and_skips_auto_title(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """Test that a caller-supplied title is stored and not auto-titled over."""
+        # Arrange
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        request = AppConversationStartRequest(title='PR-REVIEW APPEVO-1234')
+
+        # Act
+        async for task in self.service._start_app_conversation(request):
+            pass
+
+        # Assert
+        save_call = self.mock_app_conversation_info_service.save_app_conversation_info
+        saved_info = save_call.call_args[0][0]
+        assert saved_info.title == 'PR-REVIEW APPEVO-1234'
+        saved_callbacks = (
+            self.mock_event_callback_service.save_event_callback.await_args_list
+        )
+        saved_processors = [call.args[0].processor for call in saved_callbacks]
+        assert not any(
+            isinstance(p, SetTitleCallbackProcessor) for p in saved_processors
+        )
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
@@ -3726,6 +3999,32 @@ class TestPluginHandling:
             'Plugin Configuration Parameters:' in result.initial_message.content[0].text
         )
         assert '- api_key: test123' in result.initial_message.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_resolve_registered_marketplaces_uses_shared_resolver(self):
+        """Conversation start composes marketplaces through the shared resolver."""
+        from openhands.app_server.settings.settings_models import (
+            MarketplaceRegistration,
+        )
+
+        # Arrange
+        marketplaces = [
+            MarketplaceRegistration(
+                name='team', source='github:owner/plugins', auto_load=True
+            )
+        ]
+
+        # Act
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.'
+            'resolve_registered_marketplaces',
+            AsyncMock(return_value=marketplaces),
+        ) as mock_resolve:
+            result = await self.service._resolve_registered_marketplaces(self.mock_user)
+
+        # Assert
+        mock_resolve.assert_awaited_once_with(self.mock_user_context, self.mock_user)
+        assert result == marketplaces
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',

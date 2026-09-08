@@ -46,6 +46,11 @@ export interface WebClientFeatureFlags {
   enable_onboarding: boolean;
   enable_automations?: boolean;
   enable_agent_canvas_banner?: boolean;
+  /** When true, LLM API key export (BYOR) is enabled for every org regardless
+   *  of billing/credits. Mirrors the ENABLE_BYOR_EXPORT env var so the API keys
+   *  page can distinguish "export disabled on this deployment" from "buy credits
+   *  to enable" when billing is off. */
+  enable_byor_export?: boolean;
 }
 
 export interface ACPModelOption {
@@ -90,4 +95,8 @@ export interface WebClientConfig {
   jira_dc_service_account_email?: string | null;
   /** Non-secret Jira DC service-account env config error, if any. */
   jira_dc_service_account_config_error?: string | null;
+  /** False when the install links Jira Cloud users by email match instead of
+   *  Atlassian OAuth; drives direct-save + manual-webhook UI in the configure
+   *  flow. Absent ⇒ true (OAuth), so SaaS/older backends are unaffected. */
+  jira_oauth_enabled?: boolean;
 }

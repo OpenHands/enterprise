@@ -77,9 +77,13 @@ function ManageOrg() {
             {t(I18nKey.ORG$CREDITS)}
           </span>
           <div className="flex items-center gap-2">
-            <CreditsChip testId="available-credits">
-              ${Number(balance ?? 0).toFixed(2)}
-            </CreditsChip>
+            {balance !== undefined && (
+              <CreditsChip testId="available-credits">
+                {balance === null
+                  ? t(I18nKey.CONVERSATION$NO_BUDGET_LIMIT)
+                  : `$${Number(balance).toFixed(2)}`}
+              </CreditsChip>
+            )}
             {canAddCredits && (
               <InteractiveChip onClick={() => setAddCreditsFormVisible(true)}>
                 {t(I18nKey.ORG$ADD)}

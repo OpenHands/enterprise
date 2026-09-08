@@ -781,3 +781,134 @@ class TestSQLAppConversationStartTaskService:
             conversation_id__eq=conversation_id1, created_at__gte=filter_time
         )
         assert count == 1
+
+    async def test_delete_start_tasks_older_than(
+        self,
+        service: SQLAppConversationStartTaskService,
+        sample_request: AppConversationStartRequest,
+    ):
+        """Test bulk deletion of tasks older than a cutoff, regardless of user."""
+        from datetime import timedelta
+
+        from openhands.agent_server.models import utc_now
+
+        base_time = utc_now()
+
+        # Old task (user1) — should be deleted
+        old_task = AppConversationStartTask(
+            id=uuid4(),
+            created_by_user_id='user1',
+            status=AppConversationStartTaskStatus.READY,
+            request=sample_request,
+        )
+        old_task.created_at = base_time - timedelta(days=2)
+        await service.save_app_conversation_start_task(old_task)
+
+        # Old task (user2) — should be deleted; verifies no user scoping
+        old_task_other_user = AppConversationStartTask(
+            id=uuid4(),
+            created_by_user_id='user2',
+            status=AppConversationStartTaskStatus.ERROR,
+            request=sample_request,
+        )
+        old_task_other_user.created_at = base_time - timedelta(days=3)
+        await service.save_app_conversation_start_task(old_task_other_user)
+
+        # Recent task (user1) — should be kept
+        recent_task = AppConversationStartTask(
+            id=uuid4(),
+            created_by_user_id='user1',
+            status=AppConversationStartTaskStatus.WORKING,
+            request=sample_request,
+        )
+        recent_task.created_at = base_time - timedelta(hours=1)
+        await service.save_app_conversation_start_task(recent_task)
+
+        # Cutoff: 1 day ago
+        cutoff = base_time - timedelta(days=1)
+        deleted = await service.delete_start_tasks_older_than(cutoff)
+
+        assert deleted == 2
+
+        # Old tasks gone
+        assert await service.get_app_conversation_start_task(old_task.id) is None
+        assert (
+            await service.get_app_conversation_start_task(old_task_other_user.id)
+            is None
+        )
+
+        # Recent task still present
+        recent = await service.get_app_conversation_start_task(recent_task.id)
+        assert recent is not None
+        assert recent.id == recent_task.id
+
+    async def test_delete_start_tasks_older_than_empty(
+        self,
+        service: SQLAppConversationStartTaskService,
+    ):
+        """Test that deleting with no matching rows returns 0."""
+        from datetime import UTC, datetime
+
+        future_cutoff = datetime.now(UTC)  # nothing is older than "now"
+        deleted = await service.delete_start_tasks_older_than(future_cutoff)
+        assert deleted == 0
+
+    async def test_delete_start_tasks_older_than_batched(
+        self,
+        service: SQLAppConversationStartTaskService,
+        sample_request: AppConversationStartRequest,
+    ):
+        """Test batched deletion deletes all matching rows across multiple batches."""
+        from datetime import timedelta
+
+        from openhands.agent_server.models import utc_now
+
+        base_time = utc_now()
+
+        # Create 5 old tasks that span 2 batches of size 2 (plus a recent one)
+        old_ids = []
+        for i in range(5):
+            task = AppConversationStartTask(
+                id=uuid4(),
+                created_by_user_id=f'user{i}',
+                status=AppConversationStartTaskStatus.READY,
+                request=sample_request,
+            )
+            task.created_at = base_time - timedelta(days=2, hours=i)
+            await service.save_app_conversation_start_task(task)
+            old_ids.append(task.id)
+
+        recent_task = AppConversationStartTask(
+            id=uuid4(),
+            created_by_user_id='user_recent',
+            status=AppConversationStartTaskStatus.WORKING,
+            request=sample_request,
+        )
+        recent_task.created_at = base_time - timedelta(hours=1)
+        await service.save_app_conversation_start_task(recent_task)
+
+        cutoff = base_time - timedelta(days=1)
+        deleted = await service.delete_start_tasks_older_than(cutoff, batch_size=2)
+
+        # All 5 old rows deleted across ceil(5/2)=3 batches
+        assert deleted == 5
+        for old_id in old_ids:
+            assert await service.get_app_conversation_start_task(old_id) is None
+
+        # Recent task kept
+        recent = await service.get_app_conversation_start_task(recent_task.id)
+        assert recent is not None
+        assert recent.id == recent_task.id
+
+    async def test_delete_start_tasks_older_than_batched_empty(
+        self,
+        service: SQLAppConversationStartTaskService,
+    ):
+        """Test batched deletion with no matching rows returns 0."""
+        from datetime import UTC, datetime
+
+        future_cutoff = datetime.now(UTC)
+        deleted = await service.delete_start_tasks_older_than(
+            future_cutoff, batch_size=100
+        )
+        assert deleted == 0

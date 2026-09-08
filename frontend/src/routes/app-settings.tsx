@@ -1,6 +1,7 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 import { usePostHog } from "posthog-js/react";
+import { useNavigate } from "react-router";
 import { useSaveSettings } from "#/hooks/mutation/use-save-settings";
 import { useSettings } from "#/hooks/query/use-settings";
 import { AvailableLanguages } from "#/i18n";
@@ -19,13 +20,13 @@ import {
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { AppSettingsInputsSkeleton } from "#/components/features/settings/app-settings/app-settings-inputs-skeleton";
 import { useConfig } from "#/hooks/query/use-config";
-import { parseMaxBudgetPerTask } from "#/utils/settings-utils";
 import {
   SandboxGroupingStrategy,
   SandboxGroupingStrategyOptions,
 } from "#/types/settings";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { useSandboxSpecs } from "#/hooks/query/use-sandbox-specs";
+import { GpgKeyModal } from "#/components/features/settings/git-settings/gpg-key-modal";
 
 export const clientLoader = createPermissionGuard(
   "manage_application_settings",
@@ -34,6 +35,7 @@ export const clientLoader = createPermissionGuard(
 function AppSettingsScreen() {
   const posthog = usePostHog();
   const { t } = useTranslation();
+  const navigate = useNavigate();
 
   const { mutate: saveSettings, isPending } = useSaveSettings();
   const { data: settings, isLoading } = useSettings();
@@ -69,14 +71,13 @@ function AppSettingsScreen() {
   const [selectedSandboxSpecId, setSelectedSandboxSpecId] = React.useState<
     string | null | undefined
   >(undefined);
-  const [maxBudgetPerTaskHasChanged, setMaxBudgetPerTaskHasChanged] =
-    React.useState(false);
   const [gitUserNameHasChanged, setGitUserNameHasChanged] =
     React.useState(false);
   const [gitUserEmailHasChanged, setGitUserEmailHasChanged] =
     React.useState(false);
   const [gitFullCloneHasChanged, setGitFullCloneHasChanged] =
     React.useState(false);
+  const [gpgKeyModalIsVisible, setGpgKeyModalIsVisible] = React.useState(false);
 
   const formAction = (formData: FormData) => {
     const languageLabel = formData.get("language-input")?.toString();
@@ -108,11 +109,6 @@ function AppSettingsScreen() {
         ? selectedSandboxSpecId
         : (settings?.default_sandbox_spec_id ?? null);
 
-    const maxBudgetPerTaskValue = formData
-      .get("max-budget-per-task-input")
-      ?.toString();
-    const maxBudgetPerTask = parseMaxBudgetPerTask(maxBudgetPerTaskValue || "");
-
     const gitUserName =
       formData.get("git-user-name-input")?.toString() ||
       DEFAULT_SETTINGS.git_user_name;
@@ -129,7 +125,6 @@ function AppSettingsScreen() {
       enable_solvability_analysis: enableSolvabilityAnalysis,
       sandbox_grouping_strategy: sandboxGroupingStrategy,
       default_sandbox_spec_id: defaultSandboxSpecId,
-      max_budget_per_task: maxBudgetPerTask,
       git_user_name: gitUserName,
       git_user_email: gitUserEmail,
       git_full_clone: gitFullClone,
@@ -154,7 +149,6 @@ function AppSettingsScreen() {
         setSelectedSandboxGroupingStrategy(null);
         setSandboxSpecIdHasChanged(false);
         setSelectedSandboxSpecId(undefined);
-        setMaxBudgetPerTaskHasChanged(false);
         setGitUserNameHasChanged(false);
         setGitUserEmailHasChanged(false);
         setGitFullCloneHasChanged(false);
@@ -217,12 +211,6 @@ function AppSettingsScreen() {
     setSandboxSpecIdHasChanged(newSpecId !== currentSpecId);
   };
 
-  const checkIfMaxBudgetPerTaskHasChanged = (value: string) => {
-    const newValue = parseMaxBudgetPerTask(value);
-    const currentValue = settings?.max_budget_per_task;
-    setMaxBudgetPerTaskHasChanged(newValue !== currentValue);
-  };
-
   const checkIfGitUserNameHasChanged = (value: string) => {
     const currentValue = settings?.git_user_name;
     setGitUserNameHasChanged(value !== currentValue);
@@ -246,7 +234,6 @@ function AppSettingsScreen() {
     !solvabilityAnalysisSwitchHasChanged &&
     !sandboxGroupingStrategyHasChanged &&
     !sandboxSpecIdHasChanged &&
-    !maxBudgetPerTaskHasChanged &&
     !gitUserNameHasChanged &&
     !gitUserEmailHasChanged &&
     !gitFullCloneHasChanged;
@@ -352,21 +339,6 @@ function AppSettingsScreen() {
             wrapperClassName="w-full max-w-[680px]"
           />
 
-          {!settings?.v1_enabled && (
-            <SettingsInput
-              testId="max-budget-per-task-input"
-              name="max-budget-per-task-input"
-              type="number"
-              label={t(I18nKey.SETTINGS$MAX_BUDGET_PER_CONVERSATION)}
-              defaultValue={settings.max_budget_per_task?.toString() || ""}
-              onChange={checkIfMaxBudgetPerTaskHasChanged}
-              placeholder={t(I18nKey.SETTINGS$MAXIMUM_BUDGET_USD)}
-              min={1}
-              step={1}
-              className="w-full max-w-[680px]" // Match the width of the language field
-            />
-          )}
-
           <div className="border-t border-t-tertiary pt-6 mt-2">
             <h3 className="text-lg font-medium mb-2">
               {t(I18nKey.SETTINGS$GIT_SETTINGS)}
@@ -415,9 +387,27 @@ function AppSettingsScreen() {
                 placeholder={t(I18nKey.SETTINGS$GIT_EMAIL_PLACEHOLDER)}
                 className="w-full max-w-[680px]"
               />
+              <BrandButton
+                testId="set-gpg-key-button"
+                type="button"
+                variant="secondary"
+                onClick={() => setGpgKeyModalIsVisible(true)}
+              >
+                {t(I18nKey.SETTINGS$GPG_KEY_BUTTON)}
+              </BrandButton>
             </div>
           </div>
         </div>
+      )}
+
+      {gpgKeyModalIsVisible && (
+        <GpgKeyModal
+          onClose={() => setGpgKeyModalIsVisible(false)}
+          onSaved={() => {
+            setGpgKeyModalIsVisible(false);
+            navigate("/settings/secrets");
+          }}
+        />
       )}
 
       <div className="flex gap-6 p-6 justify-end">

@@ -65,7 +65,7 @@ _BARE_OPENAI_MODELS: set[str] = set(_SDK_OPENAI)
 _BARE_ANTHROPIC_MODELS: set[str] = set(_SDK_ANTHROPIC)
 _BARE_MISTRAL_MODELS: set[str] = set(_SDK_MISTRAL)
 
-DEFAULT_OPENHANDS_MODEL = 'openhands/minimax-m2.7'
+DEFAULT_OPENHANDS_MODEL = 'openhands/deepseek-v4-flash'
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ def resolve_llm_base_url(
 
     * ``openhands/app_server/settings/settings_router._post_merge_llm_fixups``
       (personal-settings save path).
-    * ``enterprise/server/routes/org_models.OrgLLMSettingsUpdate._normalize_agent_settings``
+    * ``server/routes/org_models.OrgLLMSettingsUpdate._normalize_agent_settings``
       (org-defaults save path).
 
     Semantics:

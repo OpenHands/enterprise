@@ -27,6 +27,10 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.services.injector import InjectorState
 
 
+def _default_if_none(value: int | None, default: int) -> int:
+    return default if value is None else value
+
+
 @dataclass
 class DynamicRemoteSandboxSpecService(SandboxSpecService):
     """Sandbox spec service backed by the runtime-api warm runtime configs endpoint.
@@ -72,9 +76,13 @@ class DynamicRemoteSandboxSpecService(SandboxSpecService):
                 command=config['command'],
                 initial_env=config['environment'],
                 working_dir=config['working_dir'],
-                run_as_user=config.get('run_as_user', DEFAULT_RUN_AS_USER),
-                run_as_group=config.get('run_as_group', DEFAULT_RUN_AS_GROUP),
-                fs_group=config.get('fs_group', DEFAULT_FS_GROUP),
+                run_as_user=_default_if_none(
+                    config.get('run_as_user'), DEFAULT_RUN_AS_USER
+                ),
+                run_as_group=_default_if_none(
+                    config.get('run_as_group'), DEFAULT_RUN_AS_GROUP
+                ),
+                fs_group=_default_if_none(config.get('fs_group'), DEFAULT_FS_GROUP),
             )
             specs.append(spec)
             name_to_spec[config['name']] = spec

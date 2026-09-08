@@ -8,7 +8,7 @@ Skills are specialized prompts that enhance OpenHands with domain-specific knowl
 
 **Version 1 (V1)**: The term "skills" is used for V1 conversations. V1 UI and app server have not yet been released, but the codebase has been updated to use "skills" terminology in preparation for the V1 release.
 
-This directory (`OpenHands/skills/`) contains shareable skills that will be used in V1 conversations. For V0 conversations, the system continues to use microagents from the same underlying files.
+This directory (`skills/`) contains shareable skills that will be used in V1 conversations. For V0 conversations, the system continues to use microagents from the same underlying files.
 
 ## Sources of Skills/Microagents
 
@@ -16,7 +16,7 @@ OpenHands loads skills (V1) or microagents (V0) from two sources:
 
 ### 1. Shareable Skills/Microagents (Public)
 
-This directory (`OpenHands/skills/`) contains shareable skills (V1) or microagents (V0) that are:
+This directory (`skills/`) contains shareable skills (V1) or microagents (V0) that are:
 
 - Available to all OpenHands users
 - Maintained in the OpenHands repository
@@ -26,7 +26,7 @@ This directory (`OpenHands/skills/`) contains shareable skills (V1) or microagen
 Directory structure:
 
 ```
-OpenHands/skills/
+skills/
 ├── # Keyword-triggered expertise
 │   ├── github.md      # GitHub operations and API usage
 │   ├── docker.md      # Docker guidelines
