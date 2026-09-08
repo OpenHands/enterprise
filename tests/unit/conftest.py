@@ -1,17 +1,20 @@
 import os
 import uuid
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import datetime
 from uuid import UUID
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
 from openhands.app_server.app_conversation.sql_app_conversation_start_task_service import (
     StoredAppConversationStartTask,  # noqa: F401
@@ -22,9 +25,9 @@ from server.verified_models.verified_model_service import (
     StoredVerifiedModel,  # noqa: F401
 )
 
-# Anything not loaded here may not have a table created for it.
+# Imported for their side effect: SQLAlchemy can only configure mappers once
+# every model a relationship refers to has been imported.
 from storage.api_key import ApiKey  # noqa: F401
-from storage.base import Base
 from storage.billing_session import BillingSession
 from storage.bitbucket_dc_webhook import BitbucketDCWebhook  # noqa: F401
 from storage.bitbucket_webhook import BitbucketWebhook  # noqa: F401
@@ -115,59 +118,95 @@ def test_database(
         postgres_testdb.drop_test_database(postgres_server, name)
 
 
-@pytest.fixture(scope='function')
-def db_path(tmp_path):
-    """Create a unique temp file path for each test."""
-    return str(tmp_path / 'test.db')
+@pytest.fixture
+def engine(test_database: postgres_testdb.TestDatabase) -> Iterator[Engine]:
+    """Sync engine on this test's database, on the driver production uses."""
+    engine = create_engine(test_database.sync_url, poolclass=NullPool)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture
-def engine(db_path):
-    """Create a sync engine with tables using file-based DB."""
-    engine = create_engine(
-        f'sqlite:///{db_path}', connect_args={'check_same_thread': False}
-    )
-    Base.metadata.create_all(engine)
-    return engine
-
-
-@pytest.fixture
-def session_maker(engine):
+def session_maker(engine: Engine) -> sessionmaker:
     return sessionmaker(bind=engine)
 
 
 @pytest.fixture
-def async_engine(db_path):
-    """Create an async engine using the SAME file-based database."""
-    async_engine = create_async_engine(
-        f'sqlite+aiosqlite:///{db_path}',
-        connect_args={'check_same_thread': False},
-    )
-
-    async def create_tables():
-        async with async_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-    # Run the async function synchronously
-    import asyncio
-
-    asyncio.run(create_tables())
-    return async_engine
+async def async_engine(
+    test_database: postgres_testdb.TestDatabase,
+) -> AsyncIterator[AsyncEngine]:
+    """Async engine on the same database as ``engine``."""
+    async_engine = create_async_engine(test_database.async_url, poolclass=NullPool)
+    try:
+        yield async_engine
+    finally:
+        await async_engine.dispose()
 
 
 @pytest.fixture
-async def async_session_maker(async_engine):
-    """Create an async session maker bound to the async engine."""
-    async_session_maker = async_sessionmaker(
+async def async_session_maker(async_engine: AsyncEngine) -> async_sessionmaker:
+    """Async session maker bound to the async engine."""
+    return async_sessionmaker(
         bind=async_engine,
         class_=AsyncSession,
         expire_on_commit=False,
     )
-    return async_session_maker
+
+
+@pytest.fixture
+def create_org(session_maker: sessionmaker) -> Callable[..., Org]:
+    """Factory for ``org`` rows, so foreign keys pointing at one resolve.
+
+    Postgres enforces the foreign keys that SQLite quietly ignored, so a test
+    that stores anything org-scoped needs the org to exist.
+    """
+
+    def _create(**kwargs) -> Org:
+        kwargs.setdefault('id', uuid.uuid4())
+        kwargs.setdefault('name', f'test-org-{uuid.uuid4().hex[:12]}')
+        kwargs.setdefault('org_version', ORG_SETTINGS_VERSION)
+        org = Org(**kwargs)
+        with session_maker() as session:
+            session.add(org)
+            session.commit()
+            session.refresh(org)
+            session.expunge(org)
+        return org
+
+    return _create
+
+
+@pytest.fixture
+def create_user(
+    session_maker: sessionmaker, create_org: Callable[..., Org]
+) -> Callable[..., User]:
+    """Factory for ``user`` rows, defaulting ``current_org_id`` to a new org."""
+
+    def _create(**kwargs) -> User:
+        kwargs.setdefault('id', uuid.uuid4())
+        if 'current_org_id' not in kwargs:
+            kwargs['current_org_id'] = create_org().id
+        user = User(**kwargs)
+        with session_maker() as session:
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+            session.expunge(user)
+        return user
+
+    return _create
 
 
 def add_minimal_fixtures(session_maker):
     with session_maker() as session:
+        role = Role(name='admin', rank=1)
+        session.add(role)
+        # Flush before anything else so Postgres assigns ``role.id`` from its
+        # identity sequence. Hardcoding an id here would leave the sequence at
+        # 1, and the next role a test inserts without an id would collide.
+        session.flush()
         session.add(
             BillingSession(
                 id='mock-billing-session-id',
@@ -232,13 +271,6 @@ def add_minimal_fixtures(session_maker):
             )
         )
         session.add(
-            Role(
-                id=1,
-                name='admin',
-                rank=1,
-            )
-        )
-        session.add(
             User(
                 id=uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081'),
                 current_org_id=uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081'),
@@ -249,7 +281,7 @@ def add_minimal_fixtures(session_maker):
             OrgMember(
                 org_id=uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081'),
                 user_id=uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081'),
-                role_id=1,
+                role_id=role.id,
                 llm_api_key='mock-api-key',
                 status='active',
             )
