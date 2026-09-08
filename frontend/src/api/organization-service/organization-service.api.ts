@@ -612,7 +612,7 @@ interface OrgBudgetUser {
   user_id: string;
   user_email: string | null;
   user_name: string | null;
-  current_spend: number;
+  current_spend: number | null;
   monthly_limit: number | null;
   effective_monthly_limit: number | null;
   is_disabled: boolean;
@@ -622,14 +622,21 @@ interface OrgBudgetUser {
 interface OrgBudgetSettings {
   enabled: boolean;
   monthly_limit: number | null;
+  litellm_last_sync_at: string | null;
+  litellm_last_sync_status: string | null;
+  litellm_last_sync_error: string | null;
   reset_day: number;
   slack_channel: string | null;
   slack_team_id: string | null;
   default_user_monthly_limit: number | null;
   cycle_start_at: string;
   cycle_end_at: string;
-  current_spend: number;
-  current_spend_percentage: number;
+  spend_status: "live" | "stale" | "unavailable";
+  spend_observed_at: string | null;
+  current_spend: number | null;
+  current_spend_percentage: number | null;
+  unmapped_spend: number | null;
+  unmapped_member_count: number | null;
   thresholds: OrgBudgetThreshold[];
   users: OrgBudgetUser[];
   users_total: number;

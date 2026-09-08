@@ -139,6 +139,22 @@ class AppConversationInfoService(ABC):
             execution_status: The new execution status value
         """
 
+    @abstractmethod
+    async def update_title(
+        self,
+        conversation_id: UUID,
+        title: str,
+    ) -> None:
+        """Update only the title of a conversation.
+
+        Unlike ``save_app_conversation_info`` this must not rewrite any other
+        column, so it cannot revert concurrent updates (e.g. statistics).
+
+        Args:
+            conversation_id: The ID of the conversation to update
+            title: The new title
+        """
+
 
 class AppConversationInfoServiceInjector(
     DiscriminatedUnionMixin, Injector[AppConversationInfoService], ABC

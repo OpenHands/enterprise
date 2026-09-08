@@ -33,7 +33,7 @@ jobs:
           # ── 1. Extract the canonical version from pyproject.toml ──────────
           with open("pyproject.toml", "rb") as f:
               pyproject = tomllib.load(f)
-          version = pyproject["tool"]["poetry"]["version"]
+          version = pyproject["project"]["version"]
           major_minor = ".".join(version.split(".")[:2])
           print(f"📦 pyproject.toml version: {version} (major.minor: {major_minor})")
 

@@ -3,6 +3,7 @@ frontend/node_modules
 
 # Configuration (except pyproject.toml)
 *.ini
+!alembic.ini
 *.toml
 !pyproject.toml
 *.yml
