@@ -126,6 +126,7 @@ dev = [
   "types-setuptools",
 ]
 test = [
+  "filelock==3.29.0",
   "freezegun==1.5.5",
   "gevent==25.9.1",
   "moto[s3]>=5.2.2,<6.0.0",
@@ -137,6 +138,7 @@ test = [
   "pytest-timeout==2.4.0",
   "pytest-xdist==3.8.0",
   "reportlab==4.4.10",
+  "testcontainers==4.15.0",
 ]
 runtime = [
   "flake8==7.3.0",

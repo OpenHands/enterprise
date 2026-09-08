@@ -226,6 +226,12 @@ test-frontend:
 	@echo "$(YELLOW)Running tests for frontend...$(RESET)"
 	@cd frontend && npm run test
 
+# Remove the PostgreSQL container the unit tests share. It is normally left
+# running so repeated runs skip container startup and the migration replay.
+test-db-down:
+	@echo "$(YELLOW)Removing the unit test PostgreSQL container...$(RESET)"
+	@docker rm -f openhands-test-postgres 2>/dev/null || true
+
 test:
 	@$(MAKE) -s test-frontend
 
@@ -379,5 +385,5 @@ help:
 	@echo "  $(GREEN)help$(RESET)                - Display this help message, providing information on available targets."
 
 # Phony targets
-.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend start-backend start-saas-backend start-frontend _run_setup _run_saas_setup run run-saas run-wsl setup-config setup-config-prompts setup-config-basic openhands-cloud-run docker-dev docker-run clean help
+.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test-db-down test build-frontend start-backend start-saas-backend start-frontend _run_setup _run_saas_setup run run-saas run-wsl setup-config setup-config-prompts setup-config-basic openhands-cloud-run docker-dev docker-run clean help
 .PHONY: kind

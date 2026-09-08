@@ -1,5 +1,6 @@
 import os
 import uuid
+from collections.abc import Iterator
 from datetime import datetime
 from uuid import UUID
 
@@ -50,6 +51,7 @@ from storage.stored_offline_token import StoredOfflineToken
 from storage.stripe_customer import StripeCustomer
 from storage.user import User
 from storage.user_settings import UserSettings  # noqa: F401
+from tests import postgres_testdb
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +85,38 @@ def create_keycloak_user_info():
         return KeycloakUserInfo(**defaults)
 
     return _create
+
+
+@pytest.fixture(scope='session')
+def postgres_server() -> postgres_testdb.PostgresServer:
+    """The Postgres server shared by every test that touches a database.
+
+    Started on first use as a container and reused by later runs; see
+    ``tests/postgres_testdb.py``.
+    """
+    return postgres_testdb.shared_server()
+
+
+@pytest.fixture(scope='session')
+def postgres_template(postgres_server: postgres_testdb.PostgresServer) -> str:
+    """Name of the migrated database that per-test databases are cloned from."""
+    return postgres_testdb.shared_template(postgres_server)
+
+
+@pytest.fixture
+def test_database(
+    postgres_server: postgres_testdb.PostgresServer, postgres_template: str
+) -> Iterator[postgres_testdb.TestDatabase]:
+    """A database of this test's own, at ``alembic upgrade head``.
+
+    Cloning the template is fast enough (~50ms) that every test can have a
+    genuinely empty schema instead of sharing one behind a rollback.
+    """
+    name = postgres_testdb.create_test_database(postgres_server, postgres_template)
+    try:
+        yield postgres_testdb.TestDatabase(server=postgres_server, name=name)
+    finally:
+        postgres_testdb.drop_test_database(postgres_server, name)
 
 
 @pytest.fixture(scope='function')
