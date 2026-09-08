@@ -100,7 +100,7 @@ def test_writes_do_not_leak_into_other_databases(
 
 
 def test_foreign_keys_are_enforced(pg_engine: Engine):
-    """The whole point of leaving SQLite behind: constraints actually apply."""
+    """The migrated schema brings its constraints with it."""
     # DatabaseError rather than IntegrityError: pg8000 reports a foreign key
     # violation as a ProgrammingError, where asyncpg reports IntegrityError.
     with pytest.raises(DatabaseError), pg_engine.begin() as conn:
@@ -111,22 +111,3 @@ def test_foreign_keys_are_enforced(pg_engine: Engine):
             ),
             {'id': str(uuid.uuid4()), 'org_id': str(uuid.uuid4())},
         )
-
-
-def test_stale_sweep_reads_the_owning_pid_out_of_the_database_name(monkeypatch):
-    """Leftovers are named after the process that made them."""
-    seen: list[int] = []
-
-    def fake_pid_exists(pid: int) -> bool:
-        seen.append(pid)
-        return pid == 4242
-
-    monkeypatch.setattr(postgres_testdb.psutil, 'pid_exists', fake_pid_exists)
-
-    prefix = postgres_testdb.TEST_DB_PREFIX
-    assert postgres_testdb._owner_process_alive(f'{prefix}4242_abc123') is True
-    assert postgres_testdb._owner_process_alive(f'{prefix}5555_abc123') is False
-    assert seen == [4242, 5555]
-
-    # Unrecognised names are left alone rather than guessed at.
-    assert postgres_testdb._owner_process_alive(f'{prefix}legacy_name') is True
