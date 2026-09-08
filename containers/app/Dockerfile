@@ -7,7 +7,7 @@
 # `python -m sync.<job>` and `alembic upgrade head` all run from /app.
 # Python dependencies are installed with uv from the committed uv.lock.
 ARG OPENHANDS_BUILD_VERSION=dev
-FROM node:25.9-trixie-slim AS frontend-builder
+FROM node:26.8-trixie-slim AS frontend-builder
 
 WORKDIR /app
 
