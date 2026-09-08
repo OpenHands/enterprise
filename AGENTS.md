@@ -218,7 +218,7 @@ Each integration follows a consistent pattern with service classes, storage mode
 
 **Database Testing:**
 - Use the `engine` / `session_maker` / `async_engine` / `async_session_maker` fixtures from `tests/unit/conftest.py`
-  for application unit tests. Each test gets its own PostgreSQL database, migrated to head, from a shared container
+  for application unit tests. Each test gets its own PostgreSQL database, migrated to head, cloned from a template
   (see `tests/postgres_testdb.py`); never hand-roll a SQLite engine
 - Do not add SQLite paths to Alembic migrations
 - Create module-specific `conftest.py` files with database fixtures

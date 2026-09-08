@@ -320,22 +320,9 @@ uv run pytest ./tests/unit
 The suite covers the app server (`openhands/`) and the SaaS modules (`server/`, `storage/`, ...); the database
 fixtures live in `tests/unit/conftest.py`.
 
-Tests that touch the database run against real PostgreSQL. The first such test starts a `postgres:16` container
-named `openhands-test-postgres`, builds a template database with `alembic upgrade head`, and then hands every
-individual test its own clone of that template. Docker therefore has to be running; nothing else is needed.
-
-The container is left running so later runs reuse it, and the template is rebuilt automatically whenever
-`migrations/` changes. To remove it:
-
-```bash
-make test-db-down
-```
-
-To run against a PostgreSQL server you already have instead of a container, set `OH_TEST_POSTGRES_URL`:
-
-```bash
-OH_TEST_POSTGRES_URL=postgresql://openhands:openhands@localhost:5432/postgres uv run pytest ./tests/unit
-```
+Tests that touch the database run against real PostgreSQL. The first such test starts a `postgres:16` container,
+migrates a template database with `alembic upgrade head`, and then hands every individual test its own clone of
+that template. Docker has to be running; nothing else is needed. The container is removed when the run ends.
 
 ---
 

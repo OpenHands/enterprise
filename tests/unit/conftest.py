@@ -159,8 +159,7 @@ async def async_session_maker(async_engine: AsyncEngine) -> async_sessionmaker:
 def create_org(session_maker: sessionmaker) -> Callable[..., Org]:
     """Factory for ``org`` rows, so foreign keys pointing at one resolve.
 
-    Postgres enforces the foreign keys that SQLite quietly ignored, so a test
-    that stores anything org-scoped needs the org to exist.
+    Anything org-scoped a test stores needs the org row to exist first.
     """
 
     def _create(**kwargs) -> Org:
