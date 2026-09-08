@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_VERSIONS_DIR = ROOT / 'enterprise' / 'migrations' / 'versions'
+DEFAULT_VERSIONS_DIR = ROOT / 'migrations' / 'versions'
 MIGRATION_FILENAME_RE = re.compile(r'^(?P<prefix>\d+)_.+\.py$')
 SQLITE_REFERENCE_RE = re.compile(r'\bsqlite\b|sqlite_', re.IGNORECASE)
 MISSING = object()
