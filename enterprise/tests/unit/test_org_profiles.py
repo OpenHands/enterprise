@@ -413,6 +413,76 @@ class TestProfileLifecycleIntegration:
         assert models['Pinned'] == 'anthropic/claude-3-5-sonnet'
 
     @pytest.mark.asyncio
+    async def test_default_profile_cleared_when_db_default_disabled(
+        self, async_session_maker, patch_route_db
+    ):
+        """A persisted ``Default`` whose DB row is disabled must not linger.
+
+        Starts with a live OpenHands DB default (so ``Default`` materializes)
+        and a concrete user profile, then disables the only default row. The
+        logical ``Default`` pointer has no target, so it must disappear from
+        the listing and the stored snapshot must not be rewritten — while the
+        concrete user profile survives.
+        """
+        org_id = patch_route_db
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org is not None
+            org.llm_profiles = {
+                'profiles': {
+                    'Default': {'model': 'openhands/stale-default'},
+                    'Pinned': {'model': 'anthropic/claude-3-5-sonnet'},
+                },
+                'active': 'Default',
+            }
+            session.add(
+                StoredVerifiedModel(
+                    model_name='gpt-5.2',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        # With a live default, Default materializes to the concrete DB model.
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+        models = {profile.name: profile.model for profile in listing.profiles}
+        assert models['Default'] == 'openhands/gpt-5.2'
+        assert models['Pinned'] == 'anthropic/claude-3-5-sonnet'
+
+        # Disable the only enabled OpenHands default row.
+        async with async_session_maker() as session:
+            row = (
+                await session.execute(
+                    select(StoredVerifiedModel).where(
+                        StoredVerifiedModel.model_name == 'gpt-5.2'
+                    )
+                )
+            ).scalar_one()
+            row.is_enabled = False
+            await session.commit()
+
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+        models = {profile.name: profile.model for profile in listing.profiles}
+        # The logical Default is gone (no target), but the concrete user
+        # profile is preserved, and active no longer points at a stale model.
+        assert 'Default' not in models
+        assert models['Pinned'] == 'anthropic/claude-3-5-sonnet'
+        assert listing.active_profile != 'Default'
+
+        # The stored snapshot is not rewritten — only the live view dropped it.
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org is not None
+            assert (
+                org.llm_profiles['profiles']['Default']['model']
+                == 'openhands/stale-default'
+            )
+
+    @pytest.mark.asyncio
     async def test_activating_default_uses_current_verified_default(
         self, async_session_maker, patch_route_db
     ):

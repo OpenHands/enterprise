@@ -12,6 +12,7 @@ from server.verified_models.verified_model_models import (
     VerifiedModelUpdate,
 )
 from server.verified_models.verified_model_service import (
+    LiteLLMSyncError,
     VerifiedModelService,
     verified_model_store_dependency,
 )
@@ -31,6 +32,21 @@ from openhands.app_server.utils.llm import ModelsResponse, get_supported_llm_mod
 _logger = logging.getLogger(__name__)
 
 api_router = APIRouter(prefix='/api/admin/verified-models', tags=['Verified Models'])
+
+
+def _litellm_sync_error_response(exc: LiteLLMSyncError) -> HTTPException:
+    """Map a LiteLLM propagation failure to a surfaced 502.
+
+    The verified-model DB mutation is already committed before propagation
+    runs, so this does not roll it back. Surfacing the failure (instead of
+    silently acknowledging the mutation) lets the operator retry by re-saving
+    the model or reconcile LiteLLM out-of-band, so a billing/access change
+    cannot stay silently divergent.
+    """
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=str(exc),
+    )
 
 
 @api_router.get('')
@@ -83,6 +99,8 @@ async def create_verified_model(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(ex),
         ) from ex
+    except LiteLLMSyncError as ex:
+        raise _litellm_sync_error_response(ex) from ex
 
 
 @api_router.put('/{provider}/{model_name:path}')
@@ -96,14 +114,17 @@ async def update_verified_model(
     ),
 ) -> VerifiedModel:
     """Update a verified model by provider and model name."""
-    model = await verified_model_service.update_verified_model(
-        model_name=model_name,
-        provider=provider,
-        is_enabled=data.is_enabled,
-        is_verified=data.is_verified,
-        is_free=data.is_free,
-        is_default=data.is_default,
-    )
+    try:
+        model = await verified_model_service.update_verified_model(
+            model_name=model_name,
+            provider=provider,
+            is_enabled=data.is_enabled,
+            is_verified=data.is_verified,
+            is_free=data.is_free,
+            is_default=data.is_default,
+        )
+    except LiteLLMSyncError as ex:
+        raise _litellm_sync_error_response(ex) from ex
     if not model:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -132,6 +153,8 @@ async def delete_verified_model(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(ex),
         ) from ex
+    except LiteLLMSyncError as ex:
+        raise _litellm_sync_error_response(ex) from ex
 
 
 class SaaSLLMModelService(DefaultLLMModelService):

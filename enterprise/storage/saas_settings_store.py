@@ -505,13 +505,15 @@ class SaasSettingsStore(SettingsStore):
         # Covers both pre-migration rows (llm_profiles is None) and
         # already-migrated orgs whose profiles map is empty.
         seeded_default = False
+        seeded_payload: dict[str, Any] | None = None
         if not (kwargs.get('llm_profiles') or {}).get('profiles'):
             legacy_llm = merged_agent_settings.get('llm')
             if isinstance(legacy_llm, dict) and legacy_llm.get('model'):
-                kwargs['llm_profiles'] = {
+                seeded_payload = {
                     'profiles': {'Default': dict(legacy_llm)},
                     'active': 'Default',
                 }
+                kwargs['llm_profiles'] = seeded_payload
                 seeded_default = True
             else:
                 # No legacy LLM to seed; drop a None value so the non-nullable
@@ -522,6 +524,18 @@ class SaasSettingsStore(SettingsStore):
             openhands_default_model_name = await get_openhands_default_model_name(
                 session
             )
+        # Persist the seeded legacy Default only when there is no DB-backed
+        # OpenHands default to materialize. When there IS a DB default, the
+        # live ``Default`` profile stays derived from
+        # ``verified_models.is_default`` rather than a stored snapshot.
+        #
+        # Note: ``materialize_default_llm_payload`` removes the logical
+        # ``Default`` when ``openhands_default_model_name`` is ``None`` (it is
+        # a live pointer with no target). The seeded legacy Default is a
+        # concrete user model, not a DB-default pointer, so persist the
+        # pre-materialize ``seeded_payload`` — otherwise the materialized
+        # (Default-stripped) view would be written back and the user's legacy
+        # LLM would be lost on the first load after upgrade.
         persist_seeded_default = seeded_default and openhands_default_model_name is None
 
         live_llm_profiles: LLMProfiles | None = None
@@ -574,10 +588,16 @@ class SaasSettingsStore(SettingsStore):
         # profile should stay derived from verified_models.is_default, not from
         # a stored org.llm_profiles snapshot. Persist is best-effort: a
         # transient DB failure here must not block returning settings.
-        if persist_seeded_default:
+        #
+        # Persist the pre-materialize ``seeded_payload`` (the concrete legacy
+        # LLM), not ``settings.llm_profiles``: materialize stripped the
+        # logical ``Default`` because there is no DB default to point at, so
+        # the materialized view has no profile to persist.
+        if persist_seeded_default and seeded_payload is not None:
             try:
+                seeded_profiles = LLMProfiles.model_validate(seeded_payload)
                 await self._persist_seeded_default_profile(
-                    org_id, settings.llm_profiles
+                    org_id, seeded_profiles
                 )
             except Exception:
                 logger.warning(

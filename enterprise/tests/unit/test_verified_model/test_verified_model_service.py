@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from server.verified_models.verified_model_service import (
+    LiteLLMSyncError,
     VerifiedModelService,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -292,6 +293,36 @@ class TestFreeFlag:
                 await service.delete_verified_model('free-model', 'openhands')
 
             sync_allowlists.assert_awaited_once_with(['free-model'])
+
+    async def test_failed_litellm_sync_surfaces_error_and_keeps_db_change(
+        self, async_session_maker
+    ):
+        """A failed LiteLLM propagation must not be silently acknowledged.
+
+        The DB mutation commits before propagation, so the row must persist
+        (enabling a retry/reconcile) — but the service must raise
+        ``LiteLLMSyncError`` so the admin layer can surface the partial
+        failure instead of claiming success. This proves a failed sync cannot
+        leave the system silently divergent: the caller is always informed.
+        """
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            with patch(
+                'storage.lite_llm_manager.LiteLlmManager.sync_free_model_allowlists',
+                new=AsyncMock(side_effect=RuntimeError('LiteLLM unreachable')),
+            ):
+                with pytest.raises(LiteLLMSyncError):
+                    await service.create_verified_model(
+                        model_name='free-model',
+                        provider='openhands',
+                        is_free=True,
+                    )
+
+            # The DB change committed despite the propagation failure, so a
+            # retry (re-save) or out-of-band reconcile can converge LiteLLM.
+            persisted = await service.get_model('free-model', 'openhands')
+            assert persisted is not None
+            assert persisted.is_free is True
 
 
 class TestVerifiedFlag:

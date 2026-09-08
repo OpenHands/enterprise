@@ -80,7 +80,10 @@ class ModelsResponse(BaseModel):
       OpenHands has verified to work well.
     * ``verified_providers`` — provider names shown in the "Verified"
       section of the model selector.
-    * ``default_model`` — the recommended default model id.
+    * ``default_model`` — the recommended default model id, or ``None`` when
+      the backend has no default to recommend (SaaS with no enabled OpenHands
+      ``is_default`` row). Self-hosted / OSS discovery always supplies the
+      hardcoded ``DEFAULT_OPENHANDS_MODEL`` so its behavior is unchanged.
     * ``free_models`` — ``provider/model`` strings that are free to use on
       the managed OpenHands provider (rendered with a "Free" badge). Default
       empty, so self-hosted / default discovery behavior is unchanged.
@@ -99,7 +102,7 @@ class ModelsResponse(BaseModel):
     models: list[str]
     verified_models: list[str]
     verified_providers: list[str]
-    default_model: str
+    default_model: str | None = None
     free_models: list[str] = []
     hidden_models: list[str] = []
     hidden_model_canonicals: dict[str, str] = {}
@@ -292,8 +295,12 @@ def get_supported_llm_models(
         free_models: Optional list of ``"openhands/<name>"`` strings that are
             free to use on the managed OpenHands provider (SaaS mode, from the
             database). Surfaced verbatim in ``ModelsResponse.free_models``.
-        default_model: Optional recommended default model id. When ``None``
-            the hardcoded ``DEFAULT_OPENHANDS_MODEL`` is used.
+        default_model: Optional recommended default model id. ``None`` means
+            the backend has no default to recommend (SaaS with no enabled
+            OpenHands ``is_default`` row); it is passed through verbatim so
+            SaaS can represent "no default" instead of silently falling back
+            to the OSS default. The OSS caller passes ``DEFAULT_OPENHANDS_MODEL``
+            explicitly, so OSS behavior is unchanged.
         verified_openhands_models: Optional list of OpenHands-provider model ids
             that should be returned in the legacy ``verified_models`` field.
             Defaults to the full OpenHands model list.
@@ -321,7 +328,7 @@ def get_supported_llm_models(
         models=unique_models,
         verified_models=_derive_verified_models(legacy_verified_openhands_models),
         verified_providers=VERIFIED_PROVIDERS,
-        default_model=default_model or DEFAULT_OPENHANDS_MODEL,
+        default_model=default_model,
         free_models=free_models or [],
     )
 

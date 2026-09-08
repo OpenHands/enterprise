@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.settings.llm_profiles import LLMProfiles
+from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.llm import LLM
 
 from .verified_model_service import StoredVerifiedModel
@@ -31,6 +32,23 @@ def materialize_default_llm_profile(
     profiles: LLMProfiles, model_name: str | None
 ) -> LLMProfiles:
     if not model_name:
+        # No enabled OpenHands DB default. The logical ``Default`` profile is a
+        # live pointer to the managed OpenHands default, so when it currently
+        # holds an OpenHands-managed model whose DB row was disabled/deleted it
+        # must not linger — otherwise list_profiles / get_profile /
+        # SaasSettingsStore.load() keep exposing and launching the stale model,
+        # violating the contract that a disabled default is ignored
+        # immediately. A non-OpenHands ``Default`` (e.g. a legacy seeded
+        # concrete LLM) is a user-owned concrete profile, not a managed-default
+        # pointer, so it is preserved.
+        existing = profiles.get(DEFAULT_LLM_PROFILE_NAME)
+        if existing is not None and is_openhands_model(existing.model):
+            profiles.profiles.pop(DEFAULT_LLM_PROFILE_NAME, None)
+            # The logical pointer is gone; ``active`` must not keep pointing
+            # at a profile that no longer exists (a downstream launch would
+            # otherwise resolve the stale stored snapshot).
+            if profiles.active == DEFAULT_LLM_PROFILE_NAME:
+                profiles.active = None
         return profiles
 
     model = f'{_OPENHANDS_PROVIDER}/{model_name}'
@@ -49,9 +67,6 @@ def materialize_default_llm_profile(
 def materialize_default_llm_payload(
     payload: dict[str, object] | None, model_name: str | None
 ) -> dict[str, object] | None:
-    if not model_name:
-        return payload
-
     profiles = LLMProfiles.model_validate(payload or {})
     materialize_default_llm_profile(profiles, model_name)
     return profiles.model_dump(mode='json', context={'expose_secrets': True})

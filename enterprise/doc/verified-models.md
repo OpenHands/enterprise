@@ -19,6 +19,16 @@ Canvas reads model metadata from `/api/v1/config/models/search`. In an Enterpris
 
 If an admin disables the current OpenHands default row, the backend ignores it immediately. Mark another enabled OpenHands row as `is_default: true` to restore the virtual `Default` profile.
 
+### No enabled default
+
+When no enabled OpenHands row has `is_default: true` (e.g. the only default row was disabled or deleted):
+
+- The virtual `Default` profile is **removed** from profile listings, `get_profile`, and `SaasSettingsStore.load()` — it does not fall back to a stale stored model. A stored `Default` whose model is an OpenHands-managed model is cleared, because it was a managed-default pointer whose target disappeared. `active` is also cleared if it pointed at `Default`.
+- A non-OpenHands `Default` profile (for example a legacy seeded concrete LLM such as `anthropic/...`) is a user-owned concrete profile, not a managed-default pointer, so it is **preserved**.
+- User-facing model search marks **no** model with the `default` flag. SaaS represents "no default" explicitly (an unset `default_model`) rather than silently falling back to the static OSS default, which may be disabled or absent from the SaaS catalogue.
+
+To restore `Default`, mark an enabled OpenHands row `is_default: true` (see [Set the OpenHands default model](#set-the-openhands-default-model)).
+
 ## Authentication
 
 The admin endpoints require an admin bearer token for the target deployment. Set these variables before running the examples:
@@ -117,6 +127,15 @@ curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
 
 Set `is_free: true` to show the free label in Canvas for enabled model IDs returned by the backend. For OpenHands rows, changing `is_free` or `is_enabled` also syncs LiteLLM free-model allowlists.
 
+### LiteLLM propagation failures
+
+The verified-model DB mutation commits **before** LiteLLM allowlist propagation runs. If propagation fails (e.g. the LiteLLM management API is unreachable), the admin mutation endpoint returns **`502 Bad Gateway`** with a message explaining that the model was saved but propagation failed — it does **not** silently acknowledge a billing/access change that did not propagate. The DB row is still persisted, so the operator can recover by:
+
+- re-saving the model (PUT the same flags again), which re-runs propagation, or
+- reconciling the LiteLLM team allowlists out-of-band and then re-saving to confirm.
+
+A transient LiteLLM outage therefore cannot leave the system silently divergent: the caller is always informed. Treat a `502` from a create/update/delete as "retry or reconcile LiteLLM."
+
 ```bash
 curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN" \
@@ -181,8 +200,10 @@ Manual UI smoke test:
 2. Confirm `Available Profiles -> Default` resolves to the current enabled OpenHands DB default row.
 3. Mark another enabled OpenHands row as `is_default: true`.
 4. Reload LLM settings and confirm `Default` resolves to the new concrete model name.
-5. Disable that default row and reload. Confirm user-facing model search no longer exposes/default-marks that disabled row.
-6. Toggle `is_free` on an enabled row and reload. Confirm the free label follows backend metadata.
+5. Disable that default row and reload. Confirm user-facing model search no longer exposes/default-marks that disabled row, and that `Available Profiles -> Default` **disappears** (it is not left pointing at the disabled/stale model). Concrete user-created profiles remain listed.
+6. With no enabled OpenHands default, confirm no model in `/api/v1/config/models/search?provider__eq=openhands` carries `default: true` (SaaS represents "no default" explicitly instead of falling back to the OSS default).
+7. Toggle `is_free` on an enabled row and reload. Confirm the free label follows backend metadata.
+8. (If exercising a staging LiteLLM outage) Trigger a free-flag change while LiteLLM is unreachable and confirm the admin endpoint returns `502`; re-saving once LiteLLM is healthy converges the allowlists.
 
 ## Troubleshooting
 

@@ -25,6 +25,17 @@ from openhands.app_server.services.db_session import depends_db_session
 from openhands.app_server.utils.logger import openhands_logger as logger
 
 
+class LiteLLMSyncError(RuntimeError):
+    """Raised when LiteLLM free-model allowlist propagation fails.
+
+    The verified-model mutation is already committed by the time propagation
+    runs, so this error does not roll the DB back. It lets the admin layer
+    *surface* the partial failure (instead of silently acknowledging a
+    billing/access change that did not propagate) so the operator can retry or
+    reconcile — e.g. by re-saving the model, which re-runs propagation.
+    """
+
+
 class StoredVerifiedModel(Base):
     """A verified LLM model available in the model selector.
 
@@ -183,14 +194,31 @@ class VerifiedModelService:
     async def _sync_litellm_free_model_allowlists(
         self, previous_free_models: list[str]
     ) -> None:
+        """Propagate the OpenHands free-model set to LiteLLM team allowlists.
+
+        Raises :class:`LiteLLMSyncError` when propagation fails so the admin
+        layer can surface the partial failure instead of silently acknowledging
+        a billing/access change that did not propagate. The DB mutation is
+        already committed before this runs, so the caller cannot roll it back;
+        the recovery path is to retry (re-save the model) or reconcile LiteLLM
+        out-of-band.
+        """
         try:
             from storage.lite_llm_manager import LiteLlmManager
 
             await LiteLlmManager.sync_free_model_allowlists(
                 self.db_session, previous_free_models=previous_free_models
             )
-        except Exception:
-            logger.warning('Failed to sync LiteLLM free-model allowlists')
+        except Exception as exc:
+            logger.warning(
+                'Failed to sync LiteLLM free-model allowlists',
+                exc_info=True,
+            )
+            raise LiteLLMSyncError(
+                'Verified model saved, but LiteLLM free-model allowlist '
+                'propagation failed. Retry by re-saving the model or '
+                'reconcile the LiteLLM team allowlists out-of-band.'
+            ) from exc
 
     async def _clear_default_for_provider(
         self, provider: str, except_id: int | None = None
