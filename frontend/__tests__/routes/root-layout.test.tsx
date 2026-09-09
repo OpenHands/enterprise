@@ -31,10 +31,6 @@ vi.mock("#/hooks/use-migrate-user-consent", () => ({
   }),
 }));
 
-vi.mock("#/hooks/use-reo-tracking", () => ({
-  useReoTracking: () => {},
-}));
-
 vi.mock("#/hooks/use-sync-posthog-consent", () => ({
   useSyncPostHogConsent: () => {},
 }));
