@@ -1246,6 +1246,101 @@ def test_create_user_settings_from_entities_with_org_fallback():
     assert result.search_api_key == 'search-key'
 
 
+def test_create_user_settings_deep_merges_partial_condenser_member_override():
+    user_id = str(uuid.uuid4())
+
+    org_member = MagicMock()
+    org_member.llm_api_key = None
+    org_member.llm_api_key_for_byor = None
+    org_member.agent_settings_diff = {'condenser': {'enabled': False}}
+    org_member.effective_mcp_config = None
+    org_member.conversation_settings_diff = {}
+
+    user = MagicMock()
+    user.accepted_tos = None
+    user.enable_sound_notifications = False
+    user.language = 'en'
+    user.user_consents_to_analytics = False
+    user.email = None
+    user.email_verified = None
+    user.git_user_name = None
+    user.git_user_email = None
+
+    org = MagicMock()
+    org.remote_runtime_resource_factor = None
+    org.billing_margin = None
+    org.enable_proactive_conversation_starters = False
+    org.sandbox_base_container_image = None
+    org.sandbox_runtime_container_image = None
+    org.org_version = 2
+    org.agent_settings = {
+        'agent': 'CodeActAgent',
+        'llm': {'model': 'default-model', 'base_url': 'https://default.api.com'},
+        'condenser': {'enabled': True, 'max_tokens': 200000, 'max_size': 240},
+    }
+    org.conversation_settings = {}
+    org.search_api_key = None
+    org.sandbox_api_key = None
+    org.max_budget_per_task = None
+    org.v1_enabled = False
+    org.sandbox_grouping_strategy = None
+
+    result = UserStore._create_user_settings_from_entities(
+        user_id, org_member, user, org
+    )
+
+    assert result.agent_settings['condenser']['enabled'] is False
+    assert result.agent_settings['condenser']['max_tokens'] == 200000
+    assert result.agent_settings['condenser']['max_size'] == 240
+
+
+def test_create_user_settings_preserves_explicit_member_condenser_max_tokens():
+    user_id = str(uuid.uuid4())
+
+    org_member = MagicMock()
+    org_member.llm_api_key = None
+    org_member.llm_api_key_for_byor = None
+    org_member.agent_settings_diff = {'condenser': {'max_tokens': 123456}}
+    org_member.effective_mcp_config = None
+    org_member.conversation_settings_diff = {}
+
+    user = MagicMock()
+    user.accepted_tos = None
+    user.enable_sound_notifications = False
+    user.language = 'en'
+    user.user_consents_to_analytics = False
+    user.email = None
+    user.email_verified = None
+    user.git_user_name = None
+    user.git_user_email = None
+
+    org = MagicMock()
+    org.remote_runtime_resource_factor = None
+    org.billing_margin = None
+    org.enable_proactive_conversation_starters = False
+    org.sandbox_base_container_image = None
+    org.sandbox_runtime_container_image = None
+    org.org_version = 2
+    org.agent_settings = {
+        'agent': 'CodeActAgent',
+        'llm': {'model': 'default-model', 'base_url': 'https://default.api.com'},
+        'condenser': {'max_tokens': 200000, 'max_size': 240},
+    }
+    org.conversation_settings = {}
+    org.search_api_key = None
+    org.sandbox_api_key = None
+    org.max_budget_per_task = None
+    org.v1_enabled = False
+    org.sandbox_grouping_strategy = None
+
+    result = UserStore._create_user_settings_from_entities(
+        user_id, org_member, user, org
+    )
+
+    assert result.agent_settings['condenser']['max_tokens'] == 123456
+    assert result.agent_settings['condenser']['max_size'] == 240
+
+
 def test_user_settings_to_settings_is_not_a_live_mcp_update():
     from storage.user_settings import UserSettings
 

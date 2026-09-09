@@ -57,6 +57,37 @@ def test_get_kwargs_from_user_settings_uses_agent_settings_as_source_of_truth():
     assert kwargs['conversation_settings_diff']['max_iterations'] == 42
 
 
+def test_get_kwargs_from_user_settings_strips_null_condenser_max_tokens():
+    user_settings = UserSettings(
+        agent_settings={
+            'condenser': {
+                'enabled': False,
+                'max_tokens': None,
+            },
+        },
+        conversation_settings={},
+    )
+
+    kwargs = OrgMemberStore.get_kwargs_from_user_settings(user_settings)
+
+    assert kwargs['agent_settings_diff'] == {'condenser': {'enabled': False}}
+
+
+def test_get_kwargs_from_user_settings_preserves_explicit_condenser_max_tokens():
+    user_settings = UserSettings(
+        agent_settings={
+            'condenser': {
+                'max_tokens': 123456,
+            },
+        },
+        conversation_settings={},
+    )
+
+    kwargs = OrgMemberStore.get_kwargs_from_user_settings(user_settings)
+
+    assert kwargs['agent_settings_diff'] == {'condenser': {'max_tokens': 123456}}
+
+
 def test_get_kwargs_from_settings_starts_members_without_agent_setting_overrides():
     settings = Settings()
     settings.update(

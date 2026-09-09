@@ -1,0 +1,55 @@
+name: PostgreSQL Integration Tests
+
+on:
+  pull_request:
+    paths:
+      - 'storage/**'
+      - 'server/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/postgres-integration-tests.yml'
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ (github.head_ref && github.ref) || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  postgres-tests:
+    name: PostgreSQL 16 integration tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: openhands
+          POSTGRES_PASSWORD: openhands
+          POSTGRES_DB: openhands
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openhands"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_TEST_DATABASE_URL: postgresql+asyncpg://openhands:openhands@localhost:5432/openhands
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.32'
+          enable-cache: true
+      - name: Install Python dependencies
+        run: uv sync --locked --python 3.12
+      - name: Run PostgreSQL integration tests
+        run: uv run pytest -s tests/integration/test_org_condenser_reconciliation_postgres.py

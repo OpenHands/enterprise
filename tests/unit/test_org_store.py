@@ -256,6 +256,40 @@ async def test_create_org(async_session_maker, mock_litellm_api):
 
 
 @pytest.mark.asyncio
+async def test_create_org_applies_configured_condenser_max_tokens(
+    async_session_maker, mock_litellm_api, monkeypatch
+):
+    monkeypatch.setenv('OPENHANDS_ORG_DEFAULTS_CONDENSER_MAX_TOKENS', '200000')
+
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        org = await OrgStore.create_org(
+            kwargs={
+                'name': 'new-org-with-condenser-default',
+                'agent_settings': OpenHandsAgentSettings(agent='CodeActAgent'),
+            }
+        )
+
+    assert org.agent_settings['condenser']['max_tokens'] == 200000
+
+
+@pytest.mark.asyncio
+async def test_create_org_skips_configured_condenser_max_tokens_for_acp(
+    async_session_maker, mock_litellm_api, monkeypatch
+):
+    monkeypatch.setenv('OPENHANDS_ORG_DEFAULTS_CONDENSER_MAX_TOKENS', '200000')
+
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        org = await OrgStore.create_org(
+            kwargs={
+                'name': 'new-acp-org-without-condenser-default',
+                'agent_settings': ACPAgentSettings(agent_kind='acp'),
+            }
+        )
+
+    assert 'condenser' not in org.agent_settings
+
+
+@pytest.mark.asyncio
 async def test_create_org_v1_enabled_defaults_to_true_when_default_is_true(
     async_session_maker, mock_litellm_api
 ):
