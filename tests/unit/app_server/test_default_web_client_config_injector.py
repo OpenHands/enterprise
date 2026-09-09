@@ -1080,7 +1080,7 @@ class TestResolveFlag:
         assert config.feature_flags.enable_billing is True
 
 
-class TestOfferedACPProviders:
+class TestSurfacedACPProviders:
     """The web-client config emits exactly the harnesses Cloud offers.
 
     The SDK registry widens with every harness it adds upstream; a bump must
@@ -1088,18 +1088,18 @@ class TestOfferedACPProviders:
     """
 
     def test_config_emits_exactly_the_declared_set(self):
-        from openhands.app_server.acp_providers import CLOUD_ACP_PROVIDERS
+        from openhands.app_server.acp_providers import SURFACED_ACP_PROVIDERS
         from openhands.app_server.web_client.default_web_client_config_injector import (
             DefaultWebClientConfigInjector,
         )
 
         injector = DefaultWebClientConfigInjector()
 
-        assert [p.key for p in injector.acp_providers] == list(CLOUD_ACP_PROVIDERS)
+        assert [p.key for p in injector.acp_providers] == list(SURFACED_ACP_PROVIDERS)
 
     def test_declared_set_is_a_subset_of_the_sdk_registry(self):
         """An upstream rename or removal breaks loudly; an addition is a no-op."""
-        from openhands.app_server.acp_providers import CLOUD_ACP_PROVIDERS
+        from openhands.app_server.acp_providers import SURFACED_ACP_PROVIDERS
         from openhands.sdk.settings import ACP_PROVIDERS
 
-        assert set(CLOUD_ACP_PROVIDERS) <= set(ACP_PROVIDERS)
+        assert set(SURFACED_ACP_PROVIDERS) <= set(ACP_PROVIDERS)

@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 from pydantic import Field
 
-from openhands.app_server.acp_providers import offered_acp_providers
+from openhands.app_server.acp_providers import surfaced_acp_providers
 from openhands.app_server.integrations.jira_dc.config import (
     get_jira_dc_service_account_env_config,
 )
@@ -332,7 +332,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                 api_key_env_var=provider.api_key_env_var,
                 base_url_env_var=provider.base_url_env_var,
             )
-            for provider in (ACP_PROVIDERS[key] for key in offered_acp_providers())
+            for provider in (ACP_PROVIDERS[key] for key in surfaced_acp_providers())
         ]
     )
 

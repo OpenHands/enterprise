@@ -17,7 +17,7 @@ from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import SecretStr
 
-from openhands.app_server.acp_providers import CLOUD_ACP_PROVIDERS
+from openhands.app_server.acp_providers import SURFACED_ACP_PROVIDERS
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversation,
     AppConversationInfo,
@@ -37,7 +37,7 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     _resolve_acp_agent_settings,
     _resolve_file_path,
     _stream_app_conversation_start,
-    _validate_acp_provider_offered,
+    _validate_acp_provider_surfaced,
     _validate_codex_credentials,
     batch_get_app_conversations,
     count_app_conversations,
@@ -191,27 +191,27 @@ async def test_resolve_acp_agent_settings_returns_none_for_non_acp_agents(
     assert resolved is None
 
 
-@pytest.mark.parametrize('acp_server', CLOUD_ACP_PROVIDERS + ('custom',))
-def test_offered_acp_providers_start(acp_server):
-    _validate_acp_provider_offered(ACPAgentSettings(acp_server=acp_server))
+@pytest.mark.parametrize('acp_server', SURFACED_ACP_PROVIDERS + ('custom',))
+def test_surfaced_acp_providers_start(acp_server):
+    _validate_acp_provider_surfaced(ACPAgentSettings(acp_server=acp_server))
 
 
 def test_non_acp_agents_are_never_rejected():
-    _validate_acp_provider_offered(None)
+    _validate_acp_provider_surfaced(None)
 
 
 @pytest.mark.parametrize(
     'acp_server',
-    sorted(set(ACP_PROVIDERS) - set(CLOUD_ACP_PROVIDERS)),
+    sorted(set(ACP_PROVIDERS) - set(SURFACED_ACP_PROVIDERS)),
 )
-def test_unoffered_acp_providers_are_rejected_at_start(acp_server):
+def test_unsurfaced_acp_providers_are_rejected_at_start(acp_server):
     """A harness the pinned SDK registers but Cloud does not offer.
 
     Parametrized off the registry rather than a literal list so a new upstream
     harness is covered the moment it is registered.
     """
     with pytest.raises(HTTPException) as exc_info:
-        _validate_acp_provider_offered(ACPAgentSettings(acp_server=acp_server))
+        _validate_acp_provider_surfaced(ACPAgentSettings(acp_server=acp_server))
 
     assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
     assert acp_server in exc_info.value.detail
