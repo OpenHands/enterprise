@@ -20,6 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.models import Success
 from openhands.analytics import get_analytics_service, resolve_analytics_context
+from openhands.app_server.acp_providers import (
+    CLOUD_ACP_PROVIDERS,
+    is_acp_provider_offered,
+)
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
 )
@@ -150,20 +154,48 @@ def _request_or_stored_secret_value(
     return _custom_secret_value(secrets, name)
 
 
-async def _validate_codex_credentials(
+async def _resolve_acp_agent_settings(
     request: AppConversationStartRequest,
     user_context: UserContext,
-    secrets_store: SecretsStore,
-) -> None:
+) -> ACPAgentSettings | None:
     user = await user_context.get_user_info(
         resolve_agent_profile=True,
         override_agent_profile_id=request.agent_profile_id,
     )
     agent_settings = user.agent_settings
-    if not (
-        isinstance(agent_settings, ACPAgentSettings)
-        and agent_settings.acp_server == 'codex'
-    ):
+    if isinstance(agent_settings, ACPAgentSettings):
+        return agent_settings
+    return None
+
+
+def _validate_acp_provider_offered(agent_settings: ACPAgentSettings | None) -> None:
+    """Reject a harness this deployment does not offer.
+
+    Filtering the picker is not enough: ``ACPServerKind`` widens with every
+    harness the pinned SDK registers, so a persisted setting, an org-settings
+    value, an agent profile or a direct API call all validate against the
+    registry rather than against what Cloud offers.
+    """
+    if agent_settings is None:
+        return
+    if is_acp_provider_offered(agent_settings.acp_server):
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            f"ACP server '{agent_settings.acp_server}' is not available. "
+            f'Choose one of: {", ".join(CLOUD_ACP_PROVIDERS)}.'
+        ),
+    )
+
+
+async def _validate_codex_credentials(
+    agent_settings: ACPAgentSettings | None,
+    request: AppConversationStartRequest,
+    secrets_store: SecretsStore,
+) -> None:
+    if not (agent_settings is not None and agent_settings.acp_server == 'codex'):
         return
 
     secrets = await secrets_store.load()
@@ -185,6 +217,17 @@ async def _validate_codex_credentials(
             'Codex conversation.'
         ),
     )
+
+
+async def _validate_acp_start(
+    request: AppConversationStartRequest,
+    user_context: UserContext,
+    secrets_store: SecretsStore,
+) -> None:
+    """Pre-flight the ACP agent settings a conversation is about to start with."""
+    agent_settings = await _resolve_acp_agent_settings(request, user_context)
+    _validate_acp_provider_offered(agent_settings)
+    await _validate_codex_credentials(agent_settings, request, secrets_store)
 
 
 @dataclass
@@ -488,7 +531,7 @@ async def start_app_conversation(
         app_conversation_service_dependency
     ),
 ) -> AppConversationStartTask:
-    await _validate_codex_credentials(start_request, user_context, secrets_store)
+    await _validate_acp_start(start_request, user_context, secrets_store)
 
     # Because we are processing after the request finishes, keep the db connection open
     set_db_session_keep_open(request.state, True)
@@ -1153,7 +1196,7 @@ async def stream_app_conversation_start(
     """Start an app conversation start task and stream updates from it.
     Leaves the connection open until either the conversation starts or there was an error
     """
-    await _validate_codex_credentials(request, user_context, secrets_store)
+    await _validate_acp_start(request, user_context, secrets_store)
     quota_user_id = await user_context.get_user_id()
     get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
     quota_org_id = (
