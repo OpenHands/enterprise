@@ -15,6 +15,7 @@ import { useMe } from "./query/use-me";
 import { usePermission } from "./organizations/use-permissions";
 import { useOrgTypeAndAccess } from "./use-org-type-and-access";
 import { useSettings } from "./query/use-settings";
+import { useQuotaStatus } from "./query/use-quota-status";
 import { I18nKey } from "#/i18n/declaration";
 
 // Rendered navigation item types
@@ -46,6 +47,8 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const { data: config } = useConfig();
   const { data: user } = useMe();
   const { data: settings } = useSettings();
+  const isSaasMode = config?.app_mode === "saas";
+  const { data: quota } = useQuotaStatus({ enabled: isSaasMode });
   const userRole: OrganizationUserRole = user?.role ?? "member";
   const { hasPermission } = usePermission(userRole);
   const { isPersonalOrg, isTeamOrg, organizationId } = useOrgTypeAndAccess();
@@ -54,7 +57,6 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     config,
     hasPermission("view_billing"),
   );
-  const isSaasMode = config?.app_mode === "saas";
   const featureFlags = config?.feature_flags;
   const isAdminOrOwner = userRole === "admin" || userRole === "owner";
   const isAcpAgent = settings?.agent_settings?.agent_kind === "acp";
@@ -68,6 +70,11 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
   // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));
+
+  // The quota page is only useful when a daily limit is configured.
+  if (isSaasMode && quota?.daily_limit === null) {
+    items = items.filter((item) => item.to !== "/settings/quota");
+  }
 
   // Hide billing when billing is not accessible OR when in team org
   if (shouldHideBilling || isTeamOrg) {
