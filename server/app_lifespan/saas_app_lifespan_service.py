@@ -16,7 +16,7 @@ from openhands.analytics import get_analytics_service, init_analytics_service
 from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanService
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
-from server.constants import IS_FEATURE_ENV
+from server.constants import DEPLOYMENT_MODE, IS_FEATURE_ENV
 
 _ORG_CONDENSER_RECONCILIATION_LOCK_ID = 865115708052677401
 _TRANSIENT_SQLSTATES = {
@@ -66,7 +66,12 @@ class SaasAppLifespanService(AppLifespanService):
     """
 
     async def __aenter__(self):
-        api_key = os.environ.get('POSTHOG_CLIENT_KEY', '')
+        # OHE must not initialize telemetry when a legacy key is configured.
+        api_key = (
+            ''
+            if DEPLOYMENT_MODE == 'self_hosted'
+            else os.environ.get('POSTHOG_CLIENT_KEY', '')
+        )
         host = os.environ.get('POSTHOG_HOST', 'https://us.i.posthog.com')
 
         init_analytics_service(

@@ -86,6 +86,12 @@ class AuthUserContext(UserContext):
             self._user_info = user_info
         return user_info
 
+    def invalidate_user_info_cache(self) -> None:
+        """Discard both user views after an out-of-band settings mutation."""
+        self._user_info = None
+        self._resolved_user_info = None
+        self.user_auth.invalidate_user_settings_cache()
+
     async def get_provider_tokens(
         self, as_env_vars: bool = False
     ) -> PROVIDER_TOKEN_TYPE | dict[str, str] | None:
