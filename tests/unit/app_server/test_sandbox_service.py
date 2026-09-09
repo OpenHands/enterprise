@@ -291,19 +291,46 @@ def test_classify_start_failure_maps_each_class():
         '0/1 nodes: 1 Insufficient nvidia.com/gpu.'
     )
     ingress_expectations = {
-        'runtime_ingress:dns_error': 'wildcard runtime DNS',
-        'runtime_ingress:tls_error': 'TLS certificate',
-        'runtime_ingress:timeout': 'health-check timeout',
-        'runtime_ingress:connection_error': 'could not connect',
-        'runtime_ingress:request_error': 'before receiving a response',
-        'runtime_ingress:invalid_response': 'invalid response',
-        'runtime_ingress:unexpected_status': 'did not report ready',
-        'runtime_ingress:http_status:503': 'HTTP 503',
+        'runtime_ingress:dns_error': ('wildcard runtime DNS',),
+        'runtime_ingress:tls_error': ('TLS certificate', 'runtime hostname'),
+        'runtime_ingress:timeout': (
+            'health-check timeout',
+            'ingress and network connectivity',
+        ),
+        'runtime_ingress:connection_error': (
+            'could not connect',
+            'ingress routing',
+            'network connectivity',
+        ),
+        'runtime_ingress:request_error': (
+            'before receiving a response',
+            'runtime ingress',
+        ),
+        'runtime_ingress:invalid_response': (
+            'invalid response',
+            'runtime routing',
+            'sandbox image compatibility',
+        ),
+        'runtime_ingress:unexpected_status': (
+            'did not report ready',
+            'runtime routing',
+            'sandbox image compatibility',
+        ),
+        'runtime_ingress:http_status:503': (
+            'HTTP 503',
+            'ingress routing',
+            'agent-server health',
+        ),
     }
-    for detail, expected in ingress_expectations.items():
-        assert expected in _classify_start_failure(detail)
+    for detail, expected_fragments in ingress_expectations.items():
+        message = _classify_start_failure(detail)
+        assert message is not None
+        for expected in expected_fragments:
+            assert expected in message
 
     # Never reflect malformed or unknown runtime detail into the user message.
+    assert _classify_start_failure('runtime_ingress:http_status:50') is None
+    assert _classify_start_failure('runtime_ingress:http_status:5030') is None
     assert _classify_start_failure('runtime_ingress:http_status:503 secret') is None
     assert _classify_start_failure('runtime_ingress:unknown') is None
     # unrecognized / empty -> None so the caller uses a generic message
