@@ -16,6 +16,7 @@ from server.constants import (
     get_default_litellm_model,
 )
 from storage.lite_llm_manager import (
+    _DEFAULT_FREE_LLM_MODELS,
     FREE_LLM_MODELS,
     LiteLlmManager,
     get_byor_key_alias,
@@ -37,6 +38,24 @@ def _secret_value(settings: Settings, key: str):
     """Navigate into settings.agent_settings and unwrap SecretStr values."""
     secret = _agent_value(settings, key)
     return secret.get_secret_value() if secret else None
+
+
+def test_free_llm_models_include_current_default_model():
+    """The $0-cost allowlist must track the managed default model.
+
+    When the default model is renamed (e.g. kimi-k3 -> deepseek-v4-flash), a
+    free-tier team whose stored allowlist lags the rename starts 403ing on the
+    new default. Pinning this coupling in a test makes the rename a two-line
+    change instead of a runtime incident (OHE-3155).
+    """
+    from server.constants import get_default_litellm_model
+
+    default = get_default_litellm_model()
+    # The default is exposed as `litellm_proxy/<name>` (or `openhands/<name>`);
+    # the allowlist stores bare model names.
+    bare_default = default.split('/', 1)[1] if '/' in default else default
+    assert bare_default in _DEFAULT_FREE_LLM_MODELS
+    assert bare_default in FREE_LLM_MODELS
 
 
 class TestOrgTeamAlias:
