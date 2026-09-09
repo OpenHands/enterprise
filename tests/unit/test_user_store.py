@@ -197,6 +197,32 @@ async def test_create_user_first_user_is_designated_superadmin(async_session_mak
 
 
 @pytest.mark.asyncio
+async def test_create_user_applies_configured_org_condenser_default(
+    async_session_maker, monkeypatch
+):
+    await _seed_admin_role(async_session_maker)
+    monkeypatch.setenv('OPENHANDS_ORG_DEFAULTS_CONDENSER_MAX_TOKENS', '200000')
+
+    user_id = str(uuid.uuid4())
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        _mock_create_default_settings_returning_default(),
+    ):
+        user = await UserStore.create_user(
+            user_id,
+            {'email': 'configured@example.com', 'preferred_username': 'configured'},
+        )
+
+    assert user is not None
+    async with async_session_maker() as session:
+        org = await session.get(Org, uuid.UUID(user_id))
+
+    assert org is not None
+    assert org.agent_settings['condenser']['max_tokens'] == 200000
+
+
+@pytest.mark.asyncio
 async def test_create_user_subsequent_users_are_not_superadmins(async_session_maker):
     """Only the first user gets the super role; later users do not.
 
@@ -1509,6 +1535,66 @@ async def test_migrate_user_preserves_normalized_default_tools(monkeypatch):
     member = next(item for item in added if isinstance(item, OrgMember))
     assert org.agent_settings.get('tools') is None
     assert member.agent_settings_diff['tools'] is None
+
+
+@pytest.mark.asyncio
+async def test_migrate_user_applies_configured_org_condenser_default(monkeypatch):
+    from integrations import stripe_service
+    from storage.lite_llm_manager import LiteLlmManager
+    from storage.role_store import RoleStore
+    from storage.user_settings import UserSettings
+
+    monkeypatch.setenv('OPENHANDS_ORG_DEFAULTS_CONDENSER_MAX_TOKENS', '200000')
+    user_id = str(uuid.uuid4())
+    user_settings = UserSettings(
+        id=1,
+        keycloak_user_id=user_id,
+        llm_api_key='legacy-secret',
+        user_version=1,
+        agent_settings={
+            'llm': {
+                'model': 'custom/model',
+                'base_url': 'https://llm.example.com',
+            },
+        },
+        conversation_settings={},
+        already_migrated=False,
+    )
+
+    billing_result = MagicMock()
+    billing_result.scalars.return_value.first.return_value = None
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=billing_result)
+    session.merge = AsyncMock()
+    session.flush = AsyncMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    session_context = MagicMock()
+    session_context.__aenter__ = AsyncMock(return_value=session)
+    session_context.__aexit__ = AsyncMock(return_value=None)
+
+    monkeypatch.setattr('storage.user_store.a_session_maker', lambda: session_context)
+    monkeypatch.setattr(LiteLlmManager, 'migrate_entries', AsyncMock())
+    monkeypatch.setattr(stripe_service, 'migrate_customer', AsyncMock())
+    monkeypatch.setattr(
+        RoleStore,
+        'get_role_by_name',
+        AsyncMock(return_value=Role(id=1, name='owner', rank=0)),
+    )
+    monkeypatch.setattr('storage.org_member.encrypt_value', lambda value: value)
+
+    await UserStore.migrate_user(
+        user_id,
+        user_settings,
+        {
+            'email': 'user@example.com',
+            'preferred_username': 'test-user',
+        },
+    )
+
+    added = [call.args[0] for call in session.add.call_args_list]
+    org = next(item for item in added if isinstance(item, Org))
+    assert org.agent_settings['condenser']['max_tokens'] == 200000
 
 
 # --- Tests for migrate_user SQL parameter type handling ---

@@ -1,5 +1,6 @@
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -127,3 +128,42 @@ async def test_reconcile_overwrite_forces_applicable_existing_values(
     assert settings['existing-max-tokens']['condenser']['max_tokens'] == 200000
     assert settings['noop-condenser']['condenser'] == {'condenser_kind': 'no_op'}
     assert 'condenser' not in settings['acp-agent']
+
+
+@pytest.mark.asyncio
+async def test_reconcile_bumps_updated_at_only_for_changed_rows(
+    postgres_session_maker,
+):
+    stale = datetime.now(UTC) - timedelta(days=30)
+    async with postgres_session_maker() as session:
+        async with session.begin():
+            session.add_all(
+                [
+                    Org(
+                        id=uuid.uuid4(),
+                        name='changed',
+                        agent_settings={'agent_kind': 'openhands'},
+                        updated_at=stale,
+                    ),
+                    Org(
+                        id=uuid.uuid4(),
+                        name='untouched',
+                        agent_settings={'agent_kind': 'acp'},
+                        updated_at=stale,
+                    ),
+                ]
+            )
+
+    async with postgres_session_maker() as session:
+        async with session.begin():
+            await OrgStore.reconcile_applicable_org_condenser_max_tokens(
+                session,
+                max_tokens=200000,
+                overwrite_existing=False,
+            )
+
+    async with postgres_session_maker() as session:
+        rows = dict((await session.execute(select(Org.name, Org.updated_at))).all())
+
+    assert rows['changed'] > stale
+    assert rows['untouched'] == stale

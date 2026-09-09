@@ -52,4 +52,4 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --locked --python 3.12
       - name: Run PostgreSQL integration tests
-        run: uv run pytest -s tests/integration/test_org_condenser_reconciliation_postgres.py
+        run: uv run pytest -s -m postgresql tests/integration
