@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 vi.mock("react-router", () => ({
-  redirect: vi.fn((path: string) => ({ type: "redirect", path })),
+  replace: vi.fn((path: string) => ({ type: "replace", path })),
 }));
 
 const mockConfig = {
@@ -40,7 +40,7 @@ vi.mock("#/query-client-config", () => ({
   },
 }));
 
-import { redirect } from "react-router";
+import { replace } from "react-router";
 import { requireOrgDefaultsRedirect as requirePersonalWorkspaceLoader } from "#/utils/org/saas-redirect-to-org-defaults-guard";
 
 const createRequest = (pathname: string) => ({
@@ -61,8 +61,8 @@ describe("requirePersonalWorkspaceLoader", () => {
 
     const result = await guard(createRequest("/settings"));
 
-    expect(redirect).toHaveBeenCalledWith("/settings/org-defaults");
-    expect(result).toEqual({ type: "redirect", path: "/settings/org-defaults" });
+    expect(replace).toHaveBeenCalledWith("/settings/org-defaults");
+    expect(result).toEqual({ type: "replace", path: "/settings/org-defaults" });
   });
 
   it("redirects to the org-defaults equivalent even when the active org is the personal workspace", async () => {
@@ -71,8 +71,8 @@ describe("requirePersonalWorkspaceLoader", () => {
 
     const result = await guard(createRequest("/settings"));
 
-    expect(redirect).toHaveBeenCalledWith("/settings/org-defaults");
-    expect(result).toEqual({ type: "redirect", path: "/settings/org-defaults" });
+    expect(replace).toHaveBeenCalledWith("/settings/org-defaults");
+    expect(result).toEqual({ type: "replace", path: "/settings/org-defaults" });
   });
 
   it("skips the guard entirely in OSS mode", async () => {
@@ -83,7 +83,7 @@ describe("requirePersonalWorkspaceLoader", () => {
     const result = await guard(createRequest("/settings"));
 
     expect(result).toBeNull();
-    expect(redirect).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it("does not redirect while the settings loader is consuming a pending ?org= switch", async () => {
@@ -93,6 +93,6 @@ describe("requirePersonalWorkspaceLoader", () => {
     const result = await guard(createRequest("/settings?org=personal-org"));
 
     expect(result).toBeNull();
-    expect(redirect).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
   });
 });
