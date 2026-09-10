@@ -48,6 +48,8 @@ function AppSettingsScreen() {
   const { data: sandboxSpecsPage, isLoading: sandboxSpecsLoading } =
     useSandboxSpecs();
   const isSaasMode = config?.app_mode === "saas";
+  const isEnterpriseSelfHosted =
+    isSaasMode && config?.feature_flags?.deployment_mode === "self_hosted";
 
   const [languageInputHasChanged, setLanguageInputHasChanged] =
     React.useState(false);
@@ -138,7 +140,9 @@ function AppSettingsScreen() {
 
     saveSettings(settingsPayload, {
       onSuccess: () => {
-        handleCaptureConsent(posthog, enableAnalytics);
+        if (!isEnterpriseSelfHosted) {
+          handleCaptureConsent(posthog, enableAnalytics);
+        }
         displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
       },
       onError: (error) => {
@@ -260,18 +264,24 @@ function AppSettingsScreen() {
             onChange={checkIfLanguageInputHasChanged}
           />
 
-          <SettingsSwitch
-            testId="enable-analytics-switch"
-            name={isSaasMode ? undefined : "enable-analytics-switch"}
-            defaultIsToggled={
-              isSaasMode ? true : (settings.user_consents_to_analytics ?? true)
-            }
-            isToggled={isSaasMode ? true : undefined}
-            isDisabled={isSaasMode}
-            onToggle={isSaasMode ? undefined : checkIfAnalyticsSwitchHasChanged}
-          >
-            {t(I18nKey.ANALYTICS$SEND_ANONYMOUS_DATA)}
-          </SettingsSwitch>
+          {!isEnterpriseSelfHosted && (
+            <SettingsSwitch
+              testId="enable-analytics-switch"
+              name={isSaasMode ? undefined : "enable-analytics-switch"}
+              defaultIsToggled={
+                isSaasMode
+                  ? true
+                  : (settings.user_consents_to_analytics ?? true)
+              }
+              isToggled={isSaasMode ? true : undefined}
+              isDisabled={isSaasMode}
+              onToggle={
+                isSaasMode ? undefined : checkIfAnalyticsSwitchHasChanged
+              }
+            >
+              {t(I18nKey.ANALYTICS$SEND_ANONYMOUS_DATA)}
+            </SettingsSwitch>
+          )}
 
           <SettingsSwitch
             testId="enable-sound-notifications-switch"

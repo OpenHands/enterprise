@@ -34,6 +34,10 @@ async def test_aenter_passes_env_vars_to_init():
         patch(
             'server.app_lifespan.saas_app_lifespan_service.init_analytics_service'
         ) as mock_init,
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.DEPLOYMENT_MODE',
+            'cloud',
+        ),
         patch.dict(
             'os.environ',
             {
@@ -49,6 +53,27 @@ async def test_aenter_passes_env_vars_to_init():
         call_kwargs = mock_init.call_args
         assert call_kwargs.kwargs['api_key'] == 'test-key'
         assert call_kwargs.kwargs['host'] == 'https://test.posthog.com'
+
+
+@pytest.mark.asyncio
+async def test_aenter_disables_analytics_when_self_hosted():
+    """Self-hosted Enterprise ignores any configured PostHog key."""
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    with (
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.init_analytics_service'
+        ) as mock_init,
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.DEPLOYMENT_MODE',
+            'self_hosted',
+        ),
+        patch.dict('os.environ', {'POSTHOG_CLIENT_KEY': 'configured-posthog-key'}),
+    ):
+        svc = SaasAppLifespanService()
+        await svc.__aenter__()
+
+        assert mock_init.call_args.kwargs['api_key'] == ''
 
 
 @pytest.mark.asyncio
