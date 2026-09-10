@@ -2,7 +2,7 @@
 
 This module tests the SQL implementation of AppConversationInfoService,
 focusing on basic CRUD operations, search functionality, filtering, pagination,
-and batch operations using SQLite as a mock database.
+and batch operations against the test database.
 """
 
 from datetime import datetime, timezone

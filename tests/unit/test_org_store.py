@@ -1390,8 +1390,6 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
     With passive_deletes=True on the relationship, SQLAlchemy defers to the
     database's CASCADE constraint instead of trying to nullify the foreign key.
 
-    Note: SQLite doesn't enforce CASCADE by default, so we only verify that
-    the deletion succeeds. In production (PostgreSQL), CASCADE handles cleanup.
     """
     from datetime import datetime, timedelta
 
@@ -1452,10 +1450,12 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
         session.delete(org)
         session.commit()  # Success indicates passive_deletes=True is working
 
-    # Assert - Organization should be deleted
+    # Assert - the org is gone, and CASCADE took the invitation with it
     with session_maker() as session:
         deleted_org = session.query(Org).filter(Org.id == org_id).first()
         assert deleted_org is None
+        remaining = session.query(OrgInvitation).filter_by(org_id=org_id).count()
+        assert remaining == 0
 
 
 # =============================================================================

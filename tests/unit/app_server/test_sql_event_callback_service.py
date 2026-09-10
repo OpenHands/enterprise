@@ -2,7 +2,7 @@
 
 This module tests the SQL implementation of EventCallbackService,
 focusing on basic CRUD operations, search functionality, and callback execution
-using SQLite as a mock database.
+against the test database.
 """
 
 from datetime import datetime, timezone

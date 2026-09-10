@@ -31,7 +31,7 @@ EFFECTIVE_ORG_ID = UUID('00000000-0000-0000-0000-00000000cccc')
 
 
 # --------------------------------------------------------------------- #
-# Lightweight fakes — we explicitly do NOT spin up SQLite for these
+# Lightweight fakes — these tests deliberately do not touch the database for these
 # tests. We're verifying which org_id is *chosen* by the store, not the
 # SQL it emits. Hitting the DB would test SQLAlchemy more than the
 # resolver, and would tie the test to schema details unrelated to the
