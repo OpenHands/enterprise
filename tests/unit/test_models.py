@@ -4,26 +4,10 @@ Test that the models are correctly defined.
 
 from uuid import uuid4
 
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-from storage.base import Base
 from storage.org import Org
 from storage.org_member import OrgMember
+from storage.role import Role
 from storage.user import User
-
-
-@pytest.fixture
-def engine():
-    engine = create_engine('sqlite:///:memory:')
-    Base.metadata.create_all(engine)
-    return engine
-
-
-@pytest.fixture
-def session_maker(engine):
-    return sessionmaker(bind=engine)
 
 
 def test_user_model_persist_and_query(session_maker):
@@ -64,12 +48,14 @@ def test_org_member_model_persist_and_query(session_maker):
 
         user = User(id=uuid4(), current_org_id=org.id)
         session.add(user)
+        role = Role(name='member', rank=1)
+        session.add(role)
         session.flush()
 
         org_member = OrgMember(
             org_id=org.id,
             user_id=user.id,
-            role_id=1,
+            role_id=role.id,
             llm_api_key='test-api-key',
             status='active',
         )

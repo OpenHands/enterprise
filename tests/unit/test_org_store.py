@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from openhands.app_server.settings.settings_models import Settings
@@ -13,6 +13,7 @@ from openhands.sdk.settings import (
     ConversationSettings,
     OpenHandsAgentSettings,
 )
+from server.constants import ORG_SETTINGS_VERSION
 from server.routes.org_models import OrgUpdate
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
@@ -453,7 +454,9 @@ def test_get_kwargs_from_settings():
 
 
 @pytest.mark.asyncio
-async def test_persist_org_with_owner_success(async_session_maker, mock_litellm_api):
+async def test_persist_org_with_owner_success(
+    async_session_maker, mock_litellm_api, create_org
+):
     """
     GIVEN: Valid org and org_member entities
     WHEN: persist_org_with_owner is called
@@ -464,8 +467,12 @@ async def test_persist_org_with_owner_success(async_session_maker, mock_litellm_
     user_id = uuid.uuid4()
 
     # Create user and role first
+    # The owner already belongs to some org: ``org_id`` is the one
+    # persist_org_with_owner is about to create, so it cannot be their home org.
+    home_org_id = create_org().id
+
     async with async_session_maker() as session:
-        user = User(id=user_id, current_org_id=org_id)
+        user = User(id=user_id, current_org_id=home_org_id)
         role = Role(id=1, name='owner', rank=1)
         session.add(user)
         session.add(role)
@@ -512,7 +519,7 @@ async def test_persist_org_with_owner_success(async_session_maker, mock_litellm_
 
 @pytest.mark.asyncio
 async def test_persist_org_with_owner_returns_refreshed_org(
-    async_session_maker, mock_litellm_api
+    async_session_maker, mock_litellm_api, create_org
 ):
     """
     GIVEN: Valid org and org_member entities
@@ -523,8 +530,12 @@ async def test_persist_org_with_owner_returns_refreshed_org(
     org_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
+    # The owner already belongs to some org: ``org_id`` is the one
+    # persist_org_with_owner is about to create, so it cannot be their home org.
+    home_org_id = create_org().id
+
     async with async_session_maker() as session:
-        user = User(id=user_id, current_org_id=org_id)
+        user = User(id=user_id, current_org_id=home_org_id)
         role = Role(id=1, name='owner', rank=1)
         session.add(user)
         session.add(role)
@@ -560,7 +571,7 @@ async def test_persist_org_with_owner_returns_refreshed_org(
 
 @pytest.mark.asyncio
 async def test_persist_org_with_owner_transaction_atomicity(
-    async_session_maker, mock_litellm_api
+    async_session_maker, mock_litellm_api, create_org
 ):
     """
     GIVEN: Valid org but invalid org_member (missing required field)
@@ -571,8 +582,12 @@ async def test_persist_org_with_owner_transaction_atomicity(
     org_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
+    # The owner already belongs to some org: ``org_id`` is the one
+    # persist_org_with_owner is about to create, so it cannot be their home org.
+    home_org_id = create_org().id
+
     async with async_session_maker() as session:
-        user = User(id=user_id, current_org_id=org_id)
+        user = User(id=user_id, current_org_id=home_org_id)
         role = Role(id=1, name='owner', rank=1)
         session.add(user)
         session.add(role)
@@ -613,7 +628,7 @@ async def test_persist_org_with_owner_transaction_atomicity(
 
 @pytest.mark.asyncio
 async def test_persist_org_with_owner_with_multiple_fields(
-    async_session_maker, mock_litellm_api
+    async_session_maker, mock_litellm_api, create_org
 ):
     """
     GIVEN: Org with multiple optional fields populated
@@ -624,8 +639,12 @@ async def test_persist_org_with_owner_with_multiple_fields(
     org_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
+    # The owner already belongs to some org: ``org_id`` is the one
+    # persist_org_with_owner is about to create, so it cannot be their home org.
+    home_org_id = create_org().id
+
     async with async_session_maker() as session:
-        user = User(id=user_id, current_org_id=org_id)
+        user = User(id=user_id, current_org_id=home_org_id)
         role = Role(id=1, name='owner', rank=1)
         session.add(user)
         session.add(role)
@@ -697,15 +716,6 @@ async def test_delete_org_cascade_success(async_session_maker, mock_litellm_api)
     other_org_id = uuid.uuid4()
     user_id = uuid.uuid4()
     async with async_session_maker() as session:
-        # This table is owned by the OpenHands application schema rather than
-        # Enterprise's SQLAlchemy metadata, so the SQLite fixture does not
-        # create it automatically.
-        await session.execute(
-            text(
-                'CREATE TABLE IF NOT EXISTS app_conversation_start_task '
-                '(app_conversation_id TEXT)'
-            )
-        )
         session.add_all(
             [
                 expected_org,
@@ -719,6 +729,13 @@ async def test_delete_org_cascade_success(async_session_maker, mock_litellm_api)
                     current_org_id=other_org_id,
                     email='owner@example.com',
                 ),
+            ]
+        )
+        # Committed separately: the budget tables below have no relationship
+        # back to ``user``, so SQLAlchemy would not order the inserts for us.
+        await session.commit()
+        session.add_all(
+            [
                 OrgBudgetSettings(
                     org_id=org_id,
                     enabled=True,
@@ -1984,3 +2001,122 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
 
     assert result == 'fresh-rotated-key'
     assert member.llm_api_key.get_secret_value() == 'fresh-rotated-key'
+
+
+class TestUsesManagedDefaultLlm:
+    def test_managed_proxy_base_url_is_managed(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {
+                'model': 'litellm_proxy/deepseek-v4-flash',
+                'base_url': 'http://test.url',
+            }
+        }
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is True
+
+    def test_openhands_model_without_base_url_is_managed(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {'llm': {'model': 'openhands/deepseek-v4-flash'}}
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is True
+
+    def test_byok_base_url_is_not_managed(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {'model': 'gpt-4', 'base_url': 'https://api.openai.com'}
+        }
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+    def test_bare_model_with_no_base_url_is_not_managed(self):
+        # A bare (non-openhands) model with no base_url is a BYOK config that
+        # migration 153 deliberately leaves untouched.
+        org = MagicMock(spec=Org)
+        org.agent_settings = {'llm': {'model': 'gpt-4'}}
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+    def test_missing_llm_is_not_managed(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {}
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+
+@pytest.mark.asyncio
+async def test_validate_org_version_bumps_without_clobbering_byok(async_session_maker):
+    """A BYOK org still gets version-bumped, but its model/base_url are kept."""
+    async with async_session_maker() as session:
+        org = Org(
+            name='byok-org',
+            org_version=0,
+            agent_settings={
+                'llm': {'model': 'gpt-4', 'base_url': 'https://api.openai.com'}
+            },
+        )
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        org_id = org.id
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.ensure_free_team_models',
+            new=AsyncMock(return_value=False),
+        ),
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.org_version == ORG_SETTINGS_VERSION
+    llm = result.agent_settings['llm']
+    assert llm['model'] == 'gpt-4'
+    assert llm['base_url'] == 'https://api.openai.com'
+
+
+@pytest.mark.asyncio
+async def test_validate_org_version_repairs_free_team(async_session_maker):
+    """The version bump triggers a best-effort free-tier allowlist repair."""
+    async with async_session_maker() as session:
+        org = Org(name='free-org', org_version=0, agent_settings={})
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        org_id = org.id
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.ensure_free_team_models',
+            new=AsyncMock(return_value=True),
+        ) as repair_mock,
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    repair_mock.assert_awaited_once_with(str(org_id))
+
+
+@pytest.mark.asyncio
+async def test_validate_org_version_repair_failure_does_not_brick(async_session_maker):
+    """A LiteLLM failure during repair still leaves the org upgraded."""
+    async with async_session_maker() as session:
+        org = Org(name='free-org', org_version=0, agent_settings={})
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        org_id = org.id
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.ensure_free_team_models',
+            new=AsyncMock(side_effect=Exception('boom')),
+        ),
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.org_version == ORG_SETTINGS_VERSION

@@ -111,7 +111,10 @@ class AuthUserContext(UserContext):
             for provider_type, provider_token in provider_tokens.items():
                 env_key = ProviderHandler.get_provider_env_key(provider_type)
                 latest_token = None
-                if provider_type == ProviderType.AZURE_DEVOPS:
+                if provider_type in (
+                    ProviderType.AZURE_DEVOPS,
+                    ProviderType.BITBUCKET_DATA_CENTER,
+                ):
                     try:
                         latest_token = await self.get_latest_token(provider_type)
                     except Exception as exc:

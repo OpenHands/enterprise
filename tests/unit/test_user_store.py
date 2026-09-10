@@ -1607,7 +1607,6 @@ async def test_migrate_user_sql_type_handling(async_session_maker):
     This test verifies the fixes for SQL parameter binding issues in _migrate_personal_data
     where UUID and string parameters need to be correctly matched to their column types.
 
-    Note: SQLite doesn't natively support UUID types, so we use string representations.
     The key verification is that:
     1. String user_ids in WHERE clauses match source tables correctly
     2. UUID values are inserted into target UUID columns correctly
@@ -1617,17 +1616,12 @@ async def test_migrate_user_sql_type_handling(async_session_maker):
 
     user_id = str(uuid.uuid4())
     user_uuid = uuid.UUID(user_id)
-    # For SQLite raw SQL, use string representation of UUID
     user_uuid_str = str(user_uuid)
 
     # Set up legacy data with string user_ids (as in the old schema)
     async with async_session_maker() as session:
-        # First, add conversation_metadata with user_id as string column
-        # The current model doesn't have user_id, but the real DB did before migration
-        # We use raw SQL to add the column and insert test data
-        await session.execute(
-            text('ALTER TABLE conversation_metadata ADD COLUMN user_id VARCHAR')
-        )
+        # ``conversation_metadata.user_id`` is a legacy column the ORM model no
+        # longer maps, so reach for it with raw SQL.
         await session.execute(
             text(
                 """
@@ -1869,10 +1863,8 @@ async def test_migrate_user_sql_no_matching_records(async_session_maker):
 
     # Set up data for a different user
     async with async_session_maker() as session:
-        # Add conversation_metadata with user_id column for a different user
-        await session.execute(
-            text('ALTER TABLE conversation_metadata ADD COLUMN user_id VARCHAR')
-        )
+        # Legacy row for a different user, written through the unmapped
+        # ``conversation_metadata.user_id`` column.
         await session.execute(
             text(
                 """
@@ -1940,12 +1932,6 @@ async def test_migrate_user_sql_multiple_conversations(async_session_maker):
         session.add(user)
         await session.commit()
 
-        # Add conversation_metadata with user_id column
-        await session.execute(
-            text('ALTER TABLE conversation_metadata ADD COLUMN user_id VARCHAR')
-        )
-        await session.commit()
-
         # Insert multiple conversations for the same user
         for i in range(3):
             await session.execute(
@@ -1987,7 +1973,6 @@ async def test_migrate_user_sql_multiple_conversations(async_session_maker):
         await session.commit()
 
         # Verify all conversations were migrated using raw SQL
-        # (SQLite stores UUIDs as strings, ORM comparison may differ)
         result = await session.execute(
             text(
                 'SELECT conversation_id, user_id, org_id FROM conversation_metadata_saas WHERE user_id = :user_uuid'
@@ -1997,13 +1982,14 @@ async def test_migrate_user_sql_multiple_conversations(async_session_maker):
         saas_rows = result.fetchall()
         assert len(saas_rows) == 3, 'All 3 conversations should be migrated'
 
-        # Verify the user_id and org_id values
+        # Verify the user_id and org_id values. These are ``uuid`` columns, so
+        # the driver hands back UUID objects rather than the string we bound.
         for row in saas_rows:
-            assert row.user_id == user_uuid_str, (
-                f'user_id should match: {row.user_id} vs {user_uuid_str}'
+            assert row.user_id == user_uuid, (
+                f'user_id should match: {row.user_id} vs {user_uuid}'
             )
-            assert row.org_id == user_uuid_str, (
-                f'org_id should match: {row.org_id} vs {user_uuid_str}'
+            assert row.org_id == user_uuid, (
+                f'org_id should match: {row.org_id} vs {user_uuid}'
             )
 
 

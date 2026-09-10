@@ -1,0 +1,1530 @@
+version = 1
+
+[survey]
+date = "2026-09-01T19:59:44Z"
+schema = 1
+
+[system]
+systemId = "OpenHands Enterprise"
+
+[[system.composition]]
+name = "Org membership and access"
+shape = "clique"
+
+[[system.composition.roleGroups]]
+role = "peer"
+componentKey = "org-lifecycle"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "peer"
+componentKey = "org-membership-roles"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "peer"
+componentKey = "org-invitations"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "peer"
+componentKey = "default-org-bootstrap"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "peer"
+componentKey = "rbac-authorization"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "peer"
+componentKey = "org-git-claims"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "peer"
+componentKey = "org-api-surface"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "Never ownerless"
+statement = "No sequence of invitations, removals, demotions, org deletions or bootstrap runs can leave an org with zero owners or the instance with zero super admins."
+
+[[system.composition.groupProperties]]
+name = "No orphaned user"
+statement = "Deleting an org never leaves a member with no org at all without their own action."
+
+[[system.composition.groupProperties]]
+name = "One claim per git org"
+statement = "A git organization is claimed by at most one OpenHands org, so a webhook for it can only ever route to one place."
+
+[[system.composition.bridgeChecks]]
+assumer = "rbac-authorization"
+provider = "org-membership-roles"
+requirement = "the role a permission check reads is the member's current role, so a demotion takes effect on the next request rather than after a cache expiry"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "org-invitations"
+provider = "org-membership-roles"
+requirement = "accepting an invitation adds membership exactly once, and a concurrent accept through the login path does not produce a second membership or a lost status flip"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "default-org-bootstrap"
+provider = "org-lifecycle"
+requirement = "the single-default-org flag is genuinely exclusive under concurrent first-logins, and the loser of that race does not leave an orphaned org behind"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "org-api-surface"
+provider = "rbac-authorization"
+requirement = "every org route carries a permission dependency, so no endpoint reaches a service with the membership check skipped"
+status = "unchecked"
+
+[[system.composition]]
+name = "Request admission"
+shape = "star"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "saas-user-auth"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "satellite"
+componentKey = "rbac-authorization"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "satellite"
+componentKey = "api-keys"
+cardinality = "many"
+note = "a user may hold many keys, each bound to at most one org"
+
+[[system.composition.roleGroups]]
+role = "satellite"
+componentKey = "rate-limiting"
+cardinality = 1
+correctnessAssumption = "none required"
+
+[[system.composition.roleGroups]]
+role = "satellite"
+componentKey = "jwt-crypto-service"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "satellite"
+componentKey = "token-manager"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "Single identity"
+statement = "Every request that reaches a route handler has resolved to exactly one caller identity and exactly one effective org, decided once and cached for the request."
+
+[[system.composition.groupProperties]]
+name = "No cross-org reach"
+statement = "A caller can never act on an org they are not a member of, whether they name it by path, header, or query string."
+
+[[system.composition.groupProperties]]
+name = "Key scope respected"
+statement = "An API key bound to one org can never be used to act on another org, even when the caller is a member of both."
+
+[[system.composition.bridgeChecks]]
+assumer = "rbac-authorization"
+provider = "saas-user-auth"
+requirement = "the effective org handed to a permission check is the one the caller is actually authorised for, with any client-supplied org_id already discarded"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "api-keys"
+provider = "saas-user-auth"
+requirement = "a mismatch between the key's bound org and the request's target org is rejected before the key is treated as valid"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "saas-user-auth"
+provider = "jwt-crypto-service"
+requirement = "a session cookie only verifies when signed by a key the service still recognises, and a token with no key id is not accepted as if it were current"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "saas-user-auth"
+provider = "token-manager"
+requirement = "an access token handed back is unexpired, or the refresh already happened, so no handler ever presents a stale provider credential"
+status = "unchecked"
+
+[[system.composition]]
+name = "Signup admission"
+shape = "star"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "signup-verification-gate"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "satellite"
+componentKey = "token-manager"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "satellite"
+componentKey = "rate-limiting"
+cardinality = 1
+correctnessAssumption = "none required"
+
+[[system.composition.roleGroups]]
+role = "satellite"
+componentKey = "default-org-bootstrap"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "satellite"
+componentKey = "org-invitations"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "satellite"
+componentKey = "user-provisioning"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "One account per person"
+statement = "A single human cannot end up with two accounts by varying their email with a plus-modifier or by racing two signups."
+
+[[system.composition.groupProperties]]
+name = "No half-created identity"
+statement = "A rejected or failed signup never leaves a usable Keycloak identity behind without a matching application user, in either direction."
+
+[[system.composition.groupProperties]]
+name = "Landing org is deliberate"
+statement = "A new user lands in an org only through an invitation they were sent, an explicit provisioning call, or the configured default-org rule — never by accident."
+
+[[system.composition.bridgeChecks]]
+assumer = "signup-verification-gate"
+provider = "token-manager"
+requirement = "the duplicate base-email lookup reflects every existing identity, and its failing open on an outage does not silently admit a duplicate account"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "default-org-bootstrap"
+provider = "org-invitations"
+requirement = "a user who arrives holding a pending invitation is placed in the invited org rather than being auto-joined to the default org first"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "user-provisioning"
+provider = "token-manager"
+requirement = "a create that collides with an existing Keycloak user is recoverable by re-query, so the idempotent path never destroys the identity it just found"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "signup-verification-gate"
+provider = "rate-limiting"
+requirement = "verification resend and email-change endpoints stay throttled per user rather than only per IP, which an unauthenticated caller can rotate"
+status = "unchecked"
+
+[[system.composition]]
+name = "Device authorization"
+shape = "two-party"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "device-oauth-flow"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "satellite"
+componentKey = "api-keys"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "One code, one key"
+statement = "A device code yields at most one API key, and a denied or expired code yields none."
+
+[[system.composition.groupProperties]]
+name = "No authorized-but-keyless code"
+statement = "A code never remains authorized when the key it was supposed to mint failed to be created."
+
+[[system.composition.bridgeChecks]]
+assumer = "device-oauth-flow"
+provider = "api-keys"
+requirement = "a key minted for a device is scoped to the org the approving user actually chose, and a minting failure is compensated by denying the code"
+status = "unchecked"
+
+[[system.composition]]
+name = "Service key provisioning"
+shape = "two-party"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "service-and-readiness-routes"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "satellite"
+componentKey = "api-keys"
+cardinality = "many"
+
+[[system.composition.groupProperties]]
+name = "Membership gates minting"
+statement = "A service-minted key is only ever issued for a user who is currently a member of the org the key will be scoped to."
+
+[[system.composition.bridgeChecks]]
+assumer = "service-and-readiness-routes"
+provider = "api-keys"
+requirement = "a key minted on behalf of the automations service is bound to the named org rather than falling back to the user's current org"
+status = "unchecked"
+
+[components.api-keys]
+name = "API Key Lifecycle"
+description = "Long-lived bearer credentials with a not_before/expires_at activation window, debounced compare-and-set last_used_at touch, org binding, and protected system keys."
+role = "central"
+rank = 0
+paths = [
+    "enterprise/storage/api_key.py",
+    "enterprise/storage/api_key_store.py",
+    "enterprise/server/routes/api_keys.py",
+]
+tests = [
+    "enterprise/tests/unit/storage/test_api_key_store.py",
+    "enterprise/tests/unit/test_api_key_store.py",
+    "enterprise/tests/unit/server/routes/test_api_keys.py",
+]
+dependencies = [
+    "saas-user-auth",
+    "rbac-authorization",
+]
+operations = [
+    "create_api_key(user_id, name, expires_at, not_before, org_id, use_current_org_fallback) — mutates",
+    "get_or_create_system_api_key(user_id, org_id, name) — mutates",
+    "validate_api_key(api_key) — mutates",
+    "delete_api_key(user_id, name) — mutates",
+    "delete_api_key_by_id(key_id) — mutates",
+    "delete_api_key_by_name(user_id, name, allow_system) — mutates",
+    "list_api_keys(user_id, org_id) — query",
+    "retrieve_mcp_api_key(user_id) — query",
+    "retrieve_api_key_by_name(user_id, name) — query",
+]
+headlineProperties = [
+    "A key is valid iff not_before <= now < expires_at, with both bounds independent and optional; an out-of-window key never advances last_used_at.",
+    "last_used_at is written at most once per 5-second debounce window per key, via a WHERE-guarded UPDATE that no-ops when another writer already advanced it.",
+    "System keys are excluded from listings and cannot be deleted without allow_system.",
+]
+adversarySurface = [
+    "Creating a key with org_id omitted silently binds it to current_org_id unless the caller opts out, so a key can end up scoped to an org the caller did not name.",
+    "Concurrent validations race the last_used_at CAS by design, degrading to a no-op update rather than a lock wait.",
+]
+specHints = "enterprise/storage/api_key_store.py:85-143 org-binding fallback; :243-320 validity window and debounced touch; enterprise/server/routes/api_keys.py:240-330 membership gate"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.automation-event-forwarding]
+name = "Automation Webhook Event Forwarding"
+description = "Resolves a git-provider webhook to an OpenHands org via git claims, personal org, or a single-team-org fallback, all Redis-cached, then forwards signed events to the automation service."
+role = "peripheral"
+rank = 0
+paths = ["enterprise/server/services/automation_event_service.py"]
+tests = ["enterprise/tests/unit/server/services/test_automation_event_service.py"]
+dependencies = [
+    "org-git-claims",
+    "default-org-bootstrap",
+]
+operations = [
+    "forward_event(provider, payload, installation_id, event_type) — mutates",
+    "forward_jira_dc_event(org_id, payload, workspace_name) — mutates",
+    "_resolve_org_context(provider, payload) — query",
+]
+headlineProperties = [
+    "An unclaimed repo's events reach the default-org fallback only while exactly one team org exists in the install, so events never cross org boundaries in multi-org installs.",
+    "This service resolves org identity only; authorization is deliberately deferred to automation execution time.",
+]
+adversarySurface = [
+    "Negative results are cached for an hour, so claiming a git org leaves its events misrouted for up to that long.",
+    "Outbound requests are signed with a single shared AUTOMATION_WEBHOOK_SECRET; this service signs, it does not verify inbound provider signatures.",
+]
+specHints = "enterprise/server/services/automation_event_service.py:458-497 default-org fallback TTL and race"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.billing-payments]
+name = "Billing: Stripe Credits & Subscriptions"
+description = "Stripe checkout session lifecycle for credit purchases, customer lookup and creation, and a subscription-access read model."
+role = "central"
+rank = 0
+paths = [
+    "enterprise/server/routes/billing.py",
+    "enterprise/integrations/stripe_service.py",
+    "enterprise/storage/billing_session.py",
+    "enterprise/storage/billing_session_type.py",
+    "enterprise/storage/stripe_customer.py",
+    "enterprise/storage/subscription_access.py",
+    "enterprise/storage/subscription_access_status.py",
+]
+tests = [
+    "enterprise/tests/unit/test_billing.py",
+    "enterprise/tests/unit/test_billing_stripe_integration.py",
+    "enterprise/tests/unit/test_stripe_service_db.py",
+]
+dependencies = [
+    "litellm-proxy-integration",
+    "org-lifecycle",
+]
+operations = [
+    "get_credits(user_id, effective_org_id) — query",
+    "get_subscription_access(user_id) — query",
+    "has_payment_method(user_id, effective_org_id) — query",
+    "create_customer_setup_session(user_id, org_id) — mutates",
+    "create_checkout_session(user_id, org_id, amount) — mutates",
+    "success_callback(session_id, request) — mutates",
+    "cancel_callback(session_id, request) — mutates",
+    "find_or_create_customer_by_user_id(user_id, org_id) — mutates",
+    "migrate_customer(session, user_id, org) — mutates",
+]
+headlineProperties = [
+    "A BillingSession transitions in_progress to completed or cancelled at most once; both callbacks filter on status=='in_progress'.",
+    "Credits are always added on top of max(current_spend, current_max_budget), never below current spend.",
+]
+adversarySurface = [
+    "Two concurrent GETs to /success for the same in_progress session both pass the status filter with no row lock and can double-credit the account.",
+    "There is no Stripe webhook handler; success and cancel are purely browser-redirect driven, so a user who never returns leaves the session in_progress forever with no reconciliation job.",
+    "SubscriptionAccess is read but has no creator or updater anywhere in the repo — provisioning happens outside this codebase or is unbuilt.",
+]
+specHints = "enterprise/server/routes/billing.py:250-351 success_callback credit reconciliation; enterprise/integrations/stripe_service.py:70-114 find_or_create_customer_by_user_id"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.daily-quota-increase]
+name = "Daily Conversation Quota & Increase Requests"
+description = "Per-user/org/deployment daily conversation limit resolution and the self-service quota-increase request workflow with a signed approval token."
+role = "central"
+rank = 0
+paths = [
+    "enterprise/server/services/daily_conversation_quota_service.py",
+    "enterprise/server/services/quota_increase_request_service.py",
+    "enterprise/server/routes/quota.py",
+    "enterprise/storage/daily_conversation_usage.py",
+    "enterprise/storage/quota_increase_request.py",
+]
+tests = [
+    "enterprise/tests/unit/test_daily_conversation_quota_service.py",
+    "enterprise/tests/unit/test_quota_increase_request_service.py",
+    "enterprise/tests/unit/test_org_level_quota.py",
+    "enterprise/tests/unit/server/routes/test_quota_admin.py",
+    "enterprise/tests/unit/server/routes/test_quota_status.py",
+    "enterprise/tests/unit/storage/test_daily_conversation_usage.py",
+]
+dependencies = []
+operations = [
+    "get_status(user_id, org_id) — query",
+    "get_limit(user_id, org_id) — query",
+    "get_default_limit(org_id) — query",
+    "create_request(user_id, org_id, work_email, requested_limit, reason) — mutates",
+    "approve_request(request_id, approved_by_user_id) — mutates",
+    "reject_request(request_id) — mutates",
+    "create_verification_token(request_id) — query",
+    "verify_token(token) — query",
+    "set_org_quota(org_id, limit) — mutates",
+]
+headlineProperties = [
+    "Limit resolution precedence is user override, then org, then deployment default, with EXEMPT_LIMIT(-1) resolving to no limit.",
+    "A user holds at most one PENDING quota-increase request at a time.",
+    "Approval is idempotent: re-approving never re-applies the limit.",
+]
+adversarySurface = [
+    "DailyConversationUsage.conversation_count has no writer anywhere in the repo — quota status is informational and enforcement does not exist yet, so the model must not assume a live counter.",
+    "The self-service verify endpoint is authenticated only by a 1h JWS; anyone holding the link before expiry can self-approve.",
+    "create_request's stale-PENDING auto-expire reads now - created_at >= TTL without a lock, so two concurrent creates at the boundary can both pass.",
+]
+specHints = "enterprise/server/services/daily_conversation_quota_service.py:43 enforcement TODO, :60-115 precedence and sentinel; enterprise/server/services/quota_increase_request_service.py:79-113 cap and stale-pending expiry"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.default-org-bootstrap]
+name = "Default Org Bootstrap & Auto-Join"
+description = "Login-time creation or adoption of the install's single default org and additive auto-add membership, made race-safe by the is_default unique flag."
+role = "peripheral"
+rank = 0
+paths = ["enterprise/storage/default_org_service.py"]
+tests = ["enterprise/tests/unit/test_default_org_service.py"]
+dependencies = [
+    "org-lifecycle",
+    "org-membership-roles",
+]
+operations = [
+    "apply_for_user(user, is_new_user) — mutates",
+    "_get_or_create_org(config, current_user) — mutates",
+    "_ensure_membership(org, user, auto_add_users) — mutates",
+]
+headlineProperties = [
+    "This service only ever adds membership or ownership; it never demotes or removes anyone.",
+    "At most one org is created as the default per install, even under concurrent first-logins.",
+    "An ambiguous install with more than one pre-existing team org and no is_default flag refuses to guess and no-ops.",
+]
+adversarySurface = ["Two simultaneous first-logins both call create_org_with_owner; the loser catches OrgNameExistsError and re-adopts, but the org it already created is left orphaned as a non-default team org owned by the loser."]
+specHints = "enterprise/storage/default_org_service.py:157-226 create-or-adopt race; :120-155 current-org and hide_personal_workspaces interplay"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.device-oauth-flow]
+name = "OAuth Device Authorization Flow"
+description = "RFC 8628 device code state machine with pending/authorized/denied/expired states, polling backoff, a race-safe unique-code generator, and a scoped API key issued on verification."
+role = "central"
+rank = 0
+paths = [
+    "enterprise/storage/device_code.py",
+    "enterprise/storage/device_code_store.py",
+    "enterprise/server/routes/oauth_device.py",
+]
+tests = [
+    "enterprise/tests/unit/storage/test_device_code.py",
+    "enterprise/tests/unit/storage/test_device_code_store.py",
+    "enterprise/tests/unit/server/routes/test_oauth_device.py",
+]
+dependencies = ["api-keys"]
+operations = [
+    "create_device_code(expires_in, max_attempts) — mutates",
+    "authorize_device_code(user_code, user_id) — mutates",
+    "deny_device_code(user_code) — mutates",
+    "update_poll_time(device_code, increase_interval) — mutates",
+    "device_authorize(request) — mutates",
+    "device_token(request) — query",
+    "verify_authenticated(request, user_id) — mutates",
+]
+headlineProperties = [
+    "A device code transitions from PENDING to exactly one of AUTHORIZED, DENIED or EXPIRED, and a resolved code can never be re-resolved.",
+    "The polling interval only ratchets up, min(current+5, 60), never down, for the life of a code.",
+    "If API-key creation fails after authorization succeeds, the code is denied as compensation rather than left authorized but keyless.",
+]
+adversarySurface = [
+    "Two concurrent creates colliding on the same random code rely on the DB unique constraint plus a retry loop, not application locking.",
+    "The token endpoint is fully unauthenticated by design and CORS-exempt; the device_code string is the only secret.",
+    "A client polling faster than the interval still has its poll_time updated, so backoff persists across bursts.",
+]
+specHints = "enterprise/storage/device_code.py:69-129 state guards and slow_down math; enterprise/storage/device_code_store.py:29-73 unique-code retry; enterprise/server/routes/oauth_device.py:242-325 compensating deny"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.jwt-crypto-service]
+name = "JWT/JWE Crypto Service"
+description = "Multi-key JWS signing and verification with kid-header key selection, plus JWE symmetric encryption with legacy Fernet fallback; key material from env, a persisted keyfile, or generated on first run."
+role = "cross-cutting"
+rank = 0
+paths = [
+    "openhands/app_server/services/jwt_service.py",
+    "openhands/app_server/utils/encryption_key.py",
+]
+tests = [
+    "tests/unit/app_server/test_jwt_service.py",
+    "tests/unit/app_server/test_encryption_key.py",
+]
+dependencies = []
+operations = [
+    "create_jws_token(payload, key_id, expires_in) — query",
+    "verify_jws_token(token, key_id) — query",
+    "create_jwe_token(payload, key_id) — query",
+    "decrypt_jwe_token(token) — query",
+    "encrypt_value(plaintext) — query",
+    "decrypt_value(ciphertext) — query",
+    "get_default_encryption_keys(workspace_dir) — mutates",
+]
+headlineProperties = [
+    "A token's key is selected by its own kid header at verify time, so several simultaneously valid keys can coexist and rotation never invalidates outstanding tokens.",
+    "Only dir + A256GCM JWE algorithms are ever accepted, preventing algorithm-confusion attacks.",
+    "decrypt_value succeeds on a legacy Fernet value as long as any currently known key can decrypt it.",
+]
+adversarySurface = [
+    "A token with no kid header falls back silently to the current default key; a forged token with a stripped kid takes the same path.",
+    "On first run with nothing configured a brand-new key is generated and persisted to disk; losing that file invalidates every signed cookie and every encrypted DB value.",
+    "The JWE ciphertext cap is raised from 64KB to 100MB to fit encrypted org profiles, widening the blast radius of a single decrypt call.",
+]
+specHints = "openhands/app_server/services/jwt_service.py:70-151 JWS create/verify and kid fallback; :258-312 JWE-then-Fernet chain; openhands/app_server/utils/encryption_key.py:30-86 key hydration precedence"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.litellm-proxy-integration]
+name = "LiteLLM Proxy Adapter"
+description = "External adapter for LiteLLM team, user and key CRUD plus spend and budget queries; shared infrastructure behind org lifecycle, membership, budgets, member financials and billing."
+role = "cross-cutting"
+rank = 0
+paths = ["enterprise/storage/lite_llm_manager.py"]
+tests = ["enterprise/tests/unit/test_lite_llm_manager.py"]
+dependencies = []
+operations = [
+    "get_budget_from_team_info(team_info) — query",
+    "update_team_and_users_budget(org_id, new_max_budget) — mutates",
+    "generate_key(user_id, alias) — mutates",
+    "delete_key_by_alias(alias) — mutates",
+    "verify_key(key) — query",
+    "verify_existing_key(key) — query",
+    "get_team_members_financial_data(org_id) — query",
+]
+headlineProperties = ["This is a fallible external adapter, not a source of truth; every operation can throw or time out and callers must tolerate divergence."]
+adversarySurface = ["Every caller wraps LiteLLM calls in try/except and degrades by logging, so DB state and LiteLLM state can diverge indefinitely with only litellm_last_sync_status recording it."]
+specHints = "enterprise/storage/lite_llm_manager.py:122-128 class entry; methods at :149-1887"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.maintenance-task-queue]
+name = "Maintenance Task Queue"
+description = "Generic DB-backed task queue with PENDING/WORKING/ERROR states, a single-worker polling runner, batch-enqueue deduplication and a one-hour stale-task reaper."
+role = "cross-cutting"
+rank = 0
+paths = [
+    "enterprise/storage/maintenance_task.py",
+    "enterprise/server/maintenance_task_processor/__init__.py",
+    "enterprise/run_maintenance_tasks.py",
+    "enterprise/run_budget_maintenance.py",
+]
+tests = [
+    "enterprise/tests/unit/test_run_maintenance_tasks.py",
+    "enterprise/tests/unit/test_maintenance_task_runner_standalone.py",
+    "tests/unit/test_run_budget_maintenance.py",
+]
+dependencies = []
+operations = [
+    "enqueue_budget_tasks() — mutates",
+    "run_tasks() — mutates",
+    "next_task() — mutates",
+    "MaintenanceTaskProcessor.__call__(task) — mutates",
+]
+headlineProperties = [
+    "A batch is not enqueued while another batch for the same processor type is still PENDING or WORKING.",
+    "One org's processing failure is isolated by a per-org rollback and never aborts the batch.",
+]
+adversarySurface = [
+    "A WORKING task with no completion is only force-ERRORed by the next runner invocation; with no runner it stays WORKING forever.",
+    "The stale-task cutoff is a fixed one hour with no lease renewal, so a legitimately slow task is reaped and re-run concurrently.",
+]
+specHints = "enterprise/storage/maintenance_task.py:46-96 task/processor status machine; enterprise/run_maintenance_tasks.py:23-76 polling loop and stale reap; enterprise/run_budget_maintenance.py:35-69 enqueue dedup"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.org-api-surface]
+name = "Org API Surface & Error Models"
+description = "FastAPI router wiring the org lifecycle, membership, budget, conversation, settings and git-claim services together, plus the shared DTO and error hierarchy every org component raises."
+role = "cross-cutting"
+rank = 0
+paths = [
+    "enterprise/server/routes/orgs.py",
+    "enterprise/server/routes/org_models.py",
+    "enterprise/server/routes/org_profiles.py",
+]
+tests = [
+    "enterprise/tests/unit/server/routes/test_orgs.py",
+    "enterprise/tests/unit/server/routes/test_org_models.py",
+    "enterprise/tests/unit/test_org_profiles.py",
+]
+dependencies = [
+    "org-lifecycle",
+    "org-membership-roles",
+    "org-budget-cycle",
+    "org-conversation-reporting",
+    "org-app-settings",
+    "org-git-claims",
+    "org-member-financial",
+    "rbac-authorization",
+]
+operations = ["org_router CRUD endpoints for org, members, budget, conversations, app-settings and git claims — mutates and queries, each delegating to its service"]
+headlineProperties = ["This component owns no invariant of its own; it is the composition point where org permission checks are applied before delegation."]
+adversarySurface = ["Every org endpoint depends on require_permission resolving the correct effective org; a route registered without that dependency would silently skip the membership check."]
+specHints = "enterprise/server/routes/org_models.py:38-196 exception hierarchy shared across org components"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.org-app-settings]
+name = "Org App Settings"
+description = "Org-wide app, agent and marketplace settings CRUD with a row lock plus optimistic locking on last_known_updated_at."
+role = "peripheral"
+rank = 0
+paths = [
+    "enterprise/server/services/org_app_settings_service.py",
+    "enterprise/storage/org_app_settings_store.py",
+]
+tests = [
+    "enterprise/tests/unit/server/services/test_org_app_settings_service.py",
+    "enterprise/tests/unit/storage/test_org_app_settings_store.py",
+    "enterprise/tests/unit/server/routes/test_org_defaults_settings.py",
+]
+dependencies = ["org-lifecycle"]
+operations = [
+    "get_org_app_settings() — query",
+    "update_org_app_settings(update_data) — mutates",
+    "OrgAppSettingsStore.update_org_app_settings(org_id, update_data) — mutates",
+]
+headlineProperties = [
+    "An update carrying a stale last_known_updated_at is always rejected with OrgConcurrentModificationError, never silently applied.",
+    "registered_marketplaces never contains two entries with the same name.",
+]
+adversarySurface = ["last_known_updated_at is optional: a caller that omits it bypasses the optimistic-lock check entirely and can lose a concurrent update."]
+specHints = "enterprise/storage/org_app_settings_store.py:110-156 optimistic lock; :195-206 marketplace name uniqueness"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.org-budget-cycle]
+name = "Org Budget Cycle & Threshold Alerts"
+description = "Monthly budget cycle roll, per-user overrides, threshold-alert dedup per cycle, and LiteLLM budget synchronisation."
+role = "central"
+rank = 0
+paths = [
+    "enterprise/server/services/org_budget_service.py",
+    "enterprise/storage/org_budget_settings.py",
+    "enterprise/storage/org_budget_store.py",
+    "enterprise/storage/org_budget_threshold.py",
+    "enterprise/storage/org_user_budget_override.py",
+    "enterprise/server/maintenance_task_processor/org_budget_maintenance_processor.py",
+]
+tests = [
+    "enterprise/tests/unit/test_org_budget_service.py",
+    "enterprise/tests/unit/test_org_budget_maintenance_processor.py",
+    "enterprise/tests/unit/server/routes/test_org_budget_models.py",
+]
+dependencies = [
+    "litellm-proxy-integration",
+    "org-membership-roles",
+    "maintenance-task-queue",
+]
+operations = [
+    "get_budget_state(org_id) — query",
+    "update_budget_settings(org_id, update_data) — mutates",
+    "upsert_user_override(org_id, user_id, monthly_limit, is_disabled) — mutates",
+    "delete_user_override(org_id, user_id) — mutates",
+    "run_budget_maintenance(org_id) — mutates",
+    "_maybe_send_alerts(org_id, state) — mutates",
+    "OrgBudgetMaintenanceProcessor.__call__(task) — mutates",
+]
+headlineProperties = [
+    "Spend is compared against monthly_limit anchored at cycle_start_spend, and the cycle rolls exactly once per reset_day boundary.",
+    "A threshold fires at most once per (threshold, cycle_start) pair.",
+    "Budgets are never enforced against personal-workspace orgs; every mutator rejects org_id == user_id.",
+]
+adversarySurface = [
+    "Threshold double-fire: two overlapping run_budget_maintenance calls both read last_triggered_cycle_start before either writes — no row lock.",
+    "_current_cycle_start assumes reset_day exists in every month; reset_day > days-in-month is unhandled.",
+    "LiteLLM sync failures are swallowed into litellm_last_sync_status='error', letting the enforced budget silently diverge from the DB.",
+]
+specHints = "enterprise/server/services/org_budget_service.py:333-370 cycle roll; :596-706 LiteLLM sync; :708-745 alert dedup"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.org-conversation-reporting]
+name = "Org Conversation Reporting & Stop"
+description = "Org-scoped conversation listing, usage-stats aggregation over the cost-event ledger, and the stop_conversation mutation with status rollback on failure."
+role = "peripheral"
+rank = 0
+paths = [
+    "enterprise/server/services/org_conversation_service.py",
+    "enterprise/storage/conversation_work.py",
+    "enterprise/storage/stored_conversation_cost_event.py",
+]
+tests = [
+    "enterprise/tests/unit/test_org_conversation_service_pr_merge.py",
+    "enterprise/tests/unit/test_org_conversation_usage_models.py",
+    "enterprise/tests/unit/storage/test_conversation_cost_events_cascade.py",
+]
+dependencies = [
+    "org-budget-cycle",
+    "app-conversation-lifecycle",
+]
+operations = [
+    "list_org_conversations(org_id, filters, page_id, limit) — query",
+    "get_stats(org_id) — query",
+    "get_usage_stats(org_id, range) — query",
+    "get_user_usage_stats(org_id, user_id) — query",
+    "get_org_conversation(org_id, conversation_id) — query",
+    "stop_conversation(org_id, conversation_id, user_id) — mutates",
+]
+headlineProperties = [
+    "stop_conversation never leaves execution_status stuck at 'deleting'; it rolls back to the previous status on failure or exception.",
+    "A sandbox shared by more than one conversation is never torn down by stopping just one of them.",
+]
+adversarySurface = [
+    "A crash between a successful sandbox delete and the return leaves the sandbox gone but the conversation unmarked.",
+    "The sandbox_status filter scan is bounded at 5000 rows and raises rather than paginating, so a large org cannot filter by status at all.",
+    "enterprise/storage/conversation_work.py has no reader or writer outside its own module and conftest — likely dead schema.",
+]
+specHints = "enterprise/server/services/org_conversation_service.py:1481-1504 status flip and rollback; :695-771 ledger vs legacy cost merge"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.org-git-claims]
+name = "Org Git Organization Claims"
+description = "One-to-one claim of a (provider, git_organization) pair by an OpenHands org, enforced by a DB unique constraint."
+role = "peripheral"
+rank = 0
+paths = [
+    "enterprise/storage/org_git_claim.py",
+    "enterprise/storage/org_git_claim_store.py",
+]
+tests = [
+    "enterprise/tests/unit/server/routes/test_org_git_claims.py",
+    "enterprise/tests/unit/storage/test_org_git_claim_store.py",
+]
+dependencies = ["org-lifecycle"]
+operations = [
+    "create_claim(org_id, provider, git_organization, claimed_by) — mutates",
+    "get_claim_by_provider_and_git_org(provider, git_organization) — query",
+    "get_claims_by_org_id(org_id) — query",
+    "delete_claim(claim_id, org_id) — mutates",
+]
+headlineProperties = ["A (provider, git_organization) pair is claimed by at most one org at a time."]
+adversarySurface = ["create_claim pre-checks then inserts with no atomicity beyond the DB unique constraint, and does not catch IntegrityError itself — callers must translate it."]
+specHints = "enterprise/storage/org_git_claim.py:33-35 unique constraint"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.org-invitations]
+name = "Org Invitations"
+description = "Invitation state machine — create, accept, revoke, expire — with token, email-match and role-permission guards, plus SSO accept-by-email-match at login."
+role = "central"
+rank = 0
+paths = [
+    "enterprise/server/services/org_invitation_service.py",
+    "enterprise/server/routes/org_invitations.py",
+    "enterprise/server/routes/org_invitation_models.py",
+    "enterprise/storage/org_invitation.py",
+    "enterprise/storage/org_invitation_store.py",
+]
+tests = [
+    "enterprise/tests/unit/test_org_invitation_service.py",
+    "enterprise/tests/unit/test_org_invitations_router.py",
+    "enterprise/tests/unit/test_org_invitation_store.py",
+]
+dependencies = [
+    "org-membership-roles",
+    "org-lifecycle",
+    "litellm-proxy-integration",
+]
+operations = [
+    "create_invitation(org_id, email, role_name, inviter_id) — mutates",
+    "create_invitations_batch(org_id, emails, role_name, inviter_id) — mutates",
+    "accept_pending_invitations_for_user(user) — mutates",
+    "accept_invitation(token, user_id) — mutates",
+    "revoke_invitation(org_id, invitation_id) — mutates",
+    "mark_expired_if_needed(invitation) — mutates",
+    "generate_token() — query",
+]
+headlineProperties = [
+    "An invitation is accepted at most once; PENDING transitions one-way to ACCEPTED, REVOKED or EXPIRED.",
+    "Acceptance always requires the invitee's email to equal the invitation's email.",
+    "Only owners and admins may invite, and only an owner may grant the owner role.",
+]
+adversarySurface = [
+    "Double-accept race: login-time accept_pending_invitations_for_user and an explicit accept_invitation(token) check-then-act on status with no row lock.",
+    "Membership is added before status flips to ACCEPTED in both paths; a crash between them leaves a member with a PENDING invitation.",
+    "The token stays guessable and valid for DEFAULT_EXPIRATION_DAYS=7; expiry is a lazy timestamp check on read, not a sweep.",
+]
+specHints = "enterprise/server/services/org_invitation_service.py:255-350 login-time accept-by-email; :390-407 status-branch error mapping; enterprise/storage/org_invitation.py:66-70 status constants"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.org-lifecycle]
+name = "Org Lifecycle & LiteLLM Team Sync"
+description = "Org create/update/delete/switch with compensating LiteLLM team cleanup on DB failure, owner authorization and cascade deletion."
+role = "central"
+rank = 0
+paths = [
+    "enterprise/storage/org.py",
+    "enterprise/storage/org_store.py",
+    "enterprise/storage/org_service.py",
+]
+tests = [
+    "enterprise/tests/unit/test_org_service.py",
+    "enterprise/tests/unit/test_org_store.py",
+]
+dependencies = [
+    "litellm-proxy-integration",
+    "org-membership-roles",
+]
+operations = [
+    "create_org_with_owner(name, contact_name, contact_email, user_id, add_creator_as_owner) — mutates",
+    "update_org_with_permissions(org_id, update_data, user_id) — mutates",
+    "delete_org_with_cleanup(user_id, org_id) — mutates",
+    "switch_org(user_id, org_id) — mutates",
+    "get_org_by_id(org_id, user_id) — query",
+    "has_admin_or_owner_role(user_id, org_id) — query",
+    "is_org_member(user_id, org_id) — query",
+    "check_byor_export_enabled(user_id, org_id) — mutates",
+    "OrgStore.delete_org_cascade(org_id, requester_user_id) — mutates",
+    "OrgStore.mark_org_as_default(org_id) — mutates",
+]
+headlineProperties = [
+    "An org is never left with a LiteLLM team but no DB row, or vice versa — create and delete are compensated.",
+    "Deleting an org never destroys a non-consenting member's last account; OrphanedUserError blocks it.",
+    "At most one org holds is_default=True at any time.",
+]
+adversarySurface = [
+    "Concurrent create with the same name races OrgNameExistsError against a slow LiteLLM call, since the LiteLLM team is created before the uniqueness re-check.",
+    "delete_org_cascade's orphan preflight takes no row lock, so a concurrent membership change between the SELECT and the DELETEs is silently accepted.",
+    "A refactor dropping the explicit session.delete(org) leaves the row behind; only a code comment guards this.",
+]
+specHints = "enterprise/storage/org_service.py:199-309 create_org_with_owner compensation; enterprise/storage/org_store.py:521-800 delete_org_cascade orphan handling; enterprise/storage/org_store.py:206-226 mark_org_as_default race"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.org-member-financial]
+name = "Org Member Financial Reporting"
+description = "Paginated per-member spend and budget view joining member rows with LiteLLM financial data, distinguishing shared-team from individual budgets."
+role = "peripheral"
+rank = 0
+paths = ["enterprise/server/services/org_member_financial_service.py"]
+tests = ["enterprise/tests/unit/server/services/test_org_member_financial_service.py"]
+dependencies = [
+    "litellm-proxy-integration",
+    "org-membership-roles",
+]
+operations = ["get_org_members_financial_data(org_id, page_id, limit, email_filter) — query"]
+headlineProperties = [
+    "current_budget is never negative.",
+    "A 401 or 403 from LiteLLM is re-raised; every other failure degrades to empty financial data rather than failing the page.",
+]
+adversarySurface = ["Shared-team-budget members all see remaining budget computed from team_spend, which can be stale relative to the per-user snapshot fetched in the same call."]
+specHints = "enterprise/server/services/org_member_financial_service.py:67-137"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.org-membership-roles]
+name = "Org Membership & Roles"
+description = "Org member CRUD, owner/admin/member role assignment, last-owner protection and role-hierarchy permission checks."
+role = "central"
+rank = 0
+paths = [
+    "enterprise/server/services/org_member_service.py",
+    "enterprise/storage/org_member.py",
+    "enterprise/storage/org_member_store.py",
+]
+tests = [
+    "enterprise/tests/unit/test_org_member_store.py",
+    "enterprise/tests/unit/server/services/test_org_member_service.py",
+]
+dependencies = ["litellm-proxy-integration"]
+operations = [
+    "get_me(org_id, user_id) — query",
+    "get_org_members(org_id, current_user_id, page_id, limit, email_filter) — query",
+    "remove_org_member(org_id, target_user_id, current_user_id) — mutates",
+    "update_org_member(org_id, target_user_id, current_user_id, update_data) — mutates",
+    "_is_last_owner(org_id, user_id) — query",
+    "add_user_to_org(user_id, org_id, role_id) — mutates",
+    "update_all_members_settings_async(session, org_id, member_settings) — mutates",
+]
+headlineProperties = [
+    "An org can never reach zero owners; both remove and demote check _is_last_owner.",
+    "A requester can never modify or remove themselves through these endpoints.",
+    "An admin can never promote, demote or remove an owner.",
+]
+adversarySurface = [
+    "Two concurrent demote-the-last-owner requests from different admins can both read _is_last_owner()==False before either commits — no row lock, a TOCTOU hole in the core invariant.",
+    "remove_org_member deletes the DB row then best-effort removes from the LiteLLM team; partial failure desynchronises the two.",
+]
+specHints = "enterprise/server/services/org_member_service.py:344-391 role hierarchy and last-owner guards; enterprise/storage/org_member_store.py:265-313 bulk settings mutation"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.rate-limiting]
+name = "Rate Limiting Budgets"
+description = "Three limiter mechanisms: a Redis fixed-window multi-tier limiter for per-uid auth hits, a Redis SET-NX fail-open cooldown for email and verification endpoints, and a per-process in-memory sliding window used app-wide."
+role = "peripheral"
+rank = 0
+paths = [
+    "enterprise/server/rate_limit.py",
+    "enterprise/server/utils/rate_limit_utils.py",
+    "openhands/app_server/middleware.py",
+    "openhands/server/middleware.py",
+]
+tests = [
+    "enterprise/tests/unit/server/test_rate_limit.py",
+    "enterprise/tests/unit/server/test_rate_limit_utils.py",
+    "tests/unit/server/test_middleware.py",
+]
+dependencies = []
+operations = [
+    "RateLimiter.hit(namespace, key) — mutates",
+    "create_redis_rate_limiter(windows) — query",
+    "check_rate_limit_by_user_id(request, key_prefix, user_id, user_seconds, ip_seconds) — mutates",
+    "InMemoryRateLimiter.__call__(request) — mutates",
+    "RateLimitMiddleware.dispatch(request, call_next) — mutates",
+]
+headlineProperties = [
+    "Every rate-limit check fails OPEN on a backend error; availability is prioritised over enforcement.",
+    "The cooldown keys by user_id when available and otherwise by client IP, and the two counters are never combined.",
+]
+adversarySurface = [
+    "An attacker who can degrade Redis bypasses both the per-uid auth budget and the cooldown simultaneously, by design.",
+    "The IP fallback is trivially defeated by rotating source IPs on unauthenticated endpoints such as verification resend.",
+    "RATE_LIMIT_AUTH_WINDOWS='' silently disables the auth limiter entirely — a misconfigured env var removes protection with no error.",
+]
+specHints = "enterprise/server/rate_limit.py:58-114 multi-window hit and disable path; enterprise/server/utils/rate_limit_utils.py:49-121 SET NX cooldown and fail-open; openhands/app_server/middleware.py:251-315 in-memory limiter"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.rbac-authorization]
+name = "Permission & RBAC Model"
+description = "Permission enum with org-scoped and instance-level super-role tables, the require_permission dependency with org-role then super-role fallback, and the last-super-admin invariant."
+role = "central"
+rank = 0
+paths = [
+    "enterprise/server/auth/authorization.py",
+    "enterprise/storage/role.py",
+    "enterprise/storage/role_store.py",
+    "enterprise/server/routes/super_admins.py",
+    "enterprise/server/auth/user/__init__.py",
+]
+tests = [
+    "enterprise/tests/unit/test_authorization.py",
+    "enterprise/tests/unit/test_role_store.py",
+    "enterprise/tests/unit/server/routes/test_super_admins.py",
+]
+dependencies = ["saas-user-auth"]
+operations = [
+    "get_user_org_role(user_id, org_id) — query",
+    "get_user_super_role(user_id) — query",
+    "has_permission(role, permission, is_super) — query",
+    "authorize_permission(request, user_id, permission) — query",
+    "require_permission(permission) — query",
+    "require_financial_data_access(request, org_id, user_id) — query",
+    "grant_super_admin(user_id) — mutates",
+    "revoke_super_admin(user_id) — mutates",
+    "list_super_admins() — query",
+]
+headlineProperties = [
+    "An org-scoped role's permissions never leak into the super-role set or the reverse; SUPER_ROLE_PERMISSIONS is defined explicitly, not inherited.",
+    "require_permission grants access iff the org role permits or the super role permits, and never on the org role alone when org_id is unresolved.",
+    "The instance can never reach zero super admins; revoke refuses the sole remaining row under a lock over the whole super-admin set.",
+]
+adversarySurface = [
+    "Cross-org escalation via a client-supplied ?org_id= query string on path-less routes — discarded deliberately, and a regression here is a direct privilege escalation.",
+    "An API key bound to org A used against a require_permission(org B) route must 403 before any role lookup.",
+    "Two concurrent revokes each seeing two admins would race to zero if the lock covered only the target row.",
+]
+specHints = "enterprise/server/auth/authorization.py:153-261 permission tables; :440-556 require_permission precedence; enterprise/storage/user_store.py:914-999 grant/revoke with FOR UPDATE"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.saas-user-auth]
+name = "SaaS Session & Request Identity"
+description = "Resolves who is calling on each request (cookie JWS vs API-key bearer), owns lazy Keycloak refresh, effective-org precedence, chunked auth cookies, and the CORS credential-mode split."
+role = "central"
+rank = 0
+paths = [
+    "enterprise/server/auth/saas_user_auth.py",
+    "enterprise/server/auth/org_context.py",
+    "enterprise/server/auth/cookie_chunking.py",
+    "enterprise/server/auth/auth_error.py",
+    "enterprise/server/auth/github_utils.py",
+    "enterprise/server/auth/gitlab_sync.py",
+    "enterprise/server/auth/sheets_client.py",
+    "enterprise/server/middleware.py",
+    "enterprise/server/routes/auth.py",
+    "enterprise/server/routes/users_v1.py",
+    "enterprise/server/models/user_models.py",
+    "enterprise/server/models/__init__.py",
+    "enterprise/storage/user.py",
+    "enterprise/storage/user_store.py",
+    "enterprise/utils/identity.py",
+    "enterprise/utils/__init__.py",
+    "openhands/app_server/user_auth/user_auth.py",
+    "openhands/app_server/user_auth/default_user_auth.py",
+    "openhands/app_server/user_auth/__init__.py",
+    "openhands/app_server/user/user_context.py",
+    "openhands/app_server/user/auth_user_context.py",
+    "openhands/app_server/user/specifiy_user_context.py",
+    "openhands/app_server/user/user_models.py",
+    "openhands/app_server/user/user_router.py",
+    "openhands/app_server/user/skills_router.py",
+    "openhands/app_server/utils/auth.py",
+]
+tests = [
+    "enterprise/tests/unit/test_saas_user_auth.py",
+    "enterprise/tests/unit/server/auth/test_saas_user_auth_effective_org.py",
+    "enterprise/tests/unit/server/auth/test_saas_user_auth_org_info.py",
+    "enterprise/tests/unit/server/auth/test_reject_x_org_id_path_mismatch.py",
+    "enterprise/tests/unit/server/auth/test_cookie_chunking.py",
+    "enterprise/tests/unit/test_auth_middleware.py",
+    "enterprise/tests/unit/test_auth_error.py",
+    "enterprise/tests/unit/test_auth_routes.py",
+    "enterprise/tests/unit/test_auth_invitation_callback.py",
+    "enterprise/tests/unit/server/routes/test_auth_onboarding.py",
+    "enterprise/tests/unit/test_api_key_aware_cors_middleware.py",
+    "enterprise/tests/unit/test_identity_utils.py",
+    "enterprise/tests/unit/test_user_store.py",
+    "enterprise/tests/unit/test_user_store_login.py",
+    "enterprise/tests/unit/storage/test_saas_stores_effective_org.py",
+    "enterprise/tests/unit/test_user_git_organizations.py",
+    "tests/unit/app_server/test_user_context_email.py",
+    "tests/unit/server/routes/test_skills_api.py",
+]
+dependencies = [
+    "token-manager",
+    "jwt-crypto-service",
+    "rate-limiting",
+    "rbac-authorization",
+    "signup-verification-gate",
+]
+operations = [
+    "SaasUserAuth.get_instance(request) — query",
+    "SaasUserAuth.get_for_user(user_id) — query",
+    "get_effective_org_id() — query",
+    "get_target_org_id_for_permission_check() — query",
+    "set_effective_org_id_override(org_id) — mutates",
+    "refresh() — mutates",
+    "get_access_token() — mutates",
+    "get_provider_tokens() — mutates",
+    "SetAuthCookieMiddleware.__call__(request, call_next) — mutates",
+    "keycloak_callback(request) — mutates",
+]
+headlineProperties = [
+    "Exactly one of api_key_org_id, the X-Org-Id header, or user.current_org_id determines the effective org, in that precedence, cached once per request.",
+    "Logout or a mid-request auth failure never revokes an offline session a live API key depends on; only COOKIE auth_type triggers Keycloak logout.",
+    "A chunked cookie write always clears now-unused trailing chunk indices, so stale chunks cannot be replayed.",
+]
+adversarySurface = [
+    "An API key bound to org A presented with an X-Org-Id header for org B must 403 rather than silently preferring one.",
+    "A cookie exceeding MAX_CHUNKS(8) times 3000 bytes silently truncates — a documented ceiling that is not enforced.",
+    "A client-supplied ?org_id= on a path without {org_id} must be discarded, not trusted.",
+]
+specHints = "enterprise/server/auth/saas_user_auth.py:193-347 effective-org precedence; :382-427 lazy offline-token refresh; enterprise/server/auth/cookie_chunking.py:37-113 chunk algorithm; enterprise/server/middleware.py:25-227 cookie refresh and error mapping"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.service-and-readiness-routes]
+name = "Service-to-Service Keys & Readiness"
+description = "Shared-secret-authenticated endpoint letting the automations service provision and delete per-user API keys scoped to an org, plus a DB and Redis readiness probe."
+role = "peripheral"
+rank = 0
+paths = [
+    "enterprise/server/routes/service.py",
+    "enterprise/server/routes/readiness.py",
+]
+tests = ["enterprise/tests/unit/routes/test_service.py"]
+dependencies = [
+    "org-membership-roles",
+    "api-keys",
+]
+operations = [
+    "get_or_create_api_key_for_user(user_id, org_id, request) — mutates",
+    "delete_user_api_key(user_id, org_id, key_name) — mutates",
+    "is_ready() — query",
+]
+headlineProperties = ["A key is only ever created or deleted for a user who is currently a member of the target org."]
+adversarySurface = ["AUTOMATIONS_SERVICE_KEY is a single static shared secret with no rotation or expiry, and it fully substitutes for user authentication on these routes."]
+specHints = "enterprise/server/routes/service.py:57-95 shared-secret guard; :111-211 membership check"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.signup-verification-gate]
+name = "Signup & Email Verification Gate"
+description = "Everything deciding whether a login or signup may complete: whitelist/blacklist rules, duplicate base-email blocking, reCAPTCHA risk assessment, the admin-domain gate, and Keycloak email verification and change."
+role = "central"
+rank = 0
+paths = [
+    "enterprise/server/auth/user/user_authorizer.py",
+    "enterprise/server/auth/user/default_user_authorizer.py",
+    "enterprise/server/auth/email_validation.py",
+    "enterprise/server/email_validation.py",
+    "enterprise/server/services/free_email_domains.py",
+    "enterprise/server/services/email_service.py",
+    "enterprise/server/services/smtp_email_service.py",
+    "enterprise/server/auth/recaptcha_service.py",
+    "enterprise/server/routes/email.py",
+    "enterprise/storage/user_authorization.py",
+    "enterprise/storage/user_authorization_store.py",
+    "openhands/app_server/recaptcha/recaptcha_models.py",
+    "openhands/app_server/recaptcha/recaptcha_router.py",
+    "openhands/app_server/recaptcha/sql_recaptcha_service.py",
+]
+tests = [
+    "enterprise/tests/unit/test_email_validation.py",
+    "enterprise/tests/unit/test_email_validation_dependency.py",
+    "enterprise/tests/unit/test_recaptcha_service.py",
+    "enterprise/tests/unit/storage/test_user_authorization_store.py",
+    "enterprise/tests/unit/server/routes/test_email_routes.py",
+    "enterprise/tests/unit/test_free_email_domains.py",
+    "enterprise/tests/unit/test_smtp_email_service.py",
+    "tests/unit/app_server/test_recaptcha_service.py",
+]
+dependencies = [
+    "token-manager",
+    "saas-user-auth",
+    "rate-limiting",
+]
+operations = [
+    "authorize_user(user_info) — query",
+    "get_authorization_type(email, provider_type) — query",
+    "create_authorization(email, provider_type, kind) — mutates",
+    "delete_authorization(id) — mutates",
+    "extract_base_email(email) — query",
+    "matches_base_email(a, b) — query",
+    "create_assessment(token, action, user_ip, user_agent, email, user_id) — query",
+    "get_admin_user_id(request) — query",
+    "update_email(email_data) — mutates",
+    "verify_email(request) — mutates",
+]
+headlineProperties = [
+    "Whitelist rules always take precedence over blacklist rules when both match the same email and provider.",
+    "A signup is blocked as a duplicate only when DUPLICATE_EMAIL_CHECK is enabled and a base-email collision exists excluding the current user.",
+    "reCAPTCHA verification fails OPEN on any exception from the assessment API — login continues rather than blocking.",
+]
+adversarySurface = [
+    "Plus-modifier abuse (joe+1@x.com) to bypass one-account-per-email is exactly what base-email matching exists to stop; a regression there is a free-tier abuse hole.",
+    "A rejected duplicate-email OAuth callback leaves a freshly created Keycloak user behind unless a best-effort delete succeeds.",
+    "Blacklisted existing users are re-blocked on every cookie re-auth as well as at signup, so the same rule has two enforcement points that can drift.",
+]
+specHints = "enterprise/server/auth/user/default_user_authorizer.py:32-86 decision tree; enterprise/storage/user_authorization_store.py:76-115 whitelist precedence; enterprise/server/auth/recaptcha_service.py:60-158 scoring"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.token-manager]
+name = "IdP Token Manager"
+description = "Keycloak broker and git-provider OAuth token lifecycle: code exchange, encrypted storage, double-checked-locking refresh with per-IDP buffers, offline tokens, and Keycloak user admin."
+role = "central"
+rank = 0
+paths = [
+    "enterprise/server/auth/token_manager.py",
+    "enterprise/server/auth/keycloak_manager.py",
+    "enterprise/server/auth/constants.py",
+    "enterprise/storage/auth_tokens.py",
+    "enterprise/storage/auth_token_store.py",
+    "enterprise/storage/offline_token_store.py",
+    "enterprise/storage/stored_offline_token.py",
+]
+tests = [
+    "enterprise/tests/unit/test_token_manager.py",
+    "enterprise/tests/unit/test_token_manager_extended.py",
+    "enterprise/tests/unit/test_offline_token_store.py",
+    "enterprise/tests/unit/storage/test_auth_token_store.py",
+    "enterprise/tests/unit/server/routes/test_auth_offline_token.py",
+    "enterprise/tests/unit/test_keycloak_manager.py",
+]
+dependencies = ["jwt-crypto-service"]
+operations = [
+    "get_keycloak_tokens(code, redirect_uri) — query",
+    "verify_keycloak_token(token, refresh_token) — mutates",
+    "store_idp_tokens(idp, user_id, keycloak_access_token) — mutates",
+    "get_idp_token_by_user_id(user_id, idp) — mutates",
+    "get_idp_token_from_offline_token(offline_token, idp) — query",
+    "request_offline_token(username, password) — mutates",
+    "store_offline_token(user_id, offline_token) — mutates",
+    "create_keycloak_user(email, password, email_verified) — mutates",
+    "check_duplicate_base_email(email, current_user_id) — query",
+    "refresh(refresh_token) — mutates",
+]
+headlineProperties = [
+    "At most one refresh per (keycloak_user_id, idp) proceeds concurrently; losers of the row lock observe the winner's fresh tokens instead of refreshing again.",
+    "An access token is refreshed proactively before its buffer window elapses, so callers never present an expired token.",
+    "ENTERPRISE_SSO broker tokens are never persisted, avoiding phantom git-provider rows.",
+]
+adversarySurface = [
+    "A stuck row lock past the 5s lock_timeout raises TokenRefreshError, surfacing as a 401 the client must retry rather than silent corruption.",
+    "Both tokens expired raises ValueError rather than issuing a token known to be bad.",
+    "check_duplicate_base_email fails OPEN on any Keycloak error, so a Keycloak outage bypasses the one-account-per-email gate entirely.",
+]
+specHints = "enterprise/server/auth/token_manager.py:341-386 refresh buffer logic; :660-701 wildcard base-email scan; :800-805 fail-open duplicate check; enterprise/storage/auth_token_store.py:102-214 double-checked locking"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.user-provisioning]
+name = "Admin User Provisioning"
+description = "Idempotent admin-driven creation of a Keycloak and OpenHands identity directly into an org, with TOCTOU fallthrough detection and ordered multi-step compensation on failure."
+role = "peripheral"
+rank = 0
+paths = ["enterprise/server/routes/user_provisioning.py"]
+tests = ["enterprise/tests/unit/routes/test_user_provisioning.py"]
+dependencies = [
+    "token-manager",
+    "rbac-authorization",
+    "api-keys",
+    "org-membership-roles",
+]
+operations = [
+    "provision_user(request, body) — mutates",
+    "_rollback_partial_provision(state) — mutates",
+]
+headlineProperties = [
+    "The route resolves to exactly one of create, recover, or idempotent; the fourth split-state (OpenHands row but no Keycloak user) is a hard 409 and never auto-repaired.",
+    "Rollback only undoes state this call created, so a pre-existing identity is never destroyed by a failed idempotent call.",
+    "A concurrent Keycloak-create collision is recovered by re-querying and falling through to the idempotent branch.",
+]
+adversarySurface = [
+    "Two callers provisioning the same email simultaneously: the loser must TOCTOU-recover rather than duplicating work or half-rolling-back the winner.",
+    "A failure between offline-token store and user creation leaves an orphaned offline_token row keyed to a deleted Keycloak sub — a documented, unfixed gap.",
+    "The idempotent path returns password=None so callers cannot mistake it for a freshly rotated credential.",
+]
+specHints = "enterprise/server/routes/user_provisioning.py:464-498 case classification; :641-841 ordered side effects; :896-1014 rollback ordering"
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false

@@ -378,21 +378,64 @@ class OrgStore:
             return int(result.scalar() or 0)
 
     @staticmethod
+    def _uses_managed_default_llm(org: Org) -> bool:
+        """Whether the org's effective LLM is the managed default (not BYOK).
+
+        A version-bump upgrade must only reset an org's ``llm.model``/``base_url``
+        when it is still on the managed proxy default. BYOK orgs point at a
+        third-party ``base_url`` (or a bare model), so the lazy bump must leave
+        them untouched instead of aiming their custom config at the managed proxy.
+        """
+        llm = dict(org.agent_settings).get('llm') or {}
+        model = llm.get('model')
+        base_url = llm.get('base_url')
+
+        if not isinstance(model, str):
+            return False
+
+        managed_base_url = (LITE_LLM_API_URL or '').rstrip('/')
+        normalized_base_url = (
+            base_url.rstrip('/') if isinstance(base_url, str) else None
+        )
+
+        if normalized_base_url == managed_base_url:
+            return True
+        # Public OpenHands provider model with no explicit (or a managed-host)
+        # base_url is managed.
+        if is_openhands_model(model):
+            return normalized_base_url is None or (
+                'all-hands.dev' in normalized_base_url.lower()
+            )
+        return False
+
+    @staticmethod
     async def _validate_org_version(org: Org | None) -> Org | None:
         """Check if we need to update org version."""
         if org and org.org_version < ORG_SETTINGS_VERSION:
-            org = await OrgStore._update_org_kwargs(
-                org.id,
-                {
-                    'org_version': ORG_SETTINGS_VERSION,
-                    'agent_settings_diff': {
-                        'llm': {
-                            'model': get_default_llm_model(),
-                            'base_url': get_default_llm_base_url(),
-                        },
+            org_kwargs: dict[str, Any] = {'org_version': ORG_SETTINGS_VERSION}
+            # Only rewrite the default LLM config for orgs still on the managed
+            # default; BYOK orgs keep their custom model/base_url on upgrade.
+            if OrgStore._uses_managed_default_llm(org):
+                org_kwargs['agent_settings_diff'] = {
+                    'llm': {
+                        'model': get_default_llm_model(),
+                        'base_url': get_default_llm_base_url(),
                     },
-                },
-            )
+                }
+            org = await OrgStore._update_org_kwargs(org.id, org_kwargs)
+            # One-time, best-effort repair of a stale free-tier LiteLLM team
+            # allowlist (the version bump is the once-per-org trigger). A
+            # failed repair leaves the org upgraded but still 403ing exactly as
+            # before, and is never retried on later loads.
+            if org is not None:
+                try:
+                    await LiteLlmManager.ensure_free_team_models(str(org.id))
+                except Exception:
+                    logger.warning(
+                        'Failed to repair free-tier LiteLLM team allowlist',
+                        exc_info=True,
+                        extra={'org_id': str(org.id)},
+                    )
         return org
 
     @staticmethod
