@@ -26,6 +26,32 @@ def get_user_id(conversation_id: str) -> str:
         return str(conversation_metadata_saas.user_id)
 
 
+def get_conversation_org_context(conversation_id: str) -> tuple[UUID, UUID]:
+    """Get the org_id and user_id for a conversation from the metadata.
+
+    Args:
+        conversation_id: The conversation ID
+
+    Returns:
+        A tuple of (org_id, user_id)
+
+    Raises:
+        ValueError: If the conversation is not found
+    """
+    with session_maker() as session:
+        conversation_metadata_saas = (
+            session.query(StoredConversationMetadataSaas)
+            .filter(StoredConversationMetadataSaas.conversation_id == conversation_id)
+            .first()
+        )
+        if not conversation_metadata_saas:
+            raise ValueError(f'Conversation not found: {conversation_id}')
+        return (
+            conversation_metadata_saas.org_id,
+            conversation_metadata_saas.user_id,
+        )
+
+
 async def get_session_api_key(conversation_id: str) -> str | None:
     """Get the session API key for a conversation.
 
