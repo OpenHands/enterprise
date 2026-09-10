@@ -32,7 +32,7 @@ These files contain image tags that **must** be updated whenever the SDK version
 ## Updated During Release Commit (version string only)
 
 ### `pyproject.toml`
-- **Line:** `version = "X.Y.Z"` under `[tool.poetry]`
+- **Line:** `version = "X.Y.Z"` under `[project]`
 - The Python version is derived from this at runtime via `openhands/version.py`
 
 ### `frontend/package.json`
@@ -50,7 +50,7 @@ These files contain image tags that **must** be updated whenever the SDK version
 - Uses `${SHORT_SHA}` variable at CI runtime, not hardcoded
 
 ### `containers/app/Dockerfile`
-- Builds the app (`openhands-app` stage) and the enterprise server (`enterprise` stage, the default target) in one pass — no base image reference to update
+- Builds the enterprise server (`enterprise-server` stage). `ghcr.io/astral-sh/uv:<version>` pins uv; it must match the version used to generate `uv.lock`
 
 ## Image Registries
 
