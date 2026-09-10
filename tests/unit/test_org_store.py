@@ -2067,7 +2067,7 @@ async def test_validate_org_version_repairs_free_team(async_session_maker):
 
 @pytest.mark.asyncio
 async def test_validate_org_version_repair_failure_does_not_brick(async_session_maker):
-    """A LiteLLM failure during repair still leaves the org upgraded."""
+    """A LiteLLM failure preserves access and retries on the next load."""
     async with async_session_maker() as session:
         org = Org(name='free-org', org_version=0, agent_settings={})
         session.add(org)
@@ -2075,14 +2075,19 @@ async def test_validate_org_version_repair_failure_does_not_brick(async_session_
         await session.refresh(org)
         org_id = org.id
 
+    repair_mock = AsyncMock(side_effect=[Exception('boom'), True])
     with (
         patch('storage.org_store.a_session_maker', async_session_maker),
         patch(
             'storage.lite_llm_manager.LiteLlmManager.ensure_free_team_models',
-            new=AsyncMock(side_effect=Exception('boom')),
+            new=repair_mock,
         ),
     ):
-        result = await OrgStore.get_org_by_id(org_id)
+        first_result = await OrgStore.get_org_by_id(org_id)
+        second_result = await OrgStore.get_org_by_id(org_id)
 
-    assert result is not None
-    assert result.org_version == ORG_SETTINGS_VERSION
+    assert first_result is not None
+    assert first_result.org_version == 0
+    assert second_result is not None
+    assert second_result.org_version == ORG_SETTINGS_VERSION
+    assert repair_mock.await_count == 2

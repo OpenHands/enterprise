@@ -5,14 +5,43 @@ Tests the async database operations for organization app settings.
 """
 
 import uuid
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
+from server.constants import ORG_SETTINGS_VERSION
 from server.routes.org_models import OrgAppSettingsUpdate
 from storage.org import Org
 from storage.org_app_settings_store import OrgAppSettingsStore
+from storage.org_store import OrgStore
 from storage.user import User
+
+
+@pytest.mark.asyncio
+async def test_version_validation_retries_free_team_repair(async_session_maker):
+    """This load path cannot consume the version marker without reconciling."""
+    async with async_session_maker() as session:
+        org = Org(name='retry-free-team', org_version=0, agent_settings={})
+        session.add(org)
+        await session.commit()
+        org_id = org.id
+
+        repair = AsyncMock(side_effect=[False, True])
+        with patch.object(
+            OrgStore,
+            '_repair_free_team_models_for_upgrade',
+            repair,
+        ):
+            store = OrgAppSettingsStore(db_session=session)
+            first_result = await store.get_org_by_id(org_id)
+            assert first_result is not None
+            assert first_result.org_version == 0
+            second_result = await store.get_org_by_id(org_id)
+
+        assert second_result is not None
+        assert second_result.org_version == ORG_SETTINGS_VERSION
+        assert repair.await_count == 2
 
 
 @pytest.mark.asyncio
