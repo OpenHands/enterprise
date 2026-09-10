@@ -1,6 +1,4 @@
 import React from "react";
-import { useTranslation } from "react-i18next";
-import { I18nKey } from "#/i18n/declaration";
 import { BudgetProgressBar } from "./budget-progress-bar";
 import { BudgetUsageText } from "./budget-usage-text";
 
@@ -10,25 +8,19 @@ interface BudgetDisplayProps {
 }
 
 export function BudgetDisplay({ cost, maxBudgetPerTask }: BudgetDisplayProps) {
-  const { t } = useTranslation();
-
-  // Don't render anything if cost is not available
-  if (cost === null) {
+  // Only render the per-conversation cap/progress UI when a real cap exists.
+  // max_budget_per_task is a pre-V1 field that is never populated in the
+  // current setup and cannot be set by users, so absent caps render nothing
+  // rather than a misleading "No budget limit" line. Org/user monthly
+  // budgets are a different scope and are not shown here.
+  if (cost === null || maxBudgetPerTask === null || maxBudgetPerTask <= 0) {
     return null;
   }
 
   return (
     <div className="border-b border-neutral-700">
-      {maxBudgetPerTask !== null && maxBudgetPerTask > 0 ? (
-        <>
-          <BudgetProgressBar currentCost={cost} maxBudget={maxBudgetPerTask} />
-          <BudgetUsageText currentCost={cost} maxBudget={maxBudgetPerTask} />
-        </>
-      ) : (
-        <span className="text-xs text-neutral-400">
-          {t(I18nKey.CONVERSATION$NO_BUDGET_LIMIT)}
-        </span>
-      )}
+      <BudgetProgressBar currentCost={cost} maxBudget={maxBudgetPerTask} />
+      <BudgetUsageText currentCost={cost} maxBudget={maxBudgetPerTask} />
     </div>
   );
 }
