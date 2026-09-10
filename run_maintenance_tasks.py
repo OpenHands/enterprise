@@ -14,6 +14,23 @@ RETRY_DELAY = 60
 
 async def main():
     try:
+        # Imported lazily so the generic task runner remains usable in tooling
+        # that stubs database initialization while importing this module.
+        from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
+            enqueue_managed_llm_key_ownership_tasks,
+        )
+
+        try:
+            enqueued = enqueue_managed_llm_key_ownership_tasks()
+            if enqueued:
+                logger.info(
+                    'Enqueued managed LLM key ownership repairs',
+                    extra={'member_count': enqueued},
+                )
+        except Exception:
+            # One enqueue path must not prevent unrelated pending maintenance
+            # tasks from running.
+            logger.exception('Failed to enqueue managed LLM key ownership repairs')
         set_stale_task_error()
         await run_tasks()
     except Exception as e:

@@ -1927,7 +1927,6 @@ class LiteLlmManager:
 
         Returns True if the key is found and valid, False otherwise.
         """
-        found = False
         keys = await LiteLlmManager._get_all_keys_for_user(client, keycloak_user_id)
         if keys is None:
             logger.warning(
@@ -1938,6 +1937,22 @@ class LiteLlmManager:
                 },
             )
             return True
+        return LiteLlmManager._key_belongs_to_user_org(
+            keys,
+            key_value,
+            keycloak_user_id,
+            org_id,
+            openhands_type,
+        )
+
+    @staticmethod
+    def _key_belongs_to_user_org(
+        keys: list[dict],
+        key_value: str,
+        keycloak_user_id: str,
+        org_id: str,
+        openhands_type: bool,
+    ) -> bool:
         for key_info in keys:
             metadata = key_info.get('metadata') or {}
             team_id = key_info.get('team_id')
@@ -1954,8 +1969,7 @@ class LiteLlmManager:
                 if token and key_value.endswith(
                     token
                 ):  # check if this is our current key
-                    found = True
-                    break
+                    return True
             if (
                 not openhands_type
                 and team_id == org_id
@@ -1970,10 +1984,31 @@ class LiteLlmManager:
                 if token and key_value.endswith(
                     token
                 ):  # check if this is our current key
-                    found = True
-                    break
+                    return True
 
-        return found
+        return False
+
+    @staticmethod
+    async def _verify_existing_key_strict(
+        client: httpx.AsyncClient,
+        key_value: str,
+        keycloak_user_id: str,
+        org_id: str,
+        openhands_type: bool = False,
+    ) -> bool:
+        """Verify ownership without treating an unavailable lookup as healthy."""
+        keys = await LiteLlmManager._get_all_keys_for_user(client, keycloak_user_id)
+        if keys is None:
+            raise RuntimeError(
+                'Unable to inspect LiteLLM keys for managed-key ownership repair'
+            )
+        return LiteLlmManager._key_belongs_to_user_org(
+            keys,
+            key_value,
+            keycloak_user_id,
+            org_id,
+            openhands_type,
+        )
 
     @staticmethod
     async def _delete_key_by_alias(
@@ -2008,6 +2043,22 @@ class LiteLlmManager:
                     'text': response.text,
                 },
             )
+
+    @staticmethod
+    async def _delete_key_by_alias_strict(
+        client: httpx.AsyncClient,
+        key_alias: str,
+    ) -> None:
+        """Delete a deterministic alias or fail without rotating the DB row."""
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            raise ValueError('LiteLLM API configuration not found')
+        response = await client.post(
+            f'{LITE_LLM_API_URL}/key/delete',
+            json={'key_aliases': [key_alias]},
+        )
+        if response.status_code == 404:
+            return
+        response.raise_for_status()
 
     @staticmethod
     async def _delete_key(
@@ -2253,9 +2304,15 @@ class LiteLlmManager:
     generate_key = staticmethod(with_http_client(_generate_key))
     get_key_info = staticmethod(with_http_client(_get_key_info))
     verify_existing_key = staticmethod(with_http_client(_verify_existing_key))
+    verify_existing_key_strict = staticmethod(
+        with_http_client(_verify_existing_key_strict)
+    )
     delete_key = staticmethod(with_http_client(_delete_key))
     get_user_keys = staticmethod(with_http_client(_get_user_keys))
     delete_key_by_alias = staticmethod(with_http_client(_delete_key_by_alias))
+    delete_key_by_alias_strict = staticmethod(
+        with_http_client(_delete_key_by_alias_strict)
+    )
     update_user_keys = staticmethod(with_http_client(_update_user_keys))
     get_team_members_financial_data = staticmethod(
         with_http_client(_get_team_members_financial_data)
