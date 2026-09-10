@@ -814,6 +814,11 @@ class OrgBudgetUserResponse(BaseModel):
     effective_monthly_limit: float | None = None
     is_disabled: bool = False
     is_override: bool = False
+    reconciliation_state: (
+        Literal['inactive', 'pending', 'healthy', 'degraded', 'failed'] | None
+    ) = None
+    reconciliation_error: str | None = None
+    applied_at: datetime | None = None
 
 
 class OrgBudgetSettingsResponse(BaseModel):
@@ -822,6 +827,15 @@ class OrgBudgetSettingsResponse(BaseModel):
     litellm_last_sync_at: datetime | None = None
     litellm_last_sync_status: str | None = None
     litellm_last_sync_error: str | None = None
+    reconciliation_state: Literal[
+        'inactive', 'pending', 'healthy', 'degraded', 'failed'
+    ]
+    reconciliation_error: str | None = None
+    desired_team_max_budget: float | None = None
+    applied_team_max_budget: float | None = None
+    budget_policy_matches: bool | None = None
+    applied_at: datetime | None = None
+    applied_policy_observed_at: datetime | None = None
 
     reset_day: int
     slack_channel: str | None = None

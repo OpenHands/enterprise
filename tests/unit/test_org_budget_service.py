@@ -17,6 +17,7 @@ from server.services.org_budget_service import (
     LiteLlmFinancialSnapshot,
     LiteLlmMemberFinancialSnapshot,
     OrgBudgetService,
+    _budget_policy_comparison,
     _current_cycle_start,
 )
 from storage.org import Org
@@ -71,6 +72,94 @@ def _financial_data(
             ).items()
         },
     }
+
+
+def test_budget_policy_comparison_reports_verified_healthy_state():
+    user_id = str(uuid4())
+    applied_at = datetime.now(UTC)
+    settings = OrgBudgetSettings(
+        org_id=uuid4(),
+        enabled=True,
+        monthly_limit=100.0,
+        default_user_monthly_limit=30.0,
+        cycle_start_spend=20.0,
+        user_cycle_start_spend={user_id: 8.0},
+        litellm_last_sync_status='success',
+        litellm_last_sync_at=applied_at,
+    )
+    snapshot = _snapshot(
+        team_max_budget=120.0,
+        members={user_id: (8.0, 38.0, False)},
+    )
+
+    result = _budget_policy_comparison(
+        settings,
+        [],
+        {user_id},
+        BudgetFinancialSnapshotResult(snapshot=snapshot, status='live'),
+    )
+
+    assert result['reconciliation_state'] == 'healthy'
+    assert result['budget_policy_matches'] is True
+    assert result['desired_team_max_budget'] == 120.0
+    assert result['applied_team_max_budget'] == 120.0
+    assert result['applied_at'] == applied_at
+
+
+def test_budget_policy_comparison_reports_live_drift_as_degraded():
+    user_id = str(uuid4())
+    settings = OrgBudgetSettings(
+        org_id=uuid4(),
+        enabled=True,
+        monthly_limit=100.0,
+        default_user_monthly_limit=30.0,
+        cycle_start_spend=20.0,
+        user_cycle_start_spend={user_id: 8.0},
+        litellm_last_sync_status='success',
+    )
+    snapshot = _snapshot(
+        team_max_budget=2.05,
+        members={user_id: (8.0, 2.05, False)},
+    )
+
+    result = _budget_policy_comparison(
+        settings,
+        [],
+        {user_id},
+        BudgetFinancialSnapshotResult(snapshot=snapshot, status='live'),
+    )
+
+    assert result['reconciliation_state'] == 'degraded'
+    assert result['budget_policy_matches'] is False
+    assert result['reconciliation_error'].startswith('team_budget_mismatch')
+    assert result['applied_at'] is None
+
+
+def test_budget_policy_comparison_reports_unreadable_failed_state():
+    settings = OrgBudgetSettings(
+        org_id=uuid4(),
+        enabled=True,
+        monthly_limit=100.0,
+        cycle_start_spend=20.0,
+        litellm_last_sync_status='error',
+        litellm_last_sync_error='verification_fetch_failed: timeout',
+    )
+
+    result = _budget_policy_comparison(
+        settings,
+        [],
+        set(),
+        BudgetFinancialSnapshotResult(
+            snapshot=None,
+            status='unavailable',
+            error='timeout',
+        ),
+    )
+
+    assert result['reconciliation_state'] == 'failed'
+    assert result['budget_policy_matches'] is None
+    assert result['applied_team_max_budget'] is None
+    assert result['reconciliation_error'] == 'verification_fetch_failed: timeout'
 
 
 @pytest.fixture

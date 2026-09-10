@@ -41,6 +41,13 @@ const budgetResponse = {
   litellm_last_sync_at: "2024-01-15T12:00:00Z",
   litellm_last_sync_status: "success",
   litellm_last_sync_error: null,
+  reconciliation_state: "healthy" as const,
+  reconciliation_error: null,
+  desired_team_max_budget: 1000,
+  applied_team_max_budget: 1000,
+  budget_policy_matches: true,
+  applied_at: "2024-01-15T12:00:00Z",
+  applied_policy_observed_at: "2024-01-15T12:00:00Z",
   reset_day: 1,
   slack_channel: "alerts",
   slack_team_id: "T123",
@@ -217,12 +224,14 @@ describe("Budgets", () => {
       ...budgetResponse,
       litellm_last_sync_status: "error",
       litellm_last_sync_error: "member cycle baseline is unavailable",
+      reconciliation_state: "degraded",
+      reconciliation_error: "member cycle baseline is unavailable",
     });
 
     await renderBudgets();
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Existing caps are preserved",
+      "Degraded",
     );
     expect(screen.getByRole("alert")).toHaveTextContent(
       "member cycle baseline is unavailable",
