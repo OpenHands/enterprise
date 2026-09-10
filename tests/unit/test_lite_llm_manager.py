@@ -10,15 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 from pydantic import SecretStr
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from openhands.app_server.settings.settings_models import Settings
 from server.constants import (
     get_default_litellm_model,
 )
 from server.verified_models.verified_model_service import VerifiedModelService
-from storage.base import Base
 from storage.lite_llm_manager import (
     FREE_LLM_MODELS,
     LiteLlmManager,
@@ -3418,21 +3415,6 @@ class TestFreeTierModelRestriction:
     lists are restricted to FREE_LLM_MODELS. Purchased credits (budget > 0)
     must restore the full model list.
     """
-
-    @pytest.fixture
-    async def async_session_maker(self):
-        engine = create_async_engine(
-            'sqlite+aiosqlite:///:memory:',
-            poolclass=StaticPool,
-            connect_args={'check_same_thread': False},
-            echo=False,
-        )
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-        yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-        await engine.dispose()
 
     @pytest.mark.asyncio
     async def test_resolve_free_llm_models_reads_db_is_free_flags(
