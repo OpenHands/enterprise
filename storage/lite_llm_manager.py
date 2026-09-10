@@ -97,7 +97,13 @@ DEFAULT_INITIAL_BUDGET: float | None = _get_default_initial_budget(ENABLE_BILLIN
 # enforcement disabled, so free users can run free models without credits while
 # still being blocked from paid models. Override per environment via
 # FREE_LLM_MODELS (comma-separated).
-_DEFAULT_FREE_LLM_MODELS = ['glm-5.2', 'minimax-m2.5', 'minimax-m2.7', 'kimi-k3']
+_DEFAULT_FREE_LLM_MODELS = [
+    'glm-5.2',
+    'minimax-m2.5',
+    'minimax-m2.7',
+    'kimi-k3',
+    'deepseek-v4-flash',
+]
 
 
 def _get_free_llm_models() -> list[str]:
@@ -707,6 +713,60 @@ class LiteLlmManager:
                 await LiteLlmManager._update_user_in_team(
                     client, user_id, team_id, max_budget
                 )
+
+    @staticmethod
+    async def ensure_free_team_models(org_id: str) -> bool:
+        """Repair a free-tier team whose ``models`` allowlist is missing the
+        current $0-cost set (e.g. after ``deepseek-v4-flash`` joined
+        ``FREE_LLM_MODELS``). Idempotent and convergent.
+
+        Returns True only when a write was performed. Never raises: LiteLLM
+        being unreachable (or unconfigured in self-hosted installs) must not
+        fail an org-version upgrade.
+        """
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            return False
+        try:
+            async with httpx.AsyncClient(
+                headers={'x-goog-api-key': LITE_LLM_API_KEY},
+                timeout=httpx.Timeout(LITELLM_MANAGEMENT_TIMEOUT),
+            ) as client:
+                existing_team = await LiteLlmManager._get_team(client, org_id)
+                if not existing_team:
+                    return False
+                team_info = existing_team.get('team_info', {})
+                max_budget = team_info.get('max_budget')
+                models = team_info.get('models') or []
+
+                # Free tier is recognized by the same shape create_entries uses:
+                # a cleared budget (None) with a non-empty restricted allowlist,
+                # or an explicit zero budget. Anything else is a paid/unlimited
+                # team and must not be touched.
+                is_free = (
+                    max_budget is None
+                    and models
+                    and set(models).issubset(set(FREE_LLM_MODELS))
+                ) or (max_budget is not None and max_budget <= 0.0)
+                if not is_free:
+                    return False
+
+                # Already converged: the team advertises the full current free
+                # set, so there is nothing to repair and no write is needed.
+                if set(FREE_LLM_MODELS).issubset(set(models)):
+                    return False
+
+                # Re-apply the canonical free-tier state (full free allowlist,
+                # budget enforcement cleared) via the admin API, which also
+                # invalidates LiteLLM's own team cache.
+                await LiteLlmManager._update_team(client, org_id, None, 0.0)
+                return True
+        except Exception:
+            logger.warning(
+                'LiteLlmManager:ensure_free_team_models:failed',
+                exc_info=True,
+                extra={'org_id': org_id},
+            )
+            return False
 
     @staticmethod
     async def _team_alias_for_org(org_id: str, keycloak_user_id: str) -> str:
