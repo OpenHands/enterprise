@@ -109,6 +109,7 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
     owned_user_id = uuid4()
     custom_user_id = uuid4()
     acp_user_id = uuid4()
+    empty_user_id = uuid4()
     async with async_session_maker() as session:
         role = Role(name=f'key-repair-{uuid4()}', rank=1)
         session.add(role)
@@ -157,6 +158,16 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
                 'acp_server': 'codex',
             },
         )
+        session.add(User(id=empty_user_id, current_org_id=org_id))
+        session.add(
+            OrgMember(
+                org_id=org_id,
+                user_id=empty_user_id,
+                role_id=role.id,
+                _llm_api_key='',
+                managed_llm_key_ownership_version=0,
+            )
+        )
         await session.commit()
 
     processor = ManagedLlmKeyOwnershipProcessor(
@@ -171,11 +182,16 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
                 org_id=str(org_id), user_id=str(custom_user_id)
             ),
             ManagedLlmKeyOwnershipTarget(org_id=str(org_id), user_id=str(acp_user_id)),
+            ManagedLlmKeyOwnershipTarget(
+                org_id=str(org_id), user_id=str(empty_user_id)
+            ),
         ]
     )
-    verify = AsyncMock(side_effect=[False, True, True])
+    verify = AsyncMock(side_effect=[False, True, True, True])
     delete_alias = AsyncMock()
-    generate = AsyncMock(return_value='replacement-member-key')
+    generate = AsyncMock(
+        side_effect=['replacement-member-key', 'replacement-empty-key']
+    )
     with (
         patch(
             'server.maintenance_task_processor.managed_llm_key_ownership_processor.a_session_maker',
@@ -198,17 +214,26 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
 
     assert result == {
         'verified': 1,
-        'repaired': 1,
+        'repaired': 2,
         'skipped': 2,
         'error_count': 0,
         'errors': [],
     }
-    delete_alias.assert_awaited_once()
-    assert str(wrong_user_id) in delete_alias.await_args.kwargs['key_alias']
-    generate.assert_awaited_once_with(
+    assert delete_alias.await_count == 2
+    wrong_alias = delete_alias.await_args_list[0].kwargs['key_alias']
+    empty_alias = delete_alias.await_args_list[1].kwargs['key_alias']
+    assert str(wrong_user_id) in wrong_alias
+    assert str(empty_user_id) in empty_alias
+    generate.assert_any_await(
         str(wrong_user_id),
         str(org_id),
-        delete_alias.await_args.kwargs['key_alias'],
+        wrong_alias,
+        {'type': 'openhands'},
+    )
+    generate.assert_any_await(
+        str(empty_user_id),
+        str(org_id),
+        empty_alias,
         {'type': 'openhands'},
     )
 
@@ -227,6 +252,9 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
     assert members[owned_user_id].llm_api_key.get_secret_value() == 'owned-member-key'
     assert members[custom_user_id].llm_api_key.get_secret_value() == 'customer-key'
     assert members[acp_user_id].llm_api_key.get_secret_value() == 'unused-in-acp-mode'
+    assert members[empty_user_id].llm_api_key.get_secret_value() == (
+        'replacement-empty-key'
+    )
     assert all(
         member.managed_llm_key_ownership_version == 1 for member in members.values()
     )

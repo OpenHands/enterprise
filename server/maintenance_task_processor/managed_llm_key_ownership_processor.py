@@ -104,13 +104,17 @@ class ManagedLlmKeyOwnershipProcessor(MaintenanceTaskProcessor):
                         skipped += 1
                         continue
 
-                    existing_key = member.llm_api_key.get_secret_value()
-                    owned = await LiteLlmManager.verify_existing_key_strict(
-                        existing_key,
-                        target.user_id,
-                        target.org_id,
-                        openhands_type=config.openhands_type,
-                    )
+                    owned = False
+                    # Legacy rows can contain an empty value. Do not attempt to
+                    # decrypt it; an absent managed key is itself repairable.
+                    if member._llm_api_key:
+                        existing_key = member.llm_api_key.get_secret_value()
+                        owned = await LiteLlmManager.verify_existing_key_strict(
+                            existing_key,
+                            target.user_id,
+                            target.org_id,
+                            openhands_type=config.openhands_type,
+                        )
                     if owned:
                         member.managed_llm_key_ownership_version = (
                             MANAGED_LLM_KEY_OWNERSHIP_VERSION
