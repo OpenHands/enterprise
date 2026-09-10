@@ -201,11 +201,12 @@ async def test_delete_user_data_executes_sql_and_clears_quota_references(
     approver = User(id=approver_id, current_org_id=org_id, email='admin@example.com')
 
     async with async_session_maker() as session:
+        session.add_all([org, target, approver])
+        # Committed first: the rows below are foreign keys onto ``user``, and
+        # SQLAlchemy has no relationship to order the inserts for us.
+        await session.commit()
         session.add_all(
             [
-                org,
-                target,
-                approver,
                 DailyConversationUsage(
                     user_id=target_id,
                     usage_date=date.today(),
