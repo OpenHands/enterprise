@@ -2986,8 +2986,8 @@ class TestEnsureFreeTeamModels:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_swallows_litellm_errors(self):
-        """An unreachable LiteLLM must not raise out of the version bump."""
+    async def test_reports_litellm_errors_for_retry(self):
+        """An unreachable LiteLLM must not raise, but must request a retry."""
         client = AsyncMock()
         client.get.side_effect = httpx.ConnectError('boom')
         client_class = MagicMock()
@@ -3000,7 +3000,7 @@ class TestEnsureFreeTeamModels:
         ):
             result = await LiteLlmManager.ensure_free_team_models('org-1')
 
-        assert result is False
+        assert result is None
 
 
 class TestGetAllKeysForUser:

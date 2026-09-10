@@ -2075,7 +2075,7 @@ async def test_validate_org_version_repair_failure_does_not_brick(async_session_
         await session.refresh(org)
         org_id = org.id
 
-    repair_mock = AsyncMock(side_effect=[Exception('boom'), True])
+    repair_mock = AsyncMock(side_effect=[None, True])
     with (
         patch('storage.org_store.a_session_maker', async_session_maker),
         patch(

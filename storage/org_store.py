@@ -284,7 +284,7 @@ class OrgStore:
     async def _repair_free_team_models_for_upgrade(org: Org) -> bool:
         """Attempt the external repair, retaining the upgrade marker on failure."""
         try:
-            await LiteLlmManager.ensure_free_team_models(str(org.id))
+            result = await LiteLlmManager.ensure_free_team_models(str(org.id))
         except Exception:
             logger.warning(
                 'Failed to repair free-tier LiteLLM team allowlist',
@@ -292,7 +292,7 @@ class OrgStore:
                 extra={'org_id': str(org.id)},
             )
             return False
-        return True
+        return result is not None
 
     @staticmethod
     async def _validate_org_version(org: Org | None) -> Org | None:
