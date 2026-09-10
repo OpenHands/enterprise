@@ -1,4 +1,4 @@
-"""Unit tests for AuthTokenStore using SQLite in-memory database."""
+"""Unit tests for AuthTokenStore."""
 
 import time
 from unittest.mock import patch
@@ -170,23 +170,110 @@ class TestLoadTokensFastPath:
 
 
 class TestLoadTokensSlowPath:
-    """Tests for load_tokens slow path (lock required for refresh).
+    """Tests for load_tokens slow path (lock required for refresh)."""
 
-    Note: These tests require PostgreSQL's lock_timeout feature which is not
-    available in SQLite. The slow path tests are skipped when using SQLite.
-    """
-
-    @pytest.mark.skip(reason='SQLite does not support PostgreSQL lock_timeout syntax')
     @pytest.mark.asyncio
     async def test_slow_path_successful_refresh(self, async_session_maker):
         """Test slow path successfully refreshes expired tokens."""
-        pass
+        current_time = int(time.time())
+        refresh_calls = []
 
-    @pytest.mark.skip(reason='SQLite does not support PostgreSQL lock_timeout syntax')
+        async def refresh(idp, refresh_token, access_expires_at, refresh_expires_at):
+            refresh_calls.append(
+                (idp, refresh_token, access_expires_at, refresh_expires_at)
+            )
+            return {
+                'access_token': 'refreshed-access-token',
+                'refresh_token': 'refreshed-refresh-token',
+                'access_token_expires_at': current_time
+                + ACCESS_TOKEN_EXPIRY_BUFFER
+                + 1000,
+                'refresh_token_expires_at': current_time + 20000,
+            }
+
+        with patch('storage.auth_token_store.a_session_maker', async_session_maker):
+            store = AuthTokenStore(
+                keycloak_user_id='test-user-123',
+                idp=ProviderType.GITHUB,
+            )
+
+            await store.store_tokens(
+                access_token='expired-access-token',
+                refresh_token='valid-refresh-token',
+                access_token_expires_at=current_time - 100,
+                refresh_token_expires_at=current_time + 10000,
+            )
+
+            result = await store.load_tokens(check_expiration_and_refresh=refresh)
+
+        assert result is not None
+        assert result['access_token'] == 'refreshed-access-token'
+        assert result['refresh_token'] == 'refreshed-refresh-token'
+
+        # The callback is handed the stored refresh token and both expiry stamps.
+        assert refresh_calls == [
+            (
+                ProviderType.GITHUB,
+                'valid-refresh-token',
+                current_time - 100,
+                current_time + 10000,
+            )
+        ]
+
+        # The refreshed pair is persisted, not just returned to the caller.
+        async with async_session_maker() as session:
+            result_set = await session.execute(
+                select(AuthTokens).where(
+                    AuthTokens.keycloak_user_id == 'test-user-123',
+                    AuthTokens.identity_provider == ProviderType.GITHUB.value,
+                )
+            )
+            token_record = result_set.scalars().one()
+            assert token_record.access_token == 'refreshed-access-token'
+            assert token_record.refresh_token == 'refreshed-refresh-token'
+
     @pytest.mark.asyncio
     async def test_refresh_callback_returns_none(self, async_session_maker):
         """Test behavior when refresh callback returns None (no refresh performed)."""
-        pass
+        current_time = int(time.time())
+        refresh_calls = []
+
+        async def refresh(idp, refresh_token, access_expires_at, refresh_expires_at):
+            refresh_calls.append(refresh_token)
+            return None
+
+        with patch('storage.auth_token_store.a_session_maker', async_session_maker):
+            store = AuthTokenStore(
+                keycloak_user_id='test-user-123',
+                idp=ProviderType.GITHUB,
+            )
+
+            await store.store_tokens(
+                access_token='expired-access-token',
+                refresh_token='valid-refresh-token',
+                access_token_expires_at=current_time - 100,
+                refresh_token_expires_at=current_time + 10000,
+            )
+
+            result = await store.load_tokens(check_expiration_and_refresh=refresh)
+
+        assert refresh_calls == ['valid-refresh-token']
+
+        # The expired pair comes back unchanged, leaving the caller to decide.
+        assert result is not None
+        assert result['access_token'] == 'expired-access-token'
+        assert result['refresh_token'] == 'valid-refresh-token'
+        assert result['access_token_expires_at'] == current_time - 100
+
+        async with async_session_maker() as session:
+            result_set = await session.execute(
+                select(AuthTokens).where(
+                    AuthTokens.keycloak_user_id == 'test-user-123',
+                    AuthTokens.identity_provider == ProviderType.GITHUB.value,
+                )
+            )
+            token_record = result_set.scalars().one()
+            assert token_record.access_token == 'expired-access-token'
 
     @pytest.mark.asyncio
     async def test_slow_path_double_check_avoids_refresh(self, async_session_maker):

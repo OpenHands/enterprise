@@ -217,13 +217,27 @@ Each integration follows a consistent pattern with service classes, storage mode
 **Testing Best Practices:**
 
 **Database Testing:**
-- Use the `engine` / `session_maker` / `async_engine` / `async_session_maker` fixtures from `tests/unit/conftest.py`
-  for application unit tests. Each test gets its own PostgreSQL database, migrated to head, cloned from a template
-  (see `tests/postgres_testdb.py`); never hand-roll a SQLite engine
+- **Never use SQLite for a test that touches the application schema.** Unit tests run against real PostgreSQL in
+  a testcontainer, so the schema under test is the one the migrations produce. Do not introduce a
+  `sqlite:///` or `sqlite+aiosqlite:///` URL, do not call `Base.metadata.create_all`, and do not build your own
+  engine
+- **Always use the shared fixtures**: `engine` / `session_maker` / `async_engine` / `async_session_maker` from
+  `tests/unit/conftest.py`. Each test gets its own database, cloned from a template migrated to head with
+  `alembic upgrade head` (see `tests/postgres_testdb.py`). Cloning costs about 50ms, so a fresh database per test
+  is the norm -- do not reach for transaction rollback to isolate tests
+- Because the database is real, PostgreSQL semantics apply: foreign keys are enforced, `TIMESTAMP WITHOUT TIME
+  ZONE` columns reject tz-aware values, identity sequences start at 1, and UUID columns return `uuid.UUID`
+  objects. Create the rows a foreign key needs (`create_org` / `create_user` in `tests/unit/conftest.py`) instead
+  of inventing ids
+- Running any test needs a working docker daemon. The root `conftest.py` starts one container per run, shares it
+  across pytest-xdist workers, and removes it when the run ends
+- Do not mock the database in unit tests; use the fixtures. Mock only the services around it (LiteLLM, Keycloak,
+  git providers)
 - Do not add SQLite paths to Alembic migrations
-- Create module-specific `conftest.py` files with database fixtures
-- Mock external database connections in unit tests to avoid dependency on running services
-- Use real database connections only for integration tests
+- Create module-specific `conftest.py` files for fixtures beyond the shared ones
+- Two uses of SQLite are deliberate and should be left alone: migration tests that hand-declare a migration-era
+  schema (`tests/unit/test_migration_*.py`), and the tests asserting the app server's production SQLite fallback
+  URL (`tests/unit/app_server/test_db_session_injector.py`)
 
 **Import Patterns:**
 - The SaaS modules are top-level packages: `from storage.database import a_session_maker`, `from server.auth ...`
@@ -237,7 +251,7 @@ Each integration follows a consistent pattern with service classes, storage mode
 
 **Mocking Strategy:**
 - Use `AsyncMock` for async operations and `MagicMock` for complex objects
-- Mock all external dependencies (databases, APIs, file systems) in unit tests
+- Mock external dependencies (APIs, file systems) in unit tests; the database is the exception, see Database Testing above
 - Use `patch` with correct import paths (e.g., `server.routes.billing.logger`)
 - Test both success and failure scenarios with proper error handling
 
@@ -248,7 +262,7 @@ Each integration follows a consistent pattern with service classes, storage mode
 
 **Troubleshooting:**
 - If tests fail, ensure all dependencies are installed: `uv sync --all-groups`
-- For database issues, check migration status and run migrations if needed
+- If every database test fails, check that docker is running -- the test container cannot start without it
 - For frontend issues, ensure the frontend is built: `make build`
 - Check logs in the `logs/` directory for runtime issues
 - **If GitHub CI fails but local linting passes**: Always use `--show-diff-on-failure` flag to match CI behavior exactly
