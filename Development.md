@@ -317,8 +317,12 @@ Logs will be saved to `logs/llm/CURRENT_DATE/` for troubleshooting.
 uv run pytest ./tests/unit
 ```
 
-The suite covers the app server (`openhands/`) and the SaaS modules (`server/`, `storage/`, ...); the SQLite-backed
-database fixtures live in `tests/unit/conftest.py`.
+The suite covers the app server (`openhands/`) and the SaaS modules (`server/`, `storage/`, ...); the database
+fixtures live in `tests/unit/conftest.py`.
+
+Tests that touch the database run against real PostgreSQL. The first such test starts a `postgres:16` container,
+migrates a template database with `alembic upgrade head`, and then hands every individual test its own clone of
+that template. Docker has to be running; nothing else is needed. The container is removed when the run ends.
 
 ---
 

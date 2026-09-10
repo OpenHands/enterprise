@@ -3,36 +3,9 @@
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
-from storage.base import Base
 from storage.user_authorization import UserAuthorization, UserAuthorizationType
 from storage.user_authorization_store import UserAuthorizationStore
-
-
-@pytest.fixture
-async def async_engine():
-    """Create an async SQLite engine for testing."""
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-    )
-    return engine
-
-
-@pytest.fixture
-async def async_session_maker(async_engine):
-    """Create an async session maker bound to the async engine."""
-    session_maker = async_sessionmaker(
-        bind=async_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    return session_maker
 
 
 class TestGetMatchingAuthorizations:

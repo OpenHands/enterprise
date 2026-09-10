@@ -6,8 +6,6 @@ from uuid import UUID
 
 import pytest
 from resend.exceptions import ResendError
-from sqlalchemy import String, create_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from tenacity import RetryError
 
 # Set required environment variables before importing the module
@@ -154,60 +152,28 @@ class TestDisplayNameParsing:
         assert _split_display_name(None) == (None, None)
 
 
-class _LocalUserBase(DeclarativeBase):
-    pass
-
-
-class _LocalUser(_LocalUserBase):
-    __tablename__ = 'user'
-
-    id: Mapped[UUID] = mapped_column(primary_key=True)
-    email: Mapped[str | None] = mapped_column(String, nullable=True)
-    git_user_name: Mapped[str | None] = mapped_column(String, nullable=True)
-
-
-def _local_user_session_maker():
-    engine = create_engine('sqlite:///:memory:')
-    _LocalUserBase.metadata.create_all(engine)
-    session_factory = sessionmaker(bind=engine)
-
-    with session_factory() as session:
-        session.add_all(
-            [
-                _LocalUser(
-                    id=UUID('00000000-0000-0000-0000-000000000001'),
-                    email='ada@example.com',
-                    git_user_name='Ada Lovelace',
-                ),
-                _LocalUser(
-                    id=UUID('00000000-0000-0000-0000-000000000002'),
-                    email=None,
-                    git_user_name='No Email',
-                ),
-                _LocalUser(
-                    id=UUID('00000000-0000-0000-0000-000000000003'),
-                    email='',
-                    git_user_name='Blank Email',
-                ),
-                _LocalUser(
-                    id=UUID('00000000-0000-0000-0000-000000000004'),
-                    email='prince@example.com',
-                    git_user_name='Prince',
-                ),
-            ]
+def _seed_local_users(create_user) -> None:
+    """Seed the users ``get_local_users`` is expected to filter down to two of."""
+    for suffix, email, git_user_name in (
+        ('0001', 'ada@example.com', 'Ada Lovelace'),
+        ('0002', None, 'No Email'),
+        ('0003', '', 'Blank Email'),
+        ('0004', 'prince@example.com', 'Prince'),
+    ):
+        create_user(
+            id=UUID(f'00000000-0000-0000-0000-00000000{suffix}'),
+            email=email,
+            git_user_name=git_user_name,
         )
-        session.commit()
-
-    return session_factory
 
 
 class TestLocalUserQueries:
-    @patch('sync.resend_keycloak.User', _LocalUser)
     @patch('sync.resend_keycloak._get_session_maker')
     def test_get_local_users_reads_real_database_with_names(
-        self, mock_get_session_maker: MagicMock
+        self, mock_get_session_maker: MagicMock, session_maker, create_user
     ) -> None:
-        mock_get_session_maker.return_value = _local_user_session_maker()
+        _seed_local_users(create_user)
+        mock_get_session_maker.return_value = session_maker
 
         users = get_local_users(offset=0, limit=10)
 
@@ -226,12 +192,12 @@ class TestLocalUserQueries:
             ),
         ]
 
-    @patch('sync.resend_keycloak.User', _LocalUser)
     @patch('sync.resend_keycloak._get_session_maker')
     def test_get_total_local_users_counts_real_database_emails(
-        self, mock_get_session_maker: MagicMock
+        self, mock_get_session_maker: MagicMock, session_maker, create_user
     ) -> None:
-        mock_get_session_maker.return_value = _local_user_session_maker()
+        _seed_local_users(create_user)
+        mock_get_session_maker.return_value = session_maker
 
         assert get_total_local_users() == 2
 
