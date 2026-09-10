@@ -17,6 +17,7 @@ from server.constants import (
 )
 from server.verified_models.verified_model_service import VerifiedModelService
 from storage.lite_llm_manager import (
+    _DEFAULT_FREE_LLM_MODELS,
     FREE_LLM_MODELS,
     LiteLlmManager,
     get_byor_key_alias,
@@ -39,6 +40,24 @@ def _secret_value(settings: Settings, key: str):
     """Navigate into settings.agent_settings and unwrap SecretStr values."""
     secret = _agent_value(settings, key)
     return secret.get_secret_value() if secret else None
+
+
+def test_free_llm_models_include_current_default_model():
+    """The $0-cost allowlist must track the managed default model.
+
+    When the default model is renamed (e.g. kimi-k3 -> deepseek-v4-flash), a
+    free-tier team whose stored allowlist lags the rename starts 403ing on the
+    new default. Pinning this coupling in a test makes the rename a two-line
+    change instead of a runtime incident (OHE-3155).
+    """
+    from server.constants import get_default_litellm_model
+
+    default = get_default_litellm_model()
+    # The default is exposed as `litellm_proxy/<name>` (or `openhands/<name>`);
+    # the allowlist stores bare model names.
+    bare_default = default.split('/', 1)[1] if '/' in default else default
+    assert bare_default in _DEFAULT_FREE_LLM_MODELS
+    assert bare_default in FREE_LLM_MODELS
 
 
 class TestOrgTeamAlias:
@@ -2875,6 +2894,113 @@ class TestLiteLlmManager:
                     # making any LiteLLM calls
                     assert result is not None
                     assert _agent_value(result.to_settings(), 'agent') == 'TestAgent'
+
+
+class TestEnsureFreeTeamModels:
+    """Test cases for LiteLlmManager.ensure_free_team_models."""
+
+    @pytest.mark.asyncio
+    async def test_repairs_stale_free_team_allowlist(self):
+        """A free-tier team missing the current free model set is rewritten."""
+        team_info = {
+            'team_info': {'max_budget': None, 'models': ['glm-5.2']},
+            'team_memberships': [],
+        }
+        client = AsyncMock()
+        client.get.return_value = MagicMock(
+            is_success=True, json=MagicMock(return_value=team_info)
+        )
+        client.post.return_value = MagicMock(is_success=True)
+        client_class = MagicMock()
+        client_class.return_value.__aenter__.return_value = client
+
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+            patch('httpx.AsyncClient', client_class),
+        ):
+            result = await LiteLlmManager.ensure_free_team_models('org-1')
+
+        assert result is True
+        # _update_team posts to /team/update with the free-tier canonical state.
+        update_call = client.post.call_args_list[0]
+        assert 'team/update' in update_call[0][0]
+        assert update_call[1]['json']['models'] == list(FREE_LLM_MODELS)
+        assert update_call[1]['json']['max_budget'] is None
+
+    @pytest.mark.asyncio
+    async def test_skips_when_already_converged(self):
+        """A free team already on the full current set is not written to."""
+        team_info = {
+            'team_info': {
+                'max_budget': None,
+                'models': list(FREE_LLM_MODELS),
+            },
+            'team_memberships': [],
+        }
+        client = AsyncMock()
+        client.get.return_value = MagicMock(
+            is_success=True, json=MagicMock(return_value=team_info)
+        )
+        client_class = MagicMock()
+        client_class.return_value.__aenter__.return_value = client
+
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+            patch('httpx.AsyncClient', client_class),
+        ):
+            result = await LiteLlmManager.ensure_free_team_models('org-1')
+
+        assert result is False
+        client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_paid_team(self):
+        """A team with a positive budget is never touched."""
+        team_info = {
+            'team_info': {'max_budget': 50.0, 'models': []},
+            'team_memberships': [],
+        }
+        client = AsyncMock()
+        client.get.return_value = MagicMock(
+            is_success=True, json=MagicMock(return_value=team_info)
+        )
+        client_class = MagicMock()
+        client_class.return_value.__aenter__.return_value = client
+
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+            patch('httpx.AsyncClient', client_class),
+        ):
+            result = await LiteLlmManager.ensure_free_team_models('org-1')
+
+        assert result is False
+        client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_config_missing(self):
+        with patch('storage.lite_llm_manager.LITE_LLM_API_KEY', None):
+            result = await LiteLlmManager.ensure_free_team_models('org-1')
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_swallows_litellm_errors(self):
+        """An unreachable LiteLLM must not raise out of the version bump."""
+        client = AsyncMock()
+        client.get.side_effect = httpx.ConnectError('boom')
+        client_class = MagicMock()
+        client_class.return_value.__aenter__.return_value = client
+
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+            patch('httpx.AsyncClient', client_class),
+        ):
+            result = await LiteLlmManager.ensure_free_team_models('org-1')
+
+        assert result is False
 
 
 class TestGetAllKeysForUser:

@@ -13,6 +13,7 @@ from openhands.sdk.settings import (
     ConversationSettings,
     OpenHandsAgentSettings,
 )
+from server.constants import ORG_SETTINGS_VERSION
 from server.routes.org_models import OrgUpdate
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
@@ -1966,3 +1967,122 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
 
     assert result == 'fresh-rotated-key'
     assert member.llm_api_key.get_secret_value() == 'fresh-rotated-key'
+
+
+class TestUsesManagedDefaultLlm:
+    def test_managed_proxy_base_url_is_managed(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {
+                'model': 'litellm_proxy/deepseek-v4-flash',
+                'base_url': 'http://test.url',
+            }
+        }
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is True
+
+    def test_openhands_model_without_base_url_is_managed(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {'llm': {'model': 'openhands/deepseek-v4-flash'}}
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is True
+
+    def test_byok_base_url_is_not_managed(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {'model': 'gpt-4', 'base_url': 'https://api.openai.com'}
+        }
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+    def test_bare_model_with_no_base_url_is_not_managed(self):
+        # A bare (non-openhands) model with no base_url is a BYOK config that
+        # migration 153 deliberately leaves untouched.
+        org = MagicMock(spec=Org)
+        org.agent_settings = {'llm': {'model': 'gpt-4'}}
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+    def test_missing_llm_is_not_managed(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {}
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+
+@pytest.mark.asyncio
+async def test_validate_org_version_bumps_without_clobbering_byok(async_session_maker):
+    """A BYOK org still gets version-bumped, but its model/base_url are kept."""
+    async with async_session_maker() as session:
+        org = Org(
+            name='byok-org',
+            org_version=0,
+            agent_settings={
+                'llm': {'model': 'gpt-4', 'base_url': 'https://api.openai.com'}
+            },
+        )
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        org_id = org.id
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.ensure_free_team_models',
+            new=AsyncMock(return_value=False),
+        ),
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.org_version == ORG_SETTINGS_VERSION
+    llm = result.agent_settings['llm']
+    assert llm['model'] == 'gpt-4'
+    assert llm['base_url'] == 'https://api.openai.com'
+
+
+@pytest.mark.asyncio
+async def test_validate_org_version_repairs_free_team(async_session_maker):
+    """The version bump triggers a best-effort free-tier allowlist repair."""
+    async with async_session_maker() as session:
+        org = Org(name='free-org', org_version=0, agent_settings={})
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        org_id = org.id
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.ensure_free_team_models',
+            new=AsyncMock(return_value=True),
+        ) as repair_mock,
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    repair_mock.assert_awaited_once_with(str(org_id))
+
+
+@pytest.mark.asyncio
+async def test_validate_org_version_repair_failure_does_not_brick(async_session_maker):
+    """A LiteLLM failure during repair still leaves the org upgraded."""
+    async with async_session_maker() as session:
+        org = Org(name='free-org', org_version=0, agent_settings={})
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        org_id = org.id
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.ensure_free_team_models',
+            new=AsyncMock(side_effect=Exception('boom')),
+        ),
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.org_version == ORG_SETTINGS_VERSION
