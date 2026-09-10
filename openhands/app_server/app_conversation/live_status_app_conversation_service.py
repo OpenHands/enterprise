@@ -21,6 +21,10 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     TextContent,
 )
+from openhands.app_server.acp_providers import (
+    SURFACED_ACP_PROVIDERS,
+    is_acp_provider_surfaced,
+)
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
 )
@@ -69,7 +73,7 @@ from openhands.app_server.config import (
     get_event_callback_service,
     resolve_provider_llm_base_url,
 )
-from openhands.app_server.errors import SandboxError
+from openhands.app_server.errors import ACPProviderNotAvailableError, SandboxError
 from openhands.app_server.event.event_service import EventService
 from openhands.app_server.event_callback.event_callback_models import EventCallback
 from openhands.app_server.event_callback.event_callback_service import (
@@ -448,6 +452,31 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         except Exception:
             _logger.exception('Failed to release daily conversation quota reservation')
 
+    async def _validate_acp_provider_surfaced(
+        self, request: AppConversationStartRequest
+    ) -> None:
+        """Reject a harness this deployment does not offer, before any sandbox.
+
+        Lives here rather than only in the HTTP start endpoints because the
+        integrations (GitHub, GitLab, Jira, Slack, ...) call
+        ``start_app_conversation`` directly, so an endpoint-only check would let
+        a saved unsupported provider through on every integration-triggered run.
+        """
+        user = await self.user_context.get_user_info(
+            resolve_agent_profile=True,
+            override_agent_profile_id=request.agent_profile_id,
+        )
+        agent_settings = user.agent_settings
+        if not isinstance(agent_settings, ACPAgentSettings):
+            return
+        if is_acp_provider_surfaced(agent_settings.acp_server):
+            return
+
+        raise ACPProviderNotAvailableError(
+            f"ACP server '{agent_settings.acp_server}' is not available. "
+            f'Choose one of: {", ".join(SURFACED_ACP_PROVIDERS)}.'
+        )
+
     async def _start_app_conversation(
         self, request: AppConversationStartRequest
     ) -> AsyncGenerator[AppConversationStartTask, None]:
@@ -473,6 +502,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             self._inherit_configuration_from_parent(request, parent_info)
 
         self._apply_suggested_task(request)
+
+        await self._validate_acp_provider_surfaced(request)
 
         task = AppConversationStartTask(
             created_by_user_id=user_id,

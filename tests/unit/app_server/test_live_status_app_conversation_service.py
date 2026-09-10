@@ -19,6 +19,9 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     TextContent,
 )
+from openhands.app_server.acp_providers import (
+    SURFACED_ACP_PROVIDERS,
+)
 from openhands.app_server.app_conversation.app_conversation_models import (
     AgentType,
     AppConversationInfo,
@@ -37,7 +40,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     _resolve_title_llm_profile,
     effective_disabled_skills,
 )
-from openhands.app_server.errors import SandboxError
+from openhands.app_server.errors import ACPProviderNotAvailableError, SandboxError
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
@@ -61,7 +64,11 @@ from openhands.app_server.utils.redis_lock import RedisLockUnavailable
 from openhands.sdk import Agent, AgentContext, Event
 from openhands.sdk.llm import LLM
 from openhands.sdk.secret import LookupSecret, StaticSecret
-from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
+from openhands.sdk.settings import (
+    ACP_PROVIDERS,
+    ConversationSettings,
+    OpenHandsAgentSettings,
+)
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 
@@ -5370,3 +5377,85 @@ def test_exception_detail_strips_http_status_prefix():
         == 'The system is at capacity right now.'
     )
     assert _exception_detail(ValueError('boom')) == 'boom'
+
+
+class TestACPProviderAllowlistAtServiceStart:
+    """The allowlist is enforced in the shared start path, not only in the HTTP
+    endpoints. The integrations (GitHub, GitLab, Jira, Slack, ...) call
+    ``start_app_conversation`` directly, so an endpoint-only check would let a
+    saved unsupported provider through on every integration-triggered run.
+    """
+
+    @staticmethod
+    def _service_with_saved_provider(acp_server: str):
+        from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+            LiveStatusAppConversationService,
+        )
+        from openhands.sdk.settings import ACPAgentSettings
+
+        service = object.__new__(LiveStatusAppConversationService)
+        user_context = Mock()
+        user_context.get_user_info = AsyncMock(
+            return_value=SimpleNamespace(
+                agent_settings=ACPAgentSettings(acp_server=acp_server)
+            )
+        )
+        user_context.get_user_id = AsyncMock(return_value='u1')
+        user_context.get_user_email = AsyncMock(return_value=None)
+        object.__setattr__(service, 'user_context', user_context)
+        return service
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'acp_server',
+        sorted(set(ACP_PROVIDERS) - set(SURFACED_ACP_PROVIDERS)),
+    )
+    async def test_direct_service_start_rejects_unsurfaced_provider(self, acp_server):
+        """Parametrized off the registry, so a harness added upstream is covered
+        the moment it is registered."""
+        service = self._service_with_saved_provider(acp_server)
+
+        with pytest.raises(ACPProviderNotAvailableError) as exc_info:
+            await service._validate_acp_provider_surfaced(AppConversationStartRequest())
+
+        assert exc_info.value.status_code == 400
+        assert acp_server in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('acp_server', SURFACED_ACP_PROVIDERS + ('custom',))
+    async def test_direct_service_start_allows_surfaced_provider(self, acp_server):
+        service = self._service_with_saved_provider(acp_server)
+
+        await service._validate_acp_provider_surfaced(AppConversationStartRequest())
+
+    @pytest.mark.asyncio
+    async def test_non_acp_settings_are_never_rejected(self):
+        from openhands.sdk.settings import OpenHandsAgentSettings
+
+        service = object.__new__(type(self._service_with_saved_provider('claude-code')))
+        user_context = Mock()
+        user_context.get_user_info = AsyncMock(
+            return_value=SimpleNamespace(agent_settings=OpenHandsAgentSettings())
+        )
+        object.__setattr__(service, 'user_context', user_context)
+
+        await service._validate_acp_provider_surfaced(AppConversationStartRequest())
+
+    @pytest.mark.asyncio
+    async def test_rejection_happens_before_any_sandbox_is_provisioned(self):
+        """The check runs ahead of ``_wait_for_sandbox_start``, so an
+        integration-triggered start with an unsupported provider never reaches
+        sandbox provisioning."""
+        service = self._service_with_saved_provider('pi')
+        service._apply_suggested_task = Mock()
+        service._wait_for_sandbox_start = Mock(
+            side_effect=AssertionError('sandbox must not be provisioned')
+        )
+
+        with pytest.raises(ACPProviderNotAvailableError):
+            async for _ in service._start_app_conversation(
+                AppConversationStartRequest()
+            ):
+                pass
+
+        service._wait_for_sandbox_start.assert_not_called()
