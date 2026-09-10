@@ -19,7 +19,6 @@ from openhands.sdk.llm.utils.openhands_provider import (
 )
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import resolve_agent_profile
-from server.auth.token_manager import TokenManager
 from server.constants import LITE_LLM_API_URL
 from server.logger import logger
 from server.routes.org_models import (
@@ -358,12 +357,21 @@ class SaasSettingsStore(SettingsStore):
         profile resolves for *this call only*, and is never persisted to
         ``org_member.active_agent_profile_id``.
         """
-        user = await UserStore.get_user_by_id(self.user_id)
+        from server.auth.user_management import EnterpriseUserManagementService
+
+        accounts = EnterpriseUserManagementService()
+        user = await accounts.ensure_authenticated_account(UUID(self.user_id))
         if not user:
-            logger.error(f'User not found for ID {self.user_id}')
+            logger.error('User not found for settings load')
             return None
 
         org_id = self._resolve_org_id(user)
+        await accounts.ensure_llm_provisioned(user.id, org_id)
+        # Provisioning may have supplied the member key after this account was
+        # first read. Reload before composing the effective conversation settings.
+        user = await UserStore.get_user_by_id(self.user_id)
+        if user is None:
+            return None
         org_member: OrgMember | None = None
         for om in user.org_members:
             if om.org_id == org_id:
@@ -621,28 +629,13 @@ class SaasSettingsStore(SettingsStore):
             user = result.scalars().first()
 
             if not user:
-                # Check if we need to migrate from user_settings
-                user_settings = None
-                async with a_session_maker() as new_session:
-                    user_settings = await self._get_user_settings_by_keycloak_id_async(
-                        self.user_id, new_session
-                    )
-                if user_settings:
-                    token_manager = TokenManager()
-                    user_info = await token_manager.get_user_info_from_user_id(
-                        self.user_id
-                    )
-                    if not user_info:
-                        logger.error(f'User info not found for ID {self.user_id}')
-                        return None
-                    user = await UserStore.migrate_user(
-                        self.user_id, user_settings, user_info
-                    )
-                    if not user:
-                        logger.error(f'Failed to migrate user {self.user_id}')
-                        return None
-                else:
-                    logger.error(f'User not found for ID {self.user_id}')
+                from server.auth.user_management import EnterpriseUserManagementService
+
+                user = await EnterpriseUserManagementService().ensure_authenticated_account(
+                    UUID(self.user_id)
+                )
+                if user is None:
+                    logger.error('User not found for settings storage')
                     return None
 
             org_id = self._resolve_org_id(user)

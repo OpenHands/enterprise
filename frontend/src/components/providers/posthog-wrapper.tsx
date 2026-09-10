@@ -44,6 +44,11 @@ export function PostHogWrapper({ children }: { children: React.ReactNode }) {
     null,
   );
   const [isLoading, setIsLoading] = React.useState(true);
+  // Links into these pages use full navigation. Never initialize analytics
+  // while a password-recovery or email-verification token is in the URL.
+  const [isAccountActionPage] = React.useState(() =>
+    window.location.pathname.startsWith("/auth/"),
+  );
   const bootstrapIds = React.useMemo(() => getBootstrapIds(), []);
 
   React.useEffect(() => {
@@ -69,7 +74,7 @@ export function PostHogWrapper({ children }: { children: React.ReactNode }) {
     })();
   }, []);
 
-  if (isLoading || !posthogClientKey) {
+  if (isLoading || !posthogClientKey || isAccountActionPage) {
     return children;
   }
 

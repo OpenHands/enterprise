@@ -153,6 +153,10 @@ describe("LoginPage", () => {
       },
     });
 
+    vi.spyOn(AuthService, "getCapabilities").mockImplementation(async () => {
+      const config = await OptionService.getConfig();
+      return { mode: "keycloak", password_login: false, login_providers: config.providers_configured || [], registration: "admin_or_invitation", email_recovery: true, repository_connections: { manual_tokens: false, broker: true } };
+    });
     vi.spyOn(AuthService, "authenticate").mockRejectedValue({
       response: { status: 401 },
       isAxiosError: true,
@@ -679,16 +683,12 @@ describe("LoginPage", () => {
 
       // Verify the redirect URL contains the state with invitation token
       await waitFor(() => {
-        expect(window.location.href).toContain("state=");
+        expect(window.location.href).toContain("invitation_token=");
       });
 
-      // Decode and verify the state contains invitation_token
       const url = new URL(window.location.href);
-      const state = url.searchParams.get("state");
-      if (state) {
-        const decodedState = JSON.parse(atob(state));
-        expect(decodedState.invitation_token).toBe("inv-test-token-12345");
-      }
+      expect(url.searchParams.get("invitation_token")).toBe("inv-test-token-12345");
+      expect(url.searchParams.has("state")).toBe(false);
     });
 
     it("should handle login with invitation_token URL parameter", async () => {

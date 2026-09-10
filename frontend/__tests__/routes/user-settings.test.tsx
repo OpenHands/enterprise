@@ -11,6 +11,8 @@ vi.mock("#/hooks/query/use-config", () => ({
   useConfig: useConfigMock,
 }));
 
+vi.mock("#/hooks/query/use-auth-capabilities", () => ({ useAuthCapabilities: () => ({ data: { mode: "keycloak" }, isLoading: false }) }));
+
 vi.mock("#/hooks/query/use-settings", () => ({
   useSettings: () => ({
     data: {

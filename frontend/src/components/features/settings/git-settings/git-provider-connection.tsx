@@ -1,7 +1,6 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
-import { useConfig } from "#/hooks/query/use-config";
 import { useDisconnectGitProvider } from "#/hooks/mutation/use-disconnect-git-provider";
 import { generateIdpLinkUrl } from "#/utils/generate-idp-link-url";
 import {
@@ -34,7 +33,6 @@ export function GitProviderConnection({
   children,
 }: React.PropsWithChildren<GitProviderConnectionProps>) {
   const { t } = useTranslation();
-  const { data: config } = useConfig();
   const { mutate: disconnectGitProvider, isPending } =
     useDisconnectGitProvider();
   const [confirmDisconnect, setConfirmDisconnect] = React.useState(false);
@@ -43,7 +41,6 @@ export function GitProviderConnection({
     window.location.href = generateIdpLinkUrl(
       provider,
       new URL(window.location.href),
-      config?.auth_url,
     );
   };
 

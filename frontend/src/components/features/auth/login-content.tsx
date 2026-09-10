@@ -8,7 +8,6 @@ import BitbucketLogo from "#/assets/branding/bitbucket-logo.svg?react";
 import AzureDevOpsLogo from "#/assets/branding/azure-devops-logo.svg?react";
 import { useAuthUrl } from "#/hooks/use-auth-url";
 import { WebClientConfig } from "#/api/option-service/option.types";
-import { Provider } from "#/types/settings";
 import { TermsAndPrivacyNotice } from "#/components/shared/terms-and-privacy-notice";
 import { useRecaptcha } from "#/hooks/use-recaptcha";
 import { useConfig } from "#/hooks/query/use-config";
@@ -21,7 +20,7 @@ export interface LoginContentProps {
   githubAuthUrl: string | null;
   appMode?: WebClientConfig["app_mode"] | null;
   authUrl?: WebClientConfig["auth_url"];
-  providersConfigured?: Provider[];
+  providersConfigured?: string[];
   emailVerified?: boolean;
   hasDuplicatedEmail?: boolean;
   recaptchaBlocked?: boolean;
@@ -83,13 +82,7 @@ export function LoginContent({
 
   const handleAuthRedirect = async (redirectUrl: string) => {
     const url = new URL(redirectUrl);
-    const currentState =
-      url.searchParams.get("state") || window.location.origin;
-
-    // Build base state data
-    let stateData: Record<string, string> = {
-      redirect_url: currentState,
-    };
+    let stateData: Record<string, string> = {};
 
     // Add invitation token if present
     if (buildOAuthStateData) {
@@ -109,8 +102,10 @@ export function LoginContent({
       }
     }
 
-    // Encode state and redirect
-    url.searchParams.set("state", btoa(JSON.stringify(stateData)));
+    // The backend constructs OAuth state and the provider URL.
+    Object.entries(stateData).forEach(([key, value]) =>
+      url.searchParams.set(key, value),
+    );
     window.location.href = url.toString();
   };
 

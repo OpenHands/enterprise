@@ -4,10 +4,12 @@ from typing import AsyncGenerator
 
 from fastapi import Request
 from pydantic import Field
+from sqlalchemy.exc import SQLAlchemyError
 
 from openhands.app_server.services.injector import InjectorState
+from server.auth.contracts import AuthenticationUnavailable, UserProfile
 from server.auth.email_validation import extract_base_email
-from server.auth.token_manager import KeycloakUserInfo, TokenManager
+from server.auth.mode import is_keycloak_enabled
 from server.auth.user.user_authorizer import (
     UserAuthorizationResponse,
     UserAuthorizer,
@@ -17,7 +19,6 @@ from storage.user_authorization import UserAuthorizationType
 from storage.user_authorization_store import UserAuthorizationStore
 
 logger = logging.getLogger(__name__)
-token_manager = TokenManager()
 
 
 @dataclass
@@ -29,10 +30,8 @@ class DefaultUserAuthorizer(UserAuthorizer):
 
     prevent_duplicates: bool
 
-    async def authorize_user(
-        self, user_info: KeycloakUserInfo
-    ) -> UserAuthorizationResponse:
-        user_id = user_info.sub
+    async def authorize_user(self, user_info: UserProfile) -> UserAuthorizationResponse:
+        user_id = str(user_info.id)
         email = user_info.email
         provider_type = user_info.identity_provider
         try:
@@ -42,8 +41,10 @@ class DefaultUserAuthorizer(UserAuthorizer):
                     success=False, error_detail='missing_email'
                 )
 
-            if self.prevent_duplicates:
-                has_duplicate = await token_manager.check_duplicate_base_email(
+            if self.prevent_duplicates and is_keycloak_enabled():
+                from server.auth.keycloak.token_manager import TokenManager
+
+                has_duplicate = await TokenManager().check_duplicate_base_email(
                     email, user_id
                 )
                 if has_duplicate:
@@ -56,7 +57,7 @@ class DefaultUserAuthorizer(UserAuthorizer):
                     )
 
             # Check authorization rules (whitelist takes precedence over blacklist)
-            base_email = extract_base_email(email)
+            base_email = extract_base_email(email) if is_keycloak_enabled() else email
             if base_email is None:
                 return UserAuthorizationResponse(
                     success=False, error_detail='invalid_email'
@@ -79,6 +80,10 @@ class DefaultUserAuthorizer(UserAuthorizer):
                 return UserAuthorizationResponse(success=False, error_detail='blocked')
 
             return UserAuthorizationResponse(success=True)
+        except (AuthenticationUnavailable, SQLAlchemyError):
+            raise AuthenticationUnavailable(
+                'Admission policy is temporarily unavailable'
+            ) from None
         except Exception:
             logger.exception(
                 'error authorizing user', extra={'user_id': user_id}, stack_info=True

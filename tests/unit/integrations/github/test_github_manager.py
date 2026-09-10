@@ -21,10 +21,14 @@ class TestGithubManagerUserNotFound:
     """Test cases for when a valid GitHub user hasn't created an OpenHands account."""
 
     @pytest.fixture
-    def mock_token_manager(self):
+    def mock_token_manager(self, monkeypatch):
         """Create a mock token manager."""
         token_manager = MagicMock()
         token_manager.get_user_id_from_idp_user_id = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            'integrations.github.github_manager.ProviderCredentialService.resolve_user',
+            token_manager.get_user_id_from_idp_user_id,
+        )
         return token_manager
 
     @pytest.fixture
@@ -300,7 +304,7 @@ class TestGithubManagerUserNotFound:
         mock_repo.get_collaborator_permission.return_value = 'write'
 
         # Token manager returns None for keycloak_user_id (user hasn't created an account)
-        mock_token_manager.get_user_id_from_idp_user_id = AsyncMock(return_value=None)
+        mock_token_manager.get_user_id_from_idp_user_id.return_value = None
 
         # Create manager
         manager = GithubManager(mock_token_manager, mock_data_collector)
@@ -521,7 +525,7 @@ class TestGetIssueNumberFromPayload:
     """Test cases for the _get_issue_number_from_payload helper method."""
 
     @pytest.fixture
-    def mock_token_manager(self):
+    def mock_token_manager(self, monkeypatch):
         """Create a mock token manager."""
         token_manager = MagicMock()
         return token_manager
@@ -641,9 +645,13 @@ class TestReceiveMessagePayloadProcessingError:
     """Test cases for error logging in receive_message when payload processing fails."""
 
     @pytest.fixture
-    def mock_token_manager(self):
+    def mock_token_manager(self, monkeypatch):
         token_manager = MagicMock()
         token_manager.get_user_id_from_idp_user_id = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            'integrations.github.github_manager.ProviderCredentialService.resolve_user',
+            token_manager.get_user_id_from_idp_user_id,
+        )
         return token_manager
 
     @pytest.fixture

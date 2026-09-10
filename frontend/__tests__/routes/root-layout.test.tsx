@@ -431,6 +431,16 @@ describe("MainApp", () => {
       expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
     });
 
+    it("redirects local installations with a remembered provider to password login and preserves device context", async () => {
+      vi.spyOn(AuthService, "getCapabilities").mockResolvedValue({ mode: "local", password_login: true, login_providers: [], registration: "admin_or_invitation", email_recovery: false, repository_connections: { manual_tokens: true, broker: false } });
+      vi.spyOn(AuthService, "authenticate").mockRejectedValue({ isAxiosError: true, response: { status: 401 } });
+      vi.stubGlobal("localStorage", { getItem: (key: string) => key === "openhands_login_method" ? "github" : null, setItem: vi.fn(), removeItem: vi.fn() });
+      renderWithLoginStub(RouterStubWithDeviceVerify, ["/oauth/device/verify?user_code=ABCD-EFGH"]);
+      expect(await screen.findByTestId("login-page")).toBeInTheDocument();
+      expect(screen.getByTestId("return-to-param")).toHaveTextContent("/oauth/device/verify?user_code=ABCD-EFGH");
+      expect(screen.queryByTestId("device-verify-page")).not.toBeInTheDocument();
+    });
+
     it("should redirect to /login when no login method is stored", async () => {
       // Arrange - user is unauthenticated and has no stored login method
       vi.spyOn(AuthService, "authenticate").mockRejectedValue({

@@ -1,37 +1,34 @@
-"""Instance-level user lifecycle operations for Enterprise administrators."""
+"""Instance account lifecycle, with local revocation preceding remote cleanup."""
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from hashlib import sha256
 from uuid import UUID
 
-import httpx
-from sqlalchemy import text, update
+from sqlalchemy import delete, select, text
 
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.token_manager import TokenManager
+from server.auth.mode import SessionFactory, is_keycloak_enabled
+from storage.api_key import ApiKey
+from storage.auth_action_tokens import AuthActionToken
+from storage.auth_sessions import AuthSession
 from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager
-from storage.offline_token_store import OfflineTokenStore
+from storage.local_credentials import LocalCredentials
 from storage.org_store import OrgStore
+from storage.stored_offline_token import StoredOfflineToken
 from storage.user import User
 from storage.user_store import UserStore
 
 
 class LastSuperAdminError(RuntimeError):
-    """Raised when an operation would remove the final active superadmin."""
+    """An operation would remove the final active instance administrator."""
 
 
 @dataclass(frozen=True)
 class UserLifecycleResult:
-    """Summary of a lifecycle operation."""
-
     user_id: str
     email: str | None
-
-
-@dataclass(frozen=True)
-class UserDeletionResult(UserLifecycleResult):
-    """Result of a user deletion, including best-effort cleanup notes."""
-
     notes: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -39,128 +36,154 @@ class UserDeletionResult(UserLifecycleResult):
         return list(self.notes)
 
 
-class AdminUserLifecycleService:
-    """Coordinate user state across Enterprise and external identity systems."""
+@dataclass(frozen=True)
+class UserDeletionResult(UserLifecycleResult):
+    pass
 
-    def __init__(self, token_manager: TokenManager | None = None):
-        self.token_manager = token_manager or TokenManager()
+
+class AdminUserLifecycleService:
+    def __init__(
+        self, token_manager=None, *, session_factory: SessionFactory | None = None
+    ):
+        self.token_manager = token_manager
+        self.session_factory = session_factory or a_session_maker
+
+    def _keycloak(self):
+        from server.auth.keycloak.account_management import KeycloakAccountManagement
+
+        return KeycloakAccountManagement(self.token_manager)
+
+    @asynccontextmanager
+    async def _lifecycle_lock(self, user_id: str):
+        """Serialize disable/enable/delete across their committed denial boundary.
+
+        A separate, read-only PostgreSQL transaction holds a per-account advisory
+        lock until remote reconciliation and final local writes finish. Inner
+        transactions can commit revocation before calling the remote provider.
+        Transaction locks are released even when requests fail or are cancelled.
+        """
+        async with self.session_factory() as session, session.begin():
+            if session.bind.dialect.name == 'postgresql':
+                key = int.from_bytes(
+                    sha256(b'account-lifecycle:' + UUID(user_id).bytes).digest()[:8],
+                    'big',
+                    signed=True,
+                )
+                await session.execute(
+                    text('SELECT pg_advisory_xact_lock(:key)'), {'key': key}
+                )
+            yield
 
     async def get_user(self, user_id: str) -> User | None:
-        """Return a user or ``None`` for a missing identity."""
         try:
-            UUID(user_id)
+            identifier = UUID(user_id)
         except ValueError:
             return None
-        return await UserStore.get_user_by_id(user_id)
+        async with self.session_factory() as session:
+            return await session.get(User, identifier)
 
-    async def disable_user(self, user_id: str) -> UserLifecycleResult | None:
-        """Disable the identity and invalidate all credentials without deleting data."""
-        user = await self.get_user(user_id)
-        if user is None:
-            return None
-
-        await self._ensure_not_last_active_superadmin(user)
-        await self._set_disabled(user_id, True)
-        await self.token_manager.disable_keycloak_user(user_id, user.email)
-        await self._delete_api_keys(user_id)
-        await self._delete_offline_token(user_id)
-        logger.info('admin_user_lifecycle:disabled', extra={'user_id': user_id})
-        return UserLifecycleResult(user_id=user_id, email=user.email)
-
-    async def enable_user(self, user_id: str) -> UserLifecycleResult | None:
-        """Re-enable a locally and externally disabled identity."""
-        user = await self.get_user(user_id)
-        if user is None:
-            return None
-
-        await self._set_disabled(user_id, False)
-        await self.token_manager.enable_keycloak_user(user_id, user.email)
-        logger.info('admin_user_lifecycle:enabled', extra={'user_id': user_id})
-        return UserLifecycleResult(user_id=user_id, email=user.email)
-
-    async def delete_user(self, user_id: str) -> UserDeletionResult | None:
-        """Delete all Enterprise-owned data and the external identity.
-
-        Local database deletion is attempted before the Keycloak identity
-        is removed, so retrying can reconcile any failed local cleanup.
-        External cleanup failures are returned as warnings for reconciliation.
-        """
-        user = await self.get_user(user_id)
-        if user is None:
-            return None
-
-        await self._ensure_not_last_active_superadmin(user)
-        await self._set_disabled(user_id, True)
-        await self.token_manager.disable_keycloak_user(user_id, user.email)
-        await self._delete_api_keys(user_id)
-        await self._delete_offline_token(user_id)
-        await self._delete_user_data(user_id)
-
-        warnings: list[str] = []
-        try:
-            await LiteLlmManager.delete_user(user_id)
-        except httpx.HTTPError as exc:
-            warnings.append(f'LiteLLM cleanup failed: {exc}')
-            logger.warning(
-                'admin_user_lifecycle:litellm_cleanup_failed',
-                extra={'user_id': user_id},
+    async def _deny_and_revoke(self, user_id: str) -> User | None:
+        """Role mutex -> User -> credential; commit denial and all revocation together."""
+        async with self.session_factory() as session, session.begin():
+            admin_role = await UserStore.lock_super_admin_policy(session)
+            user = await session.scalar(
+                select(User).where(User.id == UUID(user_id)).with_for_update()
             )
-        if not await self.token_manager.delete_keycloak_user(user_id):
-            warnings.append('Keycloak deletion failed or user already absent')
-
-        logger.info('admin_user_lifecycle:deleted', extra={'user_id': user_id})
-        return UserDeletionResult(
-            user_id=user_id, email=user.email, notes=tuple(warnings)
-        )
-
-    async def _ensure_not_last_active_superadmin(self, user: User) -> None:
-        if user.role_id is None:
-            return
-
-        superadmins = await UserStore.list_super_admins()
-        if user.is_disabled:
-            return
-        if any(admin.id == user.id for admin in superadmins):
-            active = [admin for admin in superadmins if not admin.is_disabled]
-            if len(active) <= 1:
+            if user is None:
+                return None
+            if await UserStore.is_last_active_admin(session, user, admin_role):
                 raise LastSuperAdminError(
                     'Cannot disable or delete the last active superadmin'
                 )
+            await session.scalar(
+                select(LocalCredentials)
+                .where(LocalCredentials.user_id == user.id)
+                .with_for_update()
+            )
+            user.is_disabled = True
+            await session.execute(
+                delete(AuthSession).where(AuthSession.user_id == user.id)
+            )
+            await session.execute(
+                delete(AuthActionToken).where(AuthActionToken.user_id == user.id)
+            )
+            await session.execute(delete(ApiKey).where(ApiKey.user_id == user_id))
+            await session.execute(
+                delete(StoredOfflineToken).where(StoredOfflineToken.user_id == user_id)
+            )
+            return user
 
-    async def _set_disabled(self, user_id: str, disabled: bool) -> None:
-        async with a_session_maker() as session:
-            if disabled:
-                active_admins = await session.execute(
-                    text("""
-                        SELECT u.id
-                        FROM "user" u
-                        JOIN role r ON r.id = u.role_id
-                        WHERE r.name = 'admin' AND u.is_disabled = false
-                        FOR UPDATE OF u
-                    """)
+    async def disable_user(self, user_id: str) -> UserLifecycleResult | None:
+        async with self._lifecycle_lock(user_id):
+            return await self._disable_user(user_id)
+
+    async def _disable_user(self, user_id: str) -> UserLifecycleResult | None:
+        user = await self._deny_and_revoke(user_id)
+        if user is None:
+            return None
+        notes = []
+        if is_keycloak_enabled():
+            try:
+                await self._keycloak().set_enabled(user_id, False)
+            except Exception:
+                notes.append('Keycloak disable is pending. Retry this operation.')
+                logger.warning(
+                    'admin_user_lifecycle:remote_disable_pending',
+                    extra={'user_id': user_id},
                 )
-                active_admin_ids = {str(row[0]) for row in active_admins}
-                if user_id in active_admin_ids and len(active_admin_ids) <= 1:
-                    raise LastSuperAdminError(
-                        'Cannot disable or delete the last active superadmin'
-                    )
-            await session.execute(
-                update(User)
-                .where(User.id == UUID(user_id))
-                .values(is_disabled=disabled)
-            )
-            await session.commit()
+        return UserLifecycleResult(user_id, user.email, tuple(notes))
 
-    async def _delete_api_keys(self, user_id: str) -> None:
-        async with a_session_maker() as session:
-            await session.execute(
-                text('DELETE FROM api_keys WHERE user_id = :uid'), {'uid': user_id}
-            )
-            await session.commit()
+    async def enable_user(self, user_id: str) -> UserLifecycleResult | None:
+        async with self._lifecycle_lock(user_id):
+            return await self._enable_user(user_id)
 
-    async def _delete_offline_token(self, user_id: str) -> None:
-        token_store = await OfflineTokenStore.get_instance(user_id)
-        await token_store.delete_token()
+    async def _enable_user(self, user_id: str) -> UserLifecycleResult | None:
+        # Keep local denial until upstream enable succeeds. Holding the User lock
+        # serializes concurrent enable/disable and password/session issuance.
+        async with self.session_factory() as session, session.begin():
+            await UserStore.lock_super_admin_policy(session)
+            user = await session.scalar(
+                select(User).where(User.id == UUID(user_id)).with_for_update()
+            )
+            if user is None:
+                return None
+            if is_keycloak_enabled():
+                await self._keycloak().set_enabled(user_id, True)
+            user.is_disabled = False
+            return UserLifecycleResult(user_id, user.email)
+
+    async def delete_user(self, user_id: str) -> UserDeletionResult | None:
+        async with self._lifecycle_lock(user_id):
+            return await self._delete_user(user_id)
+
+    async def _delete_user(self, user_id: str) -> UserDeletionResult | None:
+        """Keep a disabled reconciliation identity until remote cleanup succeeds.
+
+        The same DELETE retries pending cleanup. A warning means deletion is
+        pending, with access already revoked. No queue or additional identity
+        registry is needed, and remote errors never include provider payloads.
+        """
+        user = await self._deny_and_revoke(user_id)
+        if user is None:
+            return None
+        notes = []
+        if is_keycloak_enabled():
+            try:
+                await self._keycloak().delete(user_id)
+            except Exception:
+                notes.append('Keycloak deletion is pending. Retry this operation.')
+        try:
+            await LiteLlmManager.delete_user(user_id)
+            await LiteLlmManager.delete_team(user_id)
+        except Exception:
+            notes.append('LiteLLM deletion is pending. Retry this operation.')
+        if notes:
+            logger.warning(
+                'admin_user_lifecycle:deletion_pending', extra={'user_id': user_id}
+            )
+            return UserDeletionResult(user_id, user.email, tuple(notes))
+        await self._delete_user_data(user_id)
+        return UserDeletionResult(user_id, user.email)
 
     async def _delete_user_data(self, user_id: str) -> None:
         user = await UserStore.get_user_by_id(user_id)
@@ -168,10 +191,26 @@ class AdminUserLifecycleService:
             return
 
         user_uuid = user.id
-        await OrgStore.delete_org_cascade(user_uuid, requester_user_id=user_id)
+        await OrgStore.delete_org_cascade(
+            user_uuid, requester_user_id=user_id, delete_account=True
+        )
 
         user_id_str = str(user_uuid)
-        async with a_session_maker() as session:
+        async with self.session_factory() as session:
+            admin_role_id = await UserStore.lock_super_admin_policy(session)
+            remaining = await session.scalar(
+                select(User).where(User.id == user_uuid).with_for_update()
+            )
+            if remaining is not None:
+                if await UserStore.is_last_active_admin(
+                    session, remaining, admin_role_id
+                ):
+                    raise LastSuperAdminError(
+                        'Cannot delete the last active superadmin'
+                    )
+                remaining.is_disabled = True
+                # Flush ORM state before raw SQL removes this identity.
+                await session.flush()
             # Personal org was cascade-deleted above; these DELETEs cover
             # identity-level rows and shared-org leftovers.
             await session.execute(

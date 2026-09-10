@@ -31,6 +31,7 @@ import { useMe } from "#/hooks/query/use-me";
 import { OrgWideSettingsBadge } from "#/components/features/settings/org-wide-settings-badge";
 
 const SAAS_ONLY_PATHS = [
+  "/settings/accounts",
   "/settings/user",
   "/settings/billing",
   "/settings/credits",

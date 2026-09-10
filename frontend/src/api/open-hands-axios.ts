@@ -1,7 +1,31 @@
 import axios, { AxiosError, AxiosResponse } from "axios";
+import {
+  browserCsrfEnabled,
+  configureBrowserCsrf,
+  ensureCsrfSeed,
+} from "./auth-service/browser-csrf";
+import { authPageUrl, safeAuthRedirect } from "#/utils/auth-redirect";
 
 export const openHands = axios.create({
   baseURL: `${window.location.protocol}//${import.meta.env.VITE_BACKEND_BASE_URL || window?.location.host}`,
+  withCredentials: true,
+  xsrfCookieName: "oh_csrf",
+  xsrfHeaderName: "X-CSRF-Token",
+});
+
+openHands.interceptors.request.use(async (config) => {
+  const method = config.method?.toLowerCase() || "get";
+  if (
+    browserCsrfEnabled() &&
+    !["get", "head", "options"].includes(method) &&
+    !config.headers.has("X-CSRF-Token") &&
+    !config.headers.has("Authorization") &&
+    !config.headers.has("X-Session-API-Key") &&
+    !config.headers.has("X-Access-Token")
+  ) {
+    config.headers.set("X-CSRF-Token", await ensureCsrfSeed(openHands));
+  }
+  return config;
 });
 
 // Helper function to check if a response contains an email verification error
@@ -42,8 +66,28 @@ const checkForEmailVerificationError = (data: any): boolean => {
 
 // Set up the global interceptor
 openHands.interceptors.response.use(
-  (response: AxiosResponse) => response,
+  (response: AxiosResponse) => {
+    if (response.config.url === "/api/v1/web-client/config") {
+      configureBrowserCsrf(response.data?.app_mode === "saas");
+    } else if (response.config.url === "/api/auth/capabilities") {
+      configureBrowserCsrf(true);
+    }
+    return response;
+  },
   (error: AxiosError) => {
+    const data = error.response?.data as
+      | { detail?: { code?: string; redirect_url?: string } }
+      | undefined;
+    if (
+      error.response?.status === 403 &&
+      data?.detail?.code === "password_change_required" &&
+      window.location.pathname !== "/auth/change-password"
+    ) {
+      const returnTo = `${window.location.pathname}${window.location.search}`;
+      window.location.href = data.detail.redirect_url
+        ? safeAuthRedirect(data.detail.redirect_url)
+        : authPageUrl("/auth/change-password", returnTo);
+    }
     // Check if it's a 403 error with the email verification message
     if (
       error.response?.status === 403 &&

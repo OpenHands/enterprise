@@ -21,6 +21,13 @@ from storage.user_store import SuperAdminRevokeResult, UserStore
 # --- Fixtures ---
 
 
+@pytest.fixture(autouse=True)
+def initialized_authentication_mode(monkeypatch):
+    from server.auth import mode
+
+    monkeypatch.setattr(mode, '_auth_mode', mode.AuthMode.KEYCLOAK)
+
+
 @pytest.fixture
 def mock_litellm_api():
     """Mock LiteLLM API calls to prevent external dependencies."""

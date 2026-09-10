@@ -4,6 +4,8 @@ import { useIsAuthed } from "./query/use-is-authed";
 import { LoginMethod, setLoginMethod } from "#/utils/local-storage";
 import { useConfig } from "./query/use-config";
 import { navigateOrHardRedirect } from "#/utils/cross-app-redirect";
+import { useAuthCapabilities } from "#/hooks/query/use-auth-capabilities";
+import { safeAuthRedirect } from "#/utils/auth-redirect";
 
 /**
  * Hook to handle authentication callback and set login method after successful authentication
@@ -13,10 +15,11 @@ export const useAuthCallback = () => {
   const { data: isAuthed, isLoading: isAuthLoading } = useIsAuthed();
   const { data: config } = useConfig();
   const navigate = useNavigate();
+  const { data: capabilities } = useAuthCapabilities();
 
   useEffect(() => {
     // Only run in SAAS mode
-    if (config?.app_mode !== "saas") {
+    if (config?.app_mode !== "saas" || capabilities?.mode !== "keycloak") {
       return;
     }
 
@@ -46,7 +49,7 @@ export const useAuthCallback = () => {
       // Determine where to navigate after authentication
       let destination = "/";
       if (returnTo && returnTo !== "/login") {
-        destination = returnTo;
+        destination = safeAuthRedirect(returnTo);
       } else if (location.pathname !== "/login" && location.pathname !== "/") {
         destination = location.pathname;
       }
@@ -64,6 +67,7 @@ export const useAuthCallback = () => {
     location.search,
     location.pathname,
     config?.app_mode,
+    capabilities?.mode,
     navigate,
   ]);
 };

@@ -21,10 +21,14 @@ from storage.jira_dc_workspace import JiraDcWorkspace
 
 
 @pytest.fixture
-def mock_token_manager():
+def mock_token_manager(monkeypatch):
     """Create a mock TokenManager for testing."""
     token_manager = MagicMock()
     token_manager.get_user_id_from_user_email = AsyncMock()
+    monkeypatch.setattr(
+        'integrations.jira_dc.jira_dc_manager.resolve_broker_email',
+        token_manager.get_user_id_from_user_email,
+    )
     token_manager.decrypt_text = MagicMock()
     return token_manager
 

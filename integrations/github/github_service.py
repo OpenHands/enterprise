@@ -3,12 +3,13 @@ from collections.abc import Coroutine
 
 from pydantic import SecretStr
 
+from integrations.provider_service import ProviderCredentialErrorMixin
 from integrations.store_repo_utils import store_repositories_in_db
 from openhands.app_server.integrations.github.github_service import GitHubService
 from openhands.app_server.integrations.service_types import ProviderType, Repository
 from openhands.app_server.types import AppMode
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.token_manager import TokenManager
+from server.auth.provider_credentials import ProviderCredentialService
 
 # Module-level set to keep background tasks alive until completion.
 # Without this, tasks could be garbage-collected mid-execution.
@@ -24,7 +25,7 @@ def _create_safe_task(coro: Coroutine) -> asyncio.Task:
     return task
 
 
-class SaaSGitHubService(GitHubService):
+class SaaSGitHubService(ProviderCredentialErrorMixin, GitHubService):
     def __init__(
         self,
         user_id: str | None = None,
@@ -48,45 +49,20 @@ class SaaSGitHubService(GitHubService):
 
         self.external_auth_token = external_auth_token
         self.external_auth_id = external_auth_id
-        self.token_manager = TokenManager(external=external_token_manager)
+        self.provider_credentials = ProviderCredentialService()
+        self._credential_host = base_domain
 
     async def get_latest_token(self) -> SecretStr | None:
-        github_token = None
-        if self.external_auth_token:
-            github_token = SecretStr(
-                await self.token_manager.get_idp_token(
-                    self.external_auth_token.get_secret_value(), ProviderType.GITHUB
-                )
-            )
-            logger.debug(
-                f'Got GitHub token {github_token} from access token: {self.external_auth_token}'
-            )
-        elif self.external_auth_id:
-            offline_token = await self.token_manager.load_offline_token(
-                self.external_auth_id
-            )
-            github_token_str: str | None = (
-                await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.GITHUB
-                )
-                if offline_token
-                else None
-            )
-            github_token = SecretStr(github_token_str) if github_token_str else None
-            logger.debug(
-                f'Got GitHub token {github_token} from external auth user ID: {self.external_auth_id}'
-            )
-        elif self.user_id:
-            github_token_str = await self.token_manager.get_idp_token_from_idp_user_id(
-                self.user_id, ProviderType.GITHUB
-            )
-            github_token = SecretStr(github_token_str) if github_token_str else None
-            logger.debug(
-                f'Got GitHub token {github_token} from user ID: {self.user_id}'
-            )
-        else:
-            logger.warning('external_auth_token and user_id not set!')
-        return github_token
+        token = await self.provider_credentials.token_for_service(
+            ProviderType.GITHUB,
+            user_id=self.external_auth_id,
+            account_id=self.user_id,
+            access_token=self.external_auth_token,
+            host=self._credential_host,
+        )
+        if token:
+            self.token = token
+        return token
 
     async def get_pr_patches(
         self, owner: str, repo: str, pr_number: int, per_page: int = 30, page: int = 1
@@ -144,10 +120,11 @@ class SaaSGitHubService(GitHubService):
 
         if self.external_auth_token:
             try:
-                user_info = await self.token_manager.get_user_info(
-                    self.external_auth_token.get_secret_value()
+                from server.auth.provider_compatibility import user_from_broker_token
+
+                self.external_auth_id = await user_from_broker_token(
+                    self.external_auth_token
                 )
-                self.external_auth_id = user_info.sub
                 logger.info(
                     f'Determined external_auth_id from Keycloak token: {self.external_auth_id}'
                 )

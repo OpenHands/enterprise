@@ -1,12 +1,13 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from keycloak.exceptions import KeycloakConnectionError, KeycloakDeleteError
+from keycloak.exceptions import KeycloakConnectionError
 from pydantic import SecretStr
 
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
+from server.auth.contracts import AuthenticationUnavailable, InvalidCredentials
 from server.auth.token_manager import TokenManager
 
 
@@ -30,7 +31,9 @@ async def test_get_keycloak_tokens_success(token_manager):
         'refresh_token': 'test_refresh_token',
     }
 
-    with patch('server.auth.token_manager.get_keycloak_openid') as mock_keycloak:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_openid'
+    ) as mock_keycloak:
         mock_keycloak.return_value.a_token = AsyncMock(return_value=mock_token_response)
 
         access_token, refresh_token = await token_manager.get_keycloak_tokens(
@@ -54,7 +57,9 @@ async def test_get_keycloak_tokens_missing_tokens(token_manager):
         # Missing refresh_token
     }
 
-    with patch('server.auth.token_manager.get_keycloak_openid') as mock_keycloak:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_openid'
+    ) as mock_keycloak:
         mock_keycloak.return_value.a_token = AsyncMock(return_value=mock_token_response)
 
         access_token, refresh_token = await token_manager.get_keycloak_tokens(
@@ -68,7 +73,9 @@ async def test_get_keycloak_tokens_missing_tokens(token_manager):
 @pytest.mark.asyncio
 async def test_get_keycloak_tokens_exception(token_manager):
     """Test handling of exceptions during token retrieval."""
-    with patch('server.auth.token_manager.get_keycloak_openid') as mock_keycloak:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_openid'
+    ) as mock_keycloak:
         mock_keycloak.return_value.a_token = AsyncMock(
             side_effect=Exception('Test error')
         )
@@ -83,12 +90,14 @@ async def test_get_keycloak_tokens_exception(token_manager):
 
 @pytest.mark.asyncio
 async def test_get_keycloak_tokens_preserves_connection_error(token_manager):
-    with patch('server.auth.token_manager.get_keycloak_openid') as mock_keycloak:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_openid'
+    ) as mock_keycloak:
         mock_keycloak.return_value.a_token = AsyncMock(
             side_effect=KeycloakConnectionError('DNS failure')
         )
 
-        with pytest.raises(KeycloakConnectionError, match='DNS failure'):
+        with pytest.raises(AuthenticationUnavailable):
             await token_manager.get_keycloak_tokens(
                 'test_code', 'http://test.com/callback'
             )
@@ -97,7 +106,9 @@ async def test_get_keycloak_tokens_preserves_connection_error(token_manager):
 @pytest.mark.asyncio
 async def test_verify_keycloak_token_valid(token_manager):
     """Test verification of a valid Keycloak token."""
-    with patch('server.auth.token_manager.get_keycloak_openid') as mock_keycloak:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_openid'
+    ) as mock_keycloak:
         mock_keycloak.return_value.a_userinfo = AsyncMock(
             return_value={'sub': 'test_user_id'}
         )
@@ -118,7 +129,9 @@ async def test_verify_keycloak_token_refresh(token_manager):
     """Test refreshing an invalid Keycloak token."""
     from keycloak.exceptions import KeycloakAuthenticationError
 
-    with patch('server.auth.token_manager.get_keycloak_openid') as mock_keycloak:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_openid'
+    ) as mock_keycloak:
         mock_keycloak.return_value.a_userinfo = AsyncMock(
             side_effect=KeycloakAuthenticationError('Invalid token')
         )
@@ -154,7 +167,9 @@ async def test_get_user_info(token_manager):
         'email': 'test@example.com',
     }
 
-    with patch('server.auth.token_manager.get_keycloak_openid') as mock_keycloak:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_openid'
+    ) as mock_keycloak:
         mock_keycloak.return_value.a_userinfo = AsyncMock(return_value=mock_user_info)
 
         user_info = await token_manager.get_user_info('test_access_token')
@@ -174,12 +189,14 @@ async def test_get_user_info_empty_token(token_manager):
     """Test handling of empty token when getting user info."""
     from keycloak.exceptions import KeycloakAuthenticationError
 
-    with patch('server.auth.token_manager.get_keycloak_openid') as mock_keycloak:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_openid'
+    ) as mock_keycloak:
         mock_keycloak.return_value.a_userinfo = AsyncMock(
             side_effect=KeycloakAuthenticationError('Invalid token')
         )
 
-        with pytest.raises(KeycloakAuthenticationError):
+        with pytest.raises(InvalidCredentials):
             await token_manager.get_user_info('')
 
         mock_keycloak.return_value.a_userinfo.assert_called_once_with('')
@@ -232,61 +249,53 @@ async def test_store_idp_tokens_skips_enterprise_sso(token_manager):
 
 @pytest.mark.asyncio
 async def test_get_idp_token(token_manager, create_keycloak_user_info):
-    """Test getting an identity provider token."""
+    from pydantic import SecretStr
+
+    from openhands.app_server.integrations.provider import ProviderToken
+
     with (
-        patch(
-            'server.auth.token_manager.TokenManager.get_user_info',
+        patch.object(
+            token_manager,
+            'get_user_info',
             AsyncMock(return_value=create_keycloak_user_info(sub='test_user_id')),
         ),
-        patch('server.auth.token_manager.AuthTokenStore') as mock_token_store_cls,
+        patch(
+            'server.auth.provider_credentials.ProviderCredentialService.get_token',
+            AsyncMock(
+                return_value=ProviderToken(token=SecretStr('github_access_token'))
+            ),
+        ) as get_token,
     ):
-        mock_token_store = AsyncMock()
-        mock_token_store.return_value.load_tokens.return_value = {
-            'access_token': token_manager.encrypt_text('github_access_token'),
-        }
-        mock_token_store_cls.get_instance = mock_token_store
-
-        token = await token_manager.get_idp_token(
-            'test_access_token', ProviderType.GITHUB
+        assert (
+            await token_manager.get_idp_token('test_access_token', ProviderType.GITHUB)
+            == 'github_access_token'
         )
-
-        assert token == 'github_access_token'
-        mock_token_store_cls.get_instance.assert_called_once_with(
-            keycloak_user_id='test_user_id', idp=ProviderType.GITHUB
-        )
-        mock_token_store.return_value.load_tokens.assert_called_once()
+    get_token.assert_awaited_once_with('test_user_id', ProviderType.GITHUB)
 
 
 @pytest.mark.asyncio
 async def test_get_idp_token_by_user_id(token_manager):
-    """Resolving an IDP token by user_id needs no Keycloak userinfo round-trip.
+    from pydantic import SecretStr
 
-    The token is read from the auth_tokens store (and refreshed via the
-    provider's OAuth endpoint), so this path is independent of the user's
-    Keycloak offline session.
-    """
+    from openhands.app_server.integrations.provider import ProviderToken
+
     with (
+        patch.object(token_manager, 'get_user_info', AsyncMock()) as get_user,
         patch(
-            'server.auth.token_manager.TokenManager.get_user_info',
-            AsyncMock(),
-        ) as mock_get_user_info,
-        patch('server.auth.token_manager.AuthTokenStore') as mock_token_store_cls,
+            'server.auth.provider_credentials.ProviderCredentialService.get_token',
+            AsyncMock(
+                return_value=ProviderToken(token=SecretStr('github_access_token'))
+            ),
+        ) as get_token,
     ):
-        mock_token_store = AsyncMock()
-        mock_token_store.return_value.load_tokens.return_value = {
-            'access_token': token_manager.encrypt_text('github_access_token'),
-        }
-        mock_token_store_cls.get_instance = mock_token_store
-
-        token = await token_manager.get_idp_token_by_user_id(
-            'test_user_id', ProviderType.GITHUB
+        assert (
+            await token_manager.get_idp_token_by_user_id(
+                'test_user_id', ProviderType.GITHUB
+            )
+            == 'github_access_token'
         )
-
-        assert token == 'github_access_token'
-        mock_token_store_cls.get_instance.assert_called_once_with(
-            keycloak_user_id='test_user_id', idp=ProviderType.GITHUB
-        )
-        mock_get_user_info.assert_not_called()
+    get_token.assert_awaited_once_with('test_user_id', ProviderType.GITHUB)
+    get_user.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -297,7 +306,9 @@ async def test_refresh(token_manager):
         'refresh_token': 'new_refresh_token',
     }
 
-    with patch('server.auth.token_manager.get_keycloak_openid') as mock_keycloak:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_openid'
+    ) as mock_keycloak:
         mock_keycloak.return_value.a_refresh_token = AsyncMock(return_value=mock_tokens)
 
         result = await token_manager.refresh('test_refresh_token')
@@ -321,7 +332,9 @@ async def test_disable_keycloak_user_success(token_manager):
         'emailVerified': True,
     }
 
-    with patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_admin'
+    ) as mock_get_admin:
         mock_admin = MagicMock()
         mock_admin.a_get_user = AsyncMock(return_value=mock_user)
         mock_admin.a_update_user = AsyncMock()
@@ -355,7 +368,9 @@ async def test_disable_keycloak_user_without_email(token_manager):
         'emailVerified': False,
     }
 
-    with patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_admin'
+    ) as mock_get_admin:
         mock_admin = MagicMock()
         mock_admin.a_get_user = AsyncMock(return_value=mock_user)
         mock_admin.a_update_user = AsyncMock()
@@ -376,7 +391,9 @@ async def test_disable_keycloak_user_not_found(token_manager):
     user_id = 'nonexistent_user_id'
     email = 'user@colsch.us'
 
-    with patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_admin'
+    ) as mock_get_admin:
         mock_admin = MagicMock()
         mock_admin.a_get_user = AsyncMock(return_value=None)
         mock_get_admin.return_value = mock_admin
@@ -396,7 +413,9 @@ async def test_disable_keycloak_user_exception_handling(token_manager):
     user_id = 'test_user_id'
     email = 'user@colsch.us'
 
-    with patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin:
+    with patch(
+        'server.auth.keycloak.token_manager.get_keycloak_admin'
+    ) as mock_get_admin:
         mock_admin = MagicMock()
         mock_admin.a_get_user = AsyncMock(side_effect=Exception('Connection error'))
         mock_get_admin.return_value = mock_admin
@@ -425,19 +444,19 @@ class TestRefreshBitbucketDataCenterToken:
 
         with (
             patch(
-                'server.auth.token_manager.BITBUCKET_DATA_CENTER_HOST',
+                'server.auth.provider_token_refresh.BITBUCKET_DATA_CENTER_HOST',
                 'bitbucket.example.com',
             ),
             patch(
-                'server.auth.token_manager.BITBUCKET_DATA_CENTER_TOKEN_URL',
+                'server.auth.provider_token_refresh.BITBUCKET_DATA_CENTER_TOKEN_URL',
                 'https://bitbucket.example.com/oauth2/token',
             ),
             patch(
-                'server.auth.token_manager.BITBUCKET_DATA_CENTER_CLIENT_ID',
+                'server.auth.provider_token_refresh.BITBUCKET_DATA_CENTER_CLIENT_ID',
                 'test_client_id',
             ),
             patch(
-                'server.auth.token_manager.BITBUCKET_DATA_CENTER_CLIENT_SECRET',
+                'server.auth.provider_token_refresh.BITBUCKET_DATA_CENTER_CLIENT_SECRET',
                 'test_client_secret',
             ),
             patch('httpx.AsyncClient') as mock_client_cls,
@@ -471,7 +490,7 @@ class TestRefreshBitbucketDataCenterToken:
     @pytest.mark.asyncio
     async def test_empty_url_raises_value_error(self, token_manager):
         """When BITBUCKET_DATA_CENTER_HOST is not set, ValueError is raised immediately."""
-        with patch('server.auth.token_manager.BITBUCKET_DATA_CENTER_HOST', ''):
+        with patch('server.auth.provider_token_refresh.BITBUCKET_DATA_CENTER_HOST', ''):
             with pytest.raises(ValueError, match='BITBUCKET_DATA_CENTER_HOST'):
                 await token_manager._refresh_bitbucket_data_center_token(
                     'some_refresh_token'
@@ -491,11 +510,11 @@ class TestRefreshBitbucketDataCenterToken:
 
         with (
             patch(
-                'server.auth.token_manager.BITBUCKET_DATA_CENTER_HOST',
+                'server.auth.provider_token_refresh.BITBUCKET_DATA_CENTER_HOST',
                 'bitbucket.example.com',
             ),
             patch(
-                'server.auth.token_manager.BITBUCKET_DATA_CENTER_TOKEN_URL',
+                'server.auth.provider_token_refresh.BITBUCKET_DATA_CENTER_TOKEN_URL',
                 'https://bitbucket.example.com/oauth2/token',
             ),
             patch('httpx.AsyncClient') as mock_client_cls,
@@ -528,18 +547,22 @@ class TestRefreshAzureDevOpsToken:
         }
 
         with (
-            patch('server.auth.token_manager.AZURE_DEVOPS_TENANT_ID', 'tenant-id'),
-            patch('server.auth.token_manager.AZURE_DEVOPS_CLIENT_ID', 'client-id'),
             patch(
-                'server.auth.token_manager.AZURE_DEVOPS_CLIENT_SECRET',
+                'server.auth.provider_token_refresh.AZURE_DEVOPS_TENANT_ID', 'tenant-id'
+            ),
+            patch(
+                'server.auth.provider_token_refresh.AZURE_DEVOPS_CLIENT_ID', 'client-id'
+            ),
+            patch(
+                'server.auth.provider_token_refresh.AZURE_DEVOPS_CLIENT_SECRET',
                 'client-secret',
             ),
             patch(
-                'server.auth.token_manager.AZURE_DEVOPS_SCOPE',
+                'server.auth.provider_token_refresh.AZURE_DEVOPS_SCOPE',
                 'https://app.vssps.visualstudio.com/.default',
             ),
             patch(
-                'server.auth.token_manager.AZURE_DEVOPS_TOKEN_URL',
+                'server.auth.provider_token_refresh.AZURE_DEVOPS_TOKEN_URL',
                 'https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token',
             ),
             patch('httpx.AsyncClient') as mock_client_cls,
@@ -580,10 +603,14 @@ class TestRefreshAzureDevOpsToken:
         }
 
         with (
-            patch('server.auth.token_manager.AZURE_DEVOPS_TENANT_ID', 'tenant-id'),
-            patch('server.auth.token_manager.AZURE_DEVOPS_CLIENT_ID', 'client-id'),
             patch(
-                'server.auth.token_manager.AZURE_DEVOPS_CLIENT_SECRET',
+                'server.auth.provider_token_refresh.AZURE_DEVOPS_TENANT_ID', 'tenant-id'
+            ),
+            patch(
+                'server.auth.provider_token_refresh.AZURE_DEVOPS_CLIENT_ID', 'client-id'
+            ),
+            patch(
+                'server.auth.provider_token_refresh.AZURE_DEVOPS_CLIENT_SECRET',
                 'client-secret',
             ),
             patch('httpx.AsyncClient') as mock_client_cls,
@@ -604,7 +631,7 @@ class TestRefreshAzureDevOpsToken:
 
     @pytest.mark.asyncio
     async def test_missing_config_raises_value_error(self, token_manager):
-        with patch('server.auth.token_manager.AZURE_DEVOPS_TENANT_ID', ''):
+        with patch('server.auth.provider_token_refresh.AZURE_DEVOPS_TENANT_ID', ''):
             with pytest.raises(ValueError, match='Azure DevOps OAuth'):
                 await token_manager._refresh_azure_devops_token('refresh-token')
 
@@ -630,7 +657,7 @@ class TestOrgTokenMethods:
         mock_context_manager.__aexit__ = AsyncMock(return_value=None)
 
         with patch(
-            'server.auth.token_manager.a_session_maker',
+            'server.auth.keycloak.token_manager.a_session_maker',
             return_value=mock_context_manager,
         ):
             await token_manager.store_org_token(installation_id, installation_token)
@@ -658,7 +685,7 @@ class TestOrgTokenMethods:
         mock_context_manager.__aexit__ = AsyncMock(return_value=None)
 
         with patch(
-            'server.auth.token_manager.a_session_maker',
+            'server.auth.keycloak.token_manager.a_session_maker',
             return_value=mock_context_manager,
         ):
             await token_manager.store_org_token(installation_id, installation_token)
@@ -687,7 +714,7 @@ class TestOrgTokenMethods:
         mock_context_manager.__aexit__ = AsyncMock(return_value=None)
 
         with patch(
-            'server.auth.token_manager.a_session_maker',
+            'server.auth.keycloak.token_manager.a_session_maker',
             return_value=mock_context_manager,
         ):
             result = await token_manager.load_org_token(installation_id)
@@ -709,7 +736,7 @@ class TestOrgTokenMethods:
         mock_context_manager.__aexit__ = AsyncMock(return_value=None)
 
         with patch(
-            'server.auth.token_manager.a_session_maker',
+            'server.auth.keycloak.token_manager.a_session_maker',
             return_value=mock_context_manager,
         ):
             result = await token_manager.load_org_token(installation_id)
@@ -743,7 +770,7 @@ class TestOrgTokenMethods:
         mock_context_manager_store.__aexit__ = AsyncMock(return_value=None)
 
         with patch(
-            'server.auth.token_manager.a_session_maker',
+            'server.auth.keycloak.token_manager.a_session_maker',
             return_value=mock_context_manager_store,
         ):
             await token_manager.store_org_token(installation_id, original_token)
@@ -767,7 +794,7 @@ class TestOrgTokenMethods:
         mock_context_manager_load.__aexit__ = AsyncMock(return_value=None)
 
         with patch(
-            'server.auth.token_manager.a_session_maker',
+            'server.auth.keycloak.token_manager.a_session_maker',
             return_value=mock_context_manager_load,
         ):
             loaded_token = await token_manager.load_org_token(installation_id)
@@ -805,79 +832,17 @@ async def test_get_idp_tokens_from_keycloak_returns_empty_when_user_not_linked(
 
 
 @pytest.mark.asyncio
-async def test_unlink_idp_removes_keycloak_link_and_stored_tokens(token_manager):
-    """Disconnecting a provider unlinks it in Keycloak and drops its tokens."""
-    # Arrange
-    mock_admin = MagicMock()
-    mock_admin.a_delete_user_social_login = AsyncMock()
-    mock_store = MagicMock()
-    mock_store.delete_tokens = AsyncMock()
-
-    with (
-        patch('server.auth.token_manager.get_keycloak_admin', return_value=mock_admin),
-        patch(
-            'server.auth.token_manager.AuthTokenStore.get_instance',
-            new=AsyncMock(return_value=mock_store),
-        ) as mock_get_instance,
-    ):
-        # Act
+async def test_unlink_idp_delegates_to_provider_credentials(token_manager):
+    with patch(
+        'server.auth.provider_credentials.ProviderCredentialService.disconnect',
+        AsyncMock(),
+    ) as disconnect:
         await token_manager.unlink_idp('test_user_id', ProviderType.GITHUB)
-
-    # Assert
-    mock_admin.a_delete_user_social_login.assert_awaited_once_with(
-        'test_user_id', 'github'
-    )
-    mock_get_instance.assert_awaited_once_with(
-        keycloak_user_id='test_user_id', idp=ProviderType.GITHUB
-    )
-    mock_store.delete_tokens.assert_awaited_once()
+    disconnect.assert_awaited_once_with('test_user_id', ProviderType.GITHUB)
 
 
-@pytest.mark.asyncio
-async def test_unlink_idp_tolerates_missing_keycloak_link(token_manager):
-    """Tokens are still dropped when Keycloak no longer has the link."""
-    # Arrange
-    mock_admin = MagicMock()
-    mock_admin.a_delete_user_social_login = AsyncMock(
-        side_effect=KeycloakDeleteError(error_message='Not found', response_code=404)
-    )
-    mock_store = MagicMock()
-    mock_store.delete_tokens = AsyncMock()
+@pytest.fixture(autouse=True)
+def initialized_keycloak_mode(monkeypatch):
+    from server.auth import mode
 
-    with (
-        patch('server.auth.token_manager.get_keycloak_admin', return_value=mock_admin),
-        patch(
-            'server.auth.token_manager.AuthTokenStore.get_instance',
-            new=AsyncMock(return_value=mock_store),
-        ),
-    ):
-        # Act
-        await token_manager.unlink_idp('test_user_id', ProviderType.GITHUB)
-
-    # Assert
-    mock_store.delete_tokens.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_unlink_idp_propagates_other_keycloak_errors(token_manager):
-    """Any other Keycloak failure aborts the disconnect and keeps the tokens."""
-    # Arrange
-    mock_admin = MagicMock()
-    mock_admin.a_delete_user_social_login = AsyncMock(
-        side_effect=KeycloakDeleteError(error_message='Server error', response_code=500)
-    )
-    mock_store = MagicMock()
-    mock_store.delete_tokens = AsyncMock()
-
-    with (
-        patch('server.auth.token_manager.get_keycloak_admin', return_value=mock_admin),
-        patch(
-            'server.auth.token_manager.AuthTokenStore.get_instance',
-            new=AsyncMock(return_value=mock_store),
-        ),
-    ):
-        # Act / Assert
-        with pytest.raises(KeycloakDeleteError):
-            await token_manager.unlink_idp('test_user_id', ProviderType.GITHUB)
-
-    mock_store.delete_tokens.assert_not_called()
+    monkeypatch.setattr(mode, '_auth_mode', mode.AuthMode.KEYCLOAK)

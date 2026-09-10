@@ -40,7 +40,11 @@ def mock_user_auth():
     auth.email = 'test@example.com'
     auth.email_verified = False
     auth.accepted_tos = True
-    auth.refresh = AsyncMock()
+
+    async def refresh_verified_claims():
+        auth.email_verified = True
+
+    auth.refresh = AsyncMock(side_effect=refresh_verified_claims)
     return auth
 
 
@@ -445,3 +449,10 @@ async def test_resend_email_verification_body_none_uses_auth(mock_request):
             user_rate_limit_seconds=30,
             ip_rate_limit_seconds=60,
         )
+
+
+@pytest.fixture(autouse=True)
+def initialized_keycloak_mode(monkeypatch):
+    from server.auth import mode
+
+    monkeypatch.setattr(mode, '_auth_mode', mode.AuthMode.KEYCLOAK)

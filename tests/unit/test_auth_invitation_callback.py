@@ -179,3 +179,10 @@ class TestAuthCallbackInvitationErrors:
                 redirect_url = f'{redirect_url}?already_member=true'
 
         assert redirect_url == 'https://app.example.com/?already_member=true'
+
+
+@pytest.fixture(autouse=True)
+def initialized_keycloak_mode(monkeypatch):
+    from server.auth import mode
+
+    monkeypatch.setattr(mode, '_auth_mode', mode.AuthMode.KEYCLOAK)

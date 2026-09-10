@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useAuthCapabilities } from "#/hooks/query/use-auth-capabilities";
 import { useConfig } from "./query/use-config";
 import { useIsAuthed } from "./query/use-is-authed";
 import { getLoginMethod, LoginMethod } from "#/utils/local-storage";
@@ -10,6 +11,7 @@ import { useIsOnIntermediatePage } from "./use-is-on-intermediate-page";
  * Only works in SAAS mode and when the user is not already logged in
  */
 export const useAutoLogin = () => {
+  const { data: capabilities } = useAuthCapabilities();
   const { data: config, isLoading: isConfigLoading } = useConfig();
   const { data: isAuthed, isLoading: isAuthLoading } = useIsAuthed();
   const isOnIntermediatePage = useIsOnIntermediatePage();
@@ -56,7 +58,7 @@ export const useAutoLogin = () => {
 
   useEffect(() => {
     // Only auto-login in SAAS mode
-    if (config?.app_mode !== "saas") {
+    if (config?.app_mode !== "saas" || capabilities?.mode !== "keycloak") {
       return;
     }
 
@@ -71,12 +73,12 @@ export const useAutoLogin = () => {
     }
 
     // Don't auto-login if already authenticated
-    if (isAuthed) {
+    if (isAuthed !== false) {
       return;
     }
 
     // Don't auto-login if no login method is stored
-    if (!loginMethod) {
+    if (!loginMethod || !capabilities.login_providers.includes(loginMethod)) {
       return;
     }
 
@@ -107,6 +109,7 @@ export const useAutoLogin = () => {
     }
   }, [
     config?.app_mode,
+    capabilities,
     isAuthed,
     isConfigLoading,
     isAuthLoading,

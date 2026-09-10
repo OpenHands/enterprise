@@ -45,6 +45,7 @@ from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import JIRA_DC_ENABLE_OAUTH, JIRA_DC_HTTP_TIMEOUT
+from server.auth.provider_compatibility import resolve_broker_email
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
 from storage.jira_dc_integration_store import JiraDcIntegrationStore
@@ -161,9 +162,7 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
         # preserving the verification guarantee.
         if not JIRA_DC_ENABLE_OAUTH or not jira_dc_user_id or jira_dc_user_id == 'none':
             # Get Keycloak user ID from email
-            keycloak_user_id = await self.token_manager.get_user_id_from_user_email(
-                user_email
-            )
+            keycloak_user_id = await resolve_broker_email(user_email)
             if not keycloak_user_id:
                 logger.warning(
                     f'[Jira DC] No Keycloak user found for email: {user_email}'
@@ -466,9 +465,7 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             )
             # Distinguish "no OpenHands account" from "account exists but not linked
             # to this workspace" so the reply is actionable (mirrors GitHub/BBDC).
-            keycloak_user_id = await self.token_manager.get_user_id_from_user_email(
-                job_context.user_email
-            )
+            keycloak_user_id = await resolve_broker_email(job_context.user_email)
             if keycloak_user_id:
                 error_msg = get_account_not_linked_message(job_context.display_name)
             else:

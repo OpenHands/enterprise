@@ -11,7 +11,6 @@ from integrations.azure_devops.azure_devops_view import (
     AzureDevOpsFactory,
     AzureDevOpsPRComment,
     AzureDevOpsViewType,
-    actor_email,
     mark_openhands_comment,
 )
 from integrations.manager import Manager
@@ -35,6 +34,7 @@ from openhands.app_server.types import (
     SessionExpiredError,
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.provider_credentials import ProviderCredentialService
 from server.auth.token_manager import TokenManager
 
 
@@ -50,31 +50,18 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
             raise ValueError(f'Unexpected message source {message.source}')
 
     async def _resolve_mentioner_keycloak_id(self, message: Message) -> str | None:
+        from integrations.azure_devops.azure_devops_view import _extract_org
+
         actor = AzureDevOpsFactory.extract_actor(message)
         actor_id = str(actor.get('id') or '')
-        if actor_id:
-            try:
-                keycloak_id = await self.token_manager.get_user_id_from_idp_user_id(
-                    actor_id, ProviderType.AZURE_DEVOPS
-                )
-                if keycloak_id:
-                    return keycloak_id
-            except Exception as e:
-                logger.info(
-                    f'[Azure DevOps] Keycloak id lookup failed for actor {actor_id}: {e}'
-                )
-
-        email = actor_email(actor)
-        if email:
-            try:
-                return await self.token_manager.get_user_id_from_user_email(email)
-            except Exception as e:
-                logger.info(
-                    f'[Azure DevOps] Keycloak email lookup failed for actor '
-                    f'{email}: {e}'
-                )
-
-        return None
+        if not actor_id:
+            return None
+        user_id = await ProviderCredentialService().resolve_user(
+            ProviderType.AZURE_DEVOPS,
+            actor_id,
+            _extract_org(message.message.get('payload') or {}) or None,
+        )
+        return str(user_id) if user_id else None
 
     def is_job_requested(self, message: Message) -> bool:
         self._confirm_incoming_source_type(message)
@@ -163,15 +150,11 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
                     f'in {azure_view.full_repo_name}#{azure_view.issue_number}'
                 )
 
-                offline_token = await self.token_manager.load_offline_token(
-                    user_info.keycloak_user_id
+                credential = await ProviderCredentialService().get_token(
+                    user_info.keycloak_user_id, ProviderType.AZURE_DEVOPS
                 )
-                if not offline_token:
-                    raise MissingSettingsError('Missing settings')
-
-                user_token = await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token,
-                    ProviderType.AZURE_DEVOPS,
+                user_token = (
+                    credential.token.get_secret_value() if credential.token else None
                 )
                 if not user_token:
                     raise MissingSettingsError('Missing settings')

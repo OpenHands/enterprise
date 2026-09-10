@@ -33,6 +33,7 @@ from openhands.app_server.types import (
     SessionExpiredError,
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.provider_credentials import ProviderCredentialService
 from server.auth.token_manager import TokenManager
 
 
@@ -63,9 +64,11 @@ class GitlabManager(Manager[GitlabViewType]):
             bool: True if the user has write access to the repository, False otherwise
         """
 
-        keycloak_user_id = await self.token_manager.get_user_id_from_idp_user_id(
-            user_id, ProviderType.GITLAB
+        keycloak_user_id_uuid = await ProviderCredentialService().resolve_user(
+            ProviderType.GITLAB, str(user_id)
         )
+
+        keycloak_user_id = str(keycloak_user_id_uuid) if keycloak_user_id_uuid else None
         if keycloak_user_id is None:
             logger.warning(f'Got invalid keyloak user id for GitLab User {user_id}')
             return False
@@ -182,8 +185,11 @@ class GitlabManager(Manager[GitlabViewType]):
                     f'[GitLab] Starting job for {user_info.username} in {gitlab_view.full_repo_name}#{gitlab_view.issue_number}'
                 )
 
-                user_token = await self.token_manager.get_idp_token_from_idp_user_id(
-                    str(user_info.user_id), ProviderType.GITLAB
+                credential = await ProviderCredentialService().get_token(
+                    user_info.keycloak_user_id, ProviderType.GITLAB
+                )
+                user_token = (
+                    credential.token.get_secret_value() if credential.token else None
                 )
 
                 if not user_token:

@@ -10,61 +10,67 @@ import pytest
 
 
 class TestGetPosthogClientKey:
-    """Test cases for _get_posthog_client_key helper function."""
+    """Resolve the browser key after the application mode is known."""
 
-    OSS_DEFAULT_KEY = 'phc_3ESMmY9SgqEAGBB6sMGK5ayYHkeUuknH2vP6FmWH9RA'
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('app_mode', ['oss', 'saas'])
+    @pytest.mark.parametrize(
+        'configured_key', [None, '', '   ', '  phc_explicit_key  ']
+    )
+    async def test_key_selection_by_application_mode(
+        self, monkeypatch, app_mode, configured_key
+    ):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
 
-    def test_returns_env_var_when_set(self):
-        """When POSTHOG_CLIENT_KEY is set, return that value."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_posthog_client_key,
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
         )
 
-        with patch.dict(os.environ, {'POSTHOG_CLIENT_KEY': 'phc_saas_key_123'}):
-            result = _get_posthog_client_key()
-            assert result == 'phc_saas_key_123'
+        if configured_key is None:
+            monkeypatch.delenv('POSTHOG_CLIENT_KEY', raising=False)
+        else:
+            monkeypatch.setenv('POSTHOG_CLIENT_KEY', configured_key)
+        monkeypatch.setattr(
+            'openhands.app_server.config.get_global_config',
+            lambda: SimpleNamespace(app_mode=AppMode(app_mode)),
+        )
+        monkeypatch.setattr(mod, '_get_db_feature_flags', AsyncMock(return_value={}))
+        monkeypatch.setattr(mod, '_resolve_flag', AsyncMock(return_value=False))
+        injector = mod.DefaultWebClientConfigInjector()
+        result = await injector.get_web_client_config()
+        explicit = (configured_key or '').strip()
+        expected = explicit or (mod._OSS_POSTHOG_KEY if app_mode == 'oss' else '')
+        assert result.posthog_client_key == expected
+        # Configuration construction must not recurse into global config or
+        # assume OSS before the app mode has been established.
+        assert injector.posthog_client_key == explicit
 
-    def test_returns_oss_default_when_env_var_unset(self):
-        """When POSTHOG_CLIENT_KEY is not set, return the OSS default key."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_posthog_client_key,
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('app_mode', ['oss', 'saas'])
+    async def test_explicit_injector_key_is_preserved(self, monkeypatch, app_mode):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
         )
 
-        with patch.dict(os.environ, {}, clear=True):
-            # Ensure POSTHOG_CLIENT_KEY is not in environment
-            os.environ.pop('POSTHOG_CLIENT_KEY', None)
-            result = _get_posthog_client_key()
-            assert result == self.OSS_DEFAULT_KEY
-
-    def test_returns_oss_default_when_env_var_empty(self):
-        """When POSTHOG_CLIENT_KEY is empty string, return the OSS default key."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_posthog_client_key,
+        monkeypatch.setenv('POSTHOG_CLIENT_KEY', 'environment-key')
+        monkeypatch.setattr(
+            'openhands.app_server.config.get_global_config',
+            lambda: SimpleNamespace(app_mode=AppMode(app_mode)),
         )
-
-        with patch.dict(os.environ, {'POSTHOG_CLIENT_KEY': ''}):
-            result = _get_posthog_client_key()
-            assert result == self.OSS_DEFAULT_KEY
-
-    def test_strips_whitespace_from_env_var(self):
-        """When POSTHOG_CLIENT_KEY has whitespace, strip it."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_posthog_client_key,
+        monkeypatch.setattr(mod, '_get_db_feature_flags', AsyncMock(return_value={}))
+        monkeypatch.setattr(mod, '_resolve_flag', AsyncMock(return_value=False))
+        injector = mod.DefaultWebClientConfigInjector(
+            posthog_client_key='configured-key'
         )
-
-        with patch.dict(os.environ, {'POSTHOG_CLIENT_KEY': '  phc_trimmed_key  '}):
-            result = _get_posthog_client_key()
-            assert result == 'phc_trimmed_key'
-
-    def test_returns_oss_default_when_env_var_only_whitespace(self):
-        """When POSTHOG_CLIENT_KEY is only whitespace, return the OSS default key."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_posthog_client_key,
-        )
-
-        with patch.dict(os.environ, {'POSTHOG_CLIENT_KEY': '   '}):
-            result = _get_posthog_client_key()
-            assert result == self.OSS_DEFAULT_KEY
+        assert (
+            await injector.get_web_client_config()
+        ).posthog_client_key == 'configured-key'
 
 
 class TestGetAuthUrl:

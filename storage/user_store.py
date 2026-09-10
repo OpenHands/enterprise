@@ -1,6 +1,5 @@
 """Store class for managing users."""
 
-import asyncio
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -12,7 +11,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
-from server.auth.token_manager import TokenManager
 from server.constants import (
     DEFAULT_V1_ENABLED,
     LITE_LLM_API_URL,
@@ -106,7 +104,9 @@ class UserStore:
             # ``admin`` role attached via ``user.role_id``). Super-role
             # permissions are explicit in ``server.auth.authorization``
             # and do not inherit org-scoped admin permissions.
-            if role_id is None:
+            from server.auth.mode import is_keycloak_enabled
+
+            if role_id is None and is_keycloak_enabled():
                 existing_user_count = await session.scalar(
                     select(func.count()).select_from(User)
                 )
@@ -141,7 +141,7 @@ class UserStore:
                     org.contact_email = user_info.get('email')
 
             settings = await UserStore.create_default_settings(
-                org_id=str(org.id), user_id=user_id
+                org_id=str(org.id), user_id=user_id, provision_external=False
             )
 
             if not settings:
@@ -732,7 +732,7 @@ class UserStore:
 
     @staticmethod
     async def get_user_by_id(user_id: str) -> Optional[User]:
-        """Get user by Keycloak user ID."""
+        """Read the canonical account without network calls or implicit migration."""
         async with a_session_maker() as session:
             result = await session.execute(
                 select(User)
@@ -744,55 +744,7 @@ class UserStore:
                 user.sync_analytics_consent_with_tos()
                 return user
 
-            # Check if we need to migrate from user_settings
-            while not await UserStore._acquire_user_creation_lock(user_id):
-                # The user is already being created in another thread / process
-                logger.info(
-                    'user_store:create_default_settings:waiting_for_lock',
-                    extra={'user_id': user_id},
-                )
-                await asyncio.sleep(_RETRY_LOAD_DELAY_SECONDS)
-
-            try:
-                # Check for user again as migration could have happened while trying to get the lock.
-                result = await session.execute(
-                    select(User)
-                    .options(selectinload(User.org_members))
-                    .filter(User.id == uuid.UUID(user_id))
-                )
-                user = result.scalars().first()
-                if user:
-                    user.sync_analytics_consent_with_tos()
-                    return user
-
-                result = await session.execute(
-                    select(UserSettings).filter(
-                        UserSettings.keycloak_user_id == user_id,
-                        UserSettings.already_migrated.is_(False),
-                    )
-                )
-                user_settings = result.scalars().first()
-                if user_settings:
-                    token_manager = TokenManager()
-                    user_info = await token_manager.get_user_info_from_user_id(user_id)
-                    if not user_info:
-                        logger.warning(
-                            'user_store:get_user_by_id:failed_to_get_user_info',
-                            extra={'user_id': user_id},
-                        )
-                        return None
-                    user = await UserStore.migrate_user(
-                        user_id,
-                        user_settings,
-                        user_info,
-                    )
-                    if user:
-                        user.sync_analytics_consent_with_tos()
-                    return user
-                else:
-                    return None
-            finally:
-                await UserStore._release_user_creation_lock(user_id)
+            return None
 
     @staticmethod
     async def get_user_by_email(email: str) -> Optional[User]:
@@ -897,6 +849,31 @@ class UserStore:
         return role.id
 
     @staticmethod
+    async def lock_super_admin_policy(session) -> int:
+        """Serialize changes to the final active administrator invariant.
+
+        Lock this stable row BEFORE User rows, including in lifecycle and
+        workspace deletion. A changing set of User rows is not a mutex.
+        """
+        role = await session.scalar(
+            select(Role).where(Role.name == _SUPER_ADMIN_ROLE_NAME).with_for_update()
+        )
+        if role is None:
+            raise ValueError('Super-admin role is missing')
+        return role.id
+
+    @staticmethod
+    async def is_last_active_admin(session, user: User, admin_role_id: int) -> bool:
+        if user.is_disabled or user.role_id != admin_role_id:
+            return False
+        count = await session.scalar(
+            select(func.count())
+            .select_from(User)
+            .where(User.role_id == admin_role_id, User.is_disabled.is_(False))
+        )
+        return count <= 1
+
+    @staticmethod
     async def list_super_admins() -> list[User]:
         """List all users that currently hold the instance-level super-admin role.
 
@@ -925,7 +902,7 @@ class UserStore:
             exists with the given id.
         """
         async with a_session_maker() as session:
-            admin_role_id = await UserStore._get_super_admin_role_id(session)
+            admin_role_id = await UserStore.lock_super_admin_policy(session)
             result = await session.execute(
                 select(User).filter(User.id == uuid.UUID(user_id)).with_for_update()
             )
@@ -952,13 +929,9 @@ class UserStore:
         administrator (this also covers self-removal: a super admin may
         demote themselves as long as another super admin still exists).
 
-        Concurrency: the whole set of current super admins is selected
-        ``FOR UPDATE`` before the count/clear, so simultaneous revokes
-        serialize. A transaction that waited re-evaluates the predicate
-        after acquiring the lock, so it sees an up-to-date set and cannot
-        race two "second-to-last" revocations down to zero. (On SQLite,
-        used in tests, ``FOR UPDATE`` is a no-op but the surrounding
-        transaction still serializes writes.)
+        Concurrency: lock the stable admin Role row before the target User.
+        Disable, deletion and demotion use this same order, then count active
+        administrators in a fresh statement after acquiring the role lock.
 
         Args:
             user_id: The target user's ID.
@@ -968,28 +941,17 @@ class UserStore:
         """
         target_uuid = uuid.UUID(user_id)
         async with a_session_maker() as session:
-            admin_role_id = await UserStore._get_super_admin_role_id(session)
-            result = await session.execute(
-                select(User).filter(User.role_id == admin_role_id).with_for_update()
+            admin_role_id = await UserStore.lock_super_admin_policy(session)
+            target = await session.scalar(
+                select(User).where(User.id == target_uuid).with_for_update()
             )
-            super_admins = list(result.scalars().all())
-
-            target = next((u for u in super_admins if u.id == target_uuid), None)
             if target is None:
-                exists = await session.scalar(
-                    select(User.id).filter(User.id == target_uuid)
-                )
-                return (
-                    SuperAdminRevokeResult.NOT_FOUND
-                    if exists is None
-                    else SuperAdminRevokeResult.NOT_SUPER_ADMIN
-                )
-
-            if len(super_admins) <= 1:
-                logger.warning(
-                    'user_store:revoke_super_admin:refused_last_super_admin',
-                    extra={'user_id': user_id},
-                )
+                return SuperAdminRevokeResult.NOT_FOUND
+            if target.role_id != admin_role_id:
+                return SuperAdminRevokeResult.NOT_SUPER_ADMIN
+            if not target.is_disabled and await UserStore.is_last_active_admin(
+                session, target, admin_role_id
+            ):
                 return SuperAdminRevokeResult.LAST_SUPER_ADMIN
 
             target.role_id = None
@@ -1160,11 +1122,37 @@ class UserStore:
         from openhands.app_server.settings.settings_models import Settings
 
     @staticmethod
+    def default_settings() -> 'Settings':
+        """Required account defaults, without database or network side effects."""
+        from openhands.app_server.settings.settings_models import Settings
+        from server.constants import (
+            get_default_llm_api_key,
+            should_use_direct_llm_defaults,
+        )
+
+        settings = Settings(language='en', enable_proactive_conversation_starters=True)
+        settings.v1_enabled = True
+        if should_use_direct_llm_defaults():
+            settings.update(
+                {
+                    'agent_settings_diff': {
+                        'llm': {
+                            'model': get_default_llm_model(),
+                            'base_url': get_default_llm_base_url(),
+                            'api_key': get_default_llm_api_key(),
+                        }
+                    }
+                }
+            )
+        return settings
+
+    @staticmethod
     async def create_default_settings(
         org_id: str,
         user_id: str,
         create_user: bool = True,
         add_user_to_litellm_team: bool = True,
+        provision_external: bool = True,
     ) -> Optional['Settings']:
         logger.info(
             'UserStore:create_default_settings:start',
@@ -1174,13 +1162,11 @@ class UserStore:
         if not org_id:
             return None
 
-        from openhands.app_server.settings.settings_models import Settings
-
-        default_settings = Settings(
-            language='en', enable_proactive_conversation_starters=True
-        )
-
+        default_settings = UserStore.default_settings()
         default_settings.v1_enabled = DEFAULT_V1_ENABLED
+
+        if not provision_external:
+            return default_settings
 
         from storage.lite_llm_manager import LiteLlmManager
 

@@ -34,6 +34,7 @@ from openhands.app_server.settings.provider_connections import (
 )
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.dependencies import get_dependencies
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
@@ -146,7 +147,7 @@ async def get_current_user_saas(
     expose_secrets: bool = Query(
         default=False,
         description='If true, return unmasked secret values (e.g. llm_api_key). '
-        'Requires a valid X-Session-API-Key header for an active sandbox '
+        'Requires header-based API-key authentication and a valid '
         'owned by the authenticated user.',
     ),
     x_session_api_key: str | None = Header(default=None),
@@ -159,6 +160,21 @@ async def get_current_user_saas(
     - role: User's role in the organization
     - permissions: List of permission strings for the role
     """
+    if expose_secrets:
+        user_auth = getattr(user_context, 'user_auth', None)
+        if (
+            not isinstance(user_auth, SaasUserAuth)
+            or user_auth.auth_type != AuthType.BEARER
+            or user_auth.principal is None
+            or user_auth.principal.authentication_method != 'api_key'
+            or user_auth.principal.restricted
+        ):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                detail='Exposing secrets requires header-based API-key authentication',
+            )
+        await validate_session_key_ownership(user_context, x_session_api_key)
+
     # Get base user info from the context
     base_user_info = await user_context.get_user_info()
     if base_user_info is None:
@@ -177,7 +193,6 @@ async def get_current_user_saas(
     user_info = SaasUserInfo(**user_info_data)
 
     if expose_secrets:
-        await validate_session_key_ownership(user_context, x_session_api_key)
         _resolve_exposed_llm_profiles(user_info)
         content = user_info.model_dump(mode='json', context={'expose_secrets': True})
         _inject_sdk_compat_fields(content, include_api_key=True)
@@ -237,12 +252,7 @@ async def disconnect_git_provider(
     provider: ProviderType,
     user_context: UserContext = user_dependency,
 ) -> Response:
-    """Disconnect a git provider linked to the user's Keycloak account.
-
-    Removes the Keycloak federated identity and the stored provider tokens, so
-    the provider shows as not connected until the user links it again from
-    Settings > Integrations.
-    """
+    """Disconnect a Git credential and its provider account association."""
     if provider == ProviderType.ENTERPRISE_SSO:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -256,7 +266,9 @@ async def disconnect_git_provider(
             detail='User is not authenticated',
         )
 
-    await token_manager.unlink_idp(user_id, provider)
+    from server.auth.provider_credentials import ProviderCredentialService
+
+    await ProviderCredentialService().disconnect(user_id, provider)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

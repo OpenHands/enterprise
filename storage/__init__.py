@@ -1,12 +1,16 @@
 from storage.api_key import ApiKey
+from storage.auth_action_tokens import AuthActionToken
+from storage.auth_sessions import AuthSession
 from storage.auth_tokens import AuthTokens
 from storage.billing_session import BillingSession
 from storage.billing_session_type import BillingSessionType
 from storage.conversation_work import ConversationWork
 from storage.daily_conversation_usage import DailyConversationUsage
+from storage.external_identities import ExternalIdentity
 from storage.feedback import ConversationFeedback, Feedback
 from storage.github_app_installation import GithubAppInstallation
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
+from storage.installation_auth import InstallationAuth
 from storage.jira_conversation import JiraConversation
 from storage.jira_dc_conversation import JiraDcConversation
 from storage.jira_dc_user import JiraDcUser
@@ -16,6 +20,7 @@ from storage.jira_workspace import JiraWorkspace
 from storage.linear_conversation import LinearConversation
 from storage.linear_user import LinearUser
 from storage.linear_workspace import LinearWorkspace
+from storage.local_credentials import LocalCredentials
 from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
 from storage.openhands_pr import OpenhandsPR
 from storage.org import Org
@@ -47,6 +52,8 @@ from storage.user_settings import UserSettings
 
 __all__ = [
     'ApiKey',
+    'AuthActionToken',
+    'AuthSession',
     'AuthTokens',
     'BillingSession',
     'BillingSessionType',
@@ -56,6 +63,7 @@ __all__ = [
     'DailyConversationUsage',
     'QuotaIncreaseRequest',
     'Feedback',
+    'ExternalIdentity',
     'GithubAppInstallation',
     'GitlabWebhook',
     'JiraConversation',
@@ -64,9 +72,11 @@ __all__ = [
     'JiraDcWorkspace',
     'JiraUser',
     'JiraWorkspace',
+    'InstallationAuth',
     'LinearConversation',
     'LinearUser',
     'LinearWorkspace',
+    'LocalCredentials',
     'MaintenanceTask',
     'MaintenanceTaskStatus',
     'OpenhandsPR',

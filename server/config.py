@@ -129,9 +129,6 @@ class SaaSServerConfig(ServerConfig):
         if not self.config_cls:
             raise ValueError('Config path not provided!')
 
-        if not self.posthog_client_key:
-            raise ValueError('Missing posthog client key in env')
-
         if GITHUB_APP_CLIENT_ID and not self.github_client_id:
             raise ValueError('Missing Github client id')
 
@@ -156,6 +153,11 @@ class SaaSServerConfig(ServerConfig):
 
         if AZURE_DEVOPS_CLIENT_ID:
             providers_configured.append(ProviderType.AZURE_DEVOPS)
+
+        from server.auth.mode import is_keycloak_enabled
+
+        if not is_keycloak_enabled():
+            providers_configured = []
 
         config: dict[str, typing.Any] = {
             'APP_MODE': self.app_mode,

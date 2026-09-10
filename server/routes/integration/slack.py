@@ -1,6 +1,10 @@
+import hashlib
 import html
 import json
-from urllib.parse import quote
+import secrets
+from datetime import timedelta
+from urllib.parse import quote, urlencode
+from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import (
@@ -9,12 +13,11 @@ from fastapi.responses import (
     PlainTextResponse,
     RedirectResponse,
 )
-from keycloak.exceptions import KeycloakConnectionError
 from slack_sdk.errors import SlackApiError
 from slack_sdk.oauth import AuthorizeUrlGenerator
 from slack_sdk.signature import SignatureVerifier
 from slack_sdk.web.async_client import AsyncWebClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select, text
 
 from integrations.models import Message, SourceType
 from integrations.slack.slack_errors import SlackError, SlackErrorCode
@@ -28,11 +31,17 @@ from openhands.app_server.integrations.service_types import (
     ProviderType,
 )
 from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.user_auth.user_auth import get_user_auth
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_REALM_NAME,
     KEYCLOAK_SERVER_URL_EXT,
 )
+from server.auth.contracts import AuthenticationUnavailable, InvalidCredentials
+from server.auth.keycloak.authorization import require_keycloak
+from server.auth.mode import AuthMode, get_auth_mode
+from server.auth.saas_user_auth import SaasUserAuth
+from server.auth.slack_link import slack_login_url
 from server.auth.token_manager import TokenManager
 from server.constants import (
     SLACK_CLIENT_ID,
@@ -45,14 +54,15 @@ from storage.database import a_session_maker
 from storage.redis import get_redis_client_async
 from storage.slack_team_store import SlackTeamStore
 from storage.slack_user import SlackUser
+from storage.user import User
 from storage.user_store import UserStore
 
-signature_verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+signature_verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET or '')
 slack_router = APIRouter(prefix='/slack')
 
 # Build https://slack.com/oauth/v2/authorize with sufficient query parameters
 authorize_url_generator = AuthorizeUrlGenerator(
-    client_id=SLACK_CLIENT_ID,
+    client_id=SLACK_CLIENT_ID or '',
     scopes=[
         'app_mentions:read',
         'chat:write',
@@ -71,28 +81,101 @@ slack_team_store = SlackTeamStore.get_instance()
 jwt_service_dependency = depends_jwt_service()
 
 
+_SLACK_STATE_COOKIE = 'oh_slack_oauth'
+
+
+async def _local_link_account(request: Request) -> SaasUserAuth:
+    auth = await get_user_auth(request)
+    if not isinstance(auth, SaasUserAuth) or auth.principal is None:
+        raise HTTPException(401, 'Authentication required')
+    if auth.principal.restricted:
+        raise HTTPException(403, 'Change your initial password before connecting Slack')
+    return auth
+
+
+def _link_session(auth: SaasUserAuth) -> str:
+    assert auth.principal is not None
+    principal = auth.principal
+    return f'{principal.authentication_method}:{principal.session_id or principal.api_key_id}'
+
+
 @slack_router.get('/install')
-async def install(state: str = ''):
-    """Forward into Slack OAuth."""
-    url = authorize_url_generator.generate(state=state)
-    return RedirectResponse(url)
+async def install(
+    request: Request, state: str = '', jwt_service: JwtService = jwt_service_dependency
+):
+    """Forward into Slack OAuth, binding local linking to the current account."""
+    if get_auth_mode() is AuthMode.KEYCLOAK:
+        return RedirectResponse(authorize_url_generator.generate(state=state))
+    try:
+        auth = await _local_link_account(request)
+    except InvalidCredentials:
+        return RedirectResponse(
+            '/login?'
+            + urlencode(
+                {
+                    'returnTo': '/slack/install'
+                    + ('?' + urlencode({'state': state}) if state else '')
+                }
+            ),
+            302,
+        )
+    original = jwt_service.verify_jws_token(state) if state else {}
+    nonce = secrets.token_urlsafe(32)
+    state = jwt_service.create_jws_token(
+        {
+            'purpose': 'slack_install',
+            'user_id': auth.user_id,
+            'session': _link_session(auth),
+            'nonce': nonce,
+            'message': original,
+        },
+        expires_in=timedelta(minutes=10),
+    )
+    response = RedirectResponse(authorize_url_generator.generate(state=state), 302)
+    response.set_cookie(
+        _SLACK_STATE_COOKIE,
+        nonce,
+        max_age=600,
+        secure=True,
+        httponly=True,
+        samesite='lax',
+        path='/',
+    )
+    return response
 
 
 @slack_router.get('/install-callback')
 async def install_callback(
     request: Request,
+    background_tasks: BackgroundTasks,
     code: str = '',
     state: str = '',
     error: str = '',
     jwt_service: JwtService = jwt_service_dependency,
 ):
-    """Callback from slack authentication. Verifies, then forwards into keycloak authentication."""
+    """Exchange Slack proof and link it to the authenticated account."""
+    local = get_auth_mode() is AuthMode.LOCAL
+    local_auth = None
+    local_state = None
+    if local:
+        local_auth = await _local_link_account(request)
+        try:
+            local_state = jwt_service.verify_jws_token(state)
+            nonce = request.cookies.get(_SLACK_STATE_COOKIE, '')
+            if (
+                local_state.get('purpose') != 'slack_install'
+                or local_state.get('user_id') != local_auth.user_id
+                or local_state.get('session') != _link_session(local_auth)
+                or not nonce
+                or not secrets.compare_digest(nonce, local_state.get('nonce', ''))
+            ):
+                raise ValueError('Invalid Slack connection state')
+        except Exception:
+            raise HTTPException(400, 'Invalid Slack connection state') from None
     if not code or error:
         logger.warning(
             'slack_install_callback_error',
             extra={
-                'code': code,
-                'state': state,
                 'error': error,
             },
         )
@@ -106,14 +189,38 @@ async def install_callback(
         client = AsyncWebClient()  # no prepared token needed for this
         # Complete the installation by calling oauth.v2.access API method
         oauth_response = await client.oauth_v2_access(
-            client_id=SLACK_CLIENT_ID,
-            client_secret=SLACK_CLIENT_SECRET,
+            client_id=SLACK_CLIENT_ID or '',
+            client_secret=SLACK_CLIENT_SECRET or '',
             redirect_uri=f'https://{request.url.netloc}{request.url.path}',
             code=code,
         )
         bot_access_token = oauth_response.get('access_token')
-        team_id = oauth_response.get('team', {}).get('id')
+        team = oauth_response.get('team') or {}
+        team_id = team.get('id')
         authed_user = oauth_response.get('authed_user') or {}
+
+        if local:
+            assert local_auth is not None and local_state is not None
+            user = await UserStore.get_user_by_id(local_auth.user_id)
+            if user is None or user.is_disabled:
+                raise HTTPException(401, 'Account is unavailable')
+            payload = dict(local_state.get('message') or {})
+            payload.update(
+                {
+                    'slack_user_id': authed_user.get('id'),
+                    'bot_access_token': bot_access_token,
+                    'team_id': team_id,
+                }
+            )
+            response = await _complete_slack_link(user, payload, background_tasks)
+            response.delete_cookie(
+                _SLACK_STATE_COOKIE,
+                secure=True,
+                httponly=True,
+                samesite='lax',
+                path='/',
+            )
+            return response
 
         # Create a state variable for keycloak oauth
         payload = {}
@@ -137,6 +244,8 @@ async def install_callback(
         )
 
         return RedirectResponse(auth_url)
+    except HTTPException:
+        raise
     except Exception:  # type: ignore
         logger.exception('unexpected_error', stack_info=True)
         return _html_response(
@@ -155,12 +264,11 @@ async def keycloak_callback(
     error: str = '',
     jwt_service: JwtService = jwt_service_dependency,
 ):
+    require_keycloak()
     if not code or error:
         logger.warning(
             'problem_retrieving_keycloak_tokens',
             extra={
-                'code': code,
-                'state': state,
                 'error': error,
             },
         )
@@ -171,9 +279,6 @@ async def keycloak_callback(
         )
 
     payload: dict[str, str] = jwt_service.verify_jws_token(state)
-    slack_user_id = payload['slack_user_id']
-    bot_access_token: str | None = payload['bot_access_token']
-    team_id = payload['team_id']
 
     # Retrieve the keycloak_user_id
     redirect_uri = f'{HOST_URL}{request.url.path}'
@@ -182,7 +287,7 @@ async def keycloak_callback(
             keycloak_access_token,
             keycloak_refresh_token,
         ) = await token_manager.get_keycloak_tokens(code, redirect_uri)
-    except KeycloakConnectionError:
+    except AuthenticationUnavailable:
         logger.warning('keycloak_unavailable_during_slack_auth', exc_info=True)
         return _html_response(
             title='Authentication service temporarily unavailable.',
@@ -193,8 +298,6 @@ async def keycloak_callback(
         logger.warning(
             'problem_retrieving_keycloak_tokens',
             extra={
-                'code': code,
-                'state': state,
                 'error': error,
             },
         )
@@ -206,8 +309,16 @@ async def keycloak_callback(
 
     user_info = await token_manager.get_user_info(keycloak_access_token)
     keycloak_user_id = user_info.sub
-    user = await UserStore.get_user_by_id(keycloak_user_id)
-    if not user:
+    try:
+        canonical_id = UUID(keycloak_user_id)
+    except ValueError:
+        raise HTTPException(401, 'Invalid account identifier') from None
+    from server.auth.user_management import EnterpriseUserManagementService
+
+    user = await EnterpriseUserManagementService().ensure_authenticated_account(
+        canonical_id, user_info.model_dump(exclude_none=True)
+    )
+    if not user or user.is_disabled:
         return _html_response(
             title='Failed to authenticate.',
             description=f'Please re-login into <a href="{HOST_URL}" style="color:#ecedee;text-decoration:underline;">OpenHands Cloud</a>. Then try <a href="https://docs.all-hands.dev/usage/cloud/slack-installation" style="color:#ecedee;text-decoration:underline;">installing the OpenHands Slack App</a> again',
@@ -226,6 +337,16 @@ async def keycloak_callback(
         ProviderType(idp), keycloak_user_id, keycloak_access_token
     )
 
+    return await _complete_slack_link(user, payload, background_tasks)
+
+
+async def _complete_slack_link(
+    user: User, payload: dict, background_tasks: BackgroundTasks
+) -> HTMLResponse:
+    keycloak_user_id = str(user.id)
+    slack_user_id = payload['slack_user_id']
+    bot_access_token = payload.get('bot_access_token')
+    team_id = payload['team_id']
     # Retrieve bot token
     if team_id and bot_access_token:
         await slack_team_store.create_team(team_id, bot_access_token)
@@ -236,7 +357,7 @@ async def keycloak_callback(
         logger.error(
             f'Account linking failed, did not find slack team {team_id} for user {keycloak_user_id}'
         )
-        return
+        raise HTTPException(400, 'Slack connection could not be established')
 
     # Retrieve the display_name from slack
     client = AsyncWebClient(token=bot_access_token)
@@ -258,7 +379,8 @@ async def keycloak_callback(
                 status_code=400,
             )
         raise
-    slack_display_name = slack_user_info.data['user']['profile']['display_name']
+    slack_profile = (slack_user_info.get('user') or {}).get('profile') or {}
+    slack_display_name = slack_profile.get('display_name') or ''
     slack_user = SlackUser(
         keycloak_user_id=keycloak_user_id,
         org_id=user.current_org_id,
@@ -266,7 +388,34 @@ async def keycloak_callback(
         slack_display_name=slack_display_name,
     )
 
-    async with a_session_maker(expire_on_commit=False) as session:
+    async with a_session_maker(expire_on_commit=False) as session, session.begin():
+        if get_auth_mode() is AuthMode.LOCAL:
+            current = await session.scalar(
+                select(User).where(User.id == user.id).with_for_update()
+            )
+            if current is None or current.is_disabled:
+                raise HTTPException(401, 'Account is unavailable')
+            # Serialize even the first link, when there is no SlackUser row to
+            # lock. All local writes take the account lock before this lock.
+            if session.get_bind().dialect.name == 'postgresql':
+                actor_lock = int.from_bytes(
+                    hashlib.sha256(f'slack:{slack_user_id}'.encode()).digest()[:8],
+                    signed=True,
+                )
+                await session.execute(
+                    text('SELECT pg_advisory_xact_lock(:actor_lock)'),
+                    {'actor_lock': actor_lock},
+                )
+            existing = await session.scalars(
+                select(SlackUser)
+                .where(SlackUser.slack_user_id == slack_user_id)
+                .with_for_update()
+            )
+            if any(row.keycloak_user_id != keycloak_user_id for row in existing):
+                raise HTTPException(
+                    409, 'This Slack account is already connected to another account'
+                )
+            slack_user.org_id = current.current_org_id
         # First delete any existing tokens
         await session.execute(
             delete(SlackUser).where(SlackUser.slack_user_id == slack_user_id)
@@ -274,9 +423,11 @@ async def keycloak_callback(
 
         # Store the token
         session.add(slack_user)
-        await session.commit()
 
-    message = Message(source=SourceType.SLACK, message=payload)
+    safe_payload = {
+        key: value for key, value in payload.items() if key != 'bot_access_token'
+    }
+    message = Message(source=SourceType.SLACK, message=safe_payload)
 
     background_tasks.add_task(slack_manager.receive_message, message)
     return _html_response(
@@ -293,13 +444,13 @@ async def on_event(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
     payload = json.loads(body.decode())
 
-    logger.info('slack_on_event', extra={'payload': payload})
+    logger.info('slack_on_event', extra={'event_type': payload.get('type')})
 
     # First verify the signature
-    if not signature_verifier.is_valid(
+    if not SLACK_SIGNING_SECRET or not signature_verifier.is_valid(
         body=body,
-        timestamp=request.headers.get('x-slack-request-timestamp'),
-        signature=request.headers.get('x-slack-signature'),
+        timestamp=request.headers.get('x-slack-request-timestamp', ''),
+        signature=request.headers.get('x-slack-signature', ''),
     ):
         raise HTTPException(status_code=403, detail='invalid_request')
 
@@ -372,19 +523,19 @@ async def on_options_load(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
     form = await request.form()
     payload_str = form.get('payload')
-    if not payload_str:
+    if not isinstance(payload_str, str) or not payload_str:
         logger.warning('slack_on_options_load: No payload in request')
         return JSONResponse({'options': []})
 
     payload = json.loads(payload_str)
 
-    logger.info('slack_on_options_load', extra={'payload': payload})
+    logger.info('slack_on_options_load', extra={'event_type': payload.get('type')})
 
     # Verify the signature
-    if not signature_verifier.is_valid(
+    if not SLACK_SIGNING_SECRET or not signature_verifier.is_valid(
         body=body,
-        timestamp=request.headers.get('X-Slack-Request-Timestamp'),
-        signature=request.headers.get('X-Slack-Signature'),
+        timestamp=request.headers.get('X-Slack-Request-Timestamp', ''),
+        signature=request.headers.get('X-Slack-Signature', ''),
     ):
         raise HTTPException(status_code=403, detail='invalid_request')
 
@@ -479,15 +630,18 @@ async def on_form_interaction(request: Request, background_tasks: BackgroundTask
 
     body = await request.body()
     form = await request.form()
-    payload = json.loads(form.get('payload'))
+    payload_str = form.get('payload')
+    if not isinstance(payload_str, str) or not payload_str:
+        raise HTTPException(400, 'Missing Slack payload')
+    payload = json.loads(payload_str)
 
-    logger.info('slack_on_form_interaction', extra={'payload': payload})
+    logger.info('slack_on_form_interaction', extra={'event_type': payload.get('type')})
 
     # Verify the signature
-    if not signature_verifier.is_valid(
+    if not SLACK_SIGNING_SECRET or not signature_verifier.is_valid(
         body=body,
-        timestamp=request.headers.get('X-Slack-Request-Timestamp'),
-        signature=request.headers.get('X-Slack-Signature'),
+        timestamp=request.headers.get('X-Slack-Request-Timestamp', ''),
+        signature=request.headers.get('X-Slack-Signature', ''),
     ):
         raise HTTPException(status_code=403, detail='invalid_request')
 
@@ -499,7 +653,7 @@ async def on_form_interaction(request: Request, background_tasks: BackgroundTask
 
 def _generate_login_link(state: str = '') -> str:
     """Generate the OAuth login link for Slack authentication."""
-    return authorize_url_generator.generate(state)
+    return slack_login_url(state, authorize_url_generator.generate)
 
 
 def _html_response(title: str, description: str, status_code: int) -> HTMLResponse:

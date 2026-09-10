@@ -107,7 +107,9 @@ def _inline_view() -> BitbucketDCInlinePRComment:
 
 
 @pytest.mark.asyncio
-async def test_receive_message_runs_job_as_mentioner_when_linked_in_keycloak():
+async def test_receive_message_runs_job_as_mentioner_when_linked_in_keycloak(
+    monkeypatch,
+):
     """Use the linked mentioner as the resolver user.
 
     When the @-mentioning user has an OHE account, the view's
@@ -116,6 +118,10 @@ async def test_receive_message_runs_job_as_mentioner_when_linked_in_keycloak():
     """
     token_manager = AsyncMock()
     token_manager.get_user_id_from_idp_user_id = AsyncMock(return_value='kc-alice')
+    monkeypatch.setattr(
+        'integrations.bitbucket_data_center.bitbucket_dc_manager.ProviderCredentialService.resolve_user',
+        token_manager.get_user_id_from_idp_user_id,
+    )
     manager = BitbucketDCManager(token_manager)
 
     captured: dict = {}
@@ -150,11 +156,11 @@ async def test_receive_message_runs_job_as_mentioner_when_linked_in_keycloak():
     # claim) -- NOT the slug 'alice'. Looking up by slug never matched and
     # silently fell back to the webhook installer.
     token_manager.get_user_id_from_idp_user_id.assert_awaited_once()
-    assert token_manager.get_user_id_from_idp_user_id.await_args.args[0] == '1001'
+    assert token_manager.get_user_id_from_idp_user_id.await_args.args[1] == '1001'
 
 
 @pytest.mark.asyncio
-async def test_receive_message_asks_unenrolled_mentioner_to_sign_up():
+async def test_receive_message_asks_unenrolled_mentioner_to_sign_up(monkeypatch):
     """Ask unenrolled mentioners to sign up.
 
     A mentioner with no OHE account is not run as the installer. We mirror the
@@ -163,6 +169,10 @@ async def test_receive_message_asks_unenrolled_mentioner_to_sign_up():
     """
     token_manager = AsyncMock()
     token_manager.get_user_id_from_idp_user_id = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        'integrations.bitbucket_data_center.bitbucket_dc_manager.ProviderCredentialService.resolve_user',
+        token_manager.get_user_id_from_idp_user_id,
+    )
     manager = BitbucketDCManager(token_manager)
 
     with (
@@ -193,7 +203,7 @@ async def test_receive_message_asks_unenrolled_mentioner_to_sign_up():
 
 
 @pytest.mark.asyncio
-async def test_receive_message_drops_event_when_keycloak_lookup_raises():
+async def test_receive_message_drops_event_when_keycloak_lookup_raises(monkeypatch):
     """Drop events when mentioner lookup fails.
 
     A transient Keycloak error leaves enrollment status unknown. We drop the
@@ -203,6 +213,10 @@ async def test_receive_message_drops_event_when_keycloak_lookup_raises():
     token_manager = AsyncMock()
     token_manager.get_user_id_from_idp_user_id = AsyncMock(
         side_effect=RuntimeError('keycloak unreachable')
+    )
+    monkeypatch.setattr(
+        'integrations.bitbucket_data_center.bitbucket_dc_manager.ProviderCredentialService.resolve_user',
+        token_manager.get_user_id_from_idp_user_id,
     )
     manager = BitbucketDCManager(token_manager)
 
@@ -231,13 +245,17 @@ async def test_receive_message_drops_event_when_keycloak_lookup_raises():
 
 
 @pytest.mark.asyncio
-async def test_receive_message_skips_when_bot_token_unset():
+async def test_receive_message_skips_when_bot_token_unset(monkeypatch):
     """Drop the event when no bot token is configured.
 
     Without the bot PAT there is no safe identity to post results, so the gate
     drops the event before any installer/permission/lookup work.
     """
     token_manager = AsyncMock()
+    monkeypatch.setattr(
+        'integrations.bitbucket_data_center.bitbucket_dc_manager.ProviderCredentialService.resolve_user',
+        token_manager.get_user_id_from_idp_user_id,
+    )
     manager = BitbucketDCManager(token_manager)
 
     with (
@@ -262,13 +280,17 @@ async def test_receive_message_skips_when_bot_token_unset():
 
 
 @pytest.mark.asyncio
-async def test_receive_message_skips_when_bot_username_unset():
+async def test_receive_message_skips_when_bot_username_unset(monkeypatch):
     """Drop the event when the bot username is missing even if the token is set.
 
     Token + username are one required unit: without the username the self-author
     guard can't run, so a bot reply could re-trigger a job -- so gate on both.
     """
     token_manager = AsyncMock()
+    monkeypatch.setattr(
+        'integrations.bitbucket_data_center.bitbucket_dc_manager.ProviderCredentialService.resolve_user',
+        token_manager.get_user_id_from_idp_user_id,
+    )
     manager = BitbucketDCManager(token_manager)
 
     with (
@@ -298,13 +320,17 @@ async def test_receive_message_skips_when_bot_username_unset():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('actor_slug', ['openhands', 'OpenHands'])
-async def test_receive_message_skips_event_authored_by_bot(actor_slug):
+async def test_receive_message_skips_event_authored_by_bot(actor_slug, monkeypatch):
     """Skip events the bot account authored (case-insensitive).
 
     The agent's reply is posted via the bot PAT and can contain "@openhands";
     the self-author guard stops it from re-triggering a job.
     """
     token_manager = AsyncMock()
+    monkeypatch.setattr(
+        'integrations.bitbucket_data_center.bitbucket_dc_manager.ProviderCredentialService.resolve_user',
+        token_manager.get_user_id_from_idp_user_id,
+    )
     manager = BitbucketDCManager(token_manager)
     message = _comment_message()
     message.message['payload']['actor']['slug'] = actor_slug
@@ -331,7 +357,7 @@ async def test_receive_message_skips_event_authored_by_bot(actor_slug):
 
 
 @pytest.mark.asyncio
-async def test_send_user_not_found_message_replies_as_installer():
+async def test_send_user_not_found_message_replies_as_installer(monkeypatch):
     """Post the sign-up reply as the installer.
 
     The sign-up reply is built from the payload with the installer as the
@@ -364,7 +390,7 @@ async def test_send_user_not_found_message_replies_as_installer():
 
 
 @pytest.mark.asyncio
-async def test_receive_message_skips_when_commenter_lacks_write_access():
+async def test_receive_message_skips_when_commenter_lacks_write_access(monkeypatch):
     manager = BitbucketDCManager(AsyncMock())
 
     with (
@@ -388,7 +414,7 @@ async def test_receive_message_skips_when_commenter_lacks_write_access():
 
 
 @pytest.mark.asyncio
-async def test_receive_message_skips_when_no_installer_recorded_for_repo():
+async def test_receive_message_skips_when_no_installer_recorded_for_repo(monkeypatch):
     manager = BitbucketDCManager(AsyncMock())
 
     with (
@@ -409,7 +435,7 @@ async def test_receive_message_skips_when_no_installer_recorded_for_repo():
 
 
 @pytest.mark.asyncio
-async def test_send_message_replies_inline_with_anchor_for_inline_view():
+async def test_send_message_replies_inline_with_anchor_for_inline_view(monkeypatch):
     manager = BitbucketDCManager(AsyncMock())
     fake_service = AsyncMock()
     with (
@@ -434,7 +460,7 @@ async def test_send_message_replies_inline_with_anchor_for_inline_view():
 
 
 @pytest.mark.asyncio
-async def test_send_message_replies_via_parent_id_for_pr_comment_view():
+async def test_send_message_replies_via_parent_id_for_pr_comment_view(monkeypatch):
     manager = BitbucketDCManager(AsyncMock())
     fake_service = AsyncMock()
     with (
@@ -463,7 +489,7 @@ def test_confirm_incoming_source_type_raises_on_wrong_source():
 
 
 @pytest.mark.asyncio
-async def test_send_message_posts_as_bot_not_mentioner():
+async def test_send_message_posts_as_bot_not_mentioner(monkeypatch):
     """Post replies as the bot, never the mentioner.
 
     send_message builds the posting service via ``bitbucket_dc_posting_service``,

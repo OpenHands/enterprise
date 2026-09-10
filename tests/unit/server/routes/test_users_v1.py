@@ -157,8 +157,25 @@ class TestGetCurrentUserSaasEndpoint:
 
     @pytest.fixture
     def mock_user_context(self):
-        """Create a mock user context."""
-        return AsyncMock()
+        """Create a context authenticated by a header API key."""
+        from datetime import UTC, datetime
+        from uuid import UUID
+
+        from openhands.app_server.user_auth.user_auth import AuthType
+        from server.auth.contracts import Principal
+        from server.auth.saas_user_auth import SaasUserAuth
+
+        context = AsyncMock()
+        context.user_auth = SaasUserAuth(
+            user_id='11111111-1111-4111-8111-111111111111',
+            auth_type=AuthType.BEARER,
+            principal=Principal(
+                UUID('11111111-1111-4111-8111-111111111111'),
+                'api_key',
+                datetime.now(UTC),
+            ),
+        )
+        return context
 
     @pytest.mark.asyncio
     async def test_endpoint_returns_saas_user_info_with_org_fields(
@@ -256,8 +273,25 @@ class TestSdkCompatFields:
 
     @pytest.fixture
     def mock_user_context(self):
-        """Create a mock user context."""
-        return AsyncMock()
+        """Create a context authenticated by a header API key."""
+        from datetime import UTC, datetime
+        from uuid import UUID
+
+        from openhands.app_server.user_auth.user_auth import AuthType
+        from server.auth.contracts import Principal
+        from server.auth.saas_user_auth import SaasUserAuth
+
+        context = AsyncMock()
+        context.user_auth = SaasUserAuth(
+            user_id='11111111-1111-4111-8111-111111111111',
+            auth_type=AuthType.BEARER,
+            principal=Principal(
+                UUID('11111111-1111-4111-8111-111111111111'),
+                'api_key',
+                datetime.now(UTC),
+            ),
+        )
+        return context
 
     @pytest.mark.asyncio
     async def test_non_expose_response_contains_llm_model_and_base_url(
@@ -574,9 +608,10 @@ class TestDisconnectGitProvider:
         from server.routes.users_v1 import disconnect_git_provider
 
         # Arrange
-        with patch('server.routes.users_v1.token_manager') as mock_token_manager:
-            mock_token_manager.unlink_idp = AsyncMock()
-
+        with patch(
+            'server.auth.provider_credentials.ProviderCredentialService.disconnect',
+            new_callable=AsyncMock,
+        ) as disconnect:
             # Act
             result = await disconnect_git_provider(
                 provider=ProviderType.GITHUB, user_context=mock_user_context
@@ -584,9 +619,7 @@ class TestDisconnectGitProvider:
 
         # Assert
         assert result.status_code == 204
-        mock_token_manager.unlink_idp.assert_awaited_once_with(
-            'user-123', ProviderType.GITHUB
-        )
+        disconnect.assert_awaited_once_with('user-123', ProviderType.GITHUB)
 
     @pytest.mark.asyncio
     async def test_rejects_the_login_only_identity_provider(self, mock_user_context):
@@ -599,9 +632,10 @@ class TestDisconnectGitProvider:
         from server.routes.users_v1 import disconnect_git_provider
 
         # Arrange
-        with patch('server.routes.users_v1.token_manager') as mock_token_manager:
-            mock_token_manager.unlink_idp = AsyncMock()
-
+        with patch(
+            'server.auth.provider_credentials.ProviderCredentialService.disconnect',
+            new_callable=AsyncMock,
+        ) as disconnect:
             # Act / Assert
             with pytest.raises(HTTPException) as exc_info:
                 await disconnect_git_provider(
@@ -610,4 +644,4 @@ class TestDisconnectGitProvider:
                 )
 
         assert exc_info.value.status_code == 400
-        mock_token_manager.unlink_idp.assert_not_called()
+        disconnect.assert_not_called()

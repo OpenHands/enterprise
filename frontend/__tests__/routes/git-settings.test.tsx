@@ -12,6 +12,7 @@ import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
 import { SecretsService } from "#/api/secrets-service";
+import AuthService from "#/api/auth-service/auth-service.api";
 
 const VALID_OSS_CONFIG: WebClientConfig = {
   app_mode: "oss",
@@ -794,5 +795,25 @@ describe("Git provider connections in SaaS mode", () => {
     expect(window.location.search).toBe("");
 
     window.history.replaceState(null, "", "/");
+  });
+});
+
+
+describe("Enterprise local repository credentials", () => {
+  it("uses manual token entry and V1 secrets in local mode, independently of configured login providers", async () => {
+    queryClient.clear();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue({ ...VALID_SAAS_CONFIG, providers_configured: ["github"] });
+    vi.spyOn(AuthService, "getCapabilities").mockResolvedValue({ mode: "local", password_login: true, login_providers: [], registration: "admin_or_invitation", email_recovery: false, repository_connections: { manual_tokens: true, broker: false } });
+    vi.spyOn(AuthService, "authenticate").mockResolvedValue(true);
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(MOCK_DEFAULT_USER_SETTINGS);
+    const save = vi.spyOn(SecretsService, "addGitProvider").mockResolvedValue(true);
+    renderGitSettingsScreen();
+    const tokenInput = await screen.findByTestId("github-token-input");
+    expect(screen.queryByTestId("connect-github-button")).not.toBeInTheDocument();
+    await userEvent.type(tokenInput, "local-token");
+    await userEvent.click(screen.getByTestId("submit-button"));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ github: { token: "local-token", host: "" }, gitlab: { token: "", host: "" } })));
+    vi.restoreAllMocks();
+    queryClient.clear();
   });
 });

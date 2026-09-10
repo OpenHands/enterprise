@@ -15,6 +15,13 @@ from server.routes.org_invitation_models import (
 from server.routes.org_invitations import accept_router, invitation_router
 
 
+@pytest.fixture(autouse=True)
+def initialized_authentication_mode(monkeypatch):
+    from server.auth import mode
+
+    monkeypatch.setattr(mode, '_auth_mode', mode.AuthMode.KEYCLOAK)
+
+
 @pytest.fixture
 def app():
     """Create a FastAPI app with the invitation routers."""

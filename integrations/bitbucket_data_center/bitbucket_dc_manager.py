@@ -38,6 +38,7 @@ from server.auth.constants import (
     BITBUCKET_DATA_CENTER_BOT_TOKEN,
     BITBUCKET_DATA_CENTER_BOT_USERNAME,
 )
+from server.auth.provider_credentials import ProviderCredentialService
 from server.auth.token_manager import TokenManager
 from storage.bitbucket_dc_webhook_store import BitbucketDCWebhookStore
 
@@ -253,11 +254,10 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
         lookup_failed = False
         if mentioner_idp_id:
             try:
-                mentioner_keycloak_id = (
-                    await self.token_manager.get_user_id_from_idp_user_id(
-                        mentioner_idp_id, ProviderType.BITBUCKET_DATA_CENTER
-                    )
+                mentioner_uuid = await ProviderCredentialService().resolve_user(
+                    ProviderType.BITBUCKET_DATA_CENTER, mentioner_idp_id
                 )
+                mentioner_keycloak_id = str(mentioner_uuid) if mentioner_uuid else None
             except Exception as e:
                 lookup_failed = True
                 logger.warning(
@@ -362,18 +362,11 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
                     f'in {bitbucket_view.full_repo_name}#{bitbucket_view.issue_number}'
                 )
 
-                offline_token = await self.token_manager.load_offline_token(
-                    user_info.keycloak_user_id
+                credential = await ProviderCredentialService().get_token(
+                    user_info.keycloak_user_id, ProviderType.BITBUCKET_DATA_CENTER
                 )
-                if not offline_token:
-                    logger.warning(
-                        f'[Bitbucket DC] No offline token for installer '
-                        f'{user_info.keycloak_user_id}'
-                    )
-                    raise MissingSettingsError('Missing settings')
-
-                user_token = await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.BITBUCKET_DATA_CENTER
+                user_token = (
+                    credential.token.get_secret_value() if credential.token else None
                 )
                 if not user_token:
                     logger.warning(

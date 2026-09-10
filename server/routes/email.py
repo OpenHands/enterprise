@@ -12,6 +12,7 @@ from openhands.app_server.web_client.email_change_config import (
     is_email_change_enabled,
 )
 from server.auth.constants import KEYCLOAK_CLIENT_ID
+from server.auth.keycloak.authorization import require_keycloak
 from server.auth.keycloak_manager import get_keycloak_admin
 from server.auth.saas_user_auth import SaasUserAuth
 from server.constants import IS_LOCAL_ENV
@@ -27,7 +28,7 @@ from storage.user_store import UserStore
 # Email validation regex pattern
 EMAIL_REGEX = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
-api_router = APIRouter(prefix='/api/email')
+api_router = APIRouter(prefix='/api/email', dependencies=[Depends(require_keycloak)])
 
 
 class EmailUpdate(BaseModel):
@@ -91,7 +92,7 @@ async def update_email(
         )
 
         # need to set auth cookie to the new tokens
-        if user_auth.access_token is None:
+        if user_auth.access_token is None or user_auth.refresh_token is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail='Access token not found',
@@ -167,14 +168,15 @@ async def resend_email_verification(
 async def verified_email(request: Request):
     user_auth = cast(SaasUserAuth, await get_user_auth(request))
     await user_auth.refresh()  # refresh so access token has updated email
-    user_auth.email_verified = True
+    if not user_auth.email_verified:
+        raise HTTPException(403, 'Email ownership has not been verified')
     await UserStore.update_user_email(user_id=user_auth.user_id, email_verified=True)
 
     redirect_uri = f'{get_web_url(request)}/settings/user'
     response = RedirectResponse(redirect_uri, status_code=302)
 
     # need to set auth cookie to the new tokens
-    if user_auth.access_token is None:
+    if user_auth.access_token is None or user_auth.refresh_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail='Access token not found'
         )
@@ -192,6 +194,7 @@ async def verified_email(request: Request):
 
 
 async def verify_email(request: Request, user_id: str, is_auth_flow: bool = False):
+    require_keycloak()
     keycloak_admin = get_keycloak_admin()
     if is_auth_flow:
         redirect_uri = f'{get_web_url(request)}/login?email_verified=true'

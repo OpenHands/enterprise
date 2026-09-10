@@ -5,6 +5,7 @@ Unit tests for LiteLlmManager class.
 import importlib
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -399,6 +400,25 @@ class TestIsBillingEnabled:
 class TestLiteLlmManager:
     """Test cases for LiteLlmManager class."""
 
+    @pytest.fixture(autouse=True)
+    def canonical_account(self):
+        """Managed LLM provisioning reads the canonical account, never an IdP."""
+        with (
+            patch(
+                'storage.user_store.UserStore.get_user_by_id',
+                new=AsyncMock(
+                    return_value=SimpleNamespace(
+                        email='test@example.com', is_disabled=False
+                    )
+                ),
+            ) as get_user,
+            patch(
+                'server.auth.keycloak.token_manager.TokenManager',
+                side_effect=AssertionError('LiteLLM must not query Keycloak'),
+            ),
+        ):
+            yield get_user
+
     @pytest.fixture
     def mock_settings(self):
         """Create a mock Settings object."""
@@ -582,11 +602,6 @@ class TestLiteLlmManager:
             'user_info': {'user_id': 'test-user-id'}
         }
 
-        mock_token_manager = MagicMock()
-        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
-            return_value={'email': 'test@example.com'}
-        )
-
         mock_client = AsyncMock()
         # First GET is for _get_team (404), second GET is for _user_exists (success)
         mock_client.get.side_effect = [mock_404_response, mock_user_exists_response]
@@ -599,7 +614,6 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('storage.lite_llm_manager.LITELLM_MANAGEMENT_TIMEOUT', 30.0),
             patch('httpx.AsyncClient', mock_client_class),
         ):
@@ -615,11 +629,11 @@ class TestLiteLlmManager:
             client_timeout = mock_client_class.call_args.kwargs['timeout']
             assert client_timeout.read == 30.0
 
-            # Verify API calls were made (get_team + user_exists + 4 posts)
+            # Team lookup, canonical user provisioning, and key creation.
             assert mock_client.get.call_count == 2  # get_team + user_exists
             assert (
-                mock_client.post.call_count == 4
-            )  # create_team, add_user_to_team, delete_key_by_alias, generate_key
+                mock_client.post.call_count == 5
+            )  # create_team, create_user, add_user, delete_key, generate_key
 
     async def _create_entries_with_billing_flag(
         self, mock_settings, mock_response, billing_enabled: bool
@@ -638,11 +652,6 @@ class TestLiteLlmManager:
             'user_info': {'user_id': 'test-user-id'}
         }
 
-        mock_token_manager = MagicMock()
-        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
-            return_value={'email': 'test@example.com'}
-        )
-
         mock_client = AsyncMock()
         mock_client.get.side_effect = [mock_404_response, mock_user_exists_response]
         mock_client.post.return_value = mock_response
@@ -654,7 +663,6 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch(
                 'storage.lite_llm_manager._is_billing_enabled',
@@ -706,11 +714,6 @@ class TestLiteLlmManager:
             message='Not Found', request=MagicMock(), response=mock_404_response
         )
 
-        mock_token_manager = MagicMock()
-        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
-            return_value={'email': 'test@example.com'}
-        )
-
         mock_client = AsyncMock()
         mock_client.get.side_effect = [mock_404_response]
         mock_client.post.return_value = mock_response
@@ -722,7 +725,6 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
         ):
             result = await LiteLlmManager.create_entries(
@@ -759,11 +761,6 @@ class TestLiteLlmManager:
             'user_info': {'user_id': 'test-user-id'}
         }
 
-        mock_token_manager = MagicMock()
-        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
-            return_value={'email': 'test@example.com'}
-        )
-
         mock_client = AsyncMock()
         # First GET is for _get_team (success), second GET is for _user_exists (success)
         mock_client.get.side_effect = [mock_team_response, mock_user_exists_response]
@@ -776,7 +773,6 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
         ):
             result = await LiteLlmManager.create_entries(
@@ -797,7 +793,7 @@ class TestLiteLlmManager:
             assert create_team_call[1]['json']['max_budget'] == 30.0
 
             # Verify _add_user_to_team was called with inherited budget (30.0)
-            add_user_call = mock_client.post.call_args_list[1]
+            add_user_call = mock_client.post.call_args_list[2]
             assert 'team/member_add' in add_user_call[0][0]
             assert add_user_call[1]['json']['max_budget_in_team'] == 30.0
 
@@ -812,11 +808,6 @@ class TestLiteLlmManager:
         mock_404_response.is_success = False
         mock_404_response.raise_for_status.side_effect = httpx.HTTPStatusError(
             message='Not Found', request=MagicMock(), response=mock_404_response
-        )
-
-        mock_token_manager = MagicMock()
-        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
-            return_value={'email': 'test@example.com'}
         )
 
         # Mock user exists check response
@@ -838,7 +829,6 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch(
                 'storage.lite_llm_manager._is_billing_enabled',
@@ -862,7 +852,7 @@ class TestLiteLlmManager:
 
             # The member is added without a per-member budget; the team's model
             # restriction is what gates access for the free tier.
-            add_user_call = mock_client.post.call_args_list[1]
+            add_user_call = mock_client.post.call_args_list[2]
             assert 'team/member_add' in add_user_call[0][0]
             assert 'max_budget_in_team' not in add_user_call[1]['json']
 
@@ -886,11 +876,6 @@ class TestLiteLlmManager:
             'user_info': {'user_id': 'test-user-id'}
         }
 
-        mock_token_manager = MagicMock()
-        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
-            return_value={'email': 'test@example.com'}
-        )
-
         mock_client = AsyncMock()
         # First GET is for _get_team (404), second GET is for _user_exists (success)
         mock_client.get.side_effect = [mock_404_response, mock_user_exists_response]
@@ -907,7 +892,6 @@ class TestLiteLlmManager:
             ),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch(
                 'storage.lite_llm_manager._is_billing_enabled',
@@ -929,7 +913,7 @@ class TestLiteLlmManager:
             assert create_team_call[1]['json']['models'] == []
 
             # Verify _add_user_to_team was called with custom DEFAULT_INITIAL_BUDGET
-            add_user_call = mock_client.post.call_args_list[1]
+            add_user_call = mock_client.post.call_args_list[2]
             assert 'team/member_add' in add_user_call[0][0]
             assert add_user_call[1]['json']['max_budget_in_team'] == custom_budget
 
@@ -959,11 +943,6 @@ class TestLiteLlmManager:
             'user_info': {'user_id': 'test-user-id'}
         }
 
-        mock_token_manager = MagicMock()
-        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
-            return_value={'email': 'test@example.com'}
-        )
-
         mock_client = AsyncMock()
         mock_client.get.side_effect = [mock_team_response, mock_user_exists_response]
         mock_client.post.return_value = mock_response
@@ -975,7 +954,6 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
         ):
             result = await LiteLlmManager.create_entries(
@@ -998,11 +976,6 @@ class TestLiteLlmManager:
         mock_500_response.status_code = 500
         mock_500_response.is_success = False
 
-        mock_token_manager = MagicMock()
-        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
-            return_value={'email': 'test@example.com'}
-        )
-
         mock_client = AsyncMock()
         mock_client.get.return_value = mock_500_response
         mock_client.get.return_value.raise_for_status.side_effect = (
@@ -1020,7 +993,6 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
         ):
             with pytest.raises(httpx.HTTPStatusError) as exc_info:
@@ -1031,18 +1003,8 @@ class TestLiteLlmManager:
             assert exc_info.value.response.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_create_entries_resets_stale_litellm_user(self, mock_settings):
-        """Onboarding a brand-new user must reset a pre-existing LiteLLM record.
-
-        A surviving LiteLLM user under the same id is a stale orphan from a
-        prior teardown (e.g. an account reset), so create_entries deletes it
-        before _create_user rebuilds a clean record.
-        """
-        mock_token_manager = MagicMock()
-        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
-            return_value={'email': 'test@example.com'}
-        )
-
+    async def test_create_entries_preserves_existing_litellm_user(self, mock_settings):
+        """Retrying an account's provisioning never deletes its LiteLLM identity."""
         mock_client = AsyncMock()
         mock_client_class = MagicMock()
         mock_client_class.return_value.__aenter__.return_value = mock_client
@@ -1051,7 +1013,6 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch.object(LiteLlmManager, '_get_team', new=AsyncMock(return_value=None)),
             patch.object(LiteLlmManager, '_create_team', new=AsyncMock()),
@@ -1060,7 +1021,7 @@ class TestLiteLlmManager:
                 '_team_alias_for_org',
                 new=AsyncMock(return_value='Personal Workspace'),
             ),
-            # Pre-check sees the orphan; post-create verify sees the clean user.
+            # The existing identity is verified after idempotent creation.
             patch.object(
                 LiteLlmManager, '_user_exists', new=AsyncMock(return_value=True)
             ),
@@ -1079,19 +1040,14 @@ class TestLiteLlmManager:
             )
 
         assert result is not None
-        mock_del.assert_awaited_once_with(mock_client, 'test-user-id')
-        mock_create.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_create_entries_skips_reset_for_fresh_litellm_user(
-        self, mock_settings
-    ):
-        """A genuinely new user (no LiteLLM record) is created without a delete."""
-        mock_token_manager = MagicMock()
-        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
-            return_value={'email': 'test@example.com'}
+        mock_del.assert_not_awaited()
+        mock_create.assert_awaited_once_with(
+            mock_client, 'test@example.com', 'test-user-id'
         )
 
+    @pytest.mark.asyncio
+    async def test_create_entries_creates_missing_litellm_user(self, mock_settings):
+        """A missing remote identity is created before its key is generated."""
         mock_client = AsyncMock()
         mock_client_class = MagicMock()
         mock_client_class.return_value.__aenter__.return_value = mock_client
@@ -1100,7 +1056,6 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch.object(LiteLlmManager, '_get_team', new=AsyncMock(return_value=None)),
             patch.object(LiteLlmManager, '_create_team', new=AsyncMock()),
@@ -1109,11 +1064,11 @@ class TestLiteLlmManager:
                 '_team_alias_for_org',
                 new=AsyncMock(return_value='Personal Workspace'),
             ),
-            # Pre-check: absent; post-create verify: present.
+            # The new identity is verified after creation.
             patch.object(
                 LiteLlmManager,
                 '_user_exists',
-                new=AsyncMock(side_effect=[False, True]),
+                new=AsyncMock(return_value=True),
             ),
             patch.object(LiteLlmManager, '_delete_user', new=AsyncMock()) as mock_del,
             patch.object(
@@ -1134,20 +1089,10 @@ class TestLiteLlmManager:
         mock_create.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_create_entries_reset_failure_does_not_block_onboarding(
+    async def test_create_entries_failed_creation_preserves_identity_for_retry(
         self, mock_settings
     ):
-        """A failed stale-user reset must not block onboarding (best-effort).
-
-        If _delete_user raises (e.g. a transient 5xx from the proxy),
-        create_entries swallows it and still calls _create_user, which
-        tolerates the surviving record via its 409 handling.
-        """
-        mock_token_manager = MagicMock()
-        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
-            return_value={'email': 'test@example.com'}
-        )
-
+        """Remote failure propagates without deleting the retryable identity."""
         mock_client = AsyncMock()
         mock_client_class = MagicMock()
         mock_client_class.return_value.__aenter__.return_value = mock_client
@@ -1156,7 +1101,6 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch.object(LiteLlmManager, '_get_team', new=AsyncMock(return_value=None)),
             patch.object(LiteLlmManager, '_create_team', new=AsyncMock()),
@@ -1171,14 +1115,16 @@ class TestLiteLlmManager:
             patch.object(
                 LiteLlmManager,
                 '_delete_user',
+                new=AsyncMock(),
+            ) as mock_del,
+            patch.object(
+                LiteLlmManager,
+                '_create_user',
                 new=AsyncMock(
                     side_effect=httpx.HTTPStatusError(
                         '500', request=MagicMock(), response=MagicMock()
                     )
                 ),
-            ) as mock_del,
-            patch.object(
-                LiteLlmManager, '_create_user', new=AsyncMock(return_value=True)
             ) as mock_create,
             patch.object(LiteLlmManager, '_add_user_to_team', new=AsyncMock()),
             patch.object(LiteLlmManager, '_delete_key_by_alias', new=AsyncMock()),
@@ -1186,24 +1132,19 @@ class TestLiteLlmManager:
                 LiteLlmManager, '_generate_key', new=AsyncMock(return_value='new-key')
             ),
         ):
-            result = await LiteLlmManager.create_entries(
-                'test-user-id', 'test-user-id', mock_settings, create_user=True
-            )
+            with pytest.raises(httpx.HTTPStatusError):
+                await LiteLlmManager.create_entries(
+                    'test-user-id', 'test-user-id', mock_settings, create_user=True
+                )
 
-        assert result is not None
-        mock_del.assert_awaited_once()
+        mock_del.assert_not_awaited()
         mock_create.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_create_entries_resets_stale_user_via_http(
+    async def test_create_entries_retries_existing_user_without_delete_via_http(
         self, mock_settings, mock_response
     ):
-        """Drive the real create_entries body over a mocked HTTP client.
-
-        Unlike the method-mocked tests above, this exercises the actual
-        _user_exists / _delete_user / _create_user bodies and asserts that
-        POST /user/delete fires for the orphan before POST /user/new.
-        """
+        """An existing remote user is verified and reused after an HTTP conflict."""
         mock_404 = MagicMock()
         mock_404.status_code = 404
         mock_404.is_success = False
@@ -1211,20 +1152,27 @@ class TestLiteLlmManager:
             message='Not Found', request=MagicMock(), response=mock_404
         )
 
-        # _user_exists: orphan present on the pre-check and after recreate.
+        # The same subject exists after both HTTP conflict responses.
         mock_user_exists = MagicMock()
         mock_user_exists.is_success = True
         mock_user_exists.json.return_value = {'user_info': {'user_id': 'test-user-id'}}
 
-        mock_token_manager = MagicMock()
-        mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
-            return_value={'email': 'test@example.com'}
-        )
-
         mock_client = AsyncMock()
-        # GET: _get_team (404) -> _user_exists pre-check -> _user_exists verify
+        # Team lookup, conflict recovery, and verification before key generation.
         mock_client.get.side_effect = [mock_404, mock_user_exists, mock_user_exists]
-        mock_client.post.return_value = mock_response
+        conflict = httpx.Response(
+            409,
+            text='User already exists',
+            request=httpx.Request('POST', 'http://test.com/user/new'),
+        )
+        mock_client.post.side_effect = [
+            mock_response,
+            conflict,
+            conflict,
+            mock_response,
+            mock_response,
+            mock_response,
+        ]
 
         mock_client_class = MagicMock()
         mock_client_class.return_value.__aenter__.return_value = mock_client
@@ -1233,7 +1181,6 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch.object(
                 LiteLlmManager,
@@ -1247,12 +1194,18 @@ class TestLiteLlmManager:
 
         assert result is not None
         post_urls = [call.args[0] for call in mock_client.post.call_args_list]
-        delete_idx = next(i for i, u in enumerate(post_urls) if '/user/delete' in u)
-        new_idx = next(i for i, u in enumerate(post_urls) if '/user/new' in u)
-        # The orphan is deleted before the clean record is created.
-        assert delete_idx < new_idx
-        delete_call = mock_client.post.call_args_list[delete_idx]
-        assert delete_call.kwargs['json'] == {'user_ids': ['test-user-id']}
+        assert 'http://test.com/user/delete' not in post_urls
+        user_requests = [
+            call.kwargs['json']
+            for call in mock_client.post.call_args_list
+            if call.args[0] == 'http://test.com/user/new'
+        ]
+        assert len(user_requests) == 2
+        assert user_requests[0]['user_email'] == 'test@example.com'
+        assert all(item['user_id'] == 'test-user-id' for item in user_requests)
+        assert all(
+            'spend' not in item and 'max_budget' not in item for item in user_requests
+        )
 
     @pytest.mark.asyncio
     @patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com')
@@ -1337,26 +1290,19 @@ class TestLiteLlmManager:
                 with patch(
                     'storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'
                 ):
-                    with patch(
-                        'storage.lite_llm_manager.TokenManager'
-                    ) as mock_token_manager:
-                        mock_token_manager.return_value.get_user_info_from_user_id = (
-                            AsyncMock(return_value={'email': 'test@example.com'})
+                    # Mock the _get_user method directly to return None
+                    with patch.object(
+                        LiteLlmManager, '_get_user', new_callable=AsyncMock
+                    ) as mock_get_user:
+                        mock_get_user.return_value = None
+
+                        result = await LiteLlmManager.migrate_entries(
+                            'test-org-id',
+                            'test-user-id',
+                            mock_user_settings,
                         )
 
-                        # Mock the _get_user method directly to return None
-                        with patch.object(
-                            LiteLlmManager, '_get_user', new_callable=AsyncMock
-                        ) as mock_get_user:
-                            mock_get_user.return_value = None
-
-                            result = await LiteLlmManager.migrate_entries(
-                                'test-org-id',
-                                'test-user-id',
-                                mock_user_settings,
-                            )
-
-                            assert result is None
+                        assert result is None
 
     @pytest.mark.asyncio
     async def test_migrate_entries_already_migrated(
@@ -1375,27 +1321,20 @@ class TestLiteLlmManager:
                 with patch(
                     'storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'
                 ):
-                    with patch(
-                        'storage.lite_llm_manager.TokenManager'
-                    ) as mock_token_manager:
-                        mock_token_manager.return_value.get_user_info_from_user_id = (
-                            AsyncMock(return_value={'email': 'test@example.com'})
+                    with patch('httpx.AsyncClient') as mock_client_class:
+                        mock_client = AsyncMock()
+                        mock_client_class.return_value.__aenter__.return_value = (
+                            mock_client
+                        )
+                        mock_client.get.return_value = mock_user_response
+
+                        result = await LiteLlmManager.migrate_entries(
+                            'test-org-id',
+                            'test-user-id',
+                            mock_user_settings,
                         )
 
-                        with patch('httpx.AsyncClient') as mock_client_class:
-                            mock_client = AsyncMock()
-                            mock_client_class.return_value.__aenter__.return_value = (
-                                mock_client
-                            )
-                            mock_client.get.return_value = mock_user_response
-
-                            result = await LiteLlmManager.migrate_entries(
-                                'test-org-id',
-                                'test-user-id',
-                                mock_user_settings,
-                            )
-
-                            assert result is None
+                        assert result is None
 
     @pytest.mark.asyncio
     async def test_migrate_entries_successful_migration(
@@ -1417,59 +1356,50 @@ class TestLiteLlmManager:
                 with patch(
                     'storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'
                 ):
-                    with patch(
-                        'storage.lite_llm_manager.TokenManager'
-                    ) as mock_token_manager:
-                        mock_token_manager.return_value.get_user_info_from_user_id = (
-                            AsyncMock(return_value={'email': 'test@example.com'})
+                    with patch('httpx.AsyncClient') as mock_client_class:
+                        mock_client = AsyncMock()
+                        mock_client_class.return_value.__aenter__.return_value = (
+                            mock_client
+                        )
+                        # First GET is for _get_user, second GET is for _get_user_keys
+                        mock_client.get.side_effect = [
+                            mock_user_response,
+                            mock_key_list_response,
+                        ]
+                        mock_client.post.return_value = mock_response
+
+                        # Mock verify_key to return True (key exists in LiteLLM)
+                        with patch.object(
+                            LiteLlmManager, 'verify_key', return_value=True
+                        ):
+                            result = await LiteLlmManager.migrate_entries(
+                                'test-org-id',
+                                'test-user-id',
+                                mock_user_settings,
+                            )
+
+                        # migrate_entries returns the user_settings unchanged
+                        assert result is not None
+                        effective_settings = result.to_settings()
+                        assert _agent_value(effective_settings, 'agent') == 'TestAgent'
+                        assert (
+                            _agent_value(effective_settings, 'llm.model')
+                            == 'test-model'
+                        )
+                        assert result.llm_api_key.get_secret_value() == 'test-key'
+                        assert (
+                            _agent_value(effective_settings, 'llm.base_url')
+                            == 'http://test.com'
                         )
 
-                        with patch('httpx.AsyncClient') as mock_client_class:
-                            mock_client = AsyncMock()
-                            mock_client_class.return_value.__aenter__.return_value = (
-                                mock_client
-                            )
-                            # First GET is for _get_user, second GET is for _get_user_keys
-                            mock_client.get.side_effect = [
-                                mock_user_response,
-                                mock_key_list_response,
-                            ]
-                            mock_client.post.return_value = mock_response
-
-                            # Mock verify_key to return True (key exists in LiteLLM)
-                            with patch.object(
-                                LiteLlmManager, 'verify_key', return_value=True
-                            ):
-                                result = await LiteLlmManager.migrate_entries(
-                                    'test-org-id',
-                                    'test-user-id',
-                                    mock_user_settings,
-                                )
-
-                            # migrate_entries returns the user_settings unchanged
-                            assert result is not None
-                            effective_settings = result.to_settings()
-                            assert (
-                                _agent_value(effective_settings, 'agent') == 'TestAgent'
-                            )
-                            assert (
-                                _agent_value(effective_settings, 'llm.model')
-                                == 'test-model'
-                            )
-                            assert result.llm_api_key.get_secret_value() == 'test-key'
-                            assert (
-                                _agent_value(effective_settings, 'llm.base_url')
-                                == 'http://test.com'
-                            )
-
-                            # Verify migration steps were called:
-                            # - 2 GET requests: _get_user, _get_user_keys
-                            # - POST requests: create_team, update_user, add_user_to_team,
-                            #   and update_key for each key (2 keys)
-                            assert mock_client.get.call_count == 2
-                            assert (
-                                mock_client.post.call_count == 5
-                            )  # create_team, update_user, add_user_to_team, 2x update_key
+                        # Verify migration steps were called:
+                        # - 2 GET requests: _get_user, _get_user_keys
+                        # - POST requests: create_team, update_user, add_user_to_team,
+                        #   and update_key for each key (2 keys)
+                        assert mock_client.get.call_count == 2
+                        assert (
+                            mock_client.post.call_count == 5
+                        )  # create_team, update_user, add_user_to_team, 2x update_key
 
     @pytest.mark.asyncio
     async def test_migrate_entries_generates_key_when_db_key_not_in_litellm(
@@ -1498,62 +1428,55 @@ class TestLiteLlmManager:
                 with patch(
                     'storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'
                 ):
-                    with patch(
-                        'storage.lite_llm_manager.TokenManager'
-                    ) as mock_token_manager:
-                        mock_token_manager.return_value.get_user_info_from_user_id = (
-                            AsyncMock(return_value={'email': 'test@example.com'})
+                    with patch('httpx.AsyncClient') as mock_client_class:
+                        mock_client = AsyncMock()
+                        mock_client_class.return_value.__aenter__.return_value = (
+                            mock_client
+                        )
+                        # First GET is for _get_user, second GET is for _get_user_keys
+                        mock_client.get.side_effect = [
+                            mock_user_response,
+                            mock_key_list_response,
+                        ]
+                        # POST responses: create_team, update_user, add_user_to_team,
+                        # 2x update_key, and 1x generate_key
+                        mock_client.post.side_effect = [
+                            mock_response,  # create_team
+                            mock_response,  # update_user
+                            mock_response,  # add_user_to_team
+                            mock_response,  # update_key 1
+                            mock_response,  # update_key 2
+                            mock_generate_response,  # generate_key
+                        ]
+
+                        # Mock verify_key to return False (key doesn't exist in LiteLLM)
+                        with patch.object(
+                            LiteLlmManager, 'verify_key', return_value=False
+                        ):
+                            result = await LiteLlmManager.migrate_entries(
+                                'test-org-id',
+                                'test-user-id',
+                                mock_user_settings,
+                            )
+
+                        # migrate_entries should update user_settings with the new key
+                        assert result is not None
+                        assert (
+                            result.agent_settings['llm']['api_key']
+                            == 'new-generated-key'
+                        )
+                        assert result.llm_api_key_for_byor_secret is not None
+                        assert (
+                            result.llm_api_key_for_byor_secret.get_secret_value()
+                            == 'new-generated-key'
                         )
 
-                        with patch('httpx.AsyncClient') as mock_client_class:
-                            mock_client = AsyncMock()
-                            mock_client_class.return_value.__aenter__.return_value = (
-                                mock_client
-                            )
-                            # First GET is for _get_user, second GET is for _get_user_keys
-                            mock_client.get.side_effect = [
-                                mock_user_response,
-                                mock_key_list_response,
-                            ]
-                            # POST responses: create_team, update_user, add_user_to_team,
-                            # 2x update_key, and 1x generate_key
-                            mock_client.post.side_effect = [
-                                mock_response,  # create_team
-                                mock_response,  # update_user
-                                mock_response,  # add_user_to_team
-                                mock_response,  # update_key 1
-                                mock_response,  # update_key 2
-                                mock_generate_response,  # generate_key
-                            ]
-
-                            # Mock verify_key to return False (key doesn't exist in LiteLLM)
-                            with patch.object(
-                                LiteLlmManager, 'verify_key', return_value=False
-                            ):
-                                result = await LiteLlmManager.migrate_entries(
-                                    'test-org-id',
-                                    'test-user-id',
-                                    mock_user_settings,
-                                )
-
-                            # migrate_entries should update user_settings with the new key
-                            assert result is not None
-                            assert (
-                                result.agent_settings['llm']['api_key']
-                                == 'new-generated-key'
-                            )
-                            assert result.llm_api_key_for_byor_secret is not None
-                            assert (
-                                result.llm_api_key_for_byor_secret.get_secret_value()
-                                == 'new-generated-key'
-                            )
-
-                            # Verify migration steps were called including key generation:
-                            # - 2 GET requests: _get_user, _get_user_keys
-                            # - 6 POST requests: create_team, update_user, add_user_to_team,
-                            #   2x update_key, 1x generate_key
-                            assert mock_client.get.call_count == 2
-                            assert mock_client.post.call_count == 6
+                        # Verify migration steps were called including key generation:
+                        # - 2 GET requests: _get_user, _get_user_keys
+                        # - 6 POST requests: create_team, update_user, add_user_to_team,
+                        #   2x update_key, 1x generate_key
+                        assert mock_client.get.call_count == 2
+                        assert mock_client.post.call_count == 6
 
     @pytest.mark.asyncio
     async def test_update_team_and_users_budget_missing_config(self):

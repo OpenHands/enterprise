@@ -68,22 +68,27 @@ class TestOfflineCallbackPreservesAuthCookie:
                 return_value='http://localhost:8000/',
             ),
         ):
-            mock_user_store.get_user_by_id = AsyncMock(return_value=None)
+            mock_user_store.get_user_by_id = AsyncMock(
+                return_value=MagicMock(is_disabled=False)
+            )
             mock_token_manager.get_keycloak_tokens = AsyncMock(
                 return_value=('online_access_token', 'offline_refresh_token')
             )
             mock_token_manager.get_user_info = AsyncMock(
-                return_value=create_keycloak_user_info(sub='new_user_id')
+                return_value=create_keycloak_user_info(
+                    sub='22222222-2222-4222-8222-222222222222'
+                )
             )
             mock_token_manager.store_offline_token = AsyncMock()
 
             result = await keycloak_offline_callback(
-                'test_code', 'test_state', mock_request
+                'test_code', 'http://localhost:8000/requested', mock_request
             )
 
             # The offline token is persisted in the dedicated offline-token store...
             mock_token_manager.store_offline_token.assert_awaited_once_with(
-                user_id='new_user_id', offline_token='offline_refresh_token'
+                user_id='22222222-2222-4222-8222-222222222222',
+                offline_token='offline_refresh_token',
             )
             # ...but it must NOT be written into the keycloak_auth cookie.
             mock_set_cookie.assert_not_called()
@@ -112,7 +117,7 @@ class TestOfflineTokenSurvivesLogout:
         touch the auth cookie. The online ``/logout`` endpoint therefore
         cannot accidentally pass the offline token to Keycloak.
         """
-        user_id = 'new_user_id'
+        user_id = '22222222-2222-4222-8222-222222222222'
         online_refresh_token = 'online_refresh_token'
         offline_refresh_token = 'offline_refresh_token_for_api_keys'
 
@@ -126,7 +131,9 @@ class TestOfflineTokenSurvivesLogout:
                 return_value='http://localhost:8000/',
             ),
         ):
-            mock_user_store.get_user_by_id = AsyncMock(return_value=None)
+            mock_user_store.get_user_by_id = AsyncMock(
+                return_value=MagicMock(is_disabled=False)
+            )
             mock_token_manager.get_keycloak_tokens = AsyncMock(
                 return_value=('online_access_token', offline_refresh_token)
             )
@@ -138,7 +145,9 @@ class TestOfflineTokenSurvivesLogout:
             mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
 
             # 1. New user completes keycloak offline-token authentication.
-            await keycloak_offline_callback('test_code', 'test_state', mock_request)
+            await keycloak_offline_callback(
+                'test_code', 'http://localhost:8000/requested', mock_request
+            )
             mock_token_manager.store_offline_token.assert_awaited_once_with(
                 user_id=user_id, offline_token=offline_refresh_token
             )
@@ -181,3 +190,10 @@ class TestOfflineTokenSurvivesLogout:
             # 3. The offline token (used by API keys) is still valid after
             # logout because it was never touched by the online logout flow.
             assert await mock_token_manager.validate_offline_token(user_id=user_id)
+
+
+@pytest.fixture(autouse=True)
+def initialized_keycloak_mode(monkeypatch):
+    from server.auth import mode
+
+    monkeypatch.setattr(mode, '_auth_mode', mode.AuthMode.KEYCLOAK)

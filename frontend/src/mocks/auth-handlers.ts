@@ -2,6 +2,26 @@ import { http, HttpResponse } from "msw";
 import { GitUser } from "#/types/git";
 
 export const AUTH_HANDLERS = [
+  http.get("/api/auth/capabilities", () =>
+    HttpResponse.json({
+      mode: "keycloak",
+      password_login: false,
+      login_providers: [
+        "github",
+        "gitlab",
+        "bitbucket",
+        "azure_devops",
+        "enterprise_sso",
+        "bitbucket_data_center",
+      ],
+      registration: "admin_or_invitation",
+      email_recovery: true,
+      repository_connections: { manual_tokens: false, broker: true },
+    }),
+  ),
+  http.get("/api/auth/csrf", () =>
+    HttpResponse.json({ csrf_token: "mock-csrf-token" }),
+  ),
   http.get("/api/user/info", () => {
     const user: GitUser = {
       id: "1",

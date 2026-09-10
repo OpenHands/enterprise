@@ -10,11 +10,9 @@ from storage.api_key_store import ApiKeyStore, ApiKeyValidationResult, _as_naive
 
 
 @pytest.fixture
-def mock_user(create_org):
-    """Mock user whose org exists, so ``api_keys.org_id`` satisfies its FK."""
-    user = MagicMock()
-    user.current_org_id = create_org().id
-    return user
+def mock_user(create_user):
+    """An existing account and organization for API-key lifecycle checks."""
+    return create_user()
 
 
 @pytest.fixture
@@ -62,7 +60,7 @@ async def test_create_api_key_strips_timezone_from_expires_at(
     mock_get_user, api_key_store, async_session_maker, mock_user
 ):
     """Timezone-aware expires_at must be stored as naive UTC without shifting the value."""
-    user_id = str(uuid.uuid4())
+    user_id = str(mock_user.id)
     aware_expiry = datetime.now(UTC) + timedelta(days=30)
     mock_get_user.return_value = mock_user
 
@@ -84,7 +82,7 @@ async def test_create_api_key_strips_timezone_from_not_before(
     mock_get_user, api_key_store, async_session_maker, mock_user
 ):
     """Timezone-aware not_before must be stored as naive UTC without shifting the value."""
-    user_id = str(uuid.uuid4())
+    user_id = str(mock_user.id)
     aware_not_before = datetime.now(UTC) + timedelta(days=7)
     mock_get_user.return_value = mock_user
 
@@ -111,7 +109,7 @@ async def test_create_api_key(
 ):
     """Test creating an API key."""
     # Setup
-    user_id = str(uuid.uuid4())
+    user_id = str(mock_user.id)
     name = 'Test Key'
     mock_get_user.return_value = mock_user
 
@@ -122,7 +120,7 @@ async def test_create_api_key(
 
     # Verify
     assert result.startswith('sk-oh-')
-    mock_get_user.assert_called_once_with(user_id)
+    mock_get_user.assert_not_called()
 
     # Verify the ApiKey was created in the database using async session
     async with async_session_maker() as session:
@@ -147,7 +145,7 @@ async def test_create_api_key_unbound_with_fallback_disabled(
     key flow in ``POST /api/keys`` returned 500 -- the route inserted
     with ``None`` matching nothing.
     """
-    user_id = str(uuid.uuid4())
+    user_id = str(mock_user.id)
     name = 'Unbound Key'
     # If the fallback were still active, the store would look up the user
     # and rebind ``org_id`` to ``mock_user.current_org_id``.
@@ -182,7 +180,7 @@ async def test_create_api_key_default_fallback_still_works(
     mock_get_user, api_key_store, async_session_maker, mock_user
 ):
     """Default (fallback) behavior is preserved for existing internal callers."""
-    user_id = str(uuid.uuid4())
+    user_id = str(mock_user.id)
     name = 'Legacy-style Key'
     mock_get_user.return_value = mock_user
 
@@ -190,7 +188,7 @@ async def test_create_api_key_default_fallback_still_works(
         # No ``use_current_org_fallback`` argument -- the default kicks in.
         await api_key_store.create_api_key(user_id, name, org_id=None)
 
-    mock_get_user.assert_called_once_with(user_id)
+    mock_get_user.assert_not_called()
     async with async_session_maker() as session:
         result_db = await session.execute(
             select(ApiKey).filter(ApiKey.user_id == user_id)

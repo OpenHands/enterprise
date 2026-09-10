@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from openhands.agent_server.env_parser import from_env
 from openhands.app_server.services.injector import Injector
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
-from server.auth.token_manager import KeycloakUserInfo
+from server.auth.contracts import UserProfile
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +21,7 @@ class UserAuthorizer(ABC):
     """Class determining whether a user may be authorized."""
 
     @abstractmethod
-    async def authorize_user(
-        self, user_info: KeycloakUserInfo
-    ) -> UserAuthorizationResponse:
+    async def authorize_user(self, user_info: UserProfile) -> UserAuthorizationResponse:
         """Determine whether the info given is permitted."""
 
 

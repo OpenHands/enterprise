@@ -27,6 +27,7 @@ from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk import TextContent
+from server.auth.provider_credentials import ProviderCredentialService
 from server.auth.token_manager import TokenManager
 from storage.saas_secrets_store import SaasSecretsStore
 
@@ -389,9 +390,11 @@ class GitlabFactory:
         is_public_repo = repo_obj['visibility_level'] == 0
         project_id = payload['object_attributes']['project_id']
 
-        keycloak_user_id = await token_manager.get_user_id_from_idp_user_id(
-            user_id, ProviderType.GITLAB
+        keycloak_user_id_uuid = await ProviderCredentialService().resolve_user(
+            ProviderType.GITLAB, str(user_id)
         )
+
+        keycloak_user_id = str(keycloak_user_id_uuid) if keycloak_user_id_uuid else None
         # TODO: When keycloak_user_id is None, perhaps this should raise unauthorized.
         user_info = UserData(
             user_id=user_id,

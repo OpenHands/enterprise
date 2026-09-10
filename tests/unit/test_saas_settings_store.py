@@ -185,6 +185,13 @@ def test_persisted_mcp_config_exposes_only_mcp_secrets():
     assert persisted_mcp['local']['env'] == {'API_KEY': 'mcp-env-key'}
 
 
+@pytest.fixture(autouse=True)
+def initialized_authentication_mode(monkeypatch):
+    from server.auth import mode
+
+    monkeypatch.setattr(mode, '_auth_mode', mode.AuthMode.LOCAL)
+
+
 @pytest.fixture
 def settings_store(async_session_maker):
     store = SaasSettingsStore('5594c7b6-f959-4b81-92e9-b09c206f5081')

@@ -1,25 +1,22 @@
 import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
-import { useConfig } from "#/hooks/query/use-config";
-import { useAuthUrl } from "#/hooks/use-auth-url";
+import { useAuthCapabilities } from "#/hooks/query/use-auth-capabilities";
+import { generateIdpLinkUrl } from "#/utils/generate-idp-link-url";
 import { BrandButton } from "../brand-button";
 
 export function ConfigureAzureDevOpsAnchor() {
   const { t } = useTranslation();
-  const { data: config } = useConfig();
-
-  const authUrl = useAuthUrl({
-    appMode: config?.app_mode ?? null,
-    identityProvider: "azure_devops",
-    authUrl: config?.auth_url,
-  });
+  const { data: capabilities } = useAuthCapabilities();
 
   const handleOAuthFlow = () => {
-    if (!authUrl) {
+    if (!capabilities?.repository_connections.broker) {
       return;
     }
 
-    window.location.href = authUrl;
+    window.location.href = generateIdpLinkUrl(
+      "azure_devops",
+      new URL(window.location.href),
+    );
   };
 
   return (

@@ -1,13 +1,13 @@
+import re
 from typing import Callable, cast
+from urllib.parse import urlencode
 
-import jwt
-from fastapi import Request, Response, status
+from fastapi import HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from openhands.app_server.user_auth.user_auth import AuthType, UserAuth, get_user_auth
-from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.app_server.user_auth.user_auth import get_user_auth
 from server.auth.auth_error import (
     AuthError,
     EmailNotVerifiedError,
@@ -15,96 +15,112 @@ from server.auth.auth_error import (
     TokenRefreshError,
     TosNotAcceptedError,
 )
+from server.auth.browser_security import (
+    SESSION_COOKIE,
+    clear_session_cookie,
+    validate_csrf,
+)
+from server.auth.contracts import (
+    AuthenticationUnavailable,
+    InvalidCredentials,
+    ProviderReconnectRequired,
+)
 from server.auth.cookie_chunking import delete_chunked_cookie, read_chunked_cookie
 from server.auth.gitlab_sync import schedule_gitlab_repo_sync
-from server.auth.saas_user_auth import SaasUserAuth, token_manager
+from server.auth.saas_user_auth import SaasUserAuth
 from server.routes.auth import set_response_cookie
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite
 
 
 class SetAuthCookieMiddleware:
-    """
-    Update the auth cookie with the current authentication state if it was refreshed before sending response to user.
-    Deleting invalid cookies is handled by CookieError using FastAPIs standard error handling mechanism
-    """
+    """Apply account policy to the selected principal before endpoint effects."""
 
     async def __call__(self, request: Request, call_next: Callable):
-        keycloak_auth_cookie = read_chunked_cookie(request, 'keycloak_auth')
-        logger.debug('request_with_cookie', extra={'cookie': keycloak_auth_cookie})
         try:
-            if self._should_attach(request):
+            user_auth: SaasUserAuth | None
+            attach = self._should_attach(request)
+            if attach:
+                user_auth = cast(SaasUserAuth, await get_user_auth(request))
+                principal = user_auth.principal
+                if (
+                    principal
+                    and principal.restricted
+                    and request.url.path
+                    not in (
+                        '/api/auth/password/change',
+                        '/api/logout',
+                    )
+                ):
+                    return JSONResponse(
+                        {
+                            'detail': {
+                                'code': 'password_change_required',
+                                'redirect_url': '/auth/change-password?'
+                                + urlencode({'returnTo': '/'}),
+                            }
+                        },
+                        403,
+                    )
+                if request.method not in ('GET', 'HEAD', 'OPTIONS') and getattr(
+                    request.state, 'authentication_via_cookie', True
+                ):
+                    validate_csrf(request)
                 self._check_tos(request)
-
+                if (
+                    principal
+                    and principal.authentication_method == 'keycloak'
+                    and not user_auth.email_verified
+                    and not request.url.path.startswith('/api/email')
+                    and request.url.path
+                    not in (
+                        '/api/settings',
+                        '/api/logout',
+                        '/api/authenticate',
+                    )
+                ):
+                    raise EmailNotVerifiedError
             response: Response = await call_next(request)
-            if not keycloak_auth_cookie:
-                return response
             user_auth = self._get_user_auth(request)
-            if not user_auth or user_auth.auth_type != AuthType.COOKIE:
-                return response
-            if user_auth.refreshed:
-                if user_auth.access_token is None:
-                    return response
+            if (
+                user_auth
+                and user_auth.principal
+                and user_auth.principal.authentication_method == 'keycloak'
+                and user_auth.refreshed
+                and user_auth.access_token is not None
+                and user_auth.refresh_token is not None
+                and not self._response_changes_session(response)
+            ):
                 set_response_cookie(
                     request=request,
                     response=response,
                     keycloak_access_token=user_auth.access_token.get_secret_value(),
                     keycloak_refresh_token=user_auth.refresh_token.get_secret_value(),
-                    secure=False if request.url.hostname == 'localhost' else True,
+                    secure=request.url.hostname != 'localhost',
                     accepted_tos=user_auth.accepted_tos or False,
                 )
-
-                # On re-authentication (token refresh), kick off background sync for GitLab repos
-                user_id = await user_auth.get_user_id()
-                if user_id:
-                    schedule_gitlab_repo_sync(user_id)
-
-            if (
-                self._should_attach(request)
-                and not request.url.path.startswith('/api/email')
-                and request.url.path
-                not in ('/api/settings', '/api/logout', '/api/authenticate')
-                and not user_auth.email_verified
-            ):
-                raise EmailNotVerifiedError
-
+                schedule_gitlab_repo_sync(user_auth.user_id)
             return response
-        except EmailNotVerifiedError as e:
+        except HTTPException as exc:
             return JSONResponse(
-                {'error': str(e) or e.__class__.__name__}, status.HTTP_403_FORBIDDEN
+                {'detail': exc.detail}, exc.status_code, headers=exc.headers
             )
-        except NoCredentialsError as e:
-            logger.info(e.__class__.__name__)
-            # The user is trying to use an expired token or has not logged in. No special event handling is required
+        except ProviderReconnectRequired:
             return JSONResponse(
-                {'error': str(e) or e.__class__.__name__}, status.HTTP_401_UNAUTHORIZED
+                {'detail': {'code': 'provider_reconnect_required'}}, 409
             )
-        except TokenRefreshError as e:
-            logger.warning('auth_service_unavailable', exc_info=True)
+        except (AuthenticationUnavailable, TokenRefreshError):
             return JSONResponse(
-                {'error': str(e) or e.__class__.__name__},
-                status.HTTP_503_SERVICE_UNAVAILABLE,
+                {'error': 'Authentication service temporarily unavailable'}, 503
             )
-        except AuthError as e:
-            logger.warning('auth_error', exc_info=True)
-            # Only attempt a Keycloak logout when this looked like a cookie
-            # session going bad. Bearer-token auth failures (e.g., a
-            # ``BearerTokenError`` from a transient Keycloak refresh
-            # failure) must NOT revoke the user's offline session — that
-            # would brick every subsequent API-key call until the user
-            # logs back in through the browser. The API key's lifecycle is
-            # managed via key mint/delete, not via per-request refresh
-            # outcomes. See ``_logout`` for the defense-in-depth check.
-            if keycloak_auth_cookie:
-                try:
-                    await self._logout(request)
-                except Exception as logout_error:
-                    logger.debug(str(logout_error))
-
-            # Send a response that deletes the auth cookie if needed
-            response = JSONResponse(
-                {'error': str(e) or e.__class__.__name__}, status.HTTP_401_UNAUTHORIZED
-            )
-            if keycloak_auth_cookie:
+        except (EmailNotVerifiedError, TosNotAcceptedError) as exc:
+            return JSONResponse({'error': str(exc) or exc.__class__.__name__}, 403)
+        except (InvalidCredentials, AuthError) as exc:
+            # A failed request never revokes an upstream offline session. Local
+            # logout and account lifecycle own explicit credential revocation.
+            response = JSONResponse({'error': str(exc) or exc.__class__.__name__}, 401)
+            if request.cookies.get(SESSION_COOKIE):
+                clear_session_cookie(response)
+            if read_chunked_cookie(request, 'keycloak_auth'):
                 delete_chunked_cookie(
                     response,
                     'keycloak_auth',
@@ -114,49 +130,34 @@ class SetAuthCookieMiddleware:
             return response
 
     def _get_user_auth(self, request: Request) -> SaasUserAuth | None:
-        user_auth: UserAuth | None = getattr(request.state, 'user_auth', None)
-        if user_auth is None:
-            return None
-        return cast(SaasUserAuth, user_auth)
+        return cast(SaasUserAuth | None, getattr(request.state, 'user_auth', None))
+
+    @staticmethod
+    def _response_changes_session(response: Response) -> bool:
+        # Login/logout and other auth routes own any session cookies they set
+        # or delete. Background refresh must never overwrite those decisions.
+        return any(
+            re.fullmatch(r'keycloak_auth(?:_\d+)?|oh_session', value.split('=', 1)[0])
+            is not None
+            for value in response.headers.getlist('set-cookie')
+        )
 
     def _check_tos(self, request: Request):
-        keycloak_auth_cookie = read_chunked_cookie(request, 'keycloak_auth')
-        auth_header = request.headers.get('Authorization')
-        mcp_auth_header = request.headers.get('X-Session-API-Key')
-        api_auth_header = request.headers.get('X-Access-Token')
-        api_key_cookie = request.cookies.get('api_key')
-        accepted_tos: bool | None = False
-        if (
-            keycloak_auth_cookie is None
-            and (auth_header is None or not auth_header.startswith('Bearer '))
-            and mcp_auth_header is None
-            and api_auth_header is None
-            and api_key_cookie is None
+        if request.url.path in (
+            '/api/accept_tos',
+            '/api/logout',
+            '/api/auth/password/change',
         ):
+            return
+        user_auth = self._get_user_auth(request)
+        if user_auth is None:
             raise NoCredentialsError
-
-        if keycloak_auth_cookie:
-            try:
-                from storage.encrypt_utils import get_jwt_service
-
-                decoded = get_jwt_service().verify_jws_token(keycloak_auth_cookie)
-                accepted_tos = decoded.get('accepted_tos')
-            except (jwt.InvalidTokenError, ValueError):
-                logger.warning('Invalid JWT signature detected')
-                raise AuthError('Invalid authentication token')
-            except Exception as e:
-                logger.warning(f'JWT decode error: {str(e)}')
-                raise AuthError('Invalid authentication token') from e
-        else:
-            # Don't fail an API call if the TOS has not been accepted.
-            # The user will accept the TOS the next time they login.
-            accepted_tos = True
-
-        # Reject only an explicit False (shown the TOS, declined). Users who
-        # have not re-logged in since the last TOS change (accepted_tos is
-        # None) are not logged out.
-        if accepted_tos is False and request.url.path != '/api/accept_tos':
-            logger.warning('User has not accepted the terms of service')
+        if (
+            user_auth.principal
+            and user_auth.principal.authentication_method == 'api_key'
+        ):
+            return
+        if user_auth.accepted_tos is False:
             raise TosNotAcceptedError
 
     def _should_attach(self, request: Request) -> bool:
@@ -165,7 +166,18 @@ class SetAuthCookieMiddleware:
         path = request.url.path
 
         ignore_paths = (
+            # Logout validates cookie CSRF itself and must be able to clear
+            # expired credentials even when the upstream provider is offline.
+            '/api/logout',
             '/api/options/config',
+            '/api/auth/capabilities',
+            '/api/auth/csrf',
+            '/api/auth/authorize',
+            '/api/auth/login',
+            '/api/auth/password/forgot',
+            '/api/auth/password/reset',
+            '/api/auth/email/verify',
+            '/api/auth/invitations/enroll',
             '/api/keycloak/callback',
             '/api/billing/success',
             '/api/billing/cancel',
@@ -176,12 +188,20 @@ class SetAuthCookieMiddleware:
             # email client, often without an app session; the signed JWS
             # token in the query string is the credential.
             '/api/quota/verify',
+            '/api/refresh-tokens',
             '/api/organizations/members/invite/accept',
             '/oauth/device/authorize',
             '/oauth/device/token',
             '/api/v1/web-client/config',
         )
         if path in ignore_paths:
+            return False
+
+        # These endpoints validate the sandbox session key and then resolve
+        # a checked background principal for its owner in their dependencies.
+        if request.method == 'GET' and re.fullmatch(
+            r'/api/v1/sandboxes/[^/]+/settings/secrets(?:/[^/]+)?', path
+        ):
             return False
 
         # Allow public access to shared conversations and events
@@ -200,31 +220,7 @@ class SetAuthCookieMiddleware:
 
         is_mcp = path.startswith('/mcp')
         is_api_route = path.startswith('/api')
-        return is_api_route or is_mcp
-
-    async def _logout(self, request: Request):
-        # Log out of keycloak - this prevents issues where you did not log in with the idp you believe you used.
-        #
-        # IMPORTANT: only terminate the Keycloak session when the request
-        # carried a *cookie* (browser session). For bearer-token (API
-        # key) requests, ``user_auth.refresh_token`` is the user's stored
-        # *offline_token* loaded from ``OfflineTokenStore``. Calling
-        # ``token_manager.logout`` with that value asks Keycloak to
-        # revoke the offline session, which permanently breaks every API
-        # key minted for the user until they re-authenticate through the
-        # browser (``/keycloak/callback`` rewrites the offline_token).
-        # A single transient Keycloak hiccup that surfaces as
-        # ``BearerTokenError`` must not be allowed to cause this damage.
-        try:
-            user_auth = cast(SaasUserAuth, await get_user_auth(request))
-            if (
-                user_auth
-                and user_auth.refresh_token
-                and user_auth.auth_type == AuthType.COOKIE
-            ):
-                await token_manager.logout(user_auth.refresh_token.get_secret_value())
-        except Exception:
-            logger.debug('Error logging out')
+        return is_api_route or is_mcp or path == '/oauth/device/verify-authenticated'
 
 
 _CREDENTIALLESS_PATH_PREFIXES = (
@@ -313,6 +309,10 @@ class ApiKeyAwareCORSMiddleware:
                         requested_headers
                         & {'authorization', 'x-session-api-key', 'x-access-token'}
                     )
+            return False
+        # Cookies require strict CORS even when an invalid header may fall
+        # back to that session. Preserve Origin for downstream CSRF validation.
+        if any(name == b'cookie' and value for name, value in scope['headers']):
             return False
         for name, value in scope['headers']:
             if name == b'authorization' and value[:7].lower() == b'bearer ':

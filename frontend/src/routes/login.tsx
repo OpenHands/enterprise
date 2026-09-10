@@ -1,5 +1,6 @@
 import React from "react";
 import { useNavigate, useSearchParams, useLocation } from "react-router";
+import { useTranslation } from "react-i18next";
 import { useIsAuthed } from "#/hooks/query/use-is-authed";
 import { useConfig } from "#/hooks/query/use-config";
 import { useGitHubAuthUrl } from "#/hooks/use-github-auth-url";
@@ -9,21 +10,21 @@ import { LoginContent } from "#/components/features/auth/login-content";
 import { EmailVerificationModal } from "#/components/features/waitlist/email-verification-modal";
 import { RequestSubmittedModal } from "#/components/features/onboarding/request-submitted-modal";
 import { navigateOrHardRedirect } from "#/utils/cross-app-redirect";
+import { useAuthCapabilities } from "#/hooks/query/use-auth-capabilities";
+import { PasswordLogin } from "#/components/features/auth/password-login";
+import { getAuthReturnTo } from "#/utils/auth-redirect";
+import { I18nKey } from "#/i18n/declaration";
 
 interface LocationState {
   showRequestSubmittedModal?: boolean;
 }
 
 export function getSafeReturnTo(searchParams: URLSearchParams): string {
-  const destination =
-    searchParams.get("returnTo") || searchParams.get("redirect") || "/";
-  if (!destination.startsWith("/") || destination.startsWith("//")) {
-    return "/";
-  }
-  return destination;
+  return getAuthReturnTo(searchParams);
 }
 
 export default function LoginPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -31,6 +32,7 @@ export default function LoginPage() {
   const locationState = location.state as LocationState | null;
 
   const config = useConfig();
+  const capabilities = useAuthCapabilities();
   const { data: isAuthed, isLoading: isAuthLoading } = useIsAuthed();
   const {
     emailVerified,
@@ -42,7 +44,8 @@ export default function LoginPage() {
     userId,
   } = useEmailVerification();
 
-  const { hasInvitation, buildOAuthStateData } = useInvitation();
+  const { invitationToken, hasInvitation, buildOAuthStateData } =
+    useInvitation();
 
   const gitHubAuthUrl = useGitHubAuthUrl({
     appMode: config.data?.app_mode || null,
@@ -79,7 +82,7 @@ export default function LoginPage() {
     }
   }, [isAuthed, isAuthLoading, navigate, returnTo, searchParams]);
 
-  if (isAuthLoading || config.isLoading) {
+  if (isAuthLoading || config.isLoading || capabilities.isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-base">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
@@ -92,26 +95,49 @@ export default function LoginPage() {
     return null;
   }
 
+  if (!capabilities.data || config.isError) {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-4 bg-base p-4">
+        <p role="alert">{t(I18nKey.AUTH$UNAVAILABLE)}</p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="underline"
+        >
+          {t(I18nKey.AUTH$RETRY)}
+        </button>
+      </main>
+    );
+  }
+
   return (
     <>
       <main
         className="min-h-screen flex items-center justify-center bg-base p-4"
         data-testid="login-page"
       >
-        <LoginContent
-          githubAuthUrl={gitHubAuthUrl}
-          appMode={config.data?.app_mode}
-          authUrl={config.data?.auth_url}
-          providersConfigured={config.data?.providers_configured}
-          emailVerified={emailVerified}
-          hasDuplicatedEmail={hasDuplicatedEmail}
-          recaptchaBlocked={recaptchaBlocked}
-          hasInvitation={hasInvitation}
-          buildOAuthStateData={buildOAuthStateData}
-        />
+        {capabilities.data.mode === "local" ? (
+          <PasswordLogin
+            returnTo={returnTo}
+            invitationToken={invitationToken}
+            emailRecovery={capabilities.data.email_recovery}
+          />
+        ) : (
+          <LoginContent
+            githubAuthUrl={gitHubAuthUrl}
+            appMode={config.data?.app_mode}
+            authUrl={config.data?.auth_url}
+            providersConfigured={capabilities.data.login_providers}
+            emailVerified={emailVerified}
+            hasDuplicatedEmail={hasDuplicatedEmail}
+            recaptchaBlocked={recaptchaBlocked}
+            hasInvitation={hasInvitation}
+            buildOAuthStateData={buildOAuthStateData}
+          />
+        )}
       </main>
 
-      {emailVerificationModalOpen && (
+      {capabilities.data.mode === "keycloak" && emailVerificationModalOpen && (
         <EmailVerificationModal
           onClose={() => {
             setEmailVerificationModalOpen(false);

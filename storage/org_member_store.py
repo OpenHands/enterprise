@@ -45,6 +45,11 @@ class OrgMemberStore:
         agent_settings_diff = dict(agent_settings_diff or {})
         mcp_config = _pop_mcp_config(agent_settings_diff)
         async with a_session_maker() as session:
+            user = await session.scalar(
+                select(User).where(User.id == user_id).with_for_update()
+            )
+            if user is None or user.is_disabled:
+                raise ValueError('Account is unavailable')
             org_member = OrgMember(
                 org_id=org_id,
                 user_id=user_id,
@@ -149,6 +154,11 @@ class OrgMemberStore:
     async def remove_user_from_org(org_id: UUID, user_id: UUID) -> bool:
         """Remove a user from an organization."""
         async with a_session_maker() as session:
+            # Workspace reset/deletion locks affected accounts before inspecting
+            # their memberships. Take the same lock before removing one.
+            await session.scalar(
+                select(User).where(User.id == user_id).with_for_update()
+            )
             result = await session.execute(
                 select(OrgMember).filter(
                     OrgMember.org_id == org_id, OrgMember.user_id == user_id

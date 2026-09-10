@@ -1,7 +1,11 @@
 """Service for managing organization invitations."""
 
 import asyncio
+from datetime import UTC, datetime
 from uuid import UUID
+
+from pydantic import SecretStr
+from sqlalchemy import select
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import (
@@ -9,7 +13,7 @@ from server.auth.authorization import (
     get_user_super_role,
     has_permission,
 )
-from server.auth.token_manager import TokenManager
+from server.auth.mode import is_keycloak_enabled
 from server.constants import ROLE_ADMIN, ROLE_OWNER
 from server.routes.org_invitation_models import (
     EmailMismatchError,
@@ -19,8 +23,10 @@ from server.routes.org_invitation_models import (
     UserAlreadyMemberError,
 )
 from server.services.smtp_email_service import SMTPEmailService
+from storage.database import a_session_maker
 from storage.org_invitation import OrgInvitation
 from storage.org_invitation_store import OrgInvitationStore
+from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
@@ -320,6 +326,28 @@ class OrgInvitationService:
         Returns:
             The invitations this call newly accepted with a membership.
         """
+        if not is_keycloak_enabled():
+            if not user.email_verified or user.is_disabled:
+                return []
+            invitations = await OrgInvitationStore.get_pending_invitations_for_email(
+                (user.email or '').strip().casefold()
+            )
+            accepted_local = []
+            for invitation in invitations:
+                try:
+                    accepted_local.append(
+                        await OrgInvitationService._accept_local_invitation(
+                            invitation.token, user.id, require_verified_email=True
+                        )
+                    )
+                except (
+                    InvitationInvalidError,
+                    InvitationExpiredError,
+                    EmailMismatchError,
+                ):
+                    continue
+            return accepted_local
+
         user_email = (user.email or '').strip().lower()
         if not user_email:
             return []
@@ -406,6 +434,69 @@ class OrgInvitationService:
         return accepted
 
     @staticmethod
+    async def _accept_local_invitation(
+        token: str, user_id: UUID, *, require_verified_email: bool = False
+    ) -> OrgInvitation:
+        """Email secret consumption, membership and mailbox proof commit together."""
+        async with a_session_maker() as session, session.begin():
+            user = await session.scalar(
+                select(User).where(User.id == user_id).with_for_update()
+            )
+            if user is None or user.is_disabled:
+                raise InvitationInvalidError('Account is unavailable')
+            if require_verified_email and not user.email_verified:
+                raise InvitationInvalidError(
+                    'Verify your email before accepting invitations'
+                )
+            invitation = await session.scalar(
+                select(OrgInvitation)
+                .where(OrgInvitation.token == token)
+                .with_for_update()
+            )
+            if invitation is None:
+                raise InvitationInvalidError('Invalid invitation token')
+            if (
+                user.email or ''
+            ).strip().casefold() != invitation.email.strip().casefold():
+                raise EmailMismatchError()
+            member = await session.scalar(
+                select(OrgMember).where(
+                    OrgMember.org_id == invitation.org_id, OrgMember.user_id == user_id
+                )
+            )
+            if (
+                invitation.status == OrgInvitation.STATUS_ACCEPTED
+                and invitation.accepted_by_user_id == user_id
+                and member
+            ):
+                return invitation
+            if invitation.status != OrgInvitation.STATUS_PENDING:
+                raise InvitationInvalidError('Invitation is no longer valid')
+            now = datetime.now(UTC).replace(tzinfo=None)
+            expires = invitation.expires_at.replace(tzinfo=None)
+            if expires <= now:
+                raise InvitationExpiredError('Invitation has expired')
+            if member is None:
+                session.add(
+                    OrgMember(
+                        org_id=invitation.org_id,
+                        user_id=user_id,
+                        role_id=invitation.role_id,
+                        status='active',
+                        llm_api_key=SecretStr(''),
+                        agent_settings_diff={},
+                        conversation_settings_diff={},
+                    )
+                )
+            user.email_verified = True
+            if user.current_org_id == user.id:
+                user.current_org_id = invitation.org_id
+            invitation.status = OrgInvitation.STATUS_ACCEPTED
+            invitation.accepted_by_user_id = user_id
+            invitation.accepted_at = now
+            return invitation
+
+    @staticmethod
     async def accept_invitation(token: str, user_id: UUID) -> OrgInvitation:
         """Accept an organization invitation.
 
@@ -429,10 +520,12 @@ class OrgInvitationService:
             InvitationExpiredError: If invitation has expired
             UserAlreadyMemberError: If user is already a member
         """
+        if not is_keycloak_enabled():
+            return await OrgInvitationService._accept_local_invitation(token, user_id)
+
         logger.info(
             'Accepting organization invitation',
             extra={
-                'token_prefix': token[:10] + '...' if len(token) > 10 else token,
                 'user_id': str(user_id),
             },
         )
@@ -475,22 +568,13 @@ class OrgInvitationService:
             raise InvitationInvalidError('User not found')
 
         user_email = user.email
-        # Fallback: fetch email from Keycloak if not in database (for existing users).
-        # When found, persist it back to User.email so the members list shows it
-        # without requiring the user to log out and log back in.
         if not user_email:
-            token_manager = TokenManager()
-            user_info = await token_manager.get_user_info_from_user_id(str(user_id))
-            if user_info:
-                user_email = user_info.get('email')
-                if user_email:
-                    await UserStore.backfill_user_email(
-                        str(user_id),
-                        {
-                            'email': user_email,
-                            'email_verified': user_info.get('emailVerified', False),
-                        },
-                    )
+            from server.auth.user_management import EnterpriseUserManagementService
+
+            user = await EnterpriseUserManagementService().ensure_authenticated_account(
+                user_id
+            )
+            user_email = user.email if user else None
 
         if not user_email:
             raise EmailMismatchError('Your account does not have an email address')

@@ -11,6 +11,7 @@ from sqlalchemy import or_, select, update
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.api_key import ApiKey
 from storage.database import a_session_maker
+from storage.user import User
 from storage.user_store import UserStore
 
 
@@ -118,17 +119,18 @@ class ApiKeyStore:
             The generated API key
         """
         api_key = self.generate_api_key()
-        if org_id is None and use_current_org_fallback:
-            user = await UserStore.get_user_by_id(user_id)
-            if user is None:
-                raise ValueError(f'User not found: {user_id}')
-            org_id = user.current_org_id
-
         # Column is TIMESTAMP WITHOUT TIME ZONE; strip tzinfo before writing.
         expires_at = _as_naive(expires_at)
         not_before = _as_naive(not_before)
 
         async with a_session_maker() as session:
+            user = await session.scalar(
+                select(User).where(User.id == UUID(user_id)).with_for_update()
+            )
+            if user is None or user.is_disabled:
+                raise ValueError('Account is disabled or missing')
+            if org_id is None and use_current_org_fallback:
+                org_id = user.current_org_id
             key_record = ApiKey(
                 key=api_key,
                 user_id=user_id,
@@ -168,77 +170,35 @@ class ApiKeyStore:
             The API key (existing or newly created)
         """
         system_key_name = self.make_system_key_name(name)
-
-        async with a_session_maker() as session:
-            result = await session.execute(
-                select(ApiKey).filter(
+        async with a_session_maker() as session, session.begin():
+            user = await session.scalar(
+                select(User).where(User.id == UUID(user_id)).with_for_update()
+            )
+            if user is None or user.is_disabled:
+                raise ValueError('Account is disabled or missing')
+            existing_key = await session.scalar(
+                select(ApiKey).where(
                     ApiKey.user_id == user_id,
                     ApiKey.org_id == org_id,
                     ApiKey.name == system_key_name,
                 )
             )
-            existing_key = result.scalars().first()
-
             if existing_key:
-                if existing_key.expires_at:
-                    now = datetime.now(UTC)
-                    expires_at = _as_utc_aware(existing_key.expires_at)
-
-                    if expires_at and expires_at < now:
-                        logger.info(
-                            'System API key expired, re-issuing',
-                            extra={
-                                'user_id': user_id,
-                                'org_id': str(org_id),
-                                'key_name': system_key_name,
-                            },
-                        )
-                        await session.delete(existing_key)
-                        await session.commit()
-                    else:
-                        logger.debug(
-                            'Returning existing system API key',
-                            extra={
-                                'user_id': user_id,
-                                'org_id': str(org_id),
-                                'key_name': system_key_name,
-                            },
-                        )
-                        return existing_key.key
-                else:
-                    logger.debug(
-                        'Returning existing system API key',
-                        extra={
-                            'user_id': user_id,
-                            'org_id': str(org_id),
-                            'key_name': system_key_name,
-                        },
-                    )
+                expires_at = _as_utc_aware(existing_key.expires_at)
+                if expires_at is None or expires_at >= datetime.now(UTC):
                     return existing_key.key
-
-        api_key = self.generate_api_key()
-
-        async with a_session_maker() as session:
-            key_record = ApiKey(
-                key=api_key,
-                user_id=user_id,
-                org_id=org_id,
-                name=system_key_name,
-                expires_at=None,  # System keys never expire
+                await session.delete(existing_key)
+            api_key = self.generate_api_key()
+            session.add(
+                ApiKey(
+                    key=api_key,
+                    user_id=user_id,
+                    org_id=org_id,
+                    name=system_key_name,
+                    expires_at=None,
+                )
             )
-            session.add(key_record)
-            await session.commit()
-
-        logger.info(
-            'Created system API key',
-            extra={
-                'user_id': user_id,
-                'org_id': str(org_id),
-                'key_name': system_key_name,
-            },
-        )
-
-        return api_key
+            return api_key
 
     async def validate_api_key(self, api_key: str) -> ApiKeyValidationResult | None:
         """Validate an API key and return the associated user_id and org_id if valid.

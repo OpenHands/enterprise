@@ -4,7 +4,7 @@ from typing import Any, Optional
 from uuid import UUID
 
 from pydantic import SecretStr
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
@@ -474,6 +474,10 @@ class OrgStore:
     @staticmethod
     def get_kwargs_from_settings(settings: Settings):
         dumped = settings.model_dump(mode='json', context={'expose_secrets': True})
+        # Per-user LLM credentials belong in encrypted OrgMember storage, never
+        # in the organization's plaintext settings JSON.
+        if isinstance(dumped.get('agent_settings', {}).get('llm'), dict):
+            dumped['agent_settings']['llm'].pop('api_key', None)
         return {
             field: dumped[field] for field in _ORG_SETTINGS_FIELDS if field in dumped
         }
@@ -515,77 +519,60 @@ class OrgStore:
 
     @staticmethod
     async def delete_org_cascade(
-        org_id: UUID, requester_user_id: str | None = None
+        org_id: UUID,
+        requester_user_id: str | None = None,
+        *,
+        delete_account: bool = False,
     ) -> Org | None:
-        """Delete organization and all associated data in cascade, including external LiteLLM cleanup.
+        """Clear workspace data and preserve a valid account graph atomically.
 
-        Users that belong to the org being deleted are handled in three ways:
-
-        * Users with a membership in at least one other org have their
-          ``current_org_id`` reassigned to one of those alternative orgs.
-        * If the *requester themselves* is the only orphaned user (sole member
-          of the org being deleted — the personal-org self-service case), the
-          requester's user row is cascade-deleted in the same transaction. The
-          Keycloak account is left untouched, so on the user's next login
-          ``UserStore.create_user`` re-onboards them as a brand-new user. The
-          new ``User.id`` and ``Org.id`` are derived from the Keycloak ``sub``
-          claim, which is stable across logins, so the re-created personal-org
-          identity matches the deleted one (``User.id == Org.id ==
-          UUID(keycloak.sub)``) and downstream automations that key on
-          ``keycloak_user_id`` continue to resolve correctly.
-        * If any orphan is **not** the requester (i.e., a multi-user org where
-          another member has no other org), ``OrphanedUserError`` is raised
-          and the whole transaction is rolled back. The org owner must
-          transfer or remove those members before deletion can proceed —
-          we refuse to silently destroy accounts that did not consent.
-
-        Args:
-            org_id: UUID of the organization to delete
-            requester_user_id: Keycloak ``sub`` of the user initiating the
-                deletion. Required for the sole-orphan personal-org case;
-                when ``None`` (e.g., internal callers), any orphan triggers
-                ``OrphanedUserError``.
-
-        Returns:
-            Org: The deleted organization object, or None if not found
-
-        Raises:
-            OrphanedUserError: If any non-requester member of the org would be
-                left without any organization by the deletion.
-            Exception: If database operations or LiteLLM cleanup fail
+        Local personal-workspace reset retains the User, credential and same-ID
+        Org, and restores owner membership. Legacy Keycloak self-service reset
+        removes the sole requester for re-onboarding with the same upstream ID.
+        Explicit account deletion opts into removal through ``delete_account``.
+        Other orphaned members prevent the operation. The final active instance
+        administrator cannot be removed by the legacy or account-deletion paths.
         """
+        from server.auth.mode import is_keycloak_enabled
+        from server.services.admin_user_lifecycle_service import LastSuperAdminError
+        from storage.role import Role
+        from storage.user_store import UserStore
+
+        local_reset = (
+            not is_keycloak_enabled()
+            and not delete_account
+            and requester_user_id == str(org_id)
+        )
         async with a_session_maker() as session:
-            # First get the organization to return it
-            result = await session.execute(select(Org).filter(Org.id == org_id))
-            org = result.scalars().first()
+            # Stable policy lock first, then affected accounts, then organization.
+            # Membership mutation paths take the same User lock, keeping orphan
+            # detection and the reset atomic with membership changes.
+            admin_role_id = await UserStore.lock_super_admin_policy(session)
+            affected_users = list(
+                await session.scalars(
+                    select(User)
+                    .where(
+                        (User.current_org_id == org_id)
+                        | User.id.in_(
+                            select(OrgMember.user_id).where(OrgMember.org_id == org_id)
+                        )
+                    )
+                    .order_by(User.id)
+                    .with_for_update()
+                )
+            )
+            org = await session.scalar(
+                select(Org).where(Org.id == org_id).with_for_update()
+            )
             if not org:
                 return None
+            org_parameter = (
+                str(org_id) if session.bind.dialect.name == 'postgresql' else org_id.hex
+            )
 
             try:
-                # Preflight orphan check — fail fast before any writes.
-                #
-                # The orphan SELECT only reads ``user`` and ``org_member``,
-                # neither of which is modified by the org-data cleanup
-                # below, so we hoist it to the top of the transaction. If
-                # the check fails we raise immediately and the rollback
-                # has essentially no write work to undo.
-                #
-                # Running it inside the transaction (rather than as a
-                # separate pre-flight call before opening the session) is
-                # deliberate: it ensures the orphan computation shares the
-                # same snapshot/locks as the destructive writes below, so
-                # another session cannot create a new orphan between
-                # check-and-act.
-                #
-                # No row-level lock (``FOR UPDATE``) is acquired here. A
-                # concurrent session could in principle insert or remove
-                # an ``org_member`` row for the requester between this
-                # read and the ``DELETE User`` write below; we accept
-                # that as an unlikely edge case for the personal-org
-                # self-service path, where the requester is the only
-                # actor with permission to mutate their own memberships.
-                # Promote to ``FOR UPDATE`` if this code starts running
-                # on behalf of multi-actor flows.
+                # The policy, affected users and organization are locked before
+                # determining which members would otherwise lose their workspace.
                 orphaned_result = await session.execute(
                     text("""
                         SELECT u.id
@@ -596,9 +583,11 @@ class OrgStore:
                             WHERE om.user_id = u.id AND om.org_id != :org_id
                         )
                     """),
-                    {'org_id': str(org_id)},
+                    {'org_id': org_parameter},
                 )
-                orphaned_user_ids = [str(row[0]) for row in orphaned_result.fetchall()]
+                orphaned_user_ids = [
+                    str(UUID(str(row[0]))) for row in orphaned_result.fetchall()
+                ]
 
                 # Split the orphaned users into the requester and everyone
                 # else. Only the requester is cascade-deleted: by calling
@@ -616,6 +605,24 @@ class OrgStore:
                     uid for uid in orphaned_user_ids if uid == requester_user_id
                 ]
 
+                deleting_users = [
+                    user
+                    for user in affected_users
+                    if str(user.id) in requester_orphan_ids
+                ]
+                if not local_reset:
+                    for user in deleting_users:
+                        if user.is_disabled and not delete_account:
+                            raise PermissionError(
+                                'Disabled accounts cannot reset their workspace'
+                            )
+                        if await UserStore.is_last_active_admin(
+                            session, user, admin_role_id
+                        ):
+                            raise LastSuperAdminError(
+                                'Cannot delete the last active superadmin'
+                            )
+
                 # 1. Delete conversation data for organization conversations
                 await session.execute(
                     text("""
@@ -624,7 +631,7 @@ class OrgStore:
                         SELECT conversation_id FROM conversation_metadata_saas WHERE org_id = :org_id
                     )
                     """),
-                    {'org_id': str(org_id)},
+                    {'org_id': org_parameter},
                 )
 
                 await session.execute(
@@ -634,39 +641,39 @@ class OrgStore:
                         SELECT CAST(conversation_id AS UUID) FROM conversation_metadata_saas WHERE org_id = :org_id
                     )
                     """),
-                    {'org_id': str(org_id)},
+                    {'org_id': org_parameter},
                 )
 
                 # 2. Delete organization-owned data tables (direct org_id foreign keys)
                 await session.execute(
                     text('DELETE FROM billing_sessions WHERE org_id = :org_id'),
-                    {'org_id': str(org_id)},
+                    {'org_id': org_parameter},
                 )
                 await session.execute(
                     text(
                         'DELETE FROM conversation_metadata_saas WHERE org_id = :org_id'
                     ),
-                    {'org_id': str(org_id)},
+                    {'org_id': org_parameter},
                 )
                 await session.execute(
                     text('DELETE FROM custom_secrets WHERE org_id = :org_id'),
-                    {'org_id': str(org_id)},
+                    {'org_id': org_parameter},
                 )
                 await session.execute(
                     text('DELETE FROM api_keys WHERE org_id = :org_id'),
-                    {'org_id': str(org_id)},
+                    {'org_id': org_parameter},
                 )
                 await session.execute(
                     text('DELETE FROM slack_conversation WHERE org_id = :org_id'),
-                    {'org_id': str(org_id)},
+                    {'org_id': org_parameter},
                 )
                 await session.execute(
                     text('DELETE FROM slack_users WHERE org_id = :org_id'),
-                    {'org_id': str(org_id)},
+                    {'org_id': org_parameter},
                 )
                 await session.execute(
                     text('DELETE FROM stripe_customers WHERE org_id = :org_id'),
-                    {'org_id': str(org_id)},
+                    {'org_id': org_parameter},
                 )
 
                 # Budget rows do not use ON DELETE CASCADE. Overrides also
@@ -718,7 +725,7 @@ class OrgStore:
                 # this block MUST be updated to release it, or the
                 # ``DELETE User`` below will raise a runtime FK violation
                 # with no obvious pointer back to this site. ***
-                if requester_orphan_ids:
+                if requester_orphan_ids and not local_reset:
                     await session.execute(
                         delete(OrgInvitation).where(
                             OrgInvitation.inviter_id.in_(requester_orphan_ids)
@@ -758,36 +765,91 @@ class OrgStore:
                             LIMIT 1
                         )
                         WHERE "user".current_org_id = :org_id
+                        AND (:local_reset = false OR "user".id != :org_id)
+                        AND EXISTS (SELECT 1 FROM org_member other_membership
+                            WHERE other_membership.user_id = "user".id
+                            AND other_membership.org_id != :org_id)
                     """),
-                    {'org_id': str(org_id)},
+                    {'org_id': org_parameter, 'local_reset': local_reset},
                 )
 
                 # 4. Delete organization memberships (now safe)
                 await session.execute(
                     text('DELETE FROM org_member WHERE org_id = :org_id'),
-                    {'org_id': str(org_id)},
+                    {'org_id': org_parameter},
                 )
 
-                # 5. Finally delete the organization.
-                # ``AsyncSession.delete`` is a coroutine; without ``await``
-                # it is a silent no-op — the ORM never flushes the DELETE
-                # and the ``org`` row survives the transaction even though
-                # every preceding step committed. Forgetting the ``await``
-                # here would leave the next sign-in colliding on
-                # ``org_pkey`` in ``UserStore.create_user``, because both
-                # the surviving row and the new row are keyed on the same
-                # stable Keycloak ``sub``. Awaited explicitly to make that
-                # invariant load-bearing rather than incidental.
-                await session.delete(org)
+                await session.execute(
+                    delete(OrgInvitation).where(OrgInvitation.org_id == org_id)
+                )
+                await session.execute(
+                    delete(OrgGitClaim).where(OrgGitClaim.org_id == org_id)
+                )
+                if local_reset:
+                    from storage.jira_dc_workspace import JiraDcWorkspace
+                    from storage.jira_workspace import JiraWorkspace
+
+                    # Retaining the Org row must still apply the normal deletion
+                    # semantics of integration FKs that use ON DELETE SET NULL.
+                    for workspace in (JiraWorkspace, JiraDcWorkspace):
+                        await session.execute(
+                            update(workspace)
+                            .where(workspace.org_id == org_id)
+                            .values(org_id=None)
+                        )
+                    # Keep the stable personal-org row while clearing settings.
+                    # Reset account/workspace relationships in the same transaction;
+                    # credentials, account profile, instance role and sessions stay.
+                    user = next(user for user in affected_users if user.id == org_id)
+                    defaults = UserStore.default_settings()
+                    for column in Org.__table__.columns:
+                        if column.name not in (
+                            'id',
+                            'name',
+                            'contact_name',
+                            'contact_email',
+                        ):
+                            if column.default is not None:
+                                default = column.default.arg
+                                value = default(None) if callable(default) else default
+                            else:
+                                value = None
+                            setattr(org, column.name, value)
+                    for key, value in OrgStore.get_kwargs_from_settings(
+                        defaults
+                    ).items():
+                        if key not in ('id', 'name'):
+                            setattr(org, key, value)
+                    org.contact_email = user.email
+                    owner = await session.scalar(
+                        select(Role).where(Role.name == 'owner')
+                    )
+                    if owner is None:
+                        raise ValueError('Owner role is missing')
+                    session.add(
+                        OrgMember(
+                            org_id=org_id,
+                            user_id=user.id,
+                            role_id=owner.id,
+                            status='active',
+                            llm_api_key=defaults.agent_settings.llm.api_key
+                            or SecretStr(''),
+                            agent_settings_diff={},
+                            conversation_settings_diff={},
+                        )
+                    )
+                    user.current_org_id = org_id
+                else:
+                    await session.delete(org)
 
                 # 6. Clean up LiteLLM team before committing transaction
                 logger.info(
                     'Deleting LiteLLM team within database transaction',
-                    extra={'org_id': str(org_id)},
+                    extra={'org_id': org_parameter},
                 )
                 await LiteLlmManager.delete_team(str(org_id))
 
-                if requester_orphan_ids:
+                if requester_orphan_ids and not local_reset:
                     for user_id in requester_orphan_ids:
                         await OrgStore._delete_litellm_user_best_effort(user_id, org_id)
 

@@ -47,6 +47,7 @@ from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import JIRA_ENABLE_OAUTH, JIRA_HTTP_TIMEOUT
+from server.auth.provider_compatibility import resolve_broker_email
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
 from storage.jira_integration_store import JiraIntegrationStore
@@ -292,9 +293,7 @@ class JiraManager(Manager[JiraViewInterface]):
                 return None, None
 
             jira_user = None
-            keycloak_user_id = await self.token_manager.get_user_id_from_user_email(
-                payload.user_email
-            )
+            keycloak_user_id = await resolve_broker_email(payload.user_email)
             if not keycloak_user_id:
                 logger.warning(
                     f'[Jira] No OpenHands user found for email: {payload.user_email}'

@@ -7,6 +7,7 @@ import {
 
 export default [
   route("login", "routes/login.tsx"),
+  route("auth/:action", "routes/account-action.tsx"),
   route("onboarding", "routes/onboarding-form.tsx"),
   route("information-request", "routes/information-request.tsx"),
   route("automations/*", "routes/automations-redirect.tsx"),
@@ -37,6 +38,7 @@ export default [
       route("mcp", "routes/mcp-settings.tsx"),
       route("skills", "routes/skills-settings.tsx"),
       route("user", "routes/user-settings.tsx"),
+      route("accounts", "routes/manage-accounts.tsx"),
       route("integrations", "routes/git-settings.tsx"),
       route("app", "routes/app-settings.tsx"),
       route("billing", "routes/billing.tsx"),

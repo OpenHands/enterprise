@@ -1,5 +1,6 @@
 """API routes for organization invitations."""
 
+from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -284,14 +285,18 @@ async def accept_invitation_redirect(
     Returns:
         RedirectResponse: Redirect to home page with invitation_token query param
     """
-    base_url = str(request.base_url).rstrip('/')
+    from server.auth.mode import is_keycloak_enabled
 
-    logger.info(
-        'Invitation accept: redirecting to frontend for acceptance',
-        extra={'token_prefix': token[:10] + '...'},
+    if not is_keycloak_enabled():
+        # One destination for everyone avoids exposing whether the invitation's
+        # email already has an account. Enrollment offers the existing-account
+        # sign-in path and never replaces a pre-existing credential.
+        return RedirectResponse(
+            '/auth/enroll?' + urlencode({'invitation_token': token}), status_code=302
+        )
+    return RedirectResponse(
+        '/?' + urlencode({'invitation_token': token}), status_code=302
     )
-
-    return RedirectResponse(f'{base_url}/?invitation_token={token}', status_code=302)
 
 
 @accept_router.post('/accept', response_model=AcceptInvitationResponse)

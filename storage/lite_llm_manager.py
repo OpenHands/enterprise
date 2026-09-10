@@ -12,7 +12,6 @@ from pydantic import SecretStr
 
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.http_session import httpx_verify_option
-from server.auth.token_manager import TokenManager
 from server.constants import (
     LITE_LLM_API_KEY,
     LITE_LLM_API_URL,
@@ -205,10 +204,11 @@ class LiteLlmManager:
         local_deploy = os.environ.get('LOCAL_DEPLOYMENT', None)
         key = LITE_LLM_API_KEY
         if not local_deploy:
-            token_manager = TokenManager()
-            keycloak_user_info = (
-                await token_manager.get_user_info_from_user_id(keycloak_user_id) or {}
-            )
+            from storage.user_store import UserStore
+
+            user = await UserStore.get_user_by_id(keycloak_user_id)
+            if user is None or user.is_disabled:
+                return None
 
             async with httpx.AsyncClient(
                 headers={
@@ -267,44 +267,14 @@ class LiteLlmManager:
                 )
 
                 if add_user_to_team:
-                    if create_user:
-                        # create_user is True only when no OpenHands User row exists,
-                        # so a pre-existing LiteLLM record under this id is a stale
-                        # orphan (e.g. from an account reset). Reset it so _create_user
-                        # rebuilds a clean record rather than re-attaching it. Best-
-                        # effort: a failed reset must not block onboarding — _create_user
-                        # below still tolerates a surviving record (409).
-                        if await LiteLlmManager._user_exists(client, keycloak_user_id):
-                            logger.info(
-                                'LiteLlmManager:create_entries:reset_stale_litellm_user',
-                                extra={'org_id': org_id, 'user_id': keycloak_user_id},
-                            )
-                            try:
-                                await LiteLlmManager._delete_user(
-                                    client, keycloak_user_id
-                                )
-                            except Exception as exc:
-                                logger.warning(
-                                    'LiteLlmManager:create_entries:reset_stale_litellm_user_failed',
-                                    extra={
-                                        'org_id': org_id,
-                                        'user_id': keycloak_user_id,
-                                        'error': str(exc),
-                                    },
-                                )
-
-                        user_created = await LiteLlmManager._create_user(
-                            client, keycloak_user_info.get('email'), keycloak_user_id
-                        )
-                        if not user_created:
-                            logger.error(
-                                'create_entries_failed_user_creation',
-                                extra={
-                                    'org_id': org_id,
-                                    'user_id': keycloak_user_id,
-                                },
-                            )
-                            return None
+                    # Accounts commit before remote provisioning. Creating an
+                    # existing LiteLLM identity is idempotent; never reset it on
+                    # retry and never look up its email through an identity provider.
+                    user_created = await LiteLlmManager._create_user(
+                        client, user.email, keycloak_user_id
+                    )
+                    if not user_created:
+                        return None
 
                     # Verify user exists before proceeding with key generation
                     user_exists = await LiteLlmManager._user_exists(

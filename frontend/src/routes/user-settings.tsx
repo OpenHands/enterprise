@@ -3,11 +3,14 @@ import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSettings } from "#/hooks/query/use-settings";
 import { SETTINGS_QUERY_KEYS } from "#/hooks/query/query-keys";
-import { openHands } from "#/api/open-hands-axios";
+import { useUpdateEmail } from "#/hooks/mutation/use-update-email";
 import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import { useEmailVerification } from "#/hooks/use-email-verification";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { useConfig } from "#/hooks/query/use-config";
+import { useAuthCapabilities } from "#/hooks/query/use-auth-capabilities";
+import { LocalAccountSettings } from "#/components/features/auth/local-account-settings";
+import { I18nKey } from "#/i18n/declaration";
 
 // Email validation regex pattern
 const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
@@ -127,7 +130,8 @@ function VerificationAlert() {
 
 // These components have been replaced with toast notifications
 
-function UserSettingsScreen() {
+function KeycloakUserSettingsScreen() {
+  const { mutateAsync: updateEmail } = useUpdateEmail();
   const { t } = useTranslation();
   const { data: settings, isLoading, refetch } = useSettings();
   const { data: config } = useConfig();
@@ -195,7 +199,7 @@ function UserSettingsScreen() {
     if (email === originalEmail || !isEmailValid) return;
     try {
       setIsSaving(true);
-      await openHands.post("/api/email", { email }, { withCredentials: true });
+      await updateEmail(email);
       setOriginalEmail(email);
       // Display toast notification instead of setting state
       displaySuccessToast(t("SETTINGS$EMAIL_SAVED_SUCCESSFULLY"));
@@ -243,4 +247,12 @@ function UserSettingsScreen() {
   );
 }
 
-export default UserSettingsScreen;
+export default function UserSettingsScreen() {
+  const { t } = useTranslation();
+  const { data: capabilities, isLoading } = useAuthCapabilities();
+  if (isLoading) return <p role="status">{t(I18nKey.HOME$LOADING)}</p>;
+  if (!capabilities) return <p role="alert">{t(I18nKey.AUTH$UNAVAILABLE)}</p>;
+  if (capabilities.mode === "local")
+    return <LocalAccountSettings emailRecovery={capabilities.email_recovery} />;
+  return <KeycloakUserSettingsScreen />;
+}

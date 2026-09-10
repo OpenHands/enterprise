@@ -89,9 +89,9 @@ describe("GitProviderConnection", () => {
     // Assert
     const target = new URL(window.location.href);
     expect(target.pathname).toBe(
-      "/realms/allhands/protocol/openid-connect/auth",
+      "/api/auth/providers/github/link",
     );
-    expect(target.searchParams.get("kc_action")).toBe("idp_link:github");
+    expect(target.searchParams.get("redirect_url")).toBe("/settings/integrations");
   });
 
   it("should disconnect the provider after confirmation", async () => {

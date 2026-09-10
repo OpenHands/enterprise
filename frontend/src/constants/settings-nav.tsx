@@ -133,6 +133,12 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "user",
   },
   {
+    icon: <FiUsers size={22} />,
+    to: "/settings/accounts",
+    text: "AUTH$MANAGE_ACCOUNTS",
+    section: "user",
+  },
+  {
     icon: <SettingsGearIcon width={22} height={22} />,
     to: "/settings/app",
     text: "SETTINGS$NAV_APPLICATION",

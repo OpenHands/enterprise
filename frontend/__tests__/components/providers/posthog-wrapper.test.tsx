@@ -18,6 +18,7 @@ describe("PostHogWrapper", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     queryClient.clear();
+    window.history.replaceState(null, "", "/");
     // Reset URL hash
     window.location.hash = "";
     // Clear sessionStorage
@@ -203,4 +204,14 @@ describe("PostHogWrapper", () => {
 
     expect(mockPostHogProvider).not.toHaveBeenCalled();
   });
+  it("does not initialize analytics on account action pages containing fragments", async () => {
+    window.history.replaceState(null, "", "/auth/reset-password#token=secret-action-token");
+    queryClient.clear();
+    await act(async () => {
+      render(<PostHogWrapper><div data-testid="child" /></PostHogWrapper>);
+    });
+    expect(screen.getByTestId("child")).toBeInTheDocument();
+    expect(mockPostHogProvider).not.toHaveBeenCalled();
+  });
+
 });

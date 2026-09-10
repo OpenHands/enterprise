@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 
@@ -30,6 +31,7 @@ from server.auth.constants import (  # noqa: E402
     GITHUB_APP_CLIENT_ID,
     GITLAB_APP_CLIENT_ID,
 )
+from server.auth.mode import ensure_authentication_initialized  # noqa: E402
 from server.constants import (  # noqa: E402
     PERMITTED_CORS_ORIGINS,
     USER_PROVISIONING_ENABLED,
@@ -45,6 +47,9 @@ from server.routes.agent_profiles import router as agent_profiles_router  # noqa
 from server.routes.analytics_events import analytics_events_router  # noqa: E402
 from server.routes.api_keys import api_router as api_keys_router  # noqa: E402
 from server.routes.auth import api_router, oauth_router  # noqa: E402
+from server.routes.auth_capabilities import (  # noqa: E402
+    router as auth_capabilities_router,  # noqa: E402
+)
 from server.routes.billing import billing_router  # noqa: E402
 from server.routes.email import api_router as email_router  # noqa: E402
 from server.routes.feature_flags import (  # noqa: E402
@@ -54,6 +59,7 @@ from server.routes.github_proxy import add_github_proxy_routes  # noqa: E402
 from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
 from server.routes.integration.slack import slack_router  # noqa: E402
+from server.routes.local_auth import router as local_auth_router  # noqa: E402
 from server.routes.oauth_device import oauth_device_router  # noqa: E402
 from server.routes.org_invitations import (  # noqa: E402
     accept_router as invitation_accept_router,
@@ -86,6 +92,22 @@ from server.sharing.shared_event_router import (  # noqa: E402
 from server.verified_models.verified_model_router import (  # noqa: E402
     api_router as verified_models_router,
 )
+
+_enterprise_base_lifespan = base_app.router.lifespan_context
+
+
+@asynccontextmanager
+async def enterprise_lifespan(app):
+    # Deployment migrations complete before this process starts. Keep this
+    # mandatory initialization independent of optional lifespan configuration.
+    async with _enterprise_base_lifespan(app):
+        await ensure_authentication_initialized()
+        yield
+
+
+base_app.router.lifespan_context = enterprise_lifespan
+base_app.include_router(auth_capabilities_router)
+base_app.include_router(local_auth_router)
 
 directory = os.getenv('FRONTEND_DIRECTORY', './frontend/build')
 

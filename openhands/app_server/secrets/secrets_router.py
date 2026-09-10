@@ -14,13 +14,9 @@ from redis.asyncio.lock import Lock as RedisLock
 from redis.exceptions import LockError as RedisLockError
 
 from openhands.app_server.config_api.config_models import AppMode
-from openhands.app_server.errors import AuthError
 from openhands.app_server.integrations.provider import (
-    PROVIDER_TOKEN_TYPE,
     CustomSecret,
-    ProviderType,
 )
-from openhands.app_server.integrations.utils import validate_provider_token
 from openhands.app_server.secrets.secrets_models import (
     CustomSecretCreate,
     CustomSecretPage,
@@ -30,7 +26,6 @@ from openhands.app_server.secrets.secrets_models import (
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.settings.settings_models import POSTProviderModel
 from openhands.app_server.user_auth import (
-    get_provider_tokens,
     get_secrets,
     get_secrets_store,
     get_user_id,
@@ -98,10 +93,12 @@ _SECRETS_WRITE_LOCK_BLOCKING_TIMEOUT_SECONDS = 10
 _user_secrets_write_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
-def _secrets_write_lock_key(user_id: str | None, secrets_store: SecretsStore) -> str:
+def _secrets_write_lock_key(
+    user_id: str | None, secrets_store: SecretsStore, *, account_wide: bool = False
+) -> str:
     """Build the per-user (+ per-org) lock key for serializing secret writes."""
     org_id = getattr(secrets_store, 'effective_org_id', None)
-    org_part = str(org_id) if org_id else 'default'
+    org_part = 'providers' if account_wide else str(org_id) if org_id else 'default'
     user_part = user_id or '<anonymous>'
     return f'{_SECRETS_WRITE_LOCK_KEY_PREFIX}:{user_part}:{org_part}'
 
@@ -125,7 +122,7 @@ def _reset_user_secrets_locks() -> None:
 
 @asynccontextmanager
 async def _secrets_write_lock(
-    user_id: str | None, secrets_store: SecretsStore
+    user_id: str | None, secrets_store: SecretsStore, *, account_wide: bool = False
 ) -> AsyncIterator[None]:
     """Serialize read-modify-write secret mutations for a single user.
 
@@ -135,7 +132,9 @@ async def _secrets_write_lock(
     process. On SaaS, Redis being unavailable causes a 503 — failing the
     request is safer than letting the race come back.
     """
-    lock_key = _secrets_write_lock_key(user_id, secrets_store)
+    lock_key = _secrets_write_lock_key(
+        user_id, secrets_store, account_wide=account_wide
+    )
     if _is_saas_mode():
         redis = get_redis_client_async()
         redis_lock: RedisLock | None = None
@@ -183,51 +182,6 @@ async def _secrets_write_lock(
 
 
 # =================================================
-# SECTION: Helper functions for git providers
-# =================================================
-
-
-def _check_token_type(
-    confirmed_token_type: ProviderType | None, token_type: ProviderType
-) -> None:
-    """Returns error message if token type doesn't match, None otherwise."""
-    if not confirmed_token_type or confirmed_token_type != token_type:
-        raise AuthError(
-            f'Invalid token. Please make sure it is a valid {token_type.value} token.'
-        )
-
-
-async def check_provider_tokens(
-    incoming_provider_tokens: POSTProviderModel,
-    existing_provider_tokens: PROVIDER_TOKEN_TYPE | None,
-) -> None:
-    if incoming_provider_tokens.provider_tokens:
-        # Determine whether tokens are valid
-        for token_type, token_value in incoming_provider_tokens.provider_tokens.items():
-            if token_value.token:
-                confirmed_token_type = await validate_provider_token(
-                    token_value.token, token_value.host
-                )  # FE always sends latest host
-                _check_token_type(confirmed_token_type, token_type)
-
-            existing_token = (
-                existing_provider_tokens.get(token_type, None)
-                if existing_provider_tokens
-                else None
-            )
-            if (
-                existing_token
-                and (existing_token.host != token_value.host)
-                and existing_token.token
-            ):
-                confirmed_token_type = await validate_provider_token(
-                    existing_token.token, token_value.host
-                )
-                # Host has changed, check it against existing token
-                _check_token_type(confirmed_token_type, token_type)
-
-
-# =================================================
 # SECTION: Git Provider Token Endpoints
 # =================================================
 
@@ -239,7 +193,6 @@ async def check_provider_tokens(
 async def store_provider_tokens(
     provider_info: POSTProviderModel,
     secrets_store: SecretsStore = Depends(get_secrets_store),
-    provider_tokens: PROVIDER_TOKEN_TYPE | None = Depends(get_provider_tokens),
     user_id: str | None = Depends(get_user_id),
 ) -> EditResponse:
     """Store git provider tokens.
@@ -251,31 +204,10 @@ async def store_provider_tokens(
         401: Invalid token
         500: Error storing git providers
     """
-    await check_provider_tokens(provider_info, provider_tokens)
-
-    async with _secrets_write_lock(user_id, secrets_store):
-        user_secrets = await secrets_store.load()
-        if not user_secrets:
-            user_secrets = Secrets()
-
-        if provider_info.provider_tokens:
-            existing_providers = [provider for provider in user_secrets.provider_tokens]
-
-            # Merge incoming settings store with the existing one
-            for provider, token_value in list(provider_info.provider_tokens.items()):
-                if provider in existing_providers and not token_value.token:
-                    existing_token = user_secrets.provider_tokens.get(provider)
-                    if existing_token and existing_token.token:
-                        provider_info.provider_tokens[provider] = existing_token
-
-                provider_info.provider_tokens[provider] = provider_info.provider_tokens[
-                    provider
-                ].model_copy(update={'host': token_value.host})
-
-        updated_secrets = user_secrets.model_copy(
-            update={'provider_tokens': provider_info.provider_tokens}
-        )
-        await secrets_store.store(updated_secrets)
+    async with _secrets_write_lock(
+        user_id, secrets_store, account_wide=_is_saas_mode()
+    ):
+        await secrets_store.store_provider_tokens(provider_info.provider_tokens or {})
 
     # ACTV-02: git provider connected analytics
     from openhands.analytics import get_analytics_service, resolve_analytics_context
@@ -312,11 +244,10 @@ async def unset_provider_tokens(
         200: Git provider tokens unset successfully
         500: Error unsetting git provider tokens
     """
-    async with _secrets_write_lock(user_id, secrets_store):
-        user_secrets = await secrets_store.load()
-        if user_secrets:
-            updated_secrets = user_secrets.model_copy(update={'provider_tokens': {}})
-            await secrets_store.store(updated_secrets)
+    async with _secrets_write_lock(
+        user_id, secrets_store, account_wide=_is_saas_mode()
+    ):
+        await secrets_store.delete_provider_tokens()
 
     return EditResponse(message='Unset Git provider tokens')
 

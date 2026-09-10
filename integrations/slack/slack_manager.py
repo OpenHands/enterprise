@@ -41,6 +41,7 @@ from openhands.app_server.types import (
 )
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.slack_link import slack_login_url
 from server.constants import SLACK_CLIENT_ID
 from storage.database import a_session_maker
 from storage.redis import get_redis_client_async
@@ -609,7 +610,7 @@ class SlackManager(Manager[SlackViewInterface]):
         from storage.encrypt_utils import get_jwt_service
 
         state = get_jwt_service().create_jws_token(message.message)
-        return authorize_url_generator.generate(state)
+        return slack_login_url(state, authorize_url_generator.generate)
 
     async def handle_slack_error(self, payload: dict, error: SlackError) -> None:
         """Handle a SlackError by logging and sending user message.

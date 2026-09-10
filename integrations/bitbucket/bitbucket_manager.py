@@ -29,6 +29,7 @@ from openhands.app_server.types import (
     SessionExpiredError,
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.provider_credentials import ProviderCredentialService
 from server.auth.token_manager import TokenManager
 from storage.bitbucket_webhook_store import BitbucketWebhookStore
 
@@ -176,18 +177,11 @@ class BitbucketManager(Manager[BitbucketViewType]):
                 # arbitrary commenters back to a Keycloak user. The
                 # commenter's Bitbucket account_id stays on
                 # ``ProviderToken.user_id`` for audit/display.
-                offline_token = await self.token_manager.load_offline_token(
-                    user_info.keycloak_user_id
+                credential = await ProviderCredentialService().get_token(
+                    user_info.keycloak_user_id, ProviderType.BITBUCKET
                 )
-                if not offline_token:
-                    logger.warning(
-                        f'[Bitbucket] No offline token for installer '
-                        f'{user_info.keycloak_user_id}'
-                    )
-                    raise MissingSettingsError('Missing settings')
-
-                user_token = await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.BITBUCKET
+                user_token = (
+                    credential.token.get_secret_value() if credential.token else None
                 )
                 if not user_token:
                     logger.warning(

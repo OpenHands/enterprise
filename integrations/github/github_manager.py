@@ -39,6 +39,7 @@ from openhands.app_server.types import (
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.auth_error import ExpiredError
 from server.auth.constants import GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY
+from server.auth.provider_credentials import ProviderCredentialService
 from server.auth.token_manager import TokenManager
 
 IGNORED_GITHUB_EVENT_SENDERS = frozenset(
@@ -267,8 +268,12 @@ class GithubManager(Manager[GithubViewType]):
             payload = message.message.get('payload', {})
             user_id = payload['sender']['id']
             username = payload['sender']['login']
-            keycloak_user_id = await self.token_manager.get_user_id_from_idp_user_id(
-                user_id, ProviderType.GITHUB
+            keycloak_user_id_uuid = await ProviderCredentialService().resolve_user(
+                ProviderType.GITHUB, str(user_id)
+            )
+
+            keycloak_user_id = (
+                str(keycloak_user_id_uuid) if keycloak_user_id_uuid else None
             )
 
             if not keycloak_user_id:
@@ -347,8 +352,11 @@ class GithubManager(Manager[GithubViewType]):
                     f'[GitHub] Starting job for user {user_info.username} (id={user_info.user_id})'
                 )
 
-                user_token = await self.token_manager.get_idp_token_from_idp_user_id(
-                    str(user_info.user_id), ProviderType.GITHUB
+                credential = await ProviderCredentialService().get_token(
+                    user_info.keycloak_user_id, ProviderType.GITHUB
+                )
+                user_token = (
+                    credential.token.get_secret_value() if credential.token else None
                 )
 
                 if not user_token:

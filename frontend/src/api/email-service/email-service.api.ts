@@ -8,6 +8,9 @@ import {
  * Email Service API - Handles all email-related API endpoints
  */
 export const emailService = {
+  updateEmail: async (email: string): Promise<void> => {
+    await openHands.post("/api/email", { email });
+  },
   /**
    * Resend email verification to the user's registered email address
    * @param userId - Optional user ID to send verification email for

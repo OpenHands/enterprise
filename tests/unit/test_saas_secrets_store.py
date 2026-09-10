@@ -33,11 +33,14 @@ def mock_user(create_org):
 
 
 @pytest.fixture
-def secrets_store(async_session_maker, jwt_svc):
+def secrets_store(async_session_maker, jwt_svc, monkeypatch):
     # Inject the test session maker into the store module
     import storage.saas_secrets_store as store_module
 
-    store_module.a_session_maker = async_session_maker
+    monkeypatch.setattr(store_module, 'a_session_maker', async_session_maker)
+    monkeypatch.setattr(
+        'server.auth.provider_credentials.a_session_maker', async_session_maker
+    )
 
     store = SaasSecretsStore('user-id', jwt_svc)
     # Also add it as an attribute for tests that need direct access

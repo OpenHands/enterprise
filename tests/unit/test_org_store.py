@@ -25,6 +25,20 @@ from storage.role import Role
 from storage.user import User
 
 
+@pytest.fixture(autouse=True)
+def initialized_authentication_mode(monkeypatch):
+    from server.auth import mode
+
+    monkeypatch.setattr(mode, '_auth_mode', mode.AuthMode.KEYCLOAK)
+
+
+@pytest.fixture(autouse=True)
+async def lifecycle_policy_role(async_session_maker):
+    async with async_session_maker() as session, session.begin():
+        if await session.scalar(select(Role).where(Role.name == 'admin')) is None:
+            session.add(Role(id=900, name='admin', rank=2))
+
+
 @pytest.fixture
 def mock_litellm_api():
     api_key_patch = patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test_key')

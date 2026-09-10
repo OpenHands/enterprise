@@ -11,7 +11,10 @@ const INTERMEDIATE_PAGE_PATHS = ["/accept-tos", "/information-request"];
 export const useIsOnIntermediatePage = (): boolean => {
   const { pathname } = useLocation();
 
-  return INTERMEDIATE_PAGE_PATHS.includes(
-    pathname as (typeof INTERMEDIATE_PAGE_PATHS)[number],
+  return (
+    pathname.startsWith("/auth/") ||
+    INTERMEDIATE_PAGE_PATHS.includes(
+      pathname as (typeof INTERMEDIATE_PAGE_PATHS)[number],
+    )
   );
 };

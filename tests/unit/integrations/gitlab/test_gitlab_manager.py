@@ -39,12 +39,20 @@ def mock_gitlab_view():
 
 
 @pytest.fixture
-def mock_token_manager():
+def mock_token_manager(monkeypatch):
     """Create a mock TokenManager."""
     token_manager = MagicMock()
     token_manager.get_idp_token_from_idp_user_id = AsyncMock(return_value='test_token')
     token_manager.get_user_id_from_idp_user_id = AsyncMock(
         return_value='keycloak_test_user'
+    )
+    from pydantic import SecretStr
+
+    from openhands.app_server.integrations.provider import ProviderToken
+
+    monkeypatch.setattr(
+        'integrations.gitlab.gitlab_manager.ProviderCredentialService.get_token',
+        AsyncMock(return_value=ProviderToken(token=SecretStr('test_token'))),
     )
     return token_manager
 

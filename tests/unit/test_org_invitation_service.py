@@ -16,6 +16,13 @@ from server.services.org_invitation_service import OrgInvitationService
 from storage.org_invitation import OrgInvitation
 
 
+@pytest.fixture(autouse=True)
+def initialized_authentication_mode(monkeypatch):
+    from server.auth import mode
+
+    monkeypatch.setattr(mode, '_auth_mode', mode.AuthMode.KEYCLOAK)
+
+
 class TestAcceptInvitationEmailValidation:
     """Test cases for email validation during invitation acceptance."""
 
@@ -91,221 +98,67 @@ class TestAcceptInvitationEmailValidation:
     async def test_accept_invitation_user_no_email_keycloak_fallback_matches(
         self, mock_invitation
     ):
-        """Test that Keycloak email is used when user has no email in database."""
-        # Arrange
         user_id = UUID('87654321-4321-8765-4321-876543218765')
-        token = 'inv-test-token-12345'
-
-        mock_user = MagicMock()
-        mock_user.id = user_id
-        mock_user.email = None  # No email in database
-
-        mock_keycloak_user_info = {'email': 'alice@example.com'}  # Email from Keycloak
-
-        mock_org = MagicMock()
-        mock_org.agent_settings = {'llm': {'model': 'test-model'}}
-
+        user = MagicMock(id=user_id, email=None)
+        hydrated = MagicMock(id=user_id, email='alice@example.com')
         with (
             patch(
                 'server.services.org_invitation_service.OrgInvitationStore.get_invitation_by_token',
-                new_callable=AsyncMock,
-            ) as mock_get_invitation,
+                AsyncMock(return_value=mock_invitation),
+            ),
             patch(
-                'server.services.org_invitation_service.OrgInvitationStore.is_token_expired'
-            ) as mock_is_expired,
+                'server.services.org_invitation_service.OrgInvitationStore.is_token_expired',
+                return_value=False,
+            ),
             patch(
                 'server.services.org_invitation_service.UserStore.get_user_by_id',
-                new_callable=AsyncMock,
-            ) as mock_get_user,
+                AsyncMock(return_value=user),
+            ),
             patch(
-                'server.services.org_invitation_service.TokenManager'
-            ) as mock_token_manager_class,
+                'server.auth.user_management.EnterpriseUserManagementService.ensure_authenticated_account',
+                AsyncMock(return_value=hydrated),
+            ) as hydrate,
             patch(
                 'server.services.org_invitation_service.OrgMemberStore.get_org_member',
-                new_callable=AsyncMock,
-            ) as mock_get_member,
-            patch(
-                'server.services.org_invitation_service.OrgService.create_litellm_integration',
-                new_callable=AsyncMock,
-            ) as mock_create_litellm,
-            patch(
-                'server.services.org_invitation_service.OrgStore.get_org_by_id',
-                new_callable=AsyncMock,
-            ) as mock_get_org,
-            patch(
-                'server.services.org_invitation_service.OrgMemberStore.add_user_to_org',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.services.org_invitation_service.OrgInvitationStore.update_invitation_status',
-                new_callable=AsyncMock,
-            ) as mock_update_status,
-            patch(
-                'server.services.org_invitation_service.UserStore.backfill_user_email',
-                new_callable=AsyncMock,
+                AsyncMock(return_value=MagicMock()),
             ),
         ):
-            mock_get_invitation.return_value = mock_invitation
-            mock_is_expired.return_value = False
-            mock_get_user.return_value = mock_user
-
-            # Mock TokenManager instance
-            mock_token_manager = MagicMock()
-            mock_token_manager.get_user_info_from_user_id = AsyncMock(
-                return_value=mock_keycloak_user_info
-            )
-            mock_token_manager_class.return_value = mock_token_manager
-
-            mock_get_member.return_value = None  # Not already a member
-            mock_settings = MagicMock()
-            mock_settings.llm_api_key = SecretStr('test-key')
-            mock_create_litellm.return_value = mock_settings
-            mock_get_org.return_value = mock_org
-            mock_update_status.return_value = mock_invitation
-
-            # Act - should not raise error because Keycloak email matches
-            await OrgInvitationService.accept_invitation(token, user_id)
-
-            # Assert
-            mock_token_manager.get_user_info_from_user_id.assert_called_once_with(
-                str(user_id)
-            )
-
-    @pytest.mark.asyncio
-    async def test_accept_invitation_user_no_email_keycloak_fallback_persists_email(
-        self, mock_invitation
-    ):
-        """When User.email is NULL and Keycloak returns an email, the email is
-        persisted back to the User record (normalized to snake_case) so the
-        members list shows it without requiring the user to log out and back in.
-        """
-        # Arrange
-        user_id = UUID('87654321-4321-8765-4321-876543218765')
-        token = 'inv-test-token-12345'
-
-        mock_user = MagicMock()
-        mock_user.id = user_id
-        mock_user.email = None
-
-        # Keycloak admin API returns camelCase `emailVerified`.
-        mock_keycloak_user_info = {
-            'email': 'alice@example.com',
-            'emailVerified': True,
-        }
-
-        mock_org = MagicMock()
-        mock_org.agent_settings = {'llm': {'model': 'test-model'}}
-
-        with (
-            patch(
-                'server.services.org_invitation_service.OrgInvitationStore.get_invitation_by_token',
-                new_callable=AsyncMock,
-            ) as mock_get_invitation,
-            patch(
-                'server.services.org_invitation_service.OrgInvitationStore.is_token_expired'
-            ) as mock_is_expired,
-            patch(
-                'server.services.org_invitation_service.UserStore.get_user_by_id',
-                new_callable=AsyncMock,
-            ) as mock_get_user,
-            patch(
-                'server.services.org_invitation_service.TokenManager'
-            ) as mock_token_manager_class,
-            patch(
-                'server.services.org_invitation_service.OrgMemberStore.get_org_member',
-                new_callable=AsyncMock,
-            ) as mock_get_member,
-            patch(
-                'server.services.org_invitation_service.OrgService.create_litellm_integration',
-                new_callable=AsyncMock,
-            ) as mock_create_litellm,
-            patch(
-                'server.services.org_invitation_service.OrgStore.get_org_by_id',
-                new_callable=AsyncMock,
-            ) as mock_get_org,
-            patch(
-                'server.services.org_invitation_service.OrgMemberStore.add_user_to_org',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.services.org_invitation_service.OrgInvitationStore.update_invitation_status',
-                new_callable=AsyncMock,
-            ) as mock_update_status,
-            patch(
-                'server.services.org_invitation_service.UserStore.backfill_user_email',
-                new_callable=AsyncMock,
-            ) as mock_backfill,
-        ):
-            mock_get_invitation.return_value = mock_invitation
-            mock_is_expired.return_value = False
-            mock_get_user.return_value = mock_user
-
-            mock_token_manager = MagicMock()
-            mock_token_manager.get_user_info_from_user_id = AsyncMock(
-                return_value=mock_keycloak_user_info
-            )
-            mock_token_manager_class.return_value = mock_token_manager
-
-            mock_get_member.return_value = None
-            mock_settings = MagicMock()
-            mock_settings.llm_api_key = SecretStr('test-key')
-            mock_create_litellm.return_value = mock_settings
-            mock_get_org.return_value = mock_org
-            mock_update_status.return_value = mock_invitation
-
-            # Act
-            await OrgInvitationService.accept_invitation(token, user_id)
-
-            # Assert — persisted with snake_case `email_verified` derived from
-            # Keycloak's camelCase `emailVerified`.
-            mock_backfill.assert_awaited_once_with(
-                str(user_id),
-                {'email': 'alice@example.com', 'email_verified': True},
-            )
+            with pytest.raises(UserAlreadyMemberError):
+                await OrgInvitationService.accept_invitation('token', user_id)
+        hydrate.assert_awaited_once_with(user_id)
 
     @pytest.mark.asyncio
     async def test_accept_invitation_no_email_anywhere_raises_error(
         self, mock_invitation
     ):
-        """Test that EmailMismatchError is raised when user has no email in database or Keycloak."""
-        # Arrange
         user_id = UUID('87654321-4321-8765-4321-876543218765')
-        token = 'inv-test-token-12345'
-
-        mock_user = MagicMock()
-        mock_user.id = user_id
-        mock_user.email = None  # No email in database
-
+        user = MagicMock(id=user_id, email=None)
+        hydrated = MagicMock(id=user_id, email=None)
         with (
             patch(
                 'server.services.org_invitation_service.OrgInvitationStore.get_invitation_by_token',
-                new_callable=AsyncMock,
-            ) as mock_get_invitation,
+                AsyncMock(return_value=mock_invitation),
+            ),
             patch(
-                'server.services.org_invitation_service.OrgInvitationStore.is_token_expired'
-            ) as mock_is_expired,
+                'server.services.org_invitation_service.OrgInvitationStore.is_token_expired',
+                return_value=False,
+            ),
             patch(
                 'server.services.org_invitation_service.UserStore.get_user_by_id',
-                new_callable=AsyncMock,
-            ) as mock_get_user,
+                AsyncMock(return_value=user),
+            ),
             patch(
-                'server.services.org_invitation_service.TokenManager'
-            ) as mock_token_manager_class,
+                'server.auth.user_management.EnterpriseUserManagementService.ensure_authenticated_account',
+                AsyncMock(return_value=hydrated),
+            ) as hydrate,
+            patch(
+                'server.services.org_invitation_service.OrgMemberStore.get_org_member',
+                AsyncMock(return_value=MagicMock()),
+            ),
         ):
-            mock_get_invitation.return_value = mock_invitation
-            mock_is_expired.return_value = False
-            mock_get_user.return_value = mock_user
-
-            # Mock TokenManager to return no email
-            mock_token_manager = MagicMock()
-            mock_token_manager.get_user_info_from_user_id = AsyncMock(return_value={})
-            mock_token_manager_class.return_value = mock_token_manager
-
-            # Act & Assert
-            with pytest.raises(EmailMismatchError) as exc_info:
-                await OrgInvitationService.accept_invitation(token, user_id)
-
-            assert 'does not have an email address' in str(exc_info.value)
+            with pytest.raises(EmailMismatchError):
+                await OrgInvitationService.accept_invitation('token', user_id)
+        hydrate.assert_awaited_once_with(user_id)
 
     @pytest.mark.asyncio
     async def test_accept_invitation_email_comparison_is_case_insensitive(

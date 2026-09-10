@@ -488,10 +488,14 @@ async def test_add_git_providers_with_host(test_client, file_secrets_store):
     user_secrets = Secrets(provider_tokens=provider_tokens)
     await file_secrets_store.store(user_secrets)
 
-    # Mock check_provider_tokens to return empty string (no error)
+    # Mock provider validation while exercising the real secret persistence.
     with patch(
-        'openhands.app_server.secrets.secrets_router.check_provider_tokens',
-        AsyncMock(return_value=''),
+        'openhands.app_server.integrations.utils.validate_provider_token',
+        AsyncMock(
+            side_effect=lambda token, host: ProviderType.GITLAB
+            if 'gitlab' in token.get_secret_value()
+            else ProviderType.GITHUB
+        ),
     ):
         # Add a GitHub provider with a host
         add_provider_data = {
@@ -527,10 +531,14 @@ async def test_add_git_providers_update_host_only(test_client, file_secrets_stor
     user_secrets = Secrets(provider_tokens=provider_tokens)
     await file_secrets_store.store(user_secrets)
 
-    # Mock check_provider_tokens to return empty string (no error)
+    # Mock provider validation while exercising the real secret persistence.
     with patch(
-        'openhands.app_server.secrets.secrets_router.check_provider_tokens',
-        AsyncMock(return_value=''),
+        'openhands.app_server.integrations.utils.validate_provider_token',
+        AsyncMock(
+            side_effect=lambda token, host: ProviderType.GITLAB
+            if 'gitlab' in token.get_secret_value()
+            else ProviderType.GITHUB
+        ),
     ):
         # Update only the host
         update_host_data = {
@@ -589,10 +597,14 @@ async def test_add_multiple_git_providers_with_hosts(test_client, file_secrets_s
     user_secrets = Secrets()
     await file_secrets_store.store(user_secrets)
 
-    # Mock check_provider_tokens to return empty string (no error)
+    # Mock provider validation while exercising the real secret persistence.
     with patch(
-        'openhands.app_server.secrets.secrets_router.check_provider_tokens',
-        AsyncMock(return_value=''),
+        'openhands.app_server.integrations.utils.validate_provider_token',
+        AsyncMock(
+            side_effect=lambda token, host: ProviderType.GITLAB
+            if 'gitlab' in token.get_secret_value()
+            else ProviderType.GITHUB
+        ),
     ):
         # Add multiple providers with hosts
         add_providers_data = {

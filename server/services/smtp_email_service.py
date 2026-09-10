@@ -4,6 +4,7 @@ import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape
 from typing import TypedDict
 
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -66,6 +67,8 @@ class SMTPEmailService:
         subject: str,
         html: str,
         extra: dict[str, object] | None = None,
+        *,
+        include_error_details: bool = True,
     ) -> bool:
         settings = SMTPEmailService._get_smtp_settings()
         if not settings:
@@ -97,9 +100,16 @@ class SMTPEmailService:
                 client.quit()
             return True
         except Exception:
-            logger.exception(
-                'Failed to send SMTP email', extra={**extra_payload}, stack_info=True
-            )
+            if include_error_details:
+                logger.exception(
+                    'Failed to send SMTP email',
+                    extra={**extra_payload},
+                    stack_info=True,
+                )
+            else:
+                # SMTP responses can quote rejected message content. Account
+                # messages contain bearer links, so never log that exception.
+                logger.warning('Failed to send account email')
             return False
 
     @staticmethod
@@ -111,6 +121,28 @@ class SMTPEmailService:
         silently.
         """
         return SMTPEmailService._get_smtp_settings() is not None
+
+    @staticmethod
+    def send_auth_email(to_email: str, purpose: str, action_url: str) -> None:
+        """Deliver a local account action without logging its bearer link."""
+        subject = (
+            'Reset your OpenHands password'
+            if purpose == 'password_reset'
+            else 'Verify your OpenHands email address'
+        )
+        escaped_url = escape(action_url, quote=True)
+        body = (
+            f'<p>{escape(subject)}</p>'
+            f'<p><a href="{escaped_url}">Continue in OpenHands</a></p>'
+            '<p>If you did not request this email, you can ignore it.</p>'
+        )
+        try:
+            SMTPEmailService._send_smtp_email(
+                [to_email], subject, body, include_error_details=False
+            )
+        except Exception:
+            # Header/configuration errors can happen before SMTP connects.
+            logger.warning('Failed to send account email')
 
     @staticmethod
     def build_invitation_url(invitation_token: str) -> str:

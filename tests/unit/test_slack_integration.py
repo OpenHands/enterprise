@@ -20,6 +20,16 @@ from openhands.app_server.user_auth.user_auth import UserAuth
 from storage.slack_user import SlackUser
 
 
+@pytest.fixture(autouse=True)
+def configured_legacy_slack(monkeypatch):
+    from server.auth import mode
+
+    monkeypatch.setattr(mode, '_auth_mode', mode.AuthMode.KEYCLOAK)
+    monkeypatch.setattr(
+        'server.routes.integration.slack.SLACK_SIGNING_SECRET', 'test-signing-secret'
+    )
+
+
 @pytest.fixture
 def slack_manager():
     # Mock the token_manager constructor

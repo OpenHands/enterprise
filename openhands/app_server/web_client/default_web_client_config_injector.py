@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 
 from pydantic import Field
 
+from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.integrations.jira_dc.config import (
     get_jira_dc_service_account_env_config,
 )
@@ -41,11 +42,10 @@ _OSS_POSTHOG_KEY = 'phc_3ESMmY9SgqEAGBB6sMGK5ayYHkeUuknH2vP6FmWH9RA'
 def _get_posthog_client_key() -> str:
     """Get PostHog client key from environment variable.
 
-    Reads POSTHOG_CLIENT_KEY from environment. If not set or empty,
-    returns the OSS default key for backwards compatibility.
+    Missing configuration stays empty until the known application mode is
+    available. Only the OSS response supplies the historical default key.
     """
-    key = os.getenv('POSTHOG_CLIENT_KEY', '').strip()
-    return key if key else _OSS_POSTHOG_KEY
+    return os.getenv('POSTHOG_CLIENT_KEY', '').strip()
 
 
 def _get_auth_url() -> str | None:
@@ -339,6 +339,9 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         from openhands.app_server.config import get_global_config
 
         config = get_global_config()
+        posthog_client_key = self.posthog_client_key
+        if not posthog_client_key and config.app_mode is AppMode.OPENHANDS:
+            posthog_client_key = _OSS_POSTHOG_KEY
         # enable_billing is a registered default flag (ENABLE_BILLING): the
         # database overlay wins, the env var baked into self.feature_flags at
         # init is the fallback.
@@ -351,7 +354,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         )
         result = WebClientConfig(
             app_mode=config.app_mode,
-            posthog_client_key=self.posthog_client_key,
+            posthog_client_key=posthog_client_key,
             feature_flags=feature_flags,
             db_feature_flags=await _get_db_feature_flags(),
             providers_configured=self.providers_configured,

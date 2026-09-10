@@ -2,6 +2,10 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockUseConfig = vi.fn();
+const mockCapabilities = vi.fn();
+vi.mock("#/hooks/query/use-auth-capabilities", () => ({
+  useAuthCapabilities: () => mockCapabilities(),
+}));
 const mockUseIsAuthed = vi.fn();
 const mockGetLoginMethod = vi.fn();
 const mockUseIsOnIntermediatePage = vi.fn();
@@ -26,7 +30,6 @@ vi.mock("#/utils/local-storage", () => ({
   getLoginMethod: () => mockGetLoginMethod(),
 }));
 
-
 vi.mock("#/hooks/use-is-on-intermediate-page", () => ({
   useIsOnIntermediatePage: () => mockUseIsOnIntermediatePage(),
 }));
@@ -41,6 +44,9 @@ describe("useAutoLogin", () => {
     );
 
   beforeEach(() => {
+    mockCapabilities.mockReturnValue({
+      data: { mode: "keycloak", login_providers: ["github", "azure_devops"] },
+    });
     vi.stubGlobal("location", { href: acceptTosUrl });
 
     mockUseConfig.mockReturnValue({
@@ -89,8 +95,29 @@ describe("useAutoLogin", () => {
       expect(window.location.href).not.toBe(appUrl);
     });
     const redirect = new URL(window.location.href);
-    expect(redirect.hostname).toBe("ohpr-13306-497.auth.staging.all-hands.dev");
-    expect(redirect.searchParams.get("kc_idp_hint")).toBe("azure_devops");
+    expect(redirect.hostname).toBe("ohpr-13306-497.staging.all-hands.dev");
+    expect(redirect.pathname).toBe("/api/auth/authorize");
+    expect(redirect.searchParams.get("provider")).toBe("azure_devops");
     expect(redirect.searchParams.get("login_method")).toBe("azure_devops");
+  });
+  it.each(["local", undefined])(
+    "never redirects remembered providers when mode is %s",
+    (mode) => {
+      mockCapabilities.mockReturnValue({
+        data: mode ? { mode, login_providers: [] } : undefined,
+      });
+      mockUseIsOnIntermediatePage.mockReturnValue(false);
+      renderHook(() => useAutoLogin());
+      expect(window.location.href).toBe(acceptTosUrl);
+    },
+  );
+
+  it("does not redirect to a provider the backend no longer offers", () => {
+    mockCapabilities.mockReturnValue({
+      data: { mode: "keycloak", login_providers: [] },
+    });
+    mockUseIsOnIntermediatePage.mockReturnValue(false);
+    renderHook(() => useAutoLogin());
+    expect(window.location.href).toBe(acceptTosUrl);
   });
 });

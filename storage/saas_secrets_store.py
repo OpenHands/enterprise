@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy import delete, select
 
+from openhands.app_server.integrations.provider import PROVIDER_TOKEN_TYPE
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.services.jwt_service import JwtService
@@ -41,9 +42,6 @@ class SaasSecretsStore(SecretsStore):
             result = await session.execute(query)
             settings = result.scalars().all()
 
-            if not settings:
-                return Secrets()
-
             kwargs = {}
             for secret in settings:
                 kwargs[secret.secret_name] = {
@@ -53,7 +51,12 @@ class SaasSecretsStore(SecretsStore):
 
             self._decrypt_kwargs(kwargs)
 
-            return Secrets(custom_secrets=kwargs)  # type: ignore[arg-type]
+            from server.auth.provider_credentials import ProviderCredentialService
+
+            provider_tokens = await ProviderCredentialService(
+                self._jwt_svc
+            ).stored_tokens(self.user_id)
+            return Secrets(custom_secrets=kwargs, provider_tokens=provider_tokens)  # type: ignore[arg-type]
 
     async def store(self, item: Secrets):
         user = await UserStore.get_user_by_id(self.user_id)
@@ -74,9 +77,10 @@ class SaasSecretsStore(SecretsStore):
 
             # Prepare the new secrets data
             kwargs = item.model_dump(context={'expose_secrets': True})
-            del kwargs[
-                'provider_tokens'
-            ]  # Assuming provider_tokens is not part of custom_secrets
+            # Provider writes have their own authenticated connection operation.
+            # Custom-secret updates must not revalidate, overwrite, or delete
+            # account-wide credentials from a stale org-scoped snapshot.
+            del kwargs['provider_tokens']
             self._encrypt_kwargs(kwargs)
 
             secrets_json = kwargs.get('custom_secrets', {})
@@ -101,6 +105,44 @@ class SaasSecretsStore(SecretsStore):
                 session.add(new_secret)
 
             await session.commit()
+
+    async def store_provider_tokens(self, provider_tokens: PROVIDER_TOKEN_TYPE) -> None:
+        from server.auth.provider_credentials import (
+            ProviderCredentialService,
+            normalize_provider_host,
+        )
+
+        credentials = ProviderCredentialService(self._jwt_svc)
+        existing = await credentials.stored_tokens(self.user_id)
+        for provider, incoming in provider_tokens.items():
+            previous = existing.get(provider)
+            token = incoming.token or (previous.token if previous else None)
+            if not token and previous is None and not incoming.host:
+                # The integrations form includes empty fields for providers
+                # the user has not connected.
+                continue
+            if token is None:
+                from server.auth.contracts import ProviderReconnectRequired
+
+                raise ProviderReconnectRequired('A provider access token is required')
+            normalized_host = normalize_provider_host(provider, incoming.host)
+            if (
+                previous
+                and previous.token == token
+                and previous.host == normalized_host
+            ):
+                continue
+            await credentials.connect(self.user_id, provider, token, incoming.host)
+        for provider in existing:
+            if provider not in provider_tokens:
+                await credentials.disconnect(self.user_id, provider)
+
+    async def delete_provider_tokens(self) -> None:
+        from server.auth.provider_credentials import ProviderCredentialService
+
+        credentials = ProviderCredentialService(self._jwt_svc)
+        for provider in await credentials.stored_tokens(self.user_id):
+            await credentials.disconnect(self.user_id, provider)
 
     def _decrypt_kwargs(self, kwargs: dict):
         for key, value in kwargs.items():

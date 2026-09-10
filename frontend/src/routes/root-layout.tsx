@@ -32,6 +32,7 @@ import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { useAppTitle } from "#/hooks/use-app-title";
 import { useAutoAcceptInvitation } from "#/hooks/use-auto-accept-invitation";
 import { usePostHogIdentify } from "#/hooks/use-posthog-identify";
+import { useAuthCapabilities } from "#/hooks/query/use-auth-capabilities";
 
 export function ErrorBoundary() {
   const error = useRouteError();
@@ -77,6 +78,7 @@ export default function MainApp() {
   const { t } = useTranslation();
 
   const config = useConfig();
+  const capabilities = useAuthCapabilities();
   const {
     data: isAuthed,
     isLoading: isAuthLoading,
@@ -181,7 +183,13 @@ export default function MainApp() {
   }, [isAuthed, checkLoginMethodExists]);
 
   // Show loading spinner while config or auth is loading
-  const isLoading = config.isLoading || isAuthLoading;
+  const isLoading = config.isLoading || isAuthLoading || capabilities.isLoading;
+  const hasRememberedProvider =
+    loginMethodExists &&
+    capabilities.data?.mode === "keycloak" &&
+    capabilities.data.login_providers.includes(
+      localStorage.getItem(LOCAL_STORAGE_KEYS.LOGIN_METHOD) || "",
+    );
 
   // Only decide to redirect AFTER loading completes
   const shouldRedirectToLogin =
@@ -190,7 +198,8 @@ export default function MainApp() {
     !isAuthError &&
     !isOnIntermediatePage &&
     config.data?.app_mode === "saas" &&
-    !loginMethodExists;
+    !hasRememberedProvider &&
+    !!capabilities.data;
 
   React.useEffect(() => {
     if (shouldRedirectToLogin) {
@@ -216,6 +225,21 @@ export default function MainApp() {
     );
   }
 
+  if (config.data?.app_mode === "saas" && !capabilities.data) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-base">
+        <p role="alert">{t(I18nKey.AUTH$UNAVAILABLE)}</p>
+        <button
+          type="button"
+          onClick={() => capabilities.refetch()}
+          className="underline"
+        >
+          {t(I18nKey.AUTH$RETRY)}
+        </button>
+      </div>
+    );
+  }
+
   // The session is known to be expired (/api/authenticate answered 401) and a
   // stored login method means useAutoLogin is about to redirect to the identity
   // provider. Do NOT mount the app tree in the meantime: every polling hook
@@ -228,7 +252,7 @@ export default function MainApp() {
     isAuthed === false &&
     !isOnIntermediatePage &&
     config.data?.app_mode === "saas" &&
-    loginMethodExists;
+    hasRememberedProvider;
 
   if (isSessionExpired) {
     return (

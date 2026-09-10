@@ -30,6 +30,7 @@ import { useAddGitProviders } from "#/hooks/mutation/use-add-git-providers";
 import { useUserProviders } from "#/hooks/use-user-providers";
 import { ProjectManagementIntegration } from "#/components/features/settings/project-management/project-management-integration";
 import { Typography } from "#/ui/typography";
+import { useAuthCapabilities } from "#/hooks/query/use-auth-capabilities";
 
 export const clientLoader = createPermissionGuard("manage_integrations");
 
@@ -44,6 +45,7 @@ function GitSettingsScreen() {
   const { providers } = useUserProviders();
 
   const { data: config } = useConfig();
+  const { data: capabilities } = useAuthCapabilities();
 
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -128,6 +130,11 @@ function GitSettingsScreen() {
   const existingForgejoHost = settings?.provider_tokens_set.forgejo;
 
   const isSaas = config?.app_mode === "saas";
+  const manualTokens =
+    config?.app_mode === "oss" ||
+    capabilities?.repository_connections.manual_tokens === true;
+  const brokerConnections =
+    isSaas && capabilities?.repository_connections.broker === true;
   const isGitHubTokenSet = providers.includes("github");
   const isGitLabTokenSet = providers.includes("gitlab");
   const isBitbucketTokenSet = providers.includes("bitbucket");
@@ -243,17 +250,21 @@ function GitSettingsScreen() {
     !azureDevOpsHostInputHasValue &&
     !forgejoHostInputHasValue;
   const shouldRenderGitHubSection =
-    isSaas && Boolean(config?.providers_configured?.includes("github"));
+    brokerConnections &&
+    Boolean(config?.providers_configured?.includes("github"));
   const shouldRenderGitHubConfigureButton =
     shouldRenderGitHubSection && isGitHubTokenSet && config?.github_app_slug;
-  const shouldRenderGitLabSection = isSaas && Boolean(config?.gitlab_enabled);
+  const shouldRenderGitLabSection =
+    brokerConnections && Boolean(config?.gitlab_enabled);
   const shouldRenderBitbucketSection =
-    isSaas && Boolean(config?.providers_configured?.includes("bitbucket"));
+    brokerConnections &&
+    Boolean(config?.providers_configured?.includes("bitbucket"));
   const shouldRenderBitbucketDCSection =
-    isSaas &&
+    brokerConnections &&
     Boolean(config?.providers_configured?.includes("bitbucket_data_center"));
   const shouldRenderAzureDevOpsSection =
-    isSaas && Boolean(config?.providers_configured?.includes("azure_devops"));
+    brokerConnections &&
+    Boolean(config?.providers_configured?.includes("azure_devops"));
   const shouldRenderSlackSection = isSaas && Boolean(config?.slack_enabled);
   const shouldRenderProjectManagementIntegrations =
     config?.feature_flags?.enable_jira ||
@@ -401,7 +412,7 @@ function GitSettingsScreen() {
           )}
 
           <div className="flex flex-col gap-4">
-            {!isSaas && (
+            {manualTokens && (
               <GitHubTokenInput
                 name="github-token-input"
                 isGitHubTokenSet={isGitHubTokenSet}
@@ -415,7 +426,7 @@ function GitSettingsScreen() {
               />
             )}
 
-            {!isSaas && (
+            {manualTokens && (
               <GitLabTokenInput
                 name="gitlab-token-input"
                 isGitLabTokenSet={isGitLabTokenSet}
@@ -429,7 +440,7 @@ function GitSettingsScreen() {
               />
             )}
 
-            {!isSaas && (
+            {manualTokens && (
               <BitbucketTokenInput
                 name="bitbucket-token-input"
                 isBitbucketTokenSet={isBitbucketTokenSet}
@@ -443,7 +454,7 @@ function GitSettingsScreen() {
               />
             )}
 
-            {!isSaas && (
+            {manualTokens && (
               <BitbucketDCTokenInput
                 name="bitbucket-dc-token-input"
                 isBitbucketDCTokenSet={isBitbucketDCTokenSet}
@@ -457,7 +468,7 @@ function GitSettingsScreen() {
               />
             )}
 
-            {!isSaas && (
+            {manualTokens && (
               <AzureDevOpsTokenInput
                 name="azure-devops-token-input"
                 isAzureDevOpsTokenSet={isAzureDevOpsTokenSet}
@@ -471,7 +482,7 @@ function GitSettingsScreen() {
               />
             )}
 
-            {!isSaas && (
+            {manualTokens && (
               <ForgejoTokenInput
                 name="forgejo-token-input"
                 isForgejoTokenSet={isForgejoTokenSet}
@@ -491,7 +502,7 @@ function GitSettingsScreen() {
       {isLoading && <GitSettingInputsSkeleton />}
 
       <div className="flex gap-6 p-6 justify-end">
-        {!isSaas && (
+        {manualTokens && (
           <>
             <BrandButton
               testId="disconnect-tokens-button"

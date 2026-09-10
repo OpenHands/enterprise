@@ -6,6 +6,7 @@ from pydantic import SecretStr
 
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
+from server.auth.contracts import AuthenticationUnavailable, InvalidCredentials
 from server.auth.token_manager import TokenManager
 
 
@@ -151,9 +152,8 @@ class TestCheckDuplicateBaseEmail:
             # Act & Assert
             # KeycloakConnectionError is re-raised, which triggers retry decorator
             # After retries exhaust (2 attempts), it raises RetryError
-            from tenacity import RetryError
 
-            with pytest.raises(RetryError):
+            with pytest.raises(AuthenticationUnavailable):
                 await token_manager.check_duplicate_base_email(email, current_user_id)
 
     @pytest.mark.asyncio
@@ -193,7 +193,9 @@ class TestQueryUsersByWildcardPattern:
             {'id': 'user2', 'email': 'joe+test@example.com'},
         ]
 
-        with patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin:
+        with patch(
+            'server.auth.keycloak.token_manager.get_keycloak_admin'
+        ) as mock_get_admin:
             mock_admin = MagicMock()
             mock_admin.a_get_users = AsyncMock(return_value=mock_users)
             mock_get_admin.return_value = mock_admin
@@ -219,7 +221,9 @@ class TestQueryUsersByWildcardPattern:
         domain = 'example.com'
         mock_users = [{'id': 'user1', 'email': 'joe@example.com'}]
 
-        with patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin:
+        with patch(
+            'server.auth.keycloak.token_manager.get_keycloak_admin'
+        ) as mock_get_admin:
             mock_admin = MagicMock()
             # First call fails, second succeeds
             mock_admin.a_get_users = AsyncMock(
@@ -244,7 +248,9 @@ class TestQueryUsersByWildcardPattern:
         local_part = 'joe'
         domain = 'example.com'
 
-        with patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin:
+        with patch(
+            'server.auth.keycloak.token_manager.get_keycloak_admin'
+        ) as mock_get_admin:
             mock_admin = MagicMock()
             mock_admin.a_get_users = AsyncMock(return_value=[])
             mock_get_admin.return_value = mock_admin
@@ -289,7 +295,8 @@ class TestFindDuplicateInUsers:
         current_user_id = 'user2'
 
         with patch(
-            'server.auth.token_manager.get_base_email_regex_pattern', return_value=None
+            'server.auth.keycloak.token_manager.get_base_email_regex_pattern',
+            return_value=None,
         ):
             # Act
             result = token_manager._find_duplicate_in_users(
@@ -360,7 +367,9 @@ class TestDeleteKeycloakUser:
         user_id = 'test_user_id'
 
         with (
-            patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin,
+            patch(
+                'server.auth.keycloak.token_manager.get_keycloak_admin'
+            ) as mock_get_admin,
             patch('asyncio.to_thread') as mock_to_thread,
         ):
             mock_admin = MagicMock()
@@ -382,7 +391,9 @@ class TestDeleteKeycloakUser:
         user_id = 'test_user_id'
 
         with (
-            patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin,
+            patch(
+                'server.auth.keycloak.token_manager.get_keycloak_admin'
+            ) as mock_get_admin,
             patch('asyncio.to_thread') as mock_to_thread,
         ):
             mock_admin = MagicMock()
@@ -393,9 +404,8 @@ class TestDeleteKeycloakUser:
             # Act & Assert
             # KeycloakConnectionError triggers retry decorator
             # After retries exhaust (2 attempts), it raises RetryError
-            from tenacity import RetryError
 
-            with pytest.raises(RetryError):
+            with pytest.raises(AuthenticationUnavailable):
                 await token_manager.delete_keycloak_user(user_id)
 
     @pytest.mark.asyncio
@@ -405,7 +415,9 @@ class TestDeleteKeycloakUser:
         user_id = 'test_user_id'
 
         with (
-            patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin,
+            patch(
+                'server.auth.keycloak.token_manager.get_keycloak_admin'
+            ) as mock_get_admin,
             patch('asyncio.to_thread') as mock_to_thread,
         ):
             mock_admin = MagicMock()
@@ -426,7 +438,9 @@ class TestDeleteKeycloakUser:
         user_id = 'test_user_id'
 
         with (
-            patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin,
+            patch(
+                'server.auth.keycloak.token_manager.get_keycloak_admin'
+            ) as mock_get_admin,
             patch('asyncio.to_thread') as mock_to_thread,
         ):
             mock_admin = MagicMock()
@@ -458,7 +472,9 @@ class TestCreateKeycloakUser:
         password = 'GeneratedPassword-1234'
         new_user_id = 'kc-user-id-success'
 
-        with patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin:
+        with patch(
+            'server.auth.keycloak.token_manager.get_keycloak_admin'
+        ) as mock_get_admin:
             mock_admin = MagicMock()
             mock_admin.a_create_user = AsyncMock(return_value=new_user_id)
             mock_admin.a_set_user_password = AsyncMock(return_value=None)
@@ -502,7 +518,9 @@ class TestCreateKeycloakUser:
         email = 'policy.fail@example.com'
         password = 'WeakishButPassesLocalCheck-1'
 
-        with patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin:
+        with patch(
+            'server.auth.keycloak.token_manager.get_keycloak_admin'
+        ) as mock_get_admin:
             mock_admin = MagicMock()
             mock_admin.a_create_user = AsyncMock(
                 side_effect=KeycloakError('Password policy not met')
@@ -511,7 +529,7 @@ class TestCreateKeycloakUser:
             mock_get_admin.return_value = mock_admin
 
             # Act / Assert
-            with pytest.raises(KeycloakError):
+            with pytest.raises(InvalidCredentials):
                 await token_manager.create_keycloak_user(email=email, password=password)
 
             # No standalone password call, and no cleanup necessary —
@@ -528,7 +546,9 @@ class TestGetUserIdFromUserEmail:
     async def test_picks_exact_match_not_substring_collision(self, token_manager):
         """A substring-colliding email (bob@acme.com vs bob@acme.com.au) must not
         be returned in place of the exact user, regardless of result order."""
-        with patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin:
+        with patch(
+            'server.auth.keycloak.token_manager.get_keycloak_admin'
+        ) as mock_get_admin:
             mock_admin = MagicMock()
             mock_admin.a_get_users = AsyncMock(
                 return_value=[
@@ -545,7 +565,9 @@ class TestGetUserIdFromUserEmail:
     @pytest.mark.asyncio
     async def test_returns_none_when_only_substring_matches(self, token_manager):
         """If the query returns only non-exact matches, refuse (no wrong user)."""
-        with patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin:
+        with patch(
+            'server.auth.keycloak.token_manager.get_keycloak_admin'
+        ) as mock_get_admin:
             mock_admin = MagicMock()
             mock_admin.a_get_users = AsyncMock(
                 return_value=[{'id': 'wrong', 'email': 'bob@acme.com.au'}]
@@ -559,7 +581,9 @@ class TestGetUserIdFromUserEmail:
     @pytest.mark.asyncio
     async def test_returns_none_on_ambiguous_duplicate_email(self, token_manager):
         """Two users with the same exact email is ambiguous -> refuse."""
-        with patch('server.auth.token_manager.get_keycloak_admin') as mock_get_admin:
+        with patch(
+            'server.auth.keycloak.token_manager.get_keycloak_admin'
+        ) as mock_get_admin:
             mock_admin = MagicMock()
             mock_admin.a_get_users = AsyncMock(
                 return_value=[
@@ -572,3 +596,10 @@ class TestGetUserIdFromUserEmail:
             result = await token_manager.get_user_id_from_user_email('bob@acme.com')
 
         assert result is None
+
+
+@pytest.fixture(autouse=True)
+def initialized_keycloak_mode(monkeypatch):
+    from server.auth import mode
+
+    monkeypatch.setattr(mode, '_auth_mode', mode.AuthMode.KEYCLOAK)

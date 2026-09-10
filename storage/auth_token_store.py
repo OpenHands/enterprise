@@ -82,6 +82,9 @@ class AuthTokenStore:
                 token_record = result.scalars().first()
 
                 if token_record:
+                    token_record.credential_kind = 'oauth'
+                    token_record.provider_account_id = None
+                    token_record.provider_host = None
                     token_record.access_token = access_token
                     token_record.refresh_token = refresh_token
                     token_record.access_token_expires_at = access_token_expires_at
@@ -160,17 +163,19 @@ class AuthTokenStore:
                 return None
 
             access_expired, _ = self._is_token_expired(
-                token_record.access_token_expires_at,
-                token_record.refresh_token_expires_at,
+                token_record.access_token_expires_at or 0,
+                token_record.refresh_token_expires_at or 0,
             )
 
             # If token is still valid, return it without acquiring a lock
             if not access_expired or check_expiration_and_refresh is None:
                 return {
                     'access_token': token_record.access_token,
-                    'refresh_token': token_record.refresh_token,
-                    'access_token_expires_at': token_record.access_token_expires_at,
-                    'refresh_token_expires_at': token_record.refresh_token_expires_at,
+                    'refresh_token': token_record.refresh_token or '',
+                    'access_token_expires_at': token_record.access_token_expires_at
+                    or 0,
+                    'refresh_token_expires_at': token_record.refresh_token_expires_at
+                    or 0,
                 }
 
         # SLOW PATH: Token needs refresh, acquire lock
@@ -200,8 +205,8 @@ class AuthTokenStore:
 
                     # Double-check: another request may have refreshed while we waited for the lock
                     access_expired, _ = self._is_token_expired(
-                        token_record.access_token_expires_at,
-                        token_record.refresh_token_expires_at,
+                        token_record.access_token_expires_at or 0,
+                        token_record.refresh_token_expires_at or 0,
                     )
 
                     if not access_expired:
@@ -211,17 +216,19 @@ class AuthTokenStore:
                         )
                         return {
                             'access_token': token_record.access_token,
-                            'refresh_token': token_record.refresh_token,
-                            'access_token_expires_at': token_record.access_token_expires_at,
-                            'refresh_token_expires_at': token_record.refresh_token_expires_at,
+                            'refresh_token': token_record.refresh_token or '',
+                            'access_token_expires_at': token_record.access_token_expires_at
+                            or 0,
+                            'refresh_token_expires_at': token_record.refresh_token_expires_at
+                            or 0,
                         }
 
                     # We're the one doing the refresh
                     token_refresh = await check_expiration_and_refresh(
                         self.idp,
-                        token_record.refresh_token,
-                        token_record.access_token_expires_at,
-                        token_record.refresh_token_expires_at,
+                        token_record.refresh_token or '',
+                        token_record.access_token_expires_at or 0,
+                        token_record.refresh_token_expires_at or 0,
                     )
 
                     if token_refresh:
@@ -246,9 +253,11 @@ class AuthTokenStore:
                         if token_refresh
                         else {
                             'access_token': token_record.access_token,
-                            'refresh_token': token_record.refresh_token,
-                            'access_token_expires_at': token_record.access_token_expires_at,
-                            'refresh_token_expires_at': token_record.refresh_token_expires_at,
+                            'refresh_token': token_record.refresh_token or '',
+                            'access_token_expires_at': token_record.access_token_expires_at
+                            or 0,
+                            'refresh_token_expires_at': token_record.refresh_token_expires_at
+                            or 0,
                         }
                     )
         except OperationalError as e:
@@ -273,7 +282,10 @@ class AuthTokenStore:
         access_token_expires_at = tokens['access_token_expires_at']
         current_time = int(time.time())
 
-        return int(access_token_expires_at) > (current_time + 30)
+        return bool(tokens['access_token']) and (
+            not access_token_expires_at
+            or int(access_token_expires_at) > (current_time + 30)
+        )
 
     async def is_refresh_token_valid(self) -> bool:
         """Check if the refresh token is still valid.
@@ -288,7 +300,10 @@ class AuthTokenStore:
         refresh_token_expires_at = tokens['refresh_token_expires_at']
         current_time = int(time.time())
 
-        return int(refresh_token_expires_at) > (current_time + 30)
+        return bool(tokens['refresh_token']) and (
+            not refresh_token_expires_at
+            or int(refresh_token_expires_at) > (current_time + 30)
+        )
 
     @classmethod
     async def get_instance(

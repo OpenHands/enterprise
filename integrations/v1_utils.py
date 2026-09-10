@@ -2,11 +2,8 @@ import logging
 from typing import Callable, Coroutine
 from uuid import UUID
 
-from pydantic import SecretStr
-
 from integrations.utils import CONVERSATION_URL
 from openhands.app_server.user_auth.user_auth import UserAuth
-from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
 
@@ -84,14 +81,10 @@ async def handle_callback_error(
 
 
 async def get_saas_user_auth(
-    keycloak_user_id: str, token_manager: TokenManager
+    keycloak_user_id: str,
+    token_manager: TokenManager,
+    effective_org_id: UUID | None = None,
 ) -> UserAuth:
-    offline_token = await token_manager.load_offline_token(keycloak_user_id)
-    if offline_token is None:
-        logger.info('no_offline_token_found')
-
-    user_auth = SaasUserAuth(
-        user_id=keycloak_user_id,
-        refresh_token=SecretStr(offline_token or ''),
-    )
-    return user_auth
+    # Keep the legacy argument for existing integration callers; it is never
+    # consulted for background authentication or provider credentials.
+    return await SaasUserAuth.for_background(keycloak_user_id, effective_org_id)

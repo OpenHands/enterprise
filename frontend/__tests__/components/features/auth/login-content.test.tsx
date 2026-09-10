@@ -458,7 +458,7 @@ describe("LoginContent", () => {
     await waitFor(() => {
       expect(mockBuildOAuthStateData).toHaveBeenCalled();
       const callArg = mockBuildOAuthStateData.mock.calls[0][0];
-      expect(callArg).toHaveProperty("redirect_url");
+      expect(callArg).toEqual({});
     });
   });
 
@@ -506,14 +506,10 @@ describe("LoginContent", () => {
     await waitFor(() => {
       const redirectUrl = window.location.href;
       // The URL should contain an encoded state parameter
-      expect(redirectUrl).toContain("state=");
-      // Decode and verify the state contains invitation_token
+      expect(redirectUrl).toContain("invitation_token=");
       const url = new URL(redirectUrl);
-      const state = url.searchParams.get("state");
-      if (state) {
-        const decodedState = JSON.parse(atob(state));
-        expect(decodedState.invitation_token).toBe("inv-test-token-12345");
-      }
+      expect(url.searchParams.get("invitation_token")).toBe("inv-test-token-12345");
+      expect(url.searchParams.has("state")).toBe(false);
     });
   });
 });

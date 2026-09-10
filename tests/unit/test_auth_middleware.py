@@ -1,503 +1,236 @@
-from contextlib import contextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+"""Account policy runs on the selected principal before endpoint side effects."""
+
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
-from fastapi import Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi import Request, Response
 from pydantic import SecretStr
 
 from openhands.app_server.user_auth.user_auth import AuthType
-from server.auth.auth_error import (
-    AuthError,
-    BearerTokenError,
-    CookieError,
-    ExpiredError,
-    NoCredentialsError,
-    TokenRefreshError,
+from server.auth.auth_error import AuthError, TokenRefreshError
+from server.auth.contracts import (
+    AuthenticationUnavailable,
+    InvalidCredentials,
+    Principal,
+    ProviderReconnectRequired,
 )
 from server.auth.saas_user_auth import SaasUserAuth
 from server.middleware import SetAuthCookieMiddleware
 
-
-@contextmanager
-def _mock_jwt_decode(accepted_tos: bool = True):
-    """Patch get_jwt_service so verify_jws_token returns a controlled payload."""
-    mock_svc = MagicMock()
-    mock_svc.verify_jws_token.return_value = {'accepted_tos': accepted_tos}
-    with patch('storage.encrypt_utils.get_jwt_service', return_value=mock_svc):
-        yield mock_svc
+USER_ID = UUID('11111111-1111-4111-8111-111111111111')
 
 
-@pytest.fixture
-def middleware():
-    return SetAuthCookieMiddleware()
-
-
-@pytest.fixture
-def mock_request():
-    request = MagicMock(spec=Request)
-    request.cookies = {}
-    return request
-
-
-@pytest.fixture
-def mock_response():
-    return MagicMock(spec=Response)
-
-
-@pytest.mark.asyncio
-async def test_middleware_no_cookie(middleware, mock_request, mock_response):
-    """Test middleware when no auth cookie is present."""
-    mock_request.cookies = {}
-    mock_call_next = AsyncMock(return_value=mock_response)
-
-    # Mock the request URL to have hostname 'localhost' and path that doesn't start with /api
-    mock_request.url = MagicMock()
-    mock_request.url.hostname = 'localhost'
-    mock_request.url.path = '/some/non-api/path'
-
-    result = await middleware(mock_request, mock_call_next)
-
-    assert result == mock_response
-    mock_call_next.assert_called_once_with(mock_request)
-
-
-@pytest.mark.asyncio
-async def test_middleware_with_cookie_no_refresh(
-    middleware, mock_request, mock_response
-):
-    """Test middleware when auth cookie is present but no refresh occurred."""
-    with _mock_jwt_decode():
-        mock_request.cookies = {'keycloak_auth': 'test_cookie'}
-        mock_call_next = AsyncMock(return_value=mock_response)
-
-        mock_user_auth = MagicMock(spec=SaasUserAuth)
-        mock_user_auth.refreshed = False
-        mock_user_auth.auth_type = AuthType.COOKIE
-
-        with patch(
-            'server.middleware.SetAuthCookieMiddleware._get_user_auth',
-            return_value=mock_user_auth,
-        ):
-            result = await middleware(mock_request, mock_call_next)
-
-            assert result == mock_response
-            mock_call_next.assert_called_once_with(mock_request)
-            mock_response.set_cookie.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_middleware_with_cookie_and_refresh(
-    middleware, mock_request, mock_response
-):
-    """Test middleware when auth cookie is present and refresh occurred."""
-    with _mock_jwt_decode():
-        mock_request.cookies = {'keycloak_auth': 'test_cookie'}
-        mock_call_next = AsyncMock(return_value=mock_response)
-
-        mock_user_auth = MagicMock(spec=SaasUserAuth)
-        mock_user_auth.refreshed = True
-        mock_user_auth.access_token = SecretStr('new_access_token')
-        mock_user_auth.refresh_token = SecretStr('new_refresh_token')
-        mock_user_auth.accepted_tos = True
-        mock_user_auth.auth_type = AuthType.COOKIE
-
-        with (
-            patch(
-                'server.middleware.SetAuthCookieMiddleware._get_user_auth',
-                return_value=mock_user_auth,
-            ),
-            patch('server.middleware.set_response_cookie') as mock_set_cookie,
-        ):
-            result = await middleware(mock_request, mock_call_next)
-
-            assert result == mock_response
-            mock_call_next.assert_called_once_with(mock_request)
-            mock_set_cookie.assert_called_once_with(
-                request=mock_request,
-                response=mock_response,
-                keycloak_access_token='new_access_token',
-                keycloak_refresh_token='new_refresh_token',
-                secure=True,
-                accepted_tos=True,
-            )
-
-
-@pytest.mark.asyncio
-async def test_middleware_with_api_key_cookie_only(
-    middleware, mock_request, mock_response
-):
-    """A request authenticated solely via the api_key cookie must not be treated as unauthenticated.
-
-    The middleware's _check_tos would otherwise raise NoCredentialsError
-    when the only credential on the request is the new ``api_key`` cookie.
-    """
-    mock_request.cookies = {'api_key': 'test_api_key'}
-    mock_request.headers = {}
-    mock_request.url = MagicMock()
-    mock_request.url.hostname = 'localhost'
-    mock_request.url.path = '/api/some/endpoint'
-    mock_call_next = AsyncMock(return_value=mock_response)
-
-    result = await middleware(mock_request, mock_call_next)
-
-    assert result == mock_response
-    mock_call_next.assert_called_once_with(mock_request)
-
-
-@pytest.mark.asyncio
-async def test_middleware_no_auth_at_all(middleware, mock_request):
-    """Without any credential source the middleware should still surface NoCredentialsError."""
-    mock_request.cookies = {}
-    mock_request.headers = {}
-    mock_request.url = MagicMock()
-    mock_request.url.hostname = 'localhost'
-    mock_request.url.path = '/api/some/endpoint'
-    mock_call_next = AsyncMock(return_value=MagicMock(spec=Response))
-
-    result = await middleware(mock_request, mock_call_next)
-
-    assert isinstance(result, JSONResponse)
-    assert result.status_code == status.HTTP_401_UNAUTHORIZED
-
-
-def decode_body(body: bytes | memoryview):
-    if isinstance(body, memoryview):
-        return body.tobytes().decode()
-    else:
-        return body.decode()
-
-
-@pytest.mark.asyncio
-async def test_middleware_with_no_auth_provided_error(middleware, mock_request):
-    """Test middleware when NoCredentialsError is raised."""
-    with _mock_jwt_decode():
-        mock_request.cookies = {'keycloak_auth': 'test_cookie'}
-        mock_call_next = AsyncMock(side_effect=NoCredentialsError())
-
-        result = await middleware(mock_request, mock_call_next)
-
-        assert isinstance(result, JSONResponse)
-        assert result.status_code == status.HTTP_401_UNAUTHORIZED
-        assert 'error' in decode_body(result.body)
-        assert decode_body(result.body).find('NoCredentialsError') > 0
-        # Cookie should not be deleted for NoCredentialsError
-        assert 'set-cookie' not in result.headers
-
-
-@pytest.mark.asyncio
-async def test_middleware_with_expired_auth_cookie(middleware, mock_request):
-    """Test middleware when ExpiredError is raised due to an expired authentication cookie."""
-    with _mock_jwt_decode():
-        mock_request.cookies = {'keycloak_auth': 'test_cookie'}
-        mock_call_next = AsyncMock(
-            side_effect=ExpiredError('Authentication token has expired')
-        )
-
-        with patch('server.middleware.logger') as mock_logger:
-            result = await middleware(mock_request, mock_call_next)
-
-            assert isinstance(result, JSONResponse)
-            assert result.status_code == status.HTTP_401_UNAUTHORIZED
-            assert 'error' in decode_body(result.body)
-            assert decode_body(result.body).find('Authentication token has expired') > 0
-            # Cookie should be deleted for ExpiredError as it's now handled as a general AuthError
-            assert 'set-cookie' in result.headers
-            # Logger should be called for ExpiredError
-            mock_logger.warning.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_middleware_with_cookie_error(middleware, mock_request):
-    """Test middleware when CookieError is raised."""
-    with _mock_jwt_decode():
-        mock_request.cookies = {'keycloak_auth': 'test_cookie'}
-        mock_call_next = AsyncMock(side_effect=CookieError('Invalid cookie'))
-
-        result = await middleware(mock_request, mock_call_next)
-
-        assert isinstance(result, JSONResponse)
-        assert result.status_code == status.HTTP_401_UNAUTHORIZED
-        assert 'error' in decode_body(result.body)
-        assert decode_body(result.body).find('Invalid cookie') > 0
-        # Cookie should be deleted for CookieError
-        assert 'set-cookie' in result.headers
-
-
-@pytest.mark.asyncio
-async def test_middleware_transient_refresh_error_preserves_cookie(
-    middleware, mock_request
-):
-    with _mock_jwt_decode():
-        mock_request.cookies = {'keycloak_auth': 'test_cookie'}
-        mock_call_next = AsyncMock(
-            side_effect=TokenRefreshError(
-                'Authentication service temporarily unavailable'
-            )
-        )
-
-        with patch.object(middleware, '_logout', new=AsyncMock()) as mock_logout:
-            result = await middleware(mock_request, mock_call_next)
-
-    assert isinstance(result, JSONResponse)
-    assert result.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
-    assert 'set-cookie' not in result.headers
-    mock_logout.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_middleware_with_other_auth_error(middleware, mock_request):
-    """Test middleware when another AuthError is raised."""
-    with _mock_jwt_decode():
-        mock_request.cookies = {'keycloak_auth': 'test_cookie'}
-        mock_call_next = AsyncMock(side_effect=AuthError('General auth error'))
-
-        with patch('server.middleware.logger') as mock_logger:
-            result = await middleware(mock_request, mock_call_next)
-
-            assert isinstance(result, JSONResponse)
-            assert result.status_code == status.HTTP_401_UNAUTHORIZED
-            assert 'error' in decode_body(result.body)
-            assert decode_body(result.body).find('General auth error') > 0
-            # Cookie should be deleted for any AuthError
-            assert 'set-cookie' in result.headers
-            # Logger should be called for non-NoCredentialsError
-            mock_logger.warning.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_middleware_bearer_only_auth_error_does_not_revoke_offline_token(
-    middleware, mock_request
-):
-    """Bearer-only auth failures must not revoke the offline session.
-
-    A bearer-only request whose route handler raises ``BearerTokenError``
-    must NOT trigger a Keycloak logout — that would revoke the user's
-    offline session and brick every API key minted for them. The cookie
-    deletion side effect also must not happen because there was no
-    cookie.
-    """
-    mock_request.cookies = {}  # bearer-only: no keycloak_auth cookie
-    mock_call_next = AsyncMock(
-        side_effect=BearerTokenError('refresh failed transiently')
+def request(path='/api/v1/users/me', *, method='GET', cookies=None):
+    req = Request(
+        {
+            'type': 'http',
+            'method': method,
+            'path': path,
+            'scheme': 'https',
+            'server': ('app.example.com', 443),
+            'headers': [],
+            'query_string': b'',
+        }
     )
+    req._cookies = cookies or {}
+    return req
 
-    with patch.object(middleware, '_logout', new=AsyncMock()) as mock_logout:
-        result = await middleware(mock_request, mock_call_next)
 
-    # _logout must not be called for bearer-only failures.
-    mock_logout.assert_not_called()
+def authenticate(
+    req, *, method='keycloak', restricted=False, accepted_tos=True, email_verified=True
+):
+    auth = SaasUserAuth(
+        user_id=str(USER_ID),
+        principal=Principal(USER_ID, method, datetime.now(UTC), restricted=restricted),
+        accepted_tos=accepted_tos,
+        email_verified=email_verified,
+        auth_type=AuthType.BEARER if method == 'api_key' else AuthType.COOKIE,
+    )
+    req.state.user_auth = auth
+    req.state.authentication_via_cookie = method != 'api_key'
+    return auth
 
-    assert isinstance(result, JSONResponse)
-    assert result.status_code == status.HTTP_401_UNAUTHORIZED
-    # There was no cookie, so we must not emit a Set-Cookie header.
+
+@pytest.mark.parametrize(
+    'path',
+    [
+        '/api/auth/capabilities',
+        '/api/auth/csrf',
+        '/api/auth/login',
+        '/api/auth/password/forgot',
+        '/api/auth/password/reset',
+        '/api/auth/email/verify',
+        '/api/auth/invitations/enroll',
+        '/api/options/config',
+        '/api/v1/web-client/config',
+        '/api/email/resend',
+        '/api/v1/webhooks/a/secrets',
+        '/oauth/device/authorize',
+        '/oauth/device/token',
+        '/api/refresh-tokens',
+        '/api/v1/sandboxes/box/settings/secrets',
+        '/api/v1/sandboxes/box/settings/secrets/GITHUB_TOKEN',
+        '/login',
+    ],
+)
+async def test_routes_with_separate_proof_or_public_access_do_not_require_browser_auth(
+    path,
+):
+    req = request(path)
+    downstream = AsyncMock(return_value=Response(status_code=204))
+    assert (await SetAuthCookieMiddleware()(req, downstream)).status_code == 204
+    downstream.assert_awaited_once_with(req)
+
+
+@pytest.mark.parametrize(
+    'path',
+    [
+        '/api/v1/webhooksettings',
+        '/api/v1/sandboxes/box/settings',
+        '/api/v1/sandboxes/box/settings/secrets/name/extra',
+        '/oauth/device/verify-authenticated',
+    ],
+)
+def test_similar_paths_do_not_bypass_account_authentication(path):
+    assert SetAuthCookieMiddleware()._should_attach(request(path))
+
+
+@pytest.mark.parametrize(
+    'exc, expected',
+    [
+        (InvalidCredentials(), 401),
+        (AuthError(), 401),
+        (TokenRefreshError(), 503),
+        (AuthenticationUnavailable(), 503),
+    ],
+)
+async def test_authentication_errors_do_not_revoke_upstream_sessions(
+    monkeypatch, exc, expected
+):
+    monkeypatch.setattr('server.middleware.get_user_auth', AsyncMock(side_effect=exc))
+    logout = AsyncMock()
+    monkeypatch.setattr('server.auth.saas_user_auth.token_manager.logout', logout)
+    req = request(cookies={'keycloak_auth': 'signed-cookie'})
+    downstream = AsyncMock()
+    result = await SetAuthCookieMiddleware()(req, downstream)
+    assert result.status_code == expected
+    downstream.assert_not_awaited()
+    logout.assert_not_awaited()
+    assert ('set-cookie' in result.headers) is (expected == 401)
+
+
+async def test_refresh_replaces_cookie_for_keycloak_principal(monkeypatch):
+    req = request(cookies={'keycloak_auth': 'signed-cookie'})
+    auth = authenticate(req)
+    auth.refreshed = True
+    auth.access_token = SecretStr('new-access')
+    auth.refresh_token = SecretStr('new-refresh')
+    from unittest.mock import MagicMock
+
+    set_cookie = MagicMock()
+    monkeypatch.setattr('server.middleware.set_response_cookie', set_cookie)
+    monkeypatch.setattr('server.middleware.schedule_gitlab_repo_sync', MagicMock())
+    result = await SetAuthCookieMiddleware()(req, AsyncMock(return_value=Response()))
+    assert result.status_code == 200
+    assert set_cookie.call_args.kwargs['keycloak_refresh_token'] == 'new-refresh'
+
+
+@pytest.mark.parametrize('name', ['keycloak_auth', 'keycloak_auth_1', 'oh_session'])
+async def test_explicit_session_response_is_not_overwritten_by_refresh(
+    monkeypatch, name
+):
+    req = request(cookies={'keycloak_auth': 'signed-cookie'})
+    auth = authenticate(req)
+    auth.refreshed = True
+    auth.access_token = SecretStr('refreshed-access')
+    auth.refresh_token = SecretStr('refreshed-token')
+    response = Response()
+    response.set_cookie(name, 'route-owned-session')
+    from unittest.mock import MagicMock
+
+    write_cookie = MagicMock()
+    monkeypatch.setattr('server.middleware.set_response_cookie', write_cookie)
+    result = await SetAuthCookieMiddleware()(req, AsyncMock(return_value=response))
+    assert result.status_code == 200
+    assert 'route-owned-session' in result.headers['set-cookie']
+    write_cookie.assert_not_called()
+
+
+async def test_initial_password_restriction_precedes_terms_and_csrf():
+    req = request('/api/authenticate', method='POST')
+    authenticate(
+        req,
+        method='password',
+        restricted=True,
+        accepted_tos=False,
+        email_verified=False,
+    )
+    downstream = AsyncMock()
+    result = await SetAuthCookieMiddleware()(req, downstream)
+    assert result.status_code == 403
+    assert b'password_change_required' in result.body
+    downstream.assert_not_awaited()
+
+
+@pytest.mark.parametrize('path', ['/api/auth/password/change', '/api/logout'])
+async def test_restricted_session_can_change_password_or_logout(monkeypatch, path):
+    req = request(path, method='POST')
+    authenticate(
+        req,
+        method='password',
+        restricted=True,
+        accepted_tos=False,
+        email_verified=False,
+    )
+    from unittest.mock import MagicMock
+
+    csrf = MagicMock()
+    monkeypatch.setattr('server.middleware.validate_csrf', csrf)
+    result = await SetAuthCookieMiddleware()(req, AsyncMock(return_value=Response()))
+    assert result.status_code == 200
+    if path == '/api/logout':
+        # Logout owns cookie CSRF validation so unavailable upstream authentication
+        # cannot prevent deleting an expired session.
+        csrf.assert_not_called()
+    else:
+        csrf.assert_called_once_with(req)
+
+
+async def test_terms_and_keycloak_email_checks_precede_endpoint_side_effects():
+    for accepted_tos, verified in [(False, True), (True, False)]:
+        req = request()
+        authenticate(req, accepted_tos=accepted_tos, email_verified=verified)
+        downstream = AsyncMock()
+        result = await SetAuthCookieMiddleware()(req, downstream)
+        assert result.status_code == 403
+        downstream.assert_not_awaited()
+
+
+async def test_explicitly_provisioned_local_account_does_not_require_email_proof():
+    req = request()
+    authenticate(req, method='password', email_verified=False)
+    assert (
+        await SetAuthCookieMiddleware()(req, AsyncMock(return_value=Response()))
+    ).status_code == 200
+
+
+async def test_real_api_key_request_ignores_browser_terms_and_csrf():
+    req = request(method='POST')
+    authenticate(req, method='api_key', accepted_tos=False, email_verified=False)
+    assert (
+        await SetAuthCookieMiddleware()(req, AsyncMock(return_value=Response()))
+    ).status_code == 200
+
+
+@pytest.mark.parametrize(
+    'exc, expected',
+    [(ProviderReconnectRequired(), 409), (AuthenticationUnavailable(), 503)],
+)
+async def test_provider_failure_preserves_browser_session(exc, expected):
+    req = request(cookies={'keycloak_auth': 'signed-cookie'})
+    authenticate(req)
+    result = await SetAuthCookieMiddleware()(req, AsyncMock(side_effect=exc))
+    assert result.status_code == expected
     assert 'set-cookie' not in result.headers
-
-
-@pytest.mark.asyncio
-async def test_middleware_cookie_auth_error_still_triggers_logout(
-    middleware, mock_request
-):
-    """Cookie-bearing requests that fail auth still log out at Keycloak.
-
-    That's the legitimate cookie-session-going-bad case the middleware
-    was designed for, and the new bearer guard must not break it.
-    """
-    with _mock_jwt_decode():
-        mock_request.cookies = {'keycloak_auth': 'test_cookie'}
-        mock_call_next = AsyncMock(side_effect=AuthError('General auth error'))
-
-        with patch.object(middleware, '_logout', new=AsyncMock()) as mock_logout:
-            result = await middleware(mock_request, mock_call_next)
-
-        mock_logout.assert_awaited_once_with(mock_request)
-        assert isinstance(result, JSONResponse)
-        assert result.status_code == status.HTTP_401_UNAUTHORIZED
-        # Cookie must still be deleted.
-        assert 'set-cookie' in result.headers
-
-
-@pytest.mark.asyncio
-async def test_logout_skips_keycloak_for_bearer_auth():
-    """``_logout`` must skip Keycloak when the resolved auth is bearer.
-
-    Defense-in-depth: even if ``_logout`` is reached for a bearer-auth
-    user (e.g., from a future call site), the offline_token must not be
-    revoked. Only ``AuthType.COOKIE`` sessions get logged out at
-    Keycloak.
-    """
-    middleware = SetAuthCookieMiddleware()
-    mock_request = MagicMock(spec=Request)
-    mock_request.cookies = {}
-
-    bearer_user_auth = MagicMock(spec=SaasUserAuth)
-    bearer_user_auth.auth_type = AuthType.BEARER
-    bearer_user_auth.refresh_token = SecretStr('the-users-offline-token')
-
-    with (
-        patch(
-            'server.middleware.get_user_auth',
-            new=AsyncMock(return_value=bearer_user_auth),
-        ),
-        patch(
-            'server.middleware.token_manager.logout', new=AsyncMock()
-        ) as mock_kc_logout,
-    ):
-        await middleware._logout(mock_request)
-
-    mock_kc_logout.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_logout_invokes_keycloak_for_cookie_auth():
-    """Cookie auth must still terminate the Keycloak session.
-
-    This is the path the middleware was originally written for; the new
-    bearer-vs-cookie guard inside ``_logout`` must not regress it.
-    """
-    middleware = SetAuthCookieMiddleware()
-    mock_request = MagicMock(spec=Request)
-    mock_request.cookies = {'keycloak_auth': 'test_cookie'}
-
-    cookie_user_auth = MagicMock(spec=SaasUserAuth)
-    cookie_user_auth.auth_type = AuthType.COOKIE
-    cookie_user_auth.refresh_token = SecretStr('cookie-refresh-token')
-
-    with (
-        patch(
-            'server.middleware.get_user_auth',
-            new=AsyncMock(return_value=cookie_user_auth),
-        ),
-        patch(
-            'server.middleware.token_manager.logout', new=AsyncMock()
-        ) as mock_kc_logout,
-    ):
-        await middleware._logout(mock_request)
-
-    mock_kc_logout.assert_awaited_once_with('cookie-refresh-token')
-
-
-@pytest.mark.asyncio
-async def test_middleware_ignores_email_resend_path(
-    middleware, mock_request, mock_response
-):
-    """Test middleware ignores /api/email/resend path and doesn't require authentication."""
-    # Arrange
-    mock_request.cookies = {}
-    mock_request.url = MagicMock()
-    mock_request.url.hostname = 'localhost'
-    mock_request.url.path = '/api/email/resend'
-    mock_call_next = AsyncMock(return_value=mock_response)
-
-    # Act
-    result = await middleware(mock_request, mock_call_next)
-
-    # Assert
-    assert result == mock_response
-    mock_call_next.assert_called_once_with(mock_request)
-    # Should not raise NoCredentialsError even without auth cookie
-
-
-@pytest.mark.asyncio
-async def test_middleware_ignores_email_resend_path_no_tos_check(
-    middleware, mock_request, mock_response
-):
-    """Test middleware doesn't check TOS for /api/email/resend path."""
-    # Arrange
-    mock_request.cookies = {'keycloak_auth': 'test_cookie'}
-    mock_request.url = MagicMock()
-    mock_request.url.hostname = 'localhost'
-    mock_request.url.path = '/api/email/resend'
-    mock_call_next = AsyncMock(return_value=mock_response)
-
-    # Even with accepted_tos=False, should not raise TosNotAcceptedError
-    with _mock_jwt_decode(accepted_tos=False):
-        # Act
-        result = await middleware(mock_request, mock_call_next)
-
-        # Assert
-        assert result == mock_response
-        mock_call_next.assert_called_once_with(mock_request)
-        # Should not raise TosNotAcceptedError for this path
-
-
-@pytest.mark.asyncio
-async def test_middleware_skips_webhook_endpoints(
-    middleware, mock_request, mock_response
-):
-    """Test middleware skips webhook endpoints (/api/v1/webhooks/*) and doesn't require auth."""
-    # Test various webhook paths
-    webhook_paths = [
-        '/api/v1/webhooks/events',
-        '/api/v1/webhooks/events/123',
-        '/api/v1/webhooks/stats',
-        '/api/v1/webhooks/parent-conversation',
-    ]
-
-    for path in webhook_paths:
-        mock_request.cookies = {}
-        mock_request.url = MagicMock()
-        mock_request.url.hostname = 'localhost'
-        mock_request.url.path = path
-        mock_call_next = AsyncMock(return_value=mock_response)
-
-        # Act
-        result = await middleware(mock_request, mock_call_next)
-
-        # Assert - middleware should skip auth check and call next
-        assert result == mock_response
-        mock_call_next.assert_called_once_with(mock_request)
-
-
-@pytest.mark.asyncio
-async def test_middleware_skips_webhook_secrets_endpoint(
-    middleware, mock_request, mock_response
-):
-    """Test middleware skips the old /api/v1/webhooks/secrets endpoint."""
-    # This was explicitly in ignore_paths but is now handled by the prefix check
-    mock_request.cookies = {}
-    mock_request.url = MagicMock()
-    mock_request.url.hostname = 'localhost'
-    mock_request.url.path = '/api/v1/webhooks/secrets'
-    mock_call_next = AsyncMock(return_value=mock_response)
-
-    # Act
-    result = await middleware(mock_request, mock_call_next)
-
-    # Assert - middleware should skip auth check and call next
-    assert result == mock_response
-    mock_call_next.assert_called_once_with(mock_request)
-
-
-@pytest.mark.asyncio
-async def test_middleware_does_not_skip_similar_non_webhook_paths(
-    middleware, mock_response
-):
-    """Test middleware does NOT skip paths that start with /api/v1/webhook (without 's')."""
-    # These paths should still be processed by the middleware (not skipped)
-    # They start with /api so _should_attach returns True, and since there's no auth,
-    # middleware should return 401 response (it catches NoCredentialsError internally)
-    non_webhook_paths = [
-        '/api/v1/webhook/events',
-        '/api/v1/webhook/something',
-    ]
-
-    for path in non_webhook_paths:
-        # Create a fresh mock request for each test
-        mock_request = MagicMock(spec=Request)
-        mock_request.cookies = {}
-        mock_request.url = MagicMock()
-        mock_request.url.hostname = 'localhost'
-        mock_request.url.path = path
-        mock_request.headers = MagicMock()
-        mock_request.headers.get = MagicMock(side_effect=lambda k: None)
-
-        # Since these paths start with /api, _should_attach returns True
-        # Since there's no auth, middleware catches NoCredentialsError and returns 401
-        mock_call_next = AsyncMock()
-        result = await middleware(mock_request, mock_call_next)
-
-        # Should return a 401 response, not raise an exception
-        assert result.status_code == status.HTTP_401_UNAUTHORIZED
-        # Should NOT call next for non-webhook paths when auth is missing
-        mock_call_next.assert_not_called()

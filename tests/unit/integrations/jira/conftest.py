@@ -23,10 +23,14 @@ from storage.jira_workspace import JiraWorkspace
 
 
 @pytest.fixture
-def mock_token_manager():
+def mock_token_manager(monkeypatch):
     """Create a mock TokenManager for testing."""
     token_manager = MagicMock()
     token_manager.get_user_id_from_user_email = AsyncMock()
+    monkeypatch.setattr(
+        'integrations.jira.jira_manager.resolve_broker_email',
+        token_manager.get_user_id_from_user_email,
+    )
     token_manager.decrypt_text = MagicMock(return_value='decrypted_key')
     return token_manager
 

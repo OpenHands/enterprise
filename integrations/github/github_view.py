@@ -38,7 +38,7 @@ from openhands.app_server.utils.async_utils import call_sync_from_async
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk import TextContent
 from server.auth.constants import GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY
-from server.auth.token_manager import TokenManager
+from server.auth.provider_credentials import ProviderCredentialService
 from storage.org_store import OrgStore
 from storage.proactive_conversation_store import ProactiveConversationStore
 from storage.saas_secrets_store import SaasSecretsStore
@@ -628,10 +628,11 @@ class GithubFactory:
         user_id = None
         try:
             sender_id = payload['sender']['id']
-            token_manager = TokenManager()
-            user_id = await token_manager.get_user_id_from_idp_user_id(
-                sender_id, ProviderType.GITHUB
+            user_id_uuid = await ProviderCredentialService().resolve_user(
+                ProviderType.GITHUB, str(sender_id)
             )
+
+            user_id = str(user_id_uuid) if user_id_uuid else None
         except (KeyError, Exception) as e:
             logger.warning(
                 f'Failed to get user ID for proactive conversation check: {str(e)}'

@@ -1,44 +1,18 @@
-/**
- * Generates a URL to redirect to for OAuth authentication
- * @param identityProvider The identity provider to use (e.g., "github", "gitlab", "bitbucket", "azure_devops")
- * @param requestUrl The URL of the request
- * @returns The URL to redirect to for OAuth
- */
-export const generateAuthUrl = (
-  identityProvider: string,
-  requestUrl: URL,
-  authUrl?: string | null,
-) => {
-  // Use HTTPS protocol unless the host is localhost
-  const protocol =
-    requestUrl.hostname === "localhost" ? requestUrl.protocol : "https:";
-  const redirectUri = `${protocol}//${requestUrl.host}/oauth/keycloak/callback`;
+import { getAuthReturnTo } from "./auth-redirect";
 
-  let finalAuthUrl: string;
-
-  if (authUrl) {
-    // Ensure https:// is prepended and remove any accidental duplicate slashes
-    finalAuthUrl = `https://${authUrl.replace(/^https?:\/\//, "")}`;
-  } else {
-    finalAuthUrl = requestUrl.hostname
-      .replace(/(^|\.)staging\.all-hands\.dev$/, "$1auth.staging.all-hands.dev")
-      .replace(/(^|\.)app\.all-hands\.dev$/, "auth.app.all-hands.dev")
-      .replace(/(^|\.)localhost$/, "auth.staging.all-hands.dev");
-
-    // If no replacements matched, prepend "auth." (excluding localhost)
-    if (
-      finalAuthUrl === requestUrl.hostname &&
-      requestUrl.hostname !== "localhost"
-    ) {
-      finalAuthUrl = `auth.${requestUrl.hostname}`;
-    }
-
-    finalAuthUrl = `https://${finalAuthUrl}`;
-  }
-
-  const scope = "openid email profile"; // OAuth scope - not user-facing
-  const separator = requestUrl.search ? "&" : "?";
-  const cleanHref = requestUrl.href.replace(/\/$/, "");
-  const state = `${cleanHref}${separator}login_method=${identityProvider}`;
-  return `${finalAuthUrl}/realms/allhands/protocol/openid-connect/auth?client_id=allhands&kc_idp_hint=${identityProvider}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}`;
+/** The backend owns provider authorization, callback URLs, and OAuth state. */
+export const generateAuthUrl = (identityProvider: string, requestUrl: URL) => {
+  const url = new URL("/api/auth/authorize", requestUrl.origin);
+  url.searchParams.set("provider", identityProvider);
+  const redirect =
+    requestUrl.pathname === "/login"
+      ? getAuthReturnTo(requestUrl.searchParams)
+      : `${requestUrl.pathname}${requestUrl.search}`;
+  url.searchParams.set("redirect_url", redirect);
+  const invitationToken =
+    requestUrl.searchParams.get("invitation_token") ||
+    localStorage.getItem("openhands_invitation_token");
+  if (invitationToken)
+    url.searchParams.set("invitation_token", invitationToken);
+  return url.toString();
 };

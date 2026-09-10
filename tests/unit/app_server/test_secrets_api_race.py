@@ -376,23 +376,23 @@ async def test_concurrent_git_provider_token_updates_preserve_tokens(
     _install_race_window(file_secrets_store)
 
     async def post_github(initial_token: str):
-        with patch(
-            'openhands.app_server.secrets.secrets_router.check_provider_tokens',
-            AsyncMock(return_value=''),
-        ):
-            return await test_client.post(
-                '/secrets/git-providers',
-                json={
-                    'provider_tokens': {
-                        'github': {'token': initial_token, 'host': 'github.com'},
-                    }
-                },
-            )
+        return await test_client.post(
+            '/secrets/git-providers',
+            json={
+                'provider_tokens': {
+                    'github': {'token': initial_token, 'host': 'github.com'}
+                }
+            },
+        )
 
-    results = await asyncio.gather(
-        post_github('github-token-a'),
-        post_github('github-token-b'),
-    )
+    with patch(
+        'openhands.app_server.integrations.utils.validate_provider_token',
+        AsyncMock(return_value=ProviderType.GITHUB),
+    ):
+        results = await asyncio.gather(
+            post_github('github-token-a'),
+            post_github('github-token-b'),
+        )
     assert sorted(r.status_code for r in results) == [200, 200]
 
     stored = await file_secrets_store.load()
@@ -407,3 +407,31 @@ def test_lock_registry_is_module_scoped():
     _user_secrets_write_locks['sentinel'] = asyncio.Lock()
     _reset_user_secrets_locks()
     assert 'sentinel' not in _user_secrets_write_locks
+
+
+@pytest.mark.asyncio
+async def test_provider_and_custom_secret_writes_share_the_oss_document_lock(
+    test_client, file_secrets_store
+):
+    await file_secrets_store.store(Secrets())
+    _install_race_window(file_secrets_store)
+    with patch(
+        'openhands.app_server.integrations.utils.validate_provider_token',
+        AsyncMock(return_value=ProviderType.GITHUB),
+    ):
+        results = await asyncio.gather(
+            test_client.post(
+                '/secrets/git-providers',
+                json={'provider_tokens': {'github': {'token': 'github-token'}}},
+            ),
+            test_client.post(
+                '/secrets', json={'name': 'CUSTOM', 'value': 'custom-secret'}
+            ),
+        )
+    assert sorted(result.status_code for result in results) == [200, 201]
+    stored = await file_secrets_store.load()
+    assert (
+        stored.provider_tokens[ProviderType.GITHUB].token.get_secret_value()
+        == 'github-token'
+    )
+    assert stored.custom_secrets['CUSTOM'].secret.get_secret_value() == 'custom-secret'

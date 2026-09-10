@@ -11,83 +11,30 @@ from openhands.app_server.integrations.service_types import ProviderType, Reques
 
 
 @pytest.mark.asyncio
-async def test_get_latest_token_updates_cached_token_for_retry_headers():
-    service = SaaSAzureDevOpsService(
-        external_auth_token=SecretStr('keycloak-token'),
-        token=SecretStr('expired-token'),
-    )
-
+@pytest.mark.parametrize(
+    'context',
+    [
+        {'external_auth_token': SecretStr('legacy-broker-token')},
+        {'external_auth_id': 'openhands-user'},
+        {'user_id': 'provider-account'},
+    ],
+)
+async def test_get_latest_token_updates_cached_token_for_retry_headers(context):
+    service = SaaSAzureDevOpsService(**context, token=SecretStr('expired-token'))
     with patch.object(
-        service.token_manager,
-        'get_idp_token',
-        new_callable=AsyncMock,
-        return_value='fresh-token',
-    ) as mock_get_idp_token:
+        service.provider_credentials,
+        'token_for_service',
+        AsyncMock(return_value=SecretStr('fresh-token')),
+    ) as get_token:
         token = await service.get_latest_token()
-
-    assert token is not None
     assert token.get_secret_value() == 'fresh-token'
     assert service.token.get_secret_value() == 'fresh-token'
-    mock_get_idp_token.assert_awaited_once_with(
-        'keycloak-token',
-        idp=ProviderType.AZURE_DEVOPS,
-    )
-
-
-@pytest.mark.asyncio
-async def test_get_latest_token_updates_cached_token_from_external_auth_id():
-    service = SaaSAzureDevOpsService(
-        external_auth_id='external-auth-id',
-        token=SecretStr('expired-token'),
-    )
-
-    with (
-        patch.object(
-            service.token_manager,
-            'load_offline_token',
-            new_callable=AsyncMock,
-            return_value='offline-token',
-        ) as mock_load_offline_token,
-        patch.object(
-            service.token_manager,
-            'get_idp_token_from_offline_token',
-            new_callable=AsyncMock,
-            return_value='fresh-token',
-        ) as mock_get_idp_token_from_offline_token,
-    ):
-        token = await service.get_latest_token()
-
-    assert token is not None
-    assert token.get_secret_value() == 'fresh-token'
-    assert service.token.get_secret_value() == 'fresh-token'
-    mock_load_offline_token.assert_awaited_once_with('external-auth-id')
-    mock_get_idp_token_from_offline_token.assert_awaited_once_with(
-        'offline-token',
+    get_token.assert_awaited_once_with(
         ProviderType.AZURE_DEVOPS,
-    )
-
-
-@pytest.mark.asyncio
-async def test_get_latest_token_updates_cached_token_from_user_id():
-    service = SaaSAzureDevOpsService(
-        user_id='azure-user-id',
-        token=SecretStr('expired-token'),
-    )
-
-    with patch.object(
-        service.token_manager,
-        'get_idp_token_from_idp_user_id',
-        new_callable=AsyncMock,
-        return_value='fresh-token',
-    ) as mock_get_idp_token_from_user_id:
-        token = await service.get_latest_token()
-
-    assert token is not None
-    assert token.get_secret_value() == 'fresh-token'
-    assert service.token.get_secret_value() == 'fresh-token'
-    mock_get_idp_token_from_user_id.assert_awaited_once_with(
-        'azure-user-id',
-        ProviderType.AZURE_DEVOPS,
+        user_id=context.get('external_auth_id'),
+        account_id=context.get('user_id'),
+        access_token=context.get('external_auth_token'),
+        host=None,
     )
 
 

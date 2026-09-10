@@ -2,6 +2,7 @@ import asyncio
 
 from pydantic import SecretStr
 
+from integrations.provider_service import ProviderCredentialErrorMixin
 from integrations.store_repo_utils import store_repositories_in_db
 from integrations.types import GitLabResourceType
 from openhands.app_server.integrations.gitlab.gitlab_service import GitLabService
@@ -13,12 +14,12 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.types import AppMode
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.token_manager import TokenManager
+from server.auth.provider_credentials import ProviderCredentialService
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
 from storage.gitlab_webhook_store import GitlabWebhookStore
 
 
-class SaaSGitLabService(GitLabService):
+class SaaSGitLabService(ProviderCredentialErrorMixin, GitLabService):
     def __init__(
         self,
         user_id: str | None = None,
@@ -42,45 +43,20 @@ class SaaSGitLabService(GitLabService):
 
         self.external_auth_token = external_auth_token
         self.external_auth_id = external_auth_id
-        self.token_manager = TokenManager(external=external_token_manager)
+        self.provider_credentials = ProviderCredentialService()
+        self._credential_host = base_domain
 
     async def get_latest_token(self) -> SecretStr | None:
-        gitlab_token = None
-        if self.external_auth_token:
-            gitlab_token = SecretStr(
-                await self.token_manager.get_idp_token(
-                    self.external_auth_token.get_secret_value(), idp=ProviderType.GITLAB
-                )
-            )
-            logger.debug(
-                f'Got GitLab token {gitlab_token} from access token: {self.external_auth_token}'
-            )
-        elif self.external_auth_id:
-            offline_token = await self.token_manager.load_offline_token(
-                self.external_auth_id
-            )
-            gitlab_token_str: str | None = (
-                await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.GITLAB
-                )
-                if offline_token
-                else None
-            )
-            gitlab_token = SecretStr(gitlab_token_str) if gitlab_token_str else None
-            logger.info(
-                f'Got GitLab token {gitlab_token} from external auth user ID: {self.external_auth_id}'
-            )
-        elif self.user_id:
-            gitlab_token_str = await self.token_manager.get_idp_token_from_idp_user_id(
-                self.user_id, ProviderType.GITLAB
-            )
-            gitlab_token = SecretStr(gitlab_token_str) if gitlab_token_str else None
-            logger.debug(
-                f'Got Gitlab token {gitlab_token} from user ID: {self.user_id}'
-            )
-        else:
-            logger.warning('external_auth_token and user_id not set!')
-        return gitlab_token
+        token = await self.provider_credentials.token_for_service(
+            ProviderType.GITLAB,
+            user_id=self.external_auth_id,
+            account_id=self.user_id,
+            access_token=self.external_auth_token,
+            host=self._credential_host,
+        )
+        if token:
+            self.token = token
+        return token
 
     async def get_owned_groups(self, min_access_level: int = 40) -> list[dict]:
         """
@@ -189,11 +165,11 @@ class SaaSGitLabService(GitLabService):
         # If external_auth_id is not set, try to determine it from the Keycloak token
         if not self.external_auth_id and self.external_auth_token:
             try:
-                user_info = await self.token_manager.get_user_info(
-                    self.external_auth_token.get_secret_value()
+                from server.auth.provider_compatibility import user_from_broker_token
+
+                self.external_auth_id = await user_from_broker_token(
+                    self.external_auth_token
                 )
-                keycloak_user_id = user_info.sub
-                self.external_auth_id = keycloak_user_id
                 logger.info(
                     f'Determined external_auth_id from Keycloak token: {self.external_auth_id}'
                 )

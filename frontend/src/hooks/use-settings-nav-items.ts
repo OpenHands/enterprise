@@ -16,6 +16,7 @@ import { usePermission } from "./organizations/use-permissions";
 import { useOrgTypeAndAccess } from "./use-org-type-and-access";
 import { useSettings } from "./query/use-settings";
 import { I18nKey } from "#/i18n/declaration";
+import { useAuthCapabilities } from "#/hooks/query/use-auth-capabilities";
 
 // Rendered navigation item types
 export type SettingsNavRenderedItem =
@@ -45,6 +46,7 @@ const SECTION_HEADERS: Partial<Record<SettingsNavSection, I18nKey>> = {
 export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const { data: config } = useConfig();
   const { data: user } = useMe();
+  const { data: capabilities } = useAuthCapabilities();
   const { data: settings } = useSettings();
   const userRole: OrganizationUserRole = user?.role ?? "member";
   const { hasPermission } = usePermission(userRole);
@@ -65,6 +67,12 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     : null;
 
   let items = isSaasMode ? [...SAAS_NAV_ITEMS] : [...OSS_NAV_ITEMS];
+  if (
+    capabilities?.mode !== "local" ||
+    !user?.permissions?.includes("manage_users")
+  ) {
+    items = items.filter((item) => item.to !== "/settings/accounts");
+  }
 
   // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));

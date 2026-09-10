@@ -23,7 +23,7 @@ export const useLogout = () => {
         clearLoginData();
       }
 
-      posthog.reset();
+      posthog?.reset();
 
       // Refresh the page after all logout logic is completed
       window.location.reload();

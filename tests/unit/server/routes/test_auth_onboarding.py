@@ -73,7 +73,7 @@ class TestShouldRedirectToOnboarding:
         """Test that cloud mode users with incomplete onboarding are redirected."""
         mock_user.onboarding_completed = False
 
-        with patch('server.routes.auth.DEPLOYMENT_MODE', 'cloud'):
+        with patch('server.auth.admission.DEPLOYMENT_MODE', 'cloud'):
             result = await _should_redirect_to_onboarding('user-123', mock_user)
 
         assert result is True
@@ -89,7 +89,7 @@ class TestShouldRedirectToOnboarding:
         first_owner.id = mock_user.id
 
         with (
-            patch('server.routes.auth.DEPLOYMENT_MODE', 'self_hosted'),
+            patch('server.auth.admission.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
                 'server.routes.auth.UserStore.get_first_owner_in_org',
                 new_callable=AsyncMock,
@@ -111,7 +111,7 @@ class TestShouldRedirectToOnboarding:
         first_owner.id = uuid.uuid4()  # Different user
 
         with (
-            patch('server.routes.auth.DEPLOYMENT_MODE', 'self_hosted'),
+            patch('server.auth.admission.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
                 'server.routes.auth.UserStore.get_first_owner_in_org',
                 new_callable=AsyncMock,
@@ -129,7 +129,7 @@ class TestShouldRedirectToOnboarding:
         user_id = str(mock_user.id)
 
         with (
-            patch('server.routes.auth.DEPLOYMENT_MODE', 'self_hosted'),
+            patch('server.auth.admission.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
                 'server.routes.auth.UserStore.get_first_owner_in_org',
                 new_callable=AsyncMock,
@@ -148,7 +148,7 @@ class TestShouldRedirectToOnboarding:
         mock_get_first_owner = AsyncMock(return_value=None)
 
         with (
-            patch('server.routes.auth.DEPLOYMENT_MODE', 'self_hosted'),
+            patch('server.auth.admission.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
                 'server.routes.auth.UserStore.get_first_owner_in_org',
                 mock_get_first_owner,
@@ -172,7 +172,7 @@ class TestGetPostAuthRedirect:
         user_id = str(mock_user.id)
 
         with (
-            patch('server.routes.auth.DEPLOYMENT_MODE', 'cloud'),
+            patch('server.auth.admission.DEPLOYMENT_MODE', 'cloud'),
             patch(
                 'server.routes.auth.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
@@ -244,13 +244,13 @@ class TestGetPostAuthRedirect:
         user_id = str(mock_user.id)
 
         with (
-            patch('server.routes.auth.DEPLOYMENT_MODE', 'cloud'),
+            patch('server.auth.admission.DEPLOYMENT_MODE', 'cloud'),
             patch(
                 'server.routes.auth.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
                 return_value=mock_user,
             ),
-            patch('server.routes.auth.logger') as mock_logger,
+            patch('server.auth.admission.logger') as mock_logger,
         ):
             await _get_post_auth_redirect(
                 user_id, 'https://example.com/', 'https://example.com'
@@ -277,7 +277,7 @@ class TestGetPostAuthRedirect:
         user_id = str(mock_user.id)
 
         with (
-            patch('server.routes.auth.DEPLOYMENT_MODE', 'cloud'),
+            patch('server.auth.admission.DEPLOYMENT_MODE', 'cloud'),
             patch(
                 'server.routes.auth.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
@@ -305,7 +305,7 @@ class TestGetPostAuthRedirect:
         user_id = str(mock_user.id)
 
         with (
-            patch('server.routes.auth.DEPLOYMENT_MODE', 'cloud'),
+            patch('server.auth.admission.DEPLOYMENT_MODE', 'cloud'),
             patch(
                 'server.routes.auth.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
@@ -890,7 +890,7 @@ class TestOnboardingStatusEndpoint:
                 new_callable=AsyncMock,
                 return_value=mock_user,
             ),
-            patch('server.routes.auth.DEPLOYMENT_MODE', 'cloud'),
+            patch('server.auth.admission.DEPLOYMENT_MODE', 'cloud'),
         ):
             result = await onboarding_status(mock_request)
 
@@ -925,3 +925,10 @@ class TestOnboardingStatusEndpoint:
         assert result.status_code == status.HTTP_200_OK
         body = json.loads(result.body)
         assert body == {'should_complete_onboarding': False}
+
+
+@pytest.fixture(autouse=True)
+def initialized_keycloak_mode(monkeypatch):
+    from server.auth import mode
+
+    monkeypatch.setattr(mode, '_auth_mode', mode.AuthMode.KEYCLOAK)
