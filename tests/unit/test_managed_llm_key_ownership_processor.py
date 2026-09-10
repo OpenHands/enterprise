@@ -24,6 +24,7 @@ async def _create_member(
     role_id,
     key: str,
     has_custom_key: bool = False,
+    agent_settings_diff: dict | None = None,
 ) -> None:
     session.add(User(id=user_id, current_org_id=org_id))
     session.add(
@@ -33,6 +34,7 @@ async def _create_member(
             role_id=role_id,
             llm_api_key=key,
             has_custom_llm_api_key=has_custom_key,
+            agent_settings_diff=agent_settings_diff,
             managed_llm_key_ownership_version=0,
         )
     )
@@ -106,6 +108,7 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
     wrong_user_id = uuid4()
     owned_user_id = uuid4()
     custom_user_id = uuid4()
+    acp_user_id = uuid4()
     async with async_session_maker() as session:
         role = Role(name=f'key-repair-{uuid4()}', rank=1)
         session.add(role)
@@ -143,6 +146,17 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
             key='customer-key',
             has_custom_key=True,
         )
+        await _create_member(
+            session,
+            org_id=org_id,
+            user_id=acp_user_id,
+            role_id=role.id,
+            key='unused-in-acp-mode',
+            agent_settings_diff={
+                'agent_kind': 'acp',
+                'acp_server': 'codex',
+            },
+        )
         await session.commit()
 
     processor = ManagedLlmKeyOwnershipProcessor(
@@ -156,6 +170,7 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
             ManagedLlmKeyOwnershipTarget(
                 org_id=str(org_id), user_id=str(custom_user_id)
             ),
+            ManagedLlmKeyOwnershipTarget(org_id=str(org_id), user_id=str(acp_user_id)),
         ]
     )
     verify = AsyncMock(side_effect=[False, True, True])
@@ -184,7 +199,7 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
     assert result == {
         'verified': 1,
         'repaired': 1,
-        'skipped': 1,
+        'skipped': 2,
         'error_count': 0,
         'errors': [],
     }
@@ -211,6 +226,7 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
     )
     assert members[owned_user_id].llm_api_key.get_secret_value() == 'owned-member-key'
     assert members[custom_user_id].llm_api_key.get_secret_value() == 'customer-key'
+    assert members[acp_user_id].llm_api_key.get_secret_value() == 'unused-in-acp-mode'
     assert all(
         member.managed_llm_key_ownership_version == 1 for member in members.values()
     )

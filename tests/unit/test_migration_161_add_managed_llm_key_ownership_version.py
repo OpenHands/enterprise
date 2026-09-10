@@ -20,9 +20,6 @@ def test_upgrade_marks_legacy_rows_stale_and_new_rows_current(monkeypatch):
         def add_column(self, table, column):
             calls.append(('add', table, column))
 
-        def execute(self, statement):
-            calls.append(('execute', str(statement)))
-
         def alter_column(self, table, column, **kwargs):
             calls.append(('alter', table, column, kwargs))
 
@@ -33,16 +30,12 @@ def test_upgrade_marks_legacy_rows_stale_and_new_rows_current(monkeypatch):
     assert operation == 'add'
     assert table == 'org_member'
     assert column.name == 'managed_llm_key_ownership_version'
-    assert column.nullable
-    assert calls[1] == (
-        'execute',
-        'UPDATE org_member SET managed_llm_key_ownership_version = 0',
-    )
-    operation, table, column_name, kwargs = calls[2]
+    assert not column.nullable
+    assert str(column.server_default.arg) == '0'
+    operation, table, column_name, kwargs = calls[1]
     assert operation == 'alter'
     assert table == 'org_member'
     assert column_name == 'managed_llm_key_ownership_version'
-    assert kwargs['nullable'] is False
     assert str(kwargs['server_default']) == '1'
 
 

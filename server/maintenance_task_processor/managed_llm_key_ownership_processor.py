@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.sdk.settings import apply_agent_settings_diff
 from server.logger import logger
 from storage.database import a_session_maker, session_maker
 from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
@@ -36,16 +36,16 @@ class ManagedLlmKeyOwnershipProcessor(MaintenanceTaskProcessor):
 
     @staticmethod
     def _effective_managed_key_config(org: Org, member: OrgMember):
-        org_settings = OrgStore.get_agent_settings_from_org(org).model_dump(mode='json')
+        org_settings = OrgStore.get_agent_settings_from_org(org)
         member_diff = dict(member.agent_settings_diff or {})
         member_diff.pop('mcp_config', None)
-        merged_settings = deep_merge(org_settings, member_diff)
-        llm = merged_settings.get('llm')
-        if not isinstance(llm, dict):
+        effective_settings = apply_agent_settings_diff(org_settings, member_diff)
+        llm = getattr(effective_settings, 'llm', None)
+        if llm is None:
             return None
         return managed_llm_key_config_from_model(
-            llm.get('model'),
-            llm.get('base_url'),
+            llm.model,
+            llm.base_url,
         )
 
     async def __call__(self, task: MaintenanceTask) -> dict:
