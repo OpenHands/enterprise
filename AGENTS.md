@@ -217,10 +217,10 @@ Each integration follows a consistent pattern with service classes, storage mode
 **Testing Best Practices:**
 
 **Database Testing:**
-- **Never use SQLite for a test that touches the application schema.** Unit tests run against real PostgreSQL in
-  a testcontainer, so the schema under test is the one the migrations produce. Do not introduce a
-  `sqlite:///` or `sqlite+aiosqlite:///` URL, do not call `Base.metadata.create_all`, and do not build your own
-  engine
+- **Never use SQLite. Anywhere.** This is a PostgreSQL-only codebase: the migrations are PostgreSQL-only and so
+  are the tests. Do not introduce a `sqlite:///` or `sqlite+aiosqlite:///` URL, do not call
+  `Base.metadata.create_all`, do not build your own engine, and do not add a fallback that reaches for SQLite
+  when PostgreSQL is unreachable. If the database is not configured, fail loudly
 - **Always use the shared fixtures**: `engine` / `session_maker` / `async_engine` / `async_session_maker` from
   `tests/unit/conftest.py`. Each test gets its own database, cloned from a template migrated to head with
   `alembic upgrade head` (see `tests/postgres_testdb.py`). Cloning costs about 50ms, so a fresh database per test
@@ -235,9 +235,6 @@ Each integration follows a consistent pattern with service classes, storage mode
   git providers)
 - Do not add SQLite paths to Alembic migrations
 - Create module-specific `conftest.py` files for fixtures beyond the shared ones
-- Two uses of SQLite are deliberate and should be left alone: migration tests that hand-declare a migration-era
-  schema (`tests/unit/test_migration_*.py`), and the tests asserting the app server's production SQLite fallback
-  URL (`tests/unit/app_server/test_db_session_injector.py`)
 
 **Import Patterns:**
 - The SaaS modules are top-level packages: `from storage.database import a_session_maker`, `from server.auth ...`

@@ -73,13 +73,15 @@ def run_migrations_offline() -> None:
     db_session = global_config.db_session
 
     # Get the database URL from the DbSessionInjector
-    if db_session.host:
-        password_value = (
-            db_session.password.get_secret_value() if db_session.password else ''
+    if not db_session.host:
+        raise RuntimeError(
+            'No database configured. Set DB_HOST (or GCP_DB_INSTANCE for Cloud SQL) '
+            'to point at a PostgreSQL server.'
         )
-        url = f'postgresql://{db_session.user}:{password_value}@{db_session.host}:{db_session.port}/{db_session.name}'
-    else:
-        url = f'sqlite:///{db_session.persistence_dir}/openhands.db'
+    password_value = (
+        db_session.password.get_secret_value() if db_session.password else ''
+    )
+    url = f'postgresql://{db_session.user}:{password_value}@{db_session.host}:{db_session.port}/{db_session.name}'
 
     context.configure(
         url=url,

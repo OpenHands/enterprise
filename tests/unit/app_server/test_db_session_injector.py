@@ -15,8 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import Engine
-from sqlalchemy.ext.asyncio.engine import AsyncEngine
 from sqlalchemy.orm import sessionmaker
 
 # Mock the storage.database module and the database drivers while importing the
@@ -191,24 +189,18 @@ class TestDbSessionInjectorConfiguration:
 class TestDbSessionInjectorConnections:
     """Test database connection string generation and engine creation."""
 
-    def test_sqlite_connection_fallback(self, basic_db_session_injector):
-        """Test SQLite connection when no host is defined."""
-        engine = basic_db_session_injector.get_db_engine()
-
-        assert isinstance(engine, Engine)
-        expected_url = (
-            f'sqlite:///{basic_db_session_injector.persistence_dir}/openhands.db'
-        )
-        assert str(engine.url) == expected_url
+    def test_raises_when_no_host_configured(self, basic_db_session_injector):
+        """Test an unconfigured database fails instead of falling back."""
+        with pytest.raises(RuntimeError, match='No database configured'):
+            basic_db_session_injector.get_db_engine()
 
     @pytest.mark.asyncio
-    async def test_sqlite_async_connection_fallback(self, basic_db_session_injector):
-        """Test SQLite async connection when no host is defined."""
-        engine = await basic_db_session_injector.get_async_db_engine()
-
-        assert isinstance(engine, AsyncEngine)
-        expected_url = f'sqlite+aiosqlite:///{basic_db_session_injector.persistence_dir}/openhands.db'
-        assert str(engine.url) == expected_url
+    async def test_async_raises_when_no_host_configured(
+        self, basic_db_session_injector
+    ):
+        """Test an unconfigured database fails instead of falling back."""
+        with pytest.raises(RuntimeError, match='No database configured'):
+            await basic_db_session_injector.get_async_db_engine()
 
     def test_postgres_connection_with_host(self, postgres_db_session_injector):
         """Test PostgreSQL connection when host is defined."""
