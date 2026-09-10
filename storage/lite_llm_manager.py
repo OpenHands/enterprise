@@ -97,7 +97,13 @@ DEFAULT_INITIAL_BUDGET: float | None = _get_default_initial_budget(ENABLE_BILLIN
 # enforcement disabled, so free users can run free models without credits while
 # still being blocked from paid models. Override per environment via
 # FREE_LLM_MODELS (comma-separated).
-_DEFAULT_FREE_LLM_MODELS = ['glm-5.2', 'minimax-m2.5', 'minimax-m2.7', 'kimi-k3']
+_DEFAULT_FREE_LLM_MODELS = [
+    'glm-5.2',
+    'minimax-m2.5',
+    'minimax-m2.7',
+    'kimi-k3',
+    'deepseek-v4.1-flash',
+]
 
 
 def _get_free_llm_models() -> list[str]:
