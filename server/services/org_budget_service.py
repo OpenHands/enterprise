@@ -429,12 +429,6 @@ class OrgBudgetService:
             org_member_ids,
             snapshot_result,
         )
-        for user in users:
-            user.update(
-                reconciliation_state=policy_comparison['reconciliation_state'],
-                reconciliation_error=policy_comparison['reconciliation_error'],
-                applied_at=policy_comparison['applied_at'],
-            )
         return {
             'settings': settings,
             'thresholds': thresholds,
@@ -651,12 +645,6 @@ class OrgBudgetService:
             org_member_ids,
             snapshot_result,
         )
-        for user in users:
-            user.update(
-                reconciliation_state=policy_comparison['reconciliation_state'],
-                reconciliation_error=policy_comparison['reconciliation_error'],
-                applied_at=policy_comparison['applied_at'],
-            )
         return {
             'settings': settings,
             'thresholds': thresholds,

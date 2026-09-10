@@ -36,6 +36,7 @@ from server.routes.org_models import (
     OrgBudgetSettingsResponse,
     OrgBudgetSettingsUpdate,
     OrgBudgetThresholdResponse,
+    OrgBudgetUserMutationResponse,
     OrgBudgetUserOverrideUpdate,
     OrgBudgetUserResponse,
     OrgConcurrentModificationError,
@@ -1289,7 +1290,7 @@ async def update_org_budget_settings(
 
 @org_router.put(
     '/{org_id}/budgets/overrides/{user_id}',
-    response_model=OrgBudgetUserResponse,
+    response_model=OrgBudgetUserMutationResponse,
 )
 async def upsert_org_budget_override(
     org_id: UUID,
@@ -1298,7 +1299,7 @@ async def upsert_org_budget_override(
     response: Response,
     current_user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     budget_service: OrgBudgetService = org_budget_service_dependency,
-) -> OrgBudgetUserResponse:
+) -> OrgBudgetUserMutationResponse:
     logger.info(
         'Updating org budget override',
         extra={
@@ -1321,7 +1322,7 @@ async def upsert_org_budget_override(
         )
     if user_row.get('reconciliation_state') in {'degraded', 'failed'}:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-    return OrgBudgetUserResponse(**user_row)
+    return OrgBudgetUserMutationResponse(**user_row)
 
 
 @org_router.delete(

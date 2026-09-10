@@ -814,6 +814,9 @@ class OrgBudgetUserResponse(BaseModel):
     effective_monthly_limit: float | None = None
     is_disabled: bool = False
     is_override: bool = False
+
+
+class OrgBudgetUserMutationResponse(OrgBudgetUserResponse):
     reconciliation_state: (
         Literal['inactive', 'pending', 'healthy', 'degraded', 'failed'] | None
     ) = None
