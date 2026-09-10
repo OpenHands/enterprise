@@ -109,7 +109,7 @@ Backend:
   - All tests are in `tests/unit/test_*.py`
   - To test new code, run `uv run pytest tests/unit/test_xxx.py` where `xxx` is the appropriate file for the current functionality
   - Write all tests with pytest
-  - Tests for the SaaS/enterprise modules live in `tests/unit/server/`, `tests/unit/storage/`, `tests/unit/integrations/`, `tests/unit/sync/`, ...; `tests/unit/conftest.py` provides the SQLite-backed DB fixtures they use
+  - Tests for the SaaS/enterprise modules live in `tests/unit/server/`, `tests/unit/storage/`, `tests/unit/integrations/`, `tests/unit/sync/`, ...; `tests/unit/conftest.py` provides the PostgreSQL-backed DB fixtures they use
 
 
 Frontend:
@@ -143,7 +143,7 @@ Frontend:
 
 The SaaS/enterprise modules extend the OpenHands app server (`openhands/`). They live at the repository root, next to it:
 - `server/` - the SaaS server: authentication and user management (Keycloak integration), org management, billing (Stripe), routes, services
-- `storage/` - SQLAlchemy models and stores (PostgreSQL in production, SQLite in unit tests)
+- `storage/` - SQLAlchemy models and stores (PostgreSQL in production and in unit tests)
 - `integrations/` - GitHub, GitLab, Bitbucket, Azure DevOps, Jira, Linear and Slack integrations
 - `sync/` - CronJob entrypoints (`python -m sync.<job>`)
 - `analytics/`, `utils/` - SaaS analytics user provider and shared helpers
@@ -217,7 +217,9 @@ Each integration follows a consistent pattern with service classes, storage mode
 **Testing Best Practices:**
 
 **Database Testing:**
-- Use SQLite in-memory databases (`sqlite:///:memory:`) for application unit tests instead of real PostgreSQL
+- Use the `engine` / `session_maker` / `async_engine` / `async_session_maker` fixtures from `tests/unit/conftest.py`
+  for application unit tests. Each test gets its own PostgreSQL database, migrated to head, cloned from a template
+  (see `tests/postgres_testdb.py`); never hand-roll a SQLite engine
 - Do not add SQLite paths to Alembic migrations
 - Create module-specific `conftest.py` files with database fixtures
 - Mock external database connections in unit tests to avoid dependency on running services
