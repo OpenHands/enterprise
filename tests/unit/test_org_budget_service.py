@@ -162,6 +162,39 @@ def test_budget_policy_comparison_reports_unreadable_failed_state():
     assert result['reconciliation_error'] == 'verification_fetch_failed: timeout'
 
 
+def test_budget_policy_comparison_reports_beta_missing_baseline_shape():
+    user_id = str(uuid4())
+    settings = OrgBudgetSettings(
+        org_id=uuid4(),
+        enabled=True,
+        monthly_limit=1000.0,
+        default_user_monthly_limit=300.0,
+        cycle_start_spend=2.0,
+        user_cycle_start_spend={},
+        litellm_known_member_ids=[user_id],
+        litellm_last_sync_status='error',
+        litellm_last_sync_error=f'member_cycle_baseline_missing: {user_id}',
+    )
+    snapshot = _snapshot(
+        team_spend=2.29,
+        team_max_budget=1002.0,
+        members={user_id: (2.29, 1002.0, True)},
+    )
+
+    result = _budget_policy_comparison(
+        settings,
+        [],
+        {user_id},
+        BudgetFinancialSnapshotResult(snapshot=snapshot, status='live'),
+    )
+
+    assert result['desired_team_max_budget'] == 1002.0
+    assert result['applied_team_max_budget'] == 1002.0
+    assert result['budget_policy_matches'] is False
+    assert result['reconciliation_state'] == 'degraded'
+    assert 'member_cycle_baseline_missing' in result['reconciliation_error']
+
+
 @pytest.fixture
 async def budget_org(async_session_maker):
     org_id = uuid4()
