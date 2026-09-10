@@ -5,6 +5,38 @@ directory) plus the SaaS/enterprise modules that extend it, which sit beside it 
 `saas_server.py`, `run_maintenance_tasks.py`, `run_budget_maintenance.py`. This is the same layout the Docker
 image has in `/app`. Python dependencies are managed with uv (`pyproject.toml` + `uv.lock`).
 
+## Model default migration playbook (OpenHands Cloud)
+
+When making a new model the OpenHands Cloud default (e.g. deepseek-v4-flash -> deepseek-v4.1-flash),
+follow the established two-migration pattern (see 142/144 + 153, and 158 + 159):
+
+1. `enterprise/migrations/versions/<N>_add_<model>_verified_model.py` — INSERT into
+   `verified_models (model_name, provider) VALUES ('<model>', 'openhands') ON CONFLICT DO UPDATE`.
+2. `enterprise/migrations/versions/<N+1>_migrate_<old>_to_<new>.py` — clone of 153: rewrite
+   `MODEL_REPLACEMENTS` for `openhands/<old>` and `litellm_proxy/<old>` only (NOT bare names =
+   BYOK). SaaS-only via the `WEB_HOST` gate (`_is_saas_web_host`). Rewrites JSON columns
+   `user_settings.agent_settings`, `org.agent_settings`, `org_member.agent_settings_diff` and
+   the encrypted `user.llm_profiles` / `org.llm_profiles` (decrypt -> `_replace_model_values` ->
+   re-encrypt). Postgres-only.
+3. `enterprise/server/constants.py` `PERSONAL_WORKSPACE_VERSION_TO_MODEL`: add next version key.
+   `ORG/PERSONAL_WORKSPACE_VERSION` auto-bumps via `max(keys())` -> drives `get_default_litellm_model()`.
+4. `openhands/app_server/utils/llm.py` `DEFAULT_OPENHANDS_MODEL = 'openhands/<new>'` (ModelsResponse.default_model).
+5. `enterprise/storage/lite_llm_manager.py` `_DEFAULT_FREE_LLM_MODELS`: include `<new>`.
+6. SDK `software-agent-sdk/.../verified_models.py`: add to `VERIFIED_OPENHANDS_MODELS` and the
+   provider list (e.g. `VERIFIED_DEEPSEEK_MODELS`). `model_features.py`: mirror v4-flash's
+   entries (e.g. `SEND_REASONING_CONTENT_MODELS` for dual-mode thinking models).
+7. `saas-deploy/app/openhands/environments/staging/values.yaml` `FREE_LLM_MODELS: "<new>"`.
+8. Frontend `OpenHands/src/utils/format-model-name.ts` `FREE_OPENHANDS_MODELS` key+label;
+   update `src/mocks/settings-handlers.ts` + the model-name/selector/profile/chat tests.
+9. Tests: `enterprise/tests/unit/test_migration_<N+1>_...py` mirroring `test_migration_153`.
+10. Verify: `enterprise/scripts/check_enterprise_migration_integrity.py` (linear chain) +
+    the migration test + frontend `npx vitest run` + `eslint --fix` on changed test files.
+
+Note: the enterprise `.venv` in this workspace is missing `keycloak`, so the unit `conftest.py`
+fails to import and `pytest` can't collect the migration tests through it. The migration tests
+are self-contained (import the migration file directly via `importlib.util`); validate them by
+running the assertions standalone, and run the integrity-check script (pure stdlib AST) directly.
+
 ## General Setup:
 To set up the entire repo, including frontend and backend, run `make build`.
 You don't need to do this unless the user asks you to, or if you're trying to run the entire application.
