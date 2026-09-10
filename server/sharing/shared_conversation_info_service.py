@@ -1,4 +1,3 @@
-import asyncio
 from abc import ABC, abstractmethod
 from uuid import UUID
 
@@ -21,13 +20,17 @@ class SharedConversationInfoService(ABC):
     async def batch_get_shared_conversation_info(
         self, conversation_ids: list[UUID]
     ) -> list[SharedConversation | None]:
-        """Get a batch of shared conversation info, return None for any missing or non-shared."""
-        return await asyncio.gather(
-            *[
-                self.get_shared_conversation_info(conversation_id)
-                for conversation_id in conversation_ids
-            ]
-        )
+        """Get a batch of shared conversation info, return None for any missing or non-shared.
+
+        Sequential on purpose: the SQL implementation shares one
+        ``AsyncSession`` across every lookup, and SQLAlchemy rejects
+        concurrent operations on a single session with
+        ``This session is provisioning a new connection``.
+        """
+        return [
+            await self.get_shared_conversation_info(conversation_id)
+            for conversation_id in conversation_ids
+        ]
 
 
 class SharedConversationInfoServiceInjector(
