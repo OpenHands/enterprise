@@ -471,10 +471,11 @@ class OrgBudgetService:
             allow_stale=False,
         )
         if snapshot_result.snapshot is None:
+            reconciliation_error = self._snapshot_unavailable_detail()
             await self._record_litellm_sync(
                 settings,
                 'error',
-                self._snapshot_unavailable_detail(),
+                reconciliation_error,
             )
             return {
                 'cycle_start_at': cycle.start_at,
@@ -482,6 +483,8 @@ class OrgBudgetService:
                 'cycle_rolled': False,
                 'current_spend': None,
                 'skipped': 'litellm_spend_unavailable',
+                'reconciliation_status': 'error',
+                'reconciliation_error': reconciliation_error,
             }
 
         snapshot = snapshot_result.snapshot
@@ -491,13 +494,14 @@ class OrgBudgetService:
                 org_id, settings, overrides, snapshot
             )
             if repair_result.snapshot is None:
+                reconciliation_error = (
+                    repair_result.error
+                    or 'LiteLLM membership repair failed before cycle rollover.'
+                )[:500]
                 await self._record_litellm_sync(
                     settings,
                     'error',
-                    (
-                        repair_result.error
-                        or 'LiteLLM membership repair failed before cycle rollover.'
-                    )[:500],
+                    reconciliation_error,
                 )
                 return {
                     'cycle_start_at': cycle.start_at,
@@ -505,6 +509,8 @@ class OrgBudgetService:
                     'cycle_rolled': False,
                     'current_spend': _litellm_cycle_spend(settings, snapshot),
                     'skipped': 'litellm_membership_repair_failed',
+                    'reconciliation_status': 'error',
+                    'reconciliation_error': reconciliation_error,
                 }
             snapshot = repair_result.snapshot
 
@@ -533,6 +539,8 @@ class OrgBudgetService:
             'cycle_end_at': cycle.end_at,
             'cycle_rolled': cycle_rolled,
             'current_spend': current_spend,
+            'reconciliation_status': settings.litellm_last_sync_status,
+            'reconciliation_error': settings.litellm_last_sync_error,
         }
 
     async def update_budget_settings(

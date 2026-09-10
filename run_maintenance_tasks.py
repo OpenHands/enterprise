@@ -12,6 +12,15 @@ NUM_RETRIES = 3
 RETRY_DELAY = 60
 
 
+def maintenance_task_status(info: dict) -> MaintenanceTaskStatus:
+    """Derive outer task status without discarding processor diagnostics."""
+    return (
+        MaintenanceTaskStatus.ERROR
+        if info.get('error_count', 0) > 0
+        else MaintenanceTaskStatus.COMPLETED
+    )
+
+
 async def main():
     try:
         # Imported lazily so the generic task runner remains usable in tooling
@@ -64,7 +73,7 @@ async def run_tasks():
             try:
                 processor = task.get_processor()
                 task.info = await processor(task)
-                task.status = MaintenanceTaskStatus.COMPLETED
+                task.status = maintenance_task_status(task.info)
                 session.commit()
             except Exception as e:
                 task.info = {'error': str(e)}
