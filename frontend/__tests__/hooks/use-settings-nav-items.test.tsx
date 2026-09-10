@@ -42,6 +42,14 @@ vi.mock("#/hooks/query/use-me", () => ({
   useMe: () => mockMe,
 }));
 
+const mockQuotaStatus = vi.hoisted(() => ({
+  data: { daily_limit: 100 } as { daily_limit: number | null } | undefined,
+}));
+
+vi.mock("#/hooks/query/use-quota-status", () => ({
+  useQuotaStatus: () => mockQuotaStatus,
+}));
+
 const queryClient = new QueryClient();
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
@@ -99,6 +107,31 @@ describe("useSettingsNavItems", () => {
     mockOrgTypeAndAccess.selectedOrg = null;
     mockOrgTypeAndAccess.canViewOrgRoutes = false;
     mockMe.data = null;
+    mockQuotaStatus.data = { daily_limit: 100 };
+  });
+
+  it("should show quota route when a daily limit is configured", async () => {
+    mockConfig("saas");
+    mockMe.data = { role: "member" };
+    mockQuotaStatus.data = { daily_limit: 100 };
+
+    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+    await waitFor(() => {
+      expect(findItemByPath(result.current, "/settings/quota")).toBeDefined();
+    });
+  });
+
+  it("should hide quota route when the daily limit is unlimited", async () => {
+    mockConfig("saas");
+    mockMe.data = { role: "member" };
+    mockQuotaStatus.data = { daily_limit: null };
+
+    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+    await waitFor(() => {
+      expect(findItemByPath(result.current, "/settings/quota")).toBeUndefined();
+    });
   });
 
   it("should return SAAS_NAV_ITEMS minus billing/org/org-members when userRole is 'member'", async () => {
