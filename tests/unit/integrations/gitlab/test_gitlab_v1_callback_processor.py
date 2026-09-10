@@ -421,7 +421,8 @@ class TestGitlabV1CallbackProcessor:
         mock_saas_gitlab_service_cls.return_value = mock_gitlab_service
 
         with patch(
-            'server.utils.conversation_utils.get_conversation_org_context'
+            'server.utils.conversation_utils.get_conversation_org_context',
+            new_callable=AsyncMock,
         ) as mock_get_org_context:
             # Mock personal workspace: org_id == user_id
             mock_get_org_context.return_value = (user_id, user_id)
@@ -497,7 +498,8 @@ class TestGitlabV1CallbackProcessor:
         mock_saas_gitlab_service_cls.return_value = mock_gitlab_service
 
         with patch(
-            'server.utils.conversation_utils.get_conversation_org_context'
+            'server.utils.conversation_utils.get_conversation_org_context',
+            new_callable=AsyncMock,
         ) as mock_get_org_context:
             # Mock multi-user org: org_id != user_id
             mock_get_org_context.return_value = (org_id, user_id)

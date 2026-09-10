@@ -864,7 +864,8 @@ class TestGithubV1CallbackProcessor:
                 'integrations.github.github_v1_callback_processor.Github'
             ) as mock_github,
             patch(
-                'server.utils.conversation_utils.get_conversation_org_context'
+                'server.utils.conversation_utils.get_conversation_org_context',
+                new_callable=AsyncMock,
             ) as mock_get_org_context,
         ):
             # Mock personal workspace: org_id == user_id
@@ -959,7 +960,8 @@ class TestGithubV1CallbackProcessor:
                 'integrations.github.github_v1_callback_processor.Github'
             ) as mock_github,
             patch(
-                'server.utils.conversation_utils.get_conversation_org_context'
+                'server.utils.conversation_utils.get_conversation_org_context',
+                new_callable=AsyncMock,
             ) as mock_get_org_context,
         ):
             # Mock multi-user org: org_id != user_id

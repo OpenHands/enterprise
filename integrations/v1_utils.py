@@ -39,7 +39,7 @@ def get_budget_error_message(org_id: UUID, user_id: UUID) -> str:
     Returns:
         An error message string with keywords the frontend expects
     """
-    is_personal_workspace = str(org_id) == str(user_id)
+    is_personal_workspace = org_id == user_id
 
     if is_personal_workspace:
         # Use "OpenHands credits" keyword for frontend credit error classification
@@ -100,7 +100,9 @@ async def handle_callback_error(
                         get_conversation_org_context,
                     )
 
-                    org_id, user_id = get_conversation_org_context(str(conversation_id))
+                    org_id, user_id = await get_conversation_org_context(
+                        str(conversation_id)
+                    )
                     error_detail = get_budget_error_message(org_id, user_id)
                 except Exception as ctx_error:
                     service_logger.warning(
