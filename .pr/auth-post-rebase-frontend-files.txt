@@ -1,0 +1,11 @@
+frontend/__tests__/api/local-auth.test.ts
+frontend/__tests__/components/features/auth/login-content.test.tsx
+frontend/__tests__/components/features/settings/git-provider-connection.test.tsx
+frontend/__tests__/components/providers/posthog-wrapper.test.tsx
+frontend/__tests__/hooks/use-auto-login.test.tsx
+frontend/__tests__/routes/git-settings.test.tsx
+frontend/__tests__/routes/local-auth.test.tsx
+frontend/__tests__/routes/login.test.tsx
+frontend/__tests__/routes/root-layout.test.tsx
+frontend/__tests__/routes/user-settings.test.tsx
+frontend/__tests__/utils/generate-idp-link-url.test.ts

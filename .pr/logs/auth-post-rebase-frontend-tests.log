@@ -1,0 +1,12 @@
+
+> openhands-frontend@1.59.1 test
+> vitest run __tests__/api/local-auth.test.ts __tests__/components/features/auth/login-content.test.tsx __tests__/components/features/settings/git-provider-connection.test.tsx __tests__/components/providers/posthog-wrapper.test.tsx __tests__/hooks/use-auto-login.test.tsx __tests__/routes/git-settings.test.tsx __tests__/routes/local-auth.test.tsx __tests__/routes/login.test.tsx __tests__/routes/root-layout.test.tsx __tests__/routes/user-settings.test.tsx __tests__/utils/generate-idp-link-url.test.ts
+
+
+ RUN  v4.1.8 /Users/jlaverty/dev/enterprise/frontend
+
+
+ Test Files  11 passed (11)
+      Tests  144 passed | 1 skipped (145)
+   Start at  11:10:38
+   Duration  2.80s (transform 2.96s, setup 3.54s, import 4.61s, tests 2.80s, environment 5.76s)

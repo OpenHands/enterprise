@@ -1,0 +1,19 @@
+{
+  "database": "auth_browser_0c09b3d26242",
+  "postgres_port": 32769,
+  "redis_container": "oh-auth-browser-redis-13df71836cd1",
+  "app_port": 57664,
+  "llm_port": 57665,
+  "smtp_port": 57666,
+  "redis_port": 32770,
+  "cleanup": {
+    "app_stopped": true,
+    "sdk_and_transport_stopped": true,
+    "external_http_smtp_stopped": true,
+    "named_browser_closed": true,
+    "redis_removed": true,
+    "browser_database_removed": true,
+    "runtime_and_tls_material_removed": true,
+    "shared_postgres_retained_for_keycloak_qa": true
+  }
+}

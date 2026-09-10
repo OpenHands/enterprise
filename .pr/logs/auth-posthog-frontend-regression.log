@@ -1,0 +1,12 @@
+
+> openhands-frontend@1.59.0 test
+> vitest run --run __tests__/components/providers/posthog-wrapper.test.tsx
+
+
+ RUN  v4.1.8 /Users/jlaverty/dev/enterprise/frontend
+
+
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
+   Start at  10:58:05
+   Duration  864ms (transform 125ms, setup 235ms, import 146ms, tests 25ms, environment 353ms)

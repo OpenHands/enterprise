@@ -1,0 +1,60 @@
+Preserved startup excerpt from the actual SDK agent process; request/conversation logs omitted because they contain runtime bearer URLs.
+
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.45.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+Starting OpenHands Agent Server on 0.0.0.0:59373
+API docs will be available at http://0.0.0.0:59373/docs
+Auto-reload: disabled
+DEBUG mode: DISABLED
+
+[09/10/26 10:38:49] WARNING  Current configuration will not reload config.py:290
+                             as not all conditions are met, please
+                             refer to documentation.
+[09/10/26 10:38:50] INFO     Registered file-based agent          default.py:167
+                             'bash-runner' from
+                             /Users/jlaverty/dev/enterprise/.venv
+                             /lib/python3.13/site-packages/openha
+                             nds/tools/preset/subagents/bash_runn
+                             er.md
+[09/10/26 10:38:50] INFO     Registered file-based agent          default.py:167
+                             'code-explorer' from
+                             /Users/jlaverty/dev/enterprise/.venv
+                             /lib/python3.13/site-packages/openha
+                             nds/tools/preset/subagents/code_expl
+                             orer.md
+[09/10/26 10:38:50] INFO     Registered file-based agent          default.py:167
+                             'general-purpose' from
+                             /Users/jlaverty/dev/enterprise/.venv
+                             /lib/python3.13/site-packages/openha
+                             nds/tools/preset/subagents/default.m
+                             d
+[09/10/26 10:38:50] INFO     Registered file-based agent          default.py:167
+                             'web-researcher' from
+                             /Users/jlaverty/dev/enterprise/.venv
+                             /lib/python3.13/site-packages/openha
+                             nds/tools/preset/subagents/web_resea
+                             rcher.md
+[09/10/26 10:38:50] INFO     Started server process [44228]         server.py:92
+[09/10/26 10:38:50] INFO     Waiting for application startup.           on.py:48
+[09/10/26 10:38:51] WARNING  VSCode server binary not       vscode_service.py:48
+                             found, VSCode will be disabled
+[09/10/26 10:38:51] WARNING  VSCode service failed to start,          api.py:179
+                             continuing without VSCode
+[09/10/26 10:38:51] INFO     Chromium is available for browser       impl.py:291
+                             operations at /Applications/Google
+                             Chrome.app/Contents/MacOS/Google Chrome
+[09/10/26 10:38:51] INFO     Tool preload service started             api.py:189
+                             successfully
+[09/10/26 10:38:51] INFO     Server initialization complete - ready   api.py:251
+                             to serve requests
+[09/10/26 10:38:51] INFO     Application startup complete.              on.py:62
+[09/10/26 10:38:51] INFO     Uvicorn running on                    server.py:224
+                             http://0.0.0.0:59373 (Press CTRL+C to

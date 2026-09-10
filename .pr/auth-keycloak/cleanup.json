@@ -1,0 +1,16 @@
+{
+  "completed_at": "2026-09-10T14:58:57.667277+00:00",
+  "containers_removed": [
+    "oh-auth-keycloak-2b44eb429e03",
+    "oh-auth-keycloak-redis-2b44eb429e03",
+    "oh-auth-core-pg-ca5a3a34ca4c"
+  ],
+  "database_removed_with_disposable_postgres": "auth_keycloak_2b44eb429e03",
+  "listeners_stopped": [
+    59582,
+    49694
+  ],
+  "browser_session_closed": "auth-keycloak-qa",
+  "synthetic_secrets_browser_state_and_private_keys_removed": true,
+  "owner_mypy_cache_removed": true
+}

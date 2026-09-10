@@ -1,0 +1,14 @@
+Actual application access-log excerpts for SMTP verification, email replacement, reset and replay.
+No bearer values are present: action tokens were submitted in JSON; email links used fragments.
+
+
+Source: auth-browser-app-runtime.log
+{"message": "127.0.0.1:59640 - \"POST /api/auth/email/request-verification HTTP/1.1\" 200", "severity": "INFO", "module": "h11_impl", "funcName": "send", "lineno": 481, "ts": "2026-09-10T14:40:35.044819+00:00"}
+{"message": "127.0.0.1:59756 - \"POST /api/auth/email/verify HTTP/1.1\" 200", "severity": "INFO", "module": "h11_impl", "funcName": "send", "lineno": 481, "ts": "2026-09-10T14:40:55.491468+00:00"}
+{"message": "127.0.0.1:59903 - \"POST /api/auth/email/change HTTP/1.1\" 200", "severity": "INFO", "module": "h11_impl", "funcName": "send", "lineno": 481, "ts": "2026-09-10T14:41:47.198497+00:00"}
+{"message": "127.0.0.1:60111 - \"POST /api/auth/email/verify HTTP/1.1\" 200", "severity": "INFO", "module": "h11_impl", "funcName": "send", "lineno": 481, "ts": "2026-09-10T14:42:17.728779+00:00"}
+{"message": "127.0.0.1:62476 - \"POST /api/auth/password/forgot HTTP/1.1\" 200", "severity": "INFO", "module": "h11_impl", "funcName": "send", "lineno": 481, "ts": "2026-09-10T14:44:17.287763+00:00"}
+{"message": "127.0.0.1:63550 - \"POST /api/auth/password/reset HTTP/1.1\" 200", "severity": "INFO", "module": "h11_impl", "funcName": "send", "lineno": 481, "ts": "2026-09-10T14:44:31.949534+00:00"}
+{"message": "127.0.0.1:64202 - \"POST /api/auth/password/reset HTTP/1.1\" 400", "severity": "INFO", "module": "h11_impl", "funcName": "send", "lineno": 481, "ts": "2026-09-10T14:44:46.246928+00:00"}
+{"message": "127.0.0.1:65294 - \"POST /api/auth/password/forgot HTTP/1.1\" 200", "severity": "INFO", "module": "h11_impl", "funcName": "send", "lineno": 481, "ts": "2026-09-10T14:45:42.010578+00:00"}
+{"message": "127.0.0.1:65294 - \"POST /api/auth/password/forgot HTTP/1.1\" 200", "severity": "INFO", "module": "h11_impl", "funcName": "send", "lineno": 481, "ts": "2026-09-10T14:45:42.020464+00:00"}

@@ -1,0 +1,8 @@
+{
+  "openhands-sdk": "1.46.0",
+  "openhands-agent-server": "1.46.0",
+  "openhands-tools": "1.46.0",
+  "fastapi-users": "15.0.5",
+  "pwdlib": "0.3.0",
+  "testcontainers": "4.15.0"
+}

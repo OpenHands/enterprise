@@ -1,0 +1,336 @@
+Skipping migration 019: STRIPE_API_KEY not set
+Skipping migration 143: WEB_HOST '' is not an All-Hands-managed deployment.
+Skipping migration 145: WEB_HOST '' is not an All-Hands-managed deployment.
+Skipping migration 153: WEB_HOST '' is not an All-Hands-managed deployment.
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.45.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 001, Create feedback table
+DEBUG [alembic.runtime.migration] new branch insert 001
+INFO  [alembic.runtime.migration] Running upgrade 001 -> 002, create saas settings table
+DEBUG [alembic.runtime.migration] update 001 to 002
+INFO  [alembic.runtime.migration] Running upgrade 002 -> 003, create saas conversations table
+DEBUG [alembic.runtime.migration] update 002 to 003
+INFO  [alembic.runtime.migration] Running upgrade 003 -> 004, create saas conversations table
+DEBUG [alembic.runtime.migration] update 003 to 004
+INFO  [alembic.runtime.migration] Running upgrade 004 -> 005, add margin column
+DEBUG [alembic.runtime.migration] update 004 to 005
+INFO  [alembic.runtime.migration] Running upgrade 005 -> 006, add branch column to convo metadata table
+DEBUG [alembic.runtime.migration] update 005 to 006
+INFO  [alembic.runtime.migration] Running upgrade 006 -> 007, add enable_sound_notifications column to settings table
+DEBUG [alembic.runtime.migration] update 006 to 007
+INFO  [alembic.runtime.migration] Running upgrade 007 -> 008, fix enable_sound_notifications settings to not be nullable
+DEBUG [alembic.runtime.migration] update 007 to 008
+INFO  [alembic.runtime.migration] Running upgrade 008 -> 009, fix enable_sound_notifications settings to not be nullable
+DEBUG [alembic.runtime.migration] update 008 to 009
+INFO  [alembic.runtime.migration] Running upgrade 009 -> 010, create offline tokens table.
+DEBUG [alembic.runtime.migration] update 009 to 010
+INFO  [alembic.runtime.migration] Running upgrade 010 -> 011, create user settings table
+DEBUG [alembic.runtime.migration] update 010 to 011
+INFO  [alembic.runtime.migration] Running upgrade 011 -> 012, add secret_store column to settings table
+Revision ID: 012
+Revises: 011
+Create Date: 2025-05-01 10:00:00.000
+DEBUG [alembic.runtime.migration] update 011 to 012
+INFO  [alembic.runtime.migration] Running upgrade 012 -> 013, create user settings table
+DEBUG [alembic.runtime.migration] update 012 to 013
+INFO  [alembic.runtime.migration] Running upgrade 013 -> 014, Add github_user_id field and rename user_id to github_user_id.
+DEBUG [alembic.runtime.migration] update 013 to 014
+INFO  [alembic.runtime.migration] Running upgrade 014 -> 015, add sandbox_base_container_image and sandbox_runtime_container_image columns
+DEBUG [alembic.runtime.migration] update 014 to 015
+INFO  [alembic.runtime.migration] Running upgrade 015 -> 016, Add user settings version which acts as a hint of external db state
+DEBUG [alembic.runtime.migration] update 015 to 016
+INFO  [alembic.runtime.migration] Running upgrade 016 -> 017, Add a stripe customers table
+DEBUG [alembic.runtime.migration] update 016 to 017
+INFO  [alembic.runtime.migration] Running upgrade 017 -> 018, Add a table for tracking output from maintenance scripts. These are basically migrations that are not sql centric.
+Revision ID: 018
+Revises: 017
+Create Date: 2025-03-26 19:45:00.000
+DEBUG [alembic.runtime.migration] update 017 to 018
+INFO  [alembic.runtime.migration] Running upgrade 018 -> 019, Remove duplicates from stripe. This is a non standard alembic migration for non sql resources.
+DEBUG [alembic.runtime.migration] update 018 to 019
+INFO  [alembic.runtime.migration] Running upgrade 019 -> 020, set condenser to false for all users
+DEBUG [alembic.runtime.migration] update 019 to 020
+INFO  [alembic.runtime.migration] Running upgrade 020 -> 021, create auth tokens table
+DEBUG [alembic.runtime.migration] update 020 to 021
+INFO  [alembic.runtime.migration] Running upgrade 021 -> 022, Create API keys table
+DEBUG [alembic.runtime.migration] update 021 to 022
+INFO  [alembic.runtime.migration] Running upgrade 022 -> 023, Add cost and token metrics columns to conversation_metadata table.
+DEBUG [alembic.runtime.migration] update 022 to 023
+INFO  [alembic.runtime.migration] Running upgrade 023 -> 024, update enable_default_condenser default to True
+DEBUG [alembic.runtime.migration] update 023 to 024
+INFO  [alembic.runtime.migration] Running upgrade 024 -> 025, Revert user_version from 3 to 2
+DEBUG [alembic.runtime.migration] update 024 to 025
+INFO  [alembic.runtime.migration] Running upgrade 025 -> 026, add branch column to convo metadata table
+DEBUG [alembic.runtime.migration] update 025 to 026
+INFO  [alembic.runtime.migration] Running upgrade 026 -> 027, create saas settings table
+DEBUG [alembic.runtime.migration] update 026 to 027
+INFO  [alembic.runtime.migration] Running upgrade 027 -> 028, create user-repos table
+DEBUG [alembic.runtime.migration] update 027 to 028
+INFO  [alembic.runtime.migration] Running upgrade 028 -> 029, add accepted_tos to user_settings
+DEBUG [alembic.runtime.migration] update 028 to 029
+INFO  [alembic.runtime.migration] Running upgrade 029 -> 030, add proactive conversation starters column
+DEBUG [alembic.runtime.migration] update 029 to 030
+INFO  [alembic.runtime.migration] Running upgrade 030 -> 031, create user secrets table
+DEBUG [alembic.runtime.migration] update 030 to 031
+INFO  [alembic.runtime.migration] Running upgrade 031 -> 032, add status column to gitlab-webhook table
+DEBUG [alembic.runtime.migration] update 031 to 032
+INFO  [alembic.runtime.migration] Running upgrade 032 -> 033, add status column to gitlab-webhook table
+DEBUG [alembic.runtime.migration] update 032 to 033
+INFO  [alembic.runtime.migration] Running upgrade 033 -> 034, create proactive conversation starters commits table
+DEBUG [alembic.runtime.migration] update 033 to 034
+INFO  [alembic.runtime.migration] Running upgrade 034 -> 035, create slack users table
+DEBUG [alembic.runtime.migration] update 034 to 035
+INFO  [alembic.runtime.migration] Running upgrade 035 -> 036, add mcp_config to user_settings
+DEBUG [alembic.runtime.migration] update 035 to 036
+INFO  [alembic.runtime.migration] Running upgrade 036 -> 037, make user secrets table one row per secret
+DEBUG [alembic.runtime.migration] update 036 to 037
+INFO  [alembic.runtime.migration] Running upgrade 037 -> 038, add pr_number to conversation metadata table
+DEBUG [alembic.runtime.migration] update 037 to 038
+INFO  [alembic.runtime.migration] Running upgrade 038 -> 039, add user token to conversation metadata table
+DEBUG [alembic.runtime.migration] update 038 to 039
+INFO  [alembic.runtime.migration] Running upgrade 039 -> 040, add search_api_key to user_settings
+DEBUG [alembic.runtime.migration] update 039 to 040
+INFO  [alembic.runtime.migration] Running upgrade 040 -> 041, create slack conversation table
+DEBUG [alembic.runtime.migration] update 040 to 041
+INFO  [alembic.runtime.migration] Running upgrade 041 -> 042, add git_provider to conversation_metadata
+DEBUG [alembic.runtime.migration] update 041 to 042
+INFO  [alembic.runtime.migration] Running upgrade 042 -> 043, add parent_id column and index to slack conversation table
+DEBUG [alembic.runtime.migration] update 042 to 043
+INFO  [alembic.runtime.migration] Running upgrade 043 -> 044, add llm_model to conversation_metadata
+DEBUG [alembic.runtime.migration] update 043 to 044
+INFO  [alembic.runtime.migration] Running upgrade 044 -> 045, create slack team table
+DEBUG [alembic.runtime.migration] update 044 to 045
+INFO  [alembic.runtime.migration] Running upgrade 045 -> 046, delete all slack users
+DEBUG [alembic.runtime.migration] update 045 to 046
+INFO  [alembic.runtime.migration] Running upgrade 046 -> 047, Create conversation feedback table
+DEBUG [alembic.runtime.migration] update 046 to 047
+INFO  [alembic.runtime.migration] Running upgrade 047 -> 048, add max_budget_per_task to user_settings
+DEBUG [alembic.runtime.migration] update 047 to 048
+INFO  [alembic.runtime.migration] Running upgrade 048 -> 049, Create conversation callbacks table
+DEBUG [alembic.runtime.migration] update 048 to 049
+INFO  [alembic.runtime.migration] Running upgrade 049 -> 050, Create openhands_prs table
+DEBUG [alembic.runtime.migration] update 049 to 050
+INFO  [alembic.runtime.migration] Running upgrade 050 -> 051, Update conversation_callbacks foreign key to cascade deletes
+DEBUG [alembic.runtime.migration] update 050 to 051
+INFO  [alembic.runtime.migration] Running upgrade 051 -> 052, add sandbox_api_key to user_settings
+DEBUG [alembic.runtime.migration] update 051 to 052
+INFO  [alembic.runtime.migration] Running upgrade 052 -> 053, Add enable_solvability_analysis column to user_settings table.
+DEBUG [alembic.runtime.migration] update 052 to 053
+INFO  [alembic.runtime.migration] Running upgrade 053 -> 054, Add email and email_verified columns to user_settings table.
+DEBUG [alembic.runtime.migration] update 053 to 054
+INFO  [alembic.runtime.migration] Running upgrade 054 -> 055, drop slack_user_token column from slack_users table
+DEBUG [alembic.runtime.migration] update 054 to 055
+INFO  [alembic.runtime.migration] Running upgrade 055 -> 056, Add llm_api_key_for_byor column to user_settings table.
+DEBUG [alembic.runtime.migration] update 055 to 056
+INFO  [alembic.runtime.migration] Running upgrade 056 -> 057, Enable solvability analysis for all users
+DEBUG [alembic.runtime.migration] update 056 to 057
+INFO  [alembic.runtime.migration] Running upgrade 057 -> 058, create conversation_work table
+DEBUG [alembic.runtime.migration] update 057 to 058
+INFO  [alembic.runtime.migration] Running upgrade 058 -> 059, Create maintenance tasks table
+DEBUG [alembic.runtime.migration] update 058 to 059
+INFO  [alembic.runtime.migration] Running upgrade 059 -> 060, Create user version upgrade tasks
+DEBUG [alembic.runtime.migration] update 059 to 060
+INFO  [alembic.runtime.migration] Running upgrade 060 -> 061, Create experiment assignments table
+DEBUG [alembic.runtime.migration] update 060 to 061
+INFO  [alembic.runtime.migration] Running upgrade 061 -> 062, Add git_user_name and git_user_email to user_settings
+DEBUG [alembic.runtime.migration] update 061 to 062
+INFO  [alembic.runtime.migration] Running upgrade 062 -> 063, create jira_workspaces table
+DEBUG [alembic.runtime.migration] update 062 to 063
+INFO  [alembic.runtime.migration] Running upgrade 063 -> 064, create jira_users table
+DEBUG [alembic.runtime.migration] update 063 to 064
+INFO  [alembic.runtime.migration] Running upgrade 064 -> 065, create jira_conversations table
+DEBUG [alembic.runtime.migration] update 064 to 065
+INFO  [alembic.runtime.migration] Running upgrade 065 -> 066, create jira_dc_workspaces table
+DEBUG [alembic.runtime.migration] update 065 to 066
+INFO  [alembic.runtime.migration] Running upgrade 066 -> 067, create jira_dc_users table
+DEBUG [alembic.runtime.migration] update 066 to 067
+INFO  [alembic.runtime.migration] Running upgrade 067 -> 068, create jira_dc_conversations table
+DEBUG [alembic.runtime.migration] update 067 to 068
+INFO  [alembic.runtime.migration] Running upgrade 068 -> 069, create linear_workspaces table
+DEBUG [alembic.runtime.migration] update 068 to 069
+INFO  [alembic.runtime.migration] Running upgrade 069 -> 070, create linear_users table
+DEBUG [alembic.runtime.migration] update 069 to 070
+INFO  [alembic.runtime.migration] Running upgrade 070 -> 071, create linear_conversations table
+DEBUG [alembic.runtime.migration] update 070 to 071
+INFO  [alembic.runtime.migration] Running upgrade 071 -> 072, add condenser_max_size to user_settings
+DEBUG [alembic.runtime.migration] update 071 to 072
+INFO  [alembic.runtime.migration] Running upgrade 072 -> 073, add type column to billing_sessions
+DEBUG [alembic.runtime.migration] update 072 to 073
+INFO  [alembic.runtime.migration] Running upgrade 073 -> 074, create subscription_access table
+DEBUG [alembic.runtime.migration] update 073 to 074
+INFO  [alembic.runtime.migration] Running upgrade 074 -> 075, add cancellation fields to subscription_access
+DEBUG [alembic.runtime.migration] update 074 to 075
+INFO  [alembic.runtime.migration] Running upgrade 075 -> 076, Sync DB with Models
+DEBUG [alembic.runtime.migration] update 075 to 076
+INFO  [alembic.runtime.migration] Running upgrade 076 -> 077, drop settings table
+DEBUG [alembic.runtime.migration] update 076 to 077
+INFO  [alembic.runtime.migration] Running upgrade 077 -> 078, create telemetry tables
+DEBUG [alembic.runtime.migration] update 077 to 078
+INFO  [alembic.runtime.migration] Running upgrade 078 -> 079, rename user_secrets table to custom_secrets
+DEBUG [alembic.runtime.migration] update 078 to 079
+INFO  [alembic.runtime.migration] Running upgrade 079 -> 080, add status and updated_at to callback
+DEBUG [alembic.runtime.migration] update 079 to 080
+INFO  [alembic.runtime.migration] Running upgrade 080 -> 081, add parent_conversation_id to conversation_metadata
+DEBUG [alembic.runtime.migration] update 080 to 081
+INFO  [alembic.runtime.migration] Running upgrade 081 -> 082, Add SETTING_UP_SKILLS to appconversationstarttaskstatus enum
+DEBUG [alembic.runtime.migration] update 081 to 082
+INFO  [alembic.runtime.migration] Running upgrade 082 -> 083, Add v1_enabled column to user_settings
+DEBUG [alembic.runtime.migration] update 082 to 083
+INFO  [alembic.runtime.migration] Running upgrade 083 -> 084, Create device_codes table for OAuth 2.0 Device Flow
+DEBUG [alembic.runtime.migration] update 083 to 084
+INFO  [alembic.runtime.migration] Running upgrade 084 -> 085, add public column to conversation_metadata
+DEBUG [alembic.runtime.migration] update 084 to 085
+INFO  [alembic.runtime.migration] Running upgrade 085 -> 086, add v1 column to slack conversation table
+DEBUG [alembic.runtime.migration] update 085 to 086
+INFO  [alembic.runtime.migration] Running upgrade 086 -> 087, bump condenser defaults: max_size 120->240
+DEBUG [alembic.runtime.migration] update 086 to 087
+INFO  [alembic.runtime.migration] Running upgrade 087 -> 088, create blocked_email_domains table
+DEBUG [alembic.runtime.migration] update 087 to 088
+INFO  [alembic.runtime.migration] Running upgrade 088 -> 089, create org tables from pgerd schema
+DEBUG [alembic.runtime.migration] update 088 to 089
+INFO  [alembic.runtime.migration] Running upgrade 089 -> 090, Add git_user_name and git_user_email columns to user table.
+DEBUG [alembic.runtime.migration] update 089 to 090
+INFO  [alembic.runtime.migration] Running upgrade 090 -> 091, Add byor_export_enabled flag to org table.
+DEBUG [alembic.runtime.migration] update 090 to 091
+INFO  [alembic.runtime.migration] Running upgrade 091 -> 092, Rename 'user' role to 'member' in role table.
+DEBUG [alembic.runtime.migration] update 091 to 092
+INFO  [alembic.runtime.migration] Running upgrade 092 -> 093, Add pending_free_credits flag to org table.
+DEBUG [alembic.runtime.migration] update 092 to 093
+INFO  [alembic.runtime.migration] Running upgrade 093 -> 094, create org_invitation table
+DEBUG [alembic.runtime.migration] update 093 to 094
+INFO  [alembic.runtime.migration] Running upgrade 094 -> 095, Drop pending_free_credits column from org table.
+DEBUG [alembic.runtime.migration] update 094 to 095
+INFO  [alembic.runtime.migration] Running upgrade 095 -> 096, Create resend_synced_users table.
+DEBUG [alembic.runtime.migration] update 095 to 096
+INFO  [alembic.runtime.migration] Running upgrade 096 -> 097, Add session_api_key_hash to v1_remote_sandbox table
+DEBUG [alembic.runtime.migration] update 096 to 097
+INFO  [alembic.runtime.migration] Running upgrade 097 -> 098, Create verified_models table.
+DEBUG [alembic.runtime.migration] update 097 to 098
+INFO  [alembic.runtime.migration] Running upgrade 098 -> 099, Create user_authorizations table and migrate blocked_email_domains
+DEBUG [alembic.runtime.migration] update 098 to 099
+INFO  [alembic.runtime.migration] Running upgrade 099 -> 100, Add sandbox_grouping_strategy column to user, org, and user_settings tables.
+DEBUG [alembic.runtime.migration] update 099 to 100
+INFO  [alembic.runtime.migration] Running upgrade 100 -> 101, Add pending_messages table for server-side message queuing
+DEBUG [alembic.runtime.migration] update 100 to 101
+INFO  [alembic.runtime.migration] Running upgrade 101 -> 102, Add disabled_skills to user_settings.
+DEBUG [alembic.runtime.migration] update 101 to 102
+INFO  [alembic.runtime.migration] Running upgrade 102 -> 103, Add mcp_config to org_member for user-specific MCP settings.
+DEBUG [alembic.runtime.migration] update 102 to 103
+INFO  [alembic.runtime.migration] Running upgrade 103 -> 104, Add disabled_skills column to user table.
+DEBUG [alembic.runtime.migration] update 103 to 104
+INFO  [alembic.runtime.migration] Running upgrade 104 -> 105, Create org_git_claim table for tracking Git organization claims.
+DEBUG [alembic.runtime.migration] update 104 to 105
+INFO  [alembic.runtime.migration] Running upgrade 105 -> 106, Add tags column to conversation_metadata table.
+DEBUG [alembic.runtime.migration] update 105 to 106
+INFO  [alembic.runtime.migration] Running upgrade 106 -> 107, Add onboarding_completed column to user table.
+DEBUG [alembic.runtime.migration] update 106 to 107
+INFO  [alembic.runtime.migration] Running upgrade 107 -> 108, Add agent_settings columns to enterprise settings tables.
+DEBUG [alembic.runtime.migration] update 107 to 108
+INFO  [alembic.runtime.migration] Running upgrade 108 -> 109, Add llm_profiles column to user table.
+DEBUG [alembic.runtime.migration] update 108 to 109
+INFO  [alembic.runtime.migration] Running upgrade 109 -> 110, Add agent_kind column to conversation_metadata table.
+DEBUG [alembic.runtime.migration] update 109 to 110
+INFO  [alembic.runtime.migration] Running upgrade 110 -> 111, create bitbucket webhook table
+DEBUG [alembic.runtime.migration] update 110 to 111
+INFO  [alembic.runtime.migration] Running upgrade 111 -> 112, create bitbucket dc webhook table
+DEBUG [alembic.runtime.migration] update 111 to 112
+INFO  [alembic.runtime.migration] Running upgrade 112 -> 113, bitbucket_dc_webhook.last_synced TIMESTAMP WITHOUT TIME ZONE -> WITH TIME ZONE
+DEBUG [alembic.runtime.migration] update 112 to 113
+INFO  [alembic.runtime.migration] Running upgrade 113 -> 114, add org_id to jira_dc_workspaces
+DEBUG [alembic.runtime.migration] update 113 to 114
+INFO  [alembic.runtime.migration] Running upgrade 114 -> 115, Enforce single active Jira DC user link.
+DEBUG [alembic.runtime.migration] update 114 to 115
+INFO  [alembic.runtime.migration] Running upgrade 115 -> 116, Add llm_profiles column to org table.
+DEBUG [alembic.runtime.migration] update 115 to 116
+INFO  [alembic.runtime.migration] Running upgrade 116 -> 117, Add composite index on event_callback for execute_callbacks query
+DEBUG [alembic.runtime.migration] update 116 to 117
+INFO  [alembic.runtime.migration] Running upgrade 117 -> 118, Add indexes on conversation_metadata_saas for user_id / org_id lookups
+DEBUG [alembic.runtime.migration] update 117 to 118
+INFO  [alembic.runtime.migration] Running upgrade 118 -> 119, Add is_default flag to org for default-org bootstrap keying
+DEBUG [alembic.runtime.migration] update 118 to 119
+INFO  [alembic.runtime.migration] Running upgrade 119 -> 120, Add max_concurrent_sandboxes to org and org_member tables.
+DEBUG [alembic.runtime.migration] update 119 to 120
+INFO  [alembic.runtime.migration] Running upgrade 120 -> 121, Add is_paused to v1_remote_sandbox.
+DEBUG [alembic.runtime.migration] update 120 to 121
+INFO  [alembic.runtime.migration] Running upgrade 121 -> 122, Add OAuth token columns to jira_dc_users.
+DEBUG [alembic.runtime.migration] update 121 to 122
+INFO  [alembic.runtime.migration] Running upgrade 122 -> 123, Drop is_paused from v1_remote_sandbox.
+DEBUG [alembic.runtime.migration] update 122 to 123
+INFO  [alembic.runtime.migration] Running upgrade 123 -> 124, Remove max concurrent sandbox limit columns.
+DEBUG [alembic.runtime.migration] update 123 to 124
+INFO  [alembic.runtime.migration] Running upgrade 124 -> 125, Add git_full_clone setting to user settings.
+DEBUG [alembic.runtime.migration] update 124 to 125
+INFO  [alembic.runtime.migration] Running upgrade 125 -> 126, Add default_sandbox_spec_id column to user and user_settings tables.
+DEBUG [alembic.runtime.migration] update 125 to 126
+INFO  [alembic.runtime.migration] Running upgrade 126 -> 127, Add execution_status column to conversation_metadata table.
+DEBUG [alembic.runtime.migration] update 126 to 127
+INFO  [alembic.runtime.migration] Running upgrade 127 -> 128, Add not_before column to api_keys table.
+DEBUG [alembic.runtime.migration] update 127 to 128
+INFO  [alembic.runtime.migration] Running upgrade 128 -> 129, Add registered_marketplaces and updated_at columns to org table.
+DEBUG [alembic.runtime.migration] update 128 to 129
+INFO  [alembic.runtime.migration] Running upgrade 129 -> 130, Add registered_marketplaces column to user_settings table.
+DEBUG [alembic.runtime.migration] update 129 to 130
+INFO  [alembic.runtime.migration] Running upgrade 130 -> 131, Add user login timestamps.
+DEBUG [alembic.runtime.migration] update 130 to 131
+INFO  [alembic.runtime.migration] Running upgrade 131 -> 132, Add agent_profiles to org and active_agent_profile_id to org_member.
+DEBUG [alembic.runtime.migration] update 131 to 132
+INFO  [alembic.runtime.migration] Running upgrade 132 -> 133, Add org budget configuration tables.
+DEBUG [alembic.runtime.migration] update 132 to 133
+INFO  [alembic.runtime.migration] Running upgrade 133 -> 134, Add LiteLLM sync metadata to org budgets.
+DEBUG [alembic.runtime.migration] update 133 to 134
+INFO  [alembic.runtime.migration] Running upgrade 134 -> 135, Add conversation cost events table.
+DEBUG [alembic.runtime.migration] update 134 to 135
+INFO  [alembic.runtime.migration] Running upgrade 135 -> 136, Update conversation_cost_events foreign key to cascade deletes.
+DEBUG [alembic.runtime.migration] update 135 to 136
+INFO  [alembic.runtime.migration] Running upgrade 136 -> 137, Move MCP configuration into encrypted member storage.
+DEBUG [alembic.runtime.migration] update 136 to 137
+INFO  [alembic.runtime.migration] Running upgrade 137 -> 138, Ensure upgraded instances have an initial superadmin.
+DEBUG [alembic.runtime.migration] update 137 to 138
+INFO  [alembic.runtime.migration] Running upgrade 138 -> 139, Add model/usage attribution columns to conversation cost events.
+DEBUG [alembic.runtime.migration] update 138 to 139
+INFO  [alembic.runtime.migration] Running upgrade 139 -> 140, Add title LLM profile preference to organization members.
+DEBUG [alembic.runtime.migration] update 139 to 140
+INFO  [alembic.runtime.migration] Running upgrade 140 -> 141, Normalize legacy empty tool settings.
+DEBUG [alembic.runtime.migration] update 140 to 141
+INFO  [alembic.runtime.migration] Running upgrade 141 -> 142, Add GLM 5.2 to verified OpenHands models.
+DEBUG [alembic.runtime.migration] update 141 to 142
+INFO  [alembic.runtime.migration] Running upgrade 142 -> 143, Migrate OpenHands MiniMax M2.7 settings to GLM 5.2.
+DEBUG [alembic.runtime.migration] update 142 to 143
+INFO  [alembic.runtime.migration] Running upgrade 143 -> 144, Add Kimi K3 to verified OpenHands models.
+DEBUG [alembic.runtime.migration] update 143 to 144
+INFO  [alembic.runtime.migration] Running upgrade 144 -> 145, Migrate OpenHands GLM 5.2 settings to Kimi K3.
+DEBUG [alembic.runtime.migration] update 144 to 145
+INFO  [alembic.runtime.migration] Running upgrade 145 -> 146, add org_id to jira_workspaces
+DEBUG [alembic.runtime.migration] update 145 to 146
+INFO  [alembic.runtime.migration] Running upgrade 146 -> 147, Enforce single active Jira user link.
+DEBUG [alembic.runtime.migration] update 146 to 147
+INFO  [alembic.runtime.migration] Running upgrade 147 -> 148, Remove budget settings accidentally created for personal workspaces.
+DEBUG [alembic.runtime.migration] update 147 to 148
+INFO  [alembic.runtime.migration] Running upgrade 148 -> 149, Add per-user budget cycle baselines.
+DEBUG [alembic.runtime.migration] update 148 to 149
+INFO  [alembic.runtime.migration] Running upgrade 149 -> 150, Add per-user daily conversation limits and usage accounting.
+DEBUG [alembic.runtime.migration] update 149 to 150
+INFO  [alembic.runtime.migration] Running upgrade 150 -> 151, Add org-level daily conversation limit override.
+DEBUG [alembic.runtime.migration] update 150 to 151
+INFO  [alembic.runtime.migration] Running upgrade 151 -> 152, Add quota increase request table and work email columns.
+DEBUG [alembic.runtime.migration] update 151 to 152
+INFO  [alembic.runtime.migration] Running upgrade 152 -> 153, Migrate OpenHands Kimi K3 settings to DeepSeek V4 Flash.
+DEBUG [alembic.runtime.migration] update 152 to 153
+INFO  [alembic.runtime.migration] Running upgrade 153 -> 154, Create feature_flags and feature_flag_rules tables.
+DEBUG [alembic.runtime.migration] update 153 to 154
+INFO  [alembic.runtime.migration] Running upgrade 154 -> 155, Add provider_connections column to org table.
+DEBUG [alembic.runtime.migration] update 154 to 155
+INFO  [alembic.runtime.migration] Running upgrade 155 -> 156, Add last-known-good LiteLLM budget spend snapshot.
+DEBUG [alembic.runtime.migration] update 155 to 156
+INFO  [alembic.runtime.migration] Running upgrade 156 -> 157, Add an instance-level disabled flag to users.
+DEBUG [alembic.runtime.migration] update 156 to 157

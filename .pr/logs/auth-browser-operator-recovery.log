@@ -1,0 +1,11 @@
+Observed interactive operator-recovery run on the actual disposable PostgreSQL installation.
+Command: python3 .pr/auth-browser/run_recovery.py
+Underlying command: python -m server.auth.local.recover_admin
+Environment: no SMTP_HOST, no Keycloak configuration; persisted initialized local mode.
+Existing administrator email: admin-renamed@auth-test.example
+New password (15 to 1024 characters): [entered through getpass; not echoed]
+Repeat new password: [entered through getpass; not echoed]
+Administrator password changed. Existing browser sessions were revoked.
+Process exit code: 0
+Prior browser session: GET /api/v1/users/me -> 401
+Replacement credential: successful actual login in final SDK inheritance probe.

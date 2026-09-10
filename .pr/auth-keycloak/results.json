@@ -1,0 +1,186 @@
+{
+  "legacy-login": {
+    "phase": "legacy-login",
+    "callback_statuses": [
+      302
+    ],
+    "authenticated_status": 200,
+    "cookie_names": [
+      "keycloak_auth"
+    ],
+    "cookie_secure": true,
+    "cookie_http_only": true
+  },
+  "refresh": {
+    "phase": "refresh",
+    "expired_access_token_status": 200,
+    "cookie_rotated": true,
+    "existing_api_key_status": 200
+  },
+  "logout": {
+    "phase": "logout",
+    "logout_status": 200,
+    "browser_cookie_removed": true,
+    "anonymous_status": 401,
+    "existing_api_key_status": 200
+  },
+  "oidc-broker": {
+    "phase": "broker-initial",
+    "path": "/accept-tos",
+    "title": "OpenHands Cloud",
+    "callbacks": [
+      {
+        "path": "/oauth/keycloak/callback",
+        "status": 302
+      }
+    ]
+  },
+  "oidc-broker-returning": {
+    "phase": "broker-initial",
+    "path": "/api/v1/users/me",
+    "title": "OpenHands",
+    "callbacks": [
+      {
+        "path": "/oauth/keycloak/callback",
+        "status": 302
+      }
+    ]
+  },
+  "oidc-assert": {
+    "phase": "broker-assert",
+    "status": 200,
+    "id": "d40d15b3-d537-4f4a-988a-d3c38829a2b0",
+    "org_id": "d40d15b3-d537-4f4a-988a-d3c38829a2b0",
+    "email": "broker@keycloak-qa.example",
+    "email_verified": true,
+    "role": "owner",
+    "provider_token_names": []
+  },
+  "saml-returning": {
+    "phase": "broker-initial",
+    "path": "/api/v1/users/me",
+    "title": "OpenHands",
+    "callbacks": [
+      {
+        "path": "/oauth/keycloak/callback",
+        "status": 302
+      }
+    ],
+    "brokerRequests": [
+      {
+        "path": "/realms/synthetic-upstream/protocol/saml",
+        "method": "POST",
+        "saml_request": true,
+        "saml_response": false
+      },
+      {
+        "path": "/realms/enterprise/broker/enterprise_sso/endpoint",
+        "method": "POST",
+        "saml_request": false,
+        "saml_response": true
+      }
+    ]
+  },
+  "saml-assert": {
+    "phase": "broker-assert",
+    "status": 200,
+    "id": "c41ce1d8-d5cc-42bc-906c-3e78c3426514",
+    "org_id": "c41ce1d8-d5cc-42bc-906c-3e78c3426514",
+    "email": "saml@keycloak-qa.example",
+    "email_verified": true,
+    "role": "owner",
+    "provider_token_names": []
+  },
+  "outage-503": {
+    "phase": "outage",
+    "expired_cookie_status": 503,
+    "callback_status": 503,
+    "cookie_preserved": true,
+    "api_key_status": 200,
+    "mode": "keycloak",
+    "password_login": false,
+    "local_login_status": 404
+  },
+  "outage-429": {
+    "phase": "outage",
+    "expired_cookie_status": 503,
+    "callback_status": 503,
+    "cookie_preserved": true,
+    "api_key_status": 200,
+    "mode": "keycloak",
+    "password_login": false,
+    "local_login_status": 404
+  },
+  "outage-recovery": {
+    "phase": "recovery",
+    "existing_cookie_status": 200
+  },
+  "expired-logout-fixed": {
+    "phase": "logout",
+    "logout_status": 200,
+    "browser_cookie_removed": true,
+    "anonymous_status": 401,
+    "existing_api_key_status": 200
+  },
+  "stopped-server-outage": {
+    "phase": "outage",
+    "expired_cookie_status": 503,
+    "callback_status": 503,
+    "cookie_preserved": true,
+    "api_key_status": 200,
+    "mode": "keycloak",
+    "password_login": false,
+    "local_login_status": 404
+  },
+  "stopped-server-recovery": {
+    "phase": "recovery",
+    "existing_cookie_status": 200
+  },
+  "logout-during-outage": {
+    "phase": "logout",
+    "logout_status": 200,
+    "browser_cookie_removed": true,
+    "anonymous_status": 401,
+    "existing_api_key_status": 200
+  },
+  "before-login": {
+    "migrated_schema": "159",
+    "persisted_mode": "keycloak",
+    "canonical_user_exists": false
+  },
+  "final-database": {
+    "schema_revision": "159",
+    "persisted_mode": "keycloak",
+    "stable_user_org_id": "d2155956-f347-45e2-8a6e-ffd99639ea1a",
+    "stable_api_key_id": 1,
+    "legacy_settings_id": 1,
+    "language_preserved": true,
+    "model_base_url_encrypted_key_preserved": true,
+    "external_identity_linked": true,
+    "local_credentials": 0
+  },
+  "sso-database": {
+    "broker_accounts": [
+      {
+        "id": "d2155956-f347-45e2-8a6e-ffd99639ea1a",
+        "email": "legacy@keycloak-qa.example",
+        "org_id": "d2155956-f347-45e2-8a6e-ffd99639ea1a",
+        "offline_token_present": false
+      },
+      {
+        "id": "d40d15b3-d537-4f4a-988a-d3c38829a2b0",
+        "email": "broker@keycloak-qa.example",
+        "org_id": "d40d15b3-d537-4f4a-988a-d3c38829a2b0",
+        "offline_token_present": true
+      },
+      {
+        "id": "c41ce1d8-d5cc-42bc-906c-3e78c3426514",
+        "email": "saml@keycloak-qa.example",
+        "org_id": "c41ce1d8-d5cc-42bc-906c-3e78c3426514",
+        "offline_token_present": false
+      }
+    ],
+    "provider_token_rows": 0,
+    "local_credentials": 0
+  }
+}

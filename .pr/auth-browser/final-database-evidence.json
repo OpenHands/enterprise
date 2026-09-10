@@ -1,0 +1,14 @@
+{
+  "revision": "159",
+  "mode": "local",
+  "bootstrap_complete": true,
+  "users": 2,
+  "credentials": 2,
+  "personal_orgs": 2,
+  "memberships": 2,
+  "instance_admins": 1,
+  "disabled_users": 1,
+  "canonical_admin_email_matches": true,
+  "manual_git_credentials": 1,
+  "outstanding_actions": 0
+}

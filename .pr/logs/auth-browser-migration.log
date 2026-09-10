@@ -1,0 +1,16 @@
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.45.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade 157 -> 158, Add local credentials, identity links, sessions, and installation auth state.
+DEBUG [alembic.runtime.migration] update 157 to 158
+INFO  [alembic.runtime.migration] Running upgrade 158 -> 159, Store manual Git credentials and verified provider account associations.
+DEBUG [alembic.runtime.migration] update 158 to 159

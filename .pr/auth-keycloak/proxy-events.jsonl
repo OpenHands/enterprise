@@ -1,0 +1,14 @@
+{"method": "POST", "path": "/realms/enterprise/protocol/openid-connect/token", "status": 503}
+{"method": "POST", "path": "/realms/enterprise/protocol/openid-connect/token", "status": 503}
+{"method": "POST", "path": "/realms/enterprise/protocol/openid-connect/token", "status": 429}
+{"method": "POST", "path": "/realms/enterprise/protocol/openid-connect/token", "status": 429}
+{"method": "POST", "path": "/realms/enterprise/protocol/openid-connect/token", "status": 200}
+{"method": "POST", "path": "/realms/enterprise/protocol/openid-connect/token", "status": 200}
+{"method": "POST", "path": "/realms/enterprise/protocol/openid-connect/logout", "status": 204}
+{"method": "POST", "path": "/realms/enterprise/protocol/openid-connect/token", "status": 200}
+{"method": "GET", "path": "/realms/enterprise/protocol/openid-connect/userinfo", "status": 200}
+{"method": "POST", "path": "/realms/master/protocol/openid-connect/token", "status": 200}
+{"method": "GET", "path": "/admin/realms/enterprise", "status": 200}
+{"method": "GET", "path": "/admin/realms/enterprise/users", "status": 200}
+{"method": "POST", "path": "/realms/enterprise/protocol/openid-connect/token", "status": 200}
+{"method": "POST", "path": "/realms/enterprise/protocol/openid-connect/token", "status": 503}

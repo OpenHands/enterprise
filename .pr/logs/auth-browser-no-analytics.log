@@ -1,0 +1,12 @@
+### Result
+{"browser_login_rendered":true,"posthog_key_empty":true,"posthog_requests":0,"request_count":52}
+### Ran Playwright code
+```js
+await (async page => { const requests = []; page.on("request", request => requests.push(request.url())); const configResponse = page.waitForResponse(response => response.url().endsWith("/api/v1/web-client/config") && response.status() === 200); await page.reload(); const config = await (await configResponse).json(); await page.getByRole("button", {name:"Sign in", exact:true}).waitFor(); await page.waitForTimeout(2000); const analytics = requests.filter(url => /posthog/i.test(url)); if (config.posthog_client_key !== "" || analytics.length !== 0) throw new Error("Analytics-free SaaS browser check failed"); return {browser_login_rendered:true,posthog_key_empty:config.posthog_client_key === "",posthog_requests:analytics.length,request_count:requests.length}; })(page);
+```
+### Page
+- Page URL: https://localhost:57664/login
+- Page Title: OpenHands
+- Console: 9 errors, 0 warnings
+### Events
+- New console entries: .pr/auth-browser/browser/console-2026-09-10T14-53-53-673Z.log#L7-L9

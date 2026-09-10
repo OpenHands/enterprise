@@ -1,0 +1,24 @@
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
+{"kind": "llm_completion", "model": "gpt-4o-mini", "streaming": false, "message_count": 2}
+{"kind": "llm_completion", "model": "gpt-4o-mini", "streaming": true, "message_count": 2}
+{"kind": "provider_user", "authorized": true}
+{"kind": "smtp_delivery", "subject": "Verify your OpenHands email address", "recipient": "admin@auth-test.example", "file": "80b6357a90314b6eb242daaa69d8c58c.eml"}
+{"kind": "provider_user", "authorized": true}
+{"kind": "smtp_delivery", "subject": "Verify your OpenHands email address", "recipient": "admin-renamed@auth-test.example", "file": "6a39518a373c4f8b9ac0b03d4f031328.eml"}
+{"kind": "smtp_delivery", "subject": "Reset your OpenHands password", "recipient": "admin-renamed@auth-test.example", "file": "851b691ca64c4a8bb021377176e32b35.eml"}
+{"kind": "provider_user", "authorized": true}
+{"kind": "provider_user", "authorized": true}
