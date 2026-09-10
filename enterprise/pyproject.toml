@@ -23,7 +23,7 @@ packages = [
 python = "^3.12,<3.14"
 openhands-ai = { path = "../", develop = true }
 # TEMPORARY: use the Model Router SDK branch until its changes are released.
-openhands-sdk = { git = "https://github.com/OpenHands/software-agent-sdk.git", subdirectory = "openhands-sdk", rev = "1a9c1215a45f532567f3c4e9a598fdce6e0a29b1" }
+openhands-sdk = { git = "https://github.com/OpenHands/software-agent-sdk.git", subdirectory = "openhands-sdk", rev = "99c79324d94bd17afc19dd26d58c3753066d3708" }
 authlib = "1.6.12"
 gspread = "6.2.1"
 alembic = "1.18.4"
