@@ -527,7 +527,7 @@ class TestSlackV1CallbackProcessor:
         assert 'litellm.BadRequestError' not in posted_message
 
     @patch('storage.slack_team_store.SlackTeamStore')
-    @patch('openhands.app_server.utils.http_session.get_httpx_client')
+    @patch('openhands.app_server.config.get_httpx_client')
     @patch('openhands.app_server.config.get_sandbox_service')
     @patch('openhands.app_server.config.get_app_conversation_info_service')
     @patch('integrations.slack.slack_v1_callback_processor._logger')

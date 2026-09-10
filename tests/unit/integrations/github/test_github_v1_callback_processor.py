@@ -907,7 +907,7 @@ class TestGithubV1CallbackProcessor:
         # Should NOT contain the raw error message
         assert 'litellm.BadRequestError' not in posted_comment
 
-    @patch('openhands.app_server.utils.http_session.get_httpx_client')
+    @patch('openhands.app_server.config.get_httpx_client')
     @patch('openhands.app_server.config.get_sandbox_service')
     @patch('openhands.app_server.config.get_app_conversation_info_service')
     @patch('integrations.github.github_v1_callback_processor._logger')
