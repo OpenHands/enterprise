@@ -2,9 +2,11 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import datetime
+from pathlib import Path
 from uuid import UUID
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
@@ -152,6 +154,35 @@ async def async_session_maker(async_engine: AsyncEngine) -> async_sessionmaker:
         bind=async_engine,
         class_=AsyncSession,
         expire_on_commit=False,
+    )
+
+
+@pytest.fixture
+def app_db_session(
+    test_database: postgres_testdb.TestDatabase,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Point the app server's global ``db_session`` injector at this test's database.
+
+    Route tests that let FastAPI resolve ``get_db_session`` reach the injector on
+    the global config rather than a fixture, so it has to be redirected here.
+    """
+    from openhands.app_server.config import get_global_config
+    from openhands.app_server.services.db_session_injector import DbSessionInjector
+
+    server = test_database.server
+    monkeypatch.setattr(
+        get_global_config(),
+        'db_session',
+        DbSessionInjector(
+            persistence_dir=tmp_path,
+            host=server.host,
+            port=server.port,
+            name=test_database.name,
+            user=server.user,
+            password=SecretStr(server.password),
+        ),
     )
 
 

@@ -179,7 +179,7 @@ class TestRenameProfileRequest:
 
 # ── Integration tests ──────────────────────────────────────────────────────
 #
-# Exercise the route handlers end-to-end against a real SQLite-backed Org +
+# Exercise the route handlers end-to-end against a real Org +
 # OrgMember row. They verify the new ``SELECT FOR UPDATE`` transaction helper
 # round-trips correctly, the activate handler writes both the org marker and
 # the member diff atomically, and the exception-to-HTTP mapping for the
@@ -229,7 +229,7 @@ def seeded_org(session_maker):
 @pytest.fixture
 def patch_route_db(async_session_maker, seeded_org):
     """Wire the router's db session + OrgService.get_org_by_id to the test
-    SQLite fixture so direct handler calls hit the real schema. ``get_org_by_id``
+    database fixture so direct handler calls hit the real schema. ``get_org_by_id``
     is patched (rather than seeding the full membership graph) because its
     inner OrgMemberStore call opens sessions outside ``async_session_maker``.
     """
@@ -260,8 +260,7 @@ async def _read_org(async_session_maker, org_id):
 
 
 async def _read_member(async_session_maker, org_id, user_id):
-    # ``user_id`` accepts either str or UUID — coerce so the SQLite test
-    # backend's strict Uuid binding doesn't error on str inputs.
+    # ``user_id`` accepts either str or UUID — coerce so the uuid column gets a UUID.
     user_uuid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(user_id)
     async with async_session_maker() as session:
         result = await session.execute(

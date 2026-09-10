@@ -1,6 +1,6 @@
 """
 Tests for UserStore following the async pattern from test_api_key_store.py.
-Uses SQLite database with standard fixtures.
+Uses the standard PostgreSQL fixtures.
 """
 
 import uuid
@@ -1520,7 +1520,6 @@ async def test_migrate_user_sql_type_handling(async_session_maker):
 
         # Now execute the migration SQL statements with the correct parameter types
         # This tests the fix: using user_uuid for UUID columns and user_id for string columns
-        # Note: For SQLite, we use string representation of UUID
 
         # Test 1: conversation_metadata to conversation_metadata_saas migration
         # The fix uses user_uuid (UUID) for inserting into user_id/org_id (UUID columns)
@@ -1823,7 +1822,7 @@ async def test_migrate_user_sql_multiple_conversations(async_session_maker):
 #   - test_create_org_v1_enabled_explicit_true_overrides_default_false
 #
 # Testing migrate_user directly is impractical due to its complex raw SQL migration
-# statements that have SQLite/UUID compatibility issues in the test environment.
+# statements.
 # The SQL migration tests above (test_migrate_user_sql_type_handling, etc.) verify
 # the SQL operations work correctly with proper type handling.
 

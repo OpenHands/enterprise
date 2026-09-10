@@ -184,7 +184,7 @@ def seeded_org(session_maker):
 
 @pytest.fixture
 def patch_route_db(async_session_maker, seeded_org):
-    """Point both routers' db session + OrgService.get_org_by_id at the SQLite.
+    """Point both routers' db session + OrgService.get_org_by_id at the test database.
 
     fixture, so direct handler calls hit the real schema.
     """

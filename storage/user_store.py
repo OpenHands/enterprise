@@ -956,9 +956,7 @@ class UserStore:
         ``FOR UPDATE`` before the count/clear, so simultaneous revokes
         serialize. A transaction that waited re-evaluates the predicate
         after acquiring the lock, so it sees an up-to-date set and cannot
-        race two "second-to-last" revocations down to zero. (On SQLite,
-        used in tests, ``FOR UPDATE`` is a no-op but the surrounding
-        transaction still serializes writes.)
+        race two "second-to-last" revocations down to zero.
 
         Args:
             user_id: The target user's ID.

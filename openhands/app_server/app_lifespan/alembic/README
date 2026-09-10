@@ -1,6 +1,6 @@
 # OpenHands App Server Alembic Integration
 
-This alembic integration keeps the SQLite database up to date in single user deployments by managing schema migrations for app_server models. Migrations are applied automatically on startup.
+This alembic integration keeps the PostgreSQL database up to date by managing schema migrations for app_server models. Migrations are applied automatically on startup.
 
 ## Configuration
 

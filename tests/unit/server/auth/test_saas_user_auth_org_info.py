@@ -92,7 +92,7 @@ async def create_org_member(
 
 
 class TestGetOrgInfoWithRealDB:
-    """Tests for get_org_info() using in-memory SQLite database."""
+    """Tests for get_org_info() against the test database."""
 
     @pytest.mark.asyncio
     async def test_get_org_info_returns_correct_data_for_owner(

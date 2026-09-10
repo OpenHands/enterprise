@@ -1164,9 +1164,6 @@ def test_orphaned_user_error_contains_user_ids():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_sole_org_requester_is_deleted(
     async_session_maker, mock_litellm_api
 ):
@@ -1239,9 +1236,6 @@ async def test_delete_org_cascade_sole_org_requester_is_deleted(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_keeps_user_with_alternative_org(
     async_session_maker, mock_litellm_api
 ):
@@ -1304,9 +1298,6 @@ async def test_delete_org_cascade_keeps_user_with_alternative_org(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_raises_for_non_requester_orphans(
     async_session_maker, mock_litellm_api
 ):
@@ -1399,8 +1390,6 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
     With passive_deletes=True on the relationship, SQLAlchemy defers to the
     database's CASCADE constraint instead of trying to nullify the foreign key.
 
-    Note: SQLite doesn't enforce CASCADE by default, so we only verify that
-    the deletion succeeds. In production (PostgreSQL), CASCADE handles cleanup.
     """
     from datetime import datetime, timedelta
 
@@ -1461,10 +1450,12 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
         session.delete(org)
         session.commit()  # Success indicates passive_deletes=True is working
 
-    # Assert - Organization should be deleted
+    # Assert - the org is gone, and CASCADE took the invitation with it
     with session_maker() as session:
         deleted_org = session.query(Org).filter(Org.id == org_id).first()
         assert deleted_org is None
+        remaining = session.query(OrgInvitation).filter_by(org_id=org_id).count()
+        assert remaining == 0
 
 
 # =============================================================================
