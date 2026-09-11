@@ -12,7 +12,8 @@ client can change what it offers without the other following — and hold the
 same three keys today.
 """
 
-from openhands.sdk.settings import ACP_PROVIDERS
+from openhands.app_server.errors import ACPProviderNotAvailableError
+from openhands.sdk.settings import ACP_PROVIDERS, ACPAgentSettings, AgentSettingsConfig
 
 SURFACED_ACP_PROVIDERS: tuple[str, ...] = ('claude-code', 'codex', 'gemini-cli')
 
@@ -21,11 +22,25 @@ SURFACED_ACP_PROVIDERS: tuple[str, ...] = ('claude-code', 'codex', 'gemini-cli')
 # regardless of this list.
 ACP_CUSTOM_SERVER_KIND = 'custom'
 
-
-def is_acp_provider_surfaced(acp_server: str | None) -> bool:
-    return acp_server in (*SURFACED_ACP_PROVIDERS, ACP_CUSTOM_SERVER_KIND)
+_REGISTERED_SURFACED_ACP_PROVIDERS = tuple(
+    key for key in SURFACED_ACP_PROVIDERS if key in ACP_PROVIDERS
+)
 
 
 def surfaced_acp_providers() -> tuple[str, ...]:
     """Surfaced keys the pinned SDK still registers, in declared order."""
-    return tuple(key for key in SURFACED_ACP_PROVIDERS if key in ACP_PROVIDERS)
+    return _REGISTERED_SURFACED_ACP_PROVIDERS
+
+
+def validate_acp_provider_surfaced(agent_settings: AgentSettingsConfig | None) -> None:
+    """Reject an ACP harness this deployment does not offer."""
+    if not isinstance(agent_settings, ACPAgentSettings):
+        return
+    acp_server = agent_settings.acp_server
+    if acp_server == ACP_CUSTOM_SERVER_KIND or acp_server in surfaced_acp_providers():
+        return
+
+    raise ACPProviderNotAvailableError(
+        f"ACP server '{acp_server}' is not available. "
+        f'Choose one of: {", ".join(surfaced_acp_providers())}.'
+    )

@@ -20,10 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.models import Success
 from openhands.analytics import get_analytics_service, resolve_analytics_context
-from openhands.app_server.acp_providers import (
-    SURFACED_ACP_PROVIDERS,
-    is_acp_provider_surfaced,
-)
+from openhands.app_server.acp_providers import validate_acp_provider_surfaced
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
 )
@@ -168,28 +165,6 @@ async def _resolve_acp_agent_settings(
     return None
 
 
-def _validate_acp_provider_surfaced(agent_settings: ACPAgentSettings | None) -> None:
-    """Reject a harness this deployment does not offer.
-
-    Filtering the picker is not enough: ``ACPServerKind`` widens with every
-    harness the pinned SDK registers, so a persisted setting, an org-settings
-    value, an agent profile or a direct API call all validate against the
-    registry rather than against what Cloud offers.
-    """
-    if agent_settings is None:
-        return
-    if is_acp_provider_surfaced(agent_settings.acp_server):
-        return
-
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=(
-            f"ACP server '{agent_settings.acp_server}' is not available. "
-            f'Choose one of: {", ".join(SURFACED_ACP_PROVIDERS)}.'
-        ),
-    )
-
-
 async def _validate_codex_credentials(
     agent_settings: ACPAgentSettings | None,
     request: AppConversationStartRequest,
@@ -226,7 +201,7 @@ async def _validate_acp_start(
 ) -> None:
     """Pre-flight the ACP agent settings a conversation is about to start with."""
     agent_settings = await _resolve_acp_agent_settings(request, user_context)
-    _validate_acp_provider_surfaced(agent_settings)
+    validate_acp_provider_surfaced(agent_settings)
     await _validate_codex_credentials(agent_settings, request, secrets_store)
 
 

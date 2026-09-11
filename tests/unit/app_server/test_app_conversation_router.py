@@ -17,7 +17,10 @@ from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import SecretStr
 
-from openhands.app_server.acp_providers import SURFACED_ACP_PROVIDERS
+from openhands.app_server.acp_providers import (
+    SURFACED_ACP_PROVIDERS,
+    validate_acp_provider_surfaced,
+)
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversation,
     AppConversationInfo,
@@ -37,7 +40,6 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     _resolve_acp_agent_settings,
     _resolve_file_path,
     _stream_app_conversation_start,
-    _validate_acp_provider_surfaced,
     _validate_codex_credentials,
     batch_get_app_conversations,
     count_app_conversations,
@@ -193,11 +195,11 @@ async def test_resolve_acp_agent_settings_returns_none_for_non_acp_agents(
 
 @pytest.mark.parametrize('acp_server', SURFACED_ACP_PROVIDERS + ('custom',))
 def test_surfaced_acp_providers_start(acp_server):
-    _validate_acp_provider_surfaced(ACPAgentSettings(acp_server=acp_server))
+    validate_acp_provider_surfaced(ACPAgentSettings(acp_server=acp_server))
 
 
 def test_non_acp_agents_are_never_rejected():
-    _validate_acp_provider_surfaced(None)
+    validate_acp_provider_surfaced(None)
 
 
 @pytest.mark.parametrize(
@@ -211,7 +213,7 @@ def test_unsurfaced_acp_providers_are_rejected_at_start(acp_server):
     harness is covered the moment it is registered.
     """
     with pytest.raises(HTTPException) as exc_info:
-        _validate_acp_provider_surfaced(ACPAgentSettings(acp_server=acp_server))
+        validate_acp_provider_surfaced(ACPAgentSettings(acp_server=acp_server))
 
     assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
     assert acp_server in exc_info.value.detail
