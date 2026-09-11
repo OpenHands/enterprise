@@ -24344,7 +24344,7 @@
     "ca": "Com es diu la vostra organització?"
   },
   "ONBOARDING$ORG_NAME_INPUT_NAME": {
-    "en": "Org name",
+    "en": "What's your company name?",
     "ja": "組織名",
     "zh-CN": "组织名称",
     "zh-TW": "組織名稱",
@@ -24361,7 +24361,7 @@
     "ca": "Nom de l'organització"
   },
   "ONBOARDING$ORG_NAME_INPUT_DOMAIN": {
-    "en": "Domain name",
+    "en": "Company domain",
     "ja": "ドメイン名",
     "zh-CN": "域名",
     "zh-TW": "網域名稱",
