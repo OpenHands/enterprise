@@ -15,10 +15,15 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 
+from openhands.app_server.app_conversation.live_status_app_conversation_service import (
+    _apply_profile_secret_scope,
+)
 from openhands.app_server.settings.agent_profiles import (
     MAX_AGENT_PROFILES,
     AgentProfiles,
 )
+from openhands.app_server.settings.settings_models import Settings
+from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.user_auth import get_user_id
 from openhands.sdk.profiles import (
     ACPAgentProfile,
@@ -682,7 +687,7 @@ class TestResolveActiveAgentProfile:
 
         result = store._resolve_active_agent_profile(org, member, {}, None)
         assert result is not None
-        _dump, resolved_id, _revision = result
+        _dump, resolved_id, _revision, _refs = result
         assert resolved_id == pid
 
     def test_stale_pointer_falls_back_to_none(self):
@@ -705,7 +710,7 @@ class TestResolveActiveAgentProfile:
 
         result = store._resolve_active_agent_profile(org, member, {}, None)
         assert result is not None
-        dump, resolved_id, revision = result
+        dump, resolved_id, revision, _refs = result
         assert resolved_id == pid
         assert revision == 0
         assert dump['agent_kind'] == 'openhands'
@@ -739,7 +744,7 @@ class TestResolveActiveAgentProfile:
         )
 
         assert result is not None
-        dump, _resolved_id, _revision = result
+        dump, _resolved_id, _revision, _refs = result
         assert set(dump['mcp_config']) == {'shttp'}
         assert dump['mcp_config']['shttp']['auth'] == {
             'strategy': 'bearer',
@@ -780,7 +785,7 @@ class TestResolveActiveAgentProfile:
 
         result = store._resolve_active_agent_profile(org, member, {}, None)
         assert result is not None
-        dump, _resolved_id, _revision = result
+        dump, _resolved_id, _revision, _refs = result
         assert dump['llm']['model'] == 'openhands/claude-opus-4-8'
         assert dump['llm'].get('base_url') is None
 
@@ -796,7 +801,7 @@ class TestResolveActiveAgentProfile:
             org, member, {}, None, override_agent_profile_id=pid
         )
         assert result is not None
-        _dump, resolved_id, _revision = result
+        _dump, resolved_id, _revision, _refs = result
         assert resolved_id == pid
 
     def test_override_id_does_not_mutate_member_pointer(self):
@@ -1324,3 +1329,120 @@ class TestAgentProfilesRouterAuthorizationBoundary:
             )
 
         assert response.status_code == status.HTTP_201_CREATED
+
+
+class TestProfileSecretScope:
+    """``secret_refs`` must reach the launch, and narrow its secrets there.
+
+    The local agent-server filters ``request.secrets`` inside its
+    ``agent_profile_id`` branch — a branch cloud never takes, since it resolves
+    the profile itself and sends a resolved agent. These cover the cloud-side
+    equivalent (OpenHands/enterprise#344).
+    """
+
+    def _user(self, refs):
+        return UserInfo(active_agent_profile_secret_refs=refs)
+
+    SENT = {
+        'DATADOG_API_KEY': 'dd',
+        'GITHUB_TOKEN': 'gh',
+        'ANTHROPIC_API_KEY': 'ak',
+    }
+
+    def test_an_unscoped_profile_leaves_the_secrets_untouched(self):
+        assert (
+            _apply_profile_secret_scope(dict(self.SENT), self._user(None)) == self.SENT
+        )
+
+    def test_a_scoped_profile_keeps_only_the_named_secrets(self):
+        got = _apply_profile_secret_scope(
+            dict(self.SENT), self._user(['DATADOG_API_KEY'])
+        )
+        assert got == {'DATADOG_API_KEY': 'dd'}
+
+    def test_an_empty_scope_keeps_nothing(self):
+        assert _apply_profile_secret_scope(dict(self.SENT), self._user([])) == {}
+
+    def test_a_git_provider_token_is_not_exempt(self):
+        # Strict: GITHUB_TOKEN rides the same channel and is dropped when the
+        # profile does not list it. Intended, and the reason the editor shows
+        # what a scope excludes.
+        got = _apply_profile_secret_scope(
+            dict(self.SENT), self._user(['DATADOG_API_KEY'])
+        )
+        assert 'GITHUB_TOKEN' not in got
+
+    def test_an_acp_provider_credential_is_not_exempt(self):
+        got = _apply_profile_secret_scope(
+            dict(self.SENT), self._user(['DATADOG_API_KEY'])
+        )
+        assert 'ANTHROPIC_API_KEY' not in got
+
+    def test_a_ref_matching_no_supplied_secret_is_a_no_op(self):
+        got = _apply_profile_secret_scope(
+            dict(self.SENT), self._user(['DATADOG_API_KEY', 'NEVER_SUPPLIED'])
+        )
+        assert got == {'DATADOG_API_KEY': 'dd'}
+
+    def test_secret_refs_survive_the_settings_to_user_info_projection(self):
+        """The seam that would silently disable the scope if it regressed.
+
+        ``AuthUserContext._user_info_from_settings`` rebuilds ``UserInfo`` from
+        ``settings.model_dump()``. If that ever became a field-by-field copy,
+        the refs would be dropped, the filter would read ``None``, and every
+        scoped profile would quietly launch unrestricted.
+        """
+        settings = Settings(
+            active_agent_profile_id='pid',
+            active_agent_profile_secret_refs=['DATADOG_API_KEY'],
+        )
+        user = UserInfo(
+            id='u1', **settings.model_dump(context={'expose_secrets': True})
+        )
+        assert user.active_agent_profile_secret_refs == ['DATADOG_API_KEY']
+        assert _apply_profile_secret_scope(
+            {'DATADOG_API_KEY': 'dd', 'GITHUB_TOKEN': 'gh'}, user
+        ) == {'DATADOG_API_KEY': 'dd'}
+
+    def test_a_deployment_without_agent_profiles_is_unrestricted(self):
+        """The file-backed store resolves no profile, so nothing is scoped.
+
+        ``FileSettingsStore.load`` discards the resolve flags outright, so the
+        refs stay ``None`` there and the filter must be a pass-through rather
+        than an empty allow-list.
+        """
+        user = UserInfo(id='u1')
+        sent = {'GITHUB_TOKEN': 'gh', 'DATADOG_API_KEY': 'dd'}
+        assert _apply_profile_secret_scope(dict(sent), user) == sent
+
+    def test_resolution_carries_secret_refs_out_of_the_store(self):
+        """Without this the filter above would silently never fire."""
+        with patch('storage.database.a_session_maker'):
+            from storage.saas_settings_store import SaasSettingsStore
+        store = SaasSettingsStore(str(USER_ID))
+
+        org = MagicMock(spec=Org)
+        org.id = ORG_ID
+        ap = AgentProfiles()
+        save_profile_preserving_identity(
+            ap,
+            OpenHandsAgentProfile(
+                name='scoped',
+                llm_profile_ref='Default',
+                secret_refs=['DATADOG_API_KEY'],
+            ),
+        )
+        org.agent_profiles = ap.model_dump(
+            mode='json', context={'expose_secrets': True}
+        )
+        org.llm_profiles = {
+            'profiles': {'Default': {'model': 'gpt-4o', 'api_key': 'orgkey'}},
+            'active': 'Default',
+        }
+        member = MagicMock(spec=OrgMember)
+        member.active_agent_profile_id = next(iter(ap.profiles.values())).id
+
+        result = store._resolve_active_agent_profile(org, member, {}, None)
+        assert result is not None
+        _dump, _id, _revision, refs = result
+        assert refs == ['DATADOG_API_KEY']
