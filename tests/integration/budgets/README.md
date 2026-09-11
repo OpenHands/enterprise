@@ -29,6 +29,32 @@ Hypothesis executes generated operation sequences against the real Enterprise se
 
 Hypothesis is necessary because a valid abstract model cannot prove that migrations, serialization, management endpoints, asynchronous accounting, or LiteLLM admission actually implement that model.
 
+## Property-to-probe map
+
+| Intended property | Quint invariant | Real-service coverage | Current status |
+| --- | --- | --- | --- |
+| Organization cap is absolute | `P1_organizationCapIsAbsolute` | Sequential and cross-member concurrency probes | Explicit safety gates |
+| Default member cap applies | `P2_defaultUserCapApplies` | Generated request campaign | Explicit safety gate |
+| Positive override replaces the default | `P3_positiveOverrideReplacesDefault` | Healthy policy state machine | Passing |
+| Disabled override removes only the member cap | `P4_disabledOverrideRemovesOnlyMemberCap` | Disabled-override probe | Known failing behavior |
+| Verified policy exactly matches all applied caps | `P5_verifiedMeansExactAgreement` | Healthy state machine and LiteLLM contracts | Passing |
+| Verification of an older policy version is invalid | `P6_staleVerificationIsInvalid` | No delayed/out-of-order concrete probe yet | Model only |
+| Unverified policy fails closed before provider invocation | `P7_unverifiedPolicyFailsClosed` | Team-write, member-write, and readback variants in the fail-closed probe | Known failing behavior; target of PR #359 |
+| Partial synchronization cannot report success | `P8_partialSynchronizationIsNotSuccess` | Partial member-write failure contract | Passing |
+| Retry restores exact policy agreement | `P9_successfulRetryRepairsDivergence` | Partial-sync retry contract and recovery probe | Basic retry passes; spend-preserving recovery is an explicit safety gate |
+| Rejection has no accounting side effects | `P10_rejectionHasNoAccountingSideEffects` | Sequential and concurrency probes | Explicit safety gates |
+| Every accepted request has exactly one provider call and charge | `P11_admissionHasExactlyOneCharge` | Deterministic accounting contract plus sequential and concurrency probes | Basic contract passes; generated/concurrent behavior is unstable |
+| Spend remains nonnegative and never moves backward | `P12_spendIsNonnegativeAndMonotonicByConstruction` | Accounting and recovery probes | Basic coverage; recovery is an explicit safety gate |
+| Member accounting is isolated | `P13_userAccountingIsIsolated` | Cross-member concurrency probe | Explicit safety gate |
+| Synchronization is idempotent | `P14_synchronizationIsIdempotent` | Generated maintenance and legacy-baseline second sync | Passing |
+| Rejected retries never reach the provider | `P15_rejectedRetriesRemainHarmless` | Same-member and cross-member boundary probes | Explicit safety gates |
+| Disabling the organization budget removes team and member caps | Exact agreement after `disableBudget` | Disabled-budget probe | Known failing behavior |
+| Zero and negative limits are rejected | Positive-limit transition domain | Healthy state machine | Passing |
+| A missing known-member baseline recovers once without renewing allowance | Not modeled | Legacy-upgrade LiteLLM contract | Passing; added after validating PR #347 before and after |
+| Concurrent admission overshoot is bounded | Not modeled | Same-member and cross-member concurrency probes | Explicit safety gates |
+
+“Passing” rows are included in normal `test_*.py` collection. Explicit safety gates use the `probe_*.py` prefix so known product gaps remain executable without hiding them behind `xfail`.
+
 ## Campaigns
 
 ### Abstract model
