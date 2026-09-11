@@ -1,4 +1,12 @@
-"""API routes for managing verified LLM models (admin only)."""
+"""API routes for managing the LLM model catalog (admin only).
+
+The mount path was renamed from ``/api/admin/verified-models`` to
+``/api/admin/model-catalog``. The old path is preserved as a deprecated
+alias for one release so existing operator scripts and the runbook keep
+working; see OpenHands/enterprise#350 for the full rollout plan (this PR
+covers only the endpoint path — the DB table, ORM classes, and Python
+package rename follow in separate PRs).
+"""
 
 import logging
 from typing import Annotated, AsyncGenerator
@@ -31,8 +39,6 @@ from server.verified_models.verified_model_service import (
 
 _logger = logging.getLogger(__name__)
 
-api_router = APIRouter(prefix='/api/admin/verified-models', tags=['Verified Models'])
-
 
 def _litellm_sync_error_response(exc: LiteLLMSyncError) -> HTTPException:
     """Map a LiteLLM propagation failure to a surfaced 502.
@@ -49,119 +55,125 @@ def _litellm_sync_error_response(exc: LiteLLMSyncError) -> HTTPException:
     )
 
 
-@api_router.get('')
-async def search_verified_models(
-    provider: str | None = None,
-    page_id: Annotated[
-        str | None,
-        Query(title='Optional next_page_id from the previously returned page'),
-    ] = None,
-    limit: Annotated[
-        int, Query(title='The max number of results in the page', gt=0, le=100)
-    ] = 100,
-    user_id: str = Depends(get_admin_user_id),
-    verified_model_service: VerifiedModelService = Depends(
-        verified_model_store_dependency
-    ),
-) -> VerifiedModelPage:
-    """List all verified models, optionally filtered by provider."""
-    # Use SQL-level filtering and pagination
-    result = await verified_model_service.search_verified_models(
-        provider=provider,
-        enabled_only=False,  # Admin sees all models including disabled
-        page_id=page_id,
-        limit=limit,
-    )
-    return result
+def _register_routes(router: APIRouter) -> None:
+    """Register the model-catalog CRUD handlers on ``router``.
 
+    Shared between ``api_router`` (the new ``/api/admin/model-catalog``
+    mount) and ``legacy_api_router`` (the deprecated alias at
+    ``/api/admin/verified-models``), so the deprecation window keeps both
+    paths serving the same handlers. Drop ``legacy_api_router`` in Phase 3
+    of OpenHands/enterprise#350 to remove the old path.
+    """
 
-@api_router.post('', status_code=201)
-async def create_verified_model(
-    data: VerifiedModelCreate,
-    user_id: str = Depends(get_admin_user_id),
-    verified_model_service: VerifiedModelService = Depends(
-        verified_model_store_dependency
-    ),
-) -> VerifiedModel:
-    """Create a new verified model."""
-    try:
-        model = await verified_model_service.create_verified_model(
-            model_name=data.model_name,
-            provider=data.provider,
-            is_enabled=data.is_enabled,
-            is_verified=data.is_verified,
-            is_free=data.is_free,
-            is_default=data.is_default,
-        )
-        return model
-    except ValueError as ex:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(ex),
-        ) from ex
-    except LiteLLMSyncError as ex:
-        raise _litellm_sync_error_response(ex) from ex
-
-
-@api_router.put('/{provider}/{model_name:path}')
-async def update_verified_model(
-    provider: str,
-    model_name: str,
-    data: VerifiedModelUpdate,
-    user_id: str = Depends(get_admin_user_id),
-    verified_model_service: VerifiedModelService = Depends(
-        verified_model_store_dependency
-    ),
-) -> VerifiedModel:
-    """Update a verified model by provider and model name."""
-    try:
-        model = await verified_model_service.update_verified_model(
-            model_name=model_name,
+    @router.get('')
+    async def list_models(
+        provider: str | None = None,
+        page_id: Annotated[
+            str | None,
+            Query(title='Optional next_page_id from the previously returned page'),
+        ] = None,
+        limit: Annotated[
+            int, Query(title='The max number of results in the page', gt=0, le=100)
+        ] = 100,
+        user_id: str = Depends(get_admin_user_id),
+        model_service: VerifiedModelService = Depends(verified_model_store_dependency),
+    ) -> VerifiedModelPage:
+        """List all models in the catalog, optionally filtered by provider."""
+        return await model_service.search_verified_models(
             provider=provider,
-            is_enabled=data.is_enabled,
-            is_verified=data.is_verified,
-            is_free=data.is_free,
-            is_default=data.is_default,
+            enabled_only=False,  # Admin sees all rows including disabled
+            page_id=page_id,
+            limit=limit,
         )
-    except LiteLLMSyncError as ex:
-        raise _litellm_sync_error_response(ex) from ex
-    if not model:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f'Model {provider}/{model_name} not found',
-        )
-    return model
+
+    @router.post('', status_code=201)
+    async def create_model(
+        data: VerifiedModelCreate,
+        user_id: str = Depends(get_admin_user_id),
+        model_service: VerifiedModelService = Depends(verified_model_store_dependency),
+    ) -> VerifiedModel:
+        """Create a new model in the catalog."""
+        try:
+            return await model_service.create_verified_model(
+                model_name=data.model_name,
+                provider=data.provider,
+                is_enabled=data.is_enabled,
+                is_verified=data.is_verified,
+                is_free=data.is_free,
+                is_default=data.is_default,
+            )
+        except ValueError as ex:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(ex),
+            ) from ex
+        except LiteLLMSyncError as ex:
+            raise _litellm_sync_error_response(ex) from ex
+
+    @router.put('/{provider}/{model_name:path}')
+    async def update_model(
+        provider: str,
+        model_name: str,
+        data: VerifiedModelUpdate,
+        user_id: str = Depends(get_admin_user_id),
+        model_service: VerifiedModelService = Depends(verified_model_store_dependency),
+    ) -> VerifiedModel:
+        """Update a model in the catalog by provider and model name."""
+        try:
+            model = await model_service.update_verified_model(
+                model_name=model_name,
+                provider=provider,
+                is_enabled=data.is_enabled,
+                is_verified=data.is_verified,
+                is_free=data.is_free,
+                is_default=data.is_default,
+            )
+        except LiteLLMSyncError as ex:
+            raise _litellm_sync_error_response(ex) from ex
+        if not model:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f'Model {provider}/{model_name} not found',
+            )
+        return model
+
+    @router.delete('/{provider}/{model_name:path}')
+    async def delete_model(
+        provider: str,
+        model_name: str,
+        user_id: str = Depends(get_admin_user_id),
+        model_service: VerifiedModelService = Depends(verified_model_store_dependency),
+    ) -> bool:
+        """Delete a model from the catalog by provider and model name."""
+        try:
+            await model_service.delete_verified_model(
+                model_name=model_name, provider=provider
+            )
+            return True
+        except ValueError as ex:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(ex),
+            ) from ex
+        except LiteLLMSyncError as ex:
+            raise _litellm_sync_error_response(ex) from ex
 
 
-@api_router.delete('/{provider}/{model_name:path}')
-async def delete_verified_model(
-    provider: str,
-    model_name: str,
-    user_id: str = Depends(get_admin_user_id),
-    verified_model_service: VerifiedModelService = Depends(
-        verified_model_store_dependency
-    ),
-) -> bool:
-    """Delete a verified model by provider and model name."""
-    try:
-        await verified_model_service.delete_verified_model(
-            model_name=model_name, provider=provider
-        )
-        return True
-    except ValueError as ex:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(ex),
-        ) from ex
-    except LiteLLMSyncError as ex:
-        raise _litellm_sync_error_response(ex) from ex
+api_router = APIRouter(prefix='/api/admin/model-catalog', tags=['Model Catalog'])
+legacy_api_router = APIRouter(
+    prefix='/api/admin/verified-models',
+    tags=['Model Catalog (deprecated)'],
+    deprecated=True,
+)
+_register_routes(api_router)
+_register_routes(legacy_api_router)
 
 
 class SaaSLLMModelService(DefaultLLMModelService):
-    """SaaS implementation that reads verified models from the database.
+    """SaaS implementation that reads the model catalog from the database.
 
     Inherits filtering, pagination, and provider logic from
-    ``DefaultLLMModelService`` — only the verified-model list is different.
+    ``DefaultLLMModelService`` — only the catalog list is different.
     """
 
     def __init__(self, db_session) -> None:
@@ -183,8 +195,8 @@ class SaaSLLMModelService(DefaultLLMModelService):
         if self._cached_response is not None:
             return self._cached_response
 
-        verified_model_service = VerifiedModelService(self._db_session)
-        page = await verified_model_service.search_verified_models(enabled_only=False)
+        model_service = VerifiedModelService(self._db_session)
+        page = await model_service.search_verified_models(enabled_only=False)
         if page.next_page_id:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
