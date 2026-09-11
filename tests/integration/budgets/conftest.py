@@ -20,7 +20,12 @@ from testcontainers.core.container import DockerContainer
 from testcontainers.core.network import Network
 
 from tests import postgres_testdb
-from tests.integration.budgets.adapter import BudgetAdapterFactory, BudgetTestAdapter
+from tests.integration.budgets.adapter import (
+    BudgetAdapterFactory,
+    BudgetTestAdapter,
+    UpgradeBudgetAdapterFactory,
+    UpgradeBudgetTestAdapter,
+)
 from tests.integration.budgets.services import (
     LocalAppServer,
     ProviderState,
@@ -250,3 +255,28 @@ async def budget_adapter(
     budget_adapter_factory: BudgetAdapterFactory,
 ) -> BudgetTestAdapter:
     return await budget_adapter_factory.create()
+
+
+@pytest.fixture
+async def upgrade_adapter_factory(
+    async_session_maker: async_sessionmaker[AsyncSession],
+    configured_litellm_manager: LiteLlmEnvironment,
+) -> AsyncIterator[UpgradeBudgetAdapterFactory]:
+    environment = configured_litellm_manager
+    factory = UpgradeBudgetAdapterFactory(
+        async_session_maker,
+        direct_url=environment.direct_url,
+        provider_url=environment.provider_url,
+        proxy_url=environment.proxy_url,
+    )
+    try:
+        yield factory
+    finally:
+        await factory.close()
+
+
+@pytest.fixture
+async def upgrade_adapter(
+    upgrade_adapter_factory: UpgradeBudgetAdapterFactory,
+) -> UpgradeBudgetTestAdapter:
+    return await upgrade_adapter_factory.create()
