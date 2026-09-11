@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
@@ -36,6 +36,7 @@ from server.routes.org_models import (
     OrgBudgetSettingsResponse,
     OrgBudgetSettingsUpdate,
     OrgBudgetThresholdResponse,
+    OrgBudgetUserMutationResponse,
     OrgBudgetUserOverrideUpdate,
     OrgBudgetUserResponse,
     OrgConcurrentModificationError,
@@ -1191,6 +1192,13 @@ def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
         litellm_last_sync_at=settings.litellm_last_sync_at,
         litellm_last_sync_status=settings.litellm_last_sync_status,
         litellm_last_sync_error=settings.litellm_last_sync_error,
+        reconciliation_state=state['reconciliation_state'],
+        reconciliation_error=state['reconciliation_error'],
+        desired_team_max_budget=state['desired_team_max_budget'],
+        applied_team_max_budget=state['applied_team_max_budget'],
+        budget_policy_matches=state['budget_policy_matches'],
+        applied_at=state['applied_at'],
+        applied_policy_observed_at=state['applied_policy_observed_at'],
         reset_day=settings.reset_day,
         slack_channel=settings.slack_channel,
         slack_team_id=settings.slack_team_id,
@@ -1255,6 +1263,7 @@ async def get_org_budget_settings(
 async def update_org_budget_settings(
     org_id: UUID,
     update: OrgBudgetSettingsUpdate,
+    response: Response,
     user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     users_page: int = Query(1, ge=1),
     users_per_page: int = Query(50, ge=1, le=1000),
@@ -1274,20 +1283,23 @@ async def update_org_budget_settings(
         users_search=users_search,
         users_status=users_status,
     )
+    if state['reconciliation_state'] in {'degraded', 'failed'}:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return _build_budget_response(state)
 
 
 @org_router.put(
     '/{org_id}/budgets/overrides/{user_id}',
-    response_model=OrgBudgetUserResponse,
+    response_model=OrgBudgetUserMutationResponse,
 )
 async def upsert_org_budget_override(
     org_id: UUID,
     user_id: str,
     update: OrgBudgetUserOverrideUpdate,
+    response: Response,
     current_user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     budget_service: OrgBudgetService = org_budget_service_dependency,
-) -> OrgBudgetUserResponse:
+) -> OrgBudgetUserMutationResponse:
     logger.info(
         'Updating org budget override',
         extra={
@@ -1308,7 +1320,9 @@ async def upsert_org_budget_override(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='User not found in organization',
         )
-    return OrgBudgetUserResponse(**user_row)
+    if user_row.get('reconciliation_state') in {'degraded', 'failed'}:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return OrgBudgetUserMutationResponse(**user_row)
 
 
 @org_router.delete(
@@ -1318,6 +1332,7 @@ async def upsert_org_budget_override(
 async def delete_org_budget_override(
     org_id: UUID,
     user_id: str,
+    response: Response,
     current_user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     budget_service: OrgBudgetService = org_budget_service_dependency,
 ) -> None:
@@ -1330,6 +1345,9 @@ async def delete_org_budget_override(
         },
     )
     await budget_service.delete_user_override(org_id, UUID(user_id))
+    reconciliation_state = await budget_service.get_reconciliation_state(org_id)
+    if reconciliation_state in {'degraded', 'failed'}:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return None
 
 
