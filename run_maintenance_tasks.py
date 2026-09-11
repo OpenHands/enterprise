@@ -12,29 +12,39 @@ NUM_RETRIES = 3
 RETRY_DELAY = 60
 
 
-async def main():
-    try:
-        # Imported lazily so the generic task runner remains usable in tooling
-        # that stubs database initialization while importing this module.
-        from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
-            enqueue_managed_llm_key_ownership_tasks,
-        )
+def maintenance_task_status(info: dict) -> MaintenanceTaskStatus:
+    """Derive outer task status without discarding processor diagnostics."""
+    return (
+        MaintenanceTaskStatus.ERROR
+        if info.get('error_count', 0) > 0
+        else MaintenanceTaskStatus.COMPLETED
+    )
 
-        try:
-            enqueued = enqueue_managed_llm_key_ownership_tasks()
-            if enqueued:
-                logger.info(
-                    'Enqueued managed LLM key ownership repairs',
-                    extra={'member_count': enqueued},
-                )
-        except Exception:
-            # One enqueue path must not prevent unrelated pending maintenance
-            # tasks from running.
-            logger.exception('Failed to enqueue managed LLM key ownership repairs')
-        set_stale_task_error()
-        await run_tasks()
-    except Exception as e:
-        logger.info(f'Error running maintenance tasks: {e}')
+
+async def main():
+    # Imported lazily so the generic task runner remains usable in tooling
+    # that stubs database initialization while importing this module.
+    from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
+        enqueue_managed_llm_key_ownership_tasks,
+    )
+
+    try:
+        enqueued = enqueue_managed_llm_key_ownership_tasks()
+        if enqueued:
+            logger.info(
+                'Enqueued managed LLM key ownership repairs',
+                extra={'member_count': enqueued},
+            )
+    except Exception:
+        # One enqueue path must not prevent unrelated pending maintenance
+        # tasks from running.
+        logger.exception('Failed to enqueue managed LLM key ownership repairs')
+
+    set_stale_task_error()
+    failed_task_count = await run_tasks()
+    if failed_task_count:
+        logger.error(f'{failed_task_count} maintenance task(s) failed')
+        raise SystemExit(1)
 
 
 def set_stale_task_error():
@@ -49,11 +59,12 @@ def set_stale_task_error():
 
 
 async def run_tasks():
+    failed_task_count = 0
     while True:
         with session_maker() as session:
             task = await next_task(session)
             if not task:
-                return
+                return failed_task_count
 
             # started_at/updated_at are naive UTC; strip tzinfo.
             now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -64,12 +75,15 @@ async def run_tasks():
             try:
                 processor = task.get_processor()
                 task.info = await processor(task)
-                task.status = MaintenanceTaskStatus.COMPLETED
+                task.status = maintenance_task_status(task.info)
                 session.commit()
+                if task.status == MaintenanceTaskStatus.ERROR:
+                    failed_task_count += 1
             except Exception as e:
                 task.info = {'error': str(e)}
                 task.status = MaintenanceTaskStatus.ERROR
                 session.commit()
+                failed_task_count += 1
 
             # wait if there is a delay (this allows us to bypass throttling constraints)
             if task.delay:
