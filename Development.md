@@ -11,7 +11,8 @@ The Python backend is laid out exactly as it is deployed in the Docker image (`/
 - `openhands/` — the OpenHands app server (`openhands.server.listen:app`, `openhands/app_server/`)
 - `server/`, `storage/`, `integrations/`, `sync/`, `analytics/`, `utils/` — the SaaS/enterprise modules that extend it
 - `saas_server.py` — the FastAPI app that Kubernetes runs (`uvicorn saas_server:app`); `run_maintenance_tasks.py`
-  and `run_budget_maintenance.py` are CronJob entrypoints
+  and `run_budget_maintenance.py` are CronJob entrypoints; `run_budget_preflight.py` is the upgrade preflight /
+  post-upgrade gate hook entrypoint
 - `migrations/` and `alembic.ini` — Alembic database migrations (PostgreSQL only)
 - `tests/unit/` — unit tests for all of the above
 - `frontend/` — the React frontend
