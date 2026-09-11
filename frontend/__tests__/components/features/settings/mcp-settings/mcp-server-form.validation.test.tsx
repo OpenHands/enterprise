@@ -107,4 +107,101 @@ describe("MCPServerForm validation", () => {
 
     r2.unmount();
   });
+
+  it("offers a connection test for remote servers only", () => {
+    const stdio = render(
+      <MCPServerForm
+        mode="add"
+        server={{ id: "tmp", type: "stdio" }}
+        onSubmit={noop}
+        onCancel={noop}
+        onTest={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("mcp-test-connection")).not.toBeInTheDocument();
+    stdio.unmount();
+
+    render(
+      <MCPServerForm
+        mode="add"
+        server={{ id: "tmp", type: "sse" }}
+        onSubmit={noop}
+        onCancel={noop}
+        onTest={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("mcp-test-connection")).toBeInTheDocument();
+  });
+
+  it("does not request a connection test while the form is invalid", () => {
+    const onTest = vi.fn();
+    render(
+      <MCPServerForm
+        mode="add"
+        server={{ id: "tmp", type: "sse" }}
+        onSubmit={noop}
+        onCancel={noop}
+        onTest={onTest}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("mcp-test-connection"));
+
+    expect(
+      screen.getByText("SETTINGS$MCP_ERROR_URL_REQUIRED"),
+    ).toBeInTheDocument();
+    expect(onTest).not.toHaveBeenCalled();
+  });
+
+  it("disables the connection test and submit buttons while a test is pending", () => {
+    render(
+      <MCPServerForm
+        mode="add"
+        server={{ id: "tmp", type: "sse" }}
+        onSubmit={noop}
+        onCancel={noop}
+        onTest={vi.fn()}
+        isTestPending
+      />,
+    );
+
+    expect(screen.getByTestId("mcp-test-connection")).toBeDisabled();
+    expect(screen.getByTestId("mcp-test-connection")).toHaveTextContent(
+      "SETTINGS$MCP_TESTING",
+    );
+    expect(screen.getByTestId("submit-button")).toBeDisabled();
+  });
+
+  it("requests a connection test with the form's current values", () => {
+    const onTest = vi.fn();
+    render(
+      <MCPServerForm
+        mode="add"
+        server={{ id: "tmp", type: "shttp" }}
+        onSubmit={noop}
+        onCancel={noop}
+        onTest={onTest}
+        testMessage={{ ok: true, text: "connected" }}
+      />,
+    );
+
+    fireEvent.change(screen.getByTestId("url-input"), {
+      target: { value: "https://mcp.example.com/mcp" },
+    });
+    fireEvent.change(screen.getByTestId("api-key-input"), {
+      target: { value: "secret" },
+    });
+    fireEvent.click(screen.getByTestId("mcp-test-connection"));
+
+    expect(onTest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "shttp",
+        url: "https://mcp.example.com/mcp",
+        api_key: "secret",
+      }),
+    );
+    expect(screen.getByTestId("mcp-test-message")).toHaveTextContent(
+      "connected",
+    );
+  });
 });
