@@ -364,23 +364,14 @@ class OrgBudgetService:
         overrides = await self._get_overrides(org_id)
         cycle = self._current_cycle(settings)
 
-        if settings.enabled and not await self._block_litellm_admission(
-            org_id, settings
-        ):
-            return {
-                'cycle_start_at': cycle.start_at,
-                'cycle_end_at': cycle.end_at,
-                'cycle_rolled': False,
-                'current_spend': None,
-                'skipped': 'admission_block_failed',
-            }
-
         snapshot_result = await self._get_financial_snapshot(
             org_id,
             settings,
             allow_stale=False,
         )
         if snapshot_result.snapshot is None:
+            if settings.enabled:
+                await self._block_litellm_admission(org_id, settings)
             await self._record_litellm_sync(
                 settings,
                 'error',
@@ -396,10 +387,28 @@ class OrgBudgetService:
 
         snapshot = snapshot_result.snapshot
         next_cycle = _next_cycle_start(settings.cycle_start_at, settings.reset_day)
-        if datetime.now(UTC) >= next_cycle:
+        cycle_due = datetime.now(UTC) >= next_cycle
+        policy_matches = False
+        if cycle_due:
+            if settings.enabled and not await self._block_litellm_admission(
+                org_id, settings
+            ):
+                return {
+                    'cycle_start_at': cycle.start_at,
+                    'cycle_end_at': cycle.end_at,
+                    'cycle_rolled': False,
+                    'current_spend': _litellm_cycle_spend(settings, snapshot),
+                    'skipped': 'admission_block_failed',
+                }
             repair_result = await self._repair_missing_members_for_cycle(
                 org_id, settings, overrides, snapshot
             )
+        else:
+            policy_matches = await self._budget_policy_matches_snapshot(
+                org_id, settings, overrides, snapshot
+            )
+
+        if cycle_due:
             if repair_result.snapshot is None:
                 await self._record_litellm_sync(
                     settings,
@@ -434,9 +443,20 @@ class OrgBudgetService:
             cycle.start_at,
         )
         if not cycle_rolled:
-            await self._sync_litellm_budgets(
-                org_id, settings, overrides, snapshot=snapshot
-            )
+            if not settings.enabled:
+                await self._record_litellm_sync(settings, 'skipped')
+            elif policy_matches:
+                admission_ready = settings.litellm_last_sync_status == 'success'
+                if not admission_ready:
+                    admission_ready = await self._restore_litellm_admission(
+                        org_id, settings
+                    )
+                if admission_ready:
+                    await self._record_litellm_sync(settings, 'success')
+            else:
+                await self._sync_litellm_budgets(
+                    org_id, settings, overrides, snapshot=snapshot
+                )
 
         return {
             'cycle_start_at': cycle.start_at,
@@ -960,6 +980,56 @@ class OrgBudgetService:
         await self._record_litellm_sync(settings, 'pending')
         return True
 
+    async def _restore_litellm_admission(
+        self,
+        org_id: UUID,
+        settings: OrgBudgetSettings,
+    ) -> bool:
+        try:
+            await LiteLlmManager.set_team_blocked(str(org_id), False)
+        except Exception as error:
+            error_message = f'admission_restore_failed: {error}'
+            logger.warning(
+                'org_budget_litellm_admission_restore_failed',
+                extra={'org_id': str(org_id), 'error': str(error)},
+            )
+            await self._record_litellm_sync(settings, 'error', error_message[:500])
+            return False
+        return True
+
+    async def _budget_policy_matches_snapshot(
+        self,
+        org_id: UUID,
+        settings: OrgBudgetSettings,
+        overrides: list[OrgUserBudgetOverride],
+        snapshot: LiteLlmFinancialSnapshot,
+    ) -> bool:
+        override_map = {str(override.user_id): override for override in overrides}
+        baselines = settings.user_cycle_start_spend or {}
+        expected_member_budgets: dict[str, float | None] = {}
+        for user_id in await self._org_member_ids(org_id):
+            effective_limit, is_disabled, _ = _effective_user_budget_limit(
+                override_map.get(user_id), settings.default_user_monthly_limit
+            )
+            if settings.enabled and not is_disabled and effective_limit is not None:
+                baseline = baselines.get(user_id)
+                if baseline is None:
+                    return False
+                expected_member_budgets[user_id] = baseline + effective_limit
+            else:
+                expected_member_budgets[user_id] = None
+
+        expected_team_budget = (
+            settings.cycle_start_spend + settings.monthly_limit
+            if settings.enabled and settings.monthly_limit
+            else None
+        )
+        return not _budget_sync_readback_errors(
+            snapshot,
+            expected_team_budget,
+            expected_member_budgets,
+        )
+
     async def _org_member_ids(self, org_id: UUID) -> set[str]:
         member_result = await self.db_session.execute(
             select(OrgMember.user_id).where(OrgMember.org_id == org_id)
@@ -1038,7 +1108,6 @@ class OrgBudgetService:
         if not await self._block_litellm_admission(org_id, settings):
             return snapshot
 
-        team_id = str(org_id)
         sync_errors: list[str] = []
         if snapshot is None:
             snapshot_result = await self._get_financial_snapshot(
@@ -1192,15 +1261,10 @@ class OrgBudgetService:
                 f'verification_fetch_failed: {readback_result.error or "unknown"}'
             )
 
-        if not sync_errors:
-            try:
-                await LiteLlmManager.set_team_blocked(team_id, False)
-            except Exception as error:
-                sync_errors.append(f'admission_restore_failed: {error}')
-                logger.warning(
-                    'org_budget_litellm_admission_restore_failed',
-                    extra={'org_id': team_id, 'error': str(error)},
-                )
+        if not sync_errors and not await self._restore_litellm_admission(
+            org_id, settings
+        ):
+            return snapshot
 
         if sync_errors:
             summary = sync_errors[0]
