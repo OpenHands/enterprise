@@ -2469,6 +2469,39 @@ class TestLiteLlmManager:
         mock_http_client.post.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com')
+    @patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key')
+    async def test_delete_key_by_alias_strict_raises_on_server_error(
+        self, mock_http_client
+    ):
+        error_response = MagicMock()
+        error_response.status_code = 500
+        error_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            'server error',
+            request=MagicMock(),
+            response=MagicMock(),
+        )
+        mock_http_client.post.return_value = error_response
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await LiteLlmManager._delete_key_by_alias_strict(
+                mock_http_client, 'OpenHands Cloud - user 123 - org 456'
+            )
+
+    @pytest.mark.asyncio
+    @patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com')
+    @patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key')
+    async def test_delete_key_by_alias_strict_allows_not_found(self, mock_http_client):
+        not_found_response = MagicMock()
+        not_found_response.status_code = 404
+        mock_http_client.post.return_value = not_found_response
+
+        await LiteLlmManager._delete_key_by_alias_strict(
+            mock_http_client, 'OpenHands Cloud - user 123 - org 456'
+        )
+        not_found_response.raise_for_status.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_with_http_client_decorator(self):
         """Test the with_http_client decorator functionality."""
 
@@ -3280,6 +3313,25 @@ class TestVerifyExistingKey:
                 openhands_type=True,
             )
             assert result is True
+
+    @pytest.mark.asyncio
+    async def test_strict_verify_existing_key_raises_on_litellm_error(self):
+        """Ownership repair must retry instead of rotating during an outage."""
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+
+        with patch.object(
+            LiteLlmManager, '_get_all_keys_for_user', new_callable=AsyncMock
+        ) as mock_get_keys:
+            mock_get_keys.return_value = None
+
+            with pytest.raises(RuntimeError, match='Unable to inspect LiteLLM keys'):
+                await LiteLlmManager._verify_existing_key_strict(
+                    mock_client,
+                    'some-key-value',
+                    'test-user-id',
+                    'test-org',
+                    openhands_type=True,
+                )
 
     @pytest.mark.asyncio
     async def test_verify_existing_key_handles_none_key_name(self):

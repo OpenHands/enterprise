@@ -617,6 +617,15 @@ interface OrgBudgetUser {
   effective_monthly_limit: number | null;
   is_disabled: boolean;
   is_override: boolean;
+  reconciliation_state?:
+    | "inactive"
+    | "pending"
+    | "healthy"
+    | "degraded"
+    | "failed"
+    | null;
+  reconciliation_error?: string | null;
+  applied_at?: string | null;
 }
 
 interface OrgBudgetSettings {
@@ -625,6 +634,18 @@ interface OrgBudgetSettings {
   litellm_last_sync_at: string | null;
   litellm_last_sync_status: string | null;
   litellm_last_sync_error: string | null;
+  reconciliation_state:
+    | "inactive"
+    | "pending"
+    | "healthy"
+    | "degraded"
+    | "failed";
+  reconciliation_error: string | null;
+  desired_team_max_budget: number | null;
+  applied_team_max_budget: number | null;
+  budget_policy_matches: boolean | null;
+  applied_at: string | null;
+  applied_policy_observed_at: string | null;
   reset_day: number;
   slack_channel: string | null;
   slack_team_id: string | null;

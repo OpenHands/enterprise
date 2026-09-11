@@ -83,6 +83,15 @@ interface OrganizationBudgetTabProps {
   spendObservedAt: string | null;
   syncStatus: string | null;
   syncError: string | null;
+  reconciliationState:
+    | "inactive"
+    | "pending"
+    | "healthy"
+    | "degraded"
+    | "failed";
+  reconciliationError: string | null;
+  desiredTeamMaxBudget: number | null;
+  appliedTeamMaxBudget: number | null;
   unmappedSpend: number | null;
   unmappedMemberCount: number | null;
   monthlyLimit: string;
@@ -115,6 +124,10 @@ export function OrganizationBudgetTab({
   spendObservedAt,
   syncStatus,
   syncError,
+  reconciliationState,
+  reconciliationError,
+  desiredTeamMaxBudget,
+  appliedTeamMaxBudget,
   unmappedSpend,
   unmappedMemberCount,
   monthlyLimit,
@@ -138,6 +151,23 @@ export function OrganizationBudgetTab({
   const observedAtLabel = spendObservedAt
     ? new Date(spendObservedAt).toLocaleString()
     : null;
+  const reconciliationStyle = {
+    healthy: "border-green-500/30 bg-green-500/10 text-green-300",
+    inactive: "border-[#262626] bg-[#0B0F17] text-[#8C8C8C]",
+    pending: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+    degraded: "border-red-500/30 bg-red-500/10 text-red-300",
+    failed: "border-red-500/30 bg-red-500/10 text-red-300",
+  }[reconciliationState];
+  const reconciliationMessage = {
+    inactive: "Inactive — no organization budget is being enforced.",
+    pending:
+      "Pending — the desired policy has not yet been verified in LiteLLM.",
+    healthy: "Healthy — LiteLLM has verified the desired budget policy.",
+    degraded:
+      "Degraded — the desired policy is saved, but LiteLLM is enforcing different or incomplete state.",
+    failed:
+      "Failed — the applied LiteLLM policy could not be read or verified.",
+  }[reconciliationState];
 
   return (
     <div className="space-y-6">
@@ -185,7 +215,25 @@ export function OrganizationBudgetTab({
             </span>
           )}
         </div>
-        {syncStatus === "error" && (
+        <div
+          role={
+            reconciliationState === "healthy" ||
+            reconciliationState === "inactive"
+              ? "status"
+              : "alert"
+          }
+          className={`mb-4 rounded-lg border px-4 py-3 text-sm ${reconciliationStyle}`}
+        >
+          <span>{reconciliationMessage}</span>
+          {desiredTeamMaxBudget !== null && (
+            <span>{` Desired team cap: $${desiredTeamMaxBudget.toLocaleString()}.`}</span>
+          )}
+          {appliedTeamMaxBudget !== null && (
+            <span>{` Applied team cap: $${appliedTeamMaxBudget.toLocaleString()}.`}</span>
+          )}
+          {reconciliationError ? ` ${reconciliationError}` : ""}
+        </div>
+        {syncStatus === "error" && !reconciliationError && (
           <div
             role="alert"
             className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"
