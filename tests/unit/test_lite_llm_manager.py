@@ -3655,6 +3655,49 @@ class TestFreeTierModelRestriction:
         assert json_payload['models'] == ['__openhands_no_free_models__']
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('blocked', [True, False])
+    async def test_set_team_blocked_updates_only_admission_state(self, blocked):
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_response = MagicMock()
+        mock_response.is_success = True
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_client.post.return_value = mock_response
+
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-api-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+        ):
+            await LiteLlmManager._set_team_blocked(
+                mock_client,
+                team_id='test-team-id',
+                blocked=blocked,
+            )
+
+        mock_client.post.assert_awaited_once_with(
+            'http://test.com/team/update',
+            json={'team_id': 'test-team-id', 'blocked': blocked},
+        )
+        mock_response.raise_for_status.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_set_team_blocked_fails_without_management_config(self):
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', None),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', None),
+            pytest.raises(RuntimeError, match='LiteLLM API configuration not found'),
+        ):
+            await LiteLlmManager._set_team_blocked(
+                mock_client,
+                team_id='test-team-id',
+                blocked=True,
+            )
+
+        mock_client.post.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_create_team_free_tier_restricts_models_and_disables_budget(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()

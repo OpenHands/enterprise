@@ -1069,6 +1069,22 @@ class LiteLlmManager:
         response.raise_for_status()
 
     @staticmethod
+    async def _set_team_blocked(
+        client: httpx.AsyncClient,
+        team_id: str,
+        blocked: bool,
+    ) -> None:
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            raise RuntimeError('LiteLLM API configuration not found')
+
+        # LiteLLM 1.94 refreshes team auth caches here; /team/block does not.
+        response = await client.post(
+            f'{LITE_LLM_API_URL}/team/update',
+            json={'team_id': team_id, 'blocked': blocked},
+        )
+        response.raise_for_status()
+
+    @staticmethod
     async def _user_exists(
         client: httpx.AsyncClient,
         user_id: str,
@@ -2240,6 +2256,7 @@ class LiteLlmManager:
     create_team = staticmethod(with_http_client(_create_team))
     get_team = staticmethod(with_http_client(_get_team))
     update_team = staticmethod(with_http_client(_update_team))
+    set_team_blocked = staticmethod(with_http_client(_set_team_blocked))
     user_exists = staticmethod(with_http_client(_user_exists))
     create_user = staticmethod(with_http_client(_create_user))
     get_user = staticmethod(with_http_client(_get_user))
