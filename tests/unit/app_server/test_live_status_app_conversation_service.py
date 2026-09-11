@@ -33,6 +33,7 @@ from openhands.app_server.app_conversation.app_conversation_service import (
 )
 from openhands.app_server.app_conversation.live_status_app_conversation_service import (
     LiveStatusAppConversationService,
+    _compose_system_message_suffix,
     _exception_detail,
     _resolve_title_llm_profile,
     effective_disabled_skills,
@@ -5370,3 +5371,73 @@ def test_exception_detail_strips_http_status_prefix():
         == 'The system is at capacity right now.'
     )
     assert _exception_detail(ValueError('boom')) == 'boom'
+
+
+class TestProfileSystemMessageSuffix:
+    """An Agent Profile's custom prompt must survive to the launch.
+
+    Cloud builds its own agent from the resolved settings; before this it
+    constructed a fresh ``AgentContext`` from the request-derived suffix alone,
+    so a profile's `system_message_suffix` never reached the agent.
+    """
+
+    def test_profile_prompt_leads_and_runtime_context_follows(self):
+        assert (
+            _compose_system_message_suffix('Read-only explorer.', 'Shallow clone.')
+            == 'Read-only explorer.\n\nShallow clone.'
+        )
+
+    def test_profile_prompt_alone(self):
+        assert (
+            _compose_system_message_suffix('Read-only explorer.', None)
+            == 'Read-only explorer.'
+        )
+
+    def test_runtime_context_alone_is_unchanged(self):
+        # The non-profile path must behave exactly as before.
+        assert (
+            _compose_system_message_suffix(None, 'Shallow clone.') == 'Shallow clone.'
+        )
+
+    def test_neither_yields_none(self):
+        assert _compose_system_message_suffix(None, None) is None
+
+    def test_empty_strings_are_dropped_rather_than_joined(self):
+        assert _compose_system_message_suffix('', 'Shallow clone.') == 'Shallow clone.'
+        assert _compose_system_message_suffix('Read-only.', '') == 'Read-only.'
+
+
+class TestProfileToolSelection:
+    """A profile that names its tools is authoritative on cloud.
+
+    ``tools`` is tri-state, so the gate is ``is None`` — truthiness would turn a
+    deliberately bare agent (``[]``) back into the default set.
+    """
+
+    @staticmethod
+    def _resolve(profile_tools):
+        # Mirrors the branch in _build_start_conversation_request.
+        from openhands.tools.preset.default import get_default_tools
+
+        if profile_tools is None:
+            return [
+                tool.name
+                for tool in get_default_tools(
+                    enable_browser=True, enable_sub_agents=False
+                )
+            ]
+        return [tool.name for tool in profile_tools]
+
+    def test_unset_tools_get_the_default_set(self):
+        names = self._resolve(None)
+        assert 'terminal' in names and 'file_editor' in names
+
+    def test_an_explicit_list_is_used_verbatim(self):
+        from openhands.sdk.tool import Tool
+
+        names = self._resolve([Tool(name='glob'), Tool(name='grep')])
+        assert names == ['glob', 'grep']
+        assert 'terminal' not in names
+
+    def test_an_empty_list_stays_empty(self):
+        assert self._resolve([]) == []

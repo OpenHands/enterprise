@@ -276,6 +276,20 @@ def _to_sdk_marketplace_registrations(
     ]
 
 
+def _compose_system_message_suffix(
+    profile_suffix: str | None,
+    runtime_suffix: str | None,
+) -> str | None:
+    """Join an Agent Profile's custom prompt with the runtime-derived suffix.
+
+    The profile's text states what the agent is for, so it leads; the runtime
+    additions (shallow-clone notice, web host, integration context) are
+    situational facts appended after it. Either side may be absent.
+    """
+    parts = [part for part in (profile_suffix, runtime_suffix) if part]
+    return '\n\n'.join(parts) if parts else None
+
+
 @dataclass
 class LiveStatusAppConversationService(AppConversationServiceBase):
     """AppConversationService which combines live status info from the sandbox with stored data."""
@@ -2145,25 +2159,44 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             tools = get_planning_tools(plan_path=plan_path)
         else:
             register_builtins_agents(enable_browser=True)
-            tools = get_default_tools(
-                enable_browser=True,
-                enable_sub_agents=user.agent_settings.enable_sub_agents,
-            )
+            # An Agent Profile that names its tools is authoritative: this
+            # injection exists to supply a default set, not to override a
+            # deliberate one. `tools` is tri-state — None means "the standard
+            # set", [] means a deliberately bare agent — so gate on `is None`
+            # rather than truthiness, or [] would silently become the default.
+            profile_tools = user.agent_settings.tools
+            if profile_tools is None:
+                tools = get_default_tools(
+                    enable_browser=True,
+                    enable_sub_agents=user.agent_settings.enable_sub_agents,
+                )
+            else:
+                tools = list(profile_tools)
             if user.agent_settings.enable_sub_agents:
                 agent_definitions = list(get_registered_agent_definitions())
 
         # --- build AgentSettings and create agent ---------------------------
+        # Extend the resolved agent context rather than replacing it: a resolved
+        # Agent Profile carries its own `system_message_suffix`, `disabled_skills`
+        # and `load_project_skills` there, and building a fresh AgentContext
+        # dropped all three.
+        resolved_context = user.agent_settings.agent_context or AgentContext()
         configured_agent_settings = user.agent_settings.model_copy(
             update={
                 'llm': llm,
                 'tools': tools,
                 'mcp_config': mcp_config if mcp_config else {},
-                'agent_context': AgentContext(
-                    system_message_suffix=effective_suffix,
-                    secrets=secrets,
-                    registered_marketplaces=_to_sdk_marketplace_registrations(
-                        registered_marketplaces
-                    ),
+                'agent_context': resolved_context.model_copy(
+                    update={
+                        'system_message_suffix': _compose_system_message_suffix(
+                            resolved_context.system_message_suffix,
+                            effective_suffix,
+                        ),
+                        'secrets': secrets,
+                        'registered_marketplaces': (
+                            _to_sdk_marketplace_registrations(registered_marketplaces)
+                        ),
+                    }
                 ),
             }
         )
