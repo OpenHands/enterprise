@@ -3,6 +3,7 @@
 from uuid import UUID
 
 import httpx
+import quint_oracle
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.routes.org_models import (
@@ -47,6 +48,12 @@ class OrgMemberFinancialService:
                 if offset < 0:
                     raise ValueError('page_id must be non-negative')
             except ValueError as e:
+                quint_oracle.log(
+                    'OrgMemberFinancialService_get_org_members_financial_data',
+                    'org-budgets',
+                    org_id=quint_oracle.In('org', 'ORG_IDS'),
+                    outcome='rejected',
+                )
                 raise ValueError(f'Invalid page_id: {page_id}') from e
 
         members, total_count = await OrgMemberStore.get_org_members_paginated(
@@ -57,6 +64,13 @@ class OrgMemberFinancialService:
         )
 
         if not members:
+            quint_oracle.log(
+                'OrgMemberFinancialService_get_org_members_financial_data',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+                total_count=total_count,
+                has_next=False,
+            )
             return OrgMemberFinancialPage(
                 items=[],
                 current_page=(offset // limit) + 1,
@@ -153,6 +167,13 @@ class OrgMemberFinancialService:
             },
         )
 
+        quint_oracle.log(
+            'OrgMemberFinancialService_get_org_members_financial_data',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            total_count=total_count,
+            has_next=next_page_id is not None,
+        )
         return OrgMemberFinancialPage(
             items=items,
             current_page=current_page,

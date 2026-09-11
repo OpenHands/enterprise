@@ -8,6 +8,7 @@ from typing import AsyncGenerator, Literal
 from uuid import UUID
 
 import httpx
+import quint_oracle
 from fastapi import HTTPException, Request, status
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -292,8 +293,17 @@ class OrgBudgetService:
         result = await self.db_session.execute(select(User.id).where(User.id == org_id))
         return result.scalar_one_or_none() is not None
 
-    async def _reject_personal_org(self, org_id: UUID) -> None:
+    async def _reject_personal_org(
+        self, org_id: UUID, quint_action: str | None = None
+    ) -> None:
         if await self._is_personal_org(org_id):
+            if quint_action is not None:
+                quint_oracle.log(
+                    quint_action,
+                    'org-budgets',
+                    org_id=quint_oracle.In('personal', 'ORG_IDS'),
+                    outcome='rejected',
+                )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='Organization budgets are not available for personal workspaces',
@@ -307,7 +317,7 @@ class OrgBudgetService:
         users_search: str | None = None,
         users_status: str | None = None,
     ):
-        await self._reject_personal_org(org_id)
+        await self._reject_personal_org(org_id, 'get_budget_state')
         settings = await self._get_or_create_settings(org_id)
         thresholds = await self._get_thresholds(org_id)
         cycle = self._current_cycle(settings)
@@ -328,6 +338,12 @@ class OrgBudgetService:
             users_per_page=users_per_page,
             users_search=users_search,
             users_status=users_status,
+        )
+        quint_oracle.log(
+            'get_budget_state',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            spend_status=snapshot_result.status,
         )
         return {
             'settings': settings,
@@ -351,6 +367,12 @@ class OrgBudgetService:
 
     async def run_budget_maintenance(self, org_id: UUID) -> dict:
         if await self._is_personal_org(org_id):
+            quint_oracle.log(
+                'run_budget_maintenance',
+                'org-budgets',
+                org_id=quint_oracle.In('personal', 'ORG_IDS'),
+                cycle_rolled=False,
+            )
             return {
                 'cycle_start_at': None,
                 'cycle_end_at': None,
@@ -375,6 +397,12 @@ class OrgBudgetService:
                 'error',
                 self._snapshot_unavailable_detail(),
             )
+            quint_oracle.log(
+                'run_budget_maintenance',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+                cycle_rolled=False,
+            )
             return {
                 'cycle_start_at': cycle.start_at,
                 'cycle_end_at': cycle.end_at,
@@ -397,6 +425,12 @@ class OrgBudgetService:
                         repair_result.error
                         or 'LiteLLM membership repair failed before cycle rollover.'
                     )[:500],
+                )
+                quint_oracle.log(
+                    'run_budget_maintenance',
+                    'org-budgets',
+                    org_id=quint_oracle.In('org', 'ORG_IDS'),
+                    cycle_rolled=False,
                 )
                 return {
                     'cycle_start_at': cycle.start_at,
@@ -427,6 +461,12 @@ class OrgBudgetService:
                 org_id, settings, overrides, snapshot=snapshot
             )
 
+        quint_oracle.log(
+            'run_budget_maintenance',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            cycle_rolled=cycle_rolled,
+        )
         return {
             'cycle_start_at': cycle.start_at,
             'cycle_end_at': cycle.end_at,
@@ -443,7 +483,7 @@ class OrgBudgetService:
         users_search: str | None = None,
         users_status: str | None = None,
     ):
-        await self._reject_personal_org(org_id)
+        await self._reject_personal_org(org_id, 'update_budget_settings')
         settings = await self._get_or_create_settings(org_id)
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
@@ -470,6 +510,12 @@ class OrgBudgetService:
         if settings.enabled and (
             settings.monthly_limit is None or settings.monthly_limit <= 0
         ):
+            quint_oracle.log(
+                'update_budget_settings',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+                outcome='rejected',
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='monthly_limit is required when budgets are enabled',
@@ -483,6 +529,11 @@ class OrgBudgetService:
                 require_complete_membership=True,
             )
             if snapshot_result.snapshot is None:
+                quint_oracle.log(
+                    'update_budget_settings',
+                    'org-budgets',
+                    org_id=quint_oracle.In('org', 'ORG_IDS'),
+                )
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=self._snapshot_unavailable_detail(),
@@ -538,6 +589,12 @@ class OrgBudgetService:
             users_search=users_search,
             users_status=users_status,
         )
+        quint_oracle.log(
+            'update_budget_settings',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            budget_enabled=settings.enabled,
+        )
         return {
             'settings': settings,
             'thresholds': thresholds,
@@ -565,7 +622,7 @@ class OrgBudgetService:
         monthly_limit: float | None,
         is_disabled: bool,
     ) -> OrgUserBudgetOverride:
-        await self._reject_personal_org(org_id)
+        await self._reject_personal_org(org_id, 'upsert_user_override')
         override = await self.store.upsert_override(
             org_id=org_id,
             user_id=user_id,
@@ -575,17 +632,35 @@ class OrgBudgetService:
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         await self._sync_litellm_budgets(org_id, settings, overrides)
+        quint_oracle.log(
+            'upsert_user_override',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            override_count=len(overrides),
+        )
         return override
 
     async def delete_user_override(self, org_id: UUID, user_id: UUID) -> None:
-        await self._reject_personal_org(org_id)
+        await self._reject_personal_org(org_id, 'delete_user_override')
         override = await self._get_override(org_id, user_id)
         if override is None:
+            # The early return: no row, so no resync and no post-state count to read.
+            quint_oracle.log(
+                'delete_user_override',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+            )
             return
         await self.store.delete_override(override)
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         await self._sync_litellm_budgets(org_id, settings, overrides)
+        quint_oracle.log(
+            'delete_user_override',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            override_count=len(overrides),
+        )
 
     async def _get_or_create_settings(self, org_id: UUID) -> OrgBudgetSettings:
         settings = await self.store.get_settings(org_id)
