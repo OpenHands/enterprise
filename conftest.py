@@ -9,6 +9,8 @@ the run is killed before these hooks get to run.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from tests import postgres_testdb
@@ -17,6 +19,13 @@ from tests import postgres_testdb
 def pytest_configure(config: pytest.Config) -> None:
     # An xdist worker is handed the address of the controller's container.
     if hasattr(config, 'workerinput') or config.option.collectonly:
+        return
+    # When POSTGRES_TEST_DATABASE_URL is set, an external Postgres (e.g. the
+    # service container in the postgres-integration-tests workflow) is already
+    # available and tests connect to it directly. Skip the shared
+    # testcontainers server so that run needs neither Docker nor the
+    # testcontainers dependency.
+    if os.getenv('POSTGRES_TEST_DATABASE_URL'):
         return
     config.stash[postgres_testdb.TEST_SERVER] = postgres_testdb.start_server()
 
