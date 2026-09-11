@@ -5,8 +5,10 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from sqlalchemy import select
 
 from storage.lite_llm_manager import LiteLlmManager
+from storage.org_budget_settings import OrgBudgetSettings
 
 
 @pytest.mark.asyncio
@@ -118,3 +120,47 @@ async def test_partial_budget_sync_is_recorded_and_retry_converges(budget_adapte
     assert {
         member['max_budget'] for member in repaired_financial_data['members'].values()
     } == {2.0}
+
+
+@pytest.mark.asyncio
+async def test_known_member_missing_baseline_is_recovered_without_renewal(
+    budget_adapter,
+):
+    await budget_adapter.configure_budget(100.0, 30.0)
+    user_id = budget_adapter.user_ids[0]
+
+    await LiteLlmManager.update_user_in_team(
+        str(user_id),
+        str(budget_adapter.org_id),
+        max_budget=5.0,
+    )
+    settings = await budget_adapter.session.scalar(
+        select(OrgBudgetSettings).where(
+            OrgBudgetSettings.org_id == budget_adapter.org_id
+        )
+    )
+    assert settings is not None
+    settings.user_cycle_start_spend = {}
+    settings.litellm_known_member_ids = [
+        str(user_id) for user_id in budget_adapter.user_ids
+    ]
+    await budget_adapter.session.commit()
+
+    await budget_adapter.run_maintenance()
+    recovered_state = await budget_adapter.budget_state()
+    recovered_financial_data = await budget_adapter.financial_data()
+
+    assert recovered_state['settings'].litellm_last_sync_status == 'success'
+    assert recovered_state['settings'].user_cycle_start_spend == {
+        str(user_id): 0.0 for user_id in budget_adapter.user_ids
+    }
+    assert recovered_financial_data['members'][str(user_id)]['max_budget'] == 30.0
+
+    await budget_adapter.run_maintenance()
+    later_state = await budget_adapter.budget_state()
+    later_financial_data = await budget_adapter.financial_data()
+
+    assert later_state['settings'].user_cycle_start_spend == {
+        str(user_id): 0.0 for user_id in budget_adapter.user_ids
+    }
+    assert later_financial_data['members'][str(user_id)]['max_budget'] == 30.0

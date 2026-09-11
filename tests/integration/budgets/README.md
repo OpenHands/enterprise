@@ -43,11 +43,13 @@ npx --yes @informalsystems/quint@0.29.1 run \
   quint-specs/org-budget.qnt
 ```
 
-### Management, accounting, synchronization, and retry convergence contracts
+### Management, accounting, synchronization, and recovery contracts
 
 ```bash
 uv run pytest tests/integration/budgets/test_litellm_contract.py -n 0
 ```
+
+The upgrade-recovery contract recreates the legacy migrated state where a member is already known to budget synchronization but has no persisted cycle baseline. It requires maintenance to anchor the missing baseline to live LiteLLM spend, replace the stale absolute cap, and reuse that baseline on later synchronization instead of renewing the allowance.
 
 ### Healthy policy state machine
 
