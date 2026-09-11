@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 from uuid import uuid4
 
 import pytest
@@ -64,6 +64,10 @@ async def test_processor_persists_budget_maintenance_updates(async_session_maker
             async_session_maker,
         ),
         patch(
+            'server.services.org_budget_service.LiteLlmManager.set_team_blocked',
+            AsyncMock(),
+        ) as set_team_blocked,
+        patch(
             'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
             AsyncMock(return_value=financial_data),
         ),
@@ -75,6 +79,9 @@ async def test_processor_persists_budget_maintenance_updates(async_session_maker
         result = await processor(task)
 
     assert result == {'processed': 1, 'error_count': 0, 'errors': []}
+    set_team_blocked.assert_has_awaits(
+        [call(str(org_id), True), call(str(org_id), True), call(str(org_id), False)]
+    )
 
     async with async_session_maker() as session:
         settings = await session.scalar(
