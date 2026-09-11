@@ -1,4 +1,5 @@
 import asyncio
+import sys
 
 # `run_maintenance_tasks` is a top-level module beside this file at the repository
 # root (/app in the Docker image); `maintenance-tasks-cronjob.yaml` runs it as
@@ -66,15 +67,15 @@ def enqueue_budget_tasks(batch_size: int = BATCH_SIZE) -> int:
         return len(org_ids)
 
 
-def main() -> None:
+def main() -> int:
     total = enqueue_budget_tasks()
     if total:
         logger.info('Enqueued org budget maintenance tasks', extra={'orgs': total})
     else:
         logger.info('No org budget settings found; skipping maintenance enqueue')
 
-    asyncio.run(run_maintenance_tasks.main())
+    return 0 if asyncio.run(run_maintenance_tasks.main()) else 1
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

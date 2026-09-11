@@ -73,6 +73,21 @@ class BudgetFinancialSnapshotResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class BudgetSyncResult:
+    """Outcome of a LiteLLM budget reconciliation.
+
+    ``errors`` holds every reconciliation defect discovered during the sync
+    (write failures, missing baselines, and readback drift). An empty list
+    means the applied LiteLLM state matched the desired state. The ``snapshot``
+    is the most recent financial readback available (possibly the pre-sync
+    cached value when the post-sync readback failed).
+    """
+
+    snapshot: LiteLlmFinancialSnapshot | None
+    errors: list[str]
+
+
 def _add_month(year: int, month: int) -> tuple[int, int]:
     if month == 12:
         return year + 1, 1
@@ -352,11 +367,17 @@ class OrgBudgetService:
     async def run_budget_maintenance(self, org_id: UUID) -> dict:
         if await self._is_personal_org(org_id):
             return {
+                'status': 'skipped',
+                'reason': 'personal_org',
                 'cycle_start_at': None,
                 'cycle_end_at': None,
                 'cycle_rolled': False,
                 'current_spend': 0.0,
-                'skipped': 'personal_org',
+                'sync_status': None,
+                'sync_error': None,
+                'drift': [],
+                'desired_team_budget': None,
+                'applied_team_budget': None,
             }
 
         settings = await self._get_or_create_settings(org_id)
@@ -376,11 +397,19 @@ class OrgBudgetService:
                 self._snapshot_unavailable_detail(),
             )
             return {
+                'status': 'error',
+                'reason': 'litellm_spend_unavailable',
                 'cycle_start_at': cycle.start_at,
                 'cycle_end_at': cycle.end_at,
                 'cycle_rolled': False,
                 'current_spend': None,
-                'skipped': 'litellm_spend_unavailable',
+                'sync_status': settings.litellm_last_sync_status,
+                'sync_error': settings.litellm_last_sync_error,
+                'drift': [
+                    settings.litellm_last_sync_error or 'litellm_spend_unavailable'
+                ],
+                'desired_team_budget': None,
+                'applied_team_budget': None,
             }
 
         snapshot = snapshot_result.snapshot
@@ -399,17 +428,27 @@ class OrgBudgetService:
                     )[:500],
                 )
                 return {
+                    'status': 'error',
+                    'reason': 'litellm_membership_repair_failed',
                     'cycle_start_at': cycle.start_at,
                     'cycle_end_at': cycle.end_at,
                     'cycle_rolled': False,
                     'current_spend': _litellm_cycle_spend(settings, snapshot),
-                    'skipped': 'litellm_membership_repair_failed',
+                    'sync_status': settings.litellm_last_sync_status,
+                    'sync_error': settings.litellm_last_sync_error,
+                    'drift': [
+                        settings.litellm_last_sync_error
+                        or 'litellm_membership_repair_failed'
+                    ],
+                    'desired_team_budget': None,
+                    'applied_team_budget': None,
                 }
             snapshot = repair_result.snapshot
 
-        cycle_rolled = await self._roll_cycle_if_needed(
+        cycle_roll_result = await self._roll_cycle_if_needed(
             settings, thresholds, overrides, snapshot
         )
+        cycle_rolled = cycle_roll_result is not None
         if cycle_rolled:
             cycle = self._current_cycle(settings)
 
@@ -422,16 +461,44 @@ class OrgBudgetService:
             current_spend,
             cycle.start_at,
         )
-        if not cycle_rolled:
-            await self._sync_litellm_budgets(
+
+        desired_team_budget = (
+            settings.cycle_start_spend + settings.monthly_limit
+            if settings.enabled and settings.monthly_limit
+            else None
+        )
+        if cycle_rolled:
+            # cycle_rolled is True only when _roll_cycle_if_needed returned a
+            # BudgetSyncResult; assert to satisfy the type checker.
+            assert cycle_roll_result is not None
+            sync_result = cycle_roll_result
+        else:
+            sync_result = await self._sync_litellm_budgets(
                 org_id, settings, overrides, snapshot=snapshot
             )
+        if sync_result.snapshot is not None:
+            snapshot = sync_result.snapshot
+
+        drift = sync_result.errors
+        if drift:
+            status = 'error'
+            reason = drift[0].split(':', 1)[0] or 'sync_failed'
+        else:
+            status = 'success'
+            reason = None
 
         return {
+            'status': status,
+            'reason': reason,
             'cycle_start_at': cycle.start_at,
             'cycle_end_at': cycle.end_at,
             'cycle_rolled': cycle_rolled,
             'current_spend': current_spend,
+            'sync_status': settings.litellm_last_sync_status,
+            'sync_error': settings.litellm_last_sync_error,
+            'drift': drift,
+            'desired_team_budget': desired_team_budget,
+            'applied_team_budget': snapshot.team_max_budget,
         }
 
     async def update_budget_settings(
@@ -507,13 +574,14 @@ class OrgBudgetService:
         await self.store.flush()
         await self.store.refresh(settings)
 
-        snapshot = await self._sync_litellm_budgets(
+        sync_result = await self._sync_litellm_budgets(
             org_id,
             settings,
             overrides,
             clear_disabled=previous_enabled and not settings.enabled,
             snapshot=baseline_snapshot,
         )
+        snapshot = sync_result.snapshot
 
         cycle = self._current_cycle(settings)
         if snapshot is None:
@@ -629,11 +697,11 @@ class OrgBudgetService:
         thresholds: list[OrgBudgetThreshold],
         overrides: list[OrgUserBudgetOverride],
         snapshot: LiteLlmFinancialSnapshot,
-    ) -> bool:
+    ) -> BudgetSyncResult | None:
         now = datetime.now(UTC)
         next_cycle = _next_cycle_start(settings.cycle_start_at, settings.reset_day)
         if now < next_cycle:
-            return False
+            return None
 
         settings.cycle_start_at = _current_cycle_start(now, settings.reset_day)
         org_id = settings.org_id
@@ -647,8 +715,10 @@ class OrgBudgetService:
             threshold.last_triggered_cycle_start = None
         await self.store.flush()
         await self.store.refresh(settings)
-        await self._sync_litellm_budgets(org_id, settings, overrides, snapshot=snapshot)
-        return True
+        sync_result = await self._sync_litellm_budgets(
+            org_id, settings, overrides, snapshot=snapshot
+        )
+        return sync_result
 
     def _cached_financial_snapshot(
         self, settings: OrgBudgetSettings
@@ -999,10 +1069,10 @@ class OrgBudgetService:
         overrides: list[OrgUserBudgetOverride],
         clear_disabled: bool = False,
         snapshot: LiteLlmFinancialSnapshot | None = None,
-    ) -> LiteLlmFinancialSnapshot | None:
+    ) -> BudgetSyncResult:
         if not settings.enabled and not clear_disabled:
             await self._record_litellm_sync(settings, 'skipped')
-            return snapshot
+            return BudgetSyncResult(snapshot=snapshot, errors=[])
 
         sync_errors: list[str] = []
         if snapshot is None:
@@ -1013,7 +1083,7 @@ class OrgBudgetService:
             if snapshot is None:
                 error_message = f'fetch_failed: {snapshot_result.error or "unknown"}'
                 await self._record_litellm_sync(settings, 'error', error_message[:500])
-                return None
+                return BudgetSyncResult(snapshot=None, errors=[error_message])
 
         members = snapshot.members
 
@@ -1164,7 +1234,7 @@ class OrgBudgetService:
             await self._record_litellm_sync(settings, 'error', summary[:500])
         else:
             await self._record_litellm_sync(settings, 'success')
-        return snapshot
+        return BudgetSyncResult(snapshot=snapshot, errors=sync_errors)
 
     async def _maybe_send_alerts(
         self,

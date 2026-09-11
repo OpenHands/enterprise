@@ -14,6 +14,7 @@ from server.constants import ORG_SETTINGS_VERSION
 from server.routes.org_models import OrgBudgetSettingsUpdate
 from server.services.org_budget_service import (
     BudgetFinancialSnapshotResult,
+    BudgetSyncResult,
     LiteLlmFinancialSnapshot,
     LiteLlmMemberFinancialSnapshot,
     OrgBudgetService,
@@ -71,6 +72,14 @@ def _financial_data(
             ).items()
         },
     }
+
+
+def _sync_result(
+    *,
+    snapshot: LiteLlmFinancialSnapshot | None = None,
+    errors: list[str] | None = None,
+) -> BudgetSyncResult:
+    return BudgetSyncResult(snapshot=snapshot, errors=errors or [])
 
 
 @pytest.fixture
@@ -271,7 +280,7 @@ async def test_update_budget_settings_marks_explicit_disable_for_cap_clear(
             patch.object(service, '_get_thresholds', AsyncMock(return_value=[])),
             patch.object(service, '_get_overrides', AsyncMock(return_value=[])),
             patch.object(
-                service, '_sync_litellm_budgets', AsyncMock(return_value=None)
+                service, '_sync_litellm_budgets', AsyncMock(return_value=_sync_result())
             ) as sync_mock,
             patch.object(
                 service,
@@ -319,10 +328,13 @@ async def test_run_budget_maintenance_skips_legacy_personal_org_settings(
         await session.commit()
         service = OrgBudgetService(session)
 
-        with patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock:
+        with patch.object(
+            service, '_sync_litellm_budgets', AsyncMock(return_value=_sync_result())
+        ) as sync_mock:
             result = await service.run_budget_maintenance(personal_org.id)
 
-    assert result['skipped'] == 'personal_org'
+    assert result['status'] == 'skipped'
+    assert result['reason'] == 'personal_org'
     sync_mock.assert_not_awaited()
 
 
@@ -363,12 +375,14 @@ async def test_roll_cycle_if_needed_updates_cycle(async_session_maker, budget_or
             members={'member': (8.0, None, True)},
         )
 
-        with patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock:
+        with patch.object(
+            service, '_sync_litellm_budgets', AsyncMock(return_value=_sync_result())
+        ) as sync_mock:
             rolled = await service._roll_cycle_if_needed(
                 settings, [threshold], overrides, snapshot
             )
 
-        assert rolled is True
+        assert rolled is not None
         assert settings.cycle_start_at.replace(tzinfo=UTC) == _current_cycle_start(
             now, reset_day
         )
@@ -412,12 +426,14 @@ async def test_roll_cycle_if_needed_noop(async_session_maker, budget_org):
 
         service = OrgBudgetService(session)
         snapshot = _snapshot(team_spend=42.5)
-        with patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock:
+        with patch.object(
+            service, '_sync_litellm_budgets', AsyncMock(return_value=_sync_result())
+        ) as sync_mock:
             rolled = await service._roll_cycle_if_needed(
                 settings, [threshold], [], snapshot
             )
 
-        assert rolled is False
+        assert rolled is None
         assert settings.cycle_start_at == current_cycle_start
         assert threshold.last_triggered_at == now
         sync_mock.assert_not_called()
@@ -440,7 +456,9 @@ async def test_run_budget_maintenance_syncs_when_cycle_not_rolled(
                     )
                 ),
             ),
-            patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock,
+            patch.object(
+                service, '_sync_litellm_budgets', AsyncMock(return_value=_sync_result())
+            ) as sync_mock,
         ):
             result = await service.run_budget_maintenance(budget_org.id)
 
@@ -482,7 +500,9 @@ async def test_run_budget_maintenance_uses_cycle_roll_sync(
                     )
                 ),
             ),
-            patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock,
+            patch.object(
+                service, '_sync_litellm_budgets', AsyncMock(return_value=_sync_result())
+            ) as sync_mock,
         ):
             result = await service.run_budget_maintenance(budget_org.id)
 
@@ -552,7 +572,9 @@ async def test_cycle_roll_repairs_missing_litellm_member(
                 'server.services.org_budget_service.LiteLlmManager.add_user_to_team',
                 AsyncMock(),
             ) as add_user,
-            patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock,
+            patch.object(
+                service, '_sync_litellm_budgets', AsyncMock(return_value=_sync_result())
+            ) as sync_mock,
         ):
             result = await service.run_budget_maintenance(budget_org.id)
 
@@ -615,11 +637,14 @@ async def test_cycle_roll_does_not_advance_when_membership_repair_fails(
                 'server.services.org_budget_service.LiteLlmManager.add_user_to_team',
                 AsyncMock(),
             ) as add_user,
-            patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock,
+            patch.object(
+                service, '_sync_litellm_budgets', AsyncMock(return_value=_sync_result())
+            ) as sync_mock,
         ):
             result = await service.run_budget_maintenance(budget_org.id)
 
-    assert result['skipped'] == 'litellm_membership_repair_failed'
+    assert result['status'] == 'error'
+    assert result['reason'] == 'litellm_membership_repair_failed'
     assert result['cycle_rolled'] is False
     assert settings.cycle_start_at.replace(tzinfo=UTC) == old_cycle_start
     assert settings.cycle_start_spend == 10.0
@@ -896,7 +921,8 @@ async def test_maintenance_does_not_roll_cycle_without_fresh_snapshot(
                 budget_org.id
             )
 
-    assert result['skipped'] == 'litellm_spend_unavailable'
+    assert result['status'] == 'error'
+    assert result['reason'] == 'litellm_spend_unavailable'
     assert result['cycle_rolled'] is False
     assert result['current_spend'] is None
     assert settings.cycle_start_at.replace(tzinfo=UTC) == old_cycle_start
@@ -939,7 +965,7 @@ async def test_budget_maintenance_alerts_on_litellm_spend(
             patch.object(
                 service,
                 '_sync_litellm_budgets',
-                AsyncMock(),
+                AsyncMock(return_value=_sync_result()),
             ),
         ):
             result = await service.run_budget_maintenance(budget_org.id)
@@ -1158,7 +1184,9 @@ async def test_sync_litellm_budgets_reports_member_readback_mismatch(
             result = await service._sync_litellm_budgets(budget_org.id, settings, [])
 
     assert result is not None
-    assert result.team_spend == after['team_spend']
+    assert result.snapshot is not None
+    assert result.snapshot.team_spend == after['team_spend']
+    assert any('member_budget_mismatch' in err for err in result.errors), result.errors
     assert get_financial_data.await_count == 2
     assert settings.litellm_last_sync_status == 'error'
     assert settings.litellm_last_sync_error is not None

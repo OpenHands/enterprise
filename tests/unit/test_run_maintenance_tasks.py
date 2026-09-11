@@ -476,3 +476,176 @@ class TestRunMaintenanceTasks:
             # Pending task should be processed and completed
             assert updated_pending_task.status == MaintenanceTaskStatus.COMPLETED
             assert updated_pending_task.info == {'processed': True}
+
+
+class TestLogicalFailurePropagation:
+    """Tests that logical reconciliation failures surface as task ERROR and a
+    nonzero exit code, rather than being swallowed as COMPLETED (OHE-3254).
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_tasks_marks_error_when_processor_reports_success_false(
+        self, session_maker
+    ):
+        """A processor that returns success=False must end in ERROR, and
+        run_tasks must return False so the CronJob exits nonzero.
+        """
+        task = MaintenanceTask(
+            status=MaintenanceTaskStatus.PENDING,
+            processor_type='test.processor',
+            processor_json='{}',
+        )
+        with session_maker() as session:
+            session.add(task)
+            session.commit()
+            task_id = task.id
+
+        failing_processor = AsyncMock(
+            return_value={'processed': 0, 'failed': 1, 'success': False}
+        )
+
+        # run_tasks may be bound to a module object that differs from
+        # sys.modules['run_maintenance_tasks'] (see note in the main() tests),
+        # so patch the globals run_tasks actually closes over.
+        g = run_tasks.__globals__
+        orig_session_maker = g['session_maker']
+        orig_next_task = g['next_task']
+        # Return the persisted task once (from run_tasks' own session so the
+        # status mutation commits), then None to stop the loop.
+        call_count = {'n': 0}
+
+        async def _next_task(session):
+            call_count['n'] += 1
+            if call_count['n'] == 1:
+                return session.get(MaintenanceTask, task_id)
+            return None
+
+        g['session_maker'] = session_maker
+        g['next_task'] = _next_task
+        with (
+            patch(
+                'storage.maintenance_task.MaintenanceTask.get_processor',
+                return_value=failing_processor,
+            ),
+            patch('asyncio.sleep', new_callable=AsyncMock),
+        ):
+            try:
+                result = await run_tasks()
+            finally:
+                g['session_maker'] = orig_session_maker
+                g['next_task'] = orig_next_task
+
+        assert result is False
+        with session_maker() as session:
+            updated = session.get(MaintenanceTask, task_id)
+            assert updated.status == MaintenanceTaskStatus.ERROR
+            assert updated.info == {'processed': 0, 'failed': 1, 'success': False}
+
+    @pytest.mark.asyncio
+    async def test_run_tasks_returns_true_when_all_processors_succeed(
+        self, session_maker
+    ):
+        """When every processor reports success=True (or no success key),
+        run_tasks returns True.
+        """
+        task = MaintenanceTask(
+            status=MaintenanceTaskStatus.PENDING,
+            processor_type='test.processor',
+            processor_json='{}',
+        )
+        with session_maker() as session:
+            session.add(task)
+            session.commit()
+            task_id = task.id
+
+        succeeding_processor = AsyncMock(
+            return_value={'processed': 1, 'failed': 0, 'success': True}
+        )
+
+        g = run_tasks.__globals__
+        orig_session_maker = g['session_maker']
+        orig_next_task = g['next_task']
+        call_count = {'n': 0}
+
+        async def _next_task(session):
+            call_count['n'] += 1
+            if call_count['n'] == 1:
+                return session.get(MaintenanceTask, task_id)
+            return None
+
+        g['session_maker'] = session_maker
+        g['next_task'] = _next_task
+        with (
+            patch(
+                'storage.maintenance_task.MaintenanceTask.get_processor',
+                return_value=succeeding_processor,
+            ),
+            patch('asyncio.sleep', new_callable=AsyncMock),
+        ):
+            try:
+                result = await run_tasks()
+            finally:
+                g['session_maker'] = orig_session_maker
+                g['next_task'] = orig_next_task
+
+        assert result is True
+        with session_maker() as session:
+            updated = session.get(MaintenanceTask, task_id)
+            assert updated.status == MaintenanceTaskStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_main_returns_false_on_logical_failure(self, monkeypatch):
+        """main() must return False (→ nonzero exit) when run_tasks reports a
+        logical failure, rather than swallowing it.
+        """
+        # main may be bound to a different module object than
+        # sys.modules['run_maintenance_tasks'] (the storage.database mock +
+        # beartype import hook can replace the cached module), so patch the
+        # globals main actually closes over rather than the sys.modules copy.
+        g = main.__globals__
+        orig_run_tasks = g['run_tasks']
+        orig_set_stale = g['set_stale_task_error']
+        run_tasks_mock = AsyncMock(return_value=False)
+        g['run_tasks'] = run_tasks_mock
+        g['set_stale_task_error'] = MagicMock()
+        try:
+            result = await main()
+        finally:
+            g['run_tasks'] = orig_run_tasks
+            g['set_stale_task_error'] = orig_set_stale
+
+        assert run_tasks_mock.await_count == 1
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_main_returns_true_when_all_succeed(self, monkeypatch):
+        run_tasks_mock = AsyncMock(return_value=True)
+        # Patch the dict main actually closes over, not sys.modules' copy.
+        g = main.__globals__
+        orig_run_tasks = g['run_tasks']
+        orig_set_stale = g['set_stale_task_error']
+        g['run_tasks'] = run_tasks_mock
+        g['set_stale_task_error'] = MagicMock()
+        try:
+            result = await main()
+        finally:
+            g['run_tasks'] = orig_run_tasks
+            g['set_stale_task_error'] = orig_set_stale
+
+        assert run_tasks_mock.await_count == 1
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_main_returns_false_on_unhandled_exception(self, monkeypatch):
+        g = main.__globals__
+        orig_run_tasks = g['run_tasks']
+        orig_set_stale = g['set_stale_task_error']
+        g['run_tasks'] = AsyncMock(side_effect=RuntimeError('boom'))
+        g['set_stale_task_error'] = MagicMock()
+        try:
+            result = await main()
+        finally:
+            g['run_tasks'] = orig_run_tasks
+            g['set_stale_task_error'] = orig_set_stale
+
+        assert result is False
