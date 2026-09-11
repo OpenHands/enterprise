@@ -1,8 +1,10 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import McpService from "#/api/mcp-service/mcp-service.api";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import { useAddMcpServer } from "#/hooks/mutation/use-add-mcp-server";
+import { useTestMcpServer } from "#/hooks/mutation/use-test-mcp-server";
 import { useDeleteMcpServer } from "#/hooks/mutation/use-delete-mcp-server";
 import { useUpdateMcpServer } from "#/hooks/mutation/use-update-mcp-server";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
@@ -495,6 +497,119 @@ describe("MCP Server Mutation Hooks", () => {
       expect(payload.agent_settings_diff.mcp_config.myserver).toMatchObject({
         auth: null,
         headers: { "X-Tenant": "**********" },
+      });
+    });
+  });
+
+  describe("useTestMcpServer", () => {
+    it("tests an edited server with its stored key and unchanged redacted credential", async () => {
+      // Arrange: the settings round-trip returns the stored credential
+      // redacted; the form echoes it back unchanged.
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+        agent_settings: {
+          mcp_config: {
+            jira: {
+              url: "https://mcp-jira.example.com/mcp",
+              headers: { Authorization: "**********" },
+            },
+          },
+        },
+      } as unknown as Settings);
+      const testSpy = vi
+        .spyOn(McpService, "testServer")
+        .mockResolvedValue({ ok: true, tools: ["search_issues"] });
+      const { result } = renderHook(() => useTestMcpServer(), {
+        wrapper: createWrapper(),
+      });
+
+      // Act
+      result.current.mutate({
+        serverId: "shttp-0",
+        server: {
+          type: "shttp",
+          url: "https://mcp-jira.example.com/mcp",
+          api_key: "**********",
+        },
+      });
+
+      // Assert: the request names the stored server and carries the
+      // redacted credential in the same shape a save would persist, so
+      // the backend can restore the real value.
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      expect(testSpy).toHaveBeenCalledWith({
+        name: "jira",
+        server: {
+          url: "https://mcp-jira.example.com/mcp",
+          headers: { Authorization: "**********" },
+        },
+      });
+      expect(result.current.data).toEqual({
+        ok: true,
+        tools: ["search_issues"],
+      });
+    });
+
+    it("tests a new remote server with the typed key as a bearer credential", async () => {
+      const getSettingsSpy = vi.spyOn(SettingsService, "getSettings");
+      const testSpy = vi
+        .spyOn(McpService, "testServer")
+        .mockResolvedValue({ ok: true, tools: [] });
+      const { result } = renderHook(() => useTestMcpServer(), {
+        wrapper: createWrapper(),
+      });
+
+      result.current.mutate({
+        server: {
+          type: "sse",
+          url: "https://mcp.example.com/sse",
+          api_key: "plain-key",
+        },
+      });
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      expect(getSettingsSpy).not.toHaveBeenCalled();
+      expect(testSpy).toHaveBeenCalledWith({
+        name: "sse",
+        server: {
+          url: "https://mcp.example.com/sse",
+          transport: "sse",
+          auth: { strategy: "bearer", value: "plain-key" },
+        },
+      });
+    });
+
+    it("tests an edited server without credentials when the key was removed", async () => {
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+        agent_settings: {
+          mcp_config: {
+            jira: {
+              url: "https://mcp-jira.example.com/mcp",
+              headers: { Authorization: "**********" },
+            },
+          },
+        },
+      } as unknown as Settings);
+      const testSpy = vi
+        .spyOn(McpService, "testServer")
+        .mockResolvedValue({ ok: false, error: "401", error_kind: "unknown" });
+      const { result } = renderHook(() => useTestMcpServer(), {
+        wrapper: createWrapper(),
+      });
+
+      result.current.mutate({
+        serverId: "shttp-0",
+        server: { type: "shttp", url: "https://mcp-jira.example.com/mcp" },
+      });
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      // Mirrors the save payload: the stored credential is explicitly cleared
+      // rather than silently re-applied by the backend.
+      expect(testSpy).toHaveBeenCalledWith({
+        name: "jira",
+        server: expect.objectContaining({
+          url: "https://mcp-jira.example.com/mcp",
+          auth: null,
+        }),
       });
     });
   });

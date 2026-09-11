@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { AxiosError } from "axios";
 import { useTranslation } from "react-i18next";
 import { useSettings } from "#/hooks/query/use-settings";
@@ -7,6 +7,7 @@ import { useSaveSettings } from "#/hooks/mutation/use-save-settings";
 import { useDeleteMcpServer } from "#/hooks/mutation/use-delete-mcp-server";
 import { useAddMcpServer } from "#/hooks/mutation/use-add-mcp-server";
 import { useUpdateMcpServer } from "#/hooks/mutation/use-update-mcp-server";
+import { useTestMcpServer } from "#/hooks/mutation/use-test-mcp-server";
 import { I18nKey } from "#/i18n/declaration";
 
 import { MCPServerList } from "#/components/features/settings/mcp-settings/mcp-server-list";
@@ -53,6 +54,13 @@ function MCPSettingsScreen() {
   const { mutate: deleteMcpServer } = useDeleteMcpServer();
   const { mutate: addMcpServer } = useAddMcpServer();
   const { mutate: updateMcpServer } = useUpdateMcpServer();
+  const {
+    mutate: testMcpServer,
+    isPending: isTestingServer,
+    data: testResult,
+    error: testError,
+    reset: resetTest,
+  } = useTestMcpServer();
 
   const [view, setView] = useState<"list" | "add" | "edit">("list");
   const [editingServer, setEditingServer] = useState<MCPServerConfig | null>(
@@ -101,9 +109,53 @@ function MCPSettingsScreen() {
     setSearchApiKeyDirty(false);
   }, [settings?.search_api_key]);
 
+  const testMessage = useMemo(() => {
+    if (testError) {
+      return {
+        ok: false,
+        text:
+          retrieveAxiosErrorMessage(testError as AxiosError) ||
+          t(I18nKey.ERROR$GENERIC),
+      };
+    }
+    if (!testResult) return null;
+    if (testResult.ok) {
+      return {
+        ok: true,
+        text: t(I18nKey.SETTINGS$MCP_TEST_SUCCESS, {
+          count: testResult.tools.length,
+        }),
+      };
+    }
+    switch (testResult.error_kind) {
+      case "timeout":
+        return { ok: false, text: t(I18nKey.SETTINGS$MCP_TEST_ERROR_TIMEOUT) };
+      case "connection":
+        return {
+          ok: false,
+          text: t(I18nKey.SETTINGS$MCP_TEST_ERROR_CONNECTION),
+        };
+      default:
+        return {
+          ok: false,
+          text: t(I18nKey.SETTINGS$MCP_TEST_ERROR_UNKNOWN, {
+            error: testResult.error,
+          }),
+        };
+    }
+  }, [testError, testResult, t]);
+
   const closeServerModal = () => {
+    resetTest();
     setEditingServer(null);
     setView("list");
+  };
+
+  const handleTestServer = (serverConfig: MCPServerConfig) => {
+    testMcpServer({
+      serverId: view === "edit" ? editingServer?.id : undefined,
+      server: serverConfig,
+    });
   };
 
   const handleAddServer = (serverConfig: MCPServerConfig) => {
@@ -133,6 +185,7 @@ function MCPSettingsScreen() {
   };
 
   const handleEditClick = (server: MCPServerConfig) => {
+    resetTest();
     setEditingServer(server);
     setView("edit");
   };
@@ -189,7 +242,10 @@ function MCPSettingsScreen() {
           type="button"
           variant="primary"
           className="shrink-0 whitespace-nowrap"
-          onClick={() => setView("add")}
+          onClick={() => {
+            resetTest();
+            setView("add");
+          }}
         >
           {t(I18nKey.SETTINGS$MCP_ADD_SERVER)}
         </BrandButton>
@@ -264,6 +320,9 @@ function MCPSettingsScreen() {
           existingServers={allServers}
           onSubmit={handleAddServer}
           onClose={closeServerModal}
+          onTest={handleTestServer}
+          isTestPending={isTestingServer}
+          testMessage={testMessage}
         />
       )}
 
@@ -274,6 +333,9 @@ function MCPSettingsScreen() {
           existingServers={allServers}
           onSubmit={handleEditServer}
           onClose={closeServerModal}
+          onTest={handleTestServer}
+          isTestPending={isTestingServer}
+          testMessage={testMessage}
         />
       )}
 
