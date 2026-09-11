@@ -74,7 +74,13 @@ async def test_processor_persists_budget_maintenance_updates(async_session_maker
     ):
         result = await processor(task)
 
-    assert result == {'processed': 1, 'error_count': 0, 'errors': []}
+    assert result == {
+        'processed': 1,
+        'failed': 0,
+        'error_count': 0,
+        'errors': [],
+        'success': True,
+    }
 
     async with async_session_maker() as session:
         settings = await session.scalar(
@@ -86,3 +92,127 @@ async def test_processor_persists_budget_maintenance_updates(async_session_maker
     assert settings.cycle_start_spend == 900.0
     assert settings.litellm_last_sync_status == 'success'
     assert settings.litellm_last_sync_at is not None
+
+
+@pytest.mark.asyncio
+async def test_processor_counts_logical_sync_error_as_failed(async_session_maker):
+    """When run_budget_maintenance returns status='error', the processor must
+    count the org as failed and report success=False so run_tasks marks the
+    task ERROR instead of COMPLETED.
+    """
+    org_id = uuid4()
+    async with async_session_maker() as session:
+        session.add(
+            Org(
+                id=org_id,
+                name='Logical Fail Org',
+                org_version=ORG_SETTINGS_VERSION,
+            )
+        )
+        session.add(
+            OrgBudgetSettings(
+                org_id=org_id,
+                reset_day=1,
+                monthly_limit=100.0,
+                cycle_start_at=datetime.now(UTC).replace(day=1, tzinfo=None),
+                cycle_start_spend=0.0,
+            )
+        )
+        await session.commit()
+
+    task = MaintenanceTask(
+        status=MaintenanceTaskStatus.PENDING,
+        processor_type='org_budget_maintenance',
+        processor_json='{"org_ids": ["' + str(org_id) + '"]}',
+    )
+    processor = OrgBudgetMaintenanceProcessor(org_ids=[str(org_id)])
+
+    async def _fail_run_budget_maintenance(self, _org_uuid):
+        return {
+            'status': 'error',
+            'reason': 'litellm_spend_unavailable',
+            'sync_status': 'error',
+            'sync_error': 'no spend data',
+            'drift': [],
+        }
+
+    with (
+        patch(
+            'server.maintenance_task_processor.org_budget_maintenance_processor.a_session_maker',
+            async_session_maker,
+        ),
+        patch(
+            'server.maintenance_task_processor.org_budget_maintenance_processor.OrgBudgetService.run_budget_maintenance',
+            _fail_run_budget_maintenance,
+        ),
+    ):
+        result = await processor(task)
+
+    assert result['success'] is False
+    assert result['failed'] == 1
+    assert result['processed'] == 0
+    assert result['error_count'] == 1
+    assert result['errors'][0]['error'] == 'litellm_spend_unavailable'
+
+
+@pytest.mark.asyncio
+async def test_processor_mixed_success_and_failure_reports_success_false(
+    async_session_maker,
+):
+    """A single failed org among several healthy ones must flip success=False."""
+    healthy_org = uuid4()
+    failing_org = uuid4()
+    async with async_session_maker() as session:
+        for oid in (healthy_org, failing_org):
+            session.add(
+                Org(id=oid, name=f'Org {oid}', org_version=ORG_SETTINGS_VERSION)
+            )
+            session.add(
+                OrgBudgetSettings(
+                    org_id=oid,
+                    reset_day=1,
+                    monthly_limit=100.0,
+                    cycle_start_at=datetime.now(UTC).replace(day=1, tzinfo=None),
+                    cycle_start_spend=0.0,
+                )
+            )
+        await session.commit()
+
+    task = MaintenanceTask(
+        status=MaintenanceTaskStatus.PENDING,
+        processor_type='org_budget_maintenance',
+        processor_json='{"org_ids": ["'
+        + str(healthy_org)
+        + '", "'
+        + str(failing_org)
+        + '"]}',
+    )
+    processor = OrgBudgetMaintenanceProcessor(
+        org_ids=[str(healthy_org), str(failing_org)]
+    )
+
+    async def _run_budget_maintenance(self, org_uuid):
+        if org_uuid == failing_org:
+            return {
+                'status': 'error',
+                'reason': 'litellm_membership_repair_failed',
+                'drift': [],
+            }
+        return {'status': 'success', 'drift': []}
+
+    with (
+        patch(
+            'server.maintenance_task_processor.org_budget_maintenance_processor.a_session_maker',
+            async_session_maker,
+        ),
+        patch(
+            'server.maintenance_task_processor.org_budget_maintenance_processor.OrgBudgetService.run_budget_maintenance',
+            _run_budget_maintenance,
+        ),
+    ):
+        result = await processor(task)
+
+    assert result['success'] is False
+    assert result['processed'] == 1
+    assert result['failed'] == 1
+    assert result['error_count'] == 1

@@ -13,6 +13,7 @@ class OrgBudgetMaintenanceProcessor(MaintenanceTaskProcessor):
 
     async def __call__(self, task: MaintenanceTask) -> dict:
         processed = 0
+        failed = 0
         errors: list[dict[str, str]] = []
 
         async with a_session_maker() as session:
@@ -21,12 +22,28 @@ class OrgBudgetMaintenanceProcessor(MaintenanceTaskProcessor):
                 try:
                     org_uuid = UUID(org_id)
                 except ValueError:
+                    failed += 1
                     errors.append({'org_id': org_id, 'error': 'invalid_uuid'})
                     continue
 
                 try:
-                    await service.run_budget_maintenance(org_uuid)
+                    result = await service.run_budget_maintenance(org_uuid)
+                    # Commit per-org so healthy orgs persist independently and so
+                    # failed orgs keep their diagnostic litellm_last_sync_status
+                    # recording. External LiteLLM writes already happened; the
+                    # settings reflect "reconciliation attempted".
                     await session.commit()
+                    status = result.get('status', 'success')
+                    if status == 'error':
+                        failed += 1
+                        errors.append(
+                            {
+                                'org_id': org_id,
+                                'error': result.get('reason') or 'sync_failed',
+                                'drift': result.get('drift', []),
+                            }
+                        )
+                        continue
                     processed += 1
                 except Exception as exc:
                     await session.rollback()
@@ -37,10 +54,13 @@ class OrgBudgetMaintenanceProcessor(MaintenanceTaskProcessor):
                         },
                         stack_info=True,
                     )
+                    failed += 1
                     errors.append({'org_id': org_id, 'error': str(exc)})
 
         return {
             'processed': processed,
+            'failed': failed,
             'error_count': len(errors),
             'errors': errors[:20],
+            'success': failed == 0,
         }
