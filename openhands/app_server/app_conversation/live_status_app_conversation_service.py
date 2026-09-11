@@ -276,6 +276,38 @@ def _to_sdk_marketplace_registrations(
     ]
 
 
+def _apply_profile_secret_scope(
+    secrets: dict[str, Any],
+    user: UserInfo,
+) -> dict[str, Any]:
+    """Narrow a conversation's secrets to the active agent profile's scope.
+
+    Mirrors the local agent-server, which filters ``request.secrets`` inside its
+    ``agent_profile_id`` branch — a branch cloud never takes, because it resolves
+    the profile itself and sends a resolved agent. Without this the field would
+    persist and display while restricting nothing (OpenHands/enterprise#344).
+
+    Strict, matching ``openhands.sdk.profiles.resolver.filter_profile_secrets``:
+    nothing is added back for either agent kind, so a profile that omits its own
+    ACP provider credential — or a git provider token — does not receive it. A
+    ref matching no supplied secret is a harmless no-op; this is an allow-list
+    over what a launch assembles, so unlike ``mcp_server_refs`` it cannot dangle.
+
+    ``None`` (the default, and every non-profile launch) leaves the set untouched.
+    """
+    refs = getattr(user, 'active_agent_profile_secret_refs', None)
+    if refs is None:
+        return secrets
+    allowed = set(refs)
+    dropped = sorted(set(secrets) - allowed)
+    if dropped:
+        _logger.info(
+            'agent_profile_secret_scope:filtered',
+            extra={'dropped_secret_names': dropped},
+        )
+    return {name: value for name, value in secrets.items() if name in allowed}
+
+
 @dataclass
 class LiveStatusAppConversationService(AppConversationServiceBase):
     """AppConversationService which combines live status info from the sandbox with stored data."""
@@ -2108,6 +2140,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     )
                 secrets[name] = StaticSecret(value=value)
 
+        # After the API merge, so a caller sending extra secrets cannot
+        # widen what the profile allows.
+        secrets = _apply_profile_secret_scope(secrets, user)
+
         system_message_suffix = self._maybe_append_shallow_clone_context(
             user, selected_repository, system_message_suffix
         )
@@ -2477,6 +2513,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                         'API-provided secret %r overrides existing secret', name
                     )
                 secrets[name] = StaticSecret(value=value)
+
+        # After the API merge, so a caller sending extra secrets cannot
+        # widen what the profile allows.
+        secrets = _apply_profile_secret_scope(secrets, user)
 
         system_message_suffix = self._maybe_append_shallow_clone_context(
             user, selected_repository, system_message_suffix

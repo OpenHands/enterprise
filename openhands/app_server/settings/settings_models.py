@@ -752,6 +752,12 @@ class Settings(BaseModel):
     # None and ``store()`` refuses instances that carry them (no backing column).
     active_agent_profile_id: str | None = None
     active_agent_profile_revision: int | None = None
+    # The resolved profile's ``secret_refs`` allow-list, carried alongside the
+    # provenance above for the same reason: resolution replaces
+    # ``agent_settings`` with an ``AgentSettings`` dump, which has no field for
+    # it, and conversation-start needs it to scope the conversation's secrets.
+    # ``None`` = unrestricted, matching the SDK's tri-state.
+    active_agent_profile_secret_refs: list[str] | None = None
 
     # True when this instance came from a resolve-requested load: its
     # agent_settings are the *effective* launch view (possibly an Agent

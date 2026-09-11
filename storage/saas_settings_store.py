@@ -223,7 +223,7 @@ class SaasSettingsStore(SettingsStore):
         merged_agent_settings: dict[str, Any],
         effective_llm_api_key: SecretStr | None,
         override_agent_profile_id: str | None = None,
-    ) -> tuple[dict[str, Any], str, int] | None:
+    ) -> tuple[dict[str, Any], str, int, list[str] | None] | None:
         """Resolve an agent profile into an ``agent_settings`` dump.
 
         Resolves ``override_agent_profile_id`` when given (a one-off,
@@ -330,7 +330,10 @@ class SaasSettingsStore(SettingsStore):
                 exc,
             )
             return None
-        return resolved_dump, str(profile.id), profile.revision
+        # ``secret_refs`` rides out alongside the provenance: the resolved dump
+        # is an ``AgentSettings``, which has no field for it, and conversation
+        # start needs it to scope the conversation's secrets.
+        return resolved_dump, str(profile.id), profile.revision, profile.secret_refs
 
     async def load(
         self,
@@ -536,10 +539,16 @@ class SaasSettingsStore(SettingsStore):
                 override_agent_profile_id,
             )
             if resolved is not None:
-                resolved_dump, resolved_id, resolved_revision = resolved
+                (
+                    resolved_dump,
+                    resolved_id,
+                    resolved_revision,
+                    resolved_secret_refs,
+                ) = resolved
                 kwargs['agent_settings'] = resolved_dump
                 kwargs['active_agent_profile_id'] = resolved_id
                 kwargs['active_agent_profile_revision'] = resolved_revision
+                kwargs['active_agent_profile_secret_refs'] = resolved_secret_refs
 
         settings = Settings(**kwargs)
         settings._mcp_config_updated = False
