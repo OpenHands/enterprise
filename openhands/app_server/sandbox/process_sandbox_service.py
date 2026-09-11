@@ -358,18 +358,27 @@ class ProcessSandboxService(SandboxService):
         return await self._process_to_sandbox_info(sandbox_id, process_info)
 
     async def resume_sandbox(self, sandbox_id: str) -> bool:
-        """Resume a paused sandbox."""
+        """Resume a stopped process or no-op when it is already active."""
         process_info = _processes.get(sandbox_id)
         if process_info is None:
             return False
 
         try:
             process = psutil.Process(process_info.pid)
-            if process.status() == psutil.STATUS_STOPPED:
+            if not process.is_running():
+                return False
+            process_status = process.status()
+            if process_status == psutil.STATUS_STOPPED:
                 process.resume()
+            elif process_status in (psutil.STATUS_DEAD, psutil.STATUS_ZOMBIE):
+                return False
             return True
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except psutil.NoSuchProcess:
             return False
+        except psutil.AccessDenied as exc:
+            raise SandboxError(
+                status_code=502, detail='runtime_status_lookup_failed'
+            ) from exc
 
     async def pause_sandbox(self, sandbox_id: str) -> bool:
         """Pause a running sandbox."""

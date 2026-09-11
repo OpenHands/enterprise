@@ -72,6 +72,9 @@ STATUS_MAPPING = {
     'starting': SandboxStatus.STARTING,
     'error': SandboxStatus.ERROR,
 }
+ACTIVE_RUNTIME_STATUSES = frozenset({'running', 'starting'})
+RESUMABLE_RUNTIME_STATUSES = frozenset({'paused', 'error'})
+MISSING_RUNTIME_STATUSES = frozenset({'stopped'})
 AGENT_SERVER_PORT = 60000
 VSCODE_PORT = 60001
 WORKER_1_PORT = 12000
@@ -81,6 +84,32 @@ WORKER_2_PORT = 12001
 def _hash_session_api_key(session_api_key: str) -> str:
     """Hash a session API key using SHA-256."""
     return hashlib.sha256(session_api_key.encode()).hexdigest()
+
+
+def _get_runtime_api_error_detail(response: httpx.Response) -> Any:
+    try:
+        response_data = response.json()
+    except ValueError:
+        return None
+    if isinstance(response_data, dict):
+        return response_data.get('detail')
+    return None
+
+
+def _get_runtime_status(runtime_data: Any) -> str:
+    if not isinstance(runtime_data, dict):
+        raise ValueError('Runtime response must be an object')
+    runtime_status = runtime_data.get('status')
+    if not isinstance(runtime_status, str) or not runtime_status:
+        raise ValueError('Runtime response must contain a status')
+    return runtime_status.lower()
+
+
+def _runtime_conflict_detail(runtime_status: str) -> dict[str, str]:
+    return {
+        'code': 'runtime_not_resumable',
+        'current_status': runtime_status,
+    }
 
 
 class StoredRemoteSandbox(Base):
@@ -544,21 +573,111 @@ class RemoteSandboxService(SandboxService):
 
         return start_request
 
-    async def resume_sandbox(self, sandbox_id: str) -> bool:
-        """Resume a paused sandbox.
+    async def _invalidate_session_key(
+        self, stored_sandbox: StoredRemoteSandbox
+    ) -> None:
+        if stored_sandbox.session_api_key_hash is not None:
+            stored_sandbox.session_api_key_hash = None
+            await self.db_session.commit()
 
-        Security: When a sandbox is resumed, the runtime-api generates a new
-        session_api_key and returns it. This invalidates any previously leaked
-        keys and ensures that only the new key can be used to access secrets.
+    async def _reconcile_session_key(
+        self,
+        stored_sandbox: StoredRemoteSandbox,
+        runtime_data: dict[str, Any],
+    ) -> None:
+        session_api_key = runtime_data.get('session_api_key')
+        if not isinstance(session_api_key, str) or not session_api_key:
+            raise SandboxError(status_code=502, detail='runtime_session_key_missing')
+        session_api_key_hash = _hash_session_api_key(session_api_key)
+        if stored_sandbox.session_api_key_hash != session_api_key_hash:
+            stored_sandbox.session_api_key_hash = session_api_key_hash
+            await self.db_session.commit()
+
+    async def _resolve_resume_conflict(
+        self,
+        sandbox_id: str,
+        stored_sandbox: StoredRemoteSandbox,
+        response: httpx.Response,
+    ) -> bool:
+        upstream_detail = _get_runtime_api_error_detail(response)
+        try:
+            runtime_data = await self._get_runtime(sandbox_id)
+            runtime_status = _get_runtime_status(runtime_data)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                await self._invalidate_session_key(stored_sandbox)
+                return False
+            if isinstance(upstream_detail, dict):
+                raise SandboxError(status_code=409, detail=upstream_detail) from exc
+            raise SandboxError(
+                status_code=502, detail='runtime_status_lookup_failed'
+            ) from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            if isinstance(upstream_detail, dict):
+                raise SandboxError(status_code=409, detail=upstream_detail) from exc
+            raise SandboxError(
+                status_code=502, detail='runtime_status_lookup_failed'
+            ) from exc
+
+        if runtime_status in ACTIVE_RUNTIME_STATUSES:
+            await self._reconcile_session_key(stored_sandbox, runtime_data)
+            return True
+        if runtime_status in MISSING_RUNTIME_STATUSES:
+            await self._invalidate_session_key(stored_sandbox)
+            return False
+        detail = (
+            upstream_detail
+            if isinstance(upstream_detail, dict)
+            else _runtime_conflict_detail(runtime_status)
+        )
+        raise SandboxError(status_code=409, detail=detail)
+
+    async def resume_sandbox(self, sandbox_id: str) -> bool:
+        """Resume a resumable sandbox or safely no-op for an active runtime.
+
+        Missing runtimes return False. Active runtimes return True without rotating or
+        exposing their session key. Other non-resumable states and Runtime API 409s
+        raise a structured 409, while upstream failures raise 502.
         """
-        # Enforce sandbox limits by cleaning up old sandboxes
-        await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if not stored_sandbox:
+            return False
 
         try:
-            stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-            if not stored_sandbox:
-                return False
             runtime_data = await self._get_runtime(sandbox_id)
+            runtime_status = _get_runtime_status(runtime_data)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                await self._invalidate_session_key(stored_sandbox)
+                return False
+            raise SandboxError(
+                status_code=502, detail='runtime_status_lookup_failed'
+            ) from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            raise SandboxError(
+                status_code=502, detail='runtime_status_lookup_failed'
+            ) from exc
+
+        if runtime_status in ACTIVE_RUNTIME_STATUSES:
+            await self._reconcile_session_key(stored_sandbox, runtime_data)
+            return True
+        if runtime_status in MISSING_RUNTIME_STATUSES:
+            await self._invalidate_session_key(stored_sandbox)
+            return False
+        if runtime_status not in RESUMABLE_RUNTIME_STATUSES:
+            await self._invalidate_session_key(stored_sandbox)
+            raise SandboxError(
+                status_code=409,
+                detail=_runtime_conflict_detail(runtime_status),
+            )
+
+        previous_session_api_key_hash = stored_sandbox.session_api_key_hash
+        await self._invalidate_session_key(stored_sandbox)
+        try:
+            await self.pause_old_sandboxes(
+                self.max_num_sandboxes - 1,
+                exclude_sandbox_ids={sandbox_id},
+            )
             response = await self._send_runtime_api_request(
                 'POST',
                 '/resume',
@@ -566,24 +685,34 @@ class RemoteSandboxService(SandboxService):
             )
             if response.status_code == 404:
                 return False
+            if response.status_code == 409:
+                return await self._resolve_resume_conflict(
+                    sandbox_id, stored_sandbox, response
+                )
             response.raise_for_status()
-
-            # Security: Update stored session_api_key with the new key returned
-            # by the runtime-api. The old key was invalidated on resume.
             response_data = response.json()
-            new_session_api_key = response_data.get('session_api_key')
-            if new_session_api_key:
-                stored_sandbox.session_api_key_hash = _hash_session_api_key(
-                    new_session_api_key
-                )
-                _logger.info(
-                    f'Updated session_api_key_hash for sandbox {sandbox_id} after resume'
-                )
+        except SandboxError:
+            raise
+        except (httpx.HTTPError, KeyError, ValueError) as exc:
+            raise SandboxError(status_code=502, detail='runtime_resume_failed') from exc
 
-            return True
-        except httpx.HTTPError:
-            _logger.exception(f'Error resuming sandbox {sandbox_id}', stack_info=True)
-            return False
+        if not isinstance(response_data, dict):
+            raise SandboxError(status_code=502, detail='runtime_resume_failed')
+        new_session_api_key = response_data.get('session_api_key')
+        if not isinstance(new_session_api_key, str) or not new_session_api_key:
+            raise SandboxError(status_code=502, detail='runtime_resume_failed')
+
+        new_session_api_key_hash = _hash_session_api_key(new_session_api_key)
+        if new_session_api_key_hash == previous_session_api_key_hash:
+            raise SandboxError(
+                status_code=502, detail='runtime_session_key_not_rotated'
+            )
+        stored_sandbox.session_api_key_hash = new_session_api_key_hash
+        await self.db_session.commit()
+        _logger.info(
+            f'Updated session_api_key_hash for sandbox {sandbox_id} after resume'
+        )
+        return True
 
     async def pause_sandbox(self, sandbox_id: str) -> bool:
         """Pause a running sandbox.
@@ -820,16 +949,25 @@ class RemoteSandboxService(SandboxService):
             )
         return archived
 
-    async def pause_old_sandboxes(self, max_num_sandboxes: int) -> list[str]:
+    async def pause_old_sandboxes(
+        self,
+        max_num_sandboxes: int,
+        exclude_sandbox_ids: set[str] | None = None,
+    ) -> list[str]:
         """Pause the oldest running sandboxes until at most max_num_sandboxes remain.
 
         Uses _get_user_running_sandboxes (runtime /list + DB cross-reference) so
         only sandboxes that are actually running are considered.
         """
-        if max_num_sandboxes <= 0:
-            raise ValueError('max_num_sandboxes must be greater than 0')
+        if max_num_sandboxes < 0:
+            raise ValueError('max_num_sandboxes must be non-negative')
 
-        running = await self._get_user_running_sandboxes()
+        excluded = exclude_sandbox_ids or set()
+        running = [
+            sandbox
+            for sandbox in await self._get_user_running_sandboxes()
+            if sandbox.id not in excluded
+        ]
 
         if len(running) <= max_num_sandboxes:
             return []
