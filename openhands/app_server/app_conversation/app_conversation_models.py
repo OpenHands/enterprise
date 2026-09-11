@@ -235,6 +235,30 @@ class AppConversationStartRequest(OpenHandsModel):
     conversation_id: UUID | None = Field(default=None)
     initial_message: SendMessageRequest | None = None
     system_message_suffix: str | None = None
+    system_prompt: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Inline system prompt that replaces OpenHands' built-in static system "
+            'prompt verbatim for this conversation. Per-conversation dynamic '
+            'context (loaded skills, repository context, system_message_suffix, '
+            'secrets, current datetime) is still appended, so this composes with '
+            'system_message_suffix. When agent_type=plan it replaces the built-in '
+            'planning prompt (planning tools and workflow instruction still apply). '
+            'Ignored, with a server-side warning, when the launched agent is an '
+            'ACP agent, which owns its own system prompt.'
+        ),
+    )
+    disabled_skills: list[str] | None = Field(
+        default=None,
+        description=(
+            'Skill names to exclude from this conversation (e.g. bundled '
+            '"Instance" skills that are not needed, to save context tokens). '
+            'Unioned with the deny-lists from user settings and the launched '
+            'agent profile: a skill disabled at any level stays off. Matched by '
+            'exact skill name; unknown names are harmless no-ops.'
+        ),
+    )
     processors: list[EventCallbackProcessor] | None = Field(default=None)
     llm_model: str | None = None
     # One-off launch override: run THIS conversation from a specific Agent

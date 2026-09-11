@@ -203,9 +203,9 @@ class _TestUserInfo(SimpleNamespace):
 
 
 class TestEffectiveDisabledSkills:
-    """effective_disabled_skills() unions the member- and profile-level deny-lists.
+    """effective_disabled_skills() unions the member-, profile- and request-level deny-lists.
 
-    A skill disabled at either level stays off. The profile's deny-list rides the
+    A skill disabled at any level stays off. The profile's deny-list rides the
     resolved agent_settings.agent_context.disabled_skills (stamped by the SDK
     resolver, #4017); the member's rides user.disabled_skills.
     """
@@ -240,6 +240,13 @@ class TestEffectiveDisabledSkills:
 
     def test_empty_when_nothing_disabled(self):
         assert effective_disabled_skills(self._user([], [])) == []
+
+    def test_unions_request_deny_list_with_member_and_profile(self):
+        # A per-request deny-list (conversation REST API) is a third source: a
+        # skill disabled at any level stays off, order-preserving de-dup.
+        assert effective_disabled_skills(
+            self._user(['a'], ['b']), request_disabled_skills=['c', 'b', 'c']
+        ) == ['a', 'b', 'c']
 
 
 # Env var used by openhands SDK LLM to skip context-window validation (e.g. for gpt-4 in tests)
@@ -1538,6 +1545,11 @@ class TestLiveStatusAppConversationService:
         with pytest.raises(ValidationError):
             AppConversationStartRequest(**kwargs)
 
+    def test_app_conversation_start_request_rejects_empty_system_prompt(self):
+        # An empty inline prompt would replace the built-in prompt with nothing.
+        with pytest.raises(ValidationError):
+            AppConversationStartRequest(system_prompt='')
+
     def test_apply_server_overrides_adds_repo_metadata(self):
         llm = LLM(model='openhands/gpt-4', api_key='k', usage_id='agent')
         agent = Agent(llm=llm, tools=[])
@@ -1675,6 +1687,81 @@ class TestLiveStatusAppConversationService:
         return_value=[],
     )
     @pytest.mark.asyncio
+    async def test_build_request_unions_request_disabled_skills_into_skill_loading(
+        self, _mock_tools
+    ):
+        """A per-request deny-list joins member ∪ profile before skill loading."""
+        self.mock_user.disabled_skills = ['member-skill']
+        self.mock_user.agent_settings = OpenHandsAgentSettings(
+            llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+            agent_context=AgentContext(disabled_skills=['profile-skill']),
+        )
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        mock_agent = Mock(spec=Agent)
+        mock_agent.llm = real_llm
+        mock_agent.condenser = None
+
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+        self.service._load_skills_and_update_agent = AsyncMock(return_value=mock_agent)
+
+        await self.service._build_start_conversation_request_for_user(
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=Mock(spec=AsyncRemoteWorkspace),
+            selected_repository='test_repo',
+            disabled_skills=['request-skill', 'member-skill'],
+        )
+
+        kwargs = self.service._load_skills_and_update_agent.call_args.kwargs
+        assert kwargs['disabled_skills'] == [
+            'member-skill',
+            'profile-skill',
+            'request-skill',
+        ]
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_applies_inline_system_prompt_to_agent(
+        self, _mock_tools
+    ):
+        """The request's system_prompt replaces the built-in static prompt on the
+        outgoing agent; the suffix still rides agent_context (dynamic block)."""
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(
+            return_value=(LLM(model='gpt-4', api_key=SecretStr('k')), {})
+        )
+
+        result = await self.service._build_start_conversation_request_for_user(
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix='Custom suffix',
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=None,
+            system_prompt='You are a helper.',
+        )
+
+        assert result.agent.system_prompt == 'You are a helper.'
+        assert result.agent.static_system_message == 'You are a helper.'
+        assert 'Custom suffix' in result.agent.agent_context.system_message_suffix
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
     async def test_build_request_without_remote_workspace(self, _mock_tools):
         """Skills loading is skipped when no remote_workspace is provided."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
@@ -1735,6 +1822,39 @@ class TestLiveStatusAppConversationService:
 
             assert isinstance(result, StartConversationRequest)
             mock_logger.warning.assert_called_once()
+
+    @pytest.mark.parametrize('agent_type', [AgentType.DEFAULT, AgentType.PLAN])
+    def test_apply_server_overrides_inline_system_prompt_replaces_template(
+        self, agent_type
+    ):
+        """An inline system_prompt wins over the template/preset selection.
+
+        For PLAN the planning filename must not ride along: the SDK rejects an
+        inline prompt next to a non-default filename when the agent-server
+        re-validates the serialized agent.
+        """
+        llm = LLM(model='gpt-4', api_key='k')
+        agent = Agent(llm=llm, tools=[])
+
+        updated = self.service._apply_server_agent_overrides(
+            agent, agent_type, uuid4(), 'user-1', system_prompt='You are a helper.'
+        )
+
+        assert updated.system_prompt == 'You are a helper.'
+        assert updated.system_prompt_filename == 'system_prompt.j2'
+        revalidated = Agent.model_validate(updated.model_dump(mode='json'))
+        assert revalidated.static_system_message == 'You are a helper.'
+
+    def test_apply_server_overrides_plan_without_inline_prompt_keeps_template(self):
+        llm = LLM(model='gpt-4', api_key='k')
+        agent = Agent(llm=llm, tools=[])
+
+        updated = self.service._apply_server_agent_overrides(
+            agent, AgentType.PLAN, uuid4(), 'user-1'
+        )
+
+        assert updated.system_prompt is None
+        assert updated.system_prompt_filename == 'system_prompt_planning.j2'
 
     def test_apply_server_overrides_sets_condenser_usage_id(self):
         """Condenser LLM must get usage_id='condenser' even when it inherits 'agent'."""
@@ -2130,6 +2250,84 @@ class TestLiveStatusAppConversationService:
         assert kwargs['request_observability_metadata'] == {'evaluation': 'wb'}
         assert kwargs['request_observability_tags'] == ['wb-rubric']
         assert kwargs['request_observability_span_name'] == 'mySpanName'
+
+    @pytest.mark.asyncio
+    async def test_build_request_ignores_inline_system_prompt_for_acp_agent(self):
+        """ACP agents own their prompt: system_prompt is dropped with a warning
+        and never forwarded to the ACP builder."""
+        from openhands.sdk.settings import ACPAgentSettings
+
+        self.mock_user.agent_settings = ACPAgentSettings(
+            acp_server='claude-code',
+            llm=LLM(model='claude-sonnet-4-5', api_key=None),
+            agent_context=None,
+        )
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._resolve_registered_marketplaces = AsyncMock(return_value=None)
+        sentinel = Mock(spec=StartConversationRequest)
+        self.service._build_acp_start_conversation_request = AsyncMock(
+            return_value=sentinel
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service._logger'
+        ) as mock_logger:
+            result = await self.service._build_start_conversation_request_for_user(
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix=None,
+                git_provider=None,
+                working_dir='/test/dir',
+                remote_workspace=None,
+                system_prompt='You are a helper.',
+            )
+
+        assert result is sentinel
+        acp_kwargs = self.service._build_acp_start_conversation_request.call_args.kwargs
+        assert 'system_prompt' not in acp_kwargs
+        warned = [call.args[0] for call in mock_logger.warning.call_args_list]
+        assert 'app_conversation_start:system_prompt_ignored_for_acp_agent' in warned
+
+    @pytest.mark.asyncio
+    async def test_build_request_unions_request_disabled_skills_for_acp_agent(self):
+        """The ACP arm applies the same member ∪ profile ∪ request deny-list."""
+        from openhands.sdk.settings import ACPAgentSettings
+
+        self.mock_user.disabled_skills = ['member-skill']
+        self.mock_user.agent_settings = ACPAgentSettings(
+            acp_server='claude-code',
+            llm=LLM(model='claude-sonnet-4-5', api_key=None),
+            agent_context=AgentContext(disabled_skills=['profile-skill']),
+        )
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._resolve_registered_marketplaces = AsyncMock(return_value=None)
+        acp_request = Mock(spec=StartConversationRequest)
+        acp_request.agent = Mock(spec=Agent)
+        self.service._build_acp_start_conversation_request = AsyncMock(
+            return_value=acp_request
+        )
+        self.service._load_skills_and_update_agent = AsyncMock(
+            return_value=Mock(spec=Agent)
+        )
+
+        await self.service._build_start_conversation_request_for_user(
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=Mock(spec=AsyncRemoteWorkspace),
+            disabled_skills=['request-skill'],
+        )
+
+        kwargs = self.service._load_skills_and_update_agent.call_args.kwargs
+        assert kwargs['disabled_skills'] == [
+            'member-skill',
+            'profile-skill',
+            'request-skill',
+        ]
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
@@ -3147,6 +3345,34 @@ class TestLiveStatusAppConversationService:
         assert kwargs['request_observability_metadata'] == {'evaluation': 'wb'}
         assert kwargs['request_observability_tags'] == ['wb-rubric']
         assert kwargs['request_observability_span_name'] == 'mySpanName'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_forwards_prompt_and_skill_overrides(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """system_prompt / disabled_skills on the REST request reach the builder."""
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        request = AppConversationStartRequest(
+            system_prompt='You are a helper.', disabled_skills=['github']
+        )
+
+        async for _ in self.service._start_app_conversation(request):
+            pass
+
+        kwargs = (
+            self.service._build_start_conversation_request_for_user.call_args.kwargs
+        )
+        assert kwargs['system_prompt'] == 'You are a helper.'
+        assert kwargs['disabled_skills'] == ['github']
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
