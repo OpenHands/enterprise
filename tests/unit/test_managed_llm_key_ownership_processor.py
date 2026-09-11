@@ -102,6 +102,66 @@ def test_enqueues_only_unreconciled_managed_key_rows(session_maker):
     assert processor.targets[0].user_id == str(stale_user_id)
 
 
+def test_enqueue_does_not_duplicate_working_repair_tasks(session_maker):
+    org_id = uuid4()
+    user_id = uuid4()
+    with session_maker() as session:
+        role = Role(name=f'key-working-dedupe-{uuid4()}', rank=1)
+        session.add(role)
+        session.flush()
+        session.add(Org(id=org_id, name=f'key-working-dedupe-{org_id}'))
+        session.add(User(id=user_id, current_org_id=org_id))
+        session.add(
+            OrgMember(
+                org_id=org_id,
+                user_id=user_id,
+                role_id=role.id,
+                llm_api_key='legacy-key',
+                managed_llm_key_ownership_version=0,
+            )
+        )
+        processor = ManagedLlmKeyOwnershipProcessor(
+            targets=[
+                ManagedLlmKeyOwnershipTarget(org_id=str(org_id), user_id=str(user_id))
+            ]
+        )
+        task = MaintenanceTask(status=MaintenanceTaskStatus.WORKING, delay=0)
+        task.set_processor(processor)
+        session.add(task)
+        session.commit()
+
+    with patch(
+        'server.maintenance_task_processor.managed_llm_key_ownership_processor.session_maker',
+        session_maker,
+    ):
+        assert enqueue_managed_llm_key_ownership_tasks(batch_size=1) == 0
+
+    with session_maker() as session:
+        assert session.query(MaintenanceTask).count() == 1
+
+
+def test_org_member_model_defaults_new_rows_to_current_version(session_maker):
+    org_id = uuid4()
+    user_id = uuid4()
+    with session_maker() as session:
+        role = Role(name=f'key-default-current-{uuid4()}', rank=1)
+        session.add(role)
+        session.flush()
+        session.add(Org(id=org_id, name=f'key-default-current-{org_id}'))
+        session.add(User(id=user_id, current_org_id=org_id))
+        member = OrgMember(
+            org_id=org_id,
+            user_id=user_id,
+            role_id=role.id,
+            llm_api_key='fresh-key',
+        )
+        session.add(member)
+        session.commit()
+        session.refresh(member)
+
+    assert member.managed_llm_key_ownership_version == 1
+
+
 @pytest.mark.asyncio
 async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_maker):
     org_id = uuid4()
@@ -219,6 +279,24 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
         'error_count': 0,
         'errors': [],
     }
+    verify.assert_any_await(
+        'shared-admin-key', str(wrong_user_id), str(org_id), openhands_type=True
+    )
+    verify.assert_any_await(
+        'owned-member-key', str(owned_user_id), str(org_id), openhands_type=True
+    )
+    verify.assert_any_await(
+        'replacement-member-key',
+        str(wrong_user_id),
+        str(org_id),
+        openhands_type=True,
+    )
+    verify.assert_any_await(
+        'replacement-empty-key',
+        str(empty_user_id),
+        str(org_id),
+        openhands_type=True,
+    )
     assert delete_alias.await_count == 2
     wrong_alias = delete_alias.await_args_list[0].kwargs['key_alias']
     empty_alias = delete_alias.await_args_list[1].kwargs['key_alias']
@@ -325,3 +403,136 @@ async def test_processor_retries_when_litellm_ownership_is_unavailable(
     assert member is not None
     assert member.managed_llm_key_ownership_version == 0
     assert member.llm_api_key.get_secret_value() == 'possibly-shared-key'
+
+
+@pytest.mark.asyncio
+async def test_processor_retries_when_generated_key_fails_ownership_verification(
+    async_session_maker,
+):
+    org_id = uuid4()
+    user_id = uuid4()
+    async with async_session_maker() as session:
+        role = Role(name=f'key-post-generate-verify-{uuid4()}', rank=1)
+        session.add(role)
+        await session.flush()
+        session.add(
+            Org(
+                id=org_id,
+                name=f'key-post-generate-verify-{org_id}',
+                agent_settings={
+                    'agent_kind': 'openhands',
+                    'llm': {'model': 'openhands/test-model'},
+                },
+            )
+        )
+        await session.flush()
+        await _create_member(
+            session,
+            org_id=org_id,
+            user_id=user_id,
+            role_id=role.id,
+            key='wrong-owner-key',
+        )
+        await session.commit()
+
+    processor = ManagedLlmKeyOwnershipProcessor(
+        targets=[ManagedLlmKeyOwnershipTarget(org_id=str(org_id), user_id=str(user_id))]
+    )
+    with (
+        patch(
+            'server.maintenance_task_processor.managed_llm_key_ownership_processor.a_session_maker',
+            async_session_maker,
+        ),
+        patch(
+            'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.verify_existing_key_strict',
+            AsyncMock(side_effect=[False, False]),
+        ) as verify,
+        patch(
+            'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.delete_key_by_alias_strict',
+            AsyncMock(),
+        ),
+        patch(
+            'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.generate_key',
+            AsyncMock(return_value='replacement-key'),
+        ),
+    ):
+        result = await processor(_task())
+
+    assert result['error_count'] == 1
+    assert result['repaired'] == 0
+    assert verify.await_count == 2
+    async with async_session_maker() as session:
+        member = await session.get(
+            OrgMember,
+            {'org_id': org_id, 'user_id': user_id},
+        )
+    assert member is not None
+    assert member.managed_llm_key_ownership_version == 0
+    assert member.llm_api_key.get_secret_value() == 'wrong-owner-key'
+
+
+@pytest.mark.asyncio
+async def test_processor_skips_current_version_target_without_litellm_calls(
+    async_session_maker,
+):
+    org_id = uuid4()
+    user_id = uuid4()
+    async with async_session_maker() as session:
+        role = Role(name=f'key-current-skip-{uuid4()}', rank=1)
+        session.add(role)
+        await session.flush()
+        session.add(
+            Org(
+                id=org_id,
+                name=f'key-current-skip-{org_id}',
+                agent_settings={
+                    'agent_kind': 'openhands',
+                    'llm': {'model': 'openhands/test-model'},
+                },
+            )
+        )
+        session.add(User(id=user_id, current_org_id=org_id))
+        session.add(
+            OrgMember(
+                org_id=org_id,
+                user_id=user_id,
+                role_id=role.id,
+                llm_api_key='current-key',
+                managed_llm_key_ownership_version=1,
+            )
+        )
+        await session.commit()
+
+    processor = ManagedLlmKeyOwnershipProcessor(
+        targets=[ManagedLlmKeyOwnershipTarget(org_id=str(org_id), user_id=str(user_id))]
+    )
+    with (
+        patch(
+            'server.maintenance_task_processor.managed_llm_key_ownership_processor.a_session_maker',
+            async_session_maker,
+        ),
+        patch(
+            'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.verify_existing_key_strict',
+            AsyncMock(),
+        ) as verify,
+        patch(
+            'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.delete_key_by_alias_strict',
+            AsyncMock(),
+        ) as delete_alias,
+        patch(
+            'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.generate_key',
+            AsyncMock(),
+        ) as generate,
+    ):
+        result = await processor(_task())
+
+    assert result == {
+        'verified': 0,
+        'repaired': 0,
+        'skipped': 1,
+        'error_count': 0,
+        'errors': [],
+    }
+    verify.assert_not_awaited()
+    delete_alias.assert_not_awaited()
+    generate.assert_not_awaited()
