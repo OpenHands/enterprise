@@ -240,20 +240,27 @@ describe("MCPSettingsScreen connection test", () => {
     expect(screen.getByTestId("add-mcp-server-modal")).toBeInTheDocument();
   });
 
-  it("explains a failed connection test in plain language", async () => {
-    renderWithEmptyMcpConfig();
-    vi.spyOn(McpService, "testServer").mockResolvedValue({
-      ok: false,
-      error: "All connection attempts failed",
-      error_kind: "connection",
-    });
+  it.each([
+    ["connection", "SETTINGS$MCP_TEST_ERROR_CONNECTION"],
+    ["timeout", "SETTINGS$MCP_TEST_ERROR_TIMEOUT"],
+    ["unknown", "SETTINGS$MCP_TEST_ERROR_UNKNOWN"],
+  ] as const)(
+    "explains a failed connection test of kind %s in plain language",
+    async (errorKind, expectedMessage) => {
+      renderWithEmptyMcpConfig();
+      vi.spyOn(McpService, "testServer").mockResolvedValue({
+        ok: false,
+        error: "probe failed",
+        error_kind: errorKind,
+      });
 
-    await openAddModalAndTest("https://mcp.example.com/sse");
+      await openAddModalAndTest("https://mcp.example.com/sse");
 
-    expect(await screen.findByTestId("mcp-test-message")).toHaveTextContent(
-      "SETTINGS$MCP_TEST_ERROR_CONNECTION",
-    );
-  });
+      expect(await screen.findByTestId("mcp-test-message")).toHaveTextContent(
+        expectedMessage,
+      );
+    },
+  );
 });
 
 describe("clientLoader permission checks", () => {

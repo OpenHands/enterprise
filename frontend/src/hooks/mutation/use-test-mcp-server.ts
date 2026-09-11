@@ -45,9 +45,16 @@ export function useTestMcpServer() {
       if (server.type === "stdio") {
         throw new Error("stdio MCP servers cannot be tested from settings.");
       }
+      // The form validates before calling this, but make the contract explicit
+      // for any future caller that skips validation.
+      if (!server.url) {
+        throw new Error(
+          "An MCP server URL is required to test the connection.",
+        );
+      }
 
       let entry: MCPSSEServer | MCPSHTTPServer = {
-        url: server.url!,
+        url: server.url,
         ...(server.api_key && { api_key: server.api_key }),
         ...(server.type === "shttp" &&
           server.timeout !== undefined && { timeout: server.timeout }),

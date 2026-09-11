@@ -1,10 +1,12 @@
 """Unit tests for the ``POST /api/v1/mcp/test`` route.
 
-The SDK probe is mocked: these tests cover the route's own behaviour —
-restoring redacted secrets from stored settings, rejecting configs that must
-not be probed from the app server, and scrubbing secrets from the response.
+The SDK probe and DNS resolution are mocked: these tests cover the route's own
+behaviour — restoring redacted secrets from stored settings, rejecting configs
+and targets that must not be probed from the app server, and scrubbing secrets
+from the response.
 """
 
+from ipaddress import ip_address
 from unittest.mock import patch
 
 import pytest
@@ -57,6 +59,16 @@ def _probed_request(probe) -> MCPTestRequest:
 def probe():
     with patch('openhands.app_server.mcp.mcp_test_router._probe_mcp_server') as mock:
         mock.return_value = MCPTestSuccess(tools=['echo'])
+        yield mock
+
+
+@pytest.fixture(autouse=True)
+def resolve():
+    """Resolve every host to a public address unless a test says otherwise."""
+    with patch(
+        'openhands.app_server.mcp.mcp_test_router._resolve_probe_addresses'
+    ) as mock:
+        mock.return_value = [ip_address('203.0.113.10')]
         yield mock
 
 
@@ -121,6 +133,49 @@ def test_rejects_stdio_servers(probe):
     probe.assert_not_called()
 
 
+def test_rejects_non_http_urls(probe):
+    client = _client(settings=None)
+
+    response = client.post(
+        '/api/v1/mcp/test', json={'server': {'url': 'ftp://mcp.example.com/mcp'}}
+    )
+
+    assert response.status_code == 422
+    assert 'http' in response.json()['detail']
+    probe.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'address',
+    ['127.0.0.1', '169.254.169.254', '::1', '::ffff:169.254.169.254', '0.0.0.0'],
+)
+def test_rejects_targets_resolving_to_local_addresses(probe, resolve, address):
+    resolve.return_value = [ip_address(address)]
+    client = _client(settings=None)
+
+    response = client.post(
+        '/api/v1/mcp/test', json={'server': {'url': 'https://mcp.example.com/mcp'}}
+    )
+
+    assert response.status_code == 422
+    assert 'cannot be probed' in response.json()['detail']
+    probe.assert_not_called()
+
+
+def test_allows_private_network_targets(probe, resolve):
+    # Self-hosted deployments point at MCP servers on their internal network.
+    resolve.return_value = [ip_address('10.20.30.40')]
+    client = _client(settings=None)
+
+    response = client.post(
+        '/api/v1/mcp/test', json={'server': {'url': 'https://mcp.corp.internal/mcp'}}
+    )
+
+    assert response.status_code == 200
+    assert response.json()['ok'] is True
+    resolve.assert_called_once_with('mcp.corp.internal', None)
+
+
 def test_reports_oauth_servers_as_untestable(probe):
     client = _client(settings=None)
 
@@ -166,6 +221,29 @@ def test_scrubs_secrets_from_failure_text(probe):
     body = response.json()
     assert body['ok'] is False
     assert STORED_TOKEN not in body['error']
+    assert REDACTED in body['error']
+
+
+def test_scrubs_url_encoded_secret_from_failure_text(probe):
+    probe.return_value = MCPTestFailure(
+        error=f"redirect to '{MCP_URL}?token=Bearer%20stored-secret-token' failed",
+        error_kind='connection',
+    )
+    client = _client(_settings_with_stored_server())
+
+    response = client.post(
+        '/api/v1/mcp/test',
+        json={
+            'name': 'jira',
+            'server': {
+                'url': MCP_URL,
+                'headers': {'Authorization': f'Bearer {REDACTED}'},
+            },
+        },
+    )
+
+    body = response.json()
+    assert 'stored-secret-token' not in body['error']
     assert REDACTED in body['error']
 
 

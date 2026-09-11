@@ -153,6 +153,25 @@ describe("MCPServerForm validation", () => {
     expect(onTest).not.toHaveBeenCalled();
   });
 
+  it("disables the connection test and submit buttons while a test is pending", () => {
+    render(
+      <MCPServerForm
+        mode="add"
+        server={{ id: "tmp", type: "sse" }}
+        onSubmit={noop}
+        onCancel={noop}
+        onTest={vi.fn()}
+        isTestPending
+      />,
+    );
+
+    expect(screen.getByTestId("mcp-test-connection")).toBeDisabled();
+    expect(screen.getByTestId("mcp-test-connection")).toHaveTextContent(
+      "SETTINGS$MCP_TESTING",
+    );
+    expect(screen.getByTestId("submit-button")).toBeDisabled();
+  });
+
   it("requests a connection test with the form's current values", () => {
     const onTest = vi.fn();
     render(
