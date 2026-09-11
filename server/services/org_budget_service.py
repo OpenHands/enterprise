@@ -1201,11 +1201,22 @@ class OrgBudgetService:
         for user_id in sorted(org_member_ids & litellm_member_ids):
             info = members[user_id]
             baseline = existing_user_baselines.get(user_id)
-            if baseline is None and settings.enabled and user_id not in new_member_ids:
-                sync_errors.append(f'member_cycle_baseline_missing: {user_id}')
-                continue
             if baseline is None:
                 baseline = info.spend
+                if settings.enabled and user_id not in new_member_ids:
+                    # Legacy rows: migration 149 added baselines without a
+                    # backfill and migration 156 marked every member known, so
+                    # there is no cycle-start history. Anchor to live cumulative
+                    # spend instead of preserving a stale LiteLLM cap forever.
+                    logger.warning(
+                        'org_budget_member_cycle_baseline_recovered',
+                        extra={
+                            'org_id': str(org_id),
+                            'user_id': user_id,
+                            'baseline': baseline,
+                            'source': 'upgrade_recovery',
+                        },
+                    )
             active_user_baselines[user_id] = baseline
 
             override = override_map.get(user_id)
