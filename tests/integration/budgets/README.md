@@ -52,6 +52,8 @@ Hypothesis is necessary because a valid abstract model cannot prove that migrati
 | Zero and negative limits are rejected | Positive-limit transition domain | Healthy state machine | Passing |
 | A missing known-member baseline recovers once without renewing allowance | Not modeled | Legacy-upgrade LiteLLM contract | Passing; added after validating PR #347 before and after |
 | Concurrent admission overshoot is bounded | Not modeled | Same-member and cross-member concurrency probes | Explicit safety gates |
+| Every user receives their own managed key after upgrade | Not modeled | Upgrade regression probe | xfail until PR #353 (OHE-3252) merges |
+| Stale caps and shared keys do not survive upgrade reconciliation | Not modeled | Upgrade regression probe | Baseline recovery and cap readback passing; key ownership and job-failure xfail until #353/#356 merge |
 
 “Passing” rows are included in normal `test_*.py` collection. Explicit safety gates use the `probe_*.py` prefix so known product gaps remain executable without hiding them behind `xfail`.
 
@@ -183,3 +185,23 @@ Use this order:
 6. Run the passing backend campaign and Python pre-commit checks before submitting the change.
 
 A Quint failure usually means the intended contract is inconsistent. A minimized Hypothesis failure means real behavior diverged from that contract. A deterministic provider-call mismatch means a rejected request reached the provider or an accepted request was not charged exactly once.
+
+## Upgrade regression probe (OHE-3257)
+
+`probe_upgrade_regression.py` recreates the production incident where a LiteLLM upgrade left 11 members with empty migration-149 baselines, a stale team cap below current spend, and an administrator key broadcast to 10 other rows:
+
+```bash
+uv run pytest tests/integration/budgets/probe_upgrade_regression.py -n 0
+```
+
+The fixture seeds the exact legacy-upgrade state: 11 members, empty `user_cycle_start_spend`, all members in `litellm_known_member_ids`, one correctly attributed key, the admin key copied to the other 10 rows, stale cap `$2.05264885`, org limit `$1,000`, and a `$300` user override. The deterministic provider charges `$1.00` per request, so the exact production spend (`$2.2908277`) is not reproducible; three requests produce `$3.00` spend, which is above the stale cap and exercises the same over-cap state.
+
+Five acceptance criteria:
+
+1. **Every user receives their own key** — `xfail` until PR #353 (OHE-3252) merges the `ManagedLlmKeyOwnershipProcessor`.
+2. **Baselines remain stable on later syncs** — passing; PR #347 (merged) recovers missing baselines from live spend.
+3. **Desired and actual caps match after readback** — passing; team cap = `cycle_start_spend + org_limit`, member cap = `baseline + override`.
+4. **Partial failures resume without renewing allowance** — passing; a faulted member update records `litellm_last_sync_status='error'`, retry converges, and spend does not move.
+5. **Unresolved reconciliation fails the process/job** — `xfail` until PR #356 (OHE-3254) merges the fail-closed propagation in `run_maintenance_tasks`.
+
+Once #353 and #356 merge, remove the two `@pytest.mark.xfail` decorators and include this probe in the passing backend campaign.

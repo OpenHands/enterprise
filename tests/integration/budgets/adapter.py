@@ -4,17 +4,21 @@ import asyncio
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from server.routes.org_models import OrgBudgetSettingsUpdate
 from server.services.org_budget_service import OrgBudgetService
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
+from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_member import OrgMember
+from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
 from storage.user import User
 
@@ -248,6 +252,221 @@ class BudgetAdapterFactory:
             with suppress(Exception):
                 await LiteLlmManager.delete_key(key)
         for user_id in adapter.user_ids:
+            with suppress(Exception):
+                await LiteLlmManager.delete_user(str(user_id))
+        if scenario.team_created:
+            with suppress(Exception):
+                await LiteLlmManager.delete_team(str(adapter.org_id))
+        await adapter.session.close()
+
+
+@dataclass
+class UpgradeBudgetTestAdapter(BudgetTestAdapter):
+    """Adapter for the OHE-3257 legacy-upgrade regression scenario.
+
+    Provisions 11 members in a legacy-upgrade state: empty migration-149
+    baselines, migration 156 marking all members known, one correctly
+    attributed LiteLLM key with the admin key broadcast to the other 10 rows,
+    a stale team cap below current spend, an org limit of $1,000, and a $300
+    user override.
+    """
+
+    override_user_id: UUID | None = None
+
+    async def get_settings(self) -> OrgBudgetSettings:
+        result = await self.session.execute(
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == self.org_id)
+        )
+        return result.scalar_one()
+
+    async def get_member(self, user_id: UUID) -> OrgMember:
+        result = await self.session.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == self.org_id,
+                OrgMember.user_id == user_id,
+            )
+        )
+        return result.scalar_one()
+
+    async def get_all_members(self) -> list[OrgMember]:
+        result = await self.session.execute(
+            select(OrgMember)
+            .where(OrgMember.org_id == self.org_id)
+            .order_by(OrgMember.user_id)
+        )
+        return list(result.scalars().all())
+
+    async def get_override(self, user_id: UUID) -> OrgUserBudgetOverride | None:
+        result = await self.session.execute(
+            select(OrgUserBudgetOverride).where(
+                OrgUserBudgetOverride.org_id == self.org_id,
+                OrgUserBudgetOverride.user_id == user_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    @property
+    def all_user_ids(self) -> tuple[UUID, ...]:
+        return self.user_ids  # type: ignore[return-value]
+
+
+@dataclass
+class _UpgradeScenario:
+    adapter: UpgradeBudgetTestAdapter
+    team_created: bool = False
+
+
+class UpgradeBudgetAdapterFactory:
+    """Factory that seeds the exact OHE-3257 legacy-upgrade fixture.
+
+    The fixture mirrors the production incident: 11 members with empty
+    migration-149 baselines, migration 156 marking all members known, only
+    one correctly attributed LiteLLM key, the admin key copied to the other
+    10 rows, a stale team cap, org limit $1,000, and a $300 user override.
+    """
+
+    MEMBER_COUNT = 11
+    STALE_TEAM_CAP = 2.05264885
+    ORG_LIMIT = 1000.0
+    USER_OVERRIDE = 300.0
+
+    def __init__(
+        self,
+        session_maker: async_sessionmaker[AsyncSession],
+        *,
+        direct_url: str,
+        provider_url: str,
+        proxy_url: str,
+    ):
+        self.session_maker = session_maker
+        self.direct_url = direct_url
+        self.provider_url = provider_url
+        self.proxy_url = proxy_url
+        self._scenarios: list[_UpgradeScenario] = []
+
+    async def create(self) -> UpgradeBudgetTestAdapter:
+        session = self.session_maker()
+        org = Org(name=f'Upgrade regression {time.time_ns()}')
+        role = Role(name=f'upgrade-member-{time.time_ns()}', rank=1)
+        session.add_all([org, role])
+        await session.flush()
+
+        user_ids = tuple(uuid4() for _ in range(self.MEMBER_COUNT))
+        users = tuple(User(id=uid, current_org_id=org.id) for uid in user_ids)
+        session.add_all(users)
+        await session.flush()
+        session.add_all(
+            [
+                OrgMember(
+                    org_id=org.id,
+                    user_id=uid,
+                    role_id=role.id,
+                    _llm_api_key='placeholder',
+                    status='active',
+                )
+                for uid in user_ids
+            ]
+        )
+        await session.commit()
+
+        adapter = UpgradeBudgetTestAdapter(
+            session=session,
+            service=OrgBudgetService(db_session=session),
+            org_id=org.id,
+            user_ids=user_ids,  # type: ignore[arg-type]
+            keys={},
+            direct_url=self.direct_url,
+            provider_url=self.provider_url,
+            proxy_url=self.proxy_url,
+            override_user_id=user_ids[0],
+        )
+        scenario = _UpgradeScenario(adapter=adapter)
+        self._scenarios.append(scenario)
+
+        try:
+            # Create the team with the stale cap from the incident.
+            await LiteLlmManager.create_team(
+                team_alias=org.name,
+                team_id=str(org.id),
+                max_budget=self.STALE_TEAM_CAP,
+            )
+            scenario.team_created = True
+
+            # Provision all 11 members as real LiteLLM users in the team.
+            for uid in user_ids:
+                created = await LiteLlmManager.create_user(
+                    email=f'{uid}@example.com',
+                    keycloak_user_id=str(uid),
+                )
+                if not created:
+                    raise RuntimeError(f'failed to provision LiteLLM user {uid}')
+                await LiteLlmManager.add_user_to_team(
+                    keycloak_user_id=str(uid),
+                    team_id=str(org.id),
+                    max_budget=self.STALE_TEAM_CAP,
+                )
+
+            # Only member 0 receives their own correctly-attributed key.
+            admin_key = await LiteLlmManager.generate_key(
+                keycloak_user_id=str(user_ids[0]),
+                team_id=str(org.id),
+                key_alias=f'budget-upgrade-{user_ids[0]}',
+                metadata={'upgrade_regression': True},
+            )
+            adapter.keys[user_ids[0]] = admin_key
+
+            # The admin key is broadcast to the other 10 rows (the bug).
+            for uid in user_ids[1:]:
+                adapter.keys[uid] = admin_key
+
+            # Overwrite every OrgMember row with the broadcast key.
+            for uid in user_ids:
+                member = await adapter.get_member(uid)
+                member.llm_api_key = admin_key
+            await session.commit()
+
+            # Seed the legacy-upgrade budget settings: enabled, org limit
+            # $1,000, empty migration-149 baselines, migration 156 marking
+            # all members known, and the stale cap as the cycle-start spend.
+            settings = OrgBudgetSettings(
+                org_id=org.id,
+                enabled=True,
+                monthly_limit=self.ORG_LIMIT,
+                reset_day=1,
+                default_user_monthly_limit=self.USER_OVERRIDE,
+                cycle_start_at=datetime.now(UTC).replace(
+                    day=1, hour=0, minute=0, second=0, microsecond=0
+                ),
+                cycle_start_spend=0.0,
+                user_cycle_start_spend={},  # empty migration-149 baselines
+                litellm_known_member_ids=sorted(str(uid) for uid in user_ids),
+            )
+            session.add(settings)
+            await session.commit()
+
+            # Apply the $300 override to member 0 via the service so the
+            # override row is created through the normal path.
+            await adapter.set_override(user_ids[0], self.USER_OVERRIDE)
+        except Exception:
+            await self._cleanup(scenario)
+            self._scenarios.remove(scenario)
+            raise
+
+        return adapter
+
+    async def close(self) -> None:
+        for scenario in reversed(self._scenarios):
+            await self._cleanup(scenario)
+        self._scenarios.clear()
+
+    async def _cleanup(self, scenario: _UpgradeScenario) -> None:
+        adapter = scenario.adapter
+        # Only delete the unique admin key once; the other rows share it.
+        unique_keys = set(adapter.keys.values())
+        for key in unique_keys:
+            with suppress(Exception):
+                await LiteLlmManager.delete_key(key)
+        for user_id in adapter.all_user_ids:
             with suppress(Exception):
                 await LiteLlmManager.delete_user(str(user_id))
         if scenario.team_created:
