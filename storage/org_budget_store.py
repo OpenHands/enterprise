@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Iterable
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_threshold import OrgBudgetThreshold
 from storage.org_user_budget_override import OrgUserBudgetOverride
@@ -127,6 +130,68 @@ class OrgBudgetStore:
     async def delete_override(self, override: OrgUserBudgetOverride) -> None:
         await self.db_session.delete(override)
         await self.db_session.flush()
+
+    async def get_cycle_baselines(
+        self, org_id: UUID, cycle_start_at: datetime
+    ) -> dict[str, float]:
+        result = await self.db_session.execute(
+            select(
+                OrgBudgetCycleBaseline.user_id, OrgBudgetCycleBaseline.baseline_spend
+            )
+            .where(OrgBudgetCycleBaseline.org_id == org_id)
+            .where(OrgBudgetCycleBaseline.cycle_start_at == cycle_start_at)
+        )
+        return {user_id: baseline_spend for user_id, baseline_spend in result.all()}
+
+    async def record_cycle_baselines(
+        self,
+        org_id: UUID,
+        cycle_start_at: datetime,
+        baselines: Mapping[str, float],
+        *,
+        source: str,
+        observed_at: datetime,
+        replace: bool = False,
+    ) -> None:
+        """Insert baseline rows for one cycle.
+
+        ``replace=False`` keeps an existing row for the same member and cycle
+        (first writer wins), which is what concurrent reconcilers need.
+        ``replace=True`` overwrites it and is reserved for explicit admin
+        re-baselining.
+        """
+        if not baselines:
+            return
+        now = datetime.now(UTC)
+        stmt = insert(OrgBudgetCycleBaseline).values(
+            [
+                {
+                    'org_id': org_id,
+                    'user_id': user_id,
+                    'cycle_start_at': cycle_start_at,
+                    'baseline_spend': baseline_spend,
+                    'source': source,
+                    'observed_at': observed_at,
+                    'created_at': now,
+                    'updated_at': now,
+                }
+                for user_id, baseline_spend in baselines.items()
+            ]
+        )
+        constraint = 'uq_org_budget_cycle_baseline_member_cycle'
+        if replace:
+            stmt = stmt.on_conflict_do_update(
+                constraint=constraint,
+                set_={
+                    'baseline_spend': stmt.excluded.baseline_spend,
+                    'source': stmt.excluded.source,
+                    'observed_at': stmt.excluded.observed_at,
+                    'updated_at': now,
+                },
+            )
+        else:
+            stmt = stmt.on_conflict_do_nothing(constraint=constraint)
+        await self.db_session.execute(stmt)
 
     async def flush(self) -> None:
         await self.db_session.flush()
