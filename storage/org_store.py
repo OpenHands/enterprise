@@ -409,33 +409,47 @@ class OrgStore:
         return False
 
     @staticmethod
+    async def _repair_free_team_models_for_upgrade(org: Org) -> bool:
+        """Attempt the external repair, retaining the upgrade marker on failure."""
+        try:
+            result = await LiteLlmManager.ensure_free_team_models(str(org.id))
+        except Exception:
+            logger.warning(
+                'Failed to repair free-tier LiteLLM team allowlist',
+                exc_info=True,
+                extra={'org_id': str(org.id)},
+            )
+            return False
+        return result is not None
+
+    @staticmethod
     async def _validate_org_version(org: Org | None) -> Org | None:
         """Check if we need to update org version."""
         if org and org.org_version < ORG_SETTINGS_VERSION:
-            org_kwargs: dict[str, Any] = {'org_version': ORG_SETTINGS_VERSION}
             # Only rewrite the default LLM config for orgs still on the managed
             # default; BYOK orgs keep their custom model/base_url on upgrade.
             if OrgStore._uses_managed_default_llm(org):
-                org_kwargs['agent_settings_diff'] = {
-                    'llm': {
-                        'model': get_default_llm_model(),
-                        'base_url': get_default_llm_base_url(),
+                org = await OrgStore._update_org_kwargs(
+                    org.id,
+                    {
+                        'agent_settings_diff': {
+                            'llm': {
+                                'model': get_default_llm_model(),
+                                'base_url': get_default_llm_base_url(),
+                            },
+                        },
                     },
-                }
-            org = await OrgStore._update_org_kwargs(org.id, org_kwargs)
-            # One-time, best-effort repair of a stale free-tier LiteLLM team
-            # allowlist (the version bump is the once-per-org trigger). A
-            # failed repair leaves the org upgraded but still 403ing exactly as
-            # before, and is never retried on later loads.
-            if org is not None:
-                try:
-                    await LiteLlmManager.ensure_free_team_models(str(org.id))
-                except Exception:
-                    logger.warning(
-                        'Failed to repair free-tier LiteLLM team allowlist',
-                        exc_info=True,
-                        extra={'org_id': str(org.id)},
-                    )
+                )
+            # org_version is the completion marker for this external repair.
+            # Advance it only after LiteLLM responds successfully; failures are
+            # non-blocking for this load and retry on the next one.
+            if org is not None and await OrgStore._repair_free_team_models_for_upgrade(
+                org
+            ):
+                org = await OrgStore._update_org_kwargs(
+                    org.id,
+                    {'org_version': ORG_SETTINGS_VERSION},
+                )
         return org
 
     @staticmethod
