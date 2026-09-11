@@ -3,7 +3,6 @@
 from uuid import UUID
 
 import httpx
-import quint_oracle
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.routes.org_models import (
@@ -11,6 +10,20 @@ from server.routes.org_models import (
     OrgMemberFinancialResponse,
 )
 from storage.lite_llm_manager import LiteLlmManager
+
+# The Quint oracle client is vendored under quint-specs/, which the application
+# image does not ship. Without it the instrumentation below is a no-op, so the
+# app must not depend on it being importable.
+try:
+    import quint_oracle
+except ModuleNotFoundError:  # pragma: no cover
+    from types import SimpleNamespace
+
+    quint_oracle = SimpleNamespace(
+        log=lambda *args, **kwargs: None,
+        In=lambda value, domain: value,
+    )
+
 from storage.org_member_store import OrgMemberStore
 
 
