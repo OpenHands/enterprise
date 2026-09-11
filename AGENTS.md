@@ -2,7 +2,7 @@ This repository contains the code for OpenHands Enterprise, an automated AI soft
 and a React frontend (in the `frontend` directory). The backend is the OpenHands app server (in the `openhands`
 directory) plus the SaaS/enterprise modules that extend it, which sit beside it at the repository root:
 `server/`, `storage/`, `integrations/`, `sync/`, `analytics/`, `utils/`, `migrations/` and the entrypoints
-`saas_server.py`, `run_maintenance_tasks.py`, `run_budget_maintenance.py`. This is the same layout the Docker
+`saas_server.py`, `run_maintenance_tasks.py`, `run_budget_maintenance.py`, `run_budget_preflight.py`. This is the same layout the Docker
 image has in `/app`. Python dependencies are managed with uv (`pyproject.toml` + `uv.lock`).
 
 ## General Setup:
@@ -148,7 +148,7 @@ The SaaS/enterprise modules extend the OpenHands app server (`openhands/`). They
 - `sync/` - CronJob entrypoints (`python -m sync.<job>`)
 - `analytics/`, `utils/` - SaaS analytics user provider and shared helpers
 - `migrations/` + `alembic.ini` - Alembic database migrations
-- `saas_server.py` - the FastAPI app Kubernetes runs (`uvicorn saas_server:app`); `run_maintenance_tasks.py` / `run_budget_maintenance.py` - CronJob entrypoints
+- `saas_server.py` - the FastAPI app Kubernetes runs (`uvicorn saas_server:app`); `run_maintenance_tasks.py` / `run_budget_maintenance.py` - CronJob entrypoints; `run_budget_preflight.py` - upgrade preflight / post-upgrade gate hook entrypoint
 - Email services: Resend remains in `server/services/email_service.py`; SMTPEmailService lives in
   `server/services/smtp_email_service.py` and is used for org invitations/budget alerts plus
   the SMTP-driven UI email-enabled checks (SMTP_HOST).

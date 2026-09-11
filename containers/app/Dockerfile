@@ -116,7 +116,7 @@ COPY --chown=openhands:openhands --chmod=770 ./sync ./sync
 COPY --chown=openhands:openhands --chmod=770 ./analytics ./analytics
 COPY --chown=openhands:openhands --chmod=770 ./utils ./utils
 COPY --chown=openhands:openhands --chmod=770 ./migrations ./migrations
-COPY --chown=openhands:openhands --chmod=770 saas_server.py run_maintenance_tasks.py run_budget_maintenance.py ./
+COPY --chown=openhands:openhands --chmod=770 saas_server.py run_maintenance_tasks.py run_budget_maintenance.py run_budget_preflight.py ./
 COPY --chown=openhands:openhands pyproject.toml uv.lock alembic.ini README.md LICENSE ./
 
 # Add this line to set group ownership of all files/directories not already in "app" group
