@@ -22,6 +22,7 @@ from openhands.app_server.settings.agent_profiles import (
     MAX_AGENT_PROFILES,
     AgentProfiles,
 )
+from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.user_auth import get_user_id
 from openhands.sdk.profiles import (
@@ -1382,6 +1383,37 @@ class TestProfileSecretScope:
             dict(self.SENT), self._user(['DATADOG_API_KEY', 'NEVER_SUPPLIED'])
         )
         assert got == {'DATADOG_API_KEY': 'dd'}
+
+    def test_secret_refs_survive_the_settings_to_user_info_projection(self):
+        """The seam that would silently disable the scope if it regressed.
+
+        ``AuthUserContext._user_info_from_settings`` rebuilds ``UserInfo`` from
+        ``settings.model_dump()``. If that ever became a field-by-field copy,
+        the refs would be dropped, the filter would read ``None``, and every
+        scoped profile would quietly launch unrestricted.
+        """
+        settings = Settings(
+            active_agent_profile_id='pid',
+            active_agent_profile_secret_refs=['DATADOG_API_KEY'],
+        )
+        user = UserInfo(
+            id='u1', **settings.model_dump(context={'expose_secrets': True})
+        )
+        assert user.active_agent_profile_secret_refs == ['DATADOG_API_KEY']
+        assert _apply_profile_secret_scope(
+            {'DATADOG_API_KEY': 'dd', 'GITHUB_TOKEN': 'gh'}, user
+        ) == {'DATADOG_API_KEY': 'dd'}
+
+    def test_a_deployment_without_agent_profiles_is_unrestricted(self):
+        """The file-backed store resolves no profile, so nothing is scoped.
+
+        ``FileSettingsStore.load`` discards the resolve flags outright, so the
+        refs stay ``None`` there and the filter must be a pass-through rather
+        than an empty allow-list.
+        """
+        user = UserInfo(id='u1')
+        sent = {'GITHUB_TOKEN': 'gh', 'DATADOG_API_KEY': 'dd'}
+        assert _apply_profile_secret_scope(dict(sent), user) == sent
 
     def test_resolution_carries_secret_refs_out_of_the_store(self):
         """Without this the filter above would silently never fire."""
