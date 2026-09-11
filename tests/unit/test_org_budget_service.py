@@ -758,6 +758,8 @@ async def test_cycle_roll_does_not_advance_when_membership_repair_fails(
             result = await service.run_budget_maintenance(budget_org.id)
 
     assert result['skipped'] == 'litellm_membership_repair_failed'
+    assert result['reconciliation_status'] == 'error'
+    assert result['reconciliation_error']
     assert result['cycle_rolled'] is False
     assert settings.cycle_start_at.replace(tzinfo=UTC) == old_cycle_start
     assert settings.cycle_start_spend == 10.0

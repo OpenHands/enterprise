@@ -147,3 +147,34 @@ async def test_processor_reports_reconciliation_failure(async_session_maker):
     assert settings is not None
     assert settings.litellm_last_sync_status == 'error'
     assert settings.litellm_last_sync_error is not None
+
+
+@pytest.mark.asyncio
+async def test_processor_reports_default_reconciliation_error(async_session_maker):
+    org_id = uuid4()
+    processor = OrgBudgetMaintenanceProcessor(org_ids=[str(org_id)])
+    task = MaintenanceTask(
+        status=MaintenanceTaskStatus.WORKING,
+        processor_type='',
+        processor_json='{}',
+        delay=0,
+    )
+
+    with (
+        patch(
+            'server.maintenance_task_processor.org_budget_maintenance_processor.a_session_maker',
+            async_session_maker,
+        ),
+        patch(
+            'server.maintenance_task_processor.org_budget_maintenance_processor.OrgBudgetService.run_budget_maintenance',
+            AsyncMock(return_value={'reconciliation_status': 'error'}),
+        ),
+    ):
+        result = await processor(task)
+
+    assert result['processed'] == 1
+    assert result['error_count'] == 1
+    assert result['errors'][0] == {
+        'org_id': str(org_id),
+        'error': 'budget_reconciliation_failed',
+    }
