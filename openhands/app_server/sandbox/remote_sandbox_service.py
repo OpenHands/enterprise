@@ -4,7 +4,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncContextManager, AsyncGenerator, Callable
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -126,7 +126,7 @@ class RemoteSandboxService(SandboxService):
     max_num_sandboxes: int
     user_context: UserContext
     httpx_client: httpx.AsyncClient
-    db_session: AsyncSession
+    db_session_factory: Callable[[], AsyncContextManager[AsyncSession]]
 
     async def _send_runtime_api_request(
         self, method: str, path: str, **kwargs: Any
@@ -233,19 +233,46 @@ class RemoteSandboxService(SandboxService):
 
         return SandboxStatus.MISSING
 
-    async def _secure_select(self):
+    async def _secure_select(self, *filters, limit: int | None = None):
         query = select(StoredRemoteSandbox)
         user_id = await self.user_context.get_user_id()
         if user_id:
             query = query.where(StoredRemoteSandbox.created_by_user_id == user_id)
+        elif not filters and limit is None:
+            raise ValueError('Admin sandbox queries must be filtered or limited')
+        if filters:
+            query = query.where(*filters)
+        if limit is not None:
+            query = query.limit(limit)
         return query
 
     async def _get_stored_sandbox(self, sandbox_id: str) -> StoredRemoteSandbox | None:
-        stmt = await self._secure_select()
-        stmt = stmt.where(StoredRemoteSandbox.id == sandbox_id)
-        result = await self.db_session.execute(stmt)
-        stored_sandbox = result.scalar_one_or_none()
-        return stored_sandbox
+        stmt = await self._secure_select(StoredRemoteSandbox.id == sandbox_id, limit=1)
+        async with self.db_session_factory() as db_session:
+            result = await db_session.execute(stmt)
+            return result.scalar_one_or_none()
+
+    async def _set_session_api_key_hash(
+        self, sandbox_id: str, session_api_key_hash: str | None
+    ) -> bool:
+        stmt = await self._secure_select(StoredRemoteSandbox.id == sandbox_id, limit=1)
+        async with self.db_session_factory() as db_session:
+            result = await db_session.execute(stmt)
+            stored_sandbox = result.scalar_one_or_none()
+            if stored_sandbox is None:
+                return False
+            stored_sandbox.session_api_key_hash = session_api_key_hash
+            return True
+
+    async def _delete_stored_sandbox(self, sandbox_id: str) -> bool:
+        stmt = await self._secure_select(StoredRemoteSandbox.id == sandbox_id, limit=1)
+        async with self.db_session_factory() as db_session:
+            result = await db_session.execute(stmt)
+            stored_sandbox = result.scalar_one_or_none()
+            if stored_sandbox is None:
+                return False
+            await db_session.delete(stored_sandbox)
+            return True
 
     async def _get_runtime(self, sandbox_id: str) -> dict[str, Any]:
         response = await self._send_runtime_api_request(
@@ -316,7 +343,7 @@ class RemoteSandboxService(SandboxService):
         page_id: str | None = None,
         limit: int = 100,
     ) -> SandboxPage:
-        stmt = await self._secure_select()
+        stmt = await self._secure_select(limit=limit + 1)
 
         # Handle pagination
         if page_id is not None:
@@ -330,11 +357,11 @@ class RemoteSandboxService(SandboxService):
         else:
             offset = 0
 
-        # Apply limit and get one extra to check if there are more results
-        stmt = stmt.limit(limit + 1).order_by(StoredRemoteSandbox.created_at.desc())
+        stmt = stmt.order_by(StoredRemoteSandbox.created_at.desc())
 
-        result = await self.db_session.execute(stmt)
-        stored_sandboxes = result.scalars().all()
+        async with self.db_session_factory() as db_session:
+            result = await db_session.execute(stmt)
+            stored_sandboxes = result.scalars().all()
 
         # Check if there are more results
         has_more = len(stored_sandboxes) > limit
@@ -380,12 +407,13 @@ class RemoteSandboxService(SandboxService):
         """Get a single sandbox by session API key using the stored hash."""
         session_api_key_hash = _hash_session_api_key(session_api_key)
 
-        stmt = await self._secure_select()
-        stmt = stmt.where(
-            StoredRemoteSandbox.session_api_key_hash == session_api_key_hash
+        stmt = await self._secure_select(
+            StoredRemoteSandbox.session_api_key_hash == session_api_key_hash,
+            limit=1,
         )
-        result = await self.db_session.execute(stmt)
-        stored_sandbox = result.scalar_one_or_none()
+        async with self.db_session_factory() as db_session:
+            result = await db_session.execute(stmt)
+            stored_sandbox = result.scalar_one_or_none()
 
         if stored_sandbox is None:
             return None
@@ -416,12 +444,17 @@ class RemoteSandboxService(SandboxService):
             if 'session_id' in runtime
         }
 
-        query = await self._secure_select()
-        query = query.filter(StoredRemoteSandbox.id.in_(running_session_ids)).order_by(
-            StoredRemoteSandbox.created_at.asc()
+        if not running_session_ids:
+            return []
+
+        query = await self._secure_select(
+            StoredRemoteSandbox.id.in_(running_session_ids),
+            limit=len(running_session_ids),
         )
-        result = await self.db_session.execute(query)
-        return list(result.scalars().all())
+        query = query.order_by(StoredRemoteSandbox.created_at.asc())
+        async with self.db_session_factory() as db_session:
+            result = await db_session.execute(query)
+            return list(result.scalars().all())
 
     async def get_sandbox_record_by_session_api_key(
         self, session_api_key: str
@@ -429,12 +462,13 @@ class RemoteSandboxService(SandboxService):
         """Get persisted sandbox identity by session API key — DB lookup only, no runtime call."""
         session_api_key_hash = _hash_session_api_key(session_api_key)
 
-        stmt = await self._secure_select()
-        stmt = stmt.where(
-            StoredRemoteSandbox.session_api_key_hash == session_api_key_hash
+        stmt = await self._secure_select(
+            StoredRemoteSandbox.session_api_key_hash == session_api_key_hash,
+            limit=1,
         )
-        result = await self.db_session.execute(stmt)
-        stored_sandbox = result.scalar_one_or_none()
+        async with self.db_session_factory() as db_session:
+            result = await db_session.execute(stmt)
+            stored_sandbox = result.scalar_one_or_none()
 
         if stored_sandbox is None:
             return None
@@ -467,15 +501,6 @@ class RemoteSandboxService(SandboxService):
             # get user id
             user_id = await self.user_context.get_user_id()
 
-            # Store the sandbox
-            stored_sandbox = StoredRemoteSandbox(
-                id=sandbox_id,
-                created_by_user_id=user_id,
-                sandbox_spec_id=sandbox_spec.id,
-                created_at=utc_now(),
-            )
-            self.db_session.add(stored_sandbox)
-
             # Prepare environment variables
             environment = await self._init_environment(sandbox_spec, sandbox_id)
 
@@ -493,12 +518,19 @@ class RemoteSandboxService(SandboxService):
             response.raise_for_status()
             runtime_data = response.json()
 
-            # Store the session_api_key hash for efficient lookups
             session_api_key = runtime_data.get('session_api_key')
-            if session_api_key:
-                stored_sandbox.session_api_key_hash = _hash_session_api_key(
-                    session_api_key
-                )
+            session_api_key_hash = (
+                _hash_session_api_key(session_api_key) if session_api_key else None
+            )
+            stored_sandbox = StoredRemoteSandbox(
+                id=sandbox_id,
+                created_by_user_id=user_id,
+                sandbox_spec_id=sandbox_spec.id,
+                session_api_key_hash=session_api_key_hash,
+                created_at=utc_now(),
+            )
+            async with self.db_session_factory() as db_session:
+                db_session.add(stored_sandbox)
 
             # Log runtime assignment for observability
             runtime_id = runtime_data.get('runtime_id', 'unknown')
@@ -573,9 +605,11 @@ class RemoteSandboxService(SandboxService):
             response_data = response.json()
             new_session_api_key = response_data.get('session_api_key')
             if new_session_api_key:
-                stored_sandbox.session_api_key_hash = _hash_session_api_key(
-                    new_session_api_key
+                updated = await self._set_session_api_key_hash(
+                    sandbox_id, _hash_session_api_key(new_session_api_key)
                 )
+                if not updated:
+                    return False
                 _logger.info(
                     f'Updated session_api_key_hash for sandbox {sandbox_id} after resume'
                 )
@@ -596,10 +630,6 @@ class RemoteSandboxService(SandboxService):
             if not stored_sandbox:
                 return False
 
-            # Security: Invalidate the session API key hash to prevent
-            # leaked keys from being used while the sandbox is paused.
-            stored_sandbox.session_api_key_hash = None
-
             runtime_data = await self._get_runtime(sandbox_id)
             response = await self._send_runtime_api_request(
                 'POST',
@@ -609,7 +639,10 @@ class RemoteSandboxService(SandboxService):
             if response.status_code == 404:
                 return False
             response.raise_for_status()
-            return True
+
+            # The runtime is paused, so persist key invalidation in a fresh
+            # transaction after all network I/O has completed.
+            return await self._set_session_api_key_hash(sandbox_id, None)
 
         except httpx.HTTPError:
             _logger.exception(f'Error pausing sandbox {sandbox_id}', stack_info=True)
@@ -632,22 +665,18 @@ class RemoteSandboxService(SandboxService):
         (router -> 503) and keeps the row + runtime for a retry — so a live sandbox
         is never reported as 404.
 
-        Security: the session_api_key_hash is invalidated UP FRONT (like
-        ``pause_sandbox`` clears it before pausing) so a delete — commonly a
-        revoke of a leaked key — kills it promptly. This goes further than pause:
-        on a transient stop failure the invalidation is committed before raising,
-        so the caller's rollback cannot resurrect the just-revoked key (pause does
-        not commit, so its clear can still be rolled back). The row is kept for
-        retry.
+        Security: the session_api_key_hash is invalidated and committed UP FRONT
+        before the runtime request, so a delete — commonly a revoke of a leaked key
+        — kills it promptly. On a transient stop failure, the caller's rollback
+        cannot resurrect the just-revoked key. The row is kept for retry.
         """
-        had_key = False
         try:
             stored_sandbox = await self._get_stored_sandbox(sandbox_id)
             if not stored_sandbox:
                 return False
-            # Security: drop the key now, before the (fallible) runtime stop.
-            had_key = stored_sandbox.session_api_key_hash is not None
-            stored_sandbox.session_api_key_hash = None
+            # Security: persist key revocation before the fallible runtime stop.
+            if not await self._set_session_api_key_hash(sandbox_id, None):
+                return False
             try:
                 runtime_data = await self._get_runtime(sandbox_id)
             except httpx.HTTPStatusError as e:
@@ -658,8 +687,7 @@ class RemoteSandboxService(SandboxService):
                     f'Runtime for sandbox {sandbox_id} already gone (404); '
                     'deleting record'
                 )
-                await self.db_session.delete(stored_sandbox)
-                return True
+                return await self._delete_stored_sandbox(sandbox_id)
 
             response = await self._send_runtime_api_request(
                 'POST',
@@ -668,16 +696,12 @@ class RemoteSandboxService(SandboxService):
             )
             if response.status_code != 404:
                 response.raise_for_status()
-            await self.db_session.delete(stored_sandbox)
-            return True
+            return await self._delete_stored_sandbox(sandbox_id)
         except httpx.HTTPError as e:
             # Transient runtime lookup/stop failure: keep the row + runtime and
-            # signal retryable (503) — never a 404. Persist the key invalidation
-            # now: the caller rolls back on this raise, which would otherwise
-            # restore the hash and leave a just-revoked key valid.
+            # signal retryable (503) — never a 404. Key revocation was committed
+            # before the runtime request and cannot be rolled back by the caller.
             _logger.exception(f'Error deleting sandbox {sandbox_id}', stack_info=True)
-            if had_key:
-                await self.db_session.commit()
             raise SandboxDeleteRetryError(
                 f'Could not complete delete for sandbox {sandbox_id}: {e}'
             ) from e
@@ -855,13 +879,15 @@ class RemoteSandboxService(SandboxService):
         """
         if not sandbox_ids:
             return []
-        query = await self._secure_select()
-        query = query.filter(StoredRemoteSandbox.id.in_(sandbox_ids))
-        stored_remote_sandboxes = await self.db_session.execute(query)
-        stored_remote_sandboxes_by_id = {
-            stored_remote_sandbox[0].id: stored_remote_sandbox[0]
-            for stored_remote_sandbox in stored_remote_sandboxes
-        }
+        query = await self._secure_select(
+            StoredRemoteSandbox.id.in_(sandbox_ids), limit=len(set(sandbox_ids))
+        )
+        async with self.db_session_factory() as db_session:
+            stored_remote_sandboxes = await db_session.execute(query)
+            stored_remote_sandboxes_by_id = {
+                stored_remote_sandbox[0].id: stored_remote_sandbox[0]
+                for stored_remote_sandbox in stored_remote_sandboxes
+            }
 
         # Gracefully handle runtime API failures by falling back to empty runtimes.
         # This mirrors the behavior of get_sandbox which falls back to runtime=None.
@@ -1156,7 +1182,6 @@ class RemoteSandboxServiceInjector(SandboxServiceInjector):
     ) -> AsyncGenerator[SandboxService, None]:
         # Define inline to prevent circular lookup
         from openhands.app_server.config import (
-            get_db_session,
             get_global_config,
             get_httpx_client,
             get_sandbox_spec_service,
@@ -1177,11 +1202,11 @@ class RemoteSandboxServiceInjector(SandboxServiceInjector):
                         sleep_interval=self.polling_interval,
                     )
                 )
+        db_session_maker = await config.db_session.get_async_session_maker()
         async with (
             get_user_context(state, request) as user_context,
             get_sandbox_spec_service(state, request) as sandbox_spec_service,
             get_httpx_client(state, request) as httpx_client,
-            get_db_session(state, request) as db_session,
         ):
             yield RemoteSandboxService(
                 sandbox_spec_service=sandbox_spec_service,
@@ -1194,5 +1219,5 @@ class RemoteSandboxServiceInjector(SandboxServiceInjector):
                 max_num_sandboxes=self.max_num_sandboxes,
                 user_context=user_context,
                 httpx_client=httpx_client,
-                db_session=db_session,
+                db_session_factory=db_session_maker.begin,
             )
