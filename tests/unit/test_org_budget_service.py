@@ -106,6 +106,22 @@ def test_budget_policy_comparison_reports_verified_healthy_state():
     assert result['applied_at'] == applied_at
 
 
+@pytest.mark.asyncio
+async def test_get_reconciliation_state_reports_sync_error_as_degraded():
+    settings = OrgBudgetSettings(
+        org_id=uuid4(),
+        enabled=True,
+        monthly_limit=100.0,
+        litellm_last_sync_status='error',
+    )
+    store = MagicMock()
+    store.db_session = None
+    store.get_settings = AsyncMock(return_value=settings)
+    service = OrgBudgetService(store=store)
+
+    assert await service.get_reconciliation_state(settings.org_id) == 'degraded'
+
+
 def test_budget_policy_comparison_reports_live_drift_as_degraded():
     user_id = str(uuid4())
     settings = OrgBudgetSettings(

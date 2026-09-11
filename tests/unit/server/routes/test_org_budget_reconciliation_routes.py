@@ -54,9 +54,12 @@ def _budget_state(reconciliation_state: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_org_budget_write_returns_503_with_degraded_state():
+@pytest.mark.parametrize('reconciliation_state', ['degraded', 'failed'])
+async def test_org_budget_write_returns_503_for_unhealthy_reconciliation(
+    reconciliation_state: str,
+):
     service = AsyncMock()
-    service.update_budget_settings.return_value = _budget_state('degraded')
+    service.update_budget_settings.return_value = _budget_state(reconciliation_state)
     response = Response()
 
     result = await update_org_budget_settings(
@@ -68,19 +71,22 @@ async def test_org_budget_write_returns_503_with_degraded_state():
     )
 
     assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
-    assert result.reconciliation_state == 'degraded'
+    assert result.reconciliation_state == reconciliation_state
     assert result.desired_team_max_budget == 1002.0
     assert result.applied_team_max_budget == 2.05
 
 
 @pytest.mark.asyncio
-async def test_member_budget_write_returns_503_with_degraded_state():
+@pytest.mark.parametrize('reconciliation_state', ['degraded', 'failed'])
+async def test_member_budget_write_returns_503_for_unhealthy_reconciliation(
+    reconciliation_state: str,
+):
     service = AsyncMock()
     user_id = uuid4()
     service.get_user_budget_row.return_value = {
         'user_id': str(user_id),
         'effective_monthly_limit': 300.0,
-        'reconciliation_state': 'degraded',
+        'reconciliation_state': reconciliation_state,
         'reconciliation_error': 'member_budget_mismatch',
     }
     response = Response()
@@ -98,13 +104,16 @@ async def test_member_budget_write_returns_503_with_degraded_state():
     )
 
     assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
-    assert result.reconciliation_state == 'degraded'
+    assert result.reconciliation_state == reconciliation_state
 
 
 @pytest.mark.asyncio
-async def test_member_budget_delete_returns_503_with_degraded_state():
+@pytest.mark.parametrize('reconciliation_state', ['degraded', 'failed'])
+async def test_member_budget_delete_returns_503_for_unhealthy_reconciliation(
+    reconciliation_state: str,
+):
     service = AsyncMock()
-    service.get_reconciliation_state.return_value = 'degraded'
+    service.get_reconciliation_state.return_value = reconciliation_state
     response = Response()
 
     await delete_org_budget_override(
