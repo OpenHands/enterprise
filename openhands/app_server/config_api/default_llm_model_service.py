@@ -25,6 +25,7 @@ from openhands.app_server.config_api.llm_model_service import (
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.utils.async_utils import call_sync_from_async
 from openhands.app_server.utils.llm import (
+    DEFAULT_OPENHANDS_MODEL,
     ModelsResponse,
     get_supported_llm_models,
 )
@@ -52,7 +53,14 @@ def _to_llm_models(
     while still treating saved settings that reference them as available.
     A hidden model with a known canonical mapping carries the visible model
     name it aliases in ``canonical``.
+
+    The ``free`` flag mirrors ``verified``: it is set for any model whose
+    ``provider/model`` string appears in ``models_response.free_models``. The
+    ``default`` flag is set for the single model matching
+    ``models_response.default_model``.
     """
+    free_set = set(models_response.free_models)
+    default_model = models_response.default_model
     results: list[LLMModel] = []
     flagged_models = [(m, False) for m in models_response.models] + [
         (m, True) for m in models_response.hidden_models
@@ -80,6 +88,8 @@ def _to_llm_models(
                     if is_verified is not None
                     else model_name in _VERIFIED_MODEL_SET
                 ),
+                free=model_name in free_set,
+                default=model_name == default_model,
                 hidden=hidden,
                 canonical=canonical,
             )
@@ -177,6 +187,10 @@ class DefaultLLMModelService(LLMModelService):
         self._cached_response = get_supported_llm_models(
             verified_models=verified_models,
             extra_models=extra_models or None,
+            # OSS discovery has no DB-backed default, so it always recommends
+            # the hardcoded default. SaaS passes its DB-derived default (or
+            # ``None`` for "no default") and must not fall back to this value.
+            default_model=DEFAULT_OPENHANDS_MODEL,
         )
         return self._cached_response
 

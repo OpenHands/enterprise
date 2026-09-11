@@ -2,57 +2,13 @@
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from integrations.types import GitLabResourceType
-from storage.base import Base
 from storage.gitlab_webhook import GitlabWebhook
 from storage.gitlab_webhook_store import GitlabWebhookStore
 
 # Use module-scoped engine to share database across fixtures
 _test_engine = None
-
-
-@pytest.fixture(scope='function')
-def event_loop():
-    """Create an instance of the default event loop for each test case."""
-    import asyncio
-
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest.fixture(scope='function')
-async def async_engine(event_loop):
-    """Create an async SQLite engine for testing.
-
-    This fixture creates an in-memory SQLite database and ensures
-    all tables are created before tests run.
-    """
-    global _test_engine
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-        echo=False,
-    )
-    _test_engine = engine
-
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield engine
-
-    await engine.dispose()
-
-
-@pytest.fixture(scope='function')
-async def async_session_maker(async_engine):
-    """Create an async session maker for testing."""
-    return async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
 
 
 @pytest.fixture
