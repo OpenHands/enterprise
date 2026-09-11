@@ -36,7 +36,7 @@ Hypothesis is necessary because a valid abstract model cannot prove that migrati
 | Organization cap is absolute | `P1_organizationCapIsAbsolute` | Sequential and cross-member concurrency probes | Explicit safety gates |
 | Default member cap applies | `P2_defaultUserCapApplies` | Generated request campaign | Explicit safety gate |
 | Positive override replaces the default | `P3_positiveOverrideReplacesDefault` | Healthy policy state machine | Passing |
-| Disabled override removes only the member cap | `P4_disabledOverrideRemovesOnlyMemberCap` | Disabled-override probe | Known failing behavior |
+| Disabled override removes only the member cap | `P4_disabledOverrideRemovesOnlyMemberCap` | Disabled-override probe | Product-confirmed; known failing behavior |
 | Verified policy exactly matches all applied caps | `P5_verifiedMeansExactAgreement` | Healthy state machine and LiteLLM contracts | Passing |
 | Verification of an older policy version is invalid | `P6_staleVerificationIsInvalid` | No delayed/out-of-order concrete probe yet | Model only |
 | Unverified policy fails closed before provider invocation | `P7_unverifiedPolicyFailsClosed` | Team-write, member-write, and readback variants in the fail-closed probe | Known failing behavior; target of PR #359 |
@@ -48,7 +48,7 @@ Hypothesis is necessary because a valid abstract model cannot prove that migrati
 | Member accounting is isolated | `P13_userAccountingIsIsolated` | Cross-member concurrency probe | Explicit safety gate |
 | Synchronization is idempotent | `P14_synchronizationIsIdempotent` | Generated maintenance and legacy-baseline second sync | Passing |
 | Rejected retries never reach the provider | `P15_rejectedRetriesRemainHarmless` | Same-member and cross-member boundary probes | Explicit safety gates |
-| Disabling the organization budget removes team and member caps | Exact agreement after `disableBudget` | Disabled-budget probe | Known failing behavior |
+| Disabling the organization limit preserves independent member enforcement | Exact agreement after `disableOrganizationLimit` | Organization-limit disable contract | Passing |
 | Zero and negative limits are rejected | Positive-limit transition domain | Healthy state machine | Passing |
 | A missing known-member baseline recovers once without renewing allowance | Not modeled | Legacy-upgrade LiteLLM contract | Passing; added after validating PR #347 before and after |
 | Concurrent admission overshoot is bounded | Not modeled | Same-member and cross-member concurrency probes | Explicit safety gates |
@@ -140,15 +140,15 @@ uv run pytest tests/integration/budgets/probe_fail_closed.py -n 0
 
 It injects team-write, member-write, and readback failures. Every case requires inference rejection before the provider is called. Once OHE-3268 is fixed, rename this file into default test collection and include it in the passing campaign.
 
-## Disabled-budget safety gate
+## Independent organization and member enforcement
 
-`probe_disable_budget.py` captures the intended transition from enabled to disabled policy:
+`test_disable_organization_limit.py` captures the product-confirmed transition where the organization limit is disabled while individual member budgets remain enforceable:
 
 ```bash
-uv run pytest tests/integration/budgets/probe_disable_budget.py -n 0
+uv run pytest tests/integration/budgets/test_disable_organization_limit.py -n 0
 ```
 
-The probe requires both the organization cap and all member caps to be removed. It is outside default collection because the real-service harness currently observes that Enterprise clears the team cap but leaves member caps in LiteLLM.
+The contract requires LiteLLM to remove the organization team cap, preserve each default member cap, accept a request below the member cap, and reject the next request before it reaches the provider. It is included in the passing backend campaign.
 
 ## Disabled-override safety gate
 

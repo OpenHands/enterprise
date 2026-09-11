@@ -179,7 +179,7 @@ class HealthyBudgetStateMachine(RuleBasedStateMachine):
         return self.adapter
 
     def _expected_member_cap(self, user: int) -> float | None:
-        if not self.enabled or self.overrides[user][0] == 'disabled':
+        if self.overrides[user][0] == 'disabled':
             return None
         limit = (
             self.overrides[user][1]
@@ -190,9 +190,11 @@ class HealthyBudgetStateMachine(RuleBasedStateMachine):
         return self.user_baselines[user] + limit
 
     def _can_admit(self, user: int, financial_data: dict[str, Any]) -> bool:
-        if not self.enabled:
-            return True
-        if financial_data['team_spend'] >= self.team_baseline + self.organization_limit:
+        if (
+            self.enabled
+            and financial_data['team_spend']
+            >= self.team_baseline + self.organization_limit
+        ):
             return False
         member = financial_data['members'][str(self._adapter.user_ids[user])]
         member_cap = self._expected_member_cap(user)

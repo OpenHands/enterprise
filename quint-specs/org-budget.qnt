@@ -9,7 +9,7 @@ module org_budget {
   pure val syncFailed = 3
 
   type State = {
-    budgetEnabled: bool,
+    organizationBudgetEnabled: bool,
     organizationLimit: int,
     defaultUserLimit: int,
     overrideModeA: int,
@@ -39,23 +39,21 @@ module org_budget {
   var state: State
 
   pure def expectedMemberCap(
-    budgetOn: bool,
     defaultLimit: int,
     mode: int,
     limit: int,
     baseline: int,
   ): int =
-    if (not(budgetOn) or mode == disabledOverride) -1
+    if (mode == disabledOverride) -1
     else if (mode == positiveOverride) baseline + limit
     else baseline + defaultLimit
 
   val expectedTeamCap =
-    if (state.budgetEnabled)
+    if (state.organizationBudgetEnabled)
       state.organizationBaseline + state.organizationLimit
     else -1
 
   val expectedMemberCapA = expectedMemberCap(
-    state.budgetEnabled,
     state.defaultUserLimit,
     state.overrideModeA,
     state.overrideLimitA,
@@ -63,7 +61,6 @@ module org_budget {
   )
 
   val expectedMemberCapB = expectedMemberCap(
-    state.budgetEnabled,
     state.defaultUserLimit,
     state.overrideModeB,
     state.overrideLimitB,
@@ -87,7 +84,7 @@ module org_budget {
       and belowCap(state.recordedMemberSpendB, state.enforcedMemberCapB)
 
   action init = state' = {
-    budgetEnabled: false,
+    organizationBudgetEnabled: false,
     organizationLimit: 1,
     defaultUserLimit: 1,
     overrideModeA: noOverride,
@@ -116,16 +113,16 @@ module org_budget {
 
   action configureBudget(orgLimit: int, userLimit: int): bool = state' = {
     ...state,
-    budgetEnabled: true,
+    organizationBudgetEnabled: true,
     organizationLimit: orgLimit,
     defaultUserLimit: userLimit,
     policyVersion: state.policyVersion + 1,
     syncStatus: syncPending,
   }
 
-  action disableBudget = state' = {
+  action disableOrganizationLimit = state' = {
     ...state,
-    budgetEnabled: false,
+    organizationBudgetEnabled: false,
     policyVersion: state.policyVersion + 1,
     syncStatus: syncPending,
   }
@@ -239,7 +236,7 @@ module org_budget {
     configureBudget(1, 1),
     configureBudget(2, 1),
     configureBudget(3, 2),
-    disableBudget,
+    disableOrganizationLimit,
     setOrganizationLimit(1),
     setOrganizationLimit(3),
     setDefaultUserLimit(1),
@@ -276,7 +273,7 @@ module org_budget {
       implies not(canAdmitB))
 
   val P3_positiveOverrideReplacesDefault =
-    not(policyIsVerified and state.budgetEnabled)
+    not(policyIsVerified)
       or ((state.overrideModeA != positiveOverride
           or state.enforcedMemberCapA == state.userBaselineA + state.overrideLimitA)
         and (state.overrideModeB != positiveOverride
