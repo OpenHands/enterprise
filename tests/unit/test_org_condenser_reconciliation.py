@@ -1,37 +1,15 @@
-import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from storage.org import Org
 from storage.org_store import OrgStore
 
-pytestmark = pytest.mark.postgresql
 
-
-@pytest.fixture
-async def postgres_session_maker():
-    dsn = os.getenv('POSTGRES_TEST_DATABASE_URL')
-    if not dsn:
-        pytest.skip('POSTGRES_TEST_DATABASE_URL is required')
-
-    engine = create_async_engine(dsn, echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Org.__table__.drop, checkfirst=True)
-        await conn.run_sync(Org.__table__.create)
-
-    try:
-        yield async_sessionmaker(engine, expire_on_commit=False)
-    finally:
-        async with engine.begin() as conn:
-            await conn.run_sync(Org.__table__.drop, checkfirst=True)
-        await engine.dispose()
-
-
-async def _insert_orgs(session_maker, rows):
+async def _insert_orgs(session_maker: async_sessionmaker, rows) -> None:
     async with session_maker() as session:
         async with session.begin():
             for name, agent_settings in rows:
@@ -44,7 +22,7 @@ async def _insert_orgs(session_maker, rows):
                 )
 
 
-async def _settings_by_name(session_maker):
+async def _settings_by_name(session_maker: async_sessionmaker) -> dict:
     async with session_maker() as session:
         rows = (await session.execute(select(Org.name, Org.agent_settings))).all()
     return {name: settings for name, settings in rows}
@@ -52,10 +30,10 @@ async def _settings_by_name(session_maker):
 
 @pytest.mark.asyncio
 async def test_reconcile_non_overwrite_updates_only_unset_applicable_rows(
-    postgres_session_maker,
+    async_session_maker: async_sessionmaker,
 ):
     await _insert_orgs(
-        postgres_session_maker,
+        async_session_maker,
         [
             ('missing-condenser', {'agent_kind': 'openhands'}),
             ('json-null-condenser', {'condenser': None}),
@@ -69,7 +47,7 @@ async def test_reconcile_non_overwrite_updates_only_unset_applicable_rows(
         ],
     )
 
-    async with postgres_session_maker() as session:
+    async with async_session_maker() as session:
         async with session.begin():
             result = await OrgStore.reconcile_applicable_org_condenser_max_tokens(
                 session,
@@ -82,7 +60,7 @@ async def test_reconcile_non_overwrite_updates_only_unset_applicable_rows(
     assert result.skipped_condenser_variant_count == 1
     assert result.malformed_repaired_count == 2
 
-    settings = await _settings_by_name(postgres_session_maker)
+    settings = await _settings_by_name(async_session_maker)
     assert settings['missing-condenser']['condenser']['max_tokens'] == 200000
     assert settings['json-null-condenser']['condenser']['max_tokens'] == 200000
     assert settings['missing-max-tokens']['condenser']['enabled'] is True
@@ -100,10 +78,10 @@ async def test_reconcile_non_overwrite_updates_only_unset_applicable_rows(
 
 @pytest.mark.asyncio
 async def test_reconcile_overwrite_forces_applicable_existing_values(
-    postgres_session_maker,
+    async_session_maker: async_sessionmaker,
 ):
     await _insert_orgs(
-        postgres_session_maker,
+        async_session_maker,
         [
             ('existing-max-tokens', {'condenser': {'max_tokens': 123456}}),
             ('noop-condenser', {'condenser': {'condenser_kind': 'no_op'}}),
@@ -111,7 +89,7 @@ async def test_reconcile_overwrite_forces_applicable_existing_values(
         ],
     )
 
-    async with postgres_session_maker() as session:
+    async with async_session_maker() as session:
         async with session.begin():
             result = await OrgStore.reconcile_applicable_org_condenser_max_tokens(
                 session,
@@ -124,7 +102,7 @@ async def test_reconcile_overwrite_forces_applicable_existing_values(
     assert result.skipped_condenser_variant_count == 1
     assert result.malformed_repaired_count == 0
 
-    settings = await _settings_by_name(postgres_session_maker)
+    settings = await _settings_by_name(async_session_maker)
     assert settings['existing-max-tokens']['condenser']['max_tokens'] == 200000
     assert settings['noop-condenser']['condenser'] == {'condenser_kind': 'no_op'}
     assert 'condenser' not in settings['acp-agent']
@@ -132,10 +110,10 @@ async def test_reconcile_overwrite_forces_applicable_existing_values(
 
 @pytest.mark.asyncio
 async def test_reconcile_bumps_updated_at_only_for_changed_rows(
-    postgres_session_maker,
+    async_session_maker: async_sessionmaker,
 ):
     stale = datetime.now(UTC) - timedelta(days=30)
-    async with postgres_session_maker() as session:
+    async with async_session_maker() as session:
         async with session.begin():
             session.add_all(
                 [
@@ -154,7 +132,7 @@ async def test_reconcile_bumps_updated_at_only_for_changed_rows(
                 ]
             )
 
-    async with postgres_session_maker() as session:
+    async with async_session_maker() as session:
         async with session.begin():
             await OrgStore.reconcile_applicable_org_condenser_max_tokens(
                 session,
@@ -162,7 +140,7 @@ async def test_reconcile_bumps_updated_at_only_for_changed_rows(
                 overwrite_existing=False,
             )
 
-    async with postgres_session_maker() as session:
+    async with async_session_maker() as session:
         rows = dict((await session.execute(select(Org.name, Org.updated_at))).all())
 
     assert rows['changed'] > stale
