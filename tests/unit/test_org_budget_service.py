@@ -20,7 +20,9 @@ from server.services.org_budget_service import (
     _current_cycle_start,
 )
 from storage.org import Org
+from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
 from storage.org_budget_settings import OrgBudgetSettings
+from storage.org_budget_store import OrgBudgetStore
 from storage.org_budget_threshold import OrgBudgetThreshold
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
@@ -1797,3 +1799,238 @@ async def test_send_alerts_emails_and_slack(async_session_maker, budget_org):
             100.0,
             83.3,
         )
+
+
+async def _baseline_rows(session, org_id, cycle_start_at) -> dict[str, tuple]:
+    result = await session.execute(
+        select(OrgBudgetCycleBaseline)
+        .where(OrgBudgetCycleBaseline.org_id == org_id)
+        .where(OrgBudgetCycleBaseline.cycle_start_at == cycle_start_at)
+    )
+    return {
+        row.user_id: (row.baseline_spend, row.source, row.observed_at)
+        for row in result.scalars()
+    }
+
+
+@pytest.mark.asyncio
+async def test_roll_cycle_records_live_rollover_baseline_rows(
+    async_session_maker, budget_org
+):
+    async with async_session_maker() as session:
+        now = datetime.now(UTC)
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            reset_day=1,
+            monthly_limit=250.0,
+            cycle_start_at=_current_cycle_start(now - timedelta(days=40), 1),
+            cycle_start_spend=10.0,
+            user_cycle_start_spend={'existing-user': 4.0},
+        )
+        session.add(settings)
+        await session.commit()
+
+        service = OrgBudgetService(session)
+        snapshot = _snapshot(team_spend=42.5, members={'member': (8.0, None, True)})
+        with patch.object(service, '_sync_litellm_budgets', AsyncMock()):
+            assert await service._roll_cycle_if_needed(settings, [], [], snapshot)
+        await session.commit()
+
+        rows = await _baseline_rows(session, budget_org.id, settings.cycle_start_at)
+
+    assert settings.user_cycle_start_spend == {'member': 8.0}
+    assert rows == {'member': (8.0, 'live_rollover', snapshot.observed_at)}
+
+
+@pytest.mark.asyncio
+async def test_enabling_budget_replaces_the_cycle_baseline_rows(
+    async_session_maker, budget_org
+):
+    user_id = str(uuid4())
+    current_cycle = _current_cycle_start(datetime.now(UTC), 1)
+    before = _financial_data(
+        team_spend=20.0,
+        team_max_budget=None,
+        members={user_id: (5.0, None, True)},
+    )
+    after = _financial_data(
+        team_spend=20.0,
+        team_max_budget=120.0,
+        members={user_id: (5.0, None, True)},
+    )
+
+    async with async_session_maker() as session:
+        session.add(
+            OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=False,
+                reset_day=1,
+                monthly_limit=None,
+                cycle_start_at=current_cycle - timedelta(days=40),
+                cycle_start_spend=0.0,
+            )
+        )
+        await session.commit()
+        await OrgBudgetStore(session).record_cycle_baselines(
+            budget_org.id,
+            current_cycle,
+            {user_id: 1.0},
+            source=OrgBudgetCycleBaseline.SOURCE_LIVE_ROLLOVER,
+            observed_at=current_cycle,
+        )
+        await session.commit()
+
+        with (
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+                AsyncMock(side_effect=[before, after]),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_team',
+                AsyncMock(),
+            ),
+        ):
+            result = await OrgBudgetService(session).update_budget_settings(
+                budget_org.id,
+                OrgBudgetSettingsUpdate(enabled=True, monthly_limit=100.0),
+            )
+        await session.commit()
+
+        settings = result['settings']
+        rows = await _baseline_rows(session, budget_org.id, settings.cycle_start_at)
+
+    assert settings.cycle_start_at.replace(tzinfo=UTC) == current_cycle
+    assert settings.user_cycle_start_spend == {user_id: 5.0}
+    assert rows[user_id][:2] == (5.0, 'enablement')
+
+
+@pytest.mark.asyncio
+async def test_sync_records_recovered_and_added_baseline_rows(
+    async_session_maker, budget_org
+):
+    known_user_id = uuid4()
+    new_user_id = uuid4()
+    before = _financial_data(
+        team_spend=20.0,
+        team_max_budget=100.0,
+        members={
+            str(known_user_id): (8.0, 5.0, False),
+            str(new_user_id): (3.0, 100.0, True),
+        },
+    )
+    after = _financial_data(
+        team_spend=20.0,
+        team_max_budget=120.0,
+        members={
+            str(known_user_id): (8.0, 38.0, False),
+            str(new_user_id): (3.0, 33.0, False),
+        },
+    )
+
+    async with async_session_maker() as session:
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            reset_day=1,
+            monthly_limit=100.0,
+            default_user_monthly_limit=30.0,
+            cycle_start_at=datetime.now(UTC),
+            cycle_start_spend=20.0,
+            user_cycle_start_spend={},
+            litellm_known_member_ids=[str(known_user_id)],
+        )
+        session.add_all(
+            [
+                Role(id=1, name='member', rank=1),
+                User(id=known_user_id, current_org_id=budget_org.id),
+                User(id=new_user_id, current_org_id=budget_org.id),
+                OrgMember(
+                    org_id=budget_org.id,
+                    user_id=known_user_id,
+                    role_id=1,
+                    llm_api_key='test-api-key',
+                    status='active',
+                ),
+                OrgMember(
+                    org_id=budget_org.id,
+                    user_id=new_user_id,
+                    role_id=1,
+                    llm_api_key='test-api-key',
+                    status='active',
+                ),
+                settings,
+            ]
+        )
+        await session.commit()
+
+        with (
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+                AsyncMock(side_effect=[before, after]),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_team',
+                AsyncMock(),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_user_in_team',
+                AsyncMock(),
+            ),
+        ):
+            await OrgBudgetService(session)._sync_litellm_budgets(
+                budget_org.id, settings, []
+            )
+        await session.commit()
+
+        rows = await _baseline_rows(session, budget_org.id, settings.cycle_start_at)
+
+    assert settings.litellm_last_sync_status == 'success'
+    assert settings.user_cycle_start_spend == {
+        str(known_user_id): 8.0,
+        str(new_user_id): 3.0,
+    }
+    assert rows[str(known_user_id)][:2] == (8.0, 'upgrade_recovery')
+    assert rows[str(new_user_id)][:2] == (3.0, 'member_added')
+
+
+@pytest.mark.asyncio
+async def test_settings_loader_prefers_baseline_rows_and_imports_json_only_keys(
+    async_session_maker, budget_org
+):
+    cycle_start = _current_cycle_start(datetime.now(UTC), 1)
+    async with async_session_maker() as session:
+        session.add(
+            OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=True,
+                reset_day=1,
+                monthly_limit=100.0,
+                cycle_start_at=cycle_start,
+                cycle_start_spend=20.0,
+                user_cycle_start_spend={'a': 1.0, 'b': 2.0},
+            )
+        )
+        await session.commit()
+        await OrgBudgetStore(session).record_cycle_baselines(
+            budget_org.id,
+            cycle_start,
+            {'a': 5.0},
+            source=OrgBudgetCycleBaseline.SOURCE_LIVE_ROLLOVER,
+            observed_at=cycle_start,
+        )
+        await session.commit()
+
+        service = OrgBudgetService(session)
+        settings = await service._get_or_create_settings(budget_org.id)
+        await session.commit()
+        first_rows = await _baseline_rows(session, budget_org.id, cycle_start)
+
+        settings = await service._get_or_create_settings(budget_org.id)
+        await session.commit()
+        second_rows = await _baseline_rows(session, budget_org.id, cycle_start)
+
+    assert settings.user_cycle_start_spend == {'a': 5.0, 'b': 2.0}
+    assert first_rows['a'][:2] == (5.0, 'live_rollover')
+    assert first_rows['b'][:2] == (2.0, 'imported')
+    assert second_rows == first_rows

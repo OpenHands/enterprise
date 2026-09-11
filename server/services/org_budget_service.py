@@ -18,6 +18,7 @@ from server.auth.authorization import RoleName
 from server.services.smtp_email_service import SMTPEmailService
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
+from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_store import OrgBudgetStore
 from storage.org_budget_threshold import OrgBudgetThreshold
@@ -496,6 +497,15 @@ class OrgBudgetService:
                 user_id: member.spend
                 for user_id, member in baseline_snapshot.members.items()
             }
+            # An explicit admin re-baseline: replace any row for this cycle.
+            await self.store.record_cycle_baselines(
+                org_id,
+                settings.cycle_start_at,
+                settings.user_cycle_start_spend,
+                source=OrgBudgetCycleBaseline.SOURCE_ENABLEMENT,
+                observed_at=baseline_snapshot.observed_at,
+                replace=True,
+            )
             settings.litellm_known_member_ids = sorted(
                 await self._org_member_ids(org_id)
             )
@@ -590,6 +600,7 @@ class OrgBudgetService:
     async def _get_or_create_settings(self, org_id: UUID) -> OrgBudgetSettings:
         settings = await self.store.get_settings(org_id)
         if settings:
+            await self._hydrate_cycle_baselines(settings)
             return settings
 
         return await self.store.create_settings(
@@ -598,6 +609,43 @@ class OrgBudgetService:
             cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
             thresholds=DEFAULT_THRESHOLDS,
         )
+
+    async def _hydrate_cycle_baselines(self, settings: OrgBudgetSettings) -> None:
+        """Make the baseline table authoritative for the current cycle.
+
+        Rows win over the ``user_cycle_start_spend`` JSON map, which is still
+        dual-written during the compatibility window. Keys only the JSON holds
+        (written by a release before migration 161) are imported so the window
+        converges; the log line is the signal that it has not converged yet.
+        """
+        json_baselines = dict(settings.user_cycle_start_spend or {})
+        rows = await self.store.get_cycle_baselines(
+            settings.org_id, settings.cycle_start_at
+        )
+        json_only = {
+            user_id: baseline
+            for user_id, baseline in json_baselines.items()
+            if user_id not in rows
+        }
+        if json_only:
+            logger.info(
+                'org_budget_cycle_baseline_json_only',
+                extra={
+                    'org_id': str(settings.org_id),
+                    'cycle_start_at': str(settings.cycle_start_at),
+                    'user_ids': sorted(json_only),
+                },
+            )
+            await self.store.record_cycle_baselines(
+                settings.org_id,
+                settings.cycle_start_at,
+                json_only,
+                source=OrgBudgetCycleBaseline.SOURCE_IMPORTED,
+                observed_at=datetime.now(UTC),
+            )
+        merged = {**json_baselines, **rows}
+        if merged != json_baselines:
+            settings.user_cycle_start_spend = merged
 
     async def _get_thresholds(self, org_id: UUID) -> list[OrgBudgetThreshold]:
         return await self.store.get_thresholds(org_id)
@@ -641,6 +689,13 @@ class OrgBudgetService:
         settings.user_cycle_start_spend = {
             user_id: member.spend for user_id, member in snapshot.members.items()
         }
+        await self.store.record_cycle_baselines(
+            org_id,
+            settings.cycle_start_at,
+            settings.user_cycle_start_spend,
+            source=OrgBudgetCycleBaseline.SOURCE_LIVE_ROLLOVER,
+            observed_at=snapshot.observed_at,
+        )
         settings.litellm_known_member_ids = sorted(await self._org_member_ids(org_id))
         for threshold in thresholds:
             threshold.last_triggered_at = None
@@ -1068,6 +1123,8 @@ class OrgBudgetService:
         override_map = {str(o.user_id): o for o in overrides}
         existing_user_baselines = settings.user_cycle_start_spend or {}
         active_user_baselines: dict[str, float] = {}
+        added_baselines: dict[str, float] = {}
+        recovered_baselines: dict[str, float] = {}
         expected_member_budgets: dict[str, float | None] = {}
 
         for user_id in sorted(org_member_ids & litellm_member_ids):
@@ -1075,7 +1132,9 @@ class OrgBudgetService:
             baseline = existing_user_baselines.get(user_id)
             if baseline is None:
                 baseline = info.spend
+                added_baselines[user_id] = baseline
                 if settings.enabled and user_id not in new_member_ids:
+                    recovered_baselines[user_id] = added_baselines.pop(user_id)
                     # Legacy rows: migration 149 added baselines without a
                     # backfill and migration 156 marked every member known, so
                     # there is no cycle-start history. Anchor to live cumulative
@@ -1135,6 +1194,17 @@ class OrgBudgetService:
                 active_user_baselines[user_id] = baseline
 
         settings.user_cycle_start_spend = active_user_baselines
+        for initialized, source in (
+            (added_baselines, OrgBudgetCycleBaseline.SOURCE_MEMBER_ADDED),
+            (recovered_baselines, OrgBudgetCycleBaseline.SOURCE_UPGRADE_RECOVERY),
+        ):
+            await self.store.record_cycle_baselines(
+                org_id,
+                settings.cycle_start_at,
+                initialized,
+                source=source,
+                observed_at=snapshot.observed_at,
+            )
         settings.litellm_known_member_ids = sorted(
             (known_member_ids & org_member_ids) | (org_member_ids & litellm_member_ids)
         )
