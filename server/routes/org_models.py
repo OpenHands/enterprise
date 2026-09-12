@@ -402,6 +402,15 @@ class OrgUpdate(BaseModel):
             }
         )
 
+    def touches_llm_defaults(self) -> bool:
+        """Whether this update changes the shared LLM configuration."""
+        if self.llm_api_key is not None:
+            return True
+        return bool(
+            isinstance(self.agent_settings_diff, dict)
+            and 'llm' in self.agent_settings_diff
+        )
+
     def restricted_fields(self) -> set[str]:
         """Return fields that require elevated org settings permissions."""
         return self.updated_fields() & {
@@ -807,12 +816,29 @@ class OrgBudgetUserResponse(BaseModel):
     is_override: bool = False
 
 
+class OrgBudgetUserMutationResponse(OrgBudgetUserResponse):
+    reconciliation_state: (
+        Literal['inactive', 'pending', 'healthy', 'degraded', 'failed'] | None
+    ) = None
+    reconciliation_error: str | None = None
+    applied_at: datetime | None = None
+
+
 class OrgBudgetSettingsResponse(BaseModel):
     enabled: bool
     monthly_limit: float | None = None
     litellm_last_sync_at: datetime | None = None
     litellm_last_sync_status: str | None = None
     litellm_last_sync_error: str | None = None
+    reconciliation_state: Literal[
+        'inactive', 'pending', 'healthy', 'degraded', 'failed'
+    ]
+    reconciliation_error: str | None = None
+    desired_team_max_budget: float | None = None
+    applied_team_max_budget: float | None = None
+    budget_policy_matches: bool | None = None
+    applied_at: datetime | None = None
+    applied_policy_observed_at: datetime | None = None
 
     reset_day: int
     slack_channel: str | None = None

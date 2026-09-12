@@ -12,8 +12,7 @@ from uuid import uuid4
 import pytest
 from fastapi import BackgroundTasks
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
@@ -28,7 +27,6 @@ from openhands.app_server.user.specifiy_user_context import (
     SandboxUserContext,
     SpecifyUserContext,
 )
-from openhands.app_server.utils.sql_utils import Base
 from openhands.sdk import ConversationStats
 from openhands.sdk.event import ConversationStateUpdateEvent
 from openhands.sdk.llm import Metrics, TokenUsage
@@ -36,25 +34,6 @@ from openhands.sdk.llm import Metrics, TokenUsage
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-async def async_engine():
-    """Create an async SQLite engine for testing."""
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-        echo=False,
-    )
-
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield engine
-
-    await engine.dispose()
 
 
 @pytest.fixture

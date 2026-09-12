@@ -2,11 +2,8 @@ import uuid
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from openhands.app_server.settings.settings_models import Settings
-from storage.base import Base
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
@@ -57,6 +54,48 @@ def test_get_kwargs_from_user_settings_uses_agent_settings_as_source_of_truth():
     assert kwargs['conversation_settings_diff']['max_iterations'] == 42
 
 
+def test_get_kwargs_from_user_settings_strips_null_condenser_max_tokens():
+    user_settings = UserSettings(
+        agent_settings={
+            'condenser': {
+                'enabled': False,
+                'max_tokens': None,
+            },
+        },
+        conversation_settings={},
+    )
+
+    kwargs = OrgMemberStore.get_kwargs_from_user_settings(user_settings)
+
+    assert kwargs['agent_settings_diff'] == {'condenser': {'enabled': False}}
+
+
+def test_get_kwargs_from_user_settings_drops_empty_condenser_after_null_max_tokens():
+    user_settings = UserSettings(
+        agent_settings={'condenser': {'max_tokens': None}},
+        conversation_settings={},
+    )
+
+    kwargs = OrgMemberStore.get_kwargs_from_user_settings(user_settings)
+
+    assert kwargs['agent_settings_diff'] == {}
+
+
+def test_get_kwargs_from_user_settings_preserves_explicit_condenser_max_tokens():
+    user_settings = UserSettings(
+        agent_settings={
+            'condenser': {
+                'max_tokens': 123456,
+            },
+        },
+        conversation_settings={},
+    )
+
+    kwargs = OrgMemberStore.get_kwargs_from_user_settings(user_settings)
+
+    assert kwargs['agent_settings_diff'] == {'condenser': {'max_tokens': 123456}}
+
+
 def test_get_kwargs_from_settings_starts_members_without_agent_setting_overrides():
     settings = Settings()
     settings.update(
@@ -80,31 +119,6 @@ def test_get_kwargs_from_settings_starts_members_without_agent_setting_overrides
 
     assert kwargs['llm_api_key'].get_secret_value() == 'member-secret'
     assert kwargs['agent_settings_diff'] == {}
-
-
-@pytest.fixture
-async def async_engine():
-    """Create an async SQLite engine for testing."""
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-        echo=False,
-    )
-
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield engine
-
-    await engine.dispose()
-
-
-@pytest.fixture
-async def async_session_maker(async_engine):
-    """Create an async session maker for testing."""
-    return async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
 
 
 @pytest.mark.asyncio

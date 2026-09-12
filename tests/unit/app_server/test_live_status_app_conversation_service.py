@@ -19,6 +19,9 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     TextContent,
 )
+from openhands.app_server.acp_providers import (
+    SURFACED_ACP_PROVIDERS,
+)
 from openhands.app_server.app_conversation.app_conversation_models import (
     AgentType,
     AppConversationInfo,
@@ -37,7 +40,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     _resolve_title_llm_profile,
     effective_disabled_skills,
 )
-from openhands.app_server.errors import SandboxError
+from openhands.app_server.errors import ACPProviderNotAvailableError, SandboxError
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
@@ -61,7 +64,11 @@ from openhands.app_server.utils.redis_lock import RedisLockUnavailable
 from openhands.sdk import Agent, AgentContext, Event
 from openhands.sdk.llm import LLM
 from openhands.sdk.secret import LookupSecret, StaticSecret
-from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
+from openhands.sdk.settings import (
+    ACP_PROVIDERS,
+    ConversationSettings,
+    OpenHandsAgentSettings,
+)
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 
@@ -543,6 +550,7 @@ class TestLiveStatusAppConversationService:
         the app-server.
         """
         user = SimpleNamespace(
+            id='member-user',
             llm_profiles=LLMProfiles(
                 profiles={
                     'Managed': LLM(model='litellm_proxy/minimax-m2.7', usage_id='p'),
@@ -557,10 +565,20 @@ class TestLiveStatusAppConversationService:
                 }
             ),
             agent_settings=SimpleNamespace(
-                llm=SimpleNamespace(api_key=SecretStr('managed-key'))
+                llm=LLM(
+                    model='openhands/gpt-5.5',
+                    api_key=SecretStr('poisoned-owner-key'),
+                )
             ),
         )
         self.mock_user_context.get_user_info = AsyncMock(return_value=user)
+        refreshed_llm = LLM(
+            model='openhands/gpt-5.5',
+            api_key=SecretStr('managed-key'),
+        )
+        self.service._maybe_refresh_managed_llm_key = AsyncMock(
+            return_value=refreshed_llm
+        )
 
         ok = Mock(raise_for_status=Mock())
         listing = Mock(raise_for_status=Mock())
@@ -574,6 +592,10 @@ class TestLiveStatusAppConversationService:
         self.mock_httpx_client.delete = AsyncMock(return_value=ok)
 
         await self.service._seed_sandbox_profiles('http://agent.test', 'sess-key')
+
+        self.service._maybe_refresh_managed_llm_key.assert_awaited_once_with(
+            user, user.agent_settings.llm
+        )
 
         base = 'http://agent.test/api/profiles'
         pushed = {
@@ -935,11 +957,17 @@ class TestLiveStatusAppConversationService:
 
     @staticmethod
     def _install_managed_key_refresh_modules(
-        monkeypatch, *, get_key, rotate_key, verify_key
+        monkeypatch, *, get_key, rotate_key, verify_key, verify_existing_key=None
     ):
+        if verify_existing_key is None:
+            verify_existing_key = AsyncMock(return_value=True)
+
         storage_mod = types.ModuleType('storage')
         lite_llm_mod = types.ModuleType('storage.lite_llm_manager')
-        lite_llm_mod.LiteLlmManager = SimpleNamespace(verify_key=verify_key)
+        lite_llm_mod.LiteLlmManager = SimpleNamespace(
+            verify_existing_key=verify_existing_key,
+            verify_key=verify_key,
+        )
 
         store = SimpleNamespace(
             get_current_managed_llm_key=get_key,
@@ -949,6 +977,17 @@ class TestLiveStatusAppConversationService:
         saas_settings_mod.ManagedLlmKeyStatus = SimpleNamespace(ROTATED='rotated')
         saas_settings_mod.SaasSettingsStore = SimpleNamespace(
             get_instance=AsyncMock(return_value=store)
+        )
+
+        def managed_llm_key_config_from_model(model, base_url):
+            is_openhands = bool(model and model.startswith('openhands/'))
+            is_managed_url = bool(base_url and 'all-hands.dev' in base_url.lower())
+            if is_openhands and (base_url is None or is_managed_url):
+                return SimpleNamespace(openhands_type=True)
+            return None
+
+        saas_settings_mod.managed_llm_key_config_from_model = (
+            managed_llm_key_config_from_model
         )
 
         monkeypatch.setitem(sys.modules, 'storage', storage_mod)
@@ -978,9 +1017,14 @@ class TestLiveStatusAppConversationService:
         rotate_key = AsyncMock(
             return_value=SimpleNamespace(status='rotated', new_key='sk-new-managed-key')
         )
+        verify_existing_key = AsyncMock(return_value=True)
         verify_key = AsyncMock(return_value=False)
         self._install_managed_key_refresh_modules(
-            monkeypatch, get_key=get_key, rotate_key=rotate_key, verify_key=verify_key
+            monkeypatch,
+            get_key=get_key,
+            rotate_key=rotate_key,
+            verify_key=verify_key,
+            verify_existing_key=verify_existing_key,
         )
 
         llm = LLM(
@@ -995,8 +1039,101 @@ class TestLiveStatusAppConversationService:
 
         assert refreshed.api_key.get_secret_value() == 'sk-new-managed-key'
         get_key.assert_awaited_once_with()
+        verify_existing_key.assert_awaited_once_with(
+            'sk-old-managed-key',
+            'user-123',
+            str(org_id),
+            openhands_type=True,
+        )
         verify_key.assert_awaited_once_with('sk-old-managed-key', 'user-123')
         rotate_key.assert_awaited_once_with()
+        self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_rotates_wrong_user_key(
+        self, monkeypatch
+    ):
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'member-user'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+
+        get_key = AsyncMock(return_value='sk-admin-managed-key')
+        rotate_key = AsyncMock(
+            return_value=SimpleNamespace(status='rotated', new_key='sk-member-key')
+        )
+        verify_existing_key = AsyncMock(return_value=False)
+        verify_key = AsyncMock(return_value=True)
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=get_key,
+            rotate_key=rotate_key,
+            verify_key=verify_key,
+            verify_existing_key=verify_existing_key,
+        )
+
+        llm = LLM(
+            model='openhands/gpt-5.5',
+            base_url='https://llm-proxy.app.all-hands.dev',
+            api_key=SecretStr('sk-admin-managed-key'),
+        )
+
+        refreshed = await self.service._maybe_refresh_managed_llm_key(
+            self.mock_user, llm
+        )
+
+        assert refreshed.api_key.get_secret_value() == 'sk-member-key'
+        verify_existing_key.assert_awaited_once_with(
+            'sk-admin-managed-key',
+            'member-user',
+            str(org_id),
+            openhands_type=True,
+        )
+        verify_key.assert_not_awaited()
+        rotate_key.assert_awaited_once_with()
+        self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_keeps_owned_valid_key(
+        self, monkeypatch
+    ):
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'member-user'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+
+        get_key = AsyncMock(return_value='sk-member-managed-key')
+        rotate_key = AsyncMock()
+        verify_existing_key = AsyncMock(return_value=True)
+        verify_key = AsyncMock(return_value=True)
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=get_key,
+            rotate_key=rotate_key,
+            verify_key=verify_key,
+            verify_existing_key=verify_existing_key,
+        )
+
+        llm = LLM(
+            model='openhands/gpt-5.5',
+            base_url='https://llm-proxy.app.all-hands.dev',
+            api_key=SecretStr('sk-member-managed-key'),
+        )
+
+        refreshed = await self.service._maybe_refresh_managed_llm_key(
+            self.mock_user, llm
+        )
+
+        assert refreshed is llm
+        verify_existing_key.assert_awaited_once_with(
+            'sk-member-managed-key',
+            'member-user',
+            str(org_id),
+            openhands_type=True,
+        )
+        verify_key.assert_awaited_once_with('sk-member-managed-key', 'member-user')
+        rotate_key.assert_not_awaited()
+        self.mock_user_context.invalidate_user_info_cache.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_maybe_refresh_managed_llm_key_skips_non_saas(self, monkeypatch):
@@ -1452,6 +1589,7 @@ class TestLiveStatusAppConversationService:
         conversation_id = uuid4()
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=conversation_id,
             initial_message=None,
@@ -1487,6 +1625,7 @@ class TestLiveStatusAppConversationService:
         self.service._load_skills_and_update_agent = AsyncMock(return_value=mock_agent)
 
         request = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1527,6 +1666,7 @@ class TestLiveStatusAppConversationService:
         self.service._load_skills_and_update_agent = AsyncMock(return_value=mock_agent)
 
         await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1557,6 +1697,7 @@ class TestLiveStatusAppConversationService:
         conversation_id = uuid4()
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=conversation_id,
             initial_message=None,
@@ -1593,6 +1734,7 @@ class TestLiveStatusAppConversationService:
             'openhands.app_server.app_conversation.live_status_app_conversation_service._logger'
         ) as mock_logger:
             result = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
                 sandbox=self.mock_sandbox,
                 conversation_id=conversation_id,
                 initial_message=None,
@@ -1660,6 +1802,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=test_conversation_id,
             initial_message=None,
@@ -1710,6 +1853,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1745,6 +1889,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1809,6 +1954,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1855,6 +2001,7 @@ class TestLiveStatusAppConversationService:
         remote_workspace.execute_command = AsyncMock(side_effect=RuntimeError('boom'))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1889,6 +2036,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1929,6 +2077,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1980,6 +2129,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2014,6 +2164,7 @@ class TestLiveStatusAppConversationService:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2043,6 +2194,7 @@ class TestLiveStatusAppConversationService:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2093,6 +2245,7 @@ class TestLiveStatusAppConversationService:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2136,6 +2289,7 @@ class TestLiveStatusAppConversationService:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2182,6 +2336,7 @@ class TestLiveStatusAppConversationService:
         }
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=test_conversation_id,
             initial_message=None,
@@ -2240,6 +2395,7 @@ class TestLiveStatusAppConversationService:
         }
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=test_conversation_id,
             initial_message=None,
@@ -2282,6 +2438,7 @@ class TestLiveStatusAppConversationService:
 
         # No API secrets provided (None)
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=test_conversation_id,
             initial_message=None,
@@ -3199,6 +3356,67 @@ class TestLiveStatusAppConversationService:
         assert saved_info.agent_kind == 'acp'
         assert saved_info.tags.get('acpserver') == 'codex'
 
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_builds_and_stamps_the_profile_snapshot_it_validated(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """A profile overwritten after validation (same id, next revision, an
+        unsurfaced provider) must reach neither the build nor the provenance."""
+        from openhands.app_server.app_conversation.app_conversation_models import (
+            ACP_SERVER_TAG_KEY,
+            AGENT_PROFILE_REVISION_TAG_KEY,
+        )
+        from openhands.sdk.settings import ACPAgentSettings
+
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self.service._seed_sandbox_profiles = AsyncMock()
+        self.service._process_pending_messages = AsyncMock()
+        profile_id = str(uuid4())
+
+        def snapshot(acp_server, revision):
+            user = _TestUserInfo(
+                id='test_user_123',
+                sandbox_grouping_strategy=SandboxGroupingStrategy.NO_GROUPING,
+                active_agent_profile_id=profile_id,
+                active_agent_profile_revision=revision,
+            )
+            user.agent_settings = ACPAgentSettings(acp_server=acp_server)
+            return user
+
+        validated = snapshot('claude-code', 1)
+        overwritten = snapshot('pi', 2)
+        resolutions = iter([validated])
+        self.mock_user_context.get_user_info = AsyncMock(
+            side_effect=lambda **_: next(resolutions, overwritten)
+        )
+        build = self.service._build_start_conversation_request_for_user
+        build.return_value.agent = Mock(agent_kind='acp', acp_model=None)
+
+        async for _ in self.service._start_app_conversation(
+            AppConversationStartRequest(agent_profile_id=profile_id)
+        ):
+            pass
+
+        assert build.call_args.args[0] is validated
+        save = self.mock_app_conversation_info_service.save_app_conversation_info
+        saved_info = save.call_args[0][0]
+        assert saved_info.tags[ACP_SERVER_TAG_KEY] == 'claude-code'
+        assert saved_info.tags[AGENT_PROFILE_REVISION_TAG_KEY] == '1'
+        resolved_calls = [
+            call
+            for call in self.mock_user_context.get_user_info.await_args_list
+            if call.kwargs.get('resolve_agent_profile')
+        ]
+        assert len(resolved_calls) == 1
+
     @pytest.mark.asyncio
     async def test_configure_llm_and_mcp_with_custom_remote_servers(self):
         """Test _configure_llm_and_mcp merges custom remote servers."""
@@ -3567,6 +3785,7 @@ class TestLiveStatusAppConversationService:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -3595,6 +3814,7 @@ class TestLiveStatusAppConversationService:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -3979,6 +4199,7 @@ class TestPluginHandling:
         ]
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -4054,6 +4275,7 @@ class TestPluginHandling:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -4091,6 +4313,7 @@ class TestPluginHandling:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -4129,6 +4352,7 @@ class TestPluginHandling:
         ]
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -4172,6 +4396,7 @@ class TestPluginHandling:
         ]
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -4879,6 +5104,7 @@ class TestBuildAcpStartConversationRequestSecrets:
         service.user_context.get_provider_tokens = AsyncMock(return_value=None)
         sandbox = Mock(spec=SandboxInfo)
         return service._build_acp_start_conversation_request(
+            user=user,
             sandbox=sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -5240,3 +5466,54 @@ def test_exception_detail_strips_http_status_prefix():
         == 'The system is at capacity right now.'
     )
     assert _exception_detail(ValueError('boom')) == 'boom'
+
+
+class TestACPProviderAllowlistAtServiceStart:
+    """The allowlist is enforced in the shared start path, not only in the HTTP
+    endpoints. The integrations (GitHub, GitLab, Jira, Slack, ...) call
+    ``start_app_conversation`` directly, so an endpoint-only check would let a
+    saved unsupported provider through on every integration-triggered run.
+    """
+
+    @staticmethod
+    def _service_with_saved_provider(acp_server: str):
+        from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+            LiveStatusAppConversationService,
+        )
+        from openhands.sdk.settings import ACPAgentSettings
+
+        service = object.__new__(LiveStatusAppConversationService)
+        user_context = Mock()
+        user_context.get_user_info = AsyncMock(
+            return_value=SimpleNamespace(
+                agent_settings=ACPAgentSettings(acp_server=acp_server)
+            )
+        )
+        user_context.get_user_id = AsyncMock(return_value='u1')
+        user_context.get_user_email = AsyncMock(return_value=None)
+        object.__setattr__(service, 'user_context', user_context)
+        return service
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'acp_server',
+        sorted(set(ACP_PROVIDERS) - set(SURFACED_ACP_PROVIDERS)),
+    )
+    async def test_direct_service_start_rejects_unsurfaced_provider(self, acp_server):
+        """Parametrized off the registry, so a harness added upstream is covered
+        the moment it is registered."""
+        service = self._service_with_saved_provider(acp_server)
+        service._apply_suggested_task = Mock()
+        service._wait_for_sandbox_start = Mock(
+            side_effect=AssertionError('sandbox must not be provisioned')
+        )
+
+        with pytest.raises(ACPProviderNotAvailableError) as exc_info:
+            async for _ in service._start_app_conversation(
+                AppConversationStartRequest()
+            ):
+                pass
+
+        assert exc_info.value.status_code == 400
+        assert acp_server in exc_info.value.detail
+        service._wait_for_sandbox_start.assert_not_called()

@@ -110,7 +110,7 @@ async def test_validate_name_uniqueness_with_duplicate_name():
 
 @pytest.mark.asyncio
 async def test_create_org_with_owner_success(
-    session_maker, async_session_maker, owner_role, mock_litellm_api
+    session_maker, async_session_maker, owner_role, mock_litellm_api, create_org
 ):
     """
     GIVEN: Valid organization data and user ID
@@ -122,7 +122,7 @@ async def test_create_org_with_owner_success(
     contact_name = 'John Doe'
     contact_email = 'john@example.com'
     user_id = uuid.uuid4()
-    temp_org_id = uuid.uuid4()
+    temp_org_id = create_org().id
 
     # Create user in database first
     with session_maker() as session:
@@ -191,7 +191,7 @@ async def test_create_org_with_owner_success(
 
 @pytest.mark.asyncio
 async def test_create_org_without_owner_skips_creator_membership(
-    session_maker, async_session_maker
+    session_maker, async_session_maker, create_org
 ):
     """
     GIVEN: Valid organization data and add_creator_as_owner=False
@@ -199,7 +199,7 @@ async def test_create_org_without_owner_skips_creator_membership(
     THEN: The organization is created without adding the creator as a member.
     """
     user_id = uuid.uuid4()
-    temp_org_id = uuid.uuid4()
+    temp_org_id = create_org().id
 
     with session_maker() as session:
         user = User(id=user_id, current_org_id=temp_org_id)
