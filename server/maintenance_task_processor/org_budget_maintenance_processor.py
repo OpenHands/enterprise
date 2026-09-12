@@ -25,9 +25,17 @@ class OrgBudgetMaintenanceProcessor(MaintenanceTaskProcessor):
                     continue
 
                 try:
-                    await service.run_budget_maintenance(org_uuid)
+                    result = await service.run_budget_maintenance(org_uuid)
                     await session.commit()
                     processed += 1
+                    if result.get('reconciliation_status') == 'error':
+                        errors.append(
+                            {
+                                'org_id': org_id,
+                                'error': result.get('reconciliation_error')
+                                or 'budget_reconciliation_failed',
+                            }
+                        )
                 except Exception as exc:
                     await session.rollback()
                     logger.exception(

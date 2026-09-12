@@ -1,17 +1,8 @@
-"""Tests for the conversation_cost_events foreign key cascade behavior.
+"""Tests for conversation soft deletion and cost-event retention.
 
-The ``conversation_cost_events`` table records per-event cost deltas whose
-running total is already mirrored on ``conversation_metadata.accumulated_cost``.
-Deleting a conversation must therefore also remove its cost-event rows so
-that ``delete_app_conversation_info`` does not fail with a
-``ForeignKeyViolationError``.
-
-These tests guard two invariants:
-
-1. The SQLAlchemy model declares the FK with ``ondelete='CASCADE'`` so
-   fresh-schema creation (tests, dev) matches the production migration.
-2. Deleting a conversation row actually removes its cost-event rows on a
-   backend that enforces foreign keys (SQLite with ``PRAGMA foreign_keys=ON``).
+The foreign key retains ``ON DELETE CASCADE`` for explicit hard-delete paths,
+while user-initiated conversation deletion marks the metadata row deleted and
+preserves its cost events for reconciliation and auditing.
 """
 
 from __future__ import annotations
@@ -21,14 +12,12 @@ from typing import AsyncGenerator
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
-from sqlalchemy.pool import StaticPool
 
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
     SQLAppConversationInfoService,
@@ -39,38 +28,8 @@ from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
 
 
 @pytest.fixture
-async def engine() -> AsyncGenerator[AsyncEngine, None]:
-    """Async SQLite engine with FK enforcement enabled.
-
-    SQLite does not enforce foreign-key constraints unless each connection
-    runs ``PRAGMA foreign_keys=ON``; the engine ``connect`` event listener
-    applies it automatically.
-    """
-
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-    )
-
-    @event.listens_for(engine.sync_engine, 'connect')
-    def _enable_sqlite_fk(dbapi_connection, _connection_record):  # pragma: no cover
-        cursor = dbapi_connection.cursor()
-        cursor.execute('PRAGMA foreign_keys=ON')
-        cursor.close()
-
-    async with engine.begin() as conn:
-        await conn.run_sync(StoredConversationMetadata.metadata.create_all)
-
-    try:
-        yield engine
-    finally:
-        await engine.dispose()
-
-
-@pytest.fixture
-async def session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
-    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+async def session(async_engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
+    session_maker = async_sessionmaker(async_engine, expire_on_commit=False)
     async with session_maker() as db_session:
         yield db_session
 
@@ -92,7 +51,7 @@ def test_cost_event_fk_declares_cascade():
 
 @pytest.mark.asyncio
 async def test_soft_delete_conversation_retains_row_and_cost_events(
-    engine: AsyncEngine, session: AsyncSession
+    async_engine: AsyncEngine, session: AsyncSession
 ):
     """Soft-deleting a conversation retains its row and cost-event rows.
 
