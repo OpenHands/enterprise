@@ -1,12 +1,19 @@
 @import "tailwindcss";
+@import "@heroui/styles";
 
-@plugin '../hero.ts';
 @config "../tailwind.config.js";
-@source '../node_modules/@heroui/theme/dist/**/*.{js,ts,jsx,tsx}';
 
 @plugin 'tailwind-scrollbar' {
   nocompatible: true;
   preferredstrategy: "pseudoelements";
+}
+
+/* HeroUI v3 theme: dark by default with a blue accent (primary in v2) */
+:root,
+.dark,
+[data-theme="dark"] {
+  --accent: #4465db;
+  --accent-foreground: #ffffff;
 }
 
 /* OLD TAILWIND STYLES */

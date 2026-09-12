@@ -26,9 +26,10 @@ export function ArchivedConversationView() {
   const renderableEvents = React.useMemo(
     () =>
       v1FullEvents
-        .reduce<
-          OpenHandsEvent[]
-        >((uiEvents, event) => handleEventForUI(event, uiEvents), [])
+        .reduce<OpenHandsEvent[]>(
+          (uiEvents, event) => handleEventForUI(event, uiEvents),
+          [],
+        )
         .filter(shouldRenderEvent),
     [v1FullEvents],
   );

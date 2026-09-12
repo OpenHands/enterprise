@@ -1,4 +1,4 @@
-import { Autocomplete, AutocompleteItem } from "@heroui/react";
+import { ComboBox, Input, ListBox, Spinner } from "@heroui/react";
 import React, { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { OptionalTag } from "./optional-tag";
@@ -59,41 +59,53 @@ export function SettingsDropdownInput({
           {showOptionalTag && <OptionalTag />}
         </div>
       )}
-      <Autocomplete
+      <ComboBox
         aria-label={typeof label === "string" ? label : name}
-        data-testid={testId}
-        name={name}
         items={items}
         defaultSelectedKey={defaultSelectedKey}
-        selectedKey={selectedKey}
+        selectedKey={selectedKey ?? undefined}
         onSelectionChange={onSelectionChange}
         onInputChange={onInputChange}
-        isClearable={isClearable}
         isDisabled={isDisabled || isLoading}
-        isLoading={isLoading}
-        placeholder={isLoading ? t("HOME$LOADING") : placeholder}
-        allowsCustomValue={allowsCustomValue}
+        allowsCustomValue={allowsCustomValue || isClearable}
         isRequired={required}
+        defaultFilter={defaultFilter ?? (() => true)}
         className="w-full"
-        classNames={{
-          popoverContent: "bg-tertiary rounded-xl",
-        }}
-        inputProps={{
-          classNames: {
-            inputWrapper: cn(
-              "bg-tertiary border border-[#717888] h-10 w-full max-w-[680px] rounded-sm p-2 placeholder:italic",
-              inputWrapperClassName,
-            ),
-            input: inputClassName,
-          },
-        }}
-        defaultFilter={defaultFilter}
-        startContent={startContent || null}
       >
-        {(item) => (
-          <AutocompleteItem key={item.key}>{item.label}</AutocompleteItem>
-        )}
-      </Autocomplete>
+        <ComboBox.InputGroup
+          className={cn(
+            "bg-tertiary border border-[#717888] h-10 w-full max-w-[680px] rounded-sm p-2",
+            inputWrapperClassName,
+          )}
+        >
+          {startContent || null}
+          <Input
+            data-testid={testId}
+            name={name}
+            placeholder={isLoading ? t("HOME$LOADING") : placeholder}
+            className={cn("placeholder:italic", inputClassName)}
+            onMouseDown={(e) => {
+              if (document.activeElement === e.currentTarget) {
+                e.currentTarget.blur();
+              }
+            }}
+          />
+          {isLoading ? <Spinner size="sm" /> : null}
+        </ComboBox.InputGroup>
+        <ComboBox.Popover className="bg-tertiary rounded-xl">
+          <ListBox>
+            {items.map((item) => (
+              <ListBox.Item
+                id={String(item.key)}
+                key={item.key}
+                textValue={item.label}
+              >
+                {item.label}
+              </ListBox.Item>
+            ))}
+          </ListBox>
+        </ComboBox.Popover>
+      </ComboBox>
     </label>
   );
 }

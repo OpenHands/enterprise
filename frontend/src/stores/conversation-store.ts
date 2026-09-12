@@ -6,12 +6,7 @@ import {
 } from "#/utils/conversation-local-storage";
 
 export type ConversationTab =
-  | "editor"
-  | "browser"
-  | "vscode"
-  | "terminal"
-  | "planner"
-  | "tasklist";
+  "editor" | "browser" | "vscode" | "terminal" | "planner" | "tasklist";
 
 export type ConversationMode = "code" | "plan";
 

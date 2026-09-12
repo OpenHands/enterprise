@@ -1,8 +1,4 @@
-import {
-  Autocomplete,
-  AutocompleteItem,
-  AutocompleteSection,
-} from "@heroui/react";
+import { ComboBox, Header, Input, ListBox, Spinner } from "@heroui/react";
 import React from "react";
 import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
@@ -149,63 +145,66 @@ export function ModelSelector({
           <label className={cn("text-sm", labelClassName)}>
             {t(I18nKey.LLM$PROVIDER)}
           </label>
-          <Autocomplete
-            data-testid="llm-provider-input"
+          <ComboBox
             isRequired
-            isVirtualized={false}
-            name="llm-provider-input"
             isDisabled={isDisabled}
             aria-label={t(I18nKey.LLM$PROVIDER)}
-            placeholder={t(I18nKey.LLM$SELECT_PROVIDER_PLACEHOLDER)}
-            isClearable={false}
             onSelectionChange={(e) => {
               if (e?.toString()) handleChangeProvider(e.toString());
             }}
             onInputChange={(value) => !value && clear()}
             defaultSelectedKey={selectedProvider ?? undefined}
             selectedKey={selectedProvider}
-            classNames={{
-              popoverContent: "bg-tertiary rounded-xl border border-[#717888]",
-            }}
-            inputProps={{
-              classNames: {
-                inputWrapper:
-                  "bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic",
-              },
-            }}
           >
-            <AutocompleteSection
-              title={
-                unverifiedProviders.length > 0
-                  ? t(I18nKey.MODEL_SELECTOR$VERIFIED)
-                  : undefined
-              }
-            >
-              {verifiedProviders.map((provider) => (
-                <AutocompleteItem
-                  data-testid={`provider-item-${provider.name}`}
-                  key={provider.name}
-                >
-                  {mapProvider(provider.name)}
-                </AutocompleteItem>
-              ))}
-            </AutocompleteSection>
-            {unverifiedProviders.length > 0 ? (
-              <AutocompleteSection
-                title={
-                  verifiedProviders.length > 0
-                    ? t(I18nKey.MODEL_SELECTOR$OTHERS)
-                    : undefined
-                }
-              >
-                {unverifiedProviders.map((provider) => (
-                  <AutocompleteItem key={provider.name}>
-                    {mapProvider(provider.name)}
-                  </AutocompleteItem>
-                ))}
-              </AutocompleteSection>
-            ) : null}
-          </Autocomplete>
+            <ComboBox.InputGroup className="bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2">
+              <Input
+                data-testid="llm-provider-input"
+                name="llm-provider-input"
+                placeholder={t(I18nKey.LLM$SELECT_PROVIDER_PLACEHOLDER)}
+                className="placeholder:italic"
+                onMouseDown={(e) => {
+                  if (document.activeElement === e.currentTarget) {
+                    e.currentTarget.blur();
+                  }
+                }}
+              />
+            </ComboBox.InputGroup>
+            <ComboBox.Popover className="bg-tertiary rounded-xl border border-[#717888]">
+              <ListBox>
+                <ListBox.Section>
+                  {unverifiedProviders.length > 0 ? (
+                    <Header>{t(I18nKey.MODEL_SELECTOR$VERIFIED)}</Header>
+                  ) : null}
+                  {verifiedProviders.map((provider) => (
+                    <ListBox.Item
+                      data-testid={`provider-item-${provider.name}`}
+                      id={provider.name}
+                      key={provider.name}
+                      textValue={mapProvider(provider.name)}
+                    >
+                      {mapProvider(provider.name)}
+                    </ListBox.Item>
+                  ))}
+                </ListBox.Section>
+                {unverifiedProviders.length > 0 ? (
+                  <ListBox.Section>
+                    {verifiedProviders.length > 0 ? (
+                      <Header>{t(I18nKey.MODEL_SELECTOR$OTHERS)}</Header>
+                    ) : null}
+                    {unverifiedProviders.map((provider) => (
+                      <ListBox.Item
+                        id={provider.name}
+                        key={provider.name}
+                        textValue={mapProvider(provider.name)}
+                      >
+                        {mapProvider(provider.name)}
+                      </ListBox.Item>
+                    ))}
+                  </ListBox.Section>
+                ) : null}
+              </ListBox>
+            </ComboBox.Popover>
+          </ComboBox>
         </fieldset>
       ) : null}
 
@@ -224,61 +223,66 @@ export function ModelSelector({
         <label className={cn("text-sm", labelClassName)}>
           {t(I18nKey.LLM$MODEL)}
         </label>
-        <Autocomplete
-          data-testid="llm-model-input"
+        <ComboBox
           isRequired
-          isVirtualized={false}
-          isLoading={isLoadingModels}
-          name="llm-model-input"
           aria-label={t(I18nKey.LLM$MODEL)}
-          placeholder={t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER)}
-          isClearable={false}
           onSelectionChange={(e) => {
             if (e?.toString()) handleChangeModel(e.toString());
           }}
           isDisabled={isDisabled || !selectedProvider}
           selectedKey={selectedModel}
           defaultSelectedKey={selectedModel ?? undefined}
-          classNames={{
-            popoverContent: "bg-tertiary rounded-xl border border-[#717888]",
-          }}
-          inputProps={{
-            classNames: {
-              inputWrapper:
-                "bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic",
-            },
-          }}
         >
-          <AutocompleteSection
-            title={
-              unverifiedModels.length > 0
-                ? t(I18nKey.MODEL_SELECTOR$VERIFIED)
-                : undefined
-            }
-          >
-            {verifiedModels.map((model) => (
-              <AutocompleteItem key={model.name}>{model.name}</AutocompleteItem>
-            ))}
-          </AutocompleteSection>
-          {unverifiedModels.length > 0 ? (
-            <AutocompleteSection
-              title={
-                verifiedModels.length > 0
-                  ? t(I18nKey.MODEL_SELECTOR$OTHERS)
-                  : undefined
-              }
-            >
-              {unverifiedModels.map((model) => (
-                <AutocompleteItem
-                  data-testid={`model-item-${model.name}`}
-                  key={model.name}
-                >
-                  {model.name}
-                </AutocompleteItem>
-              ))}
-            </AutocompleteSection>
-          ) : null}
-        </Autocomplete>
+          <ComboBox.InputGroup className="bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2">
+            <Input
+              data-testid="llm-model-input"
+              name="llm-model-input"
+              placeholder={t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER)}
+              className="placeholder:italic"
+              onMouseDown={(e) => {
+                if (document.activeElement === e.currentTarget) {
+                  e.currentTarget.blur();
+                }
+              }}
+            />
+            {isLoadingModels ? <Spinner size="sm" /> : null}
+          </ComboBox.InputGroup>
+          <ComboBox.Popover className="bg-tertiary rounded-xl border border-[#717888]">
+            <ListBox>
+              <ListBox.Section>
+                {unverifiedModels.length > 0 ? (
+                  <Header>{t(I18nKey.MODEL_SELECTOR$VERIFIED)}</Header>
+                ) : null}
+                {verifiedModels.map((model) => (
+                  <ListBox.Item
+                    id={model.name}
+                    key={model.name}
+                    textValue={model.name}
+                  >
+                    {model.name}
+                  </ListBox.Item>
+                ))}
+              </ListBox.Section>
+              {unverifiedModels.length > 0 ? (
+                <ListBox.Section>
+                  {verifiedModels.length > 0 ? (
+                    <Header>{t(I18nKey.MODEL_SELECTOR$OTHERS)}</Header>
+                  ) : null}
+                  {unverifiedModels.map((model) => (
+                    <ListBox.Item
+                      data-testid={`model-item-${model.name}`}
+                      id={model.name}
+                      key={model.name}
+                      textValue={model.name}
+                    >
+                      {model.name}
+                    </ListBox.Item>
+                  ))}
+                </ListBox.Section>
+              ) : null}
+            </ListBox>
+          </ComboBox.Popover>
+        </ComboBox>
         {modelsError && (
           <p data-testid="models-error" className="text-danger text-xs">
             {t(I18nKey.CONFIGURATION$ERROR_FETCH_MODELS)}
