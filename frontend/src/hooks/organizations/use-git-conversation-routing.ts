@@ -66,7 +66,7 @@ export function useGitConversationRouting() {
   const claimOrg = React.useCallback(
     (id: string) => {
       const org = orgsRef.current.find((o) => o.id === id);
-      if (!org || org.status !== "unclaimed") return;
+      if (org?.status !== "unclaimed") return;
 
       setPendingClaims((prev) => new Set(prev).add(id));
 
@@ -89,7 +89,7 @@ export function useGitConversationRouting() {
   const disconnectOrg = React.useCallback(
     (id: string) => {
       const org = orgsRef.current.find((o) => o.id === id);
-      if (!org || org.status !== "claimed" || !org.claimId) return;
+      if (org?.status !== "claimed" || !org?.claimId) return;
 
       setPendingDisconnects((prev) => new Set(prev).add(id));
 
