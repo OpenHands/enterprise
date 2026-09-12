@@ -79,7 +79,7 @@ export function Budgets() {
         orgId: organizationId!,
         payload,
       }),
-    onSuccess: () =>
+    onSettled: () =>
       queryClient.invalidateQueries({
         queryKey: ["organizations", "budgets", organizationId],
       }),
@@ -95,7 +95,7 @@ export function Budgets() {
         userId: params.userId,
         payload: params.payload,
       }),
-    onSuccess: () =>
+    onSettled: () =>
       queryClient.invalidateQueries({
         queryKey: ["organizations", "budgets", organizationId],
       }),
@@ -107,7 +107,7 @@ export function Budgets() {
         orgId: organizationId!,
         userId,
       }),
-    onSuccess: () =>
+    onSettled: () =>
       queryClient.invalidateQueries({
         queryKey: ["organizations", "budgets", organizationId],
       }),
@@ -416,6 +416,10 @@ export function Budgets() {
           spendObservedAt={budgetData?.spend_observed_at ?? null}
           syncStatus={budgetData?.litellm_last_sync_status ?? null}
           syncError={budgetData?.litellm_last_sync_error ?? null}
+          reconciliationState={budgetData?.reconciliation_state ?? "pending"}
+          reconciliationError={budgetData?.reconciliation_error ?? null}
+          desiredTeamMaxBudget={budgetData?.desired_team_max_budget ?? null}
+          appliedTeamMaxBudget={budgetData?.applied_team_max_budget ?? null}
           unmappedSpend={budgetData?.unmapped_spend ?? null}
           unmappedMemberCount={budgetData?.unmapped_member_count ?? null}
           monthlyLimit={monthlyLimit}

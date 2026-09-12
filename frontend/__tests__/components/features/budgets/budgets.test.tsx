@@ -41,6 +41,13 @@ const budgetResponse = {
   litellm_last_sync_at: "2024-01-15T12:00:00Z",
   litellm_last_sync_status: "success",
   litellm_last_sync_error: null,
+  reconciliation_state: "healthy" as const,
+  reconciliation_error: null,
+  desired_team_max_budget: 1000,
+  applied_team_max_budget: 1000,
+  budget_policy_matches: true,
+  applied_at: "2024-01-15T12:00:00Z",
+  applied_policy_observed_at: "2024-01-15T12:00:00Z",
   reset_day: 1,
   slack_channel: "alerts",
   slack_team_id: "T123",
@@ -217,16 +224,101 @@ describe("Budgets", () => {
       ...budgetResponse,
       litellm_last_sync_status: "error",
       litellm_last_sync_error: "member cycle baseline is unavailable",
+      reconciliation_state: "degraded",
+      reconciliation_error: "member cycle baseline is unavailable",
     });
 
     await renderBudgets();
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Existing caps are preserved",
+      "Degraded",
     );
     expect(screen.getByRole("alert")).toHaveTextContent(
       "member cycle baseline is unavailable",
     );
     expect(screen.getByText("$200.00")).toBeInTheDocument();
+  });
+
+  it("refetches budget state after a failed settings write", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings)
+      .mockResolvedValueOnce(budgetResponse)
+      .mockResolvedValueOnce({
+        ...budgetResponse,
+        reconciliation_state: "failed" as const,
+        reconciliation_error: "verification failed",
+      });
+    vi.mocked(organizationService.updateBudgetSettings).mockRejectedValueOnce(
+      new Error("503"),
+    );
+
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: /\+ Add threshold/i }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      expect(organizationService.updateBudgetSettings).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(organizationService.getBudgetSettings).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("verification failed");
+  });
+
+  it("refetches budget state after a failed member override write", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings)
+      .mockResolvedValueOnce(budgetResponse)
+      .mockResolvedValueOnce({
+        ...budgetResponse,
+        reconciliation_state: "failed" as const,
+        reconciliation_error: "override verification failed",
+      });
+    vi.mocked(organizationService.upsertBudgetOverride).mockRejectedValueOnce(
+      new Error("503"),
+    );
+
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const overrideInput = screen.getByRole("spinbutton");
+    await user.clear(overrideInput);
+    await user.type(overrideInput, "75");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(organizationService.upsertBudgetOverride).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(organizationService.getBudgetSettings).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("refetches budget state after a failed member override delete", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings)
+      .mockResolvedValueOnce(budgetResponse)
+      .mockResolvedValueOnce({
+        ...budgetResponse,
+        reconciliation_state: "failed" as const,
+        reconciliation_error: "delete verification failed",
+      });
+    vi.mocked(organizationService.deleteBudgetOverride).mockRejectedValueOnce(
+      new Error("503"),
+    );
+
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await user.click(screen.getByLabelText("Remove override for User One"));
+
+    await waitFor(() => {
+      expect(organizationService.deleteBudgetOverride).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(organizationService.getBudgetSettings).toHaveBeenCalledTimes(2);
+    });
   });
 });

@@ -1,6 +1,6 @@
 [project]
 name = "openhands-ai"
-version = "1.58.0"
+version = "1.61.0"
 description = "OpenHands Enterprise: the OpenHands app server plus the SaaS/enterprise server that runs on top of it"
 requires-python = ">=3.12,<3.14"
 
@@ -55,9 +55,9 @@ dependencies = [
   "memory-profiler==0.61.0",
   "numpy==2.4.4",
   "openai==2.33.0",                                 # Pin because litellm 1.84.1 requires 2.33.0 and is incompatible with >=1.100.0 (BerriAI/litellm#13711). litellm 1.94.0 allows >=2.20.0, so this pin could be relaxed but is kept for stability.
-  "openhands-agent-server==1.44.1",
-  "openhands-sdk==1.44.1",
-  "openhands-tools==1.44.1",
+  "openhands-agent-server==1.47.0",
+  "openhands-sdk==1.47.0",
+  "openhands-tools==1.47.0",
   "opentelemetry-api==1.39.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
   "orjson==3.11.8",                                 # Pinned to fix CVE-2025-67221
@@ -137,6 +137,7 @@ test = [
   "pytest-timeout==2.4.0",
   "pytest-xdist==3.8.0",
   "reportlab==4.4.10",
+  "testcontainers==4.15.0",
 ]
 runtime = [
   "flake8==7.3.0",
