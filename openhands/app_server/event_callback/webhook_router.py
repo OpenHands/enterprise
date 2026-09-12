@@ -77,6 +77,8 @@ from openhands.app_server.utils.docker_utils import (
 )
 from openhands.sdk import ConversationExecutionStatus, Event
 from openhands.sdk.event import ConversationStateUpdateEvent, ObservationEvent
+from openhands.sdk.event.llm_convertible.message import MessageEvent
+from openhands.sdk.event.llm_convertible.observation import AgentErrorEvent
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.settings.acp_providers import detect_acp_provider_by_command
 from openhands.sdk.tool.builtins import SwitchLLMObservation
@@ -524,6 +526,45 @@ async def _sync_live_conversation_stats(
         )
 
 
+async def _track_first_agent_response(
+    conversation_id: UUID,
+    user_id: str,
+    event: MessageEvent | AgentErrorEvent,
+    event_service: EventService,
+) -> None:
+    try:
+        history = await event_service.search_events(conversation_id, limit=100)
+        first_terminal_event = next(
+            (
+                stored_event
+                for stored_event in history.items
+                if (
+                    isinstance(stored_event, MessageEvent)
+                    and stored_event.source == 'agent'
+                )
+                or isinstance(stored_event, AgentErrorEvent)
+            ),
+            None,
+        )
+        if not first_terminal_event or first_terminal_event.id != event.id:
+            return
+        analytics = get_analytics_service()
+        if not analytics:
+            return
+        is_failure = isinstance(event, AgentErrorEvent)
+        classification = getattr(event, 'classification', None) if is_failure else None
+        ctx = await resolve_analytics_context(user_id)
+        analytics.track_first_agent_response(
+            ctx=ctx,
+            conversation_id=str(conversation_id),
+            outcome='failed' if is_failure else 'completed',
+            failure_kind=classification.kind.value if classification else None,
+            retryable=classification.retryable if classification else None,
+        )
+    except Exception:
+        _logger.exception('analytics:first_agent_response:failed', stack_info=True)
+
+
 @router.post('/events/{conversation_id}')
 async def on_event(
     background_tasks: BackgroundTasks,
@@ -535,6 +576,24 @@ async def on_event(
 ) -> Success:
     """Webhook callback for when event stream events occur."""
     try:
+        first_terminal_event = next(
+            (
+                event
+                for event in events
+                if (isinstance(event, MessageEvent) and event.source == 'agent')
+                or isinstance(event, AgentErrorEvent)
+            ),
+            None,
+        )
+        if first_terminal_event and app_conversation_info.created_by_user_id:
+            background_tasks.add_task(
+                _track_first_agent_response,
+                conversation_id,
+                app_conversation_info.created_by_user_id,
+                first_terminal_event,
+                event_service,
+            )
+
         # Save events...
         await asyncio.gather(
             *[event_service.save_event(conversation_id, event) for event in events]

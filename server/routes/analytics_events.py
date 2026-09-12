@@ -26,10 +26,10 @@ Design notes
 """
 
 import logging
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.user_auth import get_user_id
@@ -64,17 +64,17 @@ class CreatePrButtonClickedEvent(BaseModel):
     git_provider: GitProvider | None = None
 
 
-# Tagged union of every event the frontend may send. To add a new event,
-# define another ``BaseModel`` above and append it here, e.g.:
-#     FrontendEvent = Annotated[
-#         CreatePrButtonClickedEvent | PushButtonClickedEvent,
-#         Field(discriminator='event_type'),
-#     ]
-# With a single member the discriminator is unnecessary; pydantic still uses
-# the ``Literal`` on ``event_type`` to reject unknown event types.
-# ⚠️ When adding a second event, wrap in:
-# Annotated[CreatePrButtonClickedEvent | NewEvent, Field(discriminator='event_type')]
-FrontendEvent = CreatePrButtonClickedEvent
+class CanvasAuthenticatedEvent(BaseModel):
+    """A signed-in user successfully reached the Agent Canvas application."""
+
+    event_type: Literal['canvas_authenticated']
+    client_version: str = Field(min_length=1, max_length=64)
+
+
+FrontendEvent = Annotated[
+    CreatePrButtonClickedEvent | CanvasAuthenticatedEvent,
+    Field(discriminator='event_type'),
+]
 
 
 class AnalyticsEventResponse(BaseModel):
