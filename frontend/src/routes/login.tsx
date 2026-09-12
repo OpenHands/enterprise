@@ -28,6 +28,8 @@ export default function LoginPage() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const returnTo = getSafeReturnTo(searchParams);
+  const authServiceUnavailable =
+    searchParams.get("auth_error") === "service_unavailable";
   const locationState = location.state as LocationState | null;
 
   const config = useConfig();
@@ -106,6 +108,7 @@ export default function LoginPage() {
           emailVerified={emailVerified}
           hasDuplicatedEmail={hasDuplicatedEmail}
           recaptchaBlocked={recaptchaBlocked}
+          authServiceUnavailable={authServiceUnavailable}
           hasInvitation={hasInvitation}
           buildOAuthStateData={buildOAuthStateData}
         />
