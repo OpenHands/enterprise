@@ -2,6 +2,10 @@ import React from "react";
 import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
+import {
+  formControlRadiusClassName,
+  formControlTransitionClassName,
+} from "#/utils/form-control-classes";
 import type { GitOrg } from "#/types/org";
 
 type ButtonState =
@@ -13,19 +17,19 @@ type ButtonState =
 
 const BUTTON_STYLES: Record<ButtonState, string> = {
   claiming:
-    "bg-[#050505] border border-[#242424] text-[#fafafa] opacity-50 cursor-not-allowed flex items-center justify-center",
+    "border border-[var(--oh-border)] bg-base text-white opacity-50 cursor-not-allowed flex items-center justify-center",
   disconnecting:
-    "bg-[#050505] border border-[#242424] text-[#fafafa] opacity-50 cursor-not-allowed",
+    "border border-[var(--oh-border)] bg-base text-white opacity-50 cursor-not-allowed",
   disconnect:
-    "bg-[rgba(244,63,94,0.15)] border border-[rgba(244,63,94,0.6)] text-[#fda4af] font-medium cursor-pointer",
+    "border border-red-500/60 bg-red-500/15 text-[var(--oh-status-error)] font-medium cursor-pointer",
   claimed:
-    "bg-[rgba(16,185,129,0.2)] border border-[rgba(16,185,129,0.6)] text-[#6ee7b7] font-medium cursor-pointer flex items-center justify-center",
+    "border border-emerald-500/60 bg-emerald-500/20 text-[var(--oh-status-success)] font-medium cursor-pointer flex items-center justify-center",
   unclaimed:
-    "bg-[#050505] border border-[#242424] text-[#fafafa] cursor-pointer flex items-center justify-center",
+    "border border-[var(--oh-border)] bg-base text-white cursor-pointer flex items-center justify-center",
 };
 
 const BUTTON_HOVER_STYLES: Partial<Record<ButtonState, string>> = {
-  unclaimed: "bg-[rgba(31,31,31,0.6)]",
+  unclaimed: "bg-[var(--oh-interactive-hover)]",
 };
 
 const BUTTON_LABELS: Record<ButtonState, I18nKey> = {
@@ -73,7 +77,9 @@ export function ClaimButton({ org, onClaim, onDisconnect }: ClaimButtonProps) {
       onMouseLeave={() => setIsHovered(false)}
       disabled={isDisabled}
       className={cn(
-        "h-[28px] rounded px-[13px] text-xs leading-4 text-center whitespace-nowrap transition-colors",
+        "h-7 px-3 text-xs leading-4 text-center whitespace-nowrap",
+        formControlRadiusClassName,
+        formControlTransitionClassName,
         BUTTON_STYLES[buttonState],
         isHovered && BUTTON_HOVER_STYLES[buttonState],
       )}

@@ -6,6 +6,7 @@ import { SettingsDropdownInput } from "../settings-dropdown-input";
 import { BrandButton } from "../brand-button";
 import { OptionalTag } from "../optional-tag";
 import { cn } from "#/utils/utils";
+import { formControlMultilineFieldClassName } from "#/utils/form-control-classes";
 
 type MCPServerType = "sse" | "stdio" | "shttp";
 
@@ -276,7 +277,7 @@ export function MCPServerForm({
     <form
       data-testid={formTestId}
       onSubmit={handleSubmit}
-      className="flex flex-col items-start gap-6"
+      className="flex w-full flex-col items-stretch gap-6"
     >
       {mode === "add" && (
         <SettingsDropdownInput
@@ -290,7 +291,7 @@ export function MCPServerForm({
           isClearable={false}
           allowsCustomValue={false}
           required
-          wrapperClassName={cn("w-full", "max-w-[680px]")}
+          wrapperClassName="w-full"
         />
       )}
 
@@ -303,7 +304,7 @@ export function MCPServerForm({
             name="url"
             type="url"
             label={t(I18nKey.SETTINGS$MCP_URL)}
-            className="w-full max-w-[680px]"
+            className="w-full"
             required
             defaultValue={server?.url || ""}
             placeholder="https://api.example.com"
@@ -314,7 +315,7 @@ export function MCPServerForm({
             name="api_key"
             type="password"
             label={t(I18nKey.SETTINGS$MCP_API_KEY)}
-            className="w-full max-w-[680px]"
+            className="w-full"
             showOptionalTag
             defaultValue={server?.api_key || ""}
             placeholder={t(I18nKey.SETTINGS$MCP_API_KEY_PLACEHOLDER)}
@@ -326,7 +327,7 @@ export function MCPServerForm({
               name="timeout"
               type="number"
               label={t(I18nKey.SETTINGS$MCP_TIMEOUT_LABEL)}
-              className="w-full max-w-[680px]"
+              className="w-full"
               showOptionalTag
               defaultValue={server?.timeout?.toString() || ""}
               placeholder="60"
@@ -344,7 +345,7 @@ export function MCPServerForm({
             name="name"
             type="text"
             label={t(I18nKey.SETTINGS$MCP_NAME)}
-            className="w-full max-w-[680px]"
+            className="w-full"
             required
             defaultValue={server?.name || ""}
             placeholder="my-mcp-server"
@@ -356,13 +357,13 @@ export function MCPServerForm({
             name="command"
             type="text"
             label={t(I18nKey.SETTINGS$MCP_COMMAND)}
-            className="w-full max-w-[680px]"
+            className="w-full"
             required
             defaultValue={server?.command || ""}
             placeholder="npx"
           />
 
-          <label className="flex flex-col gap-2.5 w-full max-w-[680px]">
+          <label className="flex w-full flex-col gap-2.5">
             <div className="flex items-center gap-2">
               <span className="text-sm">
                 {t(I18nKey.SETTINGS$MCP_COMMAND_ARGUMENTS)}
@@ -376,8 +377,9 @@ export function MCPServerForm({
               defaultValue={server?.args?.join("\n") || ""}
               placeholder="arg1&#10;arg2&#10;arg3"
               className={cn(
-                "bg-tertiary border border-[#717888] w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt resize-none",
-                "disabled:bg-[#2D2F36] disabled:border-[#2D2F36] disabled:cursor-not-allowed",
+                formControlMultilineFieldClassName,
+                "resize-none",
+                "disabled:bg-[var(--oh-surface-raised)] disabled:border-[var(--oh-border-subtle)]",
               )}
             />
             <p className="text-xs text-tertiary-alt">
@@ -385,7 +387,7 @@ export function MCPServerForm({
             </p>
           </label>
 
-          <label className="flex flex-col gap-2.5 w-full max-w-[680px]">
+          <label className="flex w-full flex-col gap-2.5">
             <div className="flex items-center gap-2">
               <span className="text-sm">
                 {t(I18nKey.SETTINGS$MCP_ENVIRONMENT_VARIABLES)}
@@ -399,16 +401,16 @@ export function MCPServerForm({
               defaultValue={formatEnvironmentVariables(server?.env)}
               placeholder="KEY1=value1&#10;KEY2=value2"
               className={cn(
+                formControlMultilineFieldClassName,
                 "resize-none",
-                "bg-tertiary border border-[#717888] rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt",
-                "disabled:bg-[#2D2F36] disabled:border-[#2D2F36] disabled:cursor-not-allowed",
+                "disabled:bg-[var(--oh-surface-raised)] disabled:border-[var(--oh-border-subtle)]",
               )}
             />
           </label>
         </>
       )}
 
-      <div className="flex items-center gap-4">
+      <div className="flex w-full items-center justify-end gap-2">
         <BrandButton
           testId="cancel-button"
           type="button"

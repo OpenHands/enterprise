@@ -71,7 +71,10 @@ export function InviteOrganizationMemberModal({
   const roleOptions = [
     { value: "member", label: t(I18nKey.ORG$ROLE_MEMBER) },
     { value: "admin", label: t(I18nKey.ORG$ROLE_ADMIN) },
-  ];
+  ].map((option) => ({
+    ...option,
+    label: option.label.charAt(0).toLocaleUpperCase() + option.label.slice(1),
+  }));
 
   if (result) {
     return (
@@ -146,7 +149,7 @@ export function InviteOrganizationMemberModal({
         placeholder={t(I18nKey.COMMON$ENTER_EMAIL_ADDRESSES)}
         onChange={handleEmailsChange}
       />
-      <label className="flex flex-col gap-1 text-sm capitalize">
+      <label className="flex flex-col gap-1 text-sm">
         {t(I18nKey.ORG$INVITE_ROLE_LABEL)}
         <Dropdown
           testId="invite-role-dropdown"

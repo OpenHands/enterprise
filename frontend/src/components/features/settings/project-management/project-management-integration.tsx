@@ -4,6 +4,12 @@ import { I18nKey } from "#/i18n/declaration";
 import { IntegrationRow } from "./integration-row";
 import { JiraDcIntegrationPanel } from "./jira-dc-integration-panel";
 import { useConfig } from "#/hooks/query/use-config";
+import { Text } from "#/ui/typography";
+import { cn } from "#/utils/utils";
+import {
+  settingsListContainerClassName,
+  settingsListDividerClassName,
+} from "#/utils/settings-list-classes";
 
 export function ProjectManagementIntegration() {
   const { t } = useTranslation();
@@ -14,15 +20,20 @@ export function ProjectManagementIntegration() {
   const jiraDcEnabled = config?.feature_flags?.enable_jira_dc;
 
   return (
-    <div className="flex flex-col gap-6">
-      <h3 className="text-xl font-medium text-white">
+    <div className="flex flex-col gap-3">
+      <Text className="text-sm font-medium text-content-2">
         {t(I18nKey.PROJECT_MANAGEMENT$TITLE)}
-      </h3>
+      </Text>
 
       {/* Jira Cloud + Linear are multi-workspace SaaS integrations and keep the
           compact row + modal. Their config is short. */}
       {(jiraEnabled || linearEnabled) && (
-        <div className="flex flex-col gap-4 w-1/4">
+        <div
+          className={cn(
+            settingsListContainerClassName,
+            settingsListDividerClassName,
+          )}
+        >
           {jiraEnabled && (
             <IntegrationRow
               platform="jira"

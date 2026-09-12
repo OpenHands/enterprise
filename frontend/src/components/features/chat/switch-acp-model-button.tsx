@@ -17,7 +17,6 @@ import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
 import { extractErrorMessage } from "#/utils/extract-error-message";
 import { I18nKey } from "#/i18n/declaration";
-import { CONTEXT_MENU_ICON_TEXT_CLASSNAME } from "#/utils/constants";
 import { cn } from "#/utils/utils";
 import ChevronDownSmallIcon from "#/icons/chevron-down-small.svg?react";
 import CheckIcon from "#/icons/checkmark.svg?react";
@@ -72,14 +71,12 @@ function AcpModelMenu({
             key={model.id}
             testId={`switch-acp-model-option-${model.id}`}
             onClick={(e) => handleSelect(e, model.id)}
-            className="cursor-pointer p-0 h-auto hover:bg-transparent"
+            className={cn(
+              "h-auto",
+              isActive && "bg-[var(--oh-interactive-hover)]",
+            )}
           >
-            <div
-              className={cn(
-                "flex items-center justify-between gap-2 p-2 rounded",
-                isActive ? "bg-[#5C5D62]" : "hover:bg-[#5C5D62]",
-              )}
-            >
+            <div className="flex w-full items-center justify-between gap-2">
               <span className="truncate text-sm">{model.label}</span>
               {isActive && (
                 <CheckIcon width={14} height={14} className="shrink-0" />
@@ -93,12 +90,12 @@ function AcpModelMenu({
         to="/settings/agent"
         onClick={onClose}
         data-testid="switch-acp-model-open-settings"
-        className={cn("block", CONTEXT_MENU_ICON_TEXT_CLASSNAME)}
+        className="block"
       >
         <ToolsContextMenuIconText
           icon={<SettingsIcon width={16} height={16} />}
           text={t(I18nKey.MODEL$OPEN_SETTINGS)}
-          className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
+          className="px-2 py-2"
         />
       </Link>
     </ContextMenu>

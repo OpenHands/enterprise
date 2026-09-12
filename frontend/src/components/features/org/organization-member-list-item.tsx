@@ -4,6 +4,7 @@ import { ChevronDown } from "lucide-react";
 import { OrganizationMember, OrganizationUserRole } from "#/types/org";
 import { cn } from "#/utils/utils";
 import { I18nKey } from "#/i18n/declaration";
+import { settingsListRowClassName } from "#/utils/settings-list-classes";
 import { OrganizationMemberRoleContextMenu } from "./organization-member-role-context-menu";
 
 interface OrganizationMemberListItemProps {
@@ -28,6 +29,7 @@ export function OrganizationMemberListItem({
 }: OrganizationMemberListItemProps) {
   const { t } = useTranslation();
   const [contextMenuOpen, setContextMenuOpen] = React.useState(false);
+  const roleTriggerRef = React.useRef<HTMLSpanElement>(null);
 
   const roleSelectionIsPermitted =
     status !== "invited" && hasPermissionToChangeRole;
@@ -36,34 +38,35 @@ export function OrganizationMemberListItem({
     if (roleSelectionIsPermitted) {
       event.preventDefault();
       event.stopPropagation();
-      setContextMenuOpen(true);
+      setContextMenuOpen((open) => !open);
     }
   };
 
   return (
-    <div className="flex items-center justify-between py-4">
-      <div className="flex items-center gap-2">
+    <div className={cn(settingsListRowClassName, "justify-between")}>
+      <div className="flex min-w-0 items-center gap-2">
         <span
           className={cn(
-            "text-sm font-semibold leading-6",
-            status === "invited" && "text-gray-400",
+            "truncate text-sm font-normal leading-5",
+            status === "invited" ? "text-muted" : "text-white",
           )}
         >
           {email}
         </span>
 
         {status === "invited" && (
-          <span className="text-xs text-tertiary-light border border-tertiary px-2 py-1 rounded-lg">
+          <span className="shrink-0 rounded-lg border border-[var(--oh-border)] px-2 py-0.5 text-xs text-muted">
             {t(I18nKey.ORG$STATUS_INVITED)}
           </span>
         )}
       </div>
 
-      <div className="relative">
+      <div className="relative shrink-0">
         <span
+          ref={roleTriggerRef}
           onClick={handleRoleClick}
           className={cn(
-            "text-xs font-normal leading-4 text-org-text flex items-center gap-1 capitalize",
+            "flex items-center gap-1 text-xs font-normal leading-4 text-muted capitalize",
             roleSelectionIsPermitted ? "cursor-pointer" : "cursor-not-allowed",
           )}
         >
@@ -73,6 +76,7 @@ export function OrganizationMemberListItem({
 
         {roleSelectionIsPermitted && contextMenuOpen && (
           <OrganizationMemberRoleContextMenu
+            anchorRef={roleTriggerRef}
             onClose={() => setContextMenuOpen(false)}
             onRoleChange={onRoleChange}
             onRemove={onRemove}

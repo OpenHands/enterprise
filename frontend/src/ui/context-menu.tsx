@@ -1,20 +1,26 @@
 import React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "#/utils/utils";
+import {
+  dropdownMenuListGapClassName,
+  dropdownMenuPanelPaddingClassName,
+} from "#/utils/dropdown-classes";
 
 const contextMenuVariants = cva("text-white overflow-hidden z-50", {
   variants: {
     theme: {
-      default:
-        "absolute bg-tertiary rounded-[6px] context-menu-box-shadow py-[6px] px-1",
+      default: cn(
+        "absolute bg-tertiary rounded-[6px] context-menu-box-shadow",
+        dropdownMenuPanelPaddingClassName,
+      ),
       naked: "relative",
     },
     size: {
-      compact: "py-1 px-1",
+      compact: dropdownMenuPanelPaddingClassName,
       default: "",
     },
     layout: {
-      vertical: "flex flex-col gap-2",
+      vertical: cn("flex flex-col", dropdownMenuListGapClassName),
     },
     position: {
       top: "bottom-full",

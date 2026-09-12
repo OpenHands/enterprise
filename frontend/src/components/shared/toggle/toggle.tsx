@@ -1,4 +1,5 @@
 import { cn } from "#/utils/utils";
+import { ToggleSwitchVisual } from "#/ui/toggle-switch";
 
 interface ToggleProps {
   checked: boolean;
@@ -8,6 +9,7 @@ interface ToggleProps {
   title?: string;
 }
 
+/** Settings-table toggle that shares the agent-canvas switch visual. */
 export function Toggle({
   checked,
   onClick,
@@ -18,27 +20,18 @@ export function Toggle({
   return (
     <button
       type="button"
-      onClick={disabled ? undefined : onClick}
-      className={cn("cursor-pointer", disabled && "cursor-not-allowed")}
+      role="switch"
+      aria-checked={checked}
       aria-label={ariaLabel}
-      disabled={disabled}
       title={title}
+      disabled={disabled}
+      onClick={disabled ? undefined : onClick}
+      className={cn(
+        "cursor-pointer",
+        disabled && "cursor-not-allowed opacity-50",
+      )}
     >
-      <div
-        className={cn(
-          "w-12 h-6 rounded-xl flex items-center p-1.5",
-          checked && "justify-end bg-white",
-          !checked && "justify-start bg-base-secondary",
-          disabled && "opacity-50",
-        )}
-      >
-        <div
-          className={cn(
-            "w-3 h-3 rounded-xl",
-            checked ? "bg-[#0D0F11]" : "bg-tertiary-light",
-          )}
-        />
-      </div>
+      <ToggleSwitchVisual enabled={checked} />
     </button>
   );
 }

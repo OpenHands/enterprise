@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
 import { useConfig } from "#/hooks/query/use-config";
 import { useAuthUrl } from "#/hooks/use-auth-url";
+import { settingsListRowActionButtonClassName } from "#/utils/settings-list-classes";
 import { BrandButton } from "../brand-button";
 
 export function ConfigureAzureDevOpsAnchor() {
@@ -23,15 +24,14 @@ export function ConfigureAzureDevOpsAnchor() {
   };
 
   return (
-    <div data-testid="configure-azure-devops-button" className="py-9">
-      <BrandButton
-        type="button"
-        variant="primary"
-        className="w-55"
-        onClick={handleOAuthFlow}
-      >
-        {t(I18nKey.AZURE_DEVOPS$CONNECT_ACCOUNT)}
-      </BrandButton>
-    </div>
+    <BrandButton
+      testId="configure-azure-devops-button"
+      type="button"
+      variant="primary"
+      className={settingsListRowActionButtonClassName}
+      onClick={handleOAuthFlow}
+    >
+      {t(I18nKey.SETTINGS$CONNECT)}
+    </BrandButton>
   );
 }

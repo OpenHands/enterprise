@@ -26,7 +26,7 @@ export function DeleteConfirmationModal({
   return (
     <ModalBackdrop>
       <div
-        className="bg-base p-6 rounded-xl flex flex-col gap-4 border border-tertiary"
+        className="bg-base p-6 rounded-xl flex flex-col gap-4 border border-[var(--oh-border)]"
         style={{ width: "400px" }}
       >
         <h3 className="text-xl font-bold">
@@ -39,11 +39,10 @@ export function DeleteConfirmationModal({
           })}
         </p>
 
-        <div className="w-full flex gap-2 mt-2">
+        <div className="w-full flex justify-end gap-2 mt-2">
           <BrandButton
             type="button"
             variant="secondary"
-            className="grow"
             onClick={onClose}
             isDisabled={isDeleting}
           >
@@ -53,7 +52,6 @@ export function DeleteConfirmationModal({
             testId="confirm-delete-button"
             type="button"
             variant="danger"
-            className="grow"
             onClick={onDelete}
             isDisabled={isDeleting}
           >

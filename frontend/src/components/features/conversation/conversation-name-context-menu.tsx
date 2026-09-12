@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
 import { useBreakpoint } from "#/hooks/use-breakpoint";
-import { cn } from "#/utils/utils";
 import { ContextMenu } from "#/ui/context-menu";
 import { ContextMenuListItem } from "../context-menu/context-menu-list-item";
 import { Divider } from "#/ui/divider";
@@ -19,12 +18,6 @@ import DeleteIcon from "#/icons/u-delete.svg?react";
 import LinkIcon from "#/icons/link-external.svg?react";
 import CopyIcon from "#/icons/copy.svg?react";
 import { ConversationNameContextMenuIconText } from "./conversation-name-context-menu-icon-text";
-import { CONTEXT_MENU_ICON_TEXT_CLASSNAME } from "#/utils/constants";
-
-const contextMenuListItemClassName = cn(
-  "cursor-pointer p-0 h-auto hover:bg-transparent",
-  CONTEXT_MENU_ICON_TEXT_CLASSNAME,
-);
 
 interface ConversationNameContextMenuProps {
   onClose: () => void;
@@ -77,15 +70,10 @@ export function ConversationNameContextMenu({
       className={isMobile ? "right-0 translate-x-[34%] left-auto" : ""}
     >
       {onRename && (
-        <ContextMenuListItem
-          testId="rename-button"
-          onClick={onRename}
-          className={contextMenuListItemClassName}
-        >
+        <ContextMenuListItem testId="rename-button" onClick={onRename}>
           <ConversationNameContextMenuIconText
             icon={<EditIcon width={16} height={16} />}
             text={t(I18nKey.BUTTON$RENAME)}
-            className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
           />
         </ContextMenuListItem>
       )}
@@ -93,29 +81,19 @@ export function ConversationNameContextMenu({
       {hasTools && <Divider testId="separator-tools" />}
 
       {onShowSkills && (
-        <ContextMenuListItem
-          testId="show-skills-button"
-          onClick={onShowSkills}
-          className={contextMenuListItemClassName}
-        >
+        <ContextMenuListItem testId="show-skills-button" onClick={onShowSkills}>
           <ConversationNameContextMenuIconText
             icon={<RobotIcon width={16} height={16} />}
             text={t(I18nKey.CONVERSATION$SHOW_SKILLS)}
-            className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
           />
         </ContextMenuListItem>
       )}
 
       {onShowHooks && (
-        <ContextMenuListItem
-          testId="show-hooks-button"
-          onClick={onShowHooks}
-          className={contextMenuListItemClassName}
-        >
+        <ContextMenuListItem testId="show-hooks-button" onClick={onShowHooks}>
           <ConversationNameContextMenuIconText
             icon={<ToolsIcon width={16} height={16} />}
             text={t(I18nKey.CONVERSATION$SHOW_HOOKS)}
-            className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
           />
         </ContextMenuListItem>
       )}
@@ -124,12 +102,10 @@ export function ConversationNameContextMenu({
         <ContextMenuListItem
           testId="show-agent-tools-button"
           onClick={onShowAgentTools}
-          className={contextMenuListItemClassName}
         >
           <ConversationNameContextMenuIconText
             icon={<ToolsIcon width={16} height={16} />}
             text={t(I18nKey.BUTTON$SHOW_AGENT_TOOLS_AND_METADATA)}
-            className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
           />
         </ContextMenuListItem>
       )}
@@ -138,12 +114,10 @@ export function ConversationNameContextMenu({
         <ContextMenuListItem
           testId="download-trajectory-button"
           onClick={onDownloadConversation}
-          className={contextMenuListItemClassName}
         >
           <ConversationNameContextMenuIconText
             icon={<DownloadIcon width={16} height={16} />}
             text={t(I18nKey.BUTTON$EXPORT_CONVERSATION)}
-            className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
           />
         </ContextMenuListItem>
       )}
@@ -154,12 +128,10 @@ export function ConversationNameContextMenu({
         <ContextMenuListItem
           testId="display-cost-button"
           onClick={onDisplayCost}
-          className={contextMenuListItemClassName}
         >
           <ConversationNameContextMenuIconText
             icon={<CreditCardIcon width={16} height={16} />}
             text={t(I18nKey.BUTTON$DISPLAY_COST)}
-            className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
           />
         </ContextMenuListItem>
       )}
@@ -168,14 +140,13 @@ export function ConversationNameContextMenu({
         <ContextMenuListItem
           testId="share-publicly-button"
           onClick={onTogglePublic}
-          className={contextMenuListItemClassName}
         >
-          <div className="flex items-center gap-2 justify-between w-full hover:bg-[#5C5D62] rounded h-[30px]">
+          <div className="flex w-full items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"
                 checked={conversation?.public || false}
-                className="w-4 h-4 ml-2 cursor-pointer"
+                className="h-4 w-4 cursor-pointer"
               />
               <span>{t(I18nKey.CONVERSATION$SHARE_PUBLICLY)}</span>
             </div>
@@ -185,7 +156,7 @@ export function ConversationNameContextMenu({
                   type="button"
                   data-testid="copy-share-link-button"
                   onClick={onCopyShareLink}
-                  className="p-1 hover:bg-[#717888] rounded cursor-pointer"
+                  className="cursor-pointer rounded p-1 hover:bg-[var(--oh-interactive-hover)]"
                   title={t(I18nKey.BUTTON$COPY_TO_CLIPBOARD)}
                 >
                   <CopyIcon width={16} height={16} />
@@ -196,7 +167,7 @@ export function ConversationNameContextMenu({
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
-                  className="p-1 hover:bg-[#717888] rounded cursor-pointer"
+                  className="cursor-pointer rounded p-1 hover:bg-[var(--oh-interactive-hover)]"
                   title={t(I18nKey.BUTTON$OPEN_IN_NEW_TAB)}
                 >
                   <LinkIcon width={16} height={16} />
@@ -208,29 +179,19 @@ export function ConversationNameContextMenu({
       )}
 
       {onStop && (
-        <ContextMenuListItem
-          testId="stop-button"
-          onClick={onStop}
-          className={contextMenuListItemClassName}
-        >
+        <ContextMenuListItem testId="stop-button" onClick={onStop}>
           <ConversationNameContextMenuIconText
             icon={<CloseIcon width={16} height={16} />}
             text={t(I18nKey.COMMON$CLOSE_CONVERSATION_STOP_RUNTIME)}
-            className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
           />
         </ContextMenuListItem>
       )}
 
       {onDelete && (
-        <ContextMenuListItem
-          testId="delete-button"
-          onClick={onDelete}
-          className={contextMenuListItemClassName}
-        >
+        <ContextMenuListItem testId="delete-button" onClick={onDelete}>
           <ConversationNameContextMenuIconText
             icon={<DeleteIcon width={16} height={16} />}
             text={t(I18nKey.COMMON$DELETE_CONVERSATION)}
-            className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
           />
         </ContextMenuListItem>
       )}

@@ -5,6 +5,10 @@ import { Toggle } from "#/components/shared/toggle/toggle";
 import { InfoTooltip } from "#/components/features/settings/info-tooltip";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
+import {
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+} from "#/utils/settings-list-classes";
 import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
 
@@ -42,8 +46,10 @@ function ScopeBadge({ scope }: { scope: "instance" | "org" | "personal" }) {
   );
 }
 
-const HEADER_CLASS =
-  "px-4 py-3 text-left text-xs font-medium text-tertiary-alt whitespace-nowrap";
+const HEADER_CLASS = cn(
+  settingsListTableHeaderCellClassName,
+  "whitespace-nowrap",
+);
 const CELL_CLASS = "px-4 py-3 align-middle";
 
 export function MarketplaceTable({
@@ -58,7 +64,7 @@ export function MarketplaceTable({
   const { t } = useTranslation();
 
   return (
-    <div className="overflow-hidden rounded-xl border border-tertiary bg-base-secondary/20 table-box-shadow">
+    <div className="overflow-hidden rounded-xl border border-[var(--oh-border)] bg-base-secondary/20 table-box-shadow">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] table-fixed border-collapse text-sm">
           <colgroup>
@@ -70,8 +76,8 @@ export function MarketplaceTable({
             <col className="w-[10%]" />
             <col className="w-[11%]" />
           </colgroup>
-          <thead>
-            <tr className="border-b border-tertiary bg-base-secondary/50">
+          <thead className={settingsListTableHeadClassName}>
+            <tr>
               <th className={HEADER_CLASS}>
                 {t(I18nKey.SETTINGS$MARKETPLACE_NAME)}
               </th>
@@ -104,7 +110,7 @@ export function MarketplaceTable({
             {marketplaces.map((mp) => (
               <tr
                 key={mp.name}
-                className="border-t border-tertiary/60 transition-colors hover:bg-base-secondary/40"
+                className="border-t border-[var(--oh-border)] transition-colors hover:bg-base-secondary/40"
               >
                 <td
                   className={cn(CELL_CLASS, "font-medium text-content-2")}
@@ -187,7 +193,7 @@ export function MarketplaceTable({
               </tr>
             ))}
             {marketplaces.length === 0 && (
-              <tr className="border-t border-tertiary/60">
+              <tr className="border-t border-[var(--oh-border)]">
                 <td
                   colSpan={7}
                   className="px-4 py-10 text-center text-sm text-tertiary-alt"

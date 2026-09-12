@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { OrgModal } from "#/components/shared/modals/org-modal";
 import { I18nKey } from "#/i18n/declaration";
 import { useUpdateOrganization } from "#/hooks/mutation/use-update-organization";
+import { SettingsInput } from "#/components/features/settings/settings-input";
 
 interface ChangeOrgNameModalProps {
   onClose: () => void;
@@ -33,12 +34,13 @@ export function ChangeOrgNameModal({ onClose }: ChangeOrgNameModalProps) {
       onClose={onClose}
       isLoading={isPending}
     >
-      <input
-        data-testid="org-name"
+      <SettingsInput
+        testId="org-name"
+        type="text"
+        label={t(I18nKey.ORG$ORGANIZATION_NAME)}
         value={orgName}
         placeholder={t(I18nKey.ORG$ENTER_NEW_ORGANIZATION_NAME)}
-        onChange={(e) => setOrgName(e.target.value)}
-        className="bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt"
+        onChange={setOrgName}
       />
     </OrgModal>
   );

@@ -15,6 +15,7 @@ import { useMe } from "./query/use-me";
 import { usePermission } from "./organizations/use-permissions";
 import { useOrgTypeAndAccess } from "./use-org-type-and-access";
 import { useSettings } from "./query/use-settings";
+import { useQuotaStatus } from "./query/use-quota-status";
 import { I18nKey } from "#/i18n/declaration";
 
 // Rendered navigation item types
@@ -25,13 +26,17 @@ export type SettingsNavRenderedItem =
       disabled?: boolean;
       disabledAgentName?: string;
     }
-  | { type: "header"; text: I18nKey }
+  | { type: "header"; text: I18nKey; chip?: I18nKey }
   | { type: "divider" };
 
 // Section header text mapping
 const SECTION_HEADERS: Partial<Record<SettingsNavSection, I18nKey>> = {
   org: I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
   personal: I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER,
+};
+
+const SECTION_CHIPS: Partial<Record<SettingsNavSection, I18nKey>> = {
+  personal: I18nKey.SETTINGS$THIS_ORG_CHIP,
 };
 
 /**
@@ -46,6 +51,8 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const { data: config } = useConfig();
   const { data: user } = useMe();
   const { data: settings } = useSettings();
+  const isSaasMode = config?.app_mode === "saas";
+  const { data: quota } = useQuotaStatus({ enabled: isSaasMode });
   const userRole: OrganizationUserRole = user?.role ?? "member";
   const { hasPermission } = usePermission(userRole);
   const { isPersonalOrg, isTeamOrg, organizationId } = useOrgTypeAndAccess();
@@ -54,7 +61,6 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     config,
     hasPermission("view_billing"),
   );
-  const isSaasMode = config?.app_mode === "saas";
   const featureFlags = config?.feature_flags;
   const isAdminOrOwner = userRole === "admin" || userRole === "owner";
   const isAcpAgent = settings?.agent_settings?.agent_kind === "acp";
@@ -69,9 +75,19 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));
 
+  // The quota page is only useful when a daily limit is configured.
+  if (isSaasMode && quota?.daily_limit === null) {
+    items = items.filter((item) => item.to !== "/settings/quota");
+  }
+
   // Hide billing when billing is not accessible OR when in team org
   if (shouldHideBilling || isTeamOrg) {
     items = items.filter((item) => item.to !== "/settings/billing");
+  }
+
+  // Credits is the team-org counterpart to personal Billing
+  if (shouldHideBilling || !organizationId || !isTeamOrg) {
+    items = items.filter((item) => item.to !== "/settings/credits");
   }
 
   // Hide org routes for personal orgs, missing permissions, or no org selected
@@ -157,6 +173,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
         renderedItems.push({
           type: "header",
           text: SECTION_HEADERS[itemSection]!,
+          chip: SECTION_CHIPS[itemSection],
         });
       }
 

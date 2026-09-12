@@ -20,6 +20,19 @@ describe("SettingsNavHeader", () => {
     expect(screen.getByText("SETTINGS$PERSONAL_SETTINGS_HEADER")).toBeInTheDocument();
   });
 
+  it("should render an optional scope chip beside the header", () => {
+    render(
+      <SettingsNavHeader
+        text={I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER}
+        chip={I18nKey.SETTINGS$THIS_ORG_CHIP}
+      />,
+    );
+
+    expect(screen.getByTestId("settings-nav-header-chip")).toHaveTextContent(
+      "SETTINGS$THIS_ORG_CHIP",
+    );
+  });
+
   it("should accept custom className", () => {
     // Arrange & Act
     const { container } = render(

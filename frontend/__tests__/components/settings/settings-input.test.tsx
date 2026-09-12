@@ -106,4 +106,36 @@ describe("SettingsInput", () => {
     expect(onChangeMock).toHaveBeenCalledTimes(4);
     expect(onChangeMock).toHaveBeenNthCalledWith(4, "Test");
   });
+
+  it("should show a validation error when error is set", () => {
+    render(
+      <SettingsInput
+        testId="test-input"
+        label="Test Input"
+        type="text"
+        error="Invalid value"
+      />,
+    );
+
+    expect(screen.getByTestId("test-input")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    expect(screen.getByTestId("test-input-error")).toHaveTextContent(
+      "Invalid value",
+    );
+  });
+
+  it("should mark the input read-only when isReadOnly is true", () => {
+    render(
+      <SettingsInput
+        testId="test-input"
+        label="Test Input"
+        type="text"
+        isReadOnly
+      />,
+    );
+
+    expect(screen.getByTestId("test-input")).toHaveProperty("readOnly", true);
+  });
 });

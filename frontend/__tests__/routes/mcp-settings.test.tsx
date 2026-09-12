@@ -122,7 +122,20 @@ describe("MCPSettingsScreen", () => {
   });
 
   it("removes a newly added MCP server after the delete flow completes", async () => {
-    let persistedSettings = buildSettings();
+    let persistedSettings = buildSettings({
+      mcp_config: {
+        sse_servers: [],
+        stdio_servers: [],
+        shttp_servers: [],
+      },
+      agent_settings: {
+        mcp_config: {
+          sse_servers: [],
+          stdio_servers: [],
+          shttp_servers: [],
+        },
+      },
+    });
 
     vi.spyOn(SettingsService, "getSettings").mockImplementation(async () =>
       structuredClone(persistedSettings),

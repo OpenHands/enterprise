@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { I18nKey } from "#/i18n/declaration";
-import { cn } from "#/utils/utils";
 
 interface ModalButtonGroupProps {
   primaryText: string;
@@ -14,7 +13,6 @@ interface ModalButtonGroupProps {
   primaryType?: "button" | "submit";
   primaryTestId?: string;
   secondaryTestId?: string;
-  fullWidth?: boolean;
   // For single-action modals where the primary button already closes; avoids a
   // redundant second "Close" button next to it.
   hideSecondaryButton?: boolean;
@@ -29,22 +27,29 @@ export function ModalButtonGroup({
   primaryType = "button",
   primaryTestId,
   secondaryTestId,
-  fullWidth = false,
   hideSecondaryButton = false,
 }: ModalButtonGroupProps) {
   const { t } = useTranslation();
   const closeText = secondaryText ?? t(I18nKey.BUTTON$CLOSE);
 
   return (
-    <div className="flex gap-2 w-full">
+    <div className="flex w-full justify-end gap-2">
+      {!hideSecondaryButton && (
+        <BrandButton
+          type="button"
+          variant="secondary"
+          onClick={onSecondaryClick}
+          testId={secondaryTestId}
+          isDisabled={isLoading}
+        >
+          {closeText}
+        </BrandButton>
+      )}
       <BrandButton
         type={primaryType}
         variant="primary"
         onClick={onPrimaryClick}
-        className={cn(
-          "flex items-center justify-center",
-          fullWidth ? "w-full" : "grow",
-        )}
+        className="flex items-center justify-center"
         testId={primaryTestId}
         isDisabled={isLoading}
       >
@@ -52,25 +57,12 @@ export function ModalButtonGroup({
           <LoadingSpinner
             size="small"
             className="w-5 h-5"
-            innerClassName="hidden"
             outerClassName="w-5 h-5"
           />
         ) : (
           primaryText
         )}
       </BrandButton>
-      {!hideSecondaryButton && (
-        <BrandButton
-          type="button"
-          variant="secondary"
-          onClick={onSecondaryClick}
-          className={cn(fullWidth ? "w-full" : "grow")}
-          testId={secondaryTestId}
-          isDisabled={isLoading}
-        >
-          {closeText}
-        </BrandButton>
-      )}
     </div>
   );
 }

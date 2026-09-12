@@ -32,6 +32,8 @@ vi.mock("react-hot-toast", () => ({
 vi.mock("#/utils/custom-toast-handlers", () => ({
   displaySuccessToast: vi.fn(),
   displayErrorToast: vi.fn(),
+  displayLoadingToast: (message: string, options?: { id?: string }) =>
+    mockToast.loading(message, options),
   TOAST_OPTIONS: { position: "top-right" },
 }));
 

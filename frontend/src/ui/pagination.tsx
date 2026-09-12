@@ -72,10 +72,10 @@ export function Pagination({
         onClick={() => onPageChange(currentPage - 1)}
         disabled={!canGoPrevious}
         className={cn(
-          "p-2 rounded-md transition-colors",
+          "rounded-md p-2 transition-colors",
           canGoPrevious
-            ? "hover:bg-org-border cursor-pointer"
-            : "opacity-50 cursor-not-allowed",
+            ? "cursor-pointer hover:bg-[var(--oh-interactive-hover-low)]"
+            : "cursor-not-allowed opacity-50",
         )}
         aria-label="Previous page"
       >
@@ -85,10 +85,7 @@ export function Pagination({
       {/* Page numbers */}
       {getPageNumbers().map((page, index) =>
         page === "ellipsis" ? (
-          <span
-            key={`ellipsis-${index}`}
-            className="px-2 text-sm text-tertiary-alt"
-          >
+          <span key={`ellipsis-${index}`} className="px-2 text-sm text-muted">
             ...
           </span>
         ) : (
@@ -97,10 +94,10 @@ export function Pagination({
             type="button"
             onClick={() => onPageChange(page)}
             className={cn(
-              "min-w-[32px] h-8 px-2 text-sm rounded-md transition-colors cursor-pointer",
+              "h-8 min-w-[32px] cursor-pointer rounded-md px-2 text-sm transition-colors",
               currentPage === page
-                ? "bg-org-button text-white font-medium"
-                : "text-tertiary-alt hover:bg-org-border",
+                ? "bg-primary font-medium text-[var(--oh-color-base)]"
+                : "text-muted hover:bg-[var(--oh-interactive-hover-low)]",
             )}
             aria-current={currentPage === page ? "page" : undefined}
           >
@@ -115,10 +112,10 @@ export function Pagination({
         onClick={() => onPageChange(currentPage + 1)}
         disabled={!canGoNext}
         className={cn(
-          "p-2 rounded-md transition-colors",
+          "rounded-md p-2 transition-colors",
           canGoNext
-            ? "hover:bg-org-border cursor-pointer"
-            : "opacity-50 cursor-not-allowed",
+            ? "cursor-pointer hover:bg-[var(--oh-interactive-hover-low)]"
+            : "cursor-not-allowed opacity-50",
         )}
         aria-label="Next page"
       >

@@ -41,8 +41,15 @@ export function DeleteApiKeyModal({
     <>
       <BrandButton
         type="button"
+        variant="secondary"
+        onClick={onClose}
+        isDisabled={deleteApiKeyMutation.isPending}
+      >
+        {t(I18nKey.BUTTON$CANCEL)}
+      </BrandButton>
+      <BrandButton
+        type="button"
         variant="danger"
-        className="grow"
         onClick={handleDeleteKey}
         isDisabled={deleteApiKeyMutation.isPending}
       >
@@ -51,15 +58,6 @@ export function DeleteApiKeyModal({
         ) : (
           t(I18nKey.BUTTON$DELETE)
         )}
-      </BrandButton>
-      <BrandButton
-        type="button"
-        variant="secondary"
-        className="grow"
-        onClick={onClose}
-        isDisabled={deleteApiKeyMutation.isPending}
-      >
-        {t(I18nKey.BUTTON$CANCEL)}
       </BrandButton>
     </>
   );
@@ -71,7 +69,7 @@ export function DeleteApiKeyModal({
       footer={modalFooter}
     >
       <div data-testid="delete-api-key-modal">
-        <p className="text-sm break-all">
+        <p className="break-all text-sm text-[var(--oh-muted)]">
           {t(I18nKey.SETTINGS$DELETE_API_KEY_CONFIRMATION, {
             name: keyToDelete.name,
           })}

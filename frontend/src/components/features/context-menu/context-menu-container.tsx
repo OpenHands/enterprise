@@ -24,7 +24,7 @@ export function ContextMenuContainer({
       className={cn(
         // Base styling - same for ALL modes (SaaS, OSS, mobile, desktop)
         "absolute rounded-[12px] p-[25px]",
-        "bg-[#050505] border border-[#242424]",
+        "bg-surface-deep border border-[var(--oh-border-subtle)]",
         "text-white overflow-hidden z-[9999]",
         "context-menu-box-shadow",
         // Positioning

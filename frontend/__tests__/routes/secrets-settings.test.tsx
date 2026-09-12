@@ -190,6 +190,15 @@ describe("Content", () => {
     expect(screen.queryByTestId("connect-git-button")).not.toBeInTheDocument();
   });
 
+  it("should render the add secret button beside the page title", async () => {
+    const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
+    searchSecretsSpy.mockResolvedValue(createMockSecretsPage([]));
+    renderSecretsSettings();
+
+    expect(await screen.findByTestId("add-secret-button")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-page-subtitle")).toBeInTheDocument();
+  });
+
   it("should render an empty table when there are no existing secrets", async () => {
     const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
     searchSecretsSpy.mockResolvedValue(createMockSecretsPage([]));

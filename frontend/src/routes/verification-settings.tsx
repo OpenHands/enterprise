@@ -1,4 +1,5 @@
 import { SdkSectionPage } from "#/components/features/settings/sdk-settings/sdk-section-page";
+import { VerificationSettingsInputsSkeleton } from "#/components/features/settings/verification-settings/verification-settings-inputs-skeleton";
 import { SettingsScope } from "#/types/settings";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { requireOrgDefaultsRedirect } from "#/utils/org/saas-redirect-to-org-defaults-guard";
@@ -42,6 +43,9 @@ export function VerificationSettingsScreen({
         },
       ]}
       header={renderTopContent ? () => renderTopContent() : undefined}
+      loadingSkeleton={
+        <VerificationSettingsInputsSkeleton showOrgBanner={scope === "org"} />
+      }
       testId={testId}
     />
   );
