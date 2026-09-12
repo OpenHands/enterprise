@@ -29,8 +29,6 @@ from server.verified_models.verified_model_service import (
 # every model a relationship refers to has been imported.
 from storage.api_key import ApiKey  # noqa: F401
 from storage.billing_session import BillingSession
-from storage.bitbucket_dc_webhook import BitbucketDCWebhook  # noqa: F401
-from storage.bitbucket_webhook import BitbucketWebhook  # noqa: F401
 from storage.conversation_work import ConversationWork
 from storage.daily_conversation_usage import DailyConversationUsage  # noqa: F401
 from storage.device_code import DeviceCode  # noqa: F401
