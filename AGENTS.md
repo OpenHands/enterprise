@@ -220,6 +220,15 @@ Each integration follows a consistent pattern with service classes, storage mode
 - Use the `engine` / `session_maker` / `async_engine` / `async_session_maker` fixtures from `tests/unit/conftest.py`
   for application unit tests. Each test gets its own PostgreSQL database, migrated to head, cloned from a template
   (see `tests/postgres_testdb.py`); never hand-roll a SQLite engine
+- **Do NOT build a new Postgres test harness before using the existing one and confirming it does not fit.**
+  Reusing the fixtures above is almost always the answer. Before introducing any parallel mechanism — a GitHub
+  Actions `services:` Postgres container, a `POSTGRES_TEST_DATABASE_URL`-style DSN, a separate CI workflow, or a
+  schema hand-built from model metadata (e.g. `SomeModel.__table__.create`) — first write the test against the
+  shared harness and verify it works. The shared harness runs the real `alembic upgrade head` schema, so a
+  hand-built one silently tests a *different* schema than production; a second harness also duplicates infra and
+  collides with the testcontainers Postgres that the repo-root `conftest.py` starts for every pytest session.
+  If the shared harness genuinely cannot cover the case, state the specific reason in the PR before adding a
+  second mechanism.
 - Do not add SQLite paths to Alembic migrations
 - Create module-specific `conftest.py` files with database fixtures
 - Mock external database connections in unit tests to avoid dependency on running services
