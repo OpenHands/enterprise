@@ -75,6 +75,7 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
                 == StoredConversationMetadataSaas.conversation_id,
             )
             .where(StoredConversationMetadata.conversation_version == 'V1')
+            .where(StoredConversationMetadata.deleted_at.is_(None))
             .where(StoredConversationMetadata.public == True)  # noqa: E712
         )
         return query
@@ -148,8 +149,10 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
         )
 
     def _fix_timezone(self, value: datetime | None) -> datetime:
-        """Sqlite does not store timezones - and since we can't update the existing models
-        we assume UTC if the timezone is missing. Returns current UTC time if value is None.
+        """Sqlite does not store timezones.
+
+        Since we can't update the existing models, we assume UTC if the timezone is
+        missing. Returns current UTC time if value is None.
         """
         if value is None:
             # Fallback for legacy data: use current time to match model defaults.

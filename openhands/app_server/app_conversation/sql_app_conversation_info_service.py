@@ -148,6 +148,15 @@ class StoredConversationMetadata(Base):
         DateTime(timezone=True), default=utc_now
     )
 
+    # Soft-delete marker: when set, the conversation is treated as deleted and
+    # hidden from every user-facing read path. The row (and its audit/data trail)
+    # is retained so deleted conversations can be reconciled with telemetry and
+    # audited for abuse, while still disappearing from the API exactly as if they
+    # had been hard-deleted.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
     trigger: Mapped[str | None] = mapped_column(String, nullable=True)
     pr_number: Mapped[list[int] | None] = mapped_column(
         create_json_type_decorator(list[int])
@@ -309,7 +318,8 @@ class SQLAppConversationInfoService(AppConversationInfoService):
     ) -> int:
         """Count sandboxed conversations matching the given filters."""
         query = select(func.count(StoredConversationMetadata.conversation_id)).where(
-            StoredConversationMetadata.conversation_version == 'V1'
+            StoredConversationMetadata.conversation_version == 'V1',
+            StoredConversationMetadata.deleted_at.is_(None),
         )
 
         query = self._apply_filters(
@@ -457,13 +467,20 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         # stored value directly by primary key (not via ``_secure_select``) so
         # this works under the ADMIN webhook context as well.
         created_at = info.created_at
-        existing_created_at = await self.db_session.scalar(
-            select(StoredConversationMetadata.created_at).where(
-                StoredConversationMetadata.conversation_id == str(info.id)
+        # Preserve the stored created_at AND soft-delete marker on upsert so a
+        # lifecycle webhook (which rebuilds the model without these fields) cannot
+        # drift created_at forward or un-delete a soft-deleted conversation.
+        deleted_at: datetime | None = None
+        existing = (
+            await self.db_session.execute(
+                select(
+                    StoredConversationMetadata.created_at,
+                    StoredConversationMetadata.deleted_at,
+                ).where(StoredConversationMetadata.conversation_id == str(info.id))
             )
-        )
-        if existing_created_at is not None:
-            created_at = existing_created_at
+        ).one_or_none()
+        if existing is not None:
+            created_at, deleted_at = existing
 
         stored = StoredConversationMetadata(
             conversation_id=str(info.id),
@@ -496,6 +513,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             ),
             public=info.public,
             tags=info.tags if info.tags else None,
+            deleted_at=deleted_at,
         )
 
         await self.db_session.merge(stored)
@@ -786,7 +804,8 @@ class SQLAppConversationInfoService(AppConversationInfoService):
 
     async def _secure_select(self):
         query = select(StoredConversationMetadata).where(
-            StoredConversationMetadata.conversation_version == 'V1'
+            StoredConversationMetadata.conversation_version == 'V1',
+            StoredConversationMetadata.deleted_at.is_(None),
         )
         return query
 
@@ -861,22 +880,35 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         return value
 
     async def delete_app_conversation_info(self, conversation_id: UUID) -> bool:
-        """Delete a conversation info from the database.
+        """Soft-delete a conversation by marking ``deleted_at`` instead of removing the row.
+
+        The row (and its data/audit trail) is retained so deleted conversations stay
+        reconcilable with telemetry and can be audited for abuse. Every user-facing
+        read path filters ``deleted_at`` out, so to the outside world the
+        conversation is gone exactly as if it had been hard-deleted (returns 404
+        from ``get`` and no longer appears in listings/counts).
 
         Args:
-            conversation_id: The ID of the conversation to delete.
+            conversation_id: The ID of the conversation to soft-delete.
 
-        Returns True if the conversation was deleted successfully, False otherwise.
+        Returns True if the conversation was soft-deleted successfully, False
+        otherwise (e.g. it did not exist or was already soft-deleted).
         """
-        from sqlalchemy import delete
+        from sqlalchemy import update
 
-        # Build secure delete query with user context filtering
-        delete_query = delete(StoredConversationMetadata).where(
-            StoredConversationMetadata.conversation_id == str(conversation_id)
+        # Build secure soft-delete query with user context filtering
+        update_query = (
+            update(StoredConversationMetadata)
+            .where(
+                StoredConversationMetadata.conversation_id == str(conversation_id),
+                StoredConversationMetadata.deleted_at.is_(None),
+            )
+            .values(deleted_at=utc_now())
         )
 
-        # Execute the secure delete query
-        result = cast(CursorResult, await self.db_session.execute(delete_query))
+        # Execute the secure soft-delete query
+        result = cast(CursorResult, await self.db_session.execute(update_query))
+        await self.db_session.commit()
 
         return result.rowcount > 0
 
