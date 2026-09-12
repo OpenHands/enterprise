@@ -9,13 +9,8 @@ from uuid import UUID as parse_uuid
 
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.logger import openhands_logger as logger
-from openhands.sdk.settings import ConversationSettings, default_agent_settings
-from server.constants import (
-    ENABLE_BYOR_EXPORT,
-    ORG_SETTINGS_VERSION,
-    get_default_llm_base_url,
-    get_default_llm_model,
-)
+from openhands.sdk.settings import ConversationSettings
+from server.constants import ENABLE_BYOR_EXPORT, ORG_SETTINGS_VERSION
 from server.routes.org_models import (
     LiteLLMIntegrationError,
     OrgAuthorizationError,
@@ -28,6 +23,10 @@ from server.routes.org_models import (
 )
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
+from storage.org_default_settings import (
+    apply_configured_org_condenser_default,
+    create_base_org_agent_settings,
+)
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
@@ -123,16 +122,13 @@ class OrgService:
         Returns:
             Org: New organization entity (not yet persisted)
         """
-        agent_settings = default_agent_settings()
-        agent_settings.llm.model = get_default_llm_model()
-        agent_settings.llm.base_url = get_default_llm_base_url()
         return Org(
             id=org_id,
             name=name,
             contact_name=contact_name,
             contact_email=contact_email,
             org_version=ORG_SETTINGS_VERSION,
-            agent_settings=agent_settings,
+            agent_settings=create_base_org_agent_settings(),
             conversation_settings=ConversationSettings(),
         )
 
@@ -149,6 +145,7 @@ class OrgService:
         for key, value in org_kwargs.items():
             if hasattr(org, key):
                 setattr(org, key, value)
+        org.agent_settings = apply_configured_org_condenser_default(org.agent_settings)
 
     @staticmethod
     async def get_owner_role():
