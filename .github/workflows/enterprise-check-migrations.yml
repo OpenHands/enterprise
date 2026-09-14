@@ -130,7 +130,7 @@ jobs:
           echo "::endgroup::"
           uv run alembic current
       - name: Verify newest downgrade and re-upgrade contract
-        # Revision 163 must refuse ownership removal; later heads round-trip normally.
+        # Revision 164 must refuse ownership removal; later heads round-trip normally.
         run: uv run python -m scripts.check_enterprise_migration_roundtrip
       - name: Report migration state
         if: always()

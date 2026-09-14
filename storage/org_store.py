@@ -683,6 +683,30 @@ class OrgStore:
             return org
 
     @staticmethod
+    async def get_persisted_org_creation(
+        org_id: UUID,
+        name: str,
+        owner_id: UUID | None,
+        owner_role_id: int | None,
+    ) -> Org | None:
+        """Read creation identity without lazy upgrades or native repair."""
+        async with a_session_maker() as session:
+            org = await session.get(Org, org_id)
+            if org is None or org.name != name:
+                return None
+            if owner_id is not None:
+                member = await session.get(
+                    OrgMember, {'org_id': org_id, 'user_id': owner_id}
+                )
+                if (
+                    member is None
+                    or member.role_id != owner_role_id
+                    or member.status != 'active'
+                ):
+                    return None
+            return org
+
+    @staticmethod
     async def delete_org_cascade(
         org_id: UUID, requester_user_id: str | None = None
     ) -> Org | None:

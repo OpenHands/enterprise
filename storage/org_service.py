@@ -211,7 +211,7 @@ class OrgService:
         6. Creates owner membership when requested
         7. Persists everything in a transaction
 
-        If database persistence fails, LiteLLM resources are cleaned up (compensation).
+        An uncertain database outcome never authorizes deleting native resources.
 
         Args:
             name: Organization name (must be unique)
@@ -244,8 +244,6 @@ class OrgService:
             org_id, user_id, add_user_to_litellm_team=add_creator_as_owner
         )
 
-        # Steps 4-7: Create entities and persist with compensation
-        # If any of these fail, we need to clean up LiteLLM resources
         try:
             # Step 4: Create organization entity
             org = OrgService.create_org_entity(
@@ -270,7 +268,7 @@ class OrgService:
                 )
 
             # Step 7: Persist in transaction (critical section)
-            persisted_org = await OrgService._persist_with_compensation(
+            persisted_org = await OrgService._persist_with_recovery(
                 org, org_member, org_id, user_id
             )
 
@@ -287,141 +285,56 @@ class OrgService:
             return persisted_org
 
         except OrgDatabaseError:
-            # Already handled by _persist_with_compensation, just re-raise
             raise
         except Exception as e:
-            # Unexpected error in steps 4-6, need to clean up LiteLLM
             logger.exception(
-                'Unexpected error during organization creation, initiating cleanup',
+                'Organization creation failed; preserving LiteLLM state',
                 extra={
                     'org_id': str(org_id),
                     'user_id': user_id,
                 },
                 stack_info=True,
             )
-            await OrgService._handle_failure_with_cleanup(
-                org_id, user_id, e, 'Failed to create organization'
-            )
+            OrgService._raise_creation_failure(org_id, e)
 
     @staticmethod
-    async def _persist_with_compensation(
+    async def _persist_with_recovery(
         org: Org,
         org_member: OrgMember | None,
         org_id: UUID,
         user_id: str,
     ) -> Org:
-        """
-        Persist organization with compensation on failure.
-
-        If database persistence fails, cleans up LiteLLM resources.
-
-        Args:
-            org: Organization entity to persist
-            org_member: Optional organization member entity to persist
-            org_id: Organization ID (for cleanup)
-            user_id: User ID (for cleanup)
-
-        Returns:
-            Org: The persisted organization object
-
-        Raises:
-            OrgDatabaseError: If database operations fail
-        """
+        """Recover a committed creation when its acknowledgement was lost."""
+        org_name = org.name
+        owner_id = org_member.user_id if org_member is not None else None
+        owner_role_id = org_member.role_id if org_member is not None else None
         try:
-            persisted_org = await OrgStore.persist_org_with_owner(org, org_member)
-            return persisted_org
-
+            return await OrgStore.persist_org_with_owner(org, org_member)
         except Exception as e:
-            logger.exception(
-                'Database persistence failed, initiating LiteLLM cleanup',
-                extra={
-                    'org_id': str(org_id),
-                    'user_id': user_id,
-                },
-                stack_info=True,
-            )
-            await OrgService._handle_failure_with_cleanup(
-                org_id, user_id, e, 'Failed to create organization'
-            )
+            try:
+                persisted = await OrgStore.get_persisted_org_creation(
+                    org_id, org_name, owner_id, owner_role_id
+                )
+                if persisted is not None:
+                    return persisted
+            except Exception:
+                logger.exception(
+                    'Organization creation readback unavailable',
+                    extra={'org_id': str(org_id), 'user_id': user_id},
+                )
+            OrgService._raise_creation_failure(org_id, e)
 
     @staticmethod
-    async def _handle_failure_with_cleanup(
-        org_id: UUID,
-        user_id: str,
-        original_error: Exception,
-        error_message: str,
-    ) -> NoReturn:
-        """
-        Handle failure by cleaning up LiteLLM resources and raising appropriate error.
-
-        This method performs compensating transaction and raises OrgDatabaseError.
-
-        Args:
-            org_id: Organization ID
-            user_id: User ID
-            original_error: The original exception that caused the failure
-            error_message: Base error message for the exception
-
-        Raises:
-            OrgDatabaseError: Always raises with details about the failure
-        """
-        cleanup_error = await OrgService._cleanup_litellm_resources(org_id, user_id)
-
-        if cleanup_error:
-            logger.error(
-                'Both operation and cleanup failed',
-                extra={
-                    'org_id': str(org_id),
-                    'user_id': user_id,
-                    'original_error': str(original_error),
-                    'cleanup_error': str(cleanup_error),
-                },
-            )
-            raise OrgDatabaseError(
-                f'{error_message}: {str(original_error)}. '
-                f'Cleanup also failed: {str(cleanup_error)}'
-            ) from original_error
-
+    def _raise_creation_failure(org_id: UUID, error: Exception) -> NoReturn:
+        # A failed response proves neither rollback nor ownership of the native team.
+        logger.error(
+            'Organization creation unverified; preserving LiteLLM state',
+            extra={'org_id': str(org_id)},
+        )
         raise OrgDatabaseError(
-            f'{error_message}: {str(original_error)}'
-        ) from original_error
-
-    @staticmethod
-    async def _cleanup_litellm_resources(
-        org_id: UUID, user_id: str
-    ) -> Exception | None:
-        """
-        Compensating transaction: Clean up LiteLLM resources.
-
-        Deletes the team which should cascade to remove keys and memberships.
-        This is a best-effort operation - errors are logged but not raised.
-
-        Args:
-            org_id: Organization ID
-            user_id: User ID
-
-        Returns:
-            Exception | None: Exception if cleanup failed, None if successful
-        """
-        try:
-            await LiteLlmManager.delete_team(str(org_id))
-
-            logger.info(
-                'Successfully cleaned up LiteLLM team',
-                extra={'org_id': str(org_id), 'user_id': user_id},
-            )
-            return None
-
-        except Exception as e:
-            logger.exception(
-                'Failed to cleanup LiteLLM team (resources may be orphaned)',
-                extra={
-                    'org_id': str(org_id),
-                    'user_id': user_id,
-                },
-                stack_info=True,
-            )
-            return e
+            f'Organization creation could not be verified ({org_id}). '
+            'LiteLLM state was preserved.'
+        ) from error
 
     @staticmethod
     async def has_admin_or_owner_role(user_id: str, org_id: UUID) -> bool:
