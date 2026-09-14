@@ -64,15 +64,6 @@ def _is_transient_reconciliation_error(exc: BaseException) -> bool:
     )
 
 
-def _require_supported_auth_mode() -> None:
-    from server.auth.auth_config import ENABLE_KEYCLOAK
-
-    if not ENABLE_KEYCLOAK:
-        raise RuntimeError(
-            'Password authentication is not available in this release; keep ENABLE_KEYCLOAK=true'
-        )
-
-
 class SaasAppLifespanService(AppLifespanService):
     """Lifespan service for the SaaS server.
 
@@ -85,8 +76,6 @@ class SaasAppLifespanService(AppLifespanService):
 
     async def __aenter__(self) -> Self:
         from server.auth.server_wiring import start_authentication_server
-
-        _require_supported_auth_mode()
 
         # Migrations precede startup; the selected installation initializes once.
         self._native_maintenance_task = await start_authentication_server()

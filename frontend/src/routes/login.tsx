@@ -1,5 +1,6 @@
 import React from "react";
 import { useNavigate, useSearchParams, useLocation } from "react-router";
+import NativeLoginPage from "./native-login";
 import { getSafeReturnTo } from "#/utils/safe-return-to";
 import { useIsAuthed } from "#/hooks/query/use-is-authed";
 import { useConfig } from "#/hooks/query/use-config";
@@ -17,7 +18,7 @@ interface LocationState {
 
 export { getSafeReturnTo } from "#/utils/safe-return-to";
 
-export default function LoginPage() {
+function LegacyLoginPage(): React.JSX.Element | null {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -119,5 +120,20 @@ export default function LoginPage() {
         <RequestSubmittedModal onClose={handleRequestModalClose} />
       )}
     </>
+  );
+}
+
+export default function LoginPage(): React.JSX.Element {
+  const { data: config, isLoading } = useConfig({ enabled: true });
+  if (isLoading)
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-base">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
+      </div>
+    );
+  return config?.login_methods?.includes("password") === true ? (
+    <NativeLoginPage />
+  ) : (
+    <LegacyLoginPage />
   );
 }

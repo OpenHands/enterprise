@@ -1,5 +1,7 @@
+import type { ReactNode, JSX } from "react";
 import { useTranslation } from "react-i18next";
 import { FaUserShield } from "react-icons/fa";
+import { LoginButton, loginButtonLabelClassName } from "./login-button";
 import { I18nKey } from "#/i18n/declaration";
 import OpenHandsLogoWhite from "#/assets/branding/openhands-logo-white.svg?react";
 import GitHubLogo from "#/assets/branding/github-logo.svg?react";
@@ -18,7 +20,9 @@ import { LoginCTA } from "./login-cta";
 import { useAppMode } from "#/hooks/use-app-mode";
 
 export interface LoginContentProps {
-  githubAuthUrl: string | null;
+  githubAuthUrl?: string | null;
+  title?: string;
+  children?: ReactNode;
   appMode?: WebClientConfig["app_mode"] | null;
   authUrl?: WebClientConfig["auth_url"];
   providersConfigured?: Provider[];
@@ -33,6 +37,8 @@ export interface LoginContentProps {
 
 export function LoginContent({
   githubAuthUrl,
+  title,
+  children,
   appMode,
   authUrl,
   providersConfigured,
@@ -41,14 +47,14 @@ export function LoginContent({
   recaptchaBlocked = false,
   hasInvitation = false,
   buildOAuthStateData,
-}: LoginContentProps) {
+}: LoginContentProps): JSX.Element {
   const { t } = useTranslation();
   const { data: config } = useConfig();
   const { isEnterpriseCloud } = useAppMode();
 
   // reCAPTCHA - only need token generation, verification happens at backend callback
   const { isReady: recaptchaReady, executeRecaptcha } = useRecaptcha({
-    siteKey: config?.recaptcha_site_key ?? undefined,
+    siteKey: children ? undefined : (config?.recaptcha_site_key ?? undefined),
   });
 
   const gitlabAuthUrl = useAuthUrl({
@@ -178,10 +184,6 @@ export function LoginContent({
   const noProvidersConfigured =
     !providersConfigured || providersConfigured.length === 0;
 
-  const buttonBaseClasses =
-    "w-[301.5px] h-10 rounded p-2 flex items-center justify-center cursor-pointer transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed";
-  const buttonLabelClasses = "text-sm font-medium leading-5 px-1";
-
   const shouldShownHelperText =
     emailVerified ||
     hasDuplicatedEmail ||
@@ -203,11 +205,16 @@ export function LoginContent({
           <OpenHandsLogoWhite width={106} height={72} />
         </div>
 
-        <h1 className="text-[39px] leading-5 font-medium text-white text-center">
-          {t(I18nKey.AUTH$LETS_GET_STARTED)}
+        <h1
+          className={cn(
+            "text-[39px] font-medium text-white text-center",
+            title ? "leading-tight" : "leading-5",
+          )}
+        >
+          {title ?? t(I18nKey.AUTH$LETS_GET_STARTED)}
         </h1>
 
-        {shouldShownHelperText && (
+        {!children && shouldShownHelperText && (
           <div className="flex flex-col items-center gap-3">
             {emailVerified && (
               <p className="text-sm text-muted-foreground text-center">
@@ -237,99 +244,113 @@ export function LoginContent({
           </div>
         )}
 
-        <div className="flex flex-col items-center gap-3">
-          {noProvidersConfigured ? (
-            <div className="text-center p-4 text-muted-foreground">
-              {t(I18nKey.AUTH$NO_PROVIDERS_CONFIGURED)}
-            </div>
-          ) : (
-            <>
-              {showGithub && (
-                <button
-                  type="button"
-                  onClick={handleGitHubAuth}
-                  className={`${buttonBaseClasses} bg-[#9E28B0] text-white`}
-                >
-                  <GitHubLogo width={14} height={14} className="shrink-0" />
-                  <span className={buttonLabelClasses}>
-                    {t(I18nKey.GITHUB$CONNECT_TO_GITHUB)}
-                  </span>
-                </button>
-              )}
+        {children ? (
+          <div className="w-[301.5px] max-w-full flex flex-col gap-4">
+            {children}
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-3">
+            {noProvidersConfigured ? (
+              <div className="text-center p-4 text-muted-foreground">
+                {t(I18nKey.AUTH$NO_PROVIDERS_CONFIGURED)}
+              </div>
+            ) : (
+              <>
+                {showGithub && (
+                  <LoginButton
+                    type="button"
+                    onClick={handleGitHubAuth}
+                    className="bg-[#9E28B0] text-white"
+                  >
+                    <GitHubLogo width={14} height={14} className="shrink-0" />
+                    <span className={loginButtonLabelClassName}>
+                      {t(I18nKey.GITHUB$CONNECT_TO_GITHUB)}
+                    </span>
+                  </LoginButton>
+                )}
 
-              {showGitlab && (
-                <button
-                  type="button"
-                  onClick={handleGitLabAuth}
-                  className={`${buttonBaseClasses} bg-[#FC6B0E] text-white`}
-                >
-                  <GitLabLogo width={14} height={14} className="shrink-0" />
-                  <span className={buttonLabelClasses}>
-                    {t(I18nKey.GITLAB$CONNECT_TO_GITLAB)}
-                  </span>
-                </button>
-              )}
+                {showGitlab && (
+                  <LoginButton
+                    type="button"
+                    onClick={handleGitLabAuth}
+                    className="bg-[#FC6B0E] text-white"
+                  >
+                    <GitLabLogo width={14} height={14} className="shrink-0" />
+                    <span className={loginButtonLabelClassName}>
+                      {t(I18nKey.GITLAB$CONNECT_TO_GITLAB)}
+                    </span>
+                  </LoginButton>
+                )}
 
-              {showBitbucket && (
-                <button
-                  type="button"
-                  onClick={handleBitbucketAuth}
-                  className={`${buttonBaseClasses} bg-[#2684FF] text-white`}
-                >
-                  <BitbucketLogo width={14} height={14} className="shrink-0" />
-                  <span className={buttonLabelClasses}>
-                    {t(I18nKey.BITBUCKET$CONNECT_TO_BITBUCKET)}
-                  </span>
-                </button>
-              )}
+                {showBitbucket && (
+                  <LoginButton
+                    type="button"
+                    onClick={handleBitbucketAuth}
+                    className="bg-[#2684FF] text-white"
+                  >
+                    <BitbucketLogo
+                      width={14}
+                      height={14}
+                      className="shrink-0"
+                    />
+                    <span className={loginButtonLabelClassName}>
+                      {t(I18nKey.BITBUCKET$CONNECT_TO_BITBUCKET)}
+                    </span>
+                  </LoginButton>
+                )}
 
-              {showBitbucketDataCenter && (
-                <button
-                  type="button"
-                  onClick={handleBitbucketDataCenterAuth}
-                  className={`${buttonBaseClasses} bg-[#2684FF] text-white`}
-                >
-                  <BitbucketLogo width={14} height={14} className="shrink-0" />
-                  <span className={buttonLabelClasses}>
-                    {t(
-                      I18nKey.BITBUCKET_DATA_CENTER$CONNECT_TO_BITBUCKET_DATA_CENTER,
-                    )}
-                  </span>
-                </button>
-              )}
+                {showBitbucketDataCenter && (
+                  <LoginButton
+                    type="button"
+                    onClick={handleBitbucketDataCenterAuth}
+                    className="bg-[#2684FF] text-white"
+                  >
+                    <BitbucketLogo
+                      width={14}
+                      height={14}
+                      className="shrink-0"
+                    />
+                    <span className={loginButtonLabelClassName}>
+                      {t(
+                        I18nKey.BITBUCKET_DATA_CENTER$CONNECT_TO_BITBUCKET_DATA_CENTER,
+                      )}
+                    </span>
+                  </LoginButton>
+                )}
 
-              {showAzureDevOps && (
-                <button
-                  type="button"
-                  onClick={handleAzureDevOpsAuth}
-                  className={`${buttonBaseClasses} bg-[#0078D4] text-white`}
-                >
-                  <AzureDevOpsLogo
-                    width={14}
-                    height={14}
-                    className="shrink-0"
-                  />
-                  <span className={buttonLabelClasses}>
-                    {t(I18nKey.AZURE_DEVOPS$CONNECT_ACCOUNT)}
-                  </span>
-                </button>
-              )}
+                {showAzureDevOps && (
+                  <LoginButton
+                    type="button"
+                    onClick={handleAzureDevOpsAuth}
+                    className="bg-[#0078D4] text-white"
+                  >
+                    <AzureDevOpsLogo
+                      width={14}
+                      height={14}
+                      className="shrink-0"
+                    />
+                    <span className={loginButtonLabelClassName}>
+                      {t(I18nKey.AZURE_DEVOPS$CONNECT_ACCOUNT)}
+                    </span>
+                  </LoginButton>
+                )}
 
-              {showEnterpriseSso && (
-                <button
-                  type="button"
-                  onClick={handleEnterpriseSsoAuth}
-                  className={`${buttonBaseClasses} bg-[#374151] text-white`}
-                >
-                  <FaUserShield size={14} className="shrink-0" />
-                  <span className={buttonLabelClasses}>
-                    {t(I18nKey.ENTERPRISE_SSO$CONNECT_TO_ENTERPRISE_SSO)}
-                  </span>
-                </button>
-              )}
-            </>
-          )}
-        </div>
+                {showEnterpriseSso && (
+                  <LoginButton
+                    type="button"
+                    onClick={handleEnterpriseSsoAuth}
+                    className="bg-[#374151] text-white"
+                  >
+                    <FaUserShield size={14} className="shrink-0" />
+                    <span className={loginButtonLabelClassName}>
+                      {t(I18nKey.ENTERPRISE_SSO$CONNECT_TO_ENTERPRISE_SSO)}
+                    </span>
+                  </LoginButton>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         <TermsAndPrivacyNotice className="max-w-[320px] text-[#A3A3A3]" />
       </div>
