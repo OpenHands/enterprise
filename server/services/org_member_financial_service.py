@@ -147,8 +147,11 @@ class OrgMemberFinancialService:
                 if uses_shared_budget:
                     current_budget = max(max_budget - team_spend, 0)
                 else:
-                    # Individual budget - use individual spend
-                    current_budget = max(max_budget - individual_spend, 0)
+                    counter = financial_data.get('member_counters', {}).get(
+                        user_id_str, {}
+                    )
+                    budget_spend = counter.get('spend', individual_spend)
+                    current_budget = max(max_budget - budget_spend, 0)
             else:
                 # If no max_budget, current_budget is unlimited (represented as 0)
                 current_budget = 0

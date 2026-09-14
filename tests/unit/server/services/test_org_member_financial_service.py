@@ -51,6 +51,41 @@ class TestOrgMemberFinancialServiceGetFinancialData:
     """Test cases for OrgMemberFinancialService.get_org_members_financial_data."""
 
     @pytest.mark.asyncio
+    async def test_member_headroom_uses_its_counter_not_historical_key_usage(
+        self, org_id, mock_org_member
+    ):
+        user_id = str(mock_org_member.user_id)
+        financial_data = {
+            'team_spend': 100.0,
+            'members': {
+                user_id: {
+                    'spend': 40.0,
+                    'max_budget': 25.0,
+                    'uses_shared_budget': False,
+                }
+            },
+            'member_counters': {user_id: {'spend': 0.0}},
+        }
+        with (
+            patch(
+                'server.services.org_member_financial_service.OrgMemberStore.'
+                'get_org_members_paginated',
+                AsyncMock(return_value=([mock_org_member], 1)),
+            ),
+            patch(
+                'server.services.org_member_financial_service.LiteLlmManager.'
+                'get_team_members_financial_data',
+                AsyncMock(return_value=financial_data),
+            ),
+        ):
+            result = await OrgMemberFinancialService.get_org_members_financial_data(
+                org_id
+            )
+
+        assert result.items[0].lifetime_spend == 40.0
+        assert result.items[0].current_budget == 25.0
+
+    @pytest.mark.asyncio
     async def test_returns_paginated_financial_data_with_individual_budget(
         self, org_id, mock_org_member
     ):

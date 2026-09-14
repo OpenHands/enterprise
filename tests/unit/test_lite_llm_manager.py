@@ -4102,14 +4102,10 @@ class TestGetTeamMembersFinancialData:
         assert result['members'] == {}
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_team_budget_when_member_budget_missing(
+    async def test_resolves_default_member_budget_separately_from_team_cap(
         self, mock_http_client
     ):
-        """
-        GIVEN: Team members using no budget, a private budget, and the shared default
-        WHEN: _get_team_members_financial_data is called
-        THEN: Falls back to team_info.max_budget for members without individual budget
-        """
+        """Default member caps apply per member, not against total team spend."""
         # Arrange
         mock_response = MagicMock()
         mock_response.is_success = True
@@ -4156,8 +4152,8 @@ class TestGetTeamMembersFinancialData:
         members = result['members']
         assert members['user-no-individual-budget'] == {
             'spend': 50.0,
-            'max_budget': 500.0,
-            'uses_shared_budget': True,
+            'max_budget': 100.0,
+            'uses_shared_budget': False,
         }
         assert members['user-with-individual-budget'] == {
             'spend': 75.0,
@@ -4166,9 +4162,19 @@ class TestGetTeamMembersFinancialData:
         }
         assert members['user-shared-default-budget'] == {
             'spend': 25.0,
-            'max_budget': 500.0,
-            'uses_shared_budget': True,
+            'max_budget': 100.0,
+            'uses_shared_budget': False,
         }
+        assert (
+            result['member_counters']['user-shared-default-budget']['budget_source']
+            == 'default_member'
+        )
+        assert (
+            result['member_counters']['user-no-individual-budget'][
+                'effective_budget_id'
+            ]
+            == 'shared-default-budget'
+        )
 
     @pytest.mark.asyncio
     async def test_rejects_response_when_budget_data_is_missing(self, mock_http_client):

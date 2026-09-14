@@ -136,6 +136,19 @@ def _is_free_budget(max_budget: float | None) -> bool:
     return max_budget is not None and max_budget <= 0.0
 
 
+def _validated_budget_number(value: Any, field: str) -> float | None:
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(float(value))
+        or value < 0
+    ):
+        raise ValueError(f'LiteLLM {field} must be a finite non-negative number')
+    return float(value)
+
+
 def get_openhands_cloud_key_alias(keycloak_user_id: str, org_id: str) -> str:
     """Generate the key alias for OpenHands Cloud managed keys."""
     return f'OpenHands Cloud - user {keycloak_user_id} - org {org_id}'
@@ -2152,7 +2165,9 @@ class LiteLlmManager:
                 'LiteLLM team_info is missing required budget fields '
                 '(max_budget, spend)'
             )
-        team_max_budget = team_data['max_budget']
+        team_max_budget = _validated_budget_number(
+            team_data['max_budget'], 'team max_budget'
+        )
         team_spend = team_data['spend']
 
         metadata = team_data.get('metadata') or {}
@@ -2165,6 +2180,17 @@ class LiteLlmManager:
             raise ValueError(
                 'LiteLLM team_info.metadata.team_member_budget_id must be a string'
             )
+
+        default_budget = next(
+            (
+                membership.get('litellm_budget_table')
+                for membership in team_memberships
+                if default_member_budget_id is not None
+                and membership.get('budget_id') == default_member_budget_id
+            ),
+            None,
+        )
+        member_counters: dict[str, dict[str, Any]] = {}
 
         membership_by_user_id: dict[str, dict[str, Any]] = {}
         for membership in team_memberships:
@@ -2191,6 +2217,38 @@ class LiteLlmManager:
         # Their key counters are the only authoritative per-user source at that
         # point. Membership counters take precedence as soon as a row exists.
         role_only_member_ids = role_member_ids - membership_by_user_id.keys()
+        needs_default_budget = default_member_budget_id is not None and (
+            bool(role_only_member_ids)
+            or any(
+                not membership.get('litellm_budget_table')
+                or membership['litellm_budget_table'].get('max_budget') is None
+                for membership in membership_by_user_id.values()
+            )
+        )
+        if needs_default_budget and default_budget is None:
+            response = await client.post(
+                f'{LITE_LLM_API_URL}/budget/info',
+                json={'budgets': [default_member_budget_id]},
+            )
+            response.raise_for_status()
+            budgets = response.json()
+            if not isinstance(budgets, list) or len(budgets) != 1:
+                raise ValueError('LiteLLM default member budget could not be read')
+            default_budget = budgets[0]
+            if (
+                not isinstance(default_budget, dict)
+                or default_budget.get('budget_id') != default_member_budget_id
+            ):
+                raise ValueError('LiteLLM default member budget identity mismatch')
+        if default_budget is not None and (
+            not isinstance(default_budget, dict) or 'max_budget' not in default_budget
+        ):
+            raise ValueError('LiteLLM default member budget is missing max_budget')
+        default_cap = (
+            _validated_budget_number(default_budget['max_budget'], 'default max_budget')
+            if default_budget is not None
+            else None
+        )
         role_only_spend: dict[str, float] = {}
         if role_only_member_ids:
             keys = team_info.get('keys')
@@ -2231,14 +2289,8 @@ class LiteLlmManager:
                 )
 
             budget_id = membership.get('budget_id')
-            uses_shared_budget = budget_id is None or (
-                default_member_budget_id is not None
-                and budget_id == default_member_budget_id
-            )
-            if uses_shared_budget:
-                member_max_budget = team_max_budget
-            else:
-                budget_table = membership.get('litellm_budget_table')
+            budget_table = membership.get('litellm_budget_table')
+            if budget_id is not None:
                 if not isinstance(budget_table, dict):
                     raise ValueError(
                         f'LiteLLM membership {user_id} is missing its budget table'
@@ -2247,19 +2299,64 @@ class LiteLlmManager:
                     raise ValueError(
                         f'LiteLLM membership {user_id} budget table is missing max_budget'
                     )
-                member_max_budget = budget_table['max_budget']
+            member_max_budget = _validated_budget_number(
+                budget_table['max_budget'] if budget_table is not None else None,
+                f'member {user_id} max_budget',
+            )
+            budget_source = 'private_member'
+            effective_budget_id = budget_id
+            if budget_id == default_member_budget_id:
+                budget_source = 'default_member'
+            if (
+                member_max_budget is None
+                and default_cap is not None
+                and default_cap > 0
+            ):
+                member_max_budget = default_cap
+                budget_source = 'default_member'
+                effective_budget_id = default_member_budget_id
+            uses_shared_budget = member_max_budget is None
+            if uses_shared_budget:
+                member_max_budget = team_max_budget
+                budget_source = 'team'
 
             members[user_id] = {
                 'spend': membership['spend'],
                 'max_budget': member_max_budget,
                 'uses_shared_budget': uses_shared_budget,
             }
+            member_counters[user_id] = {
+                'source': 'membership',
+                'spend': membership['spend'],
+                'budget_id': budget_id,
+                'effective_budget_id': effective_budget_id,
+                'budget_source': budget_source,
+                'budget_duration': (budget_table or {}).get('budget_duration'),
+                'budget_reset_at': (budget_table or {}).get('budget_reset_at'),
+                'reset_known': budget_id is None
+                or {'budget_duration', 'budget_reset_at'}
+                <= (budget_table or {}).keys(),
+            }
 
         for user_id, spend in role_only_spend.items():
+            uses_default_budget = default_cap is not None and default_cap > 0
             members[user_id] = {
                 'spend': spend,
-                'max_budget': team_max_budget,
-                'uses_shared_budget': True,
+                'max_budget': default_cap if uses_default_budget else team_max_budget,
+                'uses_shared_budget': not uses_default_budget,
+            }
+            # Creating a private budget creates a zero-spend membership, not a key counter.
+            member_counters[user_id] = {
+                'source': 'new_membership',
+                'spend': 0.0,
+                'budget_id': None,
+                'effective_budget_id': (
+                    default_member_budget_id if uses_default_budget else None
+                ),
+                'budget_source': 'default_member' if uses_default_budget else 'team',
+                'budget_duration': None,
+                'budget_reset_at': None,
+                'reset_known': True,
             }
 
         logger.debug(
@@ -2270,6 +2367,13 @@ class LiteLlmManager:
             'team_max_budget': team_max_budget,
             'team_spend': team_spend,
             'members': members,
+            'member_counters': member_counters,
+            'team_budget_duration': team_data.get('budget_duration'),
+            'team_budget_reset_at': team_data.get('budget_reset_at'),
+            'team_reset_known': {'budget_duration', 'budget_reset_at'}
+            <= team_data.keys(),
+            'default_member_budget_id': default_member_budget_id,
+            'default_member_budget': default_budget,
         }
 
     @staticmethod
