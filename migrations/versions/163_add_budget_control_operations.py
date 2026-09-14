@@ -11,6 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from migrations.exceptions import BudgetOwnershipDowngradeError
+
 revision: str = '163'
 down_revision: str | None = '162'
 branch_labels: str | Sequence[str] | None = None
@@ -68,6 +70,7 @@ def upgrade() -> None:
         sa.Column('kind', sa.String(32), nullable=False),
         sa.Column('actor', sa.String(), nullable=False),
         sa.Column('plan', postgresql.JSONB(), nullable=False),
+        sa.Column('verification', postgresql.JSONB(), nullable=True),
         sa.Column('status', sa.String(32), nullable=False),
         sa.Column('last_error', sa.String(500), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
@@ -110,6 +113,10 @@ def upgrade() -> None:
             IF OLD.status <> 'pending' AND NEW.status <> OLD.status THEN
                 RAISE EXCEPTION 'A finished budget operation cannot be reopened';
             END IF;
+            IF OLD.status <> 'pending'
+               AND NEW.verification IS DISTINCT FROM OLD.verification THEN
+                RAISE EXCEPTION 'Budget verification evidence is immutable';
+            END IF;
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
@@ -120,7 +127,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError(
+    raise BudgetOwnershipDowngradeError(
         'Budget ownership cannot be safely removed by an online downgrade. '
         'Use an ownership-aware rollback release; a pre-163 restore requires '
         'quiescing all OpenHands writers and a coordinated database restore.'

@@ -249,7 +249,9 @@ class OrgMemberStore:
 
             # Apply email filter if provided
             if email_filter:
-                query = query.filter(User.email.ilike(f'%{email_filter}%'))
+                query = query.filter(
+                    User.email.icontains(email_filter, autoescape=True)
+                )
 
             query = query.order_by(OrgMember.user_id).offset(offset).limit(limit + 1)
 

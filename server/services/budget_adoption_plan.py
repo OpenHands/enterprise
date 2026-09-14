@@ -103,7 +103,10 @@ def adoption_fingerprint(
             'org_id': str(org_id),
             'generation': generation,
             'org_members': sorted(member_ids),
-            'policy': observation['control_policy'],
+            'policy': {
+                **observation['control_policy'],
+                'keys': stable_key_policy(observation['control_policy']['keys']),
+            },
             'team_reset': [
                 observation['team_budget_duration'],
                 observation['team_budget_reset_at'],
@@ -117,6 +120,11 @@ def adoption_fingerprint(
             },
         }
     )
+
+
+def stable_key_policy(keys: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Independent key reset clocks can advance without changing the confirmed policy.
+    return [{k: v for k, v in key.items() if k != 'budget_reset_at'} for key in keys]
 
 
 def build_adoption_plan(
@@ -170,7 +178,6 @@ def build_adoption_plan(
         team_baseline + request.current_team_allowance, 'Team target'
     )
     member_targets = {}
-    writes = []
     for user_id in sorted(member_ids):
         remaining = request.current_member_allowances.get(
             user_id, request.current_default_member_allowance
@@ -181,6 +188,48 @@ def build_adoption_plan(
             else _counter(baselines[user_id] + remaining, f'Member {user_id} target')
         )
         member_targets[user_id] = target
+    writes = budget_writes(
+        org_id, observation['team_max_budget'], team_target, member_targets
+    )
+    return {
+        'version': 1,
+        'org_id': str(org_id),
+        'preview_fingerprint': fingerprint,
+        'observed_at': now.isoformat(),
+        'cycle_start_at': now.isoformat(),
+        'cycle_end_at': next_budget_reset(now, request.reset_day).isoformat(),
+        'team_baseline': team_baseline,
+        'default_member_budget_id': observation['default_member_budget_id'],
+        'member_baselines': baselines,
+        'counter_identities': {
+            user_id: counters[user_id] for user_id in sorted(member_ids)
+        },
+        'current_allowances': {
+            'team': request.current_team_allowance,
+            'default_member': request.current_default_member_allowance,
+            'members': request.current_member_allowances,
+        },
+        'future_policy': {
+            'monthly_limit': request.future_monthly_limit,
+            'default_user_monthly_limit': request.future_default_member_limit,
+            'member_limits': request.future_member_limits,
+            'reset_day': request.reset_day,
+        },
+        'expected_team_cap': team_target,
+        'expected_member_caps': member_targets,
+        'preserved_policy': observation['control_policy'],
+        'writes': writes,
+    }
+
+
+def budget_writes(
+    org_id: UUID,
+    old_team_cap: float | None,
+    team_target: float | None,
+    member_targets: dict[str, float | None],
+) -> list[dict[str, Any]]:
+    writes = []
+    for user_id, target in sorted(member_targets.items()):
         writes.append(
             {
                 'path': '/team/member_update',
@@ -203,45 +252,23 @@ def build_adoption_plan(
             'team_member_budget_duration': None,
         },
     }
-    old_team_cap = observation['team_max_budget']
     # Tighten the aggregate cap first; raise it only after applying member limits.
-    if old_team_cap is None or team_target < old_team_cap:
+    if team_target is not None and (old_team_cap is None or team_target < old_team_cap):
         writes.insert(0, team_write)
     else:
         writes.append(team_write)
-    next_reset = datetime(now.year, now.month, request.reset_day, tzinfo=UTC)
+    return writes
+
+
+def next_budget_reset(now: datetime, reset_day: int) -> datetime:
+    if reset_day not in (1, 15):
+        raise BudgetAdoptionUnsupported('reset_day must be 1 or 15')
+    next_reset = datetime(now.year, now.month, reset_day, tzinfo=UTC)
     if next_reset <= now:
         next_reset = datetime(
             now.year + (now.month == 12),
             now.month % 12 + 1,
-            request.reset_day,
+            reset_day,
             tzinfo=UTC,
         )
-    return {
-        'version': 1,
-        'org_id': str(org_id),
-        'preview_fingerprint': fingerprint,
-        'observed_at': now.isoformat(),
-        'cycle_start_at': now.isoformat(),
-        'cycle_end_at': next_reset.isoformat(),
-        'team_baseline': team_baseline,
-        'member_baselines': baselines,
-        'counter_identities': {
-            user_id: counters[user_id] for user_id in sorted(member_ids)
-        },
-        'current_allowances': {
-            'team': request.current_team_allowance,
-            'default_member': request.current_default_member_allowance,
-            'members': request.current_member_allowances,
-        },
-        'future_policy': {
-            'monthly_limit': request.future_monthly_limit,
-            'default_user_monthly_limit': request.future_default_member_limit,
-            'member_limits': request.future_member_limits,
-            'reset_day': request.reset_day,
-        },
-        'expected_team_cap': team_target,
-        'expected_member_caps': member_targets,
-        'preserved_policy': observation['control_policy'],
-        'writes': writes,
-    }
+    return next_reset

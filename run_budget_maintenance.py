@@ -1,5 +1,7 @@
 import asyncio
 
+from sqlalchemy import and_, exists, or_, select
+
 # `run_maintenance_tasks` is a top-level module beside this file at the repository
 # root (/app in the Docker image); `maintenance-tasks-cronjob.yaml` runs it as
 # `python -m run_maintenance_tasks`.
@@ -10,6 +12,7 @@ from server.maintenance_task_processor.org_budget_maintenance_processor import (
 )
 from storage.database import session_maker
 from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
+from storage.org_budget_operation import OrgBudgetOperation
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.user import User
 
@@ -25,7 +28,21 @@ def _eligible_budget_org_ids(session) -> list[str]:
         str(row.org_id)
         for row in session.query(OrgBudgetSettings.org_id)
         .outerjoin(User, User.id == OrgBudgetSettings.org_id)
-        .filter(User.id.is_(None), OrgBudgetSettings.enabled.is_(True))
+        .filter(
+            User.id.is_(None),
+            or_(
+                and_(
+                    OrgBudgetSettings.enabled.is_(True),
+                    OrgBudgetSettings.control_mode == 'managed',
+                ),
+                exists(
+                    select(OrgBudgetOperation.id).where(
+                        OrgBudgetOperation.org_id == OrgBudgetSettings.org_id,
+                        OrgBudgetOperation.status == 'pending',
+                    )
+                ),
+            ),
+        )
     ]
 
 

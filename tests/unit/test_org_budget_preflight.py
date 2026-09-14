@@ -13,6 +13,7 @@ import pytest
 
 from server.services.org_budget_preflight import (
     CAP_DRIFT,
+    INVALID_BASELINE,
     LAST_SYNC_ERROR,
     LITELLM_UNREACHABLE,
     MAINTENANCE_FAILED,
@@ -46,6 +47,41 @@ with patch.dict(sys.modules, {'storage.database': mock_db}):
     import run_budget_preflight
 
 NOW = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize('mode', ['managed', 'external', 'needs_adoption'])
+@pytest.mark.parametrize(
+    'baselines',
+    [
+        [],
+        'invalid-json',
+        '"decoded-string"',
+        10,
+        {'member': -1},
+        {'member': float('nan')},
+        {'member': True},
+        {'member': '1'},
+        {'member': 10**1000},
+    ],
+)
+def test_invalid_legacy_baselines_are_reported_without_mutation(mode, baselines):
+    settings, _ = settings_from_row(
+        {'control_mode': mode, 'enabled': True, 'user_cycle_start_spend': baselines}
+    )
+    report = _evaluate(
+        settings, ['member'], _snapshot(members={'member': (5, 10, False)})
+    )
+    finding = next(
+        item for item in report['findings'] if item['code'] == INVALID_BASELINE
+    )
+    assert finding['severity'] == (
+        SEVERITY_BLOCKING if mode == 'managed' else SEVERITY_INFO
+    )
+    assert report['members_missing_baseline'] == ['member']
+    assert report['desired']['members'] == {}
+    assert settings.user_cycle_start_spend == (
+        baselines if baselines != '"decoded-string"' else 'decoded-string'
+    )
 
 
 def _settings(**overrides) -> OrgBudgetSettings:

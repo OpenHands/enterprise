@@ -58,7 +58,7 @@ class Proxy:
                     'budget_duration': None,
                     'budget_reset_at': None,
                 },
-                'members': {user_id: {'rpm_limit': 9}},
+                'members': {user_id: {'rpm_limit': 9, 'max_budget': 25.0}},
                 'keys': [],
                 'default_member': {},
             },
@@ -80,6 +80,9 @@ class Proxy:
             member = self.state['members'][body['user_id']]
             member['max_budget'] = body['max_budget_in_team']
             member['uses_shared_budget'] = body['max_budget_in_team'] is None
+            self.state['control_policy']['members'][body['user_id']]['max_budget'] = (
+                body['max_budget_in_team']
+            )
         if self.lose_next_response:
             self.lose_next_response = False
             raise RuntimeError('response lost after applying write')
@@ -252,3 +255,36 @@ async def test_external_cap_edit_blocks_pending_replay(adoption):
     assert retry['status'] == 'pending'
     assert 'outside the pending operation' in retry['error']
     assert len(proxy.writes) == writes
+
+
+@pytest.mark.asyncio
+async def test_external_member_cap_edit_blocks_pending_replay(adoption):
+    org_id, user_id, service, request, proxy = adoption
+    proxy.lose_next_response = True
+    await service.confirm(org_id, 'admin', request)
+    writes = len(proxy.writes)
+    proxy.state['control_policy']['members'][user_id]['max_budget'] = 999
+    retry = await service.retry(org_id)
+    assert retry['status'] == 'pending'
+    assert 'outside the pending operation' in retry['error']
+    assert len(proxy.writes) == writes
+
+
+@pytest.mark.asyncio
+async def test_independent_key_reset_does_not_invalidate_preview_or_replay(adoption):
+    org_id, _, service, request, proxy = adoption
+    proxy.state['control_policy']['keys'] = [
+        {
+            'identity': 'test-key',
+            'max_budget': 5,
+            'budget_duration': '1d',
+            'budget_reset_at': '2026-09-15',
+        }
+    ]
+    preview = await service.preview(org_id)
+    request.preview_fingerprint = preview['fingerprint']
+    proxy.state['control_policy']['keys'][0]['budget_reset_at'] = '2026-09-16'
+    proxy.lose_next_response = True
+    assert (await service.confirm(org_id, 'admin', request))['status'] == 'pending'
+    proxy.state['control_policy']['keys'][0]['budget_reset_at'] = '2026-09-17'
+    assert (await service.retry(org_id))['status'] == 'applied'

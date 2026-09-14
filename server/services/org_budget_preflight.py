@@ -12,6 +12,7 @@ Everything here is pure: callers load the rows and the LiteLLM snapshot.
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
@@ -47,6 +48,7 @@ MAINTENANCE_FAILED = 'maintenance_failed'
 MEMBER_MISSING_FROM_LITELLM = 'member_missing_from_litellm'
 MEMBER_BASELINE_MISSING = 'member_baseline_missing'
 CAP_DRIFT = 'cap_drift'
+INVALID_BASELINE = 'invalid_legacy_member_baseline'
 # Reserved for managed-key ownership verification (OHE-3252); never emitted yet.
 KEY_OWNER_MISMATCH = 'key_owner_mismatch'
 
@@ -83,7 +85,10 @@ def settings_from_row(row: Mapping[str, Any]) -> tuple[OrgBudgetSettings, list[s
     for name in _JSON_COLUMNS:
         value = present.get(name)
         if isinstance(value, str):
-            present[name] = json.loads(value)
+            try:
+                present[name] = json.loads(value)
+            except json.JSONDecodeError:
+                pass
     if 'control_mode' not in present:
         present['control_mode'] = (
             'needs_adoption' if present.get('enabled') else 'external'
@@ -178,7 +183,30 @@ def evaluate_org(
             age_seconds=snapshot_age,
         )
 
-    baselines: dict[str, float] = dict(settings.user_cycle_start_spend or {})
+    raw_baselines: Any = settings.user_cycle_start_spend
+    baselines: dict[str, float] = {}
+    invalid_baseline = not isinstance(raw_baselines, dict) and raw_baselines is not None
+    if isinstance(raw_baselines, dict):
+        for user_id, value in raw_baselines.items():
+            try:
+                valid = (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                    and value >= 0
+                )
+            except OverflowError:
+                valid = False
+            if valid:
+                baselines[user_id] = value
+            else:
+                invalid_baseline = True
+    if invalid_baseline:
+        add(
+            INVALID_BASELINE,
+            policy_severity,
+            'Invalid legacy member baselines are preserved but cannot authorize caps',
+        )
     override_map = {str(override.user_id): override for override in overrides}
     default_limit = settings.default_user_monthly_limit
 
@@ -225,8 +253,8 @@ def evaluate_org(
             add(
                 MEMBER_BASELINE_MISSING,
                 policy_severity,
-                'members without a cycle-start baseline; the next sync anchors '
-                'them to live cumulative spend',
+                'members without a valid cycle-start baseline; explicit adoption '
+                'or a verified repair is required',
                 user_ids=members_missing_baseline,
             )
 

@@ -1153,6 +1153,8 @@ async def get_org_members_financial(
             limit=limit,
             email_filter=email,
         )
+    except HTTPException:
+        raise
     except ValueError as e:
         logger.warning(
             'Invalid page_id for financial data request',

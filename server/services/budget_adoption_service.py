@@ -12,8 +12,10 @@ from server.services.budget_adoption_plan import (
     BudgetAdoptionUnsupported,
     adoption_fingerprint,
     build_adoption_plan,
+    stable_key_policy,
     validate_adoption_observation,
 )
+from server.services.budget_constants import DEFAULT_THRESHOLDS
 from storage.budget_control import (
     BudgetControlConflict,
     BudgetControlSession,
@@ -25,6 +27,7 @@ from storage.lite_llm_manager import LiteLlmManager
 from storage.org_budget_operation import OrgBudgetOperation
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_store import OrgBudgetStore
+from storage.org_budget_threshold import OrgBudgetThreshold
 from storage.org_member import OrgMember
 from storage.user import User
 
@@ -128,8 +131,6 @@ class BudgetAdoptionService:
             operation = await control.pending_operation()
             if operation is None:
                 return None
-            if operation.kind != 'adopt':
-                raise BudgetControlConflict('Pending operation is not an adoption')
             await self._execute(control, operation)
             return await self._result(control, operation)
 
@@ -182,9 +183,23 @@ class BudgetAdoptionService:
 
         async def apply_settings(settings: OrgBudgetSettings) -> None:
             store = OrgBudgetStore(control.session)
+            if operation.kind == 'adopt' and not await store.get_thresholds(
+                control.org_id
+            ):
+                control.session.add_all(
+                    [
+                        OrgBudgetThreshold(
+                            org_id=control.org_id,
+                            percentage=percentage,
+                            email_enabled=email,
+                            slack_enabled=slack,
+                        )
+                        for percentage, email, slack in DEFAULT_THRESHOLDS
+                    ]
+                )
             future = plan['future_policy']
             current = plan['current_allowances']
-            settings.enabled = True
+            settings.enabled = plan.get('enabled', True)
             settings.monthly_limit = future['monthly_limit']
             settings.default_user_monthly_limit = future['default_user_monthly_limit']
             settings.reset_day = future['reset_day']
@@ -205,7 +220,12 @@ class BudgetAdoptionService:
                 control.org_id,
                 settings.cycle_start_at,
                 plan['member_baselines'],
-                source='adoption',
+                source={
+                    'adopt': 'adoption',
+                    'rollover': 'live_rollover',
+                    'settings': 'settings',
+                    'repair': 'member_added',
+                }[operation.kind],
                 observed_at=datetime.fromisoformat(plan['observed_at']),
             )
             settings.litellm_known_member_ids = sorted(plan['member_baselines'])
@@ -213,7 +233,7 @@ class BudgetAdoptionService:
             settings.litellm_last_sync_status = 'success'
             settings.litellm_last_sync_error = None
 
-        await control.finish_operation(operation, apply_settings)
+        await control.finish_operation(operation, apply_settings, verification=readback)
 
     def _check_counter_continuity(
         self,
@@ -251,7 +271,8 @@ class BudgetAdoptionService:
                     'Existing membership was removed during adoption'
                 )
             if (
-                initial_counter['budget_source'] == 'private_member'
+                initial_counter['budget_id'] is not None
+                and initial_counter['budget_id'] != plan.get('default_member_budget_id')
                 and counter['budget_id'] != initial_counter['budget_id']
                 and not (
                     counter['budget_id'] is None
@@ -299,9 +320,21 @@ class BudgetAdoptionService:
             raise BudgetWriteDenied(
                 'Independent team restrictions changed during adoption'
             )
+        if independent(original['default_member']) != independent(
+            current['default_member']
+        ):
+            raise BudgetWriteDenied('Independent default-member restrictions changed')
         for user_id in plan['member_baselines']:
             before = original['members'].get(user_id, {})
             after = current['members'].get(user_id, {})
+            initial_cap = before.get('max_budget')
+            if after.get('max_budget') not in (
+                initial_cap,
+                plan['expected_member_caps'][user_id],
+            ):
+                raise BudgetWriteDenied(
+                    'Member budget was changed outside the pending operation'
+                )
             fields = before.keys() | after.keys()
             if independent(
                 {field: before.get(field) for field in fields}
@@ -309,7 +342,7 @@ class BudgetAdoptionService:
                 raise BudgetWriteDenied(
                     'Independent member restrictions changed during adoption'
                 )
-        if original['keys'] != current['keys']:
+        if stable_key_policy(original['keys']) != stable_key_policy(current['keys']):
             raise BudgetWriteDenied('Key policy changed during adoption')
 
     def _verify_targets(

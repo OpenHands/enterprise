@@ -200,12 +200,14 @@ class BudgetControlSession:
         self,
         operation: OrgBudgetOperation,
         apply_settings: Callable[[OrgBudgetSettings], Awaitable[None]] | None = None,
+        verification: dict[str, Any] | None = None,
     ) -> None:
         await self.require_executable(operation)
         settings = await self.settings()
         if apply_settings is not None:
             await apply_settings(settings)
         operation.status = 'applied'
+        operation.verification = verification
         operation.finished_at = datetime.now(UTC)
         operation.last_error = None
         if operation.kind == 'adopt':

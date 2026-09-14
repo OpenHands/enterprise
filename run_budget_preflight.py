@@ -32,7 +32,6 @@ from uuid import UUID
 
 from sqlalchemy import select, text
 
-from run_budget_maintenance import _eligible_budget_org_ids
 from server.logger import logger
 from server.services.org_budget_preflight import (
     MODE_ACKNOWLEDGE,
@@ -60,6 +59,20 @@ from storage.org_user_budget_override import OrgUserBudgetOverride
 
 DEFAULT_SNAPSHOT_MAX_AGE_SECONDS = 900.0
 USAGE_EXIT_CODE = 2
+
+
+def _eligible_budget_org_ids(session) -> list[str]:
+    # This image also runs before migration; do not select new ownership columns.
+    return [
+        str(row.org_id)
+        for row in session.execute(
+            text(
+                'SELECT b.org_id FROM org_budget_settings b '
+                'LEFT JOIN "user" u ON u.id = b.org_id '
+                'WHERE u.id IS NULL'
+            )
+        )
+    ]
 
 
 def _read_env() -> tuple[str, str, float]:
@@ -176,6 +189,10 @@ async def _reconcile_orgs(org_ids: list[str]) -> dict[str, str]:
                 errors[org_id] = str(exc)
                 continue
             skipped = result.get('skipped')
+            if result.get('reconciliation_status') == 'error':
+                errors[org_id] = (
+                    result.get('reconciliation_error') or 'Budget reconciliation failed'
+                )
             if skipped and skipped not in {
                 'external',
                 'needs_adoption',
