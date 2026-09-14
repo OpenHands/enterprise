@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
+import McpService from "#/api/mcp-service/mcp-service.api";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import {
   MOCK_DEFAULT_USER_SETTINGS,
@@ -192,6 +193,74 @@ describe("MCPSettingsScreen", () => {
       expect(screen.queryAllByTestId("mcp-server-item")).toHaveLength(0);
     });
   });
+});
+
+describe("MCPSettingsScreen connection test", () => {
+  function renderWithEmptyMcpConfig() {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({
+        mcp_config: { sse_servers: [], stdio_servers: [], shttp_servers: [] },
+        agent_settings: {
+          mcp_config: { sse_servers: [], stdio_servers: [], shttp_servers: [] },
+        },
+      }),
+    );
+    return vi.spyOn(SettingsService, "saveSettings").mockResolvedValue(true);
+  }
+
+  async function openAddModalAndTest(url: string) {
+    renderMcpSettingsScreen();
+    await screen.findByText("SETTINGS$MCP_NO_SERVERS");
+    await userEvent.click(
+      screen.getByRole("button", { name: "SETTINGS$MCP_ADD_SERVER" }),
+    );
+    await userEvent.type(await screen.findByTestId("url-input"), url);
+    await userEvent.click(screen.getByTestId("mcp-test-connection"));
+  }
+
+  it("shows the connection result inline without saving the server", async () => {
+    // Arrange
+    const saveSettingsSpy = renderWithEmptyMcpConfig();
+    const testSpy = vi
+      .spyOn(McpService, "testServer")
+      .mockResolvedValue({ ok: true, tools: ["search", "fetch"] });
+
+    // Act
+    await openAddModalAndTest("https://mcp.example.com/sse");
+
+    // Assert
+    expect(await screen.findByTestId("mcp-test-message")).toHaveTextContent(
+      "SETTINGS$MCP_TEST_SUCCESS",
+    );
+    expect(testSpy).toHaveBeenCalledWith({
+      name: "sse",
+      server: { url: "https://mcp.example.com/sse", transport: "sse" },
+    });
+    expect(saveSettingsSpy).not.toHaveBeenCalled();
+    expect(screen.getByTestId("add-mcp-server-modal")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["connection", "SETTINGS$MCP_TEST_ERROR_CONNECTION"],
+    ["timeout", "SETTINGS$MCP_TEST_ERROR_TIMEOUT"],
+    ["unknown", "SETTINGS$MCP_TEST_ERROR_UNKNOWN"],
+  ] as const)(
+    "explains a failed connection test of kind %s in plain language",
+    async (errorKind, expectedMessage) => {
+      renderWithEmptyMcpConfig();
+      vi.spyOn(McpService, "testServer").mockResolvedValue({
+        ok: false,
+        error: "probe failed",
+        error_kind: errorKind,
+      });
+
+      await openAddModalAndTest("https://mcp.example.com/sse");
+
+      expect(await screen.findByTestId("mcp-test-message")).toHaveTextContent(
+        expectedMessage,
+      );
+    },
+  );
 });
 
 describe("clientLoader permission checks", () => {
