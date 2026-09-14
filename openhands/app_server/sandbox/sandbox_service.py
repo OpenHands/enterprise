@@ -373,8 +373,8 @@ class SandboxService(ABC):
         Returns:
             List of sandbox IDs that were paused
         """
-        if max_num_sandboxes <= 0:
-            raise ValueError('max_num_sandboxes must be greater than 0')
+        if max_num_sandboxes < 0:
+            raise ValueError('max_num_sandboxes must not be negative')
 
         # Get all running sandboxes (iterate through all pages)
         running_sandboxes = []
