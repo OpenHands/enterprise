@@ -10,7 +10,7 @@ from openhands.app_server.integrations.provider import CustomSecret
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
-from storage.saas_secrets_store import SaasSecretsStore
+from storage.saas_secrets_store import SaasSecretsStore, _resolve_unique_name
 from storage.stored_custom_secrets import StoredCustomSecrets
 
 
@@ -331,3 +331,255 @@ class TestSaasSecretsStore:
         )
         # Verify org2 secrets are NOT visible in org1
         assert 'org2_secret' not in loaded_org1_again.custom_secrets
+
+
+class TestResolveUniqueName:
+    """Tests for the suffix-based collision resolution helper."""
+
+    def test_no_collision(self):
+        assert _resolve_unique_name('MY_TOKEN', set()) == 'MY_TOKEN'
+
+    def test_first_collision_gets_2(self):
+        assert _resolve_unique_name('MY_TOKEN', {'MY_TOKEN'}) == 'MY_TOKEN_2'
+
+    def test_multiple_collisions_increment(self):
+        taken = {'MY_TOKEN', 'MY_TOKEN_2'}
+        assert _resolve_unique_name('MY_TOKEN', taken) == 'MY_TOKEN_3'
+
+    def test_fourth_collision(self):
+        taken = {'MY_TOKEN', 'MY_TOKEN_2', 'MY_TOKEN_3'}
+        assert _resolve_unique_name('MY_TOKEN', taken) == 'MY_TOKEN_4'
+
+    def test_unchanged_when_unique(self):
+        assert _resolve_unique_name('MY_TOKEN', {'OTHER'}) == 'MY_TOKEN'
+
+    def test_empty_taken_set(self):
+        assert _resolve_unique_name('MY_TOKEN', set()) == 'MY_TOKEN'
+
+
+class TestSaasSecretsStoreOrgSharedMerge:
+    """Tests for merging personal + org-shared secrets in load()."""
+
+    @pytest.mark.asyncio
+    @patch(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        new_callable=AsyncMock,
+    )
+    async def test_load_merges_personal_and_shared(
+        self, mock_get_user, secrets_store, mock_user
+    ):
+        """Personal and org-shared secrets are both returned by load()."""
+        mock_get_user.return_value = mock_user
+        org_id = mock_user.current_org_id
+
+        # Store a personal secret
+        personal = Secrets(
+            custom_secrets=MappingProxyType(
+                {
+                    'PERSONAL_TOKEN': CustomSecret.from_value(
+                        {'secret': 'personal_val', 'description': 'mine'}
+                    ),
+                }
+            )
+        )
+        await secrets_store.store(personal)
+
+        # Insert an org-shared secret directly
+        async with secrets_store.a_session_maker() as session:
+            shared = StoredCustomSecrets(
+                keycloak_user_id='admin-user-id',
+                org_id=org_id,
+                secret_name='SHARED_TOKEN',
+                secret_value=secrets_store._jwt_svc.encrypt_value('shared_val'),
+                description='org-wide',
+                is_org_shared=True,
+            )
+            session.add(shared)
+            await session.commit()
+
+        # Load should return both
+        loaded = await secrets_store.load()
+        assert loaded is not None
+        assert 'PERSONAL_TOKEN' in loaded.custom_secrets
+        assert 'SHARED_TOKEN' in loaded.custom_secrets
+        assert (
+            loaded.custom_secrets['PERSONAL_TOKEN'].secret.get_secret_value()
+            == 'personal_val'
+        )
+        assert (
+            loaded.custom_secrets['SHARED_TOKEN'].secret.get_secret_value()
+            == 'shared_val'
+        )
+
+    @pytest.mark.asyncio
+    @patch(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        new_callable=AsyncMock,
+    )
+    async def test_collision_personal_wins_bare_name(
+        self, mock_get_user, secrets_store, mock_user
+    ):
+        """When personal and org-shared have the same name, personal keeps
+        the bare name and the org-shared one gets ``_2`` appended."""
+        mock_get_user.return_value = mock_user
+        org_id = mock_user.current_org_id
+
+        # Store a personal secret named MY_TOKEN
+        personal = Secrets(
+            custom_secrets=MappingProxyType(
+                {
+                    'MY_TOKEN': CustomSecret.from_value(
+                        {'secret': 'personal_val', 'description': ''}
+                    ),
+                }
+            )
+        )
+        await secrets_store.store(personal)
+
+        # Insert an org-shared secret with the same name
+        async with secrets_store.a_session_maker() as session:
+            shared = StoredCustomSecrets(
+                keycloak_user_id='admin-user-id',
+                org_id=org_id,
+                secret_name='MY_TOKEN',
+                secret_value=secrets_store._jwt_svc.encrypt_value('shared_val'),
+                description='org-wide',
+                is_org_shared=True,
+            )
+            session.add(shared)
+            await session.commit()
+
+        loaded = await secrets_store.load()
+        assert loaded is not None
+        # Personal keeps bare name
+        assert 'MY_TOKEN' in loaded.custom_secrets
+        assert (
+            loaded.custom_secrets['MY_TOKEN'].secret.get_secret_value()
+            == 'personal_val'
+        )
+        # Org-shared gets _2
+        assert 'MY_TOKEN_2' in loaded.custom_secrets
+        assert (
+            loaded.custom_secrets['MY_TOKEN_2'].secret.get_secret_value()
+            == 'shared_val'
+        )
+
+    @pytest.mark.asyncio
+    @patch(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        new_callable=AsyncMock,
+    )
+    async def test_store_does_not_delete_org_shared(
+        self, mock_get_user, secrets_store, mock_user
+    ):
+        """Storing personal secrets must not clobber org-shared secrets."""
+        mock_get_user.return_value = mock_user
+        org_id = mock_user.current_org_id
+
+        # Insert an org-shared secret
+        async with secrets_store.a_session_maker() as session:
+            shared = StoredCustomSecrets(
+                keycloak_user_id='admin-user-id',
+                org_id=org_id,
+                secret_name='ORG_SECRET',
+                secret_value=secrets_store._jwt_svc.encrypt_value('org_val'),
+                description='org-wide',
+                is_org_shared=True,
+            )
+            session.add(shared)
+            await session.commit()
+
+        # Store a personal secret (triggers delete + re-insert of personal)
+        personal = Secrets(
+            custom_secrets=MappingProxyType(
+                {
+                    'PERSONAL': CustomSecret.from_value(
+                        {'secret': 'personal_val', 'description': ''}
+                    ),
+                }
+            )
+        )
+        await secrets_store.store(personal)
+
+        # The org-shared secret must still exist
+        from sqlalchemy import select
+
+        async with secrets_store.a_session_maker() as session:
+            result = await session.execute(
+                select(StoredCustomSecrets).filter(
+                    StoredCustomSecrets.secret_name == 'ORG_SECRET',
+                    StoredCustomSecrets.is_org_shared.is_(True),
+                )
+            )
+            shared_rows = result.scalars().all()
+            assert len(shared_rows) == 1
+            assert shared_rows[0].secret_name == 'ORG_SECRET'
+
+    @pytest.mark.asyncio
+    @patch(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        new_callable=AsyncMock,
+    )
+    async def test_load_without_org_shared_secrets(
+        self, mock_get_user, secrets_store, mock_user
+    ):
+        """load() works normally when no org-shared secrets exist."""
+        mock_get_user.return_value = mock_user
+
+        personal = Secrets(
+            custom_secrets=MappingProxyType(
+                {
+                    'MY_SECRET': CustomSecret.from_value(
+                        {'secret': 'val', 'description': ''}
+                    ),
+                }
+            )
+        )
+        await secrets_store.store(personal)
+
+        loaded = await secrets_store.load()
+        assert loaded is not None
+        assert 'MY_SECRET' in loaded.custom_secrets
+        assert loaded.custom_secrets['MY_SECRET'].secret.get_secret_value() == 'val'
+
+    @pytest.mark.asyncio
+    @patch(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        new_callable=AsyncMock,
+    )
+    async def test_list_personal_excludes_shared(
+        self, mock_get_user, secrets_store, mock_user
+    ):
+        """list_personal() returns only personal secrets, not org-shared."""
+        mock_get_user.return_value = mock_user
+        org_id = mock_user.current_org_id
+
+        # Store a personal secret
+        personal = Secrets(
+            custom_secrets=MappingProxyType(
+                {
+                    'PERSONAL': CustomSecret.from_value(
+                        {'secret': 'val', 'description': 'mine'}
+                    ),
+                }
+            )
+        )
+        await secrets_store.store(personal)
+
+        # Insert an org-shared secret
+        async with secrets_store.a_session_maker() as session:
+            shared = StoredCustomSecrets(
+                keycloak_user_id='admin-user-id',
+                org_id=org_id,
+                secret_name='SHARED',
+                secret_value=secrets_store._jwt_svc.encrypt_value('shared_val'),
+                description='org-wide',
+                is_org_shared=True,
+            )
+            session.add(shared)
+            await session.commit()
+
+        personal_list = await secrets_store.list_personal()
+        names = [name for name, _ in personal_list]
+        assert 'PERSONAL' in names
+        assert 'SHARED' not in names
