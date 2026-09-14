@@ -1,10 +1,18 @@
 """HTTP Client Protocol for Git Service Integrations."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import Any
 
-from httpx import AsyncClient, HTTPError, HTTPStatusError, TimeoutException
-from pydantic import SecretStr
+from httpx import (
+    AsyncClient,
+    HTTPError,
+    HTTPStatusError,
+    QueryParams,
+    Response,
+    TimeoutException,
+)
+from pydantic import JsonValue, SecretStr
 
 from openhands.app_server.integrations.service_types import (
     AuthenticationError,
@@ -66,18 +74,19 @@ class HTTPClient(ABC):
         self,
         client: AsyncClient,
         url: str,
-        headers: dict,
-        params: dict | None,
+        headers: dict[str, str],
+        params: Mapping[str, JsonValue] | None,
         method: RequestMethod = RequestMethod.GET,
-    ):
+    ) -> Response:
         """Execute an HTTP request using the provided client."""
         if method == RequestMethod.POST:
             return await client.post(url, headers=headers, json=params)
         if method == RequestMethod.PUT:
             return await client.put(url, headers=headers, json=params)
+        query = QueryParams(**params) if params is not None else None
         if method == RequestMethod.DELETE:
-            return await client.delete(url, headers=headers, params=params)
-        return await client.get(url, headers=headers, params=params)
+            return await client.delete(url, headers=headers, params=query)
+        return await client.get(url, headers=headers, params=query)
 
     def handle_http_status_error(
         self, e: HTTPStatusError

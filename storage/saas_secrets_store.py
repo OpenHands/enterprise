@@ -15,6 +15,7 @@ from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.settings.settings_models import POSTProviderModel
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from storage.database import a_session_maker
 from storage.stored_custom_secrets import StoredCustomSecrets
 from storage.user_store import UserStore
@@ -60,15 +61,37 @@ class SaasSecretsStore(SecretsStore):
             }
 
             provider_tokens: PROVIDER_TOKEN_TYPE = {}
+            if not ENABLE_KEYCLOAK:
+                from server.services.native_git_credentials import (
+                    get_native_git_service,
+                )
+
+                provider_tokens = await get_native_git_service().get_provider_tokens(
+                    self.user_id
+                )
             return Secrets(
                 custom_secrets=custom_secrets, provider_tokens=provider_tokens
             )
 
     async def store_native_provider_tokens(self, item: POSTProviderModel) -> None:
-        raise ValueError('No native Git provider connection is available')
+        from server.services.native_git_credentials import get_native_git_service
+        from server.services.native_git_provider import GitCredentialError
+
+        service = get_native_git_service()
+        for provider, credential in (item.provider_tokens or {}).items():
+            if not credential.token:
+                raise GitCredentialError('credential_required')
+            token = credential.token.get_secret_value()
+            await service.connect_manual(
+                self.user_id, provider.value, token, credential.host
+            )
 
     async def unset_native_provider_tokens(self) -> None:
-        raise ValueError('No native Git provider connection is available')
+        from server.services.native_git_credentials import get_native_git_service
+
+        service = get_native_git_service()
+        for connection in (await service.list_connections(self.user_id))['connections']:
+            await service.disconnect(self.user_id, connection['provider'])
 
     async def store(self, item: Secrets) -> None:
         user = await UserStore.get_user_by_id(self.user_id)

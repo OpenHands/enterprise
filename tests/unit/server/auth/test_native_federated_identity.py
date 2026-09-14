@@ -28,6 +28,7 @@ from server.services.native_account_service import (
     tombstone_account,
 )
 from server.services.native_auth_service import NativeAuthService, NativeLogin
+from server.services.native_git_credentials import NativeGitCredentialService
 from server.services.native_provisioning_service import (
     NativeProvisionedKeys,
     NativeProvisioningRequest,
@@ -154,6 +155,10 @@ async def test_federated_session_api_key_and_profile(
     auth = await SaasUserAuth.get_instance(request)
     assert auth.user_id == str(login.principal.account_id)
     assert await auth.get_user_email() == EMAIL
+    async with async_session_maker() as session:
+        await NativeGitCredentialService(async_session_maker)._browser(
+            session, login.principal
+        )
     auth._org_info_loaded = True
     context = AuthUserContext(
         user_auth=auth, _user_info=UserInfo(id=auth.user_id, email='stale@example.test')

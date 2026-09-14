@@ -562,7 +562,11 @@ class SaasUserAuth(UserAuth):
 
     async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         if not ENABLE_KEYCLOAK:
-            return MappingProxyType({})
+            from server.services.native_git_credentials import get_native_git_service
+
+            return MappingProxyType(
+                await get_native_git_service().get_provider_tokens(self.user_id)
+            )
         logger.debug('saas_user_auth_get_provider_tokens')
         if self.provider_tokens is not None:
             return self.provider_tokens

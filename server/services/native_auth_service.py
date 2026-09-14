@@ -1195,6 +1195,11 @@ class NativeAuthService:
         """Keep expired secrets briefly for incident review; no raw tokens exist."""
         cutoff = _now() - timedelta(days=7)
         async with self.sessions() as session, session.begin():
+            from storage.native_git import GitOAuthState
+
+            await session.execute(
+                delete(GitOAuthState).where(GitOAuthState.expires_at < _now())
+            )
             await session.execute(
                 delete(BrowserSession).where(
                     or_(

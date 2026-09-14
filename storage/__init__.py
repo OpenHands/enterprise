@@ -28,6 +28,7 @@ from storage.native_auth import (
     PasswordCredential,
 )
 from storage.native_external_work import NativeExternalWork
+from storage.native_git import GitConnection, GitOAuthState
 from storage.openhands_pr import OpenhandsPR
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
@@ -58,6 +59,8 @@ from storage.user_settings import UserSettings
 
 __all__ = [
     'NativeExternalWork',
+    'GitConnection',
+    'GitOAuthState',
     'AccountInvitation',
     'AuthAccount',
     'AuthChallenge',

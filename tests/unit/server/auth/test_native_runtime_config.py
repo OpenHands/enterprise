@@ -55,7 +55,7 @@ async def test_public_config_sources_share_native_capabilities(
     assert legacy['login_methods'] == modern.login_methods
     assert legacy['git_connection_methods'] == modern.git_connection_methods
     assert legacy['login_methods'] == ['password']
-    assert legacy['git_connection_methods'] == {}
+    assert legacy['git_connection_methods'] == {'github': ['pat']}
     assert legacy['PROVIDERS_CONFIGURED'] == modern.providers_configured == []
     assert 'AUTH_URL' not in legacy
     assert modern.auth_url is None
@@ -140,3 +140,18 @@ with patch('keycloak.keycloak_admin.KeycloakAdmin', side_effect=AssertionError('
         timeout=45,
     )
     assert result.returncode == 0, result.stderr[-5000:]
+
+
+def test_native_explicit_oauth_requires_complete_registration(
+    native_config: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv('NATIVE_GIT_GITHUB_OAUTH_ENABLED', '1')
+    monkeypatch.setenv('GITHUB_APP_CLIENT_ID', 'public-client')
+    monkeypatch.delenv('GITHUB_APP_CLIENT_SECRET', raising=False)
+    with pytest.raises(ValueError, match='complete registration'):
+        config.get_auth_capabilities()
+    monkeypatch.setenv('GITHUB_APP_CLIENT_SECRET', 'test-secret')
+    assert config.get_auth_capabilities()['git_connection_methods']['github'] == [
+        'pat',
+        'oauth',
+    ]

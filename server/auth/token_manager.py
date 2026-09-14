@@ -333,7 +333,11 @@ class TokenManager:
         so it keeps working after the offline session is revoked or expires.
         """
         if not ENABLE_KEYCLOAK:
-            raise ValueError('No native Git provider connection is available')
+            from server.services.native_git_credentials import get_native_git_service
+
+            token = await get_native_git_service().get_token(user_id, idp)
+            assert token.token is not None
+            return token.token.get_secret_value()
         logger.info(f'Getting token for user {user_id} and IDP {idp}')
         token_store = await AuthTokenStore.get_instance(
             keycloak_user_id=user_id, idp=idp
@@ -663,7 +667,16 @@ class TokenManager:
         self, idp_user_id: str, idp: ProviderType
     ) -> str | None:
         if not ENABLE_KEYCLOAK:
-            return None
+            from server.auth.native_git_config import git_config
+            from server.services.native_git_credentials import get_native_git_service
+
+            try:
+                host = git_config(idp.value).host
+            except ValueError:
+                return None
+            return await get_native_git_service().resolve_actor(
+                idp, host, str(idp_user_id)
+            )
         keycloak_admin = get_keycloak_admin(self.external)
         users = parse_keycloak_response(
             ADMIN_USERS,
@@ -925,7 +938,10 @@ class TokenManager:
         treats as the set of connected providers.
         """
         if not ENABLE_KEYCLOAK:
-            raise ValueError('No native Git provider connection is available')
+            from server.services.native_git_credentials import get_native_git_service
+
+            await get_native_git_service().disconnect(user_id, idp.value)
+            return
         keycloak_admin = get_keycloak_admin(self.external)
         try:
             await keycloak_admin.a_delete_user_social_login(user_id, idp.value)
@@ -1046,16 +1062,30 @@ class TokenManager:
             from uuid import UUID
 
             from server.services.native_auth_service import get_native_auth_service
+            from storage.native_git import GitConnection
 
             identity = await get_native_auth_service().get_identity(UUID(user_id))
             if identity is None:
                 return None
+            async with a_session_maker() as session:
+                connections = (
+                    await session.scalars(
+                        select(GitConnection).where(
+                            GitConnection.account_id == identity.account_id,
+                            GitConnection.revoked_at.is_(None),
+                        )
+                    )
+                ).all()
             return {
                 'id': user_id,
                 'email': identity.email,
                 'username': identity.email,
                 'enabled': True,
-                'attributes': {},
+                'attributes': {
+                    f'{row.provider}_id': [row.subject]
+                    for row in connections
+                    if row.subject is not None
+                },
             }
         keycloak_admin = get_keycloak_admin(self.external)
         user = await keycloak_admin.a_get_user(user_id)

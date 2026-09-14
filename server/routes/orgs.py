@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
 from openhands.analytics import get_analytics_service
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth import get_user_id, get_user_settings_store
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -1745,7 +1746,17 @@ async def claim_git_organization(
     from server.auth.auth_config import ENABLE_KEYCLOAK
 
     if not ENABLE_KEYCLOAK:
-        raise HTTPException(409, 'No native Git provider connection is available')
+        from server.auth.native_git_config import git_config
+        from server.services.native_git_credentials import get_native_git_service
+
+        credential = await get_native_git_service().get_token(
+            user_id, ProviderType(request.provider)
+        )
+        if credential.host != git_config(request.provider).host:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail='Git organization claims require the configured default provider host',
+            )
     try:
         # Check if this Git org is already claimed (early feedback for the common case)
         existing_claim = await OrgGitClaimStore.get_claim_by_provider_and_git_org(

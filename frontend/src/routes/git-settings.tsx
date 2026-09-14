@@ -1,5 +1,9 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
+import { NativeGitSettings } from "#/components/features/settings/git-settings/native-git-settings";
+import OptionService from "#/api/option-service/option-service.api";
+import { queryClient } from "#/query-client-config";
+import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 import { useConfig } from "#/hooks/query/use-config";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { useSettings } from "#/hooks/query/use-settings";
@@ -31,9 +35,19 @@ import { useUserProviders } from "#/hooks/use-user-providers";
 import { ProjectManagementIntegration } from "#/components/features/settings/project-management/project-management-integration";
 import { Typography } from "#/ui/typography";
 
-export const clientLoader = createPermissionGuard("manage_integrations");
+export const clientLoader = async (args: {
+  request: Request;
+}): Promise<Response | null> => {
+  const config = await queryClient.fetchQuery({
+    queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
+    queryFn: OptionService.getConfig,
+    ...CONFIG_CACHE_OPTIONS,
+  });
+  if (config.auth_mode === "native") return null;
+  return createPermissionGuard("manage_integrations")(args);
+};
 
-function GitSettingsScreen() {
+function LegacyGitSettingsScreen(): React.JSX.Element {
   const { t } = useTranslation();
 
   const { mutate: saveGitProviders, isPending } = useAddGitProviders();
@@ -526,4 +540,11 @@ function GitSettingsScreen() {
   );
 }
 
-export default GitSettingsScreen;
+export default function GitSettingsScreen(): React.JSX.Element {
+  const { data: config } = useConfig();
+  return config?.auth_mode === "native" ? (
+    <NativeGitSettings />
+  ) : (
+    <LegacyGitSettingsScreen />
+  );
+}

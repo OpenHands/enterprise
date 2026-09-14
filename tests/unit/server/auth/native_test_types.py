@@ -1,16 +1,18 @@
 """Explicit contracts shared by the native authentication test fixtures."""
 
 from collections.abc import Iterator, Mapping, MutableMapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, TypedDict, TypeVar, overload
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
+import httpx
 from fastapi import FastAPI
 
 from server.auth.native_types import SessionFactory
 from server.services.native_auth_service import NativeAuthService, NativeLogin
+from server.services.native_git_credentials import NativeGitCredentialService
 from server.services.native_saml_service import NativeSamlService
 from storage.user import User
 
@@ -102,3 +104,15 @@ def present(value: T | None) -> T:
     """Assert a fixture or database result required by the behavior under test."""
     assert value is not None
     return value
+
+
+GitRuntime = tuple[NativeGitCredentialService, NativeLogin, AsyncMock]
+
+
+@dataclass
+class ProviderState:
+    status: int = 200
+    requests: list[str] = field(default_factory=list)
+
+
+NativeGitInfo = tuple[httpx.AsyncClient, ProviderState, UUID]

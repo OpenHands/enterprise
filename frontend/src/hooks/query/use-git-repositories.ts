@@ -1,11 +1,14 @@
+import type {
+  FetchNextPageOptions,
+  InfiniteQueryObserverResult,
+} from "@tanstack/react-query";
 import { useInfiniteQuery, InfiniteData } from "@tanstack/react-query";
-import { useConfig } from "./use-config";
+import { useGitRepositorySource } from "../use-git-repository-source";
 import { useUserProviders } from "../use-user-providers";
 import { useAppInstallations } from "./use-app-installations";
 import { RepositoryPage } from "../../types/git";
 import { Provider } from "../../types/settings";
 import GitService from "#/api/git-service/git-service.api";
-import { shouldUseInstallationRepos } from "#/utils/utils";
 
 interface UseGitRepositoriesOptions {
   provider: Provider | null;
@@ -17,16 +20,25 @@ type InstallationCursor = { installationIndex: number; pageId: string | null };
 type UserCursor = string | null;
 type Cursor = InstallationCursor | UserCursor;
 
-export function useGitRepositories(options: UseGitRepositoriesOptions) {
+export function useGitRepositories(options: UseGitRepositoriesOptions): {
+  data: InfiniteData<RepositoryPage, unknown> | undefined;
+  isLoading: boolean;
+  isError: boolean;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  fetchNextPage: (
+    options?: FetchNextPageOptions,
+  ) => Promise<
+    InfiniteQueryObserverResult<InfiniteData<RepositoryPage, unknown>, Error>
+  >;
+  onLoadMore: () => void;
+} {
   const { provider, pageSize = 30, enabled = true } = options;
   const { providers } = useUserProviders();
-  const { data: config } = useConfig();
   const { data: page } = useAppInstallations(provider);
   const installations = page?.items;
 
-  const useInstallationRepos = provider
-    ? shouldUseInstallationRepos(provider, config?.app_mode)
-    : false;
+  const { useInstallationRepos, isReady } = useGitRepositorySource(provider);
 
   const repos = useInfiniteQuery<
     RepositoryPage,
@@ -97,8 +109,9 @@ export function useGitRepositories(options: UseGitRepositoriesOptions) {
       : null,
     enabled:
       enabled &&
-      (providers || []).length > 0 &&
+      isReady &&
       !!provider &&
+      providers.includes(provider) &&
       (!useInstallationRepos ||
         (Array.isArray(installations) && installations.length > 0)),
     staleTime: 1000 * 60 * 5, // 5 minutes

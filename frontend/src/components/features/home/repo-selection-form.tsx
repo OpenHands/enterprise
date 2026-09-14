@@ -23,7 +23,7 @@ interface RepositorySelectionFormProps {
 export function RepositorySelectionForm({
   onRepoSelection,
   isLoadingSettings = false,
-}: RepositorySelectionFormProps) {
+}: RepositorySelectionFormProps): React.JSX.Element {
   const navigate = useNavigate();
 
   const [selectedRepository, setSelectedRepository] =
@@ -52,6 +52,13 @@ export function RepositorySelectionForm({
 
   // Auto-select provider logic
   React.useEffect(() => {
+    if (selectedProvider && !providers.includes(selectedProvider)) {
+      setSelectedProvider(null);
+      setSelectedRepository(null);
+      setSelectedBranch(null);
+      onRepoSelection(null);
+      return;
+    }
     if (providers.length === 0) return;
 
     // If there's only one provider, auto-select it

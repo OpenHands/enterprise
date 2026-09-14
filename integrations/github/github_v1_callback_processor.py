@@ -24,6 +24,7 @@ from openhands.app_server.event_callback.util import (
 from openhands.sdk import Event
 from openhands.sdk.event import ConversationStateUpdateEvent
 from server.auth.constants import GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY
+from server.auth.native_git_config import github_api_kwargs, github_app_issuer
 
 _logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ class GithubV1CallbackProcessor(EventCallbackProcessor):
         except Exception as e:
             can_post_error = bool(
                 self.github_view_data.get('installation_id')
-                and GITHUB_APP_CLIENT_ID
+                and github_app_issuer(GITHUB_APP_CLIENT_ID)
                 and GITHUB_APP_PRIVATE_KEY
             )
             await handle_callback_error(
@@ -117,11 +118,14 @@ class GithubV1CallbackProcessor(EventCallbackProcessor):
                 f'Missing installation ID for GitHub payload: {self.github_view_data}'
             )
 
-        if not GITHUB_APP_CLIENT_ID or not GITHUB_APP_PRIVATE_KEY:
+        if not github_app_issuer(GITHUB_APP_CLIENT_ID) or not GITHUB_APP_PRIVATE_KEY:
             raise ValueError('GitHub App credentials are not configured')
 
         github_integration = GithubIntegration(
-            auth=Auth.AppAuth(GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY),
+            **github_api_kwargs(),
+            auth=Auth.AppAuth(
+                github_app_issuer(GITHUB_APP_CLIENT_ID), GITHUB_APP_PRIVATE_KEY
+            ),
         )
         token_data = github_integration.get_access_token(installation_id)
         return token_data.token
@@ -138,7 +142,9 @@ class GithubV1CallbackProcessor(EventCallbackProcessor):
 
         try:
             if self.inline_pr_comment:
-                with Github(auth=Auth.Token(installation_token)) as github_client:
+                with Github(
+                    auth=Auth.Token(installation_token), **github_api_kwargs()
+                ) as github_client:
                     repo = github_client.get_repo(full_repo_name)
                     pr = repo.get_pull(issue_number)
                     pr.create_review_comment_reply(
@@ -147,7 +153,9 @@ class GithubV1CallbackProcessor(EventCallbackProcessor):
                     )
                 return
 
-            with Github(auth=Auth.Token(installation_token)) as github_client:
+            with Github(
+                auth=Auth.Token(installation_token), **github_api_kwargs()
+            ) as github_client:
                 repo = github_client.get_repo(full_repo_name)
                 issue = repo.get_issue(number=issue_number)
                 issue.create_comment(summary)

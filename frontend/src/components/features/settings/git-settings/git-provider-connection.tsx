@@ -19,6 +19,12 @@ interface GitProviderConnectionProps {
   provider: Provider;
   providerName: string;
   isConnected: boolean;
+  nativeControls?: {
+    content: React.ReactNode;
+    statusLabel: string;
+    isPending: boolean;
+    onDisconnect?: () => Promise<void>;
+  };
 }
 
 /**
@@ -32,14 +38,15 @@ export function GitProviderConnection({
   providerName,
   isConnected,
   children,
-}: React.PropsWithChildren<GitProviderConnectionProps>) {
+  nativeControls,
+}: React.PropsWithChildren<GitProviderConnectionProps>): React.JSX.Element {
   const { t } = useTranslation();
   const { data: config } = useConfig();
   const { mutate: disconnectGitProvider, isPending } =
     useDisconnectGitProvider();
   const [confirmDisconnect, setConfirmDisconnect] = React.useState(false);
 
-  const handleConnect = () => {
+  const handleConnect = (): void => {
     window.location.href = generateIdpLinkUrl(
       provider,
       new URL(window.location.href),
@@ -47,8 +54,12 @@ export function GitProviderConnection({
     );
   };
 
-  const handleDisconnect = () => {
+  const handleDisconnect = (): void => {
     setConfirmDisconnect(false);
+    if (nativeControls) {
+      nativeControls.onDisconnect?.();
+      return;
+    }
     disconnectGitProvider(provider, {
       onSuccess: () => {
         displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
@@ -72,12 +83,14 @@ export function GitProviderConnection({
           testId={`${provider}-status-text`}
         >
           {t(I18nKey.COMMON$STATUS)}:{" "}
-          {isConnected
-            ? t(I18nKey.STATUS$CONNECTED)
-            : t(I18nKey.STATUS$NOT_CONNECTED)}
+          {nativeControls?.statusLabel ??
+            (isConnected
+              ? t(I18nKey.STATUS$CONNECTED)
+              : t(I18nKey.STATUS$NOT_CONNECTED))}
         </Typography.Text>
       </div>
-      {isConnected ? (
+      {nativeControls?.content}
+      {(nativeControls ? !!nativeControls.onDisconnect : isConnected) ? (
         <>
           {children}
           <BrandButton
@@ -85,22 +98,24 @@ export function GitProviderConnection({
             type="button"
             variant="secondary"
             className="w-55"
-            isDisabled={isPending}
+            isDisabled={nativeControls?.isPending ?? isPending}
             onClick={() => setConfirmDisconnect(true)}
           >
             {t(I18nKey.BUTTON$DISCONNECT)}
           </BrandButton>
         </>
       ) : (
-        <BrandButton
-          testId={`connect-${provider}-button`}
-          type="button"
-          variant="primary"
-          className="w-55"
-          onClick={handleConnect}
-        >
-          {t(I18nKey.BUTTON$CONNECT)}
-        </BrandButton>
+        !nativeControls && (
+          <BrandButton
+            testId={`connect-${provider}-button`}
+            type="button"
+            variant="primary"
+            className="w-55"
+            onClick={handleConnect}
+          >
+            {t(I18nKey.BUTTON$CONNECT)}
+          </BrandButton>
+        )
       )}
       {confirmDisconnect && (
         <ConfirmationModal

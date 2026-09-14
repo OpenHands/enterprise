@@ -38,6 +38,7 @@ from openhands.app_server.utils.async_utils import call_sync_from_async
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk import TextContent
 from server.auth.constants import GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY
+from server.auth.native_git_config import github_api_kwargs, github_app_issuer
 from server.auth.token_manager import TokenManager
 from storage.org_store import OrgStore
 from storage.proactive_conversation_store import ProactiveConversationStore
@@ -603,7 +604,7 @@ class GithubFactory:
         return True
 
     @staticmethod
-    async def trigger_conversation_starter(message: Message):
+    async def trigger_conversation_starter(message: Message) -> bool:
         """Trigger a conversation starter when a workflow fails.
 
         This is the updated version that checks user settings.
@@ -642,13 +643,16 @@ class GithubFactory:
 
         def _interact_with_github() -> Issue | None:
             with GithubIntegration(
-                auth=Auth.AppAuth(GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY)
+                **github_api_kwargs(),
+                auth=Auth.AppAuth(
+                    github_app_issuer(GITHUB_APP_CLIENT_ID), GITHUB_APP_PRIVATE_KEY
+                ),
             ) as integration:
                 access_token = integration.get_access_token(
                     payload['installation']['id']
                 ).token
 
-            with Github(auth=Auth.Token(access_token)) as gh:
+            with Github(auth=Auth.Token(access_token), **github_api_kwargs()) as gh:
                 repo = gh.get_repo(selected_repo)
                 login = (
                     payload['organization']['login']
@@ -776,12 +780,15 @@ class GithubFactory:
 
             access_token = ''
             with GithubIntegration(
-                auth=Auth.AppAuth(GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY)
+                **github_api_kwargs(),
+                auth=Auth.AppAuth(
+                    github_app_issuer(GITHUB_APP_CLIENT_ID), GITHUB_APP_PRIVATE_KEY
+                ),
             ) as integration:
                 access_token = integration.get_access_token(installation_id).token
 
             head_ref = None
-            with Github(auth=Auth.Token(access_token)) as gh:
+            with Github(auth=Auth.Token(access_token), **github_api_kwargs()) as gh:
                 repo = gh.get_repo(selected_repo)
                 pull_request = repo.get_pull(issue_number)
                 head_ref = pull_request.head.ref

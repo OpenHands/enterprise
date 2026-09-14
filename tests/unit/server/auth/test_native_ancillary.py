@@ -866,3 +866,45 @@ async def test_native_org_default_switch_queues_each_member_key(
         }
         assert len(keys) == 2 and 'shared-direct-key' not in keys
         assert (present(await session.get(Org, admin_id))).llm_api_key is None
+
+
+async def test_native_git_claim_rejects_alternate_host_before_lookup(
+    integrated: NativeFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi import HTTPException
+
+    from server.auth import native_git_config
+    from server.routes import orgs
+    from server.routes.org_models import GitOrgClaimRequest
+    from server.services import native_git_credentials
+
+    _, admin_id = integrated
+    monkeypatch.setattr(
+        native_git_config,
+        'git_config',
+        lambda provider: native_git_config.NativeGitConfig(provider, 'github.com', ()),
+    )
+    from openhands.app_server.integrations.provider import ProviderToken
+    from server.services.native_git_credentials import NativeGitCredentialService
+
+    service = NativeGitCredentialService()
+    monkeypatch.setattr(
+        service,
+        'get_token',
+        AsyncMock(return_value=ProviderToken(host='git.example.test')),
+    )
+    monkeypatch.setattr(
+        native_git_credentials, 'get_native_git_service', lambda: service
+    )
+    lookup = AsyncMock(side_effect=AssertionError('Hostless claim store reached'))
+    monkeypatch.setattr(
+        orgs.OrgGitClaimStore, 'get_claim_by_provider_and_git_org', lookup
+    )
+    with pytest.raises(HTTPException) as denied:
+        await orgs.claim_git_organization(
+            admin_id,
+            GitOrgClaimRequest(provider='github', git_organization='example'),
+            user_id=str(admin_id),
+        )
+    assert denied.value.status_code == 409
+    lookup.assert_not_called()

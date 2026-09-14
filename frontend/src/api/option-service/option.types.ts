@@ -1,3 +1,7 @@
+import type {
+  NativeGitProvider,
+  GitAuthMethod,
+} from "../git-connection-service/git-connection-service.api";
 import { Provider } from "#/types/settings";
 
 export type DeploymentMode = "cloud" | "self_hosted";
@@ -73,7 +77,7 @@ export interface WebClientConfig {
   auth_mode?: "keycloak" | "native";
   login_methods?: (Provider | "password" | "saml")[];
   saml?: { connection_id: string; name: string };
-  git_connection_methods?: Partial<Record<Provider, string[]>>;
+  git_connection_methods?: Partial<Record<NativeGitProvider, GitAuthMethod[]>>;
   posthog_client_key: string | null;
   feature_flags: WebClientFeatureFlags;
   providers_configured: Provider[];

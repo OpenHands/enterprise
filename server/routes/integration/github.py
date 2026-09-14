@@ -55,7 +55,7 @@ async def github_events(
     background_tasks: BackgroundTasks,
     x_hub_signature_256: str = Header(None),
     x_github_event: str = Header(None),
-):
+) -> JSONResponse:
     # Check if GitHub webhooks are enabled
     if not GITHUB_WEBHOOKS_ENABLED:
         logger.info('GitHub webhooks disabled by GITHUB_WEBHOOKS_ENABLED env variable')
@@ -71,6 +71,43 @@ async def github_events(
 
         payload_data = await request.json()
         installation_id = payload_data.get('installation', {}).get('id')
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+
+        if not ENABLE_KEYCLOAK:
+            from sqlalchemy import delete
+
+            from server.auth.native_git_config import git_config
+            from server.services.native_git_credentials import get_native_git_service
+            from storage.database import a_session_maker
+            from storage.github_app_installation import GithubAppInstallation
+
+            if (
+                x_github_event == 'github_app_authorization'
+                and payload_data.get('action') == 'revoked'
+            ):
+                subject = payload_data.get('sender', {}).get('id')
+                if subject is not None:
+                    await get_native_git_service().revoke_provider_subject(
+                        'github', git_config('github').host, str(subject)
+                    )
+                return JSONResponse(
+                    {'message': 'GitHub authorization revocation processed.'}
+                )
+            if x_github_event == 'installation' and payload_data.get('action') in (
+                'deleted',
+                'suspend',
+            ):
+                if installation_id:
+                    async with a_session_maker() as session, session.begin():
+                        await session.execute(
+                            delete(GithubAppInstallation).where(
+                                GithubAppInstallation.installation_id
+                                == str(installation_id)
+                            )
+                        )
+                return JSONResponse(
+                    {'message': 'GitHub installation token invalidated.'}
+                )
 
         if not installation_id:
             return JSONResponse(

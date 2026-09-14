@@ -39,6 +39,7 @@ from openhands.app_server.types import (
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.auth_error import ExpiredError
 from server.auth.constants import GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY
+from server.auth.native_git_config import github_api_kwargs, github_app_issuer
 from server.auth.token_manager import TokenManager
 
 IGNORED_GITHUB_EVENT_SENDERS = frozenset(
@@ -51,11 +52,14 @@ IGNORED_GITHUB_EVENT_SENDERS = frozenset(
 class GithubManager(Manager[GithubViewType]):
     def __init__(
         self, token_manager: TokenManager, data_collector: GitHubDataCollector
-    ):
+    ) -> None:
         self.token_manager = token_manager
         self.data_collector = data_collector
         self.github_integration = GithubIntegration(
-            auth=Auth.AppAuth(GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY)
+            **github_api_kwargs(),
+            auth=Auth.AppAuth(
+                github_app_issuer(GITHUB_APP_CLIENT_ID), GITHUB_APP_PRIVATE_KEY
+            ),
         )
 
         self.jinja_env = Environment(
@@ -78,7 +82,7 @@ class GithubManager(Manager[GithubViewType]):
 
     def _add_reaction(
         self, github_view: ResolverViewInterface, reaction: str, installation_token: str
-    ):
+    ) -> None:
         """Add a reaction to the GitHub issue, PR, or comment.
 
         Args:
@@ -86,7 +90,9 @@ class GithubManager(Manager[GithubViewType]):
             reaction: The reaction to add (e.g. "eyes", "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket")
             installation_token: GitHub installation access token for API access
         """
-        with Github(auth=Auth.Token(installation_token)) as github_client:
+        with Github(
+            auth=Auth.Token(installation_token), **github_api_kwargs()
+        ) as github_client:
             repo = github_client.get_repo(github_view.full_repo_name)
             if isinstance(github_view, GithubInlinePRComment):
                 pr = repo.get_pull(github_view.issue_number)
@@ -160,7 +166,7 @@ class GithubManager(Manager[GithubViewType]):
 
         return None
 
-    def _send_user_not_found_message(self, message: Message, username: str):
+    def _send_user_not_found_message(self, message: Message, username: str) -> None:
         """Send a message to the user informing them they need to create an OpenHands account.
 
         This method handles all supported trigger types:
@@ -190,7 +196,9 @@ class GithubManager(Manager[GithubViewType]):
             return
 
         try:
-            with Github(auth=Auth.Token(installation_token)) as github_client:
+            with Github(
+                auth=Auth.Token(installation_token), **github_api_kwargs()
+            ) as github_client:
                 repo = github_client.get_repo(full_repo_name)
                 issue = repo.get_issue(number=issue_number)
                 issue.create_comment(get_user_not_found_message(username))
@@ -247,7 +255,7 @@ class GithubManager(Manager[GithubViewType]):
 
         return user_has_write_access
 
-    async def receive_message(self, message: Message):
+    async def receive_message(self, message: Message) -> None:
         self._confirm_incoming_source_type(message)
 
         ignored_sender = self._get_ignored_sender_login(message)
@@ -279,6 +287,33 @@ class GithubManager(Manager[GithubViewType]):
                 self._send_user_not_found_message(message, username)
                 return
 
+            from server.auth.auth_config import ENABLE_KEYCLOAK
+
+            if not ENABLE_KEYCLOAK:
+                from pydantic import TypeAdapter
+
+                from integrations.github.github_service import SaaSGitHubService
+                from integrations.native_git_types import GitHubRepositoryAccess
+
+                service = SaaSGitHubService(external_auth_id=keycloak_user_id)
+                repo_name = self._get_full_repo_name(payload['repository'])
+                repository, _ = await service._make_request(
+                    f'{service.BASE_URL}/repos/{repo_name}'
+                )
+                permissions = (
+                    TypeAdapter(GitHubRepositoryAccess)
+                    .validate_python(repository)
+                    .get('permissions')
+                    or {}
+                )
+                if not (
+                    permissions.get('push')
+                    or permissions.get('maintain')
+                    or permissions.get('admin')
+                ):
+                    logger.info('Native GitHub actor lacks repository write permission')
+                    return
+
             github_view = await GithubFactory.create_github_view_from_payload(
                 message, keycloak_user_id
             )
@@ -294,7 +329,7 @@ class GithubManager(Manager[GithubViewType]):
             self._add_reaction(github_view, 'eyes', installation_token)
             await self.start_job(github_view)
 
-    async def send_message(self, message: str, github_view: GithubViewType):
+    async def send_message(self, message: str, github_view: GithubViewType) -> None:
         """Send a message to GitHub.
 
         Args:
@@ -309,7 +344,9 @@ class GithubManager(Manager[GithubViewType]):
             return
 
         if isinstance(github_view, GithubInlinePRComment):
-            with Github(auth=Auth.Token(installation_token)) as github_client:
+            with Github(
+                auth=Auth.Token(installation_token), **github_api_kwargs()
+            ) as github_client:
                 repo = github_client.get_repo(github_view.full_repo_name)
                 pr = repo.get_pull(github_view.issue_number)
                 pr.create_review_comment_reply(
@@ -319,7 +356,9 @@ class GithubManager(Manager[GithubViewType]):
         elif isinstance(
             github_view, (GithubPRComment, GithubIssueComment, GithubIssue)
         ):
-            with Github(auth=Auth.Token(installation_token)) as github_client:
+            with Github(
+                auth=Auth.Token(installation_token), **github_api_kwargs()
+            ) as github_client:
                 repo = github_client.get_repo(github_view.full_repo_name)
                 issue = repo.get_issue(number=github_view.issue_number)
                 issue.create_comment(message)

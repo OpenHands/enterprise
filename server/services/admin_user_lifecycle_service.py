@@ -168,7 +168,12 @@ class AdminUserLifecycleService:
                 return None
             email = account.display_email
             if operation == 'delete':
+                from server.services.native_git_credentials import (
+                    NativeGitCredentialService,
+                )
+
                 await tombstone_account(session, account_id)
+                await NativeGitCredentialService().disconnect_all(account_id, session)
                 account.provisioning_status = 'cleanup_pending'
                 await queue_external_cleanup(session, account_id=account_id)
             else:

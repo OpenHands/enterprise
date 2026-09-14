@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,3 +80,31 @@ class NativeAccountMetadata(TypedDict):
 class NativeAccountPage(TypedDict):
     items: list[NativeAccountMetadata]
     total: int
+
+
+class GitProviderCapability(TypedDict):
+    methods: list[str]
+    hosts: list[str]
+    default_host: str
+    installation_available: NotRequired[bool]
+
+
+class GitAccountView(TypedDict):
+    id: str | None
+    login: str | None
+    display_name: str | None
+    avatar_url: str | None
+
+
+class GitConnectionView(TypedDict):
+    provider: str
+    host: str
+    auth_type: str
+    status: Literal['reconnect_required', 'connected']
+    account: GitAccountView
+    last_error: str | None
+
+
+class GitConnectionList(TypedDict):
+    connections: list[GitConnectionView]
+    capabilities: dict[str, GitProviderCapability]

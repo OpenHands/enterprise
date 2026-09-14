@@ -176,7 +176,15 @@ class AuthUserContext(UserContext):
         from server.auth.auth_config import ENABLE_KEYCLOAK
 
         if not ENABLE_KEYCLOAK:
-            return None
+            from server.services.native_git_credentials import get_native_git_service
+
+            user_id = await self.get_user_id()
+            if not user_id:
+                return None
+            credential = await get_native_git_service().get_token(
+                user_id, provider_type
+            )
+            return credential.token.get_secret_value() if credential.token else None
         provider_handler = await self.get_provider_handler()
         service = provider_handler.get_service(provider_type)
         token = await service.get_latest_token()

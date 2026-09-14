@@ -39,43 +39,72 @@ def get_auth_capabilities(
     configured_providers: list[ProviderType] | None = None,
 ) -> AuthCapabilities:
     """One public login/connection contract for both configuration endpoints."""
-    if not ENABLE_KEYCLOAK:
-        from server.auth.saml_config import get_saml_settings
-
-        saml = get_saml_settings()
-        capabilities: AuthCapabilities = {
+    if ENABLE_KEYCLOAK:
+        providers = configured_providers
+        if providers is None:
+            providers = []
+            for provider, configured in (
+                (ProviderType.GITHUB, GITHUB_APP_CLIENT_ID),
+                (ProviderType.GITLAB, GITLAB_APP_CLIENT_ID),
+                (ProviderType.BITBUCKET, BITBUCKET_APP_CLIENT_ID),
+                (ProviderType.ENTERPRISE_SSO, ENABLE_ENTERPRISE_SSO),
+                (ProviderType.BITBUCKET_DATA_CENTER, BITBUCKET_DATA_CENTER_CLIENT_ID),
+                (ProviderType.AZURE_DEVOPS, AZURE_DEVOPS_CLIENT_ID),
+            ):
+                if configured:
+                    providers.append(provider)
+        return {
             'auth_mode': AUTH_MODE,
-            'login_methods': ['password', 'saml'] if saml else ['password'],
-            'git_connection_methods': {},
+            'login_methods': sorted(provider.value for provider in providers),
+            'git_connection_methods': {
+                provider.value: ['oauth']
+                for provider in providers
+                if provider != ProviderType.ENTERPRISE_SSO
+            },
         }
-        if saml:
-            capabilities['saml'] = {
-                'connection_id': saml.connection_id,
-                'name': saml.name,
-            }
-        return capabilities
-    providers = configured_providers
-    if providers is None:
-        providers = []
-        for provider, configured in (
-            (ProviderType.GITHUB, GITHUB_APP_CLIENT_ID),
-            (ProviderType.GITLAB, GITLAB_APP_CLIENT_ID),
-            (ProviderType.BITBUCKET, BITBUCKET_APP_CLIENT_ID),
-            (ProviderType.ENTERPRISE_SSO, ENABLE_ENTERPRISE_SSO),
-            (ProviderType.BITBUCKET_DATA_CENTER, BITBUCKET_DATA_CENTER_CLIENT_ID),
-            (ProviderType.AZURE_DEVOPS, AZURE_DEVOPS_CLIENT_ID),
-        ):
-            if configured:
-                providers.append(provider)
-    return {
+
+    methods: dict[str, list[str]] = {}
+    for provider_name, manual_method, default in (
+        ('github', 'pat', 'true'),
+        ('gitlab', 'pat', 'false'),
+        ('bitbucket', 'pat', 'false'),
+        ('bitbucket_data_center', 'pat', 'false'),
+        ('azure_devops', 'pat', 'false'),
+        ('forgejo', 'pat', 'false'),
+    ):
+        enabled: list[str] = []
+        prefix = f'NATIVE_GIT_{provider_name.upper()}'
+        if os.getenv(f'{prefix}_MANUAL_ENABLED', default).lower() in ('true', '1'):
+            if provider_name != 'github':
+                raise ValueError(
+                    f'Native Git connections are unsupported for {provider_name}'
+                )
+            enabled.append(manual_method)
+        if os.getenv(f'{prefix}_OAUTH_ENABLED', 'false').lower() in ('true', '1'):
+            if provider_name != 'github':
+                raise ValueError(f'Native OAuth is unsupported for {provider_name}')
+            registration = f'{provider_name.upper()}_APP'
+            if not all(
+                os.getenv(f'{registration}_{suffix}', '').strip()
+                for suffix in ('CLIENT_ID', 'CLIENT_SECRET')
+            ):
+                raise ValueError(
+                    f'Native {provider_name} OAuth requires a complete registration'
+                )
+            enabled.append('oauth')
+        if enabled:
+            methods[provider_name] = enabled
+    from server.auth.saml_config import get_saml_settings
+
+    saml = get_saml_settings()
+    capabilities: AuthCapabilities = {
         'auth_mode': AUTH_MODE,
-        'login_methods': sorted(provider.value for provider in providers),
-        'git_connection_methods': {
-            provider.value: ['oauth']
-            for provider in providers
-            if provider != ProviderType.ENTERPRISE_SSO
-        },
+        'login_methods': ['password', 'saml'] if saml else ['password'],
+        'git_connection_methods': methods,
     }
+    if saml:
+        capabilities['saml'] = {'connection_id': saml.connection_id, 'name': saml.name}
+    return capabilities
 
 
 def get_native_cors_origins() -> list[str]:
@@ -125,6 +154,13 @@ def validate_native_auth_configuration() -> None:
     get_native_auth_settings()
     get_native_cors_origins()
     get_auth_capabilities()
+    from server.auth.native_git_config import (
+        native_git_capabilities,
+        validate_native_git_selectors,
+    )
+
+    native_git_capabilities()
+    validate_native_git_selectors()
     from server.auth.ancillary_config import validate_native_ancillary_config
 
     validate_native_ancillary_config()

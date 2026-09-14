@@ -1,3 +1,5 @@
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+import { queryResult, axiosResponse } from "../helpers/native-fixtures";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -105,4 +107,12 @@ describe("useGitUser", () => {
       expect(mockLogout.mutate).not.toHaveBeenCalled();
     });
   });
+  it("does not log out native users when their provider returns 401", async () => {
+    vi.mocked(useConfigModule.useConfig).mockReturnValue(queryResult(createMockWebClientConfig({ app_mode: "saas", auth_mode: "native" })));
+    vi.mocked(UserService.getUser).mockRejectedValue(new AxiosError("Provider expired", "401", undefined, undefined, axiosResponse({}, 401)));
+    const { result } = renderHook(() => useGitUser(), { wrapper: createWrapper() });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(mockLogout.mutate).not.toHaveBeenCalled();
+  });
+
 });

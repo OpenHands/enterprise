@@ -40,6 +40,7 @@ from server.auth.constants import (  # noqa: E402
     ENABLE_JIRA,
     ENABLE_JIRA_DC,
     GITHUB_APP_CLIENT_ID,
+    GITHUB_APP_PRIVATE_KEY,
     GITLAB_APP_CLIENT_ID,
 )
 from server.constants import (  # noqa: E402
@@ -99,6 +100,20 @@ from server.verified_models.verified_model_router import (  # noqa: E402
     api_router as verified_models_router,
 )
 
+if not ENABLE_KEYCLOAK:
+    from server.services.native_git_provider import GitCredentialError
+
+    @base_app.exception_handler(GitCredentialError)
+    async def native_git_error_handler(
+        request: Request, exc: GitCredentialError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={'detail': exc.code},
+            headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'},
+        )
+
+
 directory = os.getenv('FRONTEND_DIRECTORY', './frontend/build')
 
 
@@ -117,6 +132,10 @@ else:
     from server.routes.native_saml import native_saml_router
 
     base_app.include_router(native_saml_router)
+    from server.routes.native_git import native_git_oauth_router, native_git_router
+
+    base_app.include_router(native_git_router)
+    base_app.include_router(native_git_oauth_router)
     base_app.include_router(native_auth_router)
     base_app.include_router(auth_accounts_router)
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
@@ -127,8 +146,12 @@ base_app.include_router(
 base_app.include_router(shared_conversation_router)
 base_app.include_router(shared_event_router)
 
-# Provider-backed integrations require Keycloak in this mode.
-if ENABLE_KEYCLOAK and GITHUB_APP_CLIENT_ID:
+# OAuth credentials alone do not configure the GitHub App webhook integration.
+if (ENABLE_KEYCLOAK and GITHUB_APP_CLIENT_ID) or (
+    not ENABLE_KEYCLOAK
+    and GITHUB_APP_PRIVATE_KEY
+    and (os.getenv('GITHUB_APP_ID') or GITHUB_APP_CLIENT_ID)
+):
     # Make sure that the callback processor is loaded here so we don't get an error when deserializing
     from integrations.github.github_v1_callback_processor import (  # noqa: E402
         GithubV1CallbackProcessor,

@@ -80,9 +80,14 @@ github_service_cls = os.environ.get(
 _github_service_impl = None
 
 
-def get_github_service_impl():
+def get_github_service_impl() -> type[GitHubService]:
     """Get the GitHub service implementation with lazy loading."""
     global _github_service_impl
+    if os.getenv('ENABLE_KEYCLOAK', 'true').lower() in ('false', '0'):
+        from server.auth.native_git_config import validate_native_git_selectors
+
+        validate_native_git_selectors()
+        return get_impl(GitHubService, os.environ['OPENHANDS_GITHUB_SERVICE_CLS'])
     if _github_service_impl is None:
         _github_service_impl = get_impl(GitHubService, github_service_cls)
     return _github_service_impl

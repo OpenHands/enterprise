@@ -1,11 +1,13 @@
+import type { UseQueryResult, DefaultError } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import React from "react";
+import type { GitUser } from "#/types/git";
 import { useConfig } from "./use-config";
 import UserService from "#/api/user-service/user-service.api";
 import { useShouldShowGitFeatures } from "#/hooks/use-should-show-git-features";
 import { useLogout } from "../mutation/use-logout";
 
-export const useGitUser = () => {
+export const useGitUser = (): UseQueryResult<GitUser, DefaultError> => {
   const { data: config } = useConfig();
   const logout = useLogout();
 
@@ -18,6 +20,7 @@ export const useGitUser = () => {
     queryFn: UserService.getUser,
     enabled: shouldFetchUser,
     retry: false,
+    meta: { skipAuthInvalidation: config?.auth_mode === "native" },
     staleTime: 1000 * 60 * 5, // 5 minutes
     gcTime: 1000 * 60 * 15, // 15 minutes
   });
@@ -26,7 +29,11 @@ export const useGitUser = () => {
   // refreshed. Since this happens at login, we log out.
   // In oss mode, skip auto-logout since there's no token refresh mechanism
   React.useEffect(() => {
-    if (user?.error?.response?.status === 401 && config?.app_mode === "saas") {
+    if (
+      config?.auth_mode !== "native" &&
+      user?.error?.response?.status === 401 &&
+      config?.app_mode === "saas"
+    ) {
       logout.mutate();
     }
   }, [user.status, config?.app_mode]);

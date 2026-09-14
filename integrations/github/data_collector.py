@@ -14,6 +14,7 @@ from integrations.github.github_view import (
 )
 from integrations.github.queries import PR_QUERY_BY_NODE_ID
 from integrations.models import Message
+from integrations.native_git_types import GitCommitView, IssueCommentView
 from integrations.types import PRStatus, ResolverViewInterface
 from integrations.utils import HOST
 from openhands.app_server.config import get_global_config
@@ -22,6 +23,7 @@ from openhands.app_server.integrations.github.github_service import GithubServic
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY
+from server.auth.native_git_config import github_api_kwargs, github_app_issuer
 from storage.openhands_pr import OpenhandsPR
 from storage.openhands_pr_store import OpenhandsPRStore
 
@@ -94,14 +96,17 @@ class GitHubDataCollector:
             - merge status (either merged/closed)
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.file_store = file_store
         self.issues_path = 'github_data/issue-{}-{}/data.json'
         self.matching_pr_path = 'github_data/pr-{}-{}/data.json'
         # self.full_saved_pr_path = 'github_data/prs/{}-{}/data.json'
         self.full_saved_pr_path = 'prs/github/{}-{}/data.json'
         self.github_integration = GithubIntegration(
-            auth=Auth.AppAuth(GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY)
+            **github_api_kwargs(),
+            auth=Auth.AppAuth(
+                github_app_issuer(GITHUB_APP_CLIENT_ID), GITHUB_APP_PRIVATE_KEY
+            ),
         )
         self.conversation_id = None
 
@@ -149,8 +154,12 @@ class GitHubDataCollector:
         )
 
     def _get_issue_comments(
-        self, installation_id: int, repo_name: str, issue_number: int, conversation_id
-    ) -> list[dict[str, Any]]:
+        self,
+        installation_id: int,
+        repo_name: str,
+        issue_number: int,
+        conversation_id: str,
+    ) -> list[IssueCommentView]:
         """
         Retrieve all comments from an issue until a comment with conversation_id is found
         """
@@ -158,13 +167,15 @@ class GitHubDataCollector:
         try:
             installation_token = self._get_installation_access_token(installation_id)
 
-            with Github(auth=Auth.Token(installation_token)) as github_client:
+            with Github(
+                auth=Auth.Token(installation_token), **github_api_kwargs()
+            ) as github_client:
                 repo = github_client.get_repo(repo_name)
                 issue = repo.get_issue(issue_number)
-                comments = []
+                comments: list[IssueCommentView] = []
 
                 for comment in issue.get_comments():
-                    comment_data = {
+                    comment_data: IssueCommentView = {
                         'id': comment.id,
                         'body': comment.body,
                         'created_at': comment.created_at.isoformat(),
@@ -248,15 +259,19 @@ class GitHubDataCollector:
             f'[Github]: Saved issue #{issue_number} for {github_view.full_repo_name}'
         )
 
-    def _get_pr_commits(self, installation_id: int, repo_name: str, pr_number: int):
-        commits = []
+    def _get_pr_commits(
+        self, installation_id: int, repo_name: str, pr_number: int
+    ) -> list[GitCommitView]:
+        commits: list[GitCommitView] = []
         installation_token = self._get_installation_access_token(installation_id)
-        with Github(auth=Auth.Token(installation_token)) as github_client:
+        with Github(
+            auth=Auth.Token(installation_token), **github_api_kwargs()
+        ) as github_client:
             repo = github_client.get_repo(repo_name)
             pr = repo.get_pull(pr_number)
 
             for commit in pr.get_commits():
-                commit_data = {
+                commit_data: GitCommitView = {
                     'sha': commit.sha,
                     'authors': commit.author.login if commit.author else None,
                     'committed_date': commit.commit.committer.date.isoformat()

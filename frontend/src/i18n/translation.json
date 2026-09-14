@@ -29824,5 +29824,59 @@
   },
   "NATIVE_AUTH$SSO_REAUTH_RETRY": {
     "en": "Sign in with SSO again, then retry this action."
+  },
+  "HOME$CONNECT_NATIVE_PROVIDER_MESSAGE": {
+    "en": "Connect a Git account in Settings to work with repositories."
+  },
+  "NATIVE_GIT$OPTIONAL_HELP": {
+    "en": "Connect a Git account when you want to work with repositories. You can use OpenHands without connecting a Git provider."
+  },
+  "NATIVE_GIT$CONNECTED": {
+    "en": "Connected"
+  },
+  "NATIVE_GIT$NOT_CONNECTED": {
+    "en": "Not connected"
+  },
+  "NATIVE_GIT$RECONNECT_REQUIRED": {
+    "en": "Reconnect required"
+  },
+  "NATIVE_GIT$CANCELLED": {
+    "en": "Connection was cancelled. Your existing connections have not changed."
+  },
+  "NATIVE_GIT$OAUTH_ERROR": {
+    "en": "The provider could not be connected. Try connecting again or use a token."
+  },
+  "NATIVE_GIT$UNAVAILABLE": {
+    "en": "Git connections are temporarily unavailable. You can continue using OpenHands."
+  },
+  "NATIVE_GIT$TRY_AGAIN": {
+    "en": "Try again"
+  },
+  "NATIVE_GIT$NO_PROVIDERS": {
+    "en": "No Git providers are configured for this installation."
+  },
+  "NATIVE_GIT$HOST": {
+    "en": "Host"
+  },
+  "NATIVE_GIT$PAT": {
+    "en": "Personal access token"
+  },
+  "NATIVE_GIT$TOKEN_HELP": {
+    "en": "Use a token with access to the repositories you need. It is saved immediately after validation."
+  },
+  "NATIVE_GIT$CONNECT": {
+    "en": "Connect"
+  },
+  "NATIVE_GIT$RECONNECT": {
+    "en": "Update connection"
+  },
+  "NATIVE_GIT$SAVED": {
+    "en": "Connection saved."
+  },
+  "NATIVE_GIT$CONNECT_OAUTH": {
+    "en": "Authorize with {{provider}}"
+  },
+  "NATIVE_GIT$DISCONNECT_HELP": {
+    "en": "Disconnect before switching provider accounts. Disconnecting keeps you signed in to OpenHands."
   }
 }

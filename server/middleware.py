@@ -199,6 +199,10 @@ class SetAuthCookieMiddleware:
                 requires_browser_proof = (
                     path == '/api/auth/password/change'
                     or path in ('/api/auth/saml/start', '/api/auth/saml/complete')
+                    or (
+                        path.startswith('/api/git-connections/')
+                        and path.endswith('/oauth')
+                    )
                     or (path == '/api/logout' and session_token is not None)
                     or (path.startswith('/integration/') and session_token is not None)
                     or (

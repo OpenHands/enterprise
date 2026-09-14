@@ -276,7 +276,14 @@ async def get_current_user_git_organizations(
     provider_tokens = client.provider_tokens
     provider = next(iter(provider_tokens))
     if not ENABLE_KEYCLOAK:
-        raise HTTPException(409, 'No native Git provider connection is available')
+        from server.auth.native_git_config import git_config
+
+        credential = provider_tokens[provider]
+        if credential.host != git_config(provider.value).host:
+            raise HTTPException(
+                409,
+                'Git organization integrations require the configured default provider host',
+            )
     if provider == ProviderType.GITHUB:
         orgs = await client.get_github_organizations()
     elif provider == ProviderType.GITLAB:

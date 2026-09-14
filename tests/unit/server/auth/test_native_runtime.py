@@ -362,6 +362,7 @@ async def test_native_sandbox_secret_route_retains_sandbox_key_proof(
     [
         '/api/organizations/members/invite/accept',
         '/oauth/device/verify-authenticated',
+        '/api/git-connections/github/oauth',
         '/integration/jira/workspaces/link',
         '/integration/jira-dc/workspaces/status',
         '/integration/gitlab/reinstall-webhook',
