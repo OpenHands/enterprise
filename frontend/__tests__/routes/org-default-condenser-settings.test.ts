@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { redirect } from "react-router";
+import { replace } from "react-router";
 
 /**
  * Regression test: when getActiveOrganizationUser() returns undefined on
@@ -10,7 +10,7 @@ import { redirect } from "react-router";
  */
 
 vi.mock("react-router", () => ({
-  redirect: vi.fn((path: string) => ({ _tag: "redirect", path })),
+  replace: vi.fn((path: string) => ({ _tag: "replace", path })),
 }));
 
 vi.mock("#/utils/org/permission-checks", () => ({
@@ -93,6 +93,6 @@ describe("org-defaults/condenser clientLoader", () => {
       ),
     });
 
-    expect(redirect).toHaveBeenCalledWith("/settings/user");
+    expect(replace).toHaveBeenCalledWith("/settings/user");
   });
 });

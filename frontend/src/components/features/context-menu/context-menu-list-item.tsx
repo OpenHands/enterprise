@@ -1,4 +1,5 @@
 import { cn } from "#/utils/utils";
+import { dropdownMenuRowForegroundClassName } from "#/utils/dropdown-classes";
 
 interface ContextMenuListItemProps {
   testId?: string;
@@ -24,8 +25,8 @@ export function ContextMenuListItem({
       disabled={isDisabled}
       aria-current={ariaCurrent}
       className={cn(
-        "text-sm px-4 h-10 w-full text-start hover:bg-white/10 cursor-pointer",
-        "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent text-nowrap",
+        dropdownMenuRowForegroundClassName,
+        "text-nowrap",
         className,
       )}
     >
