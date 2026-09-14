@@ -1,5 +1,6 @@
 """Explicit budget takeover and replay of a committed adoption operation."""
 
+import math
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -34,6 +35,17 @@ from storage.user import User
 
 class BudgetOperationNotFound(LookupError):
     """The operation does not belong to the requested organization."""
+
+
+def _native_cap_matches(actual: float | None, expected: float | None) -> bool:
+    if actual is None or expected is None:
+        return actual is expected
+    if not math.isfinite(actual) or not math.isfinite(expected):
+        return False
+    if actual == 0 or expected == 0:
+        return actual == expected
+    # Native JSON round trips can move a float by a few binary steps.
+    return abs(actual - expected) <= 4 * max(math.ulp(actual), math.ulp(expected))
 
 
 class BudgetAdoptionService:
@@ -379,9 +391,12 @@ class BudgetAdoptionService:
     ) -> None:
         original = plan['preserved_policy']
         current = observation['control_policy']
-        if current['team'].get('max_budget') not in (
-            original['team'].get('max_budget'),
-            plan['expected_team_cap'],
+        if not any(
+            _native_cap_matches(current['team'].get('max_budget'), target)
+            for target in (
+                original['team'].get('max_budget'),
+                plan['expected_team_cap'],
+            )
         ):
             raise BudgetWriteDenied(
                 'Team budget was changed outside the pending operation'
@@ -421,9 +436,9 @@ class BudgetAdoptionService:
             before = original['members'].get(user_id, {})
             after = current['members'].get(user_id, {})
             initial_cap = before.get('max_budget')
-            if after.get('max_budget') not in (
-                initial_cap,
-                plan['expected_member_caps'][user_id],
+            if not any(
+                _native_cap_matches(after.get('max_budget'), target)
+                for target in (initial_cap, plan['expected_member_caps'][user_id])
             ):
                 raise BudgetWriteDenied(
                     'Member budget was changed outside the pending operation'
@@ -446,7 +461,9 @@ class BudgetAdoptionService:
     def _verify_targets(
         self, plan: dict[str, Any], observation: dict[str, Any]
     ) -> None:
-        if observation.get('team_max_budget') != plan['expected_team_cap']:
+        if not _native_cap_matches(
+            observation.get('team_max_budget'), plan['expected_team_cap']
+        ):
             raise BudgetWriteDenied(
                 'Team cap readback did not match the committed target'
             )
@@ -469,9 +486,8 @@ class BudgetAdoptionService:
             if target is None:
                 matches = member['uses_shared_budget'] is True
             else:
-                matches = (
-                    member['uses_shared_budget'] is False
-                    and member['max_budget'] == target
+                matches = member['uses_shared_budget'] is False and _native_cap_matches(
+                    member['max_budget'], target
                 )
             if not matches:
                 raise BudgetWriteDenied(

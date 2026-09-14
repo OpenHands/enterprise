@@ -1,6 +1,7 @@
 """Adoption state transitions with PostgreSQL and a fault-injectable proxy."""
 
 import asyncio
+import math
 from copy import deepcopy
 from unittest.mock import patch
 from uuid import UUID, uuid4
@@ -177,6 +178,68 @@ async def test_adoption_commits_exact_current_and_future_policy(
         assert baseline.baseline_spend == 12
     assert proxy.state['team_max_budget'] == 140
     assert proxy.state['members'][user_id]['max_budget'] == 22
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('lose_response', [False, True])
+async def test_native_float_roundtrip_finishes_the_original_adoption(
+    adoption, async_session_maker, lose_response
+):
+    org_id, user_id, service, request, proxy = adoption
+    proxy.state['team_spend'] = 1.0705097
+    request.current_team_allowance = 0.000001
+    original_write = proxy.write
+
+    async def rounded_write(org_id, operation_id, path, body):
+        nonlocal lose_response
+        await original_write(org_id, operation_id, path, body)
+        if path == '/team/update' and 'max_budget' in body:
+            proxy.state['team_max_budget'] = 1.0705107
+            proxy.state['control_policy']['team']['max_budget'] = 1.0705107
+            if lose_response:
+                lose_response = False
+                raise RuntimeError('response lost after applying the rounded target')
+        elif path == '/team/member_update':
+            value = math.nextafter(body['max_budget_in_team'], math.inf)
+            proxy.state['members'][user_id]['max_budget'] = value
+            proxy.state['control_policy']['members'][user_id]['max_budget'] = value
+
+    with patch(
+        'storage.lite_llm_manager.LiteLlmManager.apply_budget_write', rounded_write
+    ):
+        result = await service.confirm(org_id, 'admin', request)
+        if result['status'] == 'pending':
+            recovered = await service.retry(org_id, UUID(result['operation_id']))
+            assert recovered['operation_id'] == result['operation_id']
+            result = recovered
+    assert result['status'] == 'applied', result
+    async with async_session_maker() as session:
+        operations = (await session.scalars(select(OrgBudgetOperation))).all()
+        assert len(operations) == 1
+        assert operations[0].plan['team_baseline'] == 1.0705097
+        assert operations[0].plan['current_allowances']['team'] == 0.000001
+
+
+@pytest.mark.asyncio
+async def test_native_float_tolerance_does_not_accept_a_nonzero_zero_target(adoption):
+    org_id, _, service, request, proxy = adoption
+    proxy.state['team_spend'] = 0
+    request.current_team_allowance = 0
+    original_write = proxy.write
+
+    async def incorrect_zero(org_id, operation_id, path, body):
+        await original_write(org_id, operation_id, path, body)
+        if path == '/team/update' and body.get('max_budget') == 0:
+            value = math.nextafter(0, math.inf)
+            proxy.state['team_max_budget'] = value
+            proxy.state['control_policy']['team']['max_budget'] = value
+
+    with patch(
+        'storage.lite_llm_manager.LiteLlmManager.apply_budget_write', incorrect_zero
+    ):
+        result = await service.confirm(org_id, 'admin', request)
+    assert result['status'] == 'pending'
+    assert 'Team cap readback' in result['error']
 
 
 @pytest.mark.asyncio
