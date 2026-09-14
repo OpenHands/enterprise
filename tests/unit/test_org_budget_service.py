@@ -1949,9 +1949,6 @@ async def test_send_alerts_emails_and_slack(async_session_maker, budget_org):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='reproduces obs:concurrent_roll_reanchored_cycle — fails on current code'
-)
 async def test_concurrent_maintenance_runs_roll_the_cycle_only_once(
     async_session_maker, budget_org
 ):
@@ -2177,9 +2174,6 @@ async def test_override_write_reports_failure_when_litellm_is_unreachable(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='pins cycle_advances_by_one_reset_period — fails on current code'
-)
 async def test_maintenance_advances_the_cycle_by_one_reset_period(
     async_session_maker, budget_org
 ):
