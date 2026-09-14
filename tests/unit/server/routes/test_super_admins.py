@@ -207,10 +207,19 @@ async def test_revoke_unknown_user_404(mock_app, grant_manage_super_admins):
 
 @pytest.mark.asyncio
 async def test_list_super_admins(mock_app, grant_manage_super_admins):
+    """Flag off (default): superadmin can list -- unchanged behavior."""
     a, b = str(uuid.uuid4()), str(uuid.uuid4())
-    with patch(
-        'server.routes.super_admins.UserStore.list_super_admins',
-        AsyncMock(return_value=[_fake_user(a, 'a@x.com'), _fake_user(b, 'b@x.com')]),
+    with (
+        patch(
+            'server.routes.super_admins.USER_PROVISIONING_ENABLED',
+            False,
+        ),
+        patch(
+            'server.routes.super_admins.UserStore.list_super_admins',
+            AsyncMock(
+                return_value=[_fake_user(a, 'a@x.com'), _fake_user(b, 'b@x.com')]
+            ),
+        ),
     ):
         async with _client(mock_app) as client:
             resp = await client.get('/api/admin/super-admins')
@@ -222,14 +231,60 @@ async def test_list_super_admins(mock_app, grant_manage_super_admins):
 
 @pytest.mark.asyncio
 async def test_manage_super_admins_forbidden_without_permission(mock_app):
-    """Without a super role, the conftest default denies access (403)."""
+    """Flag off (default): without a super role, access is denied (403)."""
     # No ``grant_manage_super_admins`` fixture here: org-role lookup must also
     # resolve to None so the permission check falls through to a denial.
-    with patch(
-        'server.auth.authorization.get_user_org_role',
-        AsyncMock(return_value=None),
+    with (
+        patch('server.routes.super_admins.USER_PROVISIONING_ENABLED', False),
+        patch(
+            'server.auth.authorization.get_user_org_role',
+            AsyncMock(return_value=None),
+        ),
     ):
         async with _client(mock_app) as client:
             resp = await client.get('/api/admin/super-admins')
 
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_list_super_admins_open_to_any_user_when_provisioning_enabled(
+    mock_app,
+):
+    """Flag on (OHE-3196): any authenticated user can list super-admins.
+
+    No super role is granted and the org-role lookup is left at the
+    conftest default -- the flag-on path bypasses the permission check
+    entirely and only requires a logged-in user.
+    """
+    a = str(uuid.uuid4())
+    with (
+        patch('server.routes.super_admins.USER_PROVISIONING_ENABLED', True),
+        patch(
+            'server.routes.super_admins.UserStore.list_super_admins',
+            AsyncMock(return_value=[_fake_user(a, 'admin@example.com')]),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/super-admins')
+
+    assert resp.status_code == 200
+    assert resp.json()['super_admins'] == [{'user_id': a, 'email': 'admin@example.com'}]
+
+
+@pytest.mark.asyncio
+async def test_list_super_admins_requires_auth_when_provisioning_enabled(
+    monkeypatch, mock_app
+):
+    """Flag on: an unauthenticated user gets 401, not the list."""
+    monkeypatch.setattr('server.routes.super_admins.USER_PROVISIONING_ENABLED', True)
+    # Override the ``get_user_id`` dependency to simulate no session.
+    mock_app.dependency_overrides[get_user_id] = lambda: None
+    with patch(
+        'server.routes.super_admins.UserStore.list_super_admins',
+        AsyncMock(return_value=[]),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/super-admins')
+
+    assert resp.status_code == 401
