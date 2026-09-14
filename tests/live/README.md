@@ -30,6 +30,11 @@ The default loopback port is 41400; override `BUDGET_TEST_LITELLM_PORT` if occup
 Restart tests verify the compose labels and exact loopback binding before touching
 the proxy. The database stays running across proxy restarts.
 
+The release candidate is unmodified LiteLLM 1.100.1 with
+`general_settings.user_api_key_cache_ttl: 0` (included in the test config).
+Zero cache lifetime makes each request read current policy. The separate
+two-process suite requires enforcement without Redis invalidation subscribers.
+
 To compare a dependency candidate without replacing the baseline database, use
 the separate `budget-control-local-candidate` project and another loopback port:
 

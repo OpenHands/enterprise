@@ -50,8 +50,8 @@ async def proxies():
         assert subscription_check.exit_code == 0
         assert subscription_check.output.splitlines() == [
             b'litellm_proxy.auth_cache_invalidation',
-            b'2',
-        ], 'Both proxy cache-invalidation subscribers must be ready before testing'
+            b'0',
+        ], 'Cache-free policy checks must work without Redis invalidation subscribers'
     async with (
         httpx.AsyncClient(
             base_url='http://127.0.0.1:41500',
@@ -190,7 +190,7 @@ async def test_warm_peer_observes_admission_change_with_same_key(proxies, restri
             assert reopened.status_code == expected_status, (
                 f'{reopened.text}; subsequent={recovery}'
             )
-        # Cache expiry must not masquerade as propagated invalidation.
+        # Do not allow the old 60-second cache expiry to pass the test.
         assert monotonic() - warmed_at < 4
     finally:
         if created_team:
