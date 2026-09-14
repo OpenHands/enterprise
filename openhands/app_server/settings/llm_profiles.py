@@ -244,7 +244,7 @@ class LLMProfiles(BaseModel):
     def summaries(
         self, *, managed_proxy_url: str | None = None
     ) -> list[dict[str, Any]]:
-        """Return a ``{name, model, base_url, api_key_set}`` dict per profile.
+        """Return a secret-safe summary dict per profile.
 
         ``api_key_set`` mirrors the ``llm_api_key_set`` convention the main
         settings endpoint already uses, so the frontend can render
@@ -266,6 +266,7 @@ class LLMProfiles(BaseModel):
                     else llm.base_url
                 ),
                 'api_key_set': has_real_api_key(llm.api_key),
+                'provider_connection_id': getattr(llm, 'provider_connection_id', None),
             }
             for name, llm in self.profiles.items()
         ]

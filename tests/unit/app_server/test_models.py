@@ -22,23 +22,33 @@ from openhands.app_server.event_callback.event_callback_result_models import (
 from openhands.sdk import Event
 
 
+class MyCallbackProcessor(EventCallbackProcessor):
+    """Test processor subclass.
+
+    Defined at module level (not inside a test) because the discriminated
+    union machinery rejects local classes: once defined, a subclass is
+    reachable via ``EventCallbackProcessor.__subclasses__()`` and the SDK's
+    subclass cache holds a strong reference to it, so a test-local class
+    leaks into OpenAPI schema generation in other tests.
+    """
+
+    async def __call__(
+        self,
+        conversation_id: UUID,
+        callback: EventCallback,
+        event: Event,
+    ) -> EventCallbackResult | None:
+        return EventCallbackResult(
+            status=EventCallbackResultStatus.SUCCESS,
+            event_callback_id=callback.id,
+            event_id=event.id,
+            conversation_id=conversation_id,
+            detail='Live long and prosper!',
+        )
+
+
 @pytest.mark.asyncio
 async def test_app_conversation_start_request_polymorphism():
-    class MyCallbackProcessor(EventCallbackProcessor):
-        async def __call__(
-            self,
-            conversation_id: UUID,
-            callback: EventCallback,
-            event: Event,
-        ) -> EventCallbackResult | None:
-            return EventCallbackResult(
-                status=EventCallbackResultStatus.SUCCESS,
-                event_callback_id=callback.id,
-                event_id=event.id,
-                conversation_id=conversation_id,
-                detail='Live long and prosper!',
-            )
-
     req = AppConversationStartRequest(processors=[MyCallbackProcessor()])
     assert len(req.processors) == 1
     processor = req.processors[0]

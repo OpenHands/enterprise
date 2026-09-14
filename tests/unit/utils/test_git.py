@@ -1,6 +1,9 @@
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from openhands.app_server.utils.git import (
+    configure_git_user_settings,
     ensure_valid_git_branch_name,
     is_valid_git_branch_name,
 )
@@ -29,3 +32,22 @@ def test_is_valid_git_branch_name_accepts_common_hosted_git_branch_names():
 def test_ensure_valid_git_branch_name_rejects_invalid_git_syntax(branch_name):
     with pytest.raises(ValueError, match='Common GitHub/GitLab/Bitbucket branch names'):
         ensure_valid_git_branch_name(branch_name)
+
+
+@pytest.mark.asyncio
+async def test_configure_git_user_settings_shell_quotes_values():
+    workspace = MagicMock(working_dir='/workspace/project')
+    workspace.execute_command = AsyncMock(
+        return_value=MagicMock(exit_code=0, stderr='')
+    )
+
+    await configure_git_user_settings(
+        workspace,
+        'Test "$(touch /tmp/bad)"',
+        'test@example.com',
+    )
+
+    workspace.execute_command.assert_any_await(
+        'git config --global user.name \'Test "$(touch /tmp/bad)"\'',
+        '/workspace/project',
+    )

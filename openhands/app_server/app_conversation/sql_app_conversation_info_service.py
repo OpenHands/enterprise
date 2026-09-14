@@ -752,6 +752,38 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         stored.last_updated_at = utc_now()
         await self.db_session.commit()
 
+    async def update_title(
+        self,
+        conversation_id: UUID,
+        title: str,
+    ) -> None:
+        """Update only the title of a conversation.
+
+        Loads the row and changes the single attribute so SQLAlchemy emits a
+        column-specific UPDATE; a full-row ``merge`` would overwrite metrics
+        and other fields updated concurrently.
+
+        Args:
+            conversation_id: The ID of the conversation to update
+            title: The new title
+        """
+        query = await self._secure_select()
+        query = query.where(
+            StoredConversationMetadata.conversation_id == str(conversation_id)
+        )
+        result = await self.db_session.execute(query)
+        stored = result.scalar_one_or_none()
+
+        if not stored:
+            logger.debug(
+                'Conversation %s not found or not accessible, skipping title update',
+                conversation_id,
+            )
+            return
+
+        stored.title = title
+        await self.db_session.commit()
+
     async def _secure_select(self):
         query = select(StoredConversationMetadata).where(
             StoredConversationMetadata.conversation_version == 'V1'

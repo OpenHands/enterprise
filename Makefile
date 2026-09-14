@@ -48,7 +48,7 @@ check-dependencies:
 ifeq ($(INSTALL_DOCKER),)
 	@$(MAKE) -s check-docker
 endif
-	@$(MAKE) -s check-poetry
+	@$(MAKE) -s check-uv
 	@$(MAKE) -s check-tmux
 	@echo "$(GREEN)Dependencies checked successfully.$(RESET)"
 
@@ -124,56 +124,33 @@ check-tmux:
 		echo "$(YELLOW)╚════════════════════════════════════════════════════════════════════════════╝$(RESET)"; \
 	fi
 
-check-poetry:
-	@echo "$(YELLOW)Checking Poetry installation...$(RESET)"
-	@if [ -z "$(PYTHON)" ]; then \
-		echo "$(RED)A compatible Python interpreter (>= $(PYTHON_MIN_VERSION), < $(PYTHON_MAX_VERSION)) is required. Please install Python 3.12 or 3.13 to continue.$(RESET)"; \
-		exit 1; \
-	elif command -v poetry > /dev/null; then \
-		POETRY_VERSION=$(shell poetry --version 2>&1 | sed -E 's/Poetry \(version ([0-9]+\.[0-9]+\.[0-9]+)\)/\1/'); \
-		IFS='.' read -r -a POETRY_VERSION_ARRAY <<< "$$POETRY_VERSION"; \
-		if [ $${POETRY_VERSION_ARRAY[0]} -gt 1 ] || ([ $${POETRY_VERSION_ARRAY[0]} -eq 1 ] && [ $${POETRY_VERSION_ARRAY[1]} -ge 8 ]); then \
-			echo "$(BLUE)$(shell poetry --version) is already installed.$(RESET)"; \
-		else \
-			echo "$(RED)Poetry 1.8 or later is required. You can install poetry by running the following command, then adding Poetry to your PATH:"; \
-			echo "$(RED) curl -sSL https://install.python-poetry.org | $(PYTHON) -$(RESET)"; \
-			echo "$(RED)More detail here: https://python-poetry.org/docs/#installing-with-the-official-installer$(RESET)"; \
-			exit 1; \
-		fi; \
+check-uv:
+	@echo "$(YELLOW)Checking uv installation...$(RESET)"
+	@if command -v uv > /dev/null; then \
+		echo "$(BLUE)$$(uv --version) is already installed.$(RESET)"; \
 	else \
-		echo "$(RED)Poetry is not installed. You can install poetry by running the following command, then adding Poetry to your PATH:"; \
-		echo "$(RED) curl -sSL https://install.python-poetry.org | $(PYTHON) -$(RESET)"; \
-		echo "$(RED)More detail here: https://python-poetry.org/docs/#installing-with-the-official-installer$(RESET)"; \
+		echo "$(RED)uv is not installed. You can install uv by running one of the following commands:"; \
+		echo "$(RED) curl -LsSf https://astral.sh/uv/install.sh | sh$(RESET)"; \
+		echo "$(RED) brew install uv$(RESET)"; \
+		echo "$(RED)More detail here: https://docs.astral.sh/uv/getting-started/installation/$(RESET)"; \
 		exit 1; \
 	fi
 
-install-python-dependencies: check-python
+install-python-dependencies: check-python check-uv
 	@echo "$(GREEN)Installing Python dependencies...$(RESET)"
 	@if [ -z "${TZ}" ]; then \
 		echo "Defaulting TZ (timezone) to UTC"; \
 		export TZ="UTC"; \
 	fi
-	poetry env use $(PYTHON)
-	@if [ "$(shell uname)" = "Darwin" ]; then \
-		echo "$(BLUE)Installing chroma-hnswlib...$(RESET)"; \
-		export HNSWLIB_NO_NATIVE=1; \
-		poetry run pip install chroma-hnswlib; \
-	fi
-	@if [ -n "${POETRY_GROUP}" ]; then \
-		echo "Installing only POETRY_GROUP=${POETRY_GROUP}"; \
-		poetry install --only $${POETRY_GROUP}; \
-	else \
-		poetry install --with dev,test,runtime; \
-	fi
+	uv sync --python $(PYTHON) --all-groups
 	@if [ "${INSTALL_PLAYWRIGHT}" != "false" ] && [ "${INSTALL_PLAYWRIGHT}" != "0" ]; then \
 		if [ -f "/etc/manjaro-release" ]; then \
 			echo "$(BLUE)Detected Manjaro Linux. Installing Playwright dependencies...$(RESET)"; \
-			poetry run pip install playwright; \
-			poetry run playwright install chromium; \
+			uv run playwright install chromium; \
 		else \
 			if [ ! -f cache/playwright_chromium_is_installed.txt ]; then \
 				echo "Running playwright install --with-deps chromium..."; \
-				poetry run playwright install --with-deps chromium; \
+				uv run playwright install --with-deps chromium; \
 				mkdir -p cache; \
 				touch cache/playwright_chromium_is_installed.txt; \
 			else \
@@ -193,15 +170,15 @@ install-frontend-dependencies: check-npm check-nodejs
 	@cd frontend && npm install
 	@echo "$(GREEN)Frontend dependencies installed successfully.$(RESET)"
 
-install-pre-commit-hooks: check-python check-poetry install-python-dependencies
+install-pre-commit-hooks: check-python check-uv install-python-dependencies
 	@echo "$(YELLOW)Installing pre-commit hooks...$(RESET)"
 	@git config --unset-all core.hooksPath || true
-	@poetry run pre-commit install --config $(PRE_COMMIT_CONFIG_PATH)
+	@uv run pre-commit install --config $(PRE_COMMIT_CONFIG_PATH)
 	@echo "$(GREEN)Pre-commit hooks installed successfully.$(RESET)"
 
 lint-backend: install-pre-commit-hooks
 	@echo "$(YELLOW)Running linters...$(RESET)"
-	@poetry run pre-commit run --all-files --show-diff-on-failure --config $(PRE_COMMIT_CONFIG_PATH)
+	@uv run pre-commit run --all-files --show-diff-on-failure --config $(PRE_COMMIT_CONFIG_PATH)
 
 lint-frontend: install-frontend-dependencies
 	@echo "$(YELLOW)Running linters for frontend...$(RESET)"
@@ -259,7 +236,14 @@ build-frontend:
 # Start backend
 start-backend:
 	@echo "$(YELLOW)Starting backend...$(RESET)"
-	@poetry run uvicorn openhands.server.listen:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) --reload --reload-exclude "./workspace"
+	@uv run uvicorn openhands.server.listen:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) --reload --reload-exclude "./workspace"
+
+# Start the SaaS/enterprise backend (saas_server.py), which layers the enterprise
+# routes on top of the app server. Needs the SaaS env (Postgres, Keycloak, ...);
+# see dev_config/local_saas/README.md.
+start-saas-backend:
+	@echo "$(YELLOW)Starting SaaS backend...$(RESET)"
+	@uv run uvicorn saas_server:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) --reload --reload-exclude "./workspace"
 
 # Start frontend
 start-frontend:
@@ -281,7 +265,7 @@ _run_setup:
 	fi
 	@mkdir -p logs
 	@echo "$(YELLOW)Starting backend server...$(RESET)"
-	@poetry run uvicorn openhands.server.listen:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) &
+	@uv run uvicorn openhands.server.listen:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) &
 	@echo "$(YELLOW)Waiting for the backend to start...$(RESET)"
 	@until nc -z localhost $(BACKEND_PORT); do sleep 0.1; done
 	@echo "$(GREEN)Backend started successfully.$(RESET)"
@@ -292,6 +276,21 @@ run:
 	@$(MAKE) -s _run_setup
 	@$(MAKE) -s start-frontend
 	@echo "$(GREEN)Application started successfully.$(RESET)"
+
+# Run the SaaS app (SaaS backend + frontend dev server)
+run-saas:
+	@echo "$(YELLOW)Running the SaaS app...$(RESET)"
+	@$(MAKE) -s _run_saas_setup
+	@$(MAKE) -s start-frontend
+	@echo "$(GREEN)Application started successfully.$(RESET)"
+
+_run_saas_setup:
+	@mkdir -p logs
+	@echo "$(YELLOW)Starting SaaS backend server...$(RESET)"
+	@uv run uvicorn saas_server:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) &
+	@echo "$(YELLOW)Waiting for the backend to start...$(RESET)"
+	@until nc -z localhost $(BACKEND_PORT); do sleep 0.1; done
+	@echo "$(GREEN)Backend started successfully.$(RESET)"
 
 # Run the app (in docker)
 docker-run: WORKSPACE_BASE ?= $(PWD)/workspace
@@ -371,6 +370,8 @@ help:
 	@echo "                        LLM Model name, and workspace directory."
 	@echo "  $(GREEN)start-backend$(RESET)       - Start the backend server for the OpenHands project."
 	@echo "  $(GREEN)start-frontend$(RESET)      - Start the frontend server for the OpenHands project."
+	@echo "  $(GREEN)start-saas-backend$(RESET)  - Start the SaaS/enterprise backend (saas_server.py)."
+	@echo "  $(GREEN)run-saas$(RESET)            - Run the SaaS app, starting the SaaS backend and the frontend server."
 	@echo "  $(GREEN)run$(RESET)                 - Run the OpenHands application, starting both backend and frontend servers."
 	@echo "                        Backend Log file will be stored in the 'logs' directory."
 	@echo "  $(GREEN)docker-dev$(RESET)          - Build and run the OpenHands application in Docker."
@@ -378,5 +379,5 @@ help:
 	@echo "  $(GREEN)help$(RESET)                - Display this help message, providing information on available targets."
 
 # Phony targets
-.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-poetry install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend start-backend start-frontend _run_setup run run-wsl setup-config setup-config-prompts setup-config-basic openhands-cloud-run docker-dev docker-run clean help
+.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend start-backend start-saas-backend start-frontend _run_setup _run_saas_setup run run-saas run-wsl setup-config setup-config-prompts setup-config-basic openhands-cloud-run docker-dev docker-run clean help
 .PHONY: kind

@@ -37,6 +37,20 @@ from openhands.analytics.analytics_context import AnalyticsContext
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
 
+# Maps the enterprise ConversationTrigger enum values to the unified
+# ``conversation_source`` property that both the SDK agent-server telemetry
+# and the enterprise analytics emit to PostHog.  Keeping the mapping in one
+# place ensures both pipelines use the same value space.
+_TRIGGER_TO_SOURCE: dict[str, str] = {
+    'gui': 'canvas',
+    'automation': 'automation',
+}
+
+
+def _trigger_to_conversation_source(trigger: str | None) -> str:
+    """Map an enterprise trigger value to the unified conversation_source."""
+    return _TRIGGER_TO_SOURCE.get(trigger or '', 'other')
+
 
 class AnalyticsService:
     """Server-side analytics service backed by PostHog.
@@ -216,6 +230,7 @@ class AnalyticsService:
             properties={
                 'conversation_id': conversation_id,
                 'trigger': trigger,
+                'conversation_source': _trigger_to_conversation_source(trigger),
                 'llm_model': llm_model,
                 'agent_type': agent_type,
                 'has_repository': has_repository,

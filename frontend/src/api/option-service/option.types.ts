@@ -46,6 +46,11 @@ export interface WebClientFeatureFlags {
   enable_onboarding: boolean;
   enable_automations?: boolean;
   enable_agent_canvas_banner?: boolean;
+  /** When true, LLM API key export (BYOR) is enabled for every org regardless
+   *  of billing/credits. Mirrors the ENABLE_BYOR_EXPORT env var so the API keys
+   *  page can distinguish "export disabled on this deployment" from "buy credits
+   *  to enable" when billing is off. */
+  enable_byor_export?: boolean;
 }
 
 export interface ACPModelOption {

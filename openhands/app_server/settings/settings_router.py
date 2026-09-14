@@ -530,6 +530,7 @@ class ProfileInfo(BaseModel):
     model: str | None = None
     base_url: str | None = None
     api_key_set: bool = False
+    provider_connection_id: str | None = None
 
 
 class ProfileListResponse(BaseModel):

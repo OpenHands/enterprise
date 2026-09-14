@@ -33,7 +33,7 @@ export type BudgetUserRow = {
   budgetLabel: string;
   budgetNote: string;
   hasLimit: boolean;
-  usage: number;
+  usage: number | null;
   maxUsage: number;
   status: string;
   statusColor: "green" | "yellow" | "red";
@@ -42,10 +42,25 @@ export type BudgetUserRow = {
 interface OrganizationBudgetTabProps {
   orgBudgetEnabled: boolean;
   onToggleOrgBudget: (value: boolean) => void;
-  currentSpend: number;
+  currentSpend: number | null;
   monthlyLimitValue: number | null;
   cycleLabel: string;
-  percentage: number;
+  percentage: number | null;
+  spendStatus: "live" | "stale" | "unavailable";
+  spendObservedAt: string | null;
+  syncStatus: string | null;
+  syncError: string | null;
+  reconciliationState:
+    | "inactive"
+    | "pending"
+    | "healthy"
+    | "degraded"
+    | "failed";
+  reconciliationError: string | null;
+  desiredTeamMaxBudget: number | null;
+  appliedTeamMaxBudget: number | null;
+  unmappedSpend: number | null;
+  unmappedMemberCount: number | null;
   monthlyLimit: string;
   onMonthlyLimitChange: (value: string) => void;
   billingCycle: string;
@@ -72,6 +87,16 @@ export function OrganizationBudgetTab({
   monthlyLimitValue,
   cycleLabel,
   percentage,
+  spendStatus,
+  spendObservedAt,
+  syncStatus,
+  syncError,
+  reconciliationState,
+  reconciliationError,
+  desiredTeamMaxBudget,
+  appliedTeamMaxBudget,
+  unmappedSpend,
+  unmappedMemberCount,
   monthlyLimit,
   onMonthlyLimitChange,
   billingCycle,
@@ -90,6 +115,27 @@ export function OrganizationBudgetTab({
   isSaving,
   isMonthlyLimitValid,
 }: OrganizationBudgetTabProps) {
+  const observedAtLabel = spendObservedAt
+    ? new Date(spendObservedAt).toLocaleString()
+    : null;
+  const reconciliationStyle = {
+    healthy: "border-green-500/30 bg-green-500/10 text-green-300",
+    inactive: "border-[#262626] bg-[#0B0F17] text-[#8C8C8C]",
+    pending: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+    degraded: "border-red-500/30 bg-red-500/10 text-red-300",
+    failed: "border-red-500/30 bg-red-500/10 text-red-300",
+  }[reconciliationState];
+  const reconciliationMessage = {
+    inactive: "Inactive — no organization budget is being enforced.",
+    pending:
+      "Pending — the desired policy has not yet been verified in LiteLLM.",
+    healthy: "Healthy — LiteLLM has verified the desired budget policy.",
+    degraded:
+      "Degraded — the desired policy is saved, but LiteLLM is enforcing different or incomplete state.",
+    failed:
+      "Failed — the applied LiteLLM policy could not be read or verified.",
+  }[reconciliationState];
+
   return (
     <div className="bg-[#151D2A] border border-[#262626] rounded-lg p-6">
       <div className="flex items-start justify-between mb-6">
@@ -113,13 +159,84 @@ export function OrganizationBudgetTab({
       </div>
 
       <div className="mb-6">
+        <div
+          className={`mb-4 rounded-lg border px-4 py-3 text-sm ${
+            spendStatus === "live"
+              ? "border-[#262626] bg-[#0B0F17] text-[#8C8C8C]"
+              : "border-amber-500/30 bg-amber-500/10 text-amber-300"
+          }`}
+        >
+          {spendStatus === "unavailable" ? (
+            <span>
+              Spend data is temporarily unavailable. LiteLLM remains the
+              enforcement point, but this page cannot confirm current usage.
+            </span>
+          ) : (
+            <span>
+              {spendStatus === "stale"
+                ? "Showing the last successful LiteLLM snapshot"
+                : "Spend reported by LiteLLM"}
+              {observedAtLabel ? ` from ${observedAtLabel}.` : "."} LiteLLM
+              performs final request admission, so the latest request may not
+              appear here yet.
+            </span>
+          )}
+        </div>
+        <div
+          role={
+            reconciliationState === "healthy" ||
+            reconciliationState === "inactive"
+              ? "status"
+              : "alert"
+          }
+          className={`mb-4 rounded-lg border px-4 py-3 text-sm ${reconciliationStyle}`}
+        >
+          <span>{reconciliationMessage}</span>
+          {desiredTeamMaxBudget !== null && (
+            <span>{` Desired team cap: $${desiredTeamMaxBudget.toLocaleString()}.`}</span>
+          )}
+          {appliedTeamMaxBudget !== null && (
+            <span>{` Applied team cap: $${appliedTeamMaxBudget.toLocaleString()}.`}</span>
+          )}
+          {reconciliationError ? ` ${reconciliationError}` : ""}
+        </div>
+        {syncStatus === "error" && !reconciliationError && (
+          <div
+            role="alert"
+            className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"
+          >
+            Budget enforcement reconciliation needs attention. Existing caps are
+            preserved until a verified synchronization succeeds.
+            {syncError ? ` ${syncError}` : ""}
+          </div>
+        )}
+        <p className="mb-4 text-xs text-[#6B6B6B]">
+          Includes app, automation, and SDK requests routed through this
+          deployment&apos;s LiteLLM proxy. Requests sent directly to an external
+          provider are outside this budget.
+        </p>
+        {unmappedMemberCount !== null && unmappedMemberCount > 0 && (
+          <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+            {`${unmappedMemberCount} LiteLLM ${
+              unmappedMemberCount === 1 ? "identity is" : "identities are"
+            } not mapped to organization users. `}
+            {unmappedSpend === null
+              ? "Their cycle-level attribution will become available after the next verified reset."
+              : `$${unmappedSpend.toLocaleString("en-US", {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })} of this cycle's spend is attributed to them.`}
+          </div>
+        )}
         <div className="flex items-baseline justify-between mb-3">
           <div>
             <span className="text-3xl font-bold text-white">
-              {`$${currentSpend.toLocaleString("en-US", {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              })}`}
+              {currentSpend === null
+                ? "—"
+                : `$${currentSpend.toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}`}
             </span>
             <span className="text-[#8C8C8C] ml-2">
               {monthlyLimitValue
@@ -128,10 +245,16 @@ export function OrganizationBudgetTab({
             </span>
           </div>
           <span className="text-xl font-semibold text-yellow-400">
-            {monthlyLimitValue ? `${percentage.toFixed(1)}%` : "—"}
+            {monthlyLimitValue && percentage !== null
+              ? `${percentage.toFixed(1)}%`
+              : "—"}
           </span>
         </div>
-        <SpendMeter percentage={percentage} />
+        {percentage === null ? (
+          <div className="h-3 rounded-full bg-[#0B0F17]" />
+        ) : (
+          <SpendMeter percentage={percentage} />
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-4 mb-6">
@@ -464,6 +587,42 @@ interface UserOverridesTabProps {
   onPageChange: (page: number) => void;
 }
 
+function UserBudgetUsage({ user }: { user: BudgetUserRow }) {
+  if (user.usage === null) {
+    return <div className="text-sm text-[#8C8C8C]">Unavailable</div>;
+  }
+
+  if (user.hasLimit) {
+    return (
+      <div>
+        <UserProgressBar
+          value={user.usage}
+          max={user.maxUsage}
+          status={user.statusColor}
+        />
+        <div className="mt-1 text-xs text-[#6B6B6B]">
+          {`$${user.usage.toLocaleString("en-US", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })} of $${user.maxUsage.toLocaleString("en-US", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })}`}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-sm text-[#8C8C8C]">
+      {`$${user.usage.toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })} spent`}
+    </div>
+  );
+}
+
 export function UserOverridesTab({
   searchQuery,
   statusFilter,
@@ -625,31 +784,7 @@ export function UserOverridesTab({
                     )}
                   </td>
                   <td className="px-4 py-4 min-w-[180px]">
-                    {user.hasLimit ? (
-                      <div>
-                        <UserProgressBar
-                          value={user.usage}
-                          max={user.maxUsage}
-                          status={user.statusColor}
-                        />
-                        <div className="mt-1 text-xs text-[#6B6B6B]">
-                          {`$${user.usage.toLocaleString("en-US", {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          })} of $${user.maxUsage.toLocaleString("en-US", {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          })}`}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-sm text-[#8C8C8C]">
-                        {`$${user.usage.toLocaleString("en-US", {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })} spent`}
-                      </div>
-                    )}
+                    <UserBudgetUsage user={user} />
                   </td>
                   <td className="px-4 py-4">
                     <StatusPill status={user.status} />
