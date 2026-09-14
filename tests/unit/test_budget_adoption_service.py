@@ -26,6 +26,7 @@ class Proxy:
         self.state = {
             'team_spend': 40.0,
             'team_max_budget': 500.0,
+            'team_blocked': False,
             'team_reset_known': True,
             'team_budget_duration': None,
             'team_budget_reset_at': None,
@@ -74,8 +75,12 @@ class Proxy:
         await current_budget_control(org_id).authorize_write(operation_id, path, body)
         self.writes.append({'path': path, 'body': deepcopy(body)})
         if path == '/team/update':
-            self.state['team_max_budget'] = body['max_budget']
-            self.state['control_policy']['team']['max_budget'] = body['max_budget']
+            if 'max_budget' in body:
+                self.state['team_max_budget'] = body['max_budget']
+                self.state['control_policy']['team']['max_budget'] = body['max_budget']
+            if 'blocked' in body:
+                self.state['team_blocked'] = body['blocked']
+                self.state['control_policy']['team']['blocked'] = body['blocked']
         else:
             member = self.state['members'][body['user_id']]
             member['max_budget'] = body['max_budget_in_team']

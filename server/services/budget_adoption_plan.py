@@ -20,7 +20,7 @@ class BudgetAdoptionRequest(BaseModel):
 
     preview_fingerprint: str = Field(min_length=64, max_length=64)
     idempotency_key: str = Field(min_length=1, max_length=128)
-    current_team_allowance: PositiveAllowance
+    current_team_allowance: Allowance
     current_default_member_allowance: Allowance | None
     current_member_allowances: dict[str, Allowance | None] = Field(default_factory=dict)
     future_monthly_limit: PositiveAllowance
@@ -188,8 +188,15 @@ def build_adoption_plan(
             else _counter(baselines[user_id] + remaining, f'Member {user_id} target')
         )
         member_targets[user_id] = target
+    team_block = plan_team_block(
+        observation, exhausted=request.current_team_allowance == 0
+    )
     writes = budget_writes(
-        org_id, observation['team_max_budget'], team_target, member_targets
+        org_id,
+        observation['team_max_budget'],
+        team_target,
+        member_targets,
+        team_block=team_block,
     )
     return {
         'version': 1,
@@ -217,8 +224,33 @@ def build_adoption_plan(
         },
         'expected_team_cap': team_target,
         'expected_member_caps': member_targets,
+        'team_block': team_block,
         'preserved_policy': observation['control_policy'],
         'writes': writes,
+    }
+
+
+def plan_team_block(
+    observation: dict[str, Any],
+    *,
+    exhausted: bool,
+    previously_owned: bool = False,
+) -> dict[str, Any]:
+    initial = observation['control_policy']['team'].get('blocked')
+    if initial is not None and not isinstance(initial, bool):
+        raise BudgetAdoptionUnsupported('Team block state must be a boolean')
+    if previously_owned and initial is not True:
+        raise BudgetControlConflict('The OpenHands-owned team block was changed')
+    if exhausted and initial is None:
+        raise BudgetAdoptionUnsupported(
+            'A known team block state is required for zero remaining allowance'
+        )
+    # LiteLLM denies team spending only above the cap, not at equality. Record
+    # ownership so renewal can unblock only a block imposed by this controller.
+    return {
+        'initial': initial,
+        'target': True if exhausted else False if previously_owned else initial,
+        'budget_owned': exhausted and (initial is False or previously_owned),
     }
 
 
@@ -227,6 +259,8 @@ def budget_writes(
     old_team_cap: float | None,
     team_target: float | None,
     member_targets: dict[str, float | None],
+    *,
+    team_block: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     writes = []
     for user_id, target in sorted(member_targets.items()):
@@ -257,6 +291,16 @@ def budget_writes(
         writes.insert(0, team_write)
     else:
         writes.append(team_write)
+    if team_block is not None and team_block['initial'] is not team_block['target']:
+        block_write = {
+            'path': '/team/update',
+            'body': {'team_id': str(org_id), 'blocked': team_block['target']},
+        }
+        if team_block['target'] is True:
+            writes.insert(0, block_write)
+        else:
+            # Never reopen access until all the new caps are in place.
+            writes.append(block_write)
     return writes
 
 

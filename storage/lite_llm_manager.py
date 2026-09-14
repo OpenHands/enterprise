@@ -1007,6 +1007,18 @@ class LiteLlmManager:
         return response.json()
 
     @staticmethod
+    async def _rename_team(
+        client: httpx.AsyncClient, team_id: str, team_alias: str
+    ) -> None:
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            return
+        response = await client.post(
+            f'{LITE_LLM_API_URL}/team/update',
+            json={'team_id': team_id, 'team_alias': team_alias},
+        )
+        response.raise_for_status()
+
+    @staticmethod
     async def _update_team(
         client: httpx.AsyncClient,
         team_id: str,
@@ -2019,60 +2031,9 @@ class LiteLlmManager:
         )
 
     @staticmethod
-    async def _delete_key_by_alias(
-        client: httpx.AsyncClient,
-        key_alias: str,
-    ):
-        """Delete a key from LiteLLM by its alias.
-
-        This is a best-effort operation that logs but does not raise on failure.
-        """
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
-            logger.warning('LiteLLM API configuration not found')
-            return
-        response = await client.post(
-            f'{LITE_LLM_API_URL}/key/delete',
-            json={
-                'key_aliases': [key_alias],
-            },
-        )
-        if response.is_success:
-            logger.info(
-                'LiteLlmManager:_delete_key_by_alias:key_deleted',
-                extra={'key_alias': key_alias},
-            )
-        elif response.status_code != 404:
-            # Log non-404 errors but don't fail
-            logger.warning(
-                'error_deleting_key_by_alias',
-                extra={
-                    'key_alias': key_alias,
-                    'status_code': response.status_code,
-                    'text': response.text,
-                },
-            )
-
-    @staticmethod
-    async def _delete_key_by_alias_strict(
-        client: httpx.AsyncClient,
-        key_alias: str,
-    ) -> None:
-        """Delete a deterministic alias or fail without rotating the DB row."""
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
-            raise ValueError('LiteLLM API configuration not found')
-        response = await client.post(
-            f'{LITE_LLM_API_URL}/key/delete',
-            json={'key_aliases': [key_alias]},
-        )
-        if response.status_code == 404:
-            return
-        response.raise_for_status()
-
-    @staticmethod
     async def _delete_key(
         client: httpx.AsyncClient,
         key_id: str,
-        key_alias: str | None = None,
     ):
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
@@ -2360,6 +2321,7 @@ class LiteLlmManager:
         )
         financial_data = {
             'team_max_budget': team_max_budget,
+            'team_blocked': team_data.get('blocked'),
             'team_spend': team_spend,
             'members': members,
             'member_counters': member_counters,
@@ -2435,6 +2397,7 @@ class LiteLlmManager:
     # Public methods with injected client
     create_team = staticmethod(with_http_client(_create_team))
     get_team = staticmethod(with_http_client(_get_team))
+    rename_team = staticmethod(with_http_client(_rename_team))
     update_team = staticmethod(with_http_client(_update_team))
     user_exists = staticmethod(with_http_client(_user_exists))
     create_user = staticmethod(with_http_client(_create_user))
@@ -2455,10 +2418,6 @@ class LiteLlmManager:
     )
     delete_key = staticmethod(with_http_client(_delete_key))
     get_user_keys = staticmethod(with_http_client(_get_user_keys))
-    delete_key_by_alias = staticmethod(with_http_client(_delete_key_by_alias))
-    delete_key_by_alias_strict = staticmethod(
-        with_http_client(_delete_key_by_alias_strict)
-    )
     update_user_keys = staticmethod(with_http_client(_update_user_keys))
     get_team_members_financial_data = staticmethod(
         with_http_client(_get_team_members_financial_data)

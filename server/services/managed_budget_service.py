@@ -14,6 +14,7 @@ from server.services.budget_adoption_plan import (
     PositiveAllowance,
     budget_writes,
     next_budget_reset,
+    plan_team_block,
     validate_adoption_observation,
 )
 from server.services.budget_adoption_service import BudgetAdoptionService
@@ -35,7 +36,7 @@ class ManagedBudgetUpdate(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
     expected_generation: int = Field(ge=0)
     enabled: bool
-    current_cycle_team_allowance: PositiveAllowance
+    current_cycle_team_allowance: Allowance
     current_cycle_default_member_allowance: Allowance | None
     current_cycle_member_allowances: dict[str, Allowance | None] = Field(
         default_factory=dict
@@ -76,7 +77,7 @@ class ManagedBudgetService(BudgetAdoptionService):
                     )
                 observation = await self._observe(org_id)
                 self._check_managed_observation(previous, observation, members)
-                plan = self._plan(settings, observation, members)
+                plan = self._plan(settings, observation, members, previous)
                 plan['enabled'] = request.enabled
                 plan['current_allowances'] = {
                     'team': request.current_cycle_team_allowance,
@@ -140,7 +141,7 @@ class ManagedBudgetService(BudgetAdoptionService):
                     'cycle_rolled': False,
                 }
 
-            plan = self._plan(settings, observation, members, now=now)
+            plan = self._plan(settings, observation, members, previous, now=now)
             store = OrgBudgetStore(control.session)
             overrides = await store.get_overrides(org_id)
             future = {
@@ -286,6 +287,7 @@ class ManagedBudgetService(BudgetAdoptionService):
         settings: OrgBudgetSettings,
         observation: dict[str, Any],
         members: set[str],
+        previous: OrgBudgetOperation,
         *,
         now: datetime | None = None,
     ) -> dict[str, Any]:
@@ -309,6 +311,7 @@ class ManagedBudgetService(BudgetAdoptionService):
                 u: deepcopy(observation['member_counters'][u]) for u in members
             },
             'preserved_policy': deepcopy(observation['control_policy']),
+            'team_block': deepcopy(previous.plan.get('team_block', {})),
         }
 
     def _set_targets(
@@ -328,6 +331,15 @@ class ManagedBudgetService(BudgetAdoptionService):
             )
         plan['expected_team_cap'] = target
         plan['expected_member_caps'] = targets
+        plan['team_block'] = plan_team_block(
+            observation,
+            exhausted=plan['enabled'] and current['team'] == 0,
+            previously_owned=plan['team_block'].get('budget_owned', False),
+        )
         plan['writes'] = budget_writes(
-            org_id, observation['team_max_budget'], target, targets
+            org_id,
+            observation['team_max_budget'],
+            target,
+            targets,
+            team_block=plan['team_block'],
         )

@@ -544,10 +544,6 @@ class TestRefreshManagedLlmApiKey:
         """Patch only the external LiteLLM HTTP calls."""
         return (
             patch(
-                'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
-                new_callable=AsyncMock,
-            ),
-            patch(
                 'storage.lite_llm_manager.LiteLlmManager.generate_key',
                 new_callable=AsyncMock,
                 return_value=generated_key,
@@ -563,16 +559,16 @@ class TestRefreshManagedLlmApiKey:
     def _patched(cls, async_session_maker, *, generated_key='sk-new-managed-key'):
         """Enter session + LiteLLM patches together, yielding the LiteLLM mocks.
 
-        (mock_delete_alias, mock_generate, mock_delete_token)
+        (mock_generate, mock_delete_token)
         """
         with contextlib.ExitStack() as stack:
             for p in cls._session_patches(async_session_maker):
                 stack.enter_context(p)
-            mock_delete_alias, mock_generate, mock_delete_token = (
+            mock_generate, mock_delete_token = (
                 stack.enter_context(p)
                 for p in cls._litellm_patches(generated_key=generated_key)
             )
-            yield mock_delete_alias, mock_generate, mock_delete_token
+            yield mock_generate, mock_delete_token
 
     @classmethod
     @contextlib.contextmanager
@@ -586,7 +582,7 @@ class TestRefreshManagedLlmApiKey:
         with contextlib.ExitStack() as stack:
             for p in cls._session_patches(async_session_maker):
                 stack.enter_context(p)
-            mock_delete_alias, mock_generate, mock_delete_token = (
+            mock_generate, mock_delete_token = (
                 stack.enter_context(p)
                 for p in cls._litellm_patches(generated_key=generated_key)
             )
@@ -597,7 +593,7 @@ class TestRefreshManagedLlmApiKey:
                     return_value=SaasSettingsStore(user_id, effective_org_id=org_id),
                 )
             )
-            yield mock_delete_alias, mock_generate, mock_delete_token
+            yield mock_generate, mock_delete_token
 
     # --- pure classification (no DB) ---
 
@@ -660,7 +656,6 @@ class TestRefreshManagedLlmApiKey:
     ):
         user_id, org_id = await self._seed(async_session_maker)
         with self._patched_route(async_session_maker, user_id, org_id) as (
-            delete_alias,
             generate,
             delete_token,
         ):
@@ -671,7 +666,6 @@ class TestRefreshManagedLlmApiKey:
                 )
         assert error.value.status_code == 409
         assert error.value.detail == 'Existing key policy must be preserved'
-        delete_alias.assert_not_awaited()
         delete_token.assert_not_awaited()
         member = await self._member_key(async_session_maker, org_id, user_id)
         assert member.llm_api_key.get_secret_value() == 'sk-old-managed-key'
@@ -686,7 +680,6 @@ class TestRefreshManagedLlmApiKey:
         user_id, org_id = await self._seed(async_session_maker)
 
         with self._patched(async_session_maker) as (
-            mock_delete_alias,
             mock_generate,
             mock_delete_token,
         ):
@@ -699,7 +692,6 @@ class TestRefreshManagedLlmApiKey:
         assert rotation.new_key == 'sk-new-managed-key'
 
         expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
-        mock_delete_alias.assert_not_awaited()
         mock_generate.assert_awaited_once_with(
             user_id, str(org_id), expected_alias, {'type': 'openhands'}
         )
@@ -724,7 +716,6 @@ class TestRefreshManagedLlmApiKey:
         )
 
         with self._patched(async_session_maker) as (
-            mock_delete_alias,
             mock_generate,
             _mock_delete_token,
         ):
@@ -734,7 +725,6 @@ class TestRefreshManagedLlmApiKey:
         assert rotation.status == ManagedLlmKeyStatus.ROTATED
         assert rotation.openhands_type is False
         expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
-        mock_delete_alias.assert_not_awaited()
         mock_generate.assert_awaited_once_with(
             user_id, str(org_id), expected_alias, None
         )
@@ -753,7 +743,6 @@ class TestRefreshManagedLlmApiKey:
         )
 
         with self._patched(async_session_maker) as (
-            mock_delete_alias,
             mock_generate,
             mock_delete_token,
         ):
@@ -761,7 +750,6 @@ class TestRefreshManagedLlmApiKey:
             rotation = await store.rotate_managed_llm_key()
 
         assert rotation.status == ManagedLlmKeyStatus.NOT_MANAGED
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
         mock_delete_token.assert_not_called()
 
@@ -778,7 +766,6 @@ class TestRefreshManagedLlmApiKey:
         user_id, org_id = await self._seed(async_session_maker, member_custom=True)
 
         with self._patched(async_session_maker) as (
-            mock_delete_alias,
             mock_generate,
             _mock_delete_token,
         ):
@@ -786,7 +773,6 @@ class TestRefreshManagedLlmApiKey:
             rotation = await store.rotate_managed_llm_key()
 
         assert rotation.status == ManagedLlmKeyStatus.BYOK
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -799,7 +785,6 @@ class TestRefreshManagedLlmApiKey:
         user_id, org_id = await self._seed(async_session_maker, org_key='sk-org-byok')
 
         with self._patched(async_session_maker) as (
-            mock_delete_alias,
             mock_generate,
             _mock_delete_token,
         ):
@@ -809,7 +794,6 @@ class TestRefreshManagedLlmApiKey:
 
         assert rotation.status == ManagedLlmKeyStatus.BYOK
         assert current_key is None
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -833,7 +817,6 @@ class TestRefreshManagedLlmApiKey:
             sync_session.commit()
 
         with self._patched(async_session_maker) as (
-            mock_delete_alias,
             mock_generate,
             mock_delete_token,
         ):
@@ -843,7 +826,6 @@ class TestRefreshManagedLlmApiKey:
         assert rotation.status == ManagedLlmKeyStatus.MISSING_MEMBER
         assert rotation.old_key is None
         assert rotation.new_key is None
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
         mock_delete_token.assert_not_called()
 
@@ -859,7 +841,6 @@ class TestRefreshManagedLlmApiKey:
         user_id, org_id = await self._seed(async_session_maker)
 
         with self._patched_route(async_session_maker, user_id, org_id) as (
-            mock_delete_alias,
             mock_generate,
             mock_delete_token,
         ):
@@ -868,7 +849,6 @@ class TestRefreshManagedLlmApiKey:
             )
 
         assert result == ManagedLlmApiKeyRefreshResponse(refreshed=True)
-        mock_delete_alias.assert_not_awaited()
         mock_generate.assert_awaited_once()
         # The old token is deleted best-effort after persist.
         mock_delete_token.assert_awaited_once_with('sk-old-managed-key')
@@ -884,7 +864,6 @@ class TestRefreshManagedLlmApiKey:
         )
 
         with self._patched_route(async_session_maker, user_id, org_id) as (
-            mock_delete_alias,
             mock_generate,
             mock_delete_token,
         ):
@@ -895,7 +874,6 @@ class TestRefreshManagedLlmApiKey:
 
         assert exc_info.value.status_code == 400
         assert 'non-managed LLM API key' in exc_info.value.detail
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
         mock_delete_token.assert_not_called()
 
@@ -906,7 +884,6 @@ class TestRefreshManagedLlmApiKey:
         user_id, org_id = await self._seed(async_session_maker, member_custom=True)
 
         with self._patched_route(async_session_maker, user_id, org_id) as (
-            mock_delete_alias,
             mock_generate,
             _mock_delete_token,
         ):
@@ -917,7 +894,6 @@ class TestRefreshManagedLlmApiKey:
 
         assert exc_info.value.status_code == 400
         assert 'custom BYOK' in exc_info.value.detail
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -939,7 +915,6 @@ class TestRefreshManagedLlmApiKey:
             await session.commit()
 
         with self._patched_route(async_session_maker, user_id, other_org_id) as (
-            mock_delete_alias,
             mock_generate,
             mock_delete_token,
         ):
@@ -949,7 +924,6 @@ class TestRefreshManagedLlmApiKey:
                 )
 
         assert exc_info.value.status_code == 404
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
         mock_delete_token.assert_not_called()
 
@@ -961,7 +935,6 @@ class TestRefreshManagedLlmApiKey:
 
         with (
             self._patched_route(async_session_maker, user_id, org_id) as (
-                _mock_delete_alias,
                 _mock_generate,
                 _mock_delete_token_ok,
             ),
@@ -999,19 +972,16 @@ class TestRefreshManagedLlmApiKey:
 
 
 class TestDeleteByorKeyFromLitellm:
-    """Test the delete_byor_key_from_litellm function with alias cleanup."""
+    """BYOR deletion targets only the stored credential."""
 
     @pytest.mark.asyncio
     @patch('storage.lite_llm_manager.LiteLlmManager.delete_key')
-    async def test_delete_constructs_alias_from_org(self, mock_delete_key):
-        """Test that delete_byor_key_from_litellm builds the key alias from the effective org."""
+    async def test_delete_targets_exact_credential(self, mock_delete_key):
+        """Deleting a BYOR key cannot select another credential by alias."""
         # Arrange
         user_id = 'user-123'
         org_id = uuid.uuid4()
         byor_key = 'sk-byor-key-to-delete'
-        expected_alias = BYOR_KEY_ALIAS_PATTERN.format(
-            user_id=user_id, org_id=str(org_id)
-        )
         mock_delete_key.return_value = None
 
         # Act
@@ -1019,30 +989,25 @@ class TestDeleteByorKeyFromLitellm:
 
         # Assert
         assert result is True
-        mock_delete_key.assert_called_once_with(byor_key, key_alias=expected_alias)
+        mock_delete_key.assert_called_once_with(byor_key)
 
     @pytest.mark.asyncio
-    @patch('server.routes.api_keys.BYOR_KEY_ALIAS_PATTERN', 'env/{org_id}/u={user_id}')
+    @patch('server.routes.api_keys.BYOR_KEY_ALIAS_PATTERN', '{unsupported_placeholder}')
     @patch('storage.lite_llm_manager.LiteLlmManager.delete_key')
-    async def test_delete_uses_env_override_alias(self, mock_delete_key):
-        """An overridden BYOR_KEY_ALIAS_PATTERN flows through to delete_key.
-
-        Patches the imported constant in the api_keys module since the env
-        var is read once at import time (see constants.py).
-        """
+    async def test_delete_is_independent_of_alias_configuration(self, mock_delete_key):
+        """Even an invalid alias pattern cannot prevent credential revocation."""
         # Arrange
         user_id = 'user-123'
         org_id = uuid.uuid4()
         byor_key = 'sk-byor-key-to-delete'
         mock_delete_key.return_value = None
-        expected_alias = f'env/{org_id}/u={user_id}'
 
         # Act
         result = await delete_byor_key_from_litellm(user_id, org_id, byor_key)
 
         # Assert
         assert result is True
-        mock_delete_key.assert_called_once_with(byor_key, key_alias=expected_alias)
+        mock_delete_key.assert_called_once_with(byor_key)
 
     @pytest.mark.asyncio
     @patch('storage.lite_llm_manager.LiteLlmManager.delete_key')

@@ -248,7 +248,6 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
         ]
     )
     verify = AsyncMock(side_effect=[False, True, True, True])
-    delete_alias = AsyncMock()
     generate = AsyncMock(
         side_effect=['replacement-member-key', 'replacement-empty-key']
     )
@@ -260,10 +259,6 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
         patch(
             'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.verify_existing_key_strict',
             verify,
-        ),
-        patch(
-            'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.delete_key_by_alias_strict',
-            delete_alias,
         ),
         patch(
             'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.generate_key',
@@ -297,7 +292,6 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
         str(org_id),
         openhands_type=True,
     )
-    delete_alias.assert_not_awaited()
     wrong_alias = generate.await_args_list[0].args[2]
     empty_alias = generate.await_args_list[1].args[2]
     assert str(wrong_user_id) in wrong_alias
@@ -381,10 +375,6 @@ async def test_processor_retries_when_litellm_ownership_is_unavailable(
             AsyncMock(side_effect=RuntimeError('LiteLLM unavailable')),
         ),
         patch(
-            'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.delete_key_by_alias_strict',
-            AsyncMock(),
-        ) as delete_alias,
-        patch(
             'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.generate_key',
             AsyncMock(),
         ) as generate,
@@ -393,7 +383,6 @@ async def test_processor_retries_when_litellm_ownership_is_unavailable(
 
     assert result['error_count'] == 1
     assert result['repaired'] == 0
-    delete_alias.assert_not_awaited()
     generate.assert_not_awaited()
     async with async_session_maker() as session:
         member = await session.get(
@@ -447,10 +436,6 @@ async def test_processor_retries_when_generated_key_fails_ownership_verification
             'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.verify_existing_key_strict',
             AsyncMock(side_effect=[False, False]),
         ) as verify,
-        patch(
-            'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.delete_key_by_alias_strict',
-            AsyncMock(),
-        ),
         patch(
             'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.generate_key',
             AsyncMock(return_value='replacement-key'),
@@ -516,10 +501,6 @@ async def test_processor_skips_current_version_target_without_litellm_calls(
             AsyncMock(),
         ) as verify,
         patch(
-            'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.delete_key_by_alias_strict',
-            AsyncMock(),
-        ) as delete_alias,
-        patch(
             'server.maintenance_task_processor.managed_llm_key_ownership_processor.LiteLlmManager.generate_key',
             AsyncMock(),
         ) as generate,
@@ -534,5 +515,4 @@ async def test_processor_skips_current_version_target_without_litellm_calls(
         'errors': [],
     }
     verify.assert_not_awaited()
-    delete_alias.assert_not_awaited()
     generate.assert_not_awaited()

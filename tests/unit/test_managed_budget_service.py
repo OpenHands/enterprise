@@ -1,6 +1,7 @@
 """Edits and renewals must reuse durable intent across workers and retries."""
 
 import asyncio
+from copy import deepcopy
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -18,6 +19,22 @@ from storage.org_budget_settings import OrgBudgetSettings
 from tests.unit.test_budget_adoption_service import adoption as adoption_fixture
 
 adoption = adoption_fixture
+
+
+async def adopt_zero(adoption, *, operator_blocked=False):
+    org_id, user_id, service, request, proxy = adoption
+    proxy.state['control_policy']['team']['blocked'] = operator_blocked
+    proxy.state['team_blocked'] = operator_blocked
+    preview = await service.preview(org_id)
+    request = request.model_copy(
+        update={
+            'current_team_allowance': 0,
+            'preview_fingerprint': preview['fingerprint'],
+        }
+    )
+    result = await service.confirm(org_id, 'admin', request)
+    assert result['status'] == 'applied', result
+    return org_id, user_id, proxy
 
 
 def policy(**changes):
@@ -184,6 +201,184 @@ async def test_handoff_preserves_the_last_applied_caps(managed):
     await service.hand_off(org_id, 'admin')
     assert (await service.maintain(org_id))['status'] == 'skipped'
     assert len(proxy.writes) == writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operator_blocked', [False, True])
+@pytest.mark.parametrize('transition', ['rollover', 'increase', 'disable', 'stay_zero'])
+async def test_zero_allowance_transition_removes_only_a_budget_owned_block(
+    adoption, async_engine, async_session_maker, operator_blocked, transition
+):
+    org_id, user_id, proxy = await adopt_zero(
+        adoption, operator_blocked=operator_blocked
+    )
+    assert proxy.state['team_max_budget'] == 40
+    assert proxy.state['control_policy']['team']['blocked'] is True
+    independent_members = deepcopy(proxy.state['control_policy']['members'])
+    async with async_session_maker() as session:
+        settings = await session.scalar(select(OrgBudgetSettings))
+        assert settings.cycle_allowance == 0
+        cycle_end = settings.cycle_end_at
+        state = await OrgBudgetService(session).get_budget_state(org_id)
+        assert state['reconciliation_state'] == 'healthy'
+    proxy.writes.clear()
+    service = ManagedBudgetService(async_engine)
+    if transition == 'rollover':
+        result = await service.maintain(org_id, now=cycle_end + timedelta(seconds=1))
+        assert proxy.state['team_max_budget'] == 740
+        assert proxy.state['members'][user_id]['max_budget'] == 92
+    else:
+        result = await service.update(
+            org_id,
+            'admin',
+            policy(
+                enabled=transition != 'disable',
+                current_cycle_team_allowance=0 if transition == 'stay_zero' else 200,
+            ),
+        )
+    assert result['status'] == 'applied', result
+    stays_blocked = operator_blocked or transition == 'stay_zero'
+    assert proxy.state['control_policy']['team']['blocked'] is stays_blocked
+    assert proxy.state['control_policy']['team']['models'] == ['model']
+    assert (
+        proxy.state['control_policy']['members'][user_id]['rpm_limit']
+        == (independent_members[user_id]['rpm_limit'])
+    )
+    block_writes = [w for w in proxy.writes if 'blocked' in w['body']]
+    if stays_blocked:
+        assert block_writes == []
+    else:
+        assert block_writes == [proxy.writes[-1]]
+        assert block_writes[0]['body'] == {'team_id': str(org_id), 'blocked': False}
+    async with async_session_maker() as session:
+        latest = await session.scalar(
+            select(OrgBudgetOperation).order_by(OrgBudgetOperation.generation.desc())
+        )
+        assert latest.plan['team_block']['budget_owned'] is (
+            transition == 'stay_zero' and not operator_blocked
+        )
+
+
+@pytest.mark.asyncio
+async def test_zero_adoption_lost_block_response_reuses_baseline_and_operation(
+    adoption, async_session_maker
+):
+    org_id, _, service, request, proxy = adoption
+    request = request.model_copy(update={'current_team_allowance': 0})
+    proxy.lose_next_response = True
+    first = await service.confirm(org_id, 'admin', request)
+    assert first['status'] == 'pending'
+    assert proxy.writes == [
+        {'path': '/team/update', 'body': {'team_id': str(org_id), 'blocked': True}}
+    ]
+    assert proxy.state['control_policy']['team']['blocked'] is True
+    # In-flight metering may arrive after the block. Never resnapshot on retry.
+    proxy.state['team_spend'] = 45
+    second = await service.confirm(org_id, 'admin', request)
+    assert second['status'] == 'applied', second
+    assert second['operation_id'] == first['operation_id']
+    assert proxy.state['team_max_budget'] == 40
+    async with async_session_maker() as session:
+        settings = await session.scalar(select(OrgBudgetSettings))
+        assert settings.cycle_start_spend == 40
+        assert settings.cycle_allowance == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('readback_block', [False, None, 1])
+async def test_zero_adoption_cannot_finish_without_verified_native_block(
+    adoption, async_session_maker, readback_block
+):
+    org_id, _, service, request, proxy = adoption
+    request = request.model_copy(update={'current_team_allowance': 0})
+
+    async def ignore_block_write(*args, **kwargs):
+        await proxy.write(*args, **kwargs)
+        proxy.state['control_policy']['team']['blocked'] = readback_block
+        proxy.state['team_blocked'] = readback_block
+
+    with patch(
+        'storage.lite_llm_manager.LiteLlmManager.apply_budget_write', ignore_block_write
+    ):
+        result = await service.confirm(org_id, 'admin', request)
+    assert result['status'] == 'pending'
+    assert 'block readback' in result['error']
+    async with async_session_maker() as session:
+        settings = await session.scalar(select(OrgBudgetSettings))
+        assert settings.control_mode == 'needs_adoption'
+        assert settings.cycle_allowance is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['before_unblock', 'lost_unblock_response'])
+async def test_reopening_zero_budget_retries_same_targets_after_partial_failure(
+    adoption, async_engine, failure
+):
+    org_id, _, proxy = await adopt_zero(adoption)
+    proxy.writes.clear()
+    service = ManagedBudgetService(async_engine)
+
+    async def fail_at_unblock(*args, **kwargs):
+        if kwargs['body'].get('blocked') is False:
+            if failure == 'before_unblock':
+                raise RuntimeError('proxy unavailable before unblock')
+            proxy.lose_next_response = True
+        await proxy.write(*args, **kwargs)
+
+    with patch(
+        'storage.lite_llm_manager.LiteLlmManager.apply_budget_write', fail_at_unblock
+    ):
+        first = await service.update(org_id, 'admin', policy())
+    assert first['status'] == 'pending'
+    assert proxy.state['team_max_budget'] == 240
+    assert proxy.state['control_policy']['team']['blocked'] is (
+        failure == 'before_unblock'
+    )
+    proxy.state['team_spend'] = 45
+    second = await service.update(org_id, 'admin', policy())
+    assert second['status'] == 'applied', second
+    assert second['operation_id'] == first['operation_id']
+    assert proxy.state['team_max_budget'] == 240
+    assert proxy.state['control_policy']['team']['blocked'] is False
+    assert proxy.writes[-1]['body'] == {'team_id': str(org_id), 'blocked': False}
+
+
+@pytest.mark.asyncio
+async def test_missing_zero_budget_block_is_not_healthy_or_silently_repaired(
+    adoption, async_engine, async_session_maker
+):
+    org_id, _, proxy = await adopt_zero(adoption)
+    proxy.state['team_blocked'] = False
+    proxy.state['control_policy']['team']['blocked'] = False
+    proxy.writes.clear()
+    async with async_session_maker() as session:
+        state = await OrgBudgetService(session).get_budget_state(org_id)
+        assert state['budget_policy_matches'] is False
+        assert 'zero_allowance_team_block' in state['reconciliation_error']
+    with pytest.raises(BudgetWriteDenied, match='Team block readback'):
+        await ManagedBudgetService(async_engine).maintain(org_id)
+    assert proxy.writes == []
+
+
+@pytest.mark.asyncio
+async def test_handoff_and_readoption_do_not_inherit_authority_to_unblock(
+    adoption, async_engine
+):
+    org_id, _, proxy = await adopt_zero(adoption)
+    service = ManagedBudgetService(async_engine)
+    writes = deepcopy(proxy.writes)
+    await service.hand_off(org_id, 'admin')
+    assert proxy.writes == writes
+    request = adoption[3].model_copy(
+        update={
+            'idempotency_key': 'readopt',
+            'preview_fingerprint': (await service.preview(org_id))['fingerprint'],
+        }
+    )
+    result = await service.confirm(org_id, 'admin', request)
+    assert result['status'] == 'applied', result
+    assert proxy.state['control_policy']['team']['blocked'] is True
+    assert all('blocked' not in w['body'] for w in proxy.writes[len(writes) :])
 
 
 @pytest.mark.asyncio

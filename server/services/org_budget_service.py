@@ -76,6 +76,7 @@ class LiteLlmFinancialSnapshot:
     team_max_budget: float | None
     members: dict[str, LiteLlmMemberFinancialSnapshot]
     observed_at: datetime
+    team_blocked: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -177,6 +178,9 @@ def _parse_litellm_financial_snapshot(
             uses_shared_budget=uses_shared_budget,
         )
 
+    team_blocked = financial_data.get('team_blocked')
+    if team_blocked is not None and not isinstance(team_blocked, bool):
+        raise ValueError('team_blocked must be a boolean or unknown')
     return LiteLlmFinancialSnapshot(
         team_spend=_required_nonnegative_float(
             financial_data.get('team_spend'), 'team_spend'
@@ -186,6 +190,7 @@ def _parse_litellm_financial_snapshot(
         ),
         members=members,
         observed_at=observed_at or datetime.now(UTC),
+        team_blocked=team_blocked,
     )
 
 
@@ -370,6 +375,12 @@ def _budget_policy_comparison(
                 expected_member_budgets,
             )
         )
+        if (
+            settings.enabled
+            and _cycle_allowance(settings) == 0
+            and snapshot.team_blocked is not True
+        ):
+            drift_errors.append('zero_allowance_team_block_missing_or_unknown')
         policy_matches = not drift_errors
 
     sync_status = settings.litellm_last_sync_status

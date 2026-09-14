@@ -186,6 +186,39 @@ def test_explicit_zero_member_allowance_is_a_zero_private_cap_not_unlimited():
     assert result['expected_member_caps']['u2'] == 0
 
 
+@pytest.mark.parametrize('baseline', [0, 302.55])
+@pytest.mark.parametrize('already_blocked', [False, True])
+def test_zero_team_allowance_blocks_before_caps_without_claiming_operator_block(
+    baseline, already_blocked
+):
+    observed = observation()
+    observed['team_spend'] = baseline
+    observed['control_policy']['team']['blocked'] = already_blocked
+    result = plan(observed, request(observed, current_team_allowance=0))
+    assert result['expected_team_cap'] == baseline
+    assert result['expected_member_caps'] == {'u1': 22, 'u2': 10}
+    assert result['team_block'] == {
+        'initial': already_blocked,
+        'target': True,
+        'budget_owned': not already_blocked,
+    }
+    block_writes = [w for w in result['writes'] if 'blocked' in w['body']]
+    if already_blocked:
+        assert block_writes == []
+    else:
+        assert block_writes == [result['writes'][0]]
+        assert block_writes[0]['body'] == {'team_id': str(ORG), 'blocked': True}
+    assert result['preserved_policy'] == observed['control_policy']
+
+
+@pytest.mark.parametrize('blocked', [None, 0, 1, 'false', {}, []])
+def test_zero_team_allowance_cannot_guess_unknown_or_malformed_block_state(blocked):
+    observed = observation()
+    observed['control_policy']['team']['blocked'] = blocked
+    with pytest.raises(BudgetAdoptionUnsupported, match='block state'):
+        plan(observed, request(observed, current_team_allowance=0))
+
+
 def test_member_cap_can_be_removed_without_removing_other_restrictions():
     observed = observation()
     result = plan(observed, request(observed, current_member_allowances={'u1': None}))

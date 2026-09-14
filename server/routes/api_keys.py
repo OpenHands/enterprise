@@ -82,8 +82,6 @@ async def generate_byor_key(user_id: str, org_id: UUID) -> str | None:
             'Successfully generated new BYOR key',
             extra={
                 'user_id': user_id,
-                'key_length': len(key),
-                'key_prefix': key[:10] + '...' if len(key) > 10 else key,
             },
         )
         return key
@@ -101,14 +99,9 @@ async def generate_byor_key(user_id: str, org_id: UUID) -> str | None:
 async def delete_byor_key_from_litellm(
     user_id: str, org_id: UUID, byor_key: str
 ) -> bool:
-    """Delete the BYOR key from LiteLLM using the key directly.
-
-    Also attempts to delete by key alias if the key is not found,
-    to clean up orphaned aliases that could block key regeneration.
-    """
+    """Delete only the exact BYOR credential, never a potentially reassigned alias."""
     try:
-        key_alias = _create_byor_key_alias(user_id, str(org_id))
-        await LiteLlmManager.delete_key(byor_key, key_alias=key_alias)
+        await LiteLlmManager.delete_key(byor_key)
         logger.info(
             'Successfully deleted BYOR key from LiteLLM',
             extra={'user_id': user_id},

@@ -316,7 +316,17 @@ class BudgetAdoptionService:
                 if key not in owned
             }
 
-        if independent(original['team']) != independent(current['team']):
+        before_team = independent(original['team'])
+        after_team = independent(current['team'])
+        if team_block := plan.get('team_block'):
+            observed_block = after_team.pop('blocked', None)
+            before_team.pop('blocked', None)
+            if (
+                observed_block is not team_block['initial']
+                and observed_block is not team_block['target']
+            ):
+                raise BudgetWriteDenied('Team block changed outside the operation')
+        if before_team != after_team:
             raise BudgetWriteDenied(
                 'Independent team restrictions changed during adoption'
             )
@@ -352,6 +362,14 @@ class BudgetAdoptionService:
             raise BudgetWriteDenied(
                 'Team cap readback did not match the committed target'
             )
+        if team_block := plan.get('team_block'):
+            if (
+                observation['control_policy']['team'].get('blocked')
+                is not team_block['target']
+            ):
+                raise BudgetWriteDenied(
+                    'Team block readback did not match the committed target'
+                )
         default = observation.get('default_member_budget') or {}
         if any(
             default.get(field) is not None

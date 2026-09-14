@@ -629,10 +629,9 @@ class OrgStore:
             # never fail an org update because the proxy is briefly unreachable.
             if org.name != old_name:
                 try:
-                    await LiteLlmManager.update_team(
+                    await LiteLlmManager.rename_team(
                         str(org.id),
                         get_org_team_alias(str(org.id), org.name, user_id),
-                        None,
                     )
                 except Exception:
                     logger.warning(
