@@ -9,25 +9,22 @@ import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from integrations import stripe_service
+from openhands.analytics import get_analytics_service
 from openhands.app_server.user_auth import get_user_id
 from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.constants import STRIPE_API_KEY
 from server.logger import logger
-from server.services.credit_delivery_service import deliver_checkout_credit
 from server.services.feature_flag_service import feature_flag_service
 from server.utils.url_utils import get_web_url
 from storage.billing_session import BillingSession
-from storage.budget_control import (
-    BudgetControlConflict,
-    budget_control_session,
-    budget_engine,
-)
 from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager
+from storage.org import Org
 from storage.subscription_access import SubscriptionAccess
+from storage.user_store import UserStore
 
 stripe.api_key = STRIPE_API_KEY
 billing_router = APIRouter(prefix='/api/billing', tags=['Billing'])
@@ -258,22 +255,107 @@ async def create_checkout_session(
 async def success_callback(session_id: str, request: Request):
     # We can't use the auth cookie because of SameSite=strict
     async with a_session_maker() as session:
-        billing_session = await session.get(BillingSession, session_id)
+        result = await session.execute(
+            select(BillingSession).where(
+                BillingSession.id == session_id,
+                BillingSession.status == 'in_progress',
+            )
+        )
+        billing_session = result.scalar_one_or_none()
+
         if billing_session is None:
+            # Hopefully this never happens - we get a redirect from stripe where the session does not exist
+            logger.error(
+                'session_id_not_found', extra={'checkout_session_id': session_id}
+            )
             raise HTTPException(status.HTTP_400_BAD_REQUEST)
+
+        stripe_session = stripe.checkout.Session.retrieve(session_id)
+        if stripe_session.status != 'complete':
+            # Hopefully this never happens - we get a redirect from stripe where the payment is not yet complete
+            # (Or somebody tried to manually build the URL)
+            logger.error(
+                'payment_not_complete',
+                extra={
+                    'checkout_session_id': session_id,
+                    'stripe_customer_id': stripe_session.customer,
+                },
+            )
+            raise HTTPException(status.HTTP_400_BAD_REQUEST)
+
+        # Switching workspaces during checkout must not redirect purchased credit.
         org_id = billing_session.org_id
         if org_id is None:
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 detail='Checkout organization is missing; payment requires reconciliation',
             )
-        engine = budget_engine(session)
+        org = await session.get(Org, org_id)
+        if org is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, detail='Checkout organization not found'
+            )
+        user = await UserStore.get_user_by_id(billing_session.user_id)
+        if user is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail='User not found')
+        user_team_info = await LiteLlmManager.get_user_team_info(
+            billing_session.user_id, str(org_id)
+        )
+        amount_subtotal = stripe_session.amount_subtotal or 0
+        add_credits = amount_subtotal / 100
+        budget_info = LiteLlmManager.get_budget_from_team_info(
+            user_team_info, billing_session.user_id, str(org_id)
+        )
+        if budget_info is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='Credit balance is temporarily unavailable',
+            )
+        max_budget, spend = budget_info
 
-    try:
-        async with budget_control_session(engine, org_id) as control:
-            await deliver_checkout_credit(control, session_id)
-    except BudgetControlConflict as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        budget_baseline = max(spend, max_budget if max_budget is not None else spend)
+        new_max_budget = budget_baseline + add_credits
+
+        await LiteLlmManager.update_team_and_users_budget(str(org_id), new_max_budget)
+
+        org.byor_export_enabled = True
+
+        billing_session.status = 'completed'
+        billing_session.price = add_credits
+        billing_session.updated_at = datetime.now(UTC)
+        await session.merge(billing_session)
+        logger.info(
+            'stripe_checkout_success',
+            extra={
+                'amount_subtotal': stripe_session.amount_subtotal,
+                'user_id': billing_session.user_id,
+                'org_id': str(org_id),
+                'checkout_session_id': billing_session.id,
+                'stripe_customer_id': stripe_session.customer,
+            },
+        )
+        await session.commit()
+
+        # Analytics: credit purchased event (fires after commit so event only fires on success)
+        try:
+            analytics = get_analytics_service()
+            if analytics and user:
+                from openhands.analytics.analytics_context import AnalyticsContext
+
+                ctx = AnalyticsContext(
+                    user_id=billing_session.user_id,
+                    consented=user.user_consents_to_analytics is True,
+                    org_id=str(org_id),
+                    user=user,
+                )
+                analytics.track_credit_purchased(
+                    ctx=ctx,
+                    amount_usd=add_credits,
+                    credit_balance_before=max_budget,
+                    credit_balance_after=new_max_budget,
+                )
+        except Exception:
+            logger.exception('analytics:credit_purchased:failed', stack_info=True)
 
     return RedirectResponse(
         f'{get_web_url(request)}/settings/billing?checkout=success', status_code=302
@@ -283,26 +365,25 @@ async def success_callback(session_id: str, request: Request):
 @billing_router.get('/cancel')
 async def cancel_callback(session_id: str, request: Request):
     async with a_session_maker() as session:
-        record = await session.get(BillingSession, session_id)
-        org_id = record.org_id if record is not None else None
-        engine = budget_engine(session)
-    if org_id is not None:
-        try:
-            async with budget_control_session(engine, org_id) as control:
-                await control.session.execute(
-                    update(BillingSession)
-                    .where(
-                        BillingSession.id == session_id,
-                        BillingSession.org_id == org_id,
-                        BillingSession.status == 'in_progress',
-                        BillingSession.credit_target.is_(None),
-                    )
-                    .values(status='cancelled', updated_at=datetime.now(UTC))
-                )
-                await control.session.commit()
-        except BudgetControlConflict:
-            # A cancel redirect cannot interrupt fulfillment already under way.
-            pass
+        result = await session.execute(
+            select(BillingSession).where(
+                BillingSession.id == session_id,
+                BillingSession.status == 'in_progress',
+            )
+        )
+        billing_session = result.scalar_one_or_none()
+        if billing_session:
+            logger.info(
+                'stripe_checkout_cancel',
+                extra={
+                    'user_id': billing_session.user_id,
+                    'checkout_session_id': billing_session.id,
+                },
+            )
+            billing_session.status = 'cancelled'
+            billing_session.updated_at = datetime.now(UTC)
+            await session.merge(billing_session)
+            await session.commit()
 
     return RedirectResponse(
         f'{get_web_url(request)}/settings/billing?checkout=cancel', status_code=302

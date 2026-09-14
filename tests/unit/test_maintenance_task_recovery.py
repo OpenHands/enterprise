@@ -33,17 +33,9 @@ async def test_main_expires_stale_tasks_before_enqueuing_key_repairs():
             side_effect=lambda: calls.append('enqueue') or 0,
         ),
         patch('run_maintenance_tasks.run_tasks', new=run),
-        patch(
-            'server.maintenance_task_processor.credential_retirement_processor.enqueue_credential_retirement_tasks',
-            return_value=0,
-        ),
-        patch(
-            'server.maintenance_task_processor.credit_delivery_processor.enqueue_credit_delivery_tasks',
-            side_effect=lambda: calls.append('credit') or 0,
-        ),
     ):
         await main()
-    assert calls == ['expire', 'enqueue', 'credit', 'run']
+    assert calls == ['expire', 'enqueue', 'run']
 
 
 def test_stale_cleanup_participates_in_callers_transaction(session_maker):

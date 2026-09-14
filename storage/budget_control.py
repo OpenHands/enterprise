@@ -15,10 +15,8 @@ from uuid import UUID
 
 from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
-from sqlalchemy.orm import ORMExecuteState, Session
-from sqlalchemy.sql.elements import TextClause
+from sqlalchemy.orm import Session
 
-from storage.billing_session import BillingSession
 from storage.org_budget_operation import OrgBudgetOperation
 from storage.org_budget_settings import OrgBudgetSettings
 
@@ -65,20 +63,10 @@ class BudgetControlSession:
         event.listen(self.session.sync_session, 'after_flush', self._after_flush)
         event.listen(self.session.sync_session, 'after_commit', self._after_commit)
         event.listen(self.session.sync_session, 'after_rollback', self._after_commit)
-        event.listen(self.session.sync_session, 'do_orm_execute', self._track_statement)
-
-    def _track_statement(self, state: ORMExecuteState) -> None:
-        if (
-            state.is_insert
-            or state.is_update
-            or state.is_delete
-            or isinstance(state.statement, TextClause)
-        ):
-            self._uncommitted_budget_state = True
 
     def _after_flush(self, session: Session, flush_context: Any) -> None:
         if any(
-            isinstance(item, OrgBudgetSettings | OrgBudgetOperation | BillingSession)
+            isinstance(item, OrgBudgetSettings | OrgBudgetOperation)
             for item in session.new | session.dirty | session.deleted
         ):
             self._uncommitted_budget_state = True
@@ -131,42 +119,6 @@ class BudgetControlSession:
             )
         )
 
-    async def pending_credit(self) -> BillingSession | None:
-        self.assert_locked()
-        return await self.session.scalar(
-            select(BillingSession).where(
-                BillingSession.org_id == self.org_id,
-                BillingSession.status == 'in_progress',
-                BillingSession.credit_target.is_not(None),
-            )
-        )
-
-    async def authorize_credit_target(self, session_id: str, target: float) -> None:
-        self.assert_locked()
-        if self._uncommitted_budget_state:
-            raise BudgetWriteDenied('Credit delivery intent is not durable')
-        with self.session.no_autoflush:
-            record = (
-                await self.session.execute(
-                    select(
-                        BillingSession.org_id,
-                        BillingSession.status,
-                        BillingSession.credit_target,
-                    ).where(BillingSession.id == session_id)
-                )
-            ).one_or_none()
-        if (
-            record is None
-            or record.org_id != self.org_id
-            or record.status != 'in_progress'
-            or record.credit_target != target
-        ):
-            raise BudgetWriteDenied('Credit delivery has no matching durable target')
-        if await self.pending_operation() is not None:
-            raise BudgetControlConflict(
-                'Finish the pending budget operation before delivering credit'
-            )
-
     async def reserve_operation(
         self,
         *,
@@ -179,10 +131,6 @@ class BudgetControlSession:
         existing = await self.find_operation(idempotency_key, request_hash)
         if existing is not None:
             return existing
-        if await self.pending_credit() is not None:
-            raise BudgetControlConflict(
-                'Finish pending credit delivery before changing budgets'
-            )
         if not idempotency_key or len(idempotency_key) > 128 or not actor:
             raise ValueError('A bounded idempotency key and actor are required')
         if kind not in {'adopt', 'settings', 'rollover', 'repair'}:
@@ -214,10 +162,6 @@ class BudgetControlSession:
         return operation
 
     async def require_executable(self, operation: OrgBudgetOperation) -> None:
-        if await self.pending_credit() is not None:
-            raise BudgetControlConflict(
-                'Finish pending credit delivery before changing budgets'
-            )
         settings = await self.settings()
         if (
             operation.org_id != self.org_id
@@ -318,10 +262,6 @@ class BudgetControlSession:
     async def hand_off(self, actor: str) -> None:
         if not actor:
             raise ValueError('An actor is required')
-        if await self.pending_credit() is not None:
-            raise BudgetControlConflict(
-                'Finish pending credit delivery before handing off budgets'
-            )
         settings = await self.settings()
         pending = await self.pending_operation()
         if pending is not None and pending.plan.get('revoked_member_ids'):

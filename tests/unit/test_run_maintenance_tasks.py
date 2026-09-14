@@ -510,10 +510,6 @@ class TestRunMaintenanceTasks:
                 'enqueue_credential_retirement_tasks',
                 return_value=0,
             ),
-            patch(
-                'server.maintenance_task_processor.credit_delivery_processor.enqueue_credit_delivery_tasks',
-                return_value=0,
-            ),
         ):
             with patch(
                 'run_maintenance_tasks.session_maker', return_value=session_maker()

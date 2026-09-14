@@ -31,9 +31,6 @@ async def main():
     from server.maintenance_task_processor.credential_retirement_processor import (
         enqueue_credential_retirement_tasks,
     )
-    from server.maintenance_task_processor.credit_delivery_processor import (
-        enqueue_credit_delivery_tasks,
-    )
     from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
         enqueue_managed_llm_key_ownership_tasks,
     )
@@ -55,14 +52,7 @@ async def main():
         # tasks from running.
         logger.exception('Failed to enqueue managed LLM key ownership repairs')
 
-    credit_enqueue_failed = False
-    try:
-        enqueue_credit_delivery_tasks()
-    except Exception:
-        credit_enqueue_failed = True
-        logger.exception('Failed to enqueue pending credit delivery')
-
-    failed_task_count = await run_tasks() + int(credit_enqueue_failed)
+    failed_task_count = await run_tasks()
     if failed_task_count:
         logger.error(f'{failed_task_count} maintenance task(s) failed')
         raise SystemExit(1)

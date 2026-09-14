@@ -858,52 +858,27 @@ class LiteLlmManager:
     async def update_team_and_users_budget(
         team_id: str,
         max_budget: float,
-        *,
-        billing_session_id: str,
     ):
-        from storage.budget_control import current_budget_control
-
-        control = current_budget_control(UUID(team_id))
-        await control.authorize_credit_target(billing_session_id, max_budget)
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
-            raise RuntimeError('LiteLLM API configuration not found')
+            logger.warning('LiteLLM API configuration not found')
+            return
         async with httpx.AsyncClient(
             headers={
                 'x-goog-api-key': LITE_LLM_API_KEY,
-            },
-            timeout=httpx.Timeout(LITELLM_MANAGEMENT_TIMEOUT),
+            }
         ) as client:
             await LiteLlmManager._update_team(client, team_id, None, max_budget)
             team_info = await LiteLlmManager._get_team(client, team_id)
             if not team_info:
-                raise RuntimeError('Credit delivery team could not be verified')
+                return None
             # TODO: change to use bulk update endpoint
             for membership in team_info.get('team_memberships', []):
                 user_id = membership.get('user_id')
                 if not user_id:
                     continue
-                await control.authorize_credit_target(billing_session_id, max_budget)
                 await LiteLlmManager._update_user_in_team(
                     client, user_id, team_id, max_budget
                 )
-            verified = await LiteLlmManager._get_team(client, team_id)
-            members = (verified or {}).get('team_memberships')
-            if (
-                (verified or {}).get('team_info', {}).get('team_id') != team_id
-                or (verified or {}).get('team_info', {}).get('max_budget') != max_budget
-                or not isinstance(members, list)
-                or {member.get('user_id') for member in members}
-                != {
-                    member.get('user_id')
-                    for member in team_info.get('team_memberships', [])
-                }
-                or any(
-                    (member.get('litellm_budget_table') or {}).get('max_budget')
-                    != max_budget
-                    for member in members
-                )
-            ):
-                raise RuntimeError('Credit delivery did not match its native target')
 
     @staticmethod
     async def ensure_free_team_models(org_id: str) -> bool:

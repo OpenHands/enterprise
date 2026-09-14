@@ -1,10 +1,7 @@
-import asyncio
-import json
 import uuid
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 import stripe
 from fastapi import HTTPException, Request, status
@@ -13,9 +10,6 @@ from sqlalchemy import select
 from starlette.datastructures import URL
 
 from server.constants import ORG_SETTINGS_VERSION
-from server.maintenance_task_processor.credit_delivery_processor import (
-    CreditDeliveryProcessor,
-)
 from server.routes import billing
 from server.routes.billing import (
     CreateBillingSessionResponse,
@@ -29,12 +23,8 @@ from server.routes.billing import (
     success_callback,
 )
 from storage.billing_session import BillingSession
-from storage.budget_control import current_budget_control
-from storage.lite_llm_manager import LiteLlmManager
-from storage.maintenance_task import MaintenanceTask
 from storage.org import Org
 from storage.user import User
-from storage.user_store import UserStore
 
 
 @pytest.fixture
@@ -94,13 +84,7 @@ def mock_callback_request():
 @pytest.fixture
 def patched_billing_session_maker(async_session_maker):
     """Patch the billing route session maker."""
-    with (
-        patch('server.routes.billing.a_session_maker', async_session_maker),
-        patch(
-            'server.maintenance_task_processor.credit_delivery_processor.a_session_maker',
-            async_session_maker,
-        ),
-    ):
+    with patch('server.routes.billing.a_session_maker', async_session_maker):
         yield
 
 
@@ -503,12 +487,7 @@ async def test_success_callback_success(
         await session.commit()
 
     mock_stripe_session_retrieve.return_value = MagicMock(
-        status='complete',
-        payment_status='paid',
-        currency='usd',
-        mode='payment',
-        amount_subtotal=2500,
-        customer='mock_customer_id',
+        status='complete', amount_subtotal=2500, customer='mock_customer_id'
     )
 
     with (
@@ -539,7 +518,6 @@ async def test_success_callback_success(
         mock_update_budget.assert_called_once_with(
             str(test_org.id),
             expected_budget,
-            billing_session_id=session_id,
         )
 
     # Verify database updates
@@ -590,12 +568,7 @@ async def test_checkout_credit_stays_with_recorded_org_after_workspace_switch(
         await session.commit()
 
     mock_stripe_session_retrieve.return_value = MagicMock(
-        status='complete',
-        payment_status='paid',
-        currency='usd',
-        mode='payment',
-        amount_subtotal=2500,
-        customer='checkout-customer',
+        status='complete', amount_subtotal=2500, customer='checkout-customer'
     )
     analytics = MagicMock()
     with (
@@ -610,15 +583,12 @@ async def test_checkout_credit_stays_with_recorded_org_after_workspace_switch(
             'storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget',
             AsyncMock(),
         ) as write,
-        patch(
-            'server.services.credit_delivery_service.get_analytics_service',
-            return_value=analytics,
-        ),
+        patch('server.routes.billing.get_analytics_service', return_value=analytics),
     ):
         response = await success_callback(session_id, mock_callback_request)
     assert response.status_code == 302
     read.assert_awaited_once_with(str(test_user.id), str(test_org.id))
-    write.assert_awaited_once_with(str(test_org.id), 125, billing_session_id=session_id)
+    write.assert_awaited_once_with(str(test_org.id), 125)
     assert analytics.track_credit_purchased.call_args.kwargs['ctx'].org_id == str(
         test_org.id
     )
@@ -651,12 +621,7 @@ async def test_checkout_without_recorded_org_never_guesses_from_current_workspac
         )
         await session.commit()
     mock_stripe_session_retrieve.return_value = MagicMock(
-        status='complete',
-        payment_status='paid',
-        currency='usd',
-        mode='payment',
-        amount_subtotal=2500,
-        customer='checkout-customer',
+        status='complete', amount_subtotal=2500, customer='checkout-customer'
     )
     with (
         patch(
@@ -706,11 +671,7 @@ async def test_success_callback_lite_llm_error(
         await session.commit()
 
     mock_stripe_session_retrieve.return_value = MagicMock(
-        status='complete',
-        payment_status='paid',
-        currency='usd',
-        mode='payment',
-        amount_subtotal=2500,
+        status='complete', amount_subtotal=2500
     )
 
     with (
@@ -760,11 +721,7 @@ async def test_success_callback_rejects_unavailable_budget_data(
         await session.commit()
 
     mock_stripe_session_retrieve.return_value = MagicMock(
-        status='complete',
-        payment_status='paid',
-        currency='usd',
-        mode='payment',
-        amount_subtotal=2500,
+        status='complete', amount_subtotal=2500
     )
 
     with (
@@ -802,7 +759,11 @@ async def test_success_callback_lite_llm_update_budget_error_rollback(
     mock_callback_request,
     mock_stripe_session_retrieve,
 ):
-    """A failed native write retains its durable target without marking completion."""
+    """Test that database changes are not committed when update_team_and_users_budget fails.
+
+    This test verifies that if LiteLlmManager.update_team_and_users_budget raises an exception,
+    the database transaction rolls back.
+    """
     session_id = 'test_budget_rollback_session'
     async with async_session_maker() as session:
         billing_session = BillingSession(
@@ -818,9 +779,6 @@ async def test_success_callback_lite_llm_update_budget_error_rollback(
 
     mock_stripe_session_retrieve.return_value = MagicMock(
         status='complete',
-        payment_status='paid',
-        currency='usd',
-        mode='payment',
         amount_subtotal=1000,
         customer='mock_customer_id',
     )
@@ -846,338 +804,13 @@ async def test_success_callback_lite_llm_update_budget_error_rollback(
         with pytest.raises(Exception, match='LiteLLM API Error'):
             await success_callback(session_id, mock_callback_request)
 
-    # The intent survives, but completion does not.
+    # Verify no database commit occurred - the transaction should roll back
     async with async_session_maker() as session:
         result = await session.execute(
             select(BillingSession).where(BillingSession.id == session_id)
         )
         billing_session = result.scalar_one_or_none()
         assert billing_session.status == 'in_progress'
-        assert billing_session.credit_target == 10
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('retry_via', ['browser', 'worker'])
-@pytest.mark.parametrize(
-    'failure',
-    [
-        'team_response',
-        'member_response',
-        'completion_commit',
-        'team_noop',
-        'member_noop',
-    ],
-)
-async def test_credit_retries_use_one_durable_target(
-    async_session_maker,
-    test_org,
-    test_user,
-    patched_billing_session_maker,
-    mock_callback_request,
-    mock_stripe_session_retrieve,
-    monkeypatch,
-    failure,
-    retry_via,
-):
-    """Real PostgreSQL/controller/manager; only Stripe and native HTTP are simulated."""
-    session_id = 'lost-credit-response'
-    async with async_session_maker() as session:
-        session.add(
-            BillingSession(
-                id=session_id,
-                user_id=str(test_user.id),
-                org_id=test_org.id,
-                price=25,
-                price_code='NA',
-            )
-        )
-        await session.commit()
-    mock_stripe_session_retrieve.return_value = MagicMock(
-        status='complete',
-        payment_status='paid',
-        currency='usd',
-        mode='payment',
-        amount_subtotal=2500,
-    )
-    native = {'team': 100, 'member': 100}
-    writes = []
-    failed = False
-
-    async def transport(request):
-        nonlocal failed
-        if request.method == 'GET':
-            assert request.url.path == '/team/info'
-            return Response(
-                200,
-                json={
-                    'team_info': {
-                        'team_id': str(test_org.id),
-                        'max_budget': native['team'],
-                    },
-                    'team_memberships': [
-                        {
-                            'user_id': str(test_user.id),
-                            'litellm_budget_table': {'max_budget': native['member']},
-                        }
-                    ],
-                },
-            )
-        body = json.loads(request.content)
-        async with async_session_maker() as reader:
-            receipt = await reader.get(BillingSession, session_id)
-            assert receipt.credit_target == 125
-            assert receipt.status == 'in_progress'
-        resource = 'team' if request.url.path == '/team/update' else 'member'
-        assert request.url.path in {'/team/update', '/team/member_update'}
-        if not failed and failure == resource + '_noop':
-            failed = True
-            return Response(200, json={})
-        native[resource] = body[
-            'max_budget' if resource == 'team' else 'max_budget_in_team'
-        ]
-        writes.append((resource, native[resource]))
-        if not failed and failure == resource + '_response':
-            failed = True
-            raise httpx.ReadError('Lost acknowledgement', request=request)
-        return Response(200, json={})
-
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(
-        'storage.lite_llm_manager.LITE_LLM_API_URL', 'https://native.test'
-    )
-    monkeypatch.setattr('storage.lite_llm_manager.LITE_LLM_API_KEY', 'unit-test-key')
-    monkeypatch.setattr(
-        httpx,
-        'AsyncClient',
-        lambda **kwargs: real_client(
-            transport=httpx.MockTransport(transport), **kwargs
-        ),
-    )
-    native_read = AsyncMock(return_value={'spend': 5, 'max_budget_in_team': 100})
-    real_delivery = LiteLlmManager.update_team_and_users_budget
-
-    async def deliver(*args, **kwargs):
-        nonlocal failed
-        await real_delivery(*args, **kwargs)
-        if failure == 'completion_commit' and not failed:
-            control = current_budget_control(test_org.id)
-            commit = control.session.commit
-
-            async def lost_commit():
-                nonlocal failed
-                await commit()
-                failed = True
-                raise RuntimeError('Lost acknowledgement')
-
-            monkeypatch.setattr(control.session, 'commit', lost_commit)
-
-    analytics = MagicMock()
-    with (
-        patch.object(
-            UserStore,
-            'get_user_by_id',
-            AsyncMock(return_value=test_user),
-        ),
-        patch.object(LiteLlmManager, 'get_user_team_info', native_read),
-        patch.object(LiteLlmManager, 'update_team_and_users_budget', deliver),
-        patch(
-            'server.services.credit_delivery_service.get_analytics_service',
-            return_value=analytics,
-        ),
-    ):
-        with pytest.raises(
-            (httpx.ReadError, RuntimeError),
-            match='Lost acknowledgement|did not match its native target',
-        ):
-            await success_callback(session_id, mock_callback_request)
-        # A cancel redirect cannot discard a purchase that reached native delivery.
-        await cancel_callback(session_id, mock_callback_request)
-        for _ in range(2):
-            if retry_via == 'worker':
-                processor = CreditDeliveryProcessor(
-                    org_id=test_org.id, checkout_session_id=session_id
-                )
-                assert await processor(MaintenanceTask()) == {'completed': True}
-            else:
-                assert (
-                    await success_callback(session_id, mock_callback_request)
-                ).status_code == 302
-
-    assert native == {'team': 125, 'member': 125}
-    assert all(target == 125 for _, target in writes)
-    native_read.assert_awaited_once()
-    assert analytics.track_credit_purchased.call_count == (
-        0 if failure == 'completion_commit' else 1
-    )
-    async with async_session_maker() as session:
-        receipt = await session.get(BillingSession, session_id)
-        assert receipt.status == 'completed'
-        assert receipt.credit_target == 125
-
-
-@pytest.mark.asyncio
-async def test_credit_callbacks_exclude_concurrent_purchases(
-    async_session_maker,
-    test_org,
-    test_user,
-    patched_billing_session_maker,
-    mock_callback_request,
-    mock_stripe_session_retrieve,
-):
-    async with async_session_maker() as session:
-        session.add_all(
-            [
-                BillingSession(
-                    id=identifier,
-                    user_id=str(test_user.id),
-                    org_id=test_org.id,
-                    price=25,
-                    price_code='NA',
-                )
-                for identifier in ('first', 'second')
-            ]
-        )
-        await session.commit()
-    mock_stripe_session_retrieve.return_value = MagicMock(
-        status='complete',
-        payment_status='paid',
-        currency='usd',
-        mode='payment',
-        amount_subtotal=2500,
-    )
-    writing, release = asyncio.Event(), asyncio.Event()
-
-    async def deliver(*args, **kwargs):
-        writing.set()
-        await asyncio.wait_for(release.wait(), timeout=5)
-        raise RuntimeError('Lost acknowledgement')
-
-    with (
-        patch.object(UserStore, 'get_user_by_id', AsyncMock(return_value=test_user)),
-        patch.object(
-            LiteLlmManager,
-            'get_user_team_info',
-            AsyncMock(return_value={'spend': 5, 'max_budget_in_team': 100}),
-        ),
-        patch.object(LiteLlmManager, 'update_team_and_users_budget', deliver),
-    ):
-        first = asyncio.create_task(success_callback('first', mock_callback_request))
-        try:
-            await asyncio.wait_for(writing.wait(), timeout=5)
-            assert (
-                await cancel_callback('first', mock_callback_request)
-            ).status_code == 302
-            for identifier in ('first', 'second'):
-                with pytest.raises(HTTPException) as caught:
-                    await success_callback(identifier, mock_callback_request)
-                assert caught.value.status_code == 409
-        finally:
-            release.set()
-            with pytest.raises(RuntimeError, match='Lost acknowledgement'):
-                await first
-        # The lock is now free, but a different purchase cannot overtake its receipt.
-        with pytest.raises(HTTPException) as caught:
-            await success_callback('second', mock_callback_request)
-        assert caught.value.status_code == 409
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ('stripe_fields', 'expected_status'),
-    [
-        ({'payment_status': 'unpaid'}, 400),
-        ({'amount_subtotal': 2501}, 409),
-        ({'amount_subtotal': 0}, 409),
-        ({'currency': 'eur'}, 409),
-        ({'mode': 'subscription'}, 409),
-    ],
-)
-async def test_credit_delivery_requires_matching_paid_checkout(
-    async_session_maker,
-    test_org,
-    test_user,
-    patched_billing_session_maker,
-    mock_callback_request,
-    mock_stripe_session_retrieve,
-    stripe_fields,
-    expected_status,
-):
-    async with async_session_maker() as session:
-        session.add(
-            BillingSession(
-                id='unverified',
-                user_id=str(test_user.id),
-                org_id=test_org.id,
-                price=25,
-                price_code='NA',
-            )
-        )
-        await session.commit()
-    mock_stripe_session_retrieve.return_value = MagicMock(
-        **(
-            dict(
-                status='complete',
-                payment_status='paid',
-                currency='usd',
-                mode='payment',
-                amount_subtotal=2500,
-            )
-            | stripe_fields
-        )
-    )
-    with patch.object(LiteLlmManager, 'update_team_and_users_budget') as write:
-        with pytest.raises(HTTPException) as caught:
-            await success_callback('unverified', mock_callback_request)
-        assert caught.value.status_code == expected_status
-        write.assert_not_called()
-    async with async_session_maker() as session:
-        receipt = await session.get(BillingSession, 'unverified')
-        assert receipt.credit_target is None
-        assert receipt.status == 'in_progress'
-
-
-@pytest.mark.asyncio
-async def test_credit_callback_cannot_bootstrap_a_missing_user(
-    async_session_maker,
-    test_org,
-    patched_billing_session_maker,
-    mock_callback_request,
-    mock_stripe_session_retrieve,
-):
-    async with async_session_maker() as session:
-        session.add(
-            BillingSession(
-                id='missing-purchaser',
-                user_id=str(uuid.uuid4()),
-                org_id=test_org.id,
-                price=25,
-                price_code='NA',
-            )
-        )
-        await session.commit()
-    mock_stripe_session_retrieve.return_value = MagicMock(
-        status='complete',
-        payment_status='paid',
-        currency='usd',
-        mode='payment',
-        amount_subtotal=2500,
-    )
-    with (
-        patch('storage.user_store.a_session_maker', async_session_maker),
-        patch.object(UserStore, '_acquire_user_creation_lock') as creation,
-        patch.object(UserStore, 'migrate_user') as migration,
-        patch.object(LiteLlmManager, 'update_team_and_users_budget') as write,
-    ):
-        with pytest.raises(HTTPException) as caught:
-            await success_callback('missing-purchaser', mock_callback_request)
-        assert caught.value.status_code == 404
-        creation.assert_not_called()
-        migration.assert_not_called()
-        write.assert_not_called()
-    async with async_session_maker() as session:
-        receipt = await session.get(BillingSession, 'missing-purchaser')
-        assert receipt.credit_target is None
-        assert receipt.status == 'in_progress'
 
 
 @pytest.mark.asyncio
@@ -1331,17 +964,11 @@ async def test_success_callback_tracks_credit_purchased_analytics(
         ),
         patch('storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget'),
         patch(
-            'server.services.credit_delivery_service.get_analytics_service',
-            return_value=mock_analytics,
+            'server.routes.billing.get_analytics_service', return_value=mock_analytics
         ),
     ):
         mock_stripe_retrieve.return_value = MagicMock(
-            status='complete',
-            payment_status='paid',
-            currency='usd',
-            mode='payment',
-            amount_subtotal=5000,
-            customer='mock_customer_id',
+            status='complete', amount_subtotal=5000, customer='mock_customer_id'
         )
 
         await success_callback(session_id, mock_request)
@@ -1396,18 +1023,10 @@ async def test_success_callback_skips_analytics_when_service_is_none(
             },
         ),
         patch('storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget'),
-        patch(
-            'server.services.credit_delivery_service.get_analytics_service',
-            return_value=None,
-        ),
+        patch('server.routes.billing.get_analytics_service', return_value=None),
     ):
         mock_stripe_retrieve.return_value = MagicMock(
-            status='complete',
-            payment_status='paid',
-            currency='usd',
-            mode='payment',
-            amount_subtotal=2500,
-            customer='mock_customer_id',
+            status='complete', amount_subtotal=2500, customer='mock_customer_id'
         )
 
         # Should not raise even without analytics service
@@ -1460,17 +1079,11 @@ async def test_success_callback_analytics_respects_consent_false(
         ),
         patch('storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget'),
         patch(
-            'server.services.credit_delivery_service.get_analytics_service',
-            return_value=mock_analytics,
+            'server.routes.billing.get_analytics_service', return_value=mock_analytics
         ),
     ):
         mock_stripe_retrieve.return_value = MagicMock(
-            status='complete',
-            payment_status='paid',
-            currency='usd',
-            mode='payment',
-            amount_subtotal=2500,
-            customer='mock_customer_id',
+            status='complete', amount_subtotal=2500, customer='mock_customer_id'
         )
 
         await success_callback(session_id, mock_request)
@@ -1524,17 +1137,11 @@ async def test_success_callback_analytics_exception_does_not_fail_checkout(
         ),
         patch('storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget'),
         patch(
-            'server.services.credit_delivery_service.get_analytics_service',
-            return_value=mock_analytics,
+            'server.routes.billing.get_analytics_service', return_value=mock_analytics
         ),
     ):
         mock_stripe_retrieve.return_value = MagicMock(
-            status='complete',
-            payment_status='paid',
-            currency='usd',
-            mode='payment',
-            amount_subtotal=2500,
-            customer='mock_customer_id',
+            status='complete', amount_subtotal=2500, customer='mock_customer_id'
         )
 
         # Should not raise even when analytics fails
