@@ -356,6 +356,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     web_url: str | None
     openhands_provider_base_url: str | None
     access_token_hard_timeout: timedelta | None
+    sandbox_callback_url: str | None = None
     conversation_secret_enricher: ConversationSecretEnricher = field(
         default_factory=ConversationSecretEnricher
     )
@@ -364,6 +365,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     export_lock_ttl_seconds: int = 3600
     export_lock_refresh_interval_seconds: int = 30
     export_lock_required: bool | None = None
+
+    @property
+    def callback_url(self) -> str | None:
+        url = self.sandbox_callback_url or self.web_url
+        return url.rstrip('/') if url else None
 
     def _maybe_append_shallow_clone_context(
         self,
@@ -572,11 +578,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 await self.sandbox_service.validate_resume_configuration(sandbox.id)
             await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
 
-            # Get the working dir
-            sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
-                sandbox.sandbox_spec_id
-            )
-            assert sandbox_spec is not None
+            # Existing sandboxes keep their original layout after catalog edits.
+            base_working_dir = sandbox.working_dir
+            if base_working_dir is None:
+                sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
+                    sandbox.sandbox_spec_id
+                )
+                assert sandbox_spec is not None
+                base_working_dir = sandbox_spec.working_dir
 
             # Set up conversation id
             conversation_id = request.conversation_id or uuid4()
@@ -584,7 +593,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # Setup working dir based on grouping
             sandbox_grouping_strategy = await self._get_sandbox_grouping_strategy()
             working_dir = grouped_workspace_dir(
-                sandbox_spec.working_dir,
+                base_working_dir,
                 sandbox_grouping_strategy,
                 conversation_id.hex,
             )
@@ -929,7 +938,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 result[stored_conversation.sandbox_id].append(stored_conversation.id)
         return result
 
-    async def _find_running_sandbox_for_user(self) -> SandboxInfo | None:
+    async def _find_running_sandbox_for_user(
+        self, sandbox_spec_id: str | None = None
+    ) -> SandboxInfo | None:
         """Find a running sandbox for the current user based on the grouping strategy.
 
         Returns:
@@ -955,6 +966,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     if (
                         sandbox.status == SandboxStatus.RUNNING
                         and sandbox.created_by_user_id == user_id
+                        and (
+                            sandbox_spec_id is None
+                            or sandbox.sandbox_spec_id == sandbox_spec_id
+                        )
                     ):
                         running_sandboxes.append(sandbox)
 
@@ -1063,10 +1078,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         self, task: AppConversationStartTask
     ) -> AsyncGenerator[AppConversationStartTask, None]:
         """Wait for sandbox to start and return info."""
+        # Validate explicit selection before grouping or count-cap side effects.
+        sandbox_spec_id = task.request.sandbox_spec_id
+        if sandbox_spec_id is not None:
+            spec = await self.sandbox_spec_service.get_sandbox_spec(sandbox_spec_id)
+            if spec is None:
+                raise ValueError(f'Sandbox Spec {sandbox_spec_id!r} not found')
+
         # Get or create the sandbox
         if not task.request.sandbox_id:
             # First try to find a running sandbox for the current user
-            sandbox = await self._find_running_sandbox_for_user()
+            sandbox = (
+                await self._find_running_sandbox_for_user(sandbox_spec_id)
+                if sandbox_spec_id is not None
+                else await self._find_running_sandbox_for_user()
+            )
             if sandbox is None:
                 # No running sandbox found, start a new one
 
@@ -1077,9 +1103,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     else None
                 )
 
-                sandbox = await self.sandbox_service.start_sandbox(
-                    sandbox_id=sandbox_id_str
-                )
+                if sandbox_spec_id is not None:
+                    sandbox = await self.sandbox_service.start_sandbox(
+                        sandbox_spec_id=sandbox_spec_id, sandbox_id=sandbox_id_str
+                    )
+                else:
+                    sandbox = await self.sandbox_service.start_sandbox(
+                        sandbox_id=sandbox_id_str
+                    )
             task.sandbox_id = sandbox.id
         else:
             sandbox_info = await self.sandbox_service.get_sandbox(
@@ -1244,7 +1275,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             parent_info: The parent conversation info to inherit from
         """
         # Inherit sandbox_id from parent to share the same workspace/environment
-        if not request.sandbox_id:
+        if not request.sandbox_id and request.sandbox_spec_id is None:
             request.sandbox_id = parent_info.sandbox_id
 
         # Inherit git parameters from parent if not provided
@@ -1332,7 +1363,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 secret_name = f'{provider_type.name}_TOKEN'
                 description = f'{provider_type.name} authentication token'
 
-                if self.web_url:
+                if self.callback_url:
                     # Create an access token for web-based authentication
                     access_token = self.jwt_service.create_jws_token(
                         payload={
@@ -1344,7 +1375,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     headers = {'X-Access-Token': access_token}
 
                     secrets[secret_name] = LookupSecret(
-                        url=self.web_url + '/api/v1/webhooks/secrets',
+                        url=self.callback_url + '/api/v1/webhooks/secrets',
                         headers=headers,
                         description=description,
                     )
@@ -1383,7 +1414,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             user=user,
             trigger=trigger,
             system_message_suffix=system_message_suffix,
-            web_url=self.web_url,
+            web_url=self.callback_url,
             jwt_service=self.jwt_service,
             access_token_hard_timeout=self.access_token_hard_timeout,
         )
@@ -1640,7 +1671,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             mcp_servers: Dictionary to add servers to
             conversation_id: Conversation ID forwarded to the OpenHands MCP server
         """
-        if not self.web_url:
+        if not self.callback_url:
             return
 
         headers = {'X-OpenHands-ServerConversation-ID': SecretStr(str(conversation_id))}
@@ -1651,7 +1682,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             headers['X-Session-API-Key'] = SecretStr(mcp_api_key)
 
         # Add default OpenHands MCP server (includes Tavily proxy if configured)
-        mcp_url = f'{self.web_url}/mcp/mcp'
+        mcp_url = f'{self.callback_url}/mcp/mcp'
         mcp_servers['default'] = MCPServer(
             url=mcp_url,
             headers=headers,
@@ -3281,6 +3312,7 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
                 max_num_conversations_per_sandbox=self.max_num_conversations_per_sandbox,
                 httpx_client=httpx_client,
                 web_url=web_url,
+                sandbox_callback_url=config.get_sandbox_callback_url(),
                 openhands_provider_base_url=config.openhands_provider_base_url,
                 access_token_hard_timeout=access_token_hard_timeout,
                 conversation_secret_enricher=conversation_secret_enricher,

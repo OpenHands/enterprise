@@ -18,7 +18,7 @@ function mapV1StatusToV0State(
     return AgentState.STOPPED;
   }
 
-  if (!status) {
+  if (sandboxStatus === "UNKNOWN" || !status) {
     return AgentState.LOADING;
   }
 

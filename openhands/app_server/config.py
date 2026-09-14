@@ -199,6 +199,13 @@ class AppServerConfig(OpenHandsModel):
         default_factory=get_default_web_url,
         description='The URL where OpenHands is running (e.g., http://localhost:3000)',
     )
+    sandbox_callback_url: str | None = Field(
+        default=None,
+        description=(
+            'App URL reachable from sandboxes for secrets, webhooks, and MCP. '
+            'Defaults to web_url; public browser links keep using web_url.'
+        ),
+    )
     permitted_cors_origins: list[str] = Field(
         default_factory=get_default_permitted_cors_origins,
         description=(
@@ -239,6 +246,10 @@ class AppServerConfig(OpenHandsModel):
     web_client: WebClientConfigInjector = Field(
         default_factory=DefaultWebClientConfigInjector
     )
+
+    def get_sandbox_callback_url(self) -> str | None:
+        url = self.sandbox_callback_url or self.web_url
+        return url.rstrip('/') if url else None
 
 
 def config_from_env() -> AppServerConfig:
@@ -282,11 +293,41 @@ def config_from_env() -> AppServerConfig:
     from openhands.app_server.sandbox.remote_sandbox_spec_service import (
         RemoteSandboxSpecServiceInjector,
     )
+    from openhands.app_server.sandbox.sandbox_provider_config import (
+        SandboxProviderConfig,
+    )
     from openhands.app_server.user.auth_user_context import (
         AuthUserContextInjector,
     )
 
-    config: AppServerConfig = from_env(AppServerConfig, 'OH')  # type: ignore
+    provider_config = SandboxProviderConfig.from_env()
+    if provider_config is not None:
+        # Select one configuration mechanism, before parsing custom injectors that
+        # might otherwise win silently over the explicitly selected provider.
+        for variable in ('OH_SANDBOX_KIND', 'OH_SANDBOX_SPEC_KIND'):
+            if os.getenv(variable):
+                raise ValueError(
+                    f'{variable} conflicts with SANDBOX_PROVIDER; remove the injector override'
+                )
+
+    config = AppServerConfig.model_validate(from_env(AppServerConfig, 'OH'))
+
+    if provider_config is not None:
+        if provider_config.provider == 'runtime_api':
+            config.sandbox = RemoteSandboxServiceInjector(
+                api_key=os.environ['SANDBOX_API_KEY'],
+                api_url=os.environ['SANDBOX_REMOTE_RUNTIME_API_URL'],
+            )
+            if not provider_config.templates:
+                config.sandbox_spec = RemoteSandboxSpecServiceInjector()
+        if provider_config.templates:
+            from openhands.app_server.sandbox.configured_sandbox_spec_service import (
+                ConfiguredSandboxSpecServiceInjector,
+            )
+
+            config.sandbox_spec = ConfiguredSandboxSpecServiceInjector(
+                provider_config=provider_config
+            )
 
     if config.llm_model is None:
         from openhands.app_server.config_api.default_llm_model_service import (
@@ -344,20 +385,18 @@ def config_from_env() -> AppServerConfig:
             config.sandbox = ProcessSandboxServiceInjector()
         else:
             # Support legacy environment variables for Docker sandbox configuration
-            docker_sandbox_kwargs: dict = {}
+            docker_sandbox = DockerSandboxServiceInjector()
             if os.getenv('SANDBOX_HOST_PORT'):
-                docker_sandbox_kwargs['host_port'] = int(
-                    os.environ['SANDBOX_HOST_PORT']
-                )
+                docker_sandbox.host_port = int(os.environ['SANDBOX_HOST_PORT'])
             if os.getenv('SANDBOX_CONTAINER_URL_PATTERN'):
-                docker_sandbox_kwargs['container_url_pattern'] = os.environ[
+                docker_sandbox.container_url_pattern = os.environ[
                     'SANDBOX_CONTAINER_URL_PATTERN'
                 ]
             # Allow configuring sandbox startup grace period
             # This is useful for slower machines or cloud environments where
             # the agent-server container takes longer to initialize
             if os.getenv('SANDBOX_STARTUP_GRACE_SECONDS'):
-                docker_sandbox_kwargs['startup_grace_seconds'] = int(
+                docker_sandbox.startup_grace_seconds = int(
                     os.environ['SANDBOX_STARTUP_GRACE_SECONDS']
                 )
             # Parse SANDBOX_VOLUMES and convert to VolumeMount objects
@@ -386,8 +425,8 @@ def config_from_env() -> AppServerConfig:
                             )
                         )
                 if mounts:
-                    docker_sandbox_kwargs['mounts'] = mounts
-            config.sandbox = DockerSandboxServiceInjector(**docker_sandbox_kwargs)
+                    docker_sandbox.mounts = mounts
+            config.sandbox = docker_sandbox
 
     if config.sandbox_spec is None:
         if os.getenv('RUNTIME') == 'remote':

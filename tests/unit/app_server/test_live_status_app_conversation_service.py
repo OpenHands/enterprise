@@ -307,6 +307,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox = Mock(spec=SandboxInfo)
         self.mock_sandbox.id = uuid4()
         self.mock_sandbox.status = SandboxStatus.RUNNING
+        self.mock_sandbox.working_dir = None
 
         # Stable conversation ID for tests that call _configure_llm_and_mcp directly
         self.conversation_id = uuid4()
@@ -3978,6 +3979,44 @@ class TestLiveStatusAppConversationService:
 
         # Verify empty results
         assert len(result.items) == 0
+
+    @pytest.mark.parametrize(
+        'current_spec',
+        [None, SandboxSpecInfo(id='changed', command=None, working_dir='/changed')],
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_existing_sandbox_uses_pinned_workdir_after_catalog_changes(
+        self,
+        mock_conversation_info_class: MagicMock,
+        mock_remote_workspace_class: MagicMock,
+        current_spec: SandboxSpecInfo | None,
+    ) -> None:
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        setattr(self.service, '_process_pending_messages', AsyncMock())
+        setattr(self.service, '_seed_sandbox_profiles', AsyncMock())
+        self.mock_sandbox.working_dir = '/original/workspace'
+        self.mock_user.sandbox_grouping_strategy = SandboxGroupingStrategy.NO_GROUPING
+        self.mock_sandbox_spec_service.get_sandbox_spec.return_value = current_spec
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+        assert tasks[-1].status == AppConversationStartTaskStatus.READY
+        assert (
+            mock_remote_workspace_class.call_args.kwargs['working_dir']
+            == '/original/workspace'
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec.assert_not_awaited()
 
 
 class TestPluginHandling:

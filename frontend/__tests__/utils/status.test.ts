@@ -1,10 +1,23 @@
 import { describe, it, expect } from "vitest";
-import { getStatusCode, getIndicatorColor, IndicatorColor } from "#/utils/status";
+import {
+  getStatusCode,
+  getIndicatorColor,
+  IndicatorColor,
+} from "#/utils/status";
 import { AgentState } from "#/types/agent-state";
 import { I18nKey } from "#/i18n/declaration";
 import { V1ExecutionStatus } from "#/types/v1/core";
 
 describe("getStatusCode", () => {
+  it("shows temporary unavailability instead of stale execution or websocket status", () => {
+    expect(getStatusCode("OPEN", V1ExecutionStatus.RUNNING, "UNKNOWN")).toBe(
+      I18nKey.SANDBOX$TEMPORARILY_UNAVAILABLE,
+    );
+    expect(getStatusCode("CLOSED", V1ExecutionStatus.FINISHED, "UNKNOWN")).toBe(
+      I18nKey.SANDBOX$TEMPORARILY_UNAVAILABLE,
+    );
+  });
+
   it("should show sandbox status when agent is not ready", () => {
     // Test case: Agent is loading - but since conversationStatus is not STARTING,
     // it should fall through to runtime status check

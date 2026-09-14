@@ -62,6 +62,7 @@ type ObservabilityMetadataValue =
   | boolean[];
 
 export interface V1AppConversationStartRequest {
+  sandbox_spec_id?: string | null;
   sandbox_id?: string | null;
   initial_message?: V1SendMessageRequest | null;
   processors?: unknown[]; // EventCallbackProcessor - keeping as unknown for now

@@ -105,7 +105,7 @@ export function getStatusCode(
   sandboxStatus: V1SandboxStatus | null,
   taskStatus?: V1AppConversationStartTaskStatus | null,
   subConversationTaskStatus?: V1AppConversationStartTaskStatus | null,
-) {
+): I18nKey {
   // TODO: The i18n keys in this method are scattered due to multiple iterations.
   // They should be unified under a single category
 
@@ -118,6 +118,10 @@ export function getStatusCode(
     executionStatus === "error"
   ) {
     return I18nKey.AGENT_STATUS$ERROR_OCCURRED;
+  }
+
+  if (sandboxStatus === "UNKNOWN") {
+    return I18nKey.SANDBOX$TEMPORARILY_UNAVAILABLE;
   }
 
   // Priority 2 : Startup task.

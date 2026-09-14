@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
+import { V1SandboxStatus } from "#/api/sandbox-service/sandbox-service.types";
 import { useSandboxRecovery } from "#/hooks/use-sandbox-recovery";
 import { useUnifiedResumeConversationSandbox } from "#/hooks/mutation/use-unified-start-conversation";
 import * as customToastHandlers from "#/utils/custom-toast-handlers";
@@ -81,7 +82,7 @@ describe("useSandboxRecovery", () => {
         () =>
           useSandboxRecovery({
             conversationId: "conv-123",
-            sandboxStatus: "PAUSED"
+            sandboxStatus: "PAUSED",
           }),
         { wrapper: createWrapper() },
       );
@@ -117,7 +118,7 @@ describe("useSandboxRecovery", () => {
         () =>
           useSandboxRecovery({
             conversationId: undefined,
-            sandboxStatus: "MISSING"
+            sandboxStatus: "MISSING",
           }),
         { wrapper: createWrapper() },
       );
@@ -138,12 +139,31 @@ describe("useSandboxRecovery", () => {
       expect(mockMutate).not.toHaveBeenCalled();
     });
 
+    it("resumes only once when React StrictMode repeats mount effects", () => {
+      const Wrapper = createWrapper();
+      renderHook(
+        () =>
+          useSandboxRecovery({
+            conversationId: "conv-123",
+            sandboxStatus: "PAUSED",
+          }),
+        {
+          wrapper: ({ children }) => (
+            <React.StrictMode>
+              <Wrapper>{children}</Wrapper>
+            </React.StrictMode>
+          ),
+        },
+      );
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+    });
+
     it("should only call resumeSandbox once per conversation on initial load", () => {
       const { rerender } = renderHook(
         () =>
           useSandboxRecovery({
             conversationId: "conv-123",
-            sandboxStatus: "PAUSED"
+            sandboxStatus: "PAUSED",
           }),
         { wrapper: createWrapper() },
       );
@@ -161,7 +181,7 @@ describe("useSandboxRecovery", () => {
         ({ conversationId }) =>
           useSandboxRecovery({
             conversationId,
-            sandboxStatus: "PAUSED"
+            sandboxStatus: "PAUSED",
           }),
         {
           wrapper: createWrapper(),
@@ -189,6 +209,141 @@ describe("useSandboxRecovery", () => {
     });
   });
 
+  describe("temporary provider unavailability", () => {
+    it("preserves initial navigation intent through UNKNOWN and resumes PAUSED once", () => {
+      const { rerender } = renderHook(
+        ({ sandboxStatus }: { sandboxStatus: V1SandboxStatus }) =>
+          useSandboxRecovery({
+            conversationId: "conv-123",
+            sandboxStatus,
+          }),
+        {
+          wrapper: createWrapper(),
+          initialProps: { sandboxStatus: "UNKNOWN" },
+        },
+      );
+      expect(mockMutate).not.toHaveBeenCalled();
+      rerender({ sandboxStatus: "UNKNOWN" });
+      expect(mockMutate).not.toHaveBeenCalled();
+      rerender({ sandboxStatus: "PAUSED" });
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+      rerender({ sandboxStatus: "STARTING" });
+      rerender({ sandboxStatus: "RUNNING" });
+      rerender({ sandboxStatus: "PAUSED" });
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not resume after a background status refresh on an already open conversation", () => {
+      const { rerender } = renderHook(
+        ({ sandboxStatus }: { sandboxStatus: V1SandboxStatus }) =>
+          useSandboxRecovery({
+            conversationId: "conv-123",
+            sandboxStatus,
+          }),
+        {
+          wrapper: createWrapper(),
+          initialProps: { sandboxStatus: "RUNNING" },
+        },
+      );
+      rerender({ sandboxStatus: "UNKNOWN" });
+      rerender({ sandboxStatus: "PAUSED" });
+      expect(mockMutate).not.toHaveBeenCalled();
+    });
+
+    it("resumes when returning from a conversation whose status never became known", () => {
+      const { rerender } = renderHook(
+        ({
+          conversationId,
+          sandboxStatus,
+        }: {
+          conversationId: string;
+          sandboxStatus: V1SandboxStatus;
+        }) => useSandboxRecovery({ conversationId, sandboxStatus }),
+        {
+          wrapper: createWrapper(),
+          initialProps: { conversationId: "a", sandboxStatus: "RUNNING" },
+        },
+      );
+      rerender({ conversationId: "b", sandboxStatus: "UNKNOWN" });
+      rerender({ conversationId: "a", sandboxStatus: "PAUSED" });
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+      expect(mockMutate).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationId: "a" }),
+        expect.any(Object),
+      );
+    });
+
+    it("does not resume on an UNKNOWN focus response and preserves focus intent until PAUSED", async () => {
+      const mockRefetch = vi
+        .fn()
+        .mockResolvedValue({ data: { sandbox_status: "UNKNOWN" } });
+      const { rerender } = renderHook(
+        ({ sandboxStatus }: { sandboxStatus: V1SandboxStatus }) =>
+          useSandboxRecovery({
+            conversationId: "conv-123",
+            sandboxStatus,
+            refetchConversation: mockRefetch,
+          }),
+        {
+          wrapper: createWrapper(),
+          initialProps: { sandboxStatus: "RUNNING" },
+        },
+      );
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(mockRefetch).toHaveBeenCalledTimes(1);
+      expect(mockMutate).not.toHaveBeenCalled();
+      rerender({ sandboxStatus: "UNKNOWN" });
+      expect(mockMutate).not.toHaveBeenCalled();
+      rerender({ sandboxStatus: "PAUSED" });
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+    });
+
+    it("resumes once when a focus refetch resolves before the initial UNKNOWN status updates", async () => {
+      const mockRefetch = vi
+        .fn()
+        .mockResolvedValue({ data: { sandbox_status: "PAUSED" } });
+      const { rerender } = renderHook(
+        ({ sandboxStatus }: { sandboxStatus: V1SandboxStatus }) =>
+          useSandboxRecovery({
+            conversationId: "conv-123",
+            sandboxStatus,
+            refetchConversation: mockRefetch,
+          }),
+        {
+          wrapper: createWrapper(),
+          initialProps: { sandboxStatus: "UNKNOWN" },
+        },
+      );
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+      rerender({ sandboxStatus: "PAUSED" });
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not use cached PAUSED state when focus refetch has no data", async () => {
+      const mockRefetch = vi.fn().mockResolvedValue({ data: null });
+      renderHook(
+        () =>
+          useSandboxRecovery({
+            conversationId: "conv-123",
+            sandboxStatus: "PAUSED",
+            refetchConversation: mockRefetch,
+          }),
+        { wrapper: createWrapper() },
+      );
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+      mockMutate.mockClear();
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(mockMutate).not.toHaveBeenCalled();
+    });
+  });
+
   describe("tab focus recovery", () => {
     it("should call resumeSandbox when tab becomes visible and refetch returns PAUSED", async () => {
       // Start with tab hidden
@@ -198,7 +353,7 @@ describe("useSandboxRecovery", () => {
       });
 
       const mockRefetch = vi.fn().mockResolvedValue({
-        data: { status: "PAUSED" },
+        data: { sandbox_status: "PAUSED" },
       });
 
       renderHook(
@@ -231,7 +386,7 @@ describe("useSandboxRecovery", () => {
 
     it("should NOT call resumeSandbox when tab becomes visible and refetch returns RUNNING", async () => {
       const mockRefetch = vi.fn().mockResolvedValue({
-        data: { status: "RUNNING" },
+        data: { sandbox_status: "RUNNING" },
       });
 
       renderHook(
@@ -323,7 +478,7 @@ describe("useSandboxRecovery", () => {
         () =>
           useSandboxRecovery({
             conversationId: "conv-123",
-            sandboxStatus: "MISSING"
+            sandboxStatus: "MISSING",
           }),
         { wrapper: createWrapper() },
       );
@@ -386,7 +541,9 @@ describe("useSandboxRecovery", () => {
     });
 
     it("should handle refetch errors gracefully without crashing", async () => {
-      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
 
       const mockRefetch = vi.fn().mockRejectedValue(new Error("Network error"));
 
@@ -456,7 +613,7 @@ describe("useSandboxRecovery", () => {
         () =>
           useSandboxRecovery({
             conversationId: "conv-123",
-            sandboxStatus: "MISSING"
+            sandboxStatus: "MISSING",
           }),
         { wrapper: createWrapper() },
       );
@@ -514,7 +671,9 @@ describe("useSandboxRecovery", () => {
 
       expect(onError).toHaveBeenCalledTimes(1);
       expect(onError).toHaveBeenCalledWith(testError);
-      expect(vi.mocked(customToastHandlers.displayErrorToast)).toHaveBeenCalled();
+      expect(
+        vi.mocked(customToastHandlers.displayErrorToast),
+      ).toHaveBeenCalled();
     });
 
     it("should NOT call resumeSandbox when isPending is true", () => {
@@ -540,7 +699,7 @@ describe("useSandboxRecovery", () => {
         () =>
           useSandboxRecovery({
             conversationId: "conv-123",
-            sandboxStatus: "MISSING"
+            sandboxStatus: "MISSING",
           }),
         { wrapper: createWrapper() },
       );

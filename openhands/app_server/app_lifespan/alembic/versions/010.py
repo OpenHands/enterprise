@@ -8,7 +8,10 @@ The execute_callbacks query filters on (status, event_kind, conversation_id)
 but none of these columns were indexed, causing full table scans on every
 event dispatch. This index directly covers that query.
 
-CREATE INDEX CONCURRENTLY is used to avoid locking the table during deployment.
+Use a transactional index build, matching enterprise migration 117. pg8000's
+isolation-level introspection can open a transaction inside Alembic's
+autocommit_block, making CREATE INDEX CONCURRENTLY fail on fresh installs.
+event_callback is small; the brief write lock is acceptable.
 """
 
 from typing import Sequence
@@ -22,21 +25,17 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    with op.get_context().autocommit_block():
-        op.create_index(
-            'ix_event_callback_conversation_id_status_event_kind',
-            'event_callback',
-            ['conversation_id', 'status', 'event_kind'],
-            postgresql_concurrently=True,
-            if_not_exists=True,
-        )
+    op.create_index(
+        'ix_event_callback_conversation_id_status_event_kind',
+        'event_callback',
+        ['conversation_id', 'status', 'event_kind'],
+        if_not_exists=True,
+    )
 
 
 def downgrade() -> None:
-    with op.get_context().autocommit_block():
-        op.drop_index(
-            'ix_event_callback_conversation_id_status_event_kind',
-            table_name='event_callback',
-            postgresql_concurrently=True,
-            if_exists=True,
-        )
+    op.drop_index(
+        'ix_event_callback_conversation_id_status_event_kind',
+        table_name='event_callback',
+        if_exists=True,
+    )

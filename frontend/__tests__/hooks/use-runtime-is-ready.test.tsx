@@ -47,9 +47,28 @@ describe("useRuntimeIsReady", () => {
     );
   });
 
+  it("keeps runtime actions unavailable when sandbox status is unknown", () => {
+    vi.mocked(useActiveConversation).mockReturnValue(
+      asMockReturnValue<ReturnType<typeof useActiveConversation>>({
+        data: { ...makeConversation(), sandbox_status: "UNKNOWN" },
+      }),
+    );
+    vi.mocked(useAgentState).mockReturnValue({
+      curAgentState: AgentState.RUNNING,
+      isArchived: false,
+    });
+
+    const { result } = renderHook(() =>
+      useRuntimeIsReady({ allowAgentError: true }),
+    );
+
+    expect(result.current).toBe(false);
+  });
+
   it("treats agent errors as not ready by default", () => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: AgentState.ERROR, isArchived: false,
+      curAgentState: AgentState.ERROR,
+      isArchived: false,
     });
 
     const { result } = renderHook(() => useRuntimeIsReady());
@@ -59,7 +78,8 @@ describe("useRuntimeIsReady", () => {
 
   it("allows runtime-backed tabs to stay ready when the agent errors", () => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: AgentState.ERROR, isArchived: false,
+      curAgentState: AgentState.ERROR,
+      isArchived: false,
     });
 
     const { result } = renderHook(() =>

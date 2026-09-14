@@ -398,11 +398,20 @@ class TestDockerSandboxService:
 
     @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
     @patch('os.urandom')
-    async def test_start_sandbox_success(self, mock_urandom, mock_encodebytes, service):
+    @pytest.mark.parametrize('callback_url', [None, 'http://openhands:3000/'])
+    async def test_start_sandbox_success(
+        self,
+        mock_urandom: MagicMock,
+        mock_encodebytes: MagicMock,
+        service: DockerSandboxService,
+        callback_url: str | None,
+        mock_docker_client: MagicMock,
+    ) -> None:
         """Test successful sandbox startup."""
         # Setup
         mock_urandom.side_effect = [b'container_id', b'session_key']
         mock_encodebytes.side_effect = ['test_container_id', 'test_session_key']
+        service.sandbox_callback_url = callback_url
 
         mock_container = MagicMock()
         mock_container.name = 'oh-test-test_container_id'
@@ -416,7 +425,7 @@ class TestDockerSandboxService:
             'NetworkSettings': {'Ports': {}},
         }
 
-        service.docker_client.containers.run.return_value = mock_container
+        mock_docker_client.containers.run.return_value = mock_container
 
         with (
             patch.object(service, '_find_unused_port', side_effect=[12345, 12346]),
@@ -435,8 +444,8 @@ class TestDockerSandboxService:
         mock_cleanup.assert_called_once_with(2)
 
         # Verify container was created with correct parameters
-        service.docker_client.containers.run.assert_called_once()
-        call_args = service.docker_client.containers.run.call_args
+        mock_docker_client.containers.run.assert_called_once()
+        call_args = mock_docker_client.containers.run.call_args
 
         assert call_args[1]['image'] == 'test-image:latest'
         assert call_args[1]['name'] == 'oh-test-test_container_id'
@@ -447,6 +456,11 @@ class TestDockerSandboxService:
         assert call_args[1]['ports'] == {8000: 12345, 8001: 12346}
         assert call_args[1]['working_dir'] == '/workspace'
         assert call_args[1]['detach'] is True
+        assert call_args[1]['environment']['OH_WEBHOOKS_0_BASE_URL'] == (
+            'http://openhands:3000/api/v1/webhooks'
+            if callback_url
+            else 'http://host.docker.internal:3000/api/v1/webhooks'
+        )
 
     async def test_start_sandbox_with_spec_id(self, service, mock_sandbox_spec_service):
         """Test starting sandbox with specific spec ID."""

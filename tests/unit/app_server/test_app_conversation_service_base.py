@@ -741,7 +741,7 @@ async def test_set_security_analyzer_logs_warning_on_failure():
 
 def _create_service_with_mock_user_context(
     user_info: MockUserInfo, bind_methods: tuple[str, ...] | None = None
-) -> tuple:
+) -> tuple[MagicMock, MagicMock]:
     """Create a mock service with selected real methods bound for testing.
 
     Uses MagicMock for the service but binds the real method for testing.
@@ -754,8 +754,9 @@ def _create_service_with_mock_user_context(
     mock_user_context.get_secrets = AsyncMock(return_value={})
 
     # Create a simple mock service and set required attribute
-    service = MagicMock()
+    service = MagicMock(spec=AppConversationServiceBase)
     service.user_context = mock_user_context
+    service.callback_url = None
     methods_to_bind = ['_configure_git_user_settings', '_configure_gpg_signing']
     if bind_methods:
         methods_to_bind.extend(bind_methods)
@@ -970,14 +971,14 @@ async def test_clone_or_init_git_repo_configures_dynamic_azure_devops_helper(
 
 @pytest.mark.asyncio
 async def test_azure_devops_git_credential_helper_logs_without_web_url(
-    mock_workspace,
-):
+    mock_workspace: MockWorkspace,
+) -> None:
     user_info = MockUserInfo()
     service, _ = _create_service_with_mock_user_context(
         user_info,
         bind_methods=('_configure_azure_devops_git_credential_helper',),
     )
-    service.web_url = None
+    service.callback_url = None
     sandbox = SandboxInfo(
         id='sandbox-123',
         created_by_user_id='user-123',

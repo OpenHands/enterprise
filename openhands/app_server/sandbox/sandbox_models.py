@@ -11,8 +11,10 @@ class SandboxStatus(Enum):
     RUNNING = 'RUNNING'
     PAUSED = 'PAUSED'
     ERROR = 'ERROR'
+    UNKNOWN = 'UNKNOWN'
+    """Provider unavailable or native status cannot be determined."""
     MISSING = 'MISSING'
-    """Missing - possibly deleted"""
+    """Native sandbox confirmed removed or permanently stopped."""
 
 
 class ExposedUrl(BaseModel):
@@ -52,11 +54,12 @@ class SandboxInfo(BaseModel):
     created_by_user_id: str | None
     sandbox_spec_id: str
     status: SandboxStatus
+    working_dir: str | None = None
     session_api_key: str | None = Field(
         description=(
             'Key to access sandbox, to be added as an `X-Session-API-Key` header '
-            'in each request. In cases where the sandbox statues is STARTING or '
-            'PAUSED, or the current user does not have full access '
+            'in each request. In cases where the sandbox status is STARTING, '
+            'PAUSED or UNKNOWN, or the current user does not have full access '
             'the session_api_key will be None.'
         )
     )
@@ -64,7 +67,7 @@ class SandboxInfo(BaseModel):
         default_factory=lambda: [],
         description=(
             'URLs exposed by the sandbox (App server, Vscode, etc...)'
-            'Sandboxes with a status STARTING / PAUSED / ERROR may '
+            'Sandboxes with a status STARTING / PAUSED / ERROR / UNKNOWN may '
             'not return urls.'
         ),
     )

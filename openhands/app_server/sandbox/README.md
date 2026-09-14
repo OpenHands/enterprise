@@ -2,6 +2,9 @@
 
 Manages sandbox environments for secure agent execution within OpenHands.
 
+For provider selection, templates, networking, and lifecycle configuration, see
+[Configure sandbox providers and templates](providers.md).
+
 ## Overview
 
 Since agents can do things that may harm your system, they are typically run inside a sandbox (like a Docker container). This module provides services for creating, managing, and monitoring these sandbox environments.

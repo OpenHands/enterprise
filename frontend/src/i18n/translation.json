@@ -29887,5 +29887,22 @@
   },
   "SETTINGS$PROFILE_UNAVAILABLE_BADGE": {
     "en": "Unavailable"
+  },
+  "SANDBOX$TEMPORARILY_UNAVAILABLE": {
+    "en": "Sandbox temporarily unavailable",
+    "ja": "サンドボックスは一時的に利用できません",
+    "zh-CN": "沙盒暂时不可用",
+    "zh-TW": "沙盒暫時無法使用",
+    "ko-KR": "샌드박스를 일시적으로 사용할 수 없습니다",
+    "no": "Sandkassen er midlertidig utilgjengelig",
+    "it": "Sandbox temporaneamente non disponibile",
+    "pt": "Sandbox temporariamente indisponível",
+    "es": "Sandbox temporalmente no disponible",
+    "ar": "بيئة الاختبار غير متاحة مؤقتًا",
+    "fr": "Sandbox temporairement indisponible",
+    "tr": "Korumalı alan geçici olarak kullanılamıyor",
+    "de": "Sandbox vorübergehend nicht verfügbar",
+    "uk": "Пісочниця тимчасово недоступна",
+    "ca": "Sandbox temporalment no disponible"
   }
 }

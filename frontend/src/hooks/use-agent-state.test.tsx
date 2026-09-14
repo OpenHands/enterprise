@@ -1,5 +1,9 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  queryResult,
+  conversationFixture,
+} from "../../__tests__/helpers/native-fixtures";
 import { useAgentState } from "./use-agent-state";
 import { useActiveConversation } from "./query/use-active-conversation";
 import { useV1ConversationStateStore } from "#/stores/v1-conversation-state-store";
@@ -60,6 +64,27 @@ describe("useAgentState", () => {
     expect(result.current.curAgentState).toBe(
       AgentState.AWAITING_USER_CONFIRMATION,
     );
+    expect(result.current.isArchived).toBe(false);
+  });
+
+  it("does not archive or claim a live agent when sandbox availability is unknown", () => {
+    mockUseActiveConversation.mockReturnValue(
+      queryResult(
+        conversationFixture({
+          execution_status: V1ExecutionStatus.RUNNING,
+          sandbox_status: "UNKNOWN",
+        }),
+      ),
+    );
+    act(() => {
+      useV1ConversationStateStore
+        .getState()
+        .setExecutionStatus(V1ExecutionStatus.RUNNING);
+    });
+
+    const { result } = renderHook(() => useAgentState());
+
+    expect(result.current.curAgentState).toBe(AgentState.LOADING);
     expect(result.current.isArchived).toBe(false);
   });
 

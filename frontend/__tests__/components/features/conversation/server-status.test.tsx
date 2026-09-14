@@ -35,6 +35,7 @@ vi.mock("react-i18next", async () => {
       t: (key: string) => {
         const translations: Record<string, string> = {
           COMMON$RUNNING: "Running",
+          SANDBOX$TEMPORARILY_UNAVAILABLE: "Sandbox temporarily unavailable",
           COMMON$SERVER_STOPPED: "Server Stopped",
           COMMON$ERROR: "Error",
           COMMON$STARTING: "Starting",
@@ -56,14 +57,25 @@ vi.mock("react-i18next", async () => {
 
 describe("ServerStatus", () => {
   // Helper function to mock agent state with specific state
-  const mockAgentStore = (agentState: AgentState) => {
+  const mockAgentStore = (agentState: AgentState): void => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: agentState, isArchived: false,
+      curAgentState: agentState,
+      isArchived: false,
     });
   };
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("shows temporary unavailability even when cached agent state is running", () => {
+    mockAgentStore(AgentState.RUNNING);
+    renderWithProviders(<ServerStatus sandboxStatus="UNKNOWN" />);
+    expect(
+      screen.getByText("Sandbox temporarily unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Running")).not.toBeInTheDocument();
+    expect(screen.queryByText("Server Stopped")).not.toBeInTheDocument();
   });
 
   it("should render server status with RUNNING conversation status", () => {
@@ -145,9 +157,10 @@ describe("ServerStatus", () => {
 
 describe("ServerStatusContextMenu", () => {
   // Helper function to mock agent state with specific state
-  const mockAgentStore = (agentState: AgentState) => {
+  const mockAgentStore = (agentState: AgentState): void => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: agentState, isArchived: false,
+      curAgentState: agentState,
+      isArchived: false,
     });
   };
 
@@ -158,6 +171,23 @@ describe("ServerStatusContextMenu", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("offers no start or stop action for an unknown sandbox", () => {
+    mockAgentStore(AgentState.RUNNING);
+    renderWithProviders(
+      <ServerStatusContextMenu
+        onClose={vi.fn()}
+        sandboxStatus="UNKNOWN"
+        onStartServer={vi.fn()}
+        onStopServer={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByText("Sandbox temporarily unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("start-server-button")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("stop-server-button")).not.toBeInTheDocument();
   });
 
   it("should render stop server button when status is RUNNING", () => {
@@ -196,10 +226,7 @@ describe("ServerStatusContextMenu", () => {
     mockAgentStore(AgentState.RUNNING);
 
     renderWithProviders(
-      <ServerStatusContextMenu
-        {...defaultProps}
-        sandboxStatus="RUNNING"
-      />,
+      <ServerStatusContextMenu {...defaultProps} sandboxStatus="RUNNING" />,
     );
 
     expect(screen.getByTestId("server-status")).toBeInTheDocument();
@@ -210,10 +237,7 @@ describe("ServerStatusContextMenu", () => {
     mockAgentStore(AgentState.RUNNING);
 
     renderWithProviders(
-      <ServerStatusContextMenu
-        {...defaultProps}
-        sandboxStatus="MISSING"
-      />,
+      <ServerStatusContextMenu {...defaultProps} sandboxStatus="MISSING" />,
     );
 
     expect(screen.getByTestId("server-status")).toBeInTheDocument();
@@ -312,10 +336,7 @@ describe("ServerStatusContextMenu", () => {
     mockAgentStore(AgentState.RUNNING);
 
     renderWithProviders(
-      <ServerStatusContextMenu
-        {...defaultProps}
-        sandboxStatus="STARTING"
-      />,
+      <ServerStatusContextMenu {...defaultProps} sandboxStatus="STARTING" />,
     );
 
     expect(screen.getByTestId("server-status")).toBeInTheDocument();

@@ -1,9 +1,9 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, Self
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, SecretStr, computed_field
+from pydantic import BaseModel, Field, SecretStr, computed_field, model_validator
 
 from openhands.agent_server.models import (
     ImageContent,
@@ -244,6 +244,12 @@ class AppConversationStartRequest(OpenHandsModel):
     """
 
     sandbox_id: str | None = Field(default=None)
+    sandbox_spec_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description='Template to use for this conversation, overriding user and system defaults.',
+    )
+
     conversation_id: UUID | None = Field(default=None)
     initial_message: SendMessageRequest | None = None
     system_message_suffix: str | None = None
@@ -306,6 +312,12 @@ class AppConversationStartRequest(OpenHandsModel):
             'Warning: Providing a secret that already exists will silently override it.'
         ),
     )
+
+    @model_validator(mode='after')
+    def validate_sandbox_selection(self) -> Self:
+        if self.sandbox_id is not None and self.sandbox_spec_id is not None:
+            raise ValueError('sandbox_id and sandbox_spec_id are mutually exclusive')
+        return self
 
 
 class AppConversationUpdateRequest(BaseModel):

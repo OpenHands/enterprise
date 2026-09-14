@@ -19,6 +19,8 @@ const getSandboxStatusLabel = (status: V1SandboxStatus): string => {
       return "COMMON$PAUSED";
     case "MISSING":
       return "COMMON$ARCHIVED";
+    case "UNKNOWN":
+      return "SANDBOX$TEMPORARILY_UNAVAILABLE";
     default:
       return "COMMON$STOPPED";
   }
@@ -26,7 +28,7 @@ const getSandboxStatusLabel = (status: V1SandboxStatus): string => {
 
 export function SandboxStatusIndicator({
   sandboxStatus,
-}: SandboxStatusIndicatorProps) {
+}: SandboxStatusIndicatorProps): React.JSX.Element {
   const { t } = useTranslation();
 
   const sandboxStatusBackgroundColor = useMemo(() => {
@@ -54,6 +56,7 @@ export function SandboxStatusIndicator({
       tooltipClassName="bg-[#1a1a1a] text-white text-xs shadow-lg"
     >
       <div
+        aria-label={statusLabel}
         className={cn("w-1.5 h-1.5 rounded-full", sandboxStatusBackgroundColor)}
       />
     </StyledTooltip>

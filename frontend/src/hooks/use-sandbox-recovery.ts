@@ -23,16 +23,15 @@ interface UseSandboxRecoveryOptions {
  * Hook that handles sandbox recovery based on user intent.
  *
  * Recovery triggers:
- * - Page refresh: Resumes the sandbox on initial load if it was paused/stopped
- * - Tab gains focus: Resumes the sandbox if it was paused/stopped
+ * - Page refresh: Resumes the sandbox on initial load if it was paused
+ * - Tab gains focus: Resumes the sandbox if it was paused
  *
  * What does NOT trigger recovery:
  * - WebSocket disconnect: Does NOT automatically resume the sandbox
- *   (The server pauses sandboxes after 20 minutes of inactivity,
- *    and sandboxes should only be resumed when the user explicitly shows intent)
+ *   Sandboxes should only resume when the user shows intent.
  *
  * @param options.conversationId - The conversation ID to recover
- * @param options.conversationStatus - The current conversation status
+ * @param options.sandboxStatus - The current sandbox status
  * @param options.refetchConversation - Function to refetch conversation data on tab focus
  * @param options.onSuccess - Callback when recovery succeeds
  * @param options.onError - Callback when recovery fails
@@ -44,7 +43,7 @@ export function useSandboxRecovery({
   refetchConversation,
   onSuccess,
   onError,
-}: UseSandboxRecoveryOptions) {
+}: UseSandboxRecoveryOptions): { isResuming: boolean } {
   const { t } = useTranslation();
   const { providers } = useUserProviders();
   const { mutate: resumeSandbox, isPending: isResuming } =
@@ -52,10 +51,10 @@ export function useSandboxRecovery({
 
   // Track which conversation ID we've already processed for initial load recovery
   const processedConversationIdRef = React.useRef<string | null>(null);
+  const observedConversationIdRef = React.useRef(conversationId);
 
   const attemptRecovery = React.useCallback(
-    (statusOverride?: V1SandboxStatus) => {
-      const status = statusOverride ?? sandboxStatus;
+    (status: V1SandboxStatus | undefined) => {
       /**
        * Only recover if sandbox is paused
        */
@@ -81,7 +80,6 @@ export function useSandboxRecovery({
     },
     [
       conversationId,
-      sandboxStatus,
       isResuming,
       providers,
       resumeSandbox,
@@ -93,7 +91,15 @@ export function useSandboxRecovery({
 
   // Handle page refresh (initial load) and conversation navigation
   React.useEffect(() => {
-    if (!conversationId || !sandboxStatus) return;
+    if (observedConversationIdRef.current !== conversationId) {
+      observedConversationIdRef.current = conversationId;
+      processedConversationIdRef.current = null;
+    }
+    // An outage must not consume the navigation intent. A later PAUSED
+    // response can still resume this conversation once.
+    if (!conversationId || !sandboxStatus || sandboxStatus === "UNKNOWN") {
+      return;
+    }
 
     // Only attempt recovery once per conversation (handles both initial load and navigation)
     if (processedConversationIdRef.current === conversationId) return;
@@ -101,7 +107,7 @@ export function useSandboxRecovery({
     processedConversationIdRef.current = conversationId;
 
     if (sandboxStatus === "PAUSED") {
-      attemptRecovery();
+      attemptRecovery(sandboxStatus);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, sandboxStatus]);
@@ -113,7 +119,16 @@ export function useSandboxRecovery({
     try {
       // Refetch to get fresh status - cached status may be stale if sandbox was paused while tab was inactive
       const { data } = await refetchConversation();
-      attemptRecovery(data?.sandbox_status);
+      if (observedConversationIdRef.current !== conversationId) return;
+      if (data?.sandbox_status === "UNKNOWN") {
+        // Preserve tab-focus intent while the provider is unavailable too.
+        processedConversationIdRef.current = null;
+      } else if (data?.sandbox_status) {
+        // The focus refetch may finish before the initial-load effect sees the
+        // same status. Consume that intent before starting the mutation.
+        processedConversationIdRef.current = conversationId;
+        attemptRecovery(data.sandbox_status);
+      }
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error(

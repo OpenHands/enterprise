@@ -28,11 +28,13 @@ class EventCallbackStatus(Enum):
 
 def upgrade() -> None:
     """Upgrade schema."""
+    callback_status = sa.Enum(EventCallbackStatus)
+    callback_status.create(op.get_bind(), checkfirst=True)
     op.add_column(
         'event_callback',
         sa.Column(
             'status',
-            sa.Enum(EventCallbackStatus),
+            callback_status,
             nullable=False,
             server_default='ACTIVE',
         ),

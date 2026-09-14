@@ -110,6 +110,11 @@ class AppConversationServiceBase(AppConversationService, ABC):
     init_git_in_empty_workspace: bool
     user_context: UserContext
 
+    @property
+    def callback_url(self) -> str | None:
+        """Application callback address, when supplied by the concrete service."""
+        return None
+
     async def load_and_merge_all_skills(
         self,
         sandbox: SandboxInfo,
@@ -713,13 +718,13 @@ class AppConversationServiceBase(AppConversationService, ABC):
         secret_path = (
             f'/api/v1/sandboxes/{sandbox.id}/settings/secrets/azure_devops_token'
         )
-        web_url = getattr(self, 'web_url', None)
+        web_url = self.callback_url
         if web_url is None:
             _logger.debug(
                 'Azure DevOps git credential helper has no configured web_url; '
                 'it will rely on OH_WEBHOOKS_0_BASE_URL at runtime.'
             )
-        app_base_url = shlex.quote(web_url if isinstance(web_url, str) else '')
+        app_base_url = shlex.quote(web_url or '')
         helper_script = f"""#!/bin/sh
 if [ "$1" != "get" ]; then
   exit 0

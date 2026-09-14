@@ -2,6 +2,7 @@
 // This file contains types for Sandbox API.
 
 export type V1SandboxStatus =
+  | "UNKNOWN"
   | "MISSING"
   | "STARTING"
   | "RUNNING"
@@ -18,6 +19,7 @@ export interface V1SandboxInfo {
   created_by_user_id: string | null;
   sandbox_spec_id: string;
   status: V1SandboxStatus;
+  working_dir?: string | null;
   session_api_key: string | null;
   exposed_urls: V1ExposedUrl[] | null;
   created_at: string;

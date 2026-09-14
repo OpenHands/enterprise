@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { I18nKey } from "#/i18n/declaration";
 import DebugStackframeDot from "#/icons/debug-stackframe-dot.svg?react";
 import { AgentState } from "#/types/agent-state";
 import { useAgentState } from "#/hooks/use-agent-state";
@@ -17,7 +18,7 @@ export function ServerStatus({
   className = "",
   sandboxStatus,
   isPausing = false,
-}: ServerStatusProps) {
+}: ServerStatusProps): React.JSX.Element {
   const { curAgentState } = useAgentState();
   const { isTask, taskStatus, taskDetail } = useTaskPolling();
   const { t } = useTranslation();
@@ -27,26 +28,31 @@ export function ServerStatus({
     curAgentState === AgentState.LOADING || curAgentState === AgentState.INIT;
   const isStopStatus = sandboxStatus === "MISSING";
 
-  const statusColor = getStatusColor({
-    isPausing,
-    isTask,
-    taskStatus,
-    isStartingStatus,
-    isStopStatus,
-    curAgentState,
-  });
+  const isUnavailable = sandboxStatus === "UNKNOWN";
+  const statusColor = isUnavailable
+    ? "#A3A3A3"
+    : getStatusColor({
+        isPausing,
+        isTask,
+        taskStatus,
+        isStartingStatus,
+        isStopStatus,
+        curAgentState,
+      });
 
-  const statusText = getStatusText({
-    isPausing,
-    isTask,
-    taskStatus,
-    taskDetail,
-    isStartingStatus,
-    isStopStatus,
-    curAgentState,
-    errorMessage,
-    t,
-  });
+  const statusText = isUnavailable
+    ? t(I18nKey.SANDBOX$TEMPORARILY_UNAVAILABLE)
+    : getStatusText({
+        isPausing,
+        isTask,
+        taskStatus,
+        taskDetail,
+        isStartingStatus,
+        isStopStatus,
+        curAgentState,
+        errorMessage,
+        t,
+      });
 
   return (
     <div className={className} data-testid="server-status">
