@@ -9,14 +9,19 @@ from urllib.parse import urlsplit
 import docker
 import httpx
 import pytest
+from fastapi import FastAPI
 from sqlalchemy import select
 
+from openhands.app_server.user_auth import get_user_id
+from server.routes.budget_control import get_budget_controller
+from server.routes.orgs import org_budget_service_dependency, org_router
 from server.services.budget_adoption_plan import BudgetAdoptionRequest
 from server.services.budget_adoption_service import BudgetAdoptionService
 from server.services.managed_budget_service import (
     ManagedBudgetService,
     ManagedBudgetUpdate,
 )
+from server.services.org_budget_service import OrgBudgetService
 from storage.lite_llm_manager import LiteLlmManager
 from storage.litellm_credentials import ensure_byor_credential
 from storage.org_budget_operation import OrgBudgetOperation
@@ -49,11 +54,13 @@ async def live_proxy(monkeypatch, async_session_maker):
 @pytest.fixture
 async def restart_proxy(live_proxy):
     """Restart only the dedicated local compose proxy, never an arbitrary endpoint."""
+    project = os.environ.get('BUDGET_TEST_COMPOSE_PROJECT', 'budget-control-local')
+    assert project in {'budget-control-local', 'budget-control-local-candidate'}
     with closing(docker.from_env()) as client:
         containers = client.containers.list(
             filters={
                 'label': [
-                    'com.docker.compose.project=budget-control-local',
+                    f'com.docker.compose.project={project}',
                     'com.docker.compose.service=proxy',
                 ]
             }
@@ -323,6 +330,180 @@ async def test_real_proxy_zero_allowance_denies_and_raise_restores_access(
         == before['member_counters'][str(user_id)]
     )
     (await infer(live_proxy, key)).raise_for_status()
+
+
+@pytest.mark.asyncio
+async def test_real_proxy_team_quarantine_refreshes_member_allowance(
+    live_proxy, live_member, restart_proxy
+):
+    org_id, user_id, key = live_member
+    (await infer(live_proxy, key)).raise_for_status()
+    before = await metered_snapshot(org_id, user_id)
+    spent = before['member_counters'][str(user_id)]['spend']
+    response = await live_proxy.post(
+        '/team/member_update',
+        json={
+            'team_id': str(org_id),
+            'user_id': str(user_id),
+            'max_budget_in_team': spent,
+        },
+    )
+    response.raise_for_status()
+    await restart_proxy()
+    denied = await infer(live_proxy, key)
+    assert denied.status_code == 429, denied.text
+    assert 'budget' in denied.text.lower()
+
+    # Exercise the native block/update/readback/unblock sequence independently.
+    for endpoint, body in [
+        ('/team/update', {'team_id': str(org_id), 'blocked': True}),
+        (
+            '/team/update',
+            {'team_id': str(org_id), 'max_budget': before['team_max_budget']},
+        ),
+        (
+            '/team/member_update',
+            {
+                'team_id': str(org_id),
+                'user_id': str(user_id),
+                'max_budget_in_team': spent + 5,
+            },
+        ),
+    ]:
+        response = await live_proxy.post(endpoint, json=body)
+        response.raise_for_status()
+    observed = await LiteLlmManager.get_team_members_financial_data(
+        str(org_id), include_control_policy=True
+    )
+    assert observed['team_max_budget'] == before['team_max_budget']
+    assert observed['members'][str(user_id)]['max_budget'] == spent + 5
+    assert observed['member_counters'] == before['member_counters']
+    assert observed['control_policy']['team']['blocked'] is True
+    response = await live_proxy.post(
+        '/team/update', json={'team_id': str(org_id), 'blocked': False}
+    )
+    response.raise_for_status()
+    reopened = await infer(live_proxy, key)
+    assert reopened.status_code == 200, reopened.text
+
+
+@pytest.mark.asyncio
+async def test_real_proxy_http_preview_retry_edit_and_handoff(
+    live_proxy, live_member, async_engine, async_session_maker, monkeypatch
+):
+    org_id, user_id, key = live_member
+    (await infer(live_proxy, key)).raise_for_status()
+    before = await metered_snapshot(org_id, user_id)
+    service = ManagedBudgetService(async_engine)
+    monkeypatch.setattr('storage.role_store.a_session_maker', async_session_maker)
+    app = FastAPI()
+    app.include_router(org_router)
+    # Substitute login identity only; permission checks use the actual owner row.
+    app.dependency_overrides[get_user_id] = lambda: str(user_id)
+    app.dependency_overrides[get_budget_controller] = lambda: service
+
+    async def budget_service():
+        async with async_session_maker() as session:
+            yield OrgBudgetService(session)
+
+    app.dependency_overrides[org_budget_service_dependency.dependency] = budget_service
+    real_write = LiteLlmManager.apply_budget_write
+    response_lost = False
+
+    async def lose_one_response(org_id, operation_id, path, body):
+        nonlocal response_lost
+        await real_write(org_id, operation_id, path, body)
+        if path == '/team/update' and not response_lost:
+            response_lost = True
+            raise httpx.ReadTimeout('Injected response loss after actual native write')
+
+    monkeypatch.setattr(LiteLlmManager, 'apply_budget_write', lose_one_response)
+    url = f'/api/organizations/{org_id}/budgets'
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url='http://test'
+    ) as api:
+        preview = await api.get(f'{url}/adoption/preview')
+        assert preview.status_code == 200, preview.text
+        assert key not in preview.text
+        data = preview.json()
+        assert data['control_mode'] == 'needs_adoption'
+        assert data['team_policy']['max_budget'] == before['team_max_budget']
+        assert (
+            data['members'][0]['enforcement_spend']
+            == before['member_counters'][str(user_id)]['spend']
+        )
+        assert (
+            await LiteLlmManager.get_team_members_financial_data(
+                str(org_id), include_control_policy=True
+            )
+            == before
+        )
+        request = {
+            'preview_fingerprint': data['fingerprint'],
+            'idempotency_key': 'live-http-confirm',
+            'current_team_allowance': 10,
+            'current_default_member_allowance': 5,
+            'future_monthly_limit': 20,
+            'future_default_member_limit': 7,
+            'reset_day': 1,
+            'replace_native_reset_schedules': True,
+        }
+        pending = await api.post(f'{url}/adoption', json=request)
+        assert pending.status_code == 202, pending.text
+        assert response_lost and pending.json()['status'] == 'pending'
+        operation_id = pending.json()['operation_id']
+        operation_url = f'{url}/operations/{operation_id}'
+        status = await api.get(operation_url)
+        assert status.status_code == 202, status.text
+        assert status.json()['operation_id'] == operation_id
+        rejected = await api.post(f'{url}/handoff', json={'expected_generation': 0})
+        assert rejected.status_code == 409, rejected.text
+        retried = await api.post(f'{operation_url}/retry')
+        assert retried.status_code == 200, retried.text
+        assert retried.json()['operation_id'] == operation_id
+        assert retried.json()['generation'] == 1
+        repeated = await api.post(f'{url}/adoption', json=request)
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json() == retried.json()
+        settings = await api.get(url)
+        assert settings.status_code == 200, settings.text
+        assert settings.json()['pending_operation_id'] is None
+        assert settings.json()['current_cycle_allowance'] == 10
+        assert settings.json()['monthly_limit'] == 20
+        assert settings.json()['desired_team_max_budget'] == before['team_spend'] + 10
+        update = {
+            'idempotency_key': 'live-http-edit',
+            'expected_generation': 1,
+            'enabled': True,
+            'current_cycle_team_allowance': 15,
+            'current_cycle_default_member_allowance': 5,
+            'future_monthly_limit': 30,
+            'future_default_member_limit': 7,
+            'reset_day': 1,
+        }
+        edited = await api.patch(f'{url}/policy', json=update)
+        assert edited.status_code == 200, edited.text
+        assert edited.json()['generation'] == 2
+        observed = await LiteLlmManager.get_team_members_financial_data(
+            str(org_id), include_control_policy=True
+        )
+        assert observed['team_spend'] == before['team_spend']
+        assert observed['team_max_budget'] == before['team_spend'] + 15
+        assert (
+            observed['member_counters'][str(user_id)]['spend']
+            == before['member_counters'][str(user_id)]['spend']
+        )
+        handed_off = await api.post(f'{url}/handoff', json={'expected_generation': 2})
+        assert handed_off.status_code == 200, handed_off.text
+        assert handed_off.json() == {'control_mode': 'external', 'generation': 3}
+        assert (await service.maintain(org_id))['status'] == 'skipped'
+        assert (
+            await LiteLlmManager.get_team_members_financial_data(
+                str(org_id), include_control_policy=True
+            )
+            == observed
+        )
+        (await infer(live_proxy, key)).raise_for_status()
 
 
 @pytest.mark.asyncio

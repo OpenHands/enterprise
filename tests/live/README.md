@@ -30,10 +30,34 @@ The default loopback port is 41400; override `BUDGET_TEST_LITELLM_PORT` if occup
 Restart tests verify the compose labels and exact loopback binding before touching
 the proxy. The database stays running across proxy restarts.
 
+To compare a dependency candidate without replacing the baseline database, use
+the separate `budget-control-local-candidate` project and another loopback port:
+
+```sh
+BUDGET_TEST_LITELLM_IMAGE=<verified-candidate-image> BUDGET_TEST_LITELLM_PORT=41401 \
+  docker compose -p budget-control-local-candidate -f tests/live/litellm.compose.yaml up -d
+# Wait for http://127.0.0.1:41401/health/readiness, then run the same assertions.
+BUDGET_TEST_COMPOSE_PROJECT=budget-control-local-candidate \
+  BUDGET_TEST_LITELLM_URL=http://127.0.0.1:41401 TMPDIR=/tmp \
+  uv run pytest tests/live -q --tb=short
+docker compose -p budget-control-local-candidate -f tests/live/litellm.compose.yaml down
+```
+
+The native-only quarantine regression warms an exhausted member's admission
+cache, blocks the team, raises the member cap, verifies spend/caps and unblocks
+the team. The same virtual key must immediately work; management readback alone
+does not pass this test. Both this regression and the controller's member-raise
+assertion fail on the 1.94.1 baseline.
+
 The root pytest fixture starts a separate PostgreSQL test database for the
 application and migrates it to head. Missing prerequisites fail explicitly; this
 suite is not silently skipped by the unit suite. CI's `tests/unit` selection does
 not run these opt-in tests.
+
+The HTTP scenario exercises the public preview/confirm/status/retry/edit/handoff
+routes with real application ownership/permission rows and the native proxy.
+Only login identity and database/controller injection are supplied by the harness;
+it does not establish Keycloak, browser or deployed-image authentication behavior.
 
 Required additional release gates include exact-image fresh install and revision
 153 upgrade, the four-org/95-member reconstructed customer state, old and suspended

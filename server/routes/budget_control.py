@@ -18,6 +18,11 @@ from server.services.budget_adoption_plan import (
     BudgetAdoptionUnsupported,
 )
 from server.services.budget_adoption_service import BudgetOperationNotFound
+from server.services.budget_notification_service import (
+    BudgetNotificationService,
+    BudgetNotificationState,
+    BudgetNotificationUpdate,
+)
 from server.services.managed_budget_service import (
     ManagedBudgetService,
     ManagedBudgetUpdate,
@@ -26,7 +31,11 @@ from server.services.org_budget_service import (
     OrgBudgetService,
     OrgBudgetServiceInjector,
 )
-from storage.budget_control import BudgetControlConflict, BudgetWriteDenied
+from storage.budget_control import (
+    BudgetControlConflict,
+    BudgetWriteDenied,
+    budget_engine,
+)
 
 budget_control_router = APIRouter(prefix='/{org_id}/budgets')
 _service_injector = OrgBudgetServiceInjector()
@@ -43,9 +52,20 @@ async def get_budget_controller(
 _controller = Depends(get_budget_controller)
 
 
+async def get_budget_notifications(
+    service: OrgBudgetService = Depends(_service_injector.depends),
+) -> BudgetNotificationService:
+    return BudgetNotificationService(budget_engine(service.db_session))
+
+
+_notifications = Depends(get_budget_notifications)
+
+
 async def _call(action: Callable[[], Awaitable[T]]) -> T:
     try:
         return await action()
+    except HTTPException:
+        raise
     except BudgetOperationNotFound as error:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, 'Budget operation not found'
@@ -75,6 +95,31 @@ def _operation(result: dict, response: Response) -> BudgetOperationResponse:
         response.status_code = status.HTTP_202_ACCEPTED
     response.headers['Cache-Control'] = 'no-store'
     return BudgetOperationResponse.from_result(result)
+
+
+@budget_control_router.get('/notifications', response_model=BudgetNotificationState)
+async def get_budget_notification_preferences(
+    org_id: UUID,
+    response: Response,
+    user_id: str = _admin,
+    service: BudgetNotificationService = _notifications,
+) -> BudgetNotificationState:
+    result = await _call(lambda: service.get(org_id, user_id))
+    response.headers['Cache-Control'] = 'no-store'
+    return result
+
+
+@budget_control_router.put('/notifications', response_model=BudgetNotificationState)
+async def update_budget_notification_preferences(
+    org_id: UUID,
+    request: BudgetNotificationUpdate,
+    response: Response,
+    user_id: str = _admin,
+    service: BudgetNotificationService = _notifications,
+) -> BudgetNotificationState:
+    result = await _call(lambda: service.update(org_id, user_id, request))
+    response.headers['Cache-Control'] = 'no-store'
+    return result
 
 
 @budget_control_router.get('/adoption/preview', response_model=BudgetPreviewResponse)

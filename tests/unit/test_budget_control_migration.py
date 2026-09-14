@@ -17,7 +17,7 @@ from storage.llm_credential_operation import LlmCredentialOperation
 from storage.org_budget_operation import OrgBudgetOperation
 from storage.org_budget_settings import OrgBudgetSettings
 
-migration = import_module('migrations.versions.163_add_budget_control_operations')
+migration = import_module('migrations.versions.164_add_budget_control_operations')
 baseline_migration = import_module(
     'migrations.versions.162_add_org_budget_cycle_baseline'
 )
@@ -175,7 +175,7 @@ def test_actual_alembic_downgrade_preserves_ownership_and_evidence(
     assert snapshot() == before
     with engine.connect() as connection:
         assert (
-            connection.scalar(text('SELECT version_num FROM alembic_version')) == '163'
+            connection.scalar(text('SELECT version_num FROM alembic_version')) == '164'
         )
     with pytest.raises(DBAPIError, match='verification evidence is immutable'):
         with engine.begin() as connection:
@@ -191,7 +191,7 @@ def test_actual_alembic_downgrade_preserves_ownership_and_evidence(
 def test_ci_cannot_accept_missing_fence_or_unrelated_downgrade_failure(
     monkeypatch, failure
 ):
-    monkeypatch.setattr(roundtrip, 'current_heads', lambda config: ('163',))
+    monkeypatch.setattr(roundtrip, 'current_heads', lambda config: ('164',))
     monkeypatch.setattr(roundtrip.command, 'downgrade', Mock(side_effect=failure))
     upgrade = Mock()
     monkeypatch.setattr(roundtrip.command, 'upgrade', upgrade)
@@ -202,13 +202,13 @@ def test_ci_cannot_accept_missing_fence_or_unrelated_downgrade_failure(
 
 def test_future_migration_still_requires_normal_roundtrip(monkeypatch):
     script = Mock()
-    script.get_current_head.return_value = '164'
-    script.get_revision.return_value.down_revision = '163'
+    script.get_current_head.return_value = '165'
+    script.get_revision.return_value.down_revision = '164'
     monkeypatch.setattr(
         roundtrip.ScriptDirectory, 'from_config', Mock(return_value=script)
     )
     monkeypatch.setattr(
-        roundtrip, 'current_heads', Mock(side_effect=[('164',), ('163',), ('164',)])
+        roundtrip, 'current_heads', Mock(side_effect=[('165',), ('164',), ('165',)])
     )
     downgrade, upgrade = Mock(), Mock()
     monkeypatch.setattr(roundtrip.command, 'downgrade', downgrade)

@@ -10,6 +10,7 @@ import {
   UpdateOrganizationMemberParams,
 } from "#/types/org";
 import { Settings, MarketplaceRegistration } from "#/types/settings";
+import type { BudgetControlMode } from "../budget-service/budget-service.types";
 import { openHands } from "../open-hands-axios";
 
 type OrganizationSettingsResponse = Pick<
@@ -636,7 +637,14 @@ interface OrgBudgetUser {
   applied_at?: string | null;
 }
 
-interface OrgBudgetSettings {
+export interface OrgBudgetSettings {
+  control_mode: BudgetControlMode;
+  control_generation: number;
+  pending_operation_id: string | null;
+  current_cycle_allowance: number | null;
+  current_cycle_default_member_allowance: number | null;
+  current_cycle_member_allowances: Record<string, number | null>;
+  future_member_limits: Record<string, number | null>;
   enabled: boolean;
   monthly_limit: number | null;
   litellm_last_sync_at: string | null;

@@ -28,14 +28,14 @@ def check_roundtrip(config: Config) -> None:
     if current_heads(config) != (head,):
         raise AssertionError('The test database must already be at migration head')
 
-    if head == '163':
+    if head == '164':
         try:
             command.downgrade(config, '-1')
         except BudgetOwnershipDowngradeError:
             pass
         else:
             raise AssertionError('The ownership downgrade fence did not refuse')
-        expected = ('163',)
+        expected = ('164',)
     else:
         command.downgrade(config, '-1')
         revision = script.get_revision(head)

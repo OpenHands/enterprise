@@ -1,7 +1,7 @@
 """Persist budget ownership and retryable write intent.
 
-Revision ID: 163
-Revises: 162
+Revision ID: 164
+Revises: 163
 Create Date: 2026-09-14
 """
 
@@ -13,8 +13,8 @@ from sqlalchemy.dialects import postgresql
 
 from migrations.exceptions import BudgetOwnershipDowngradeError
 
-revision: str = '163'
-down_revision: str | None = '162'
+revision: str = '164'
+down_revision: str | None = '163'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -185,6 +185,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     raise BudgetOwnershipDowngradeError(
         'Budget ownership cannot be safely removed by an online downgrade. '
-        'Use an ownership-aware rollback release; a pre-163 restore requires '
+        'Use an ownership-aware rollback release; a pre-164 restore requires '
         'quiescing all OpenHands writers and a coordinated database restore.'
     )
