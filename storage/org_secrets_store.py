@@ -189,7 +189,7 @@ class OrgSecretsStore:
                     secret=SecretStr(decrypted),
                     description=self._jwt_svc.decrypt_value(row.description)
                     if row.description
-                    else None,
+                    else '',
                 )
             return secrets
 
