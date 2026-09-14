@@ -29776,5 +29776,53 @@
   },
   "NATIVE_AUTH$EMAIL_PASSWORD_METHOD": {
     "en": "Email and password"
+  },
+  "NATIVE_AUTH$SIGN_IN_EMAIL": {
+    "en": "Sign in with Email"
+  },
+  "NATIVE_AUTH$SIGN_IN_SSO": {
+    "en": "Sign in with SSO"
+  },
+  "NATIVE_AUTH$OTHER_SIGN_IN_METHOD": {
+    "en": "Choose another sign-in method"
+  },
+  "NATIVE_AUTH$SSO_FAILED": {
+    "en": "Single sign-on could not be completed. Try again or contact your administrator."
+  },
+  "NATIVE_AUTH$SSO_ACCOUNT_LINK_REQUIRED": {
+    "en": "An account already uses this email. Sign in to that account, then link SSO in User settings."
+  },
+  "NATIVE_AUTH$SSO_INVITATION_REQUIRED": {
+    "en": "Ask an administrator for an account invitation, then start SSO from that invitation."
+  },
+  "NATIVE_AUTH$SSO_EMAIL_MISMATCH": {
+    "en": "Your SSO email does not match this account or invitation. Use the matching identity and start again."
+  },
+  "NATIVE_AUTH$SSO_UNAVAILABLE": {
+    "en": "This account cannot use SSO. Contact an administrator."
+  },
+  "NATIVE_AUTH$SSO_RECENT_AUTH_REQUIRED": {
+    "en": "Sign in again to confirm your identity, then retry this action."
+  },
+  "NATIVE_AUTH$SSO_TEMPORARILY_UNAVAILABLE": {
+    "en": "SSO is temporarily unavailable. Wait a moment, then start sign-in again."
+  },
+  "NATIVE_AUTH$SSO_COMPLETING": {
+    "en": "Completing single sign-on…"
+  },
+  "NATIVE_AUTH$SSO_METHOD": {
+    "en": "Single sign-on (SSO)"
+  },
+  "NATIVE_AUTH$SSO_PASSWORD_HELP": {
+    "en": "You sign in through your organization's identity provider. Manage your password with that provider."
+  },
+  "NATIVE_AUTH$LINK_SSO": {
+    "en": "Link SSO to this account"
+  },
+  "NATIVE_AUTH$LINK_SSO_HELP": {
+    "en": "Add single sign-on to your OpenHands account. You will confirm your identity, then sign in with your organization's identity provider."
+  },
+  "NATIVE_AUTH$SSO_REAUTH_RETRY": {
+    "en": "Sign in with SSO again, then retry this action."
   }
 }

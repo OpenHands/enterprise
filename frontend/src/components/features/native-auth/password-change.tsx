@@ -4,6 +4,7 @@ import { SettingsInput } from "#/components/features/settings/settings-input";
 import { Typography } from "#/ui/typography";
 import { useChangePassword } from "#/hooks/mutation/use-native-auth";
 import { useNativeProfile } from "#/hooks/query/use-native-profile";
+import { useConfig } from "#/hooks/query/use-config";
 import { NativeAuthError } from "#/api/native-auth-service/native-auth-service.api";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { AuthError, PasswordFields, NativeLoginForm } from "./auth-form";
@@ -12,6 +13,7 @@ export function PasswordChange(): React.JSX.Element | null {
   const { t } = useTranslation();
   const change = useChangePassword();
   const { data: profile } = useNativeProfile();
+  const { data: config } = useConfig();
   const [error, setError] = useState<string | null>(null);
   const [complete, setComplete] = useState(false);
   const [reauth, setReauth] = useState(false);
@@ -48,7 +50,11 @@ export function PasswordChange(): React.JSX.Element | null {
   };
   // Missing capabilities on an older password-only backend retain its form.
   // Do not offer password operations until a federated profile confirms one.
-  if (!profile || profile.has_password === false) return null;
+  if (
+    !profile ||
+    !(profile.has_password ?? !config?.login_methods?.includes("saml"))
+  )
+    return null;
   return (
     <section className="max-w-[680px] flex flex-col gap-4">
       <Typography.H3 className="text-xl">

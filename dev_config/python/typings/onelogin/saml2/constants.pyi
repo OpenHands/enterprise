@@ -1,0 +1,15 @@
+class OneLogin_Saml2_Constants:
+    CM_BEARER: str
+    NS_SAMLP: str
+    NS_SAML: str
+    RSA_SHA256: str
+    SHA256: str
+    NAMEID_PERSISTENT: str
+    STATUS_SUCCESS: str
+    AC_PASSWORD: str
+    NS_DS: str
+    NS_XENC: str
+    AC_PASSWORD_PROTECTED: str
+    NAMEID_TRANSIENT: str
+    RSA_SHA1: str
+    SHA1: str

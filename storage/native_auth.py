@@ -10,6 +10,7 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -72,6 +73,35 @@ class PasswordCredential(Base):
     )
 
 
+class ExternalIdentity(Base):
+    """A trusted connection and immutable provider subject identify an account.
+
+    Retain mappings after terminal account deletion so replaying an old provider
+    identity cannot silently create a replacement account.
+    """
+
+    __tablename__ = 'external_identity'
+    __table_args__ = (
+        UniqueConstraint(
+            'auth_method',
+            'connection_id',
+            'issuer',
+            'subject',
+            name='uq_external_identity_subject',
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey('auth_account.id'), index=True)
+    connection_id: Mapped[str] = mapped_column(String(128))
+    issuer: Mapped[str] = mapped_column(String(512))
+    subject: Mapped[str] = mapped_column(String(512))
+    auth_method: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc
+    )
+
+
 class BrowserSession(Base):
     __tablename__ = 'browser_session'
 
@@ -81,6 +111,9 @@ class BrowserSession(Base):
     session_version: Mapped[int] = mapped_column()
     credential_version: Mapped[int] = mapped_column()
     auth_method: Mapped[str] = mapped_column(String(32), default='password')
+    external_identity_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey('external_identity.id')
+    )
     auth_time: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=now_utc
     )

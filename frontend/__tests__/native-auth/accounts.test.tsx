@@ -105,4 +105,17 @@ describe("native Users administration", () => {
     expect(screen.queryByDisplayValue("https://app.test/password-reset#token=only-once")).not.toBeInTheDocument();
   });
 
+  it("does not offer a password reset for an SSO-only account", async () => {
+    vi.spyOn(NativeAuthService, "invitationOrganizations").mockResolvedValue({ items: [], total: 0 });
+    vi.spyOn(NativeAuthService, "profile").mockResolvedValue({ id: "admin", email: "admin@example.com", global_permissions: ["manage_users"] });
+    const federated: NativeAccount = { ...account, authentication_methods: ["saml"] };
+    vi.spyOn(NativeAuthService, "accounts").mockResolvedValue({ items: [federated], total: 1 });
+    vi.spyOn(NativeAuthService, "account").mockResolvedValue(federated);
+    vi.spyOn(NativeAuthService, "invitations").mockResolvedValue({ items: [], total: 0 });
+    vi.spyOn(NativeAuthService, "roles").mockResolvedValue([]);
+    mount(AdminUsers);
+    fireEvent.click(await screen.findByRole("button", { name: "member@example.com" }));
+    await screen.findByRole("button", { name: "NATIVE_AUTH$DISABLE" });
+    expect(screen.queryByRole("button", { name: "NATIVE_AUTH$CREATE_RESET_LINK" })).not.toBeInTheDocument();
+  });
 });

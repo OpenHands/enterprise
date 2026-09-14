@@ -52,6 +52,10 @@ async def _has_legacy_identities(session: AsyncSession) -> bool:
 async def initialize_auth_installation(
     *, session_factory: SessionFactory | None = None
 ) -> None:
+    if not auth_config.ENABLE_KEYCLOAK:
+        from server.auth.saml_config import get_saml_settings
+
+        get_saml_settings()
     factory = session_factory or a_session_maker
     async with factory() as session, session.begin():
         await lock_native_lifecycle(session)
@@ -116,7 +120,9 @@ async def verify_auth_installation(
     factory = session_factory or a_session_maker
     if not auth_config.ENABLE_KEYCLOAK:
         auth_config.get_native_auth_settings()
+        from server.auth.saml_config import get_saml_settings
 
+        get_saml_settings()
     async with factory() as session:
         installation = await session.get(AuthInstallation, 1)
         if installation is None or installation.completed_at is None:

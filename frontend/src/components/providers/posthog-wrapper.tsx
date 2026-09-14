@@ -6,7 +6,11 @@ import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
 
 const POSTHOG_BOOTSTRAP_KEY = "posthog_bootstrap";
-const sensitiveRoutes = ["/account-setup", "/password-reset"];
+const sensitiveRoutes = [
+  "/account-setup",
+  "/password-reset",
+  "/auth/saml/complete",
+];
 
 function getBootstrapIds() {
   // Try to extract from URL hash (e.g. #distinct_id=abc&session_id=xyz)
@@ -104,7 +108,9 @@ export function PostHogWrapper({
             const name = request.name || "";
             if (
               /\/api\/(auth\/|admin\/auth-|git-connections)/.test(name) ||
-              /\/(account-setup|password-reset)([?#]|$)/.test(name)
+              /\/(account-setup|password-reset|auth\/saml\/complete)([?#]|$)/.test(
+                name,
+              )
             )
               return null;
             return request;

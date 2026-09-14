@@ -94,7 +94,7 @@ export function installNativeCsrf(client: AxiosInstance): void {
     ): AxiosResponse<unknown, unknown> => {
       if (
         isNativeAuth() &&
-        /\/api\/(auth\/password\/(login|change)|auth\/enrollment\/complete|logout)$/.test(
+        /\/api\/(auth\/password\/(login|change)|auth\/enrollment\/complete|auth\/saml\/complete|logout)$/.test(
           response.config.url || "",
         )
       ) {

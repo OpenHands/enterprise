@@ -2,10 +2,22 @@ import axios from "axios";
 import AuthService from "../auth-service/auth-service.api";
 import { openHands } from "../open-hands-axios";
 
+const SAML_ERROR_CODES = [
+  "account_link_required",
+  "invitation_required",
+  "email_mismatch",
+  "unavailable",
+  "recent_auth_required",
+  "temporarily_unavailable",
+  "invalid_response",
+] as const;
+export type SamlErrorCode = (typeof SAML_ERROR_CODES)[number];
+
 export class NativeAuthError extends Error {
   constructor(
     public status: number,
     message: string,
+    public code?: SamlErrorCode,
   ) {
     super(message);
   }
@@ -33,7 +45,7 @@ export function safeNativeError(error: unknown): NativeAuthError {
   );
 }
 
-export type NativeAuthenticationMethod = "password";
+export type NativeAuthenticationMethod = "password" | "saml";
 
 export interface NativeProfile {
   id: string;
@@ -97,6 +109,39 @@ export interface NativeLoginInput {
   invitation_token?: string;
 }
 
+export interface SamlStartInput {
+  return_path?: string;
+  invitation_token?: string;
+  link?: boolean;
+  reauthenticate?: boolean;
+}
+
+// Protocol failures must not retain assertion details or the redirect URL.
+async function samlRequest(
+  path: string,
+  input: SamlStartInput,
+): Promise<AuthRedirect> {
+  try {
+    return (await openHands.post<{ redirect_to: string }>(path, input)).data;
+  } catch (error) {
+    const response = axios.isAxiosError<unknown, unknown>(error)
+      ? error.response
+      : undefined;
+    const data = response?.data;
+    const code =
+      typeof data === "object" && data !== null && "code" in data
+        ? data.code
+        : undefined;
+    throw new NativeAuthError(
+      response?.status || 0,
+      "Single sign-on could not be completed. Please try again.",
+      SAML_ERROR_CODES.find(
+        (candidate: SamlErrorCode): boolean => candidate === code,
+      ),
+    );
+  }
+}
+
 export interface AuthRedirect {
   redirect_to: string;
 }
@@ -129,6 +174,12 @@ export interface AccountLifecycleResult {
 export const NativeAuthService = {
   profile: async (): Promise<NativeProfile> =>
     (await openHands.get<NativeProfile>("/api/v1/users/me")).data,
+  startSaml: (input: SamlStartInput): Promise<AuthRedirect> =>
+    samlRequest("/api/auth/saml/start", input),
+  completeSaml: async (): Promise<NativeLoginResponse> => {
+    const result = await samlRequest("/api/auth/saml/complete", {});
+    return { ...result, ...(await AuthService.nativeSession()) };
+  },
   login: async (input: NativeLoginInput): Promise<NativeLoginResponse> => {
     const { data } = await openHands.post<{ redirect_to: string }>(
       "/api/auth/password/login",

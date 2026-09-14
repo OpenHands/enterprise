@@ -14,7 +14,9 @@ async def run_native_maintenance() -> dict[str, int]:
     from server.services.admin_user_lifecycle_service import AdminUserLifecycleService
     from server.services.native_auth_service import get_native_auth_service
     from server.services.native_provisioning_service import NativeProvisioningService
+    from server.services.native_saml_service import get_native_saml_service
 
+    await get_native_saml_service().cleanup_expired_state()
     await get_native_auth_service().cleanup_expired_state()
     failures = await AdminUserLifecycleService().retry_native_deletions()
     reconciler = NativeProvisioningService()

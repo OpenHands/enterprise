@@ -2,11 +2,23 @@ import { NativeAuthService } from "#/api/native-auth-service/native-auth-service
 import {
   useEphemeralMutation,
   EphemeralMutationFor,
+  EphemeralMutation,
 } from "./use-ephemeral-mutation";
 
 export const usePasswordLogin = (): EphemeralMutationFor<
   typeof NativeAuthService.login
 > => useEphemeralMutation(NativeAuthService.login);
+export const useStartSaml = (): EphemeralMutationFor<
+  typeof NativeAuthService.startSaml
+> => useEphemeralMutation(NativeAuthService.startSaml);
+export const useCompleteSaml = (): EphemeralMutation<
+  void,
+  Awaited<ReturnType<typeof NativeAuthService.completeSaml>>
+> =>
+  useEphemeralMutation<
+    void,
+    Awaited<ReturnType<typeof NativeAuthService.completeSaml>>
+  >(NativeAuthService.completeSaml);
 export const useInspectEnrollment = (): EphemeralMutationFor<
   typeof NativeAuthService.inspect
 > => useEphemeralMutation(NativeAuthService.inspect);

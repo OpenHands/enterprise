@@ -36,6 +36,7 @@ import { SettingsDropdownInput } from "#/components/features/settings/settings-d
 import { Typography } from "#/ui/typography";
 import { Pagination } from "#/ui/pagination";
 import { useConfig } from "#/hooks/query/use-config";
+import { SamlSignIn } from "#/components/features/native-auth/saml-sign-in";
 
 type AccountAction = "enable" | "disable" | "delete" | "grant" | "revoke";
 
@@ -314,7 +315,7 @@ export default function AdminUsers(): React.JSX.Element {
               </BrandButton>
               {!selected.is_disabled &&
                 (selected.authentication_methods?.includes("password") ??
-                  true) && (
+                  !config.login_methods?.includes("saml")) && (
                   <BrandButton
                     type="button"
                     variant="secondary"
@@ -473,11 +474,18 @@ export default function AdminUsers(): React.JSX.Element {
           onClose={(): void => setResetAccount(null)}
           className="max-w-full"
         >
-          <NativeLoginForm
-            email={profile?.email}
-            reauthenticate
-            onSuccess={() => resetPassword(resetAccount)}
-          />
+          {profile?.has_password !== false ? (
+            <NativeLoginForm
+              email={profile?.email}
+              reauthenticate
+              onSuccess={() => resetPassword(resetAccount)}
+            />
+          ) : (
+            <>
+              <p>{t("NATIVE_AUTH$SSO_REAUTH_RETRY")}</p>
+              <SamlSignIn returnTo="/settings/users" reauthenticate />
+            </>
+          )}
         </OrgModal>
       )}
     </div>

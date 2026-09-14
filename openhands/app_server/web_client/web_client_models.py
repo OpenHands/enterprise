@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.agent_server.env_parser import DiscriminatedUnionMixin
+from openhands.app_server.config_api.client_config_types import SamlCapability
 from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.web_client.web_client_deployment_mode import (
@@ -71,6 +72,7 @@ class ACPProviderConfig(BaseModel):
 
 class WebClientConfig(DiscriminatedUnionMixin):
     auth_mode: str = 'keycloak'
+    saml: SamlCapability | None = None
     login_methods: list[str] = Field(default_factory=list)
     git_connection_methods: dict[str, list[str]] = Field(default_factory=dict)
     app_mode: AppMode

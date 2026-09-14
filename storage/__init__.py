@@ -24,6 +24,7 @@ from storage.native_auth import (
     AuthInstallation,
     AuthThrottle,
     BrowserSession,
+    ExternalIdentity,
     PasswordCredential,
 )
 from storage.native_external_work import NativeExternalWork
@@ -63,6 +64,9 @@ __all__ = [
     'AuthInstallation',
     'AuthThrottle',
     'BrowserSession',
+    'ExternalIdentity',
+    'SamlReplay',
+    'SamlTransaction',
     'PasswordCredential',
     'ApiKey',
     'AuthTokens',
@@ -114,3 +118,5 @@ __all__ = [
     'UserSettings',
     'WebhookStatus',
 ]
+
+from storage.native_saml import SamlReplay, SamlTransaction

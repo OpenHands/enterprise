@@ -238,9 +238,20 @@ describe("PostHogWrapper", () => {
     const request = (name: string, bodies: Partial<Pick<CapturedNetworkRequest, "requestBody" | "responseBody">> = {}): CapturedNetworkRequest => ({ name, entryType: "resource", duration: 0, startTime: 0, ...bodies });
     expect(maskRequest(request("https://app.test/api/admin/auth-invitations", { responseBody: "secret" }))).toBeNull();
     expect(maskRequest(request("https://app.test/api/auth/password/login", { requestBody: "secret" }))).toBeNull();
+    expect(maskRequest(request("https://app.test/api/auth/saml/start", { responseBody: "private-saml-request" }))).toBeNull();
+    expect(maskRequest(request("https://app.test/api/auth/saml/acs", { requestBody: "private-assertion" }))).toBeNull();
+    expect(maskRequest(request("https://app.test/auth/saml/complete"))).toBeNull();
+    window.history.replaceState({}, "", "/auth/saml/complete");
+    expect(beforeSend({ uuid: "synthetic-event", event: "$pageview", properties: {} })).toBeNull();
     window.history.replaceState({}, "", "/");
   });
 
-
+  it("suppresses SAML completion analytics before config resolves and ignores bootstrap values", async () => {
+    window.history.replaceState({}, "", "/auth/saml/complete#distinct_id=private-id&session_id=private-session");
+    await act(async () => { render(<PostHogWrapper><span>Completing SSO</span></PostHogWrapper>); });
+    expect(mockPostHogProvider).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("posthog_bootstrap")).toBeNull();
+    window.history.replaceState({}, "", "/");
+  });
 
 });

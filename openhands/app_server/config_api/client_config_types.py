@@ -6,9 +6,15 @@ from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.integrations.service_types import ProviderType
 
 
+class SamlCapability(TypedDict):
+    connection_id: str
+    name: str
+
+
 class AuthCapabilities(TypedDict):
     auth_mode: str
     login_methods: list[str]
+    saml: NotRequired[SamlCapability]
     git_connection_methods: dict[str, list[str]]
 
 
@@ -35,4 +41,5 @@ class ClientConfig(TypedDict):
     RECAPTCHA_SITE_KEY: NotRequired[str]
     auth_mode: NotRequired[str]
     login_methods: NotRequired[list[str]]
+    saml: NotRequired[SamlCapability]
     git_connection_methods: NotRequired[dict[str, list[str]]]

@@ -32,12 +32,15 @@ ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_CACHE_DIR=/tmp/uv_cache
 
 RUN apt-get update -y \
-    && apt-get install -y curl make git build-essential jq gettext
+    && apt-get install -y curl make git build-essential jq gettext \
+        pkg-config libxml2-dev libxslt1-dev zlib1g-dev libxmlsec1-dev libxmlsec1t64-openssl
 
 # Install the dependencies. The source tree is copied into /app below and
 # imported from there via PYTHONPATH=/app.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-dev && rm -rf $UV_CACHE_DIR
+# Compile both bindings against the same libxml2 to avoid wheel ABI mismatches.
+RUN uv sync --locked --no-dev --no-binary-package lxml --no-binary-package xmlsec \
+    && rm -rf $UV_CACHE_DIR
 
 # ── enterprise-server ────────────────────────────────────────────────────────
 FROM base AS enterprise-server
@@ -68,7 +71,7 @@ RUN mkdir -p $WORKSPACE_BASE
 # System packages, Node.js v20+ and npm (which includes npx), and security
 # updates for packages with available fixes.
 RUN apt-get update -y \
-    && apt-get install -y curl git ssh sudo jq gettext \
+    && apt-get install -y curl git ssh sudo jq gettext libxml2 libxslt1.1 libxmlsec1t64-openssl \
     && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs \
     && apt-get upgrade -y \

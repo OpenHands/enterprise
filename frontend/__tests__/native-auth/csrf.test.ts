@@ -49,6 +49,22 @@ describe("native browser CSRF", () => {
     expect(mutations).toBe(3);
   });
 
+  it("replaces the anonymous proof after SAML completion before checking the new session", async () => {
+    let issued = 0;
+    const received: string[] = [];
+    const client = axios.create({ baseURL: "https://app.test", adapter: async (request) => {
+      if (request.url === "/api/auth/csrf") return response(request, { csrf_token: `proof-${++issued}` });
+      received.push(String(request.headers.get("X-CSRF-Token")));
+      return response(request, {});
+    } });
+    installNativeCsrf(client);
+    await client.post("/api/auth/saml/start", {});
+    await client.post("/api/auth/saml/complete", {});
+    await client.post("/api/authenticate");
+    expect(received).toEqual(["proof-1", "proof-1", "proof-2"]);
+    expect(issued).toBe(2);
+  });
+
   it("never attaches proof to third-party requests or legacy-mode requests", async () => {
     const adapter = vi.fn(async (request: InternalAxiosRequestConfig<unknown>) => response(request, {}));
     const client = axios.create({ baseURL: "https://app.test", adapter });

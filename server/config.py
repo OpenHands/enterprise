@@ -40,11 +40,20 @@ def get_auth_capabilities(
 ) -> AuthCapabilities:
     """One public login/connection contract for both configuration endpoints."""
     if not ENABLE_KEYCLOAK:
-        return {
+        from server.auth.saml_config import get_saml_settings
+
+        saml = get_saml_settings()
+        capabilities: AuthCapabilities = {
             'auth_mode': AUTH_MODE,
-            'login_methods': ['password'],
+            'login_methods': ['password', 'saml'] if saml else ['password'],
             'git_connection_methods': {},
         }
+        if saml:
+            capabilities['saml'] = {
+                'connection_id': saml.connection_id,
+                'name': saml.name,
+            }
+        return capabilities
     providers = configured_providers
     if providers is None:
         providers = []

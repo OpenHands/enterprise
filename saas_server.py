@@ -114,7 +114,9 @@ if ENABLE_KEYCLOAK:
 else:
     from server.routes.auth_accounts import auth_accounts_router  # noqa: E402
     from server.routes.native_auth import native_auth_router  # noqa: E402
+    from server.routes.native_saml import native_saml_router
 
+    base_app.include_router(native_saml_router)
     base_app.include_router(native_auth_router)
     base_app.include_router(auth_accounts_router)
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes

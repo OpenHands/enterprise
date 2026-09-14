@@ -15,6 +15,7 @@ import {
   PasswordFields,
 } from "#/components/features/native-auth/auth-form";
 import { NativeSignIn } from "#/components/features/native-auth/native-sign-in";
+import { SamlSignIn } from "#/components/features/native-auth/saml-sign-in";
 import {
   LoginButton,
   loginButtonLabelClassName,
@@ -118,21 +119,26 @@ export default function AccountSetup(): React.JSX.Element {
               />
             </>
           ) : (
-            <form
-              onSubmit={submit}
-              className="ph-no-capture ph-mask flex flex-col gap-4"
-            >
-              <PasswordFields />
-              <LoginButton
-                type="submit"
-                className="bg-[#9E28B0] text-white"
-                disabled={enroll.isPending}
+            <>
+              <form
+                onSubmit={submit}
+                className="ph-no-capture ph-mask flex flex-col gap-4"
               >
-                <span className={loginButtonLabelClassName}>
-                  {t("NATIVE_AUTH$SET_UP_ACCOUNT")}
-                </span>
-              </LoginButton>
-            </form>
+                <PasswordFields />
+                <LoginButton
+                  type="submit"
+                  className="bg-[#9E28B0] text-white"
+                  disabled={enroll.isPending}
+                >
+                  <span className={loginButtonLabelClassName}>
+                    {t("NATIVE_AUTH$SET_UP_ACCOUNT")}
+                  </span>
+                </LoginButton>
+              </form>
+              {config?.login_methods?.includes("saml") && (
+                <SamlSignIn loginPresentation invitationToken={token} />
+              )}
+            </>
           )}
         </>
       )}

@@ -24,6 +24,7 @@ from storage.native_auth import (
     AuthAccount,
     AuthChallenge,
     BrowserSession,
+    ExternalIdentity,
     PasswordCredential,
 )
 from storage.org import Org
@@ -76,27 +77,63 @@ async def email_admitted(
 
 
 async def account_admitted(session: AsyncSession, account: AuthAccount) -> bool:
-    """Non-browser authority requires an admitted password credential."""
-    if (
-        account.normalized_email is None
-        or await session.get(PasswordCredential, account.id) is None
-    ):
+    """Non-browser authority requires at least one admitted account credential."""
+    if account.normalized_email is None:
         return False
-    return await email_admitted(session, account.normalized_email)
+    methods = set()
+    for identity in await session.scalars(
+        select(ExternalIdentity).where(ExternalIdentity.account_id == account.id)
+    ):
+        if external_identity_configured(identity):
+            methods.add(identity.auth_method)
+    if await session.get(PasswordCredential, account.id) is not None:
+        methods.add('password')
+    for method in methods:
+        if await email_admitted(session, account.normalized_email, method):
+            return True
+    return False
+
+
+def external_identity_configured(identity: ExternalIdentity) -> bool:
+    """An identity cannot authenticate through a replaced/disabled connection."""
+    if identity.auth_method != 'saml':
+        return False  # Future protocol adapters explicitly add their configuration.
+    from server.auth.saml_config import get_saml_settings
+
+    settings = get_saml_settings()
+    return bool(
+        settings is not None
+        and settings.connection_id == identity.connection_id
+        and settings.issuer == identity.issuer
+    )
 
 
 async def session_method_admitted(
     session: AsyncSession, account: AuthAccount, browser: BrowserSession
 ) -> bool:
-    if account.normalized_email is None or browser.auth_method != 'password':
+    if account.normalized_email is None:
         return False
-    credential = await session.get(PasswordCredential, account.id)
-    if (
-        credential is None
-        or credential.credential_version != browser.credential_version
-    ):
-        return False
-    return await email_admitted(session, account.normalized_email)
+    if browser.auth_method == 'password':
+        credential = await session.get(PasswordCredential, account.id)
+        if (
+            credential is None
+            or credential.credential_version != browser.credential_version
+        ):
+            return False
+    else:
+        identity = (
+            await session.get(ExternalIdentity, browser.external_identity_id)
+            if browser.external_identity_id
+            else None
+        )
+        if (
+            identity is None
+            or identity.account_id != account.id
+            or identity.auth_method != browser.auth_method
+            or not external_identity_configured(identity)
+        ):
+            return False
+    return await email_admitted(session, account.normalized_email, browser.auth_method)
 
 
 async def _guard_last_admin(session: AsyncSession, account_id: UUID) -> None:

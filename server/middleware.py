@@ -151,8 +151,14 @@ class SetAuthCookieMiddleware:
             '/api/auth/password/reset/complete',
             '/api/auth/enrollment/inspect',
             '/api/auth/enrollment/complete',
+            '/api/auth/saml/metadata',
+            '/api/auth/saml/start',
+            '/api/auth/saml/complete',
         }
         path = request.url.path
+        if path == '/api/auth/saml/acs' and request.method == 'POST':
+            # ACS validates signed correlation; browser completion retains CSRF.
+            return await call_next(request)
         protected = self._should_attach(request) and path not in public_auth_paths
         if (
             request.method == 'GET'
@@ -192,6 +198,7 @@ class SetAuthCookieMiddleware:
                 )
                 requires_browser_proof = (
                     path == '/api/auth/password/change'
+                    or path in ('/api/auth/saml/start', '/api/auth/saml/complete')
                     or (path == '/api/logout' and session_token is not None)
                     or (path.startswith('/integration/') and session_token is not None)
                     or (

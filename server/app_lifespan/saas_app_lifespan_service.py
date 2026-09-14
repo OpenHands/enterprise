@@ -81,6 +81,10 @@ class SaasAppLifespanService(AppLifespanService):
         # Migrations run before the application starts. Initialization is
         # idempotent and verifies the durable installation mode on every start.
         await initialize_auth_installation()
+        if not ENABLE_KEYCLOAK:
+            from server.auth.saml_config import get_saml_settings
+
+            get_saml_settings()
         # OHE must not initialize telemetry when a legacy key is configured.
         api_key = (
             ''

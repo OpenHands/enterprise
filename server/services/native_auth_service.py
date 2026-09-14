@@ -49,6 +49,7 @@ from storage.native_auth import (
     AuthChallenge,
     AuthThrottle,
     BrowserSession,
+    ExternalIdentity,
     PasswordCredential,
 )
 from storage.org import Org
@@ -271,6 +272,7 @@ class NativeAuthService:
         return_path: str | None = None,
         *,
         auth_method: str = 'password',
+        external_identity: ExternalIdentity | None = None,
         auth_time: datetime | None = None,
         session_expiry_bound: datetime | None = None,
     ) -> NativeLogin:
@@ -295,6 +297,7 @@ class NativeAuthService:
             session_version=account.session_version,
             credential_version=credential.credential_version if credential else 0,
             auth_method=auth_method,
+            external_identity_id=external_identity.id if external_identity else None,
             auth_time=authenticated_at,
             idle_expires_at=min(
                 now + timedelta(seconds=config.idle_seconds), absolute_expiry
@@ -379,6 +382,206 @@ class NativeAuthService:
                 credential.password_hash = replacement
             return await self._new_session(
                 session, account, credential, user, return_path
+            )
+
+    async def complete_federated_login(
+        self,
+        *,
+        connection_id: str,
+        issuer: str,
+        subject: str,
+        email: str,
+        return_path: str | None = None,
+        invitation_token: str | None = None,
+        link_account_id: UUID | None = None,
+        link_session_id: UUID | None = None,
+        link_session_token: str | None = None,
+        allow_jit: bool = False,
+        auth_method: str = 'saml',
+        auth_time: datetime | None = None,
+        session_expiry_bound: datetime | None = None,
+    ) -> NativeLogin:
+        """Complete a trusted adapter's verified assertion in one transaction.
+
+        The protocol adapter validates the response and consumes browser-bound
+        state before calling. Email is admission/contact data, never account
+        ownership proof. Linking instead requires the exact recent browser
+        session that initiated the flow, rechecked under the lifecycle lock.
+        """
+        from server.services.native_account_service import (
+            email_admitted,
+            external_identity_configured,
+        )
+
+        if auth_method not in ('saml', 'oidc') or any(
+            not value or len(value.encode('utf-8')) > limit
+            for value, limit in ((connection_id, 128), (issuer, 512), (subject, 512))
+        ):
+            raise NativeAuthError('Invalid external identity', 400)
+        if not external_identity_configured(
+            ExternalIdentity(
+                connection_id=connection_id,
+                issuer=issuer,
+                subject=subject,
+                auth_method=auth_method,
+            )
+        ):
+            raise NativeAuthError(
+                'SSO connection is unavailable', 403, code='unavailable'
+            )
+        normalized = normalize_email(email)
+        linking = any(
+            item is not None
+            for item in (link_account_id, link_session_id, link_session_token)
+        )
+        if linking and (
+            link_account_id is None
+            or link_session_id is None
+            or link_session_token is None
+            or invitation_token is not None
+        ):
+            raise NativeAuthError('Invalid identity linking request', 400)
+        async with self.sessions() as session, session.begin():
+            await lock_native_lifecycle(session)
+            identity = await session.scalar(
+                select(ExternalIdentity)
+                .where(
+                    ExternalIdentity.auth_method == auth_method,
+                    ExternalIdentity.connection_id == connection_id,
+                    ExternalIdentity.issuer == issuer,
+                    ExternalIdentity.subject == subject,
+                )
+                .with_for_update()
+            )
+            invitation = (
+                await self._invitation(session, invitation_token)
+                if invitation_token is not None
+                else None
+            )
+            account: AuthAccount | None
+            user: User | None
+            if linking:
+                assert link_account_id is not None and link_session_token is not None
+                try:
+                    row = await self._recent(
+                        session, link_session_token, link_account_id
+                    )
+                except NativeAuthError as exc:
+                    raise NativeAuthError(
+                        'Sign in again to link this identity',
+                        exc.status_code,
+                        code='recent_auth_required',
+                    ) from None
+                if row[0].id != link_session_id:
+                    raise NativeAuthError(
+                        'Sign in again to link this identity',
+                        401,
+                        code='recent_auth_required',
+                    )
+                account, user = row[1], row[3]
+                if identity is not None and identity.account_id != account.id:
+                    raise NativeAuthError(
+                        'External identity is already assigned', 409, code='unavailable'
+                    )
+            elif identity is not None:
+                account = await session.get(AuthAccount, identity.account_id)
+                user = await session.get(User, identity.account_id)
+                if account is not None and account.state == 'deleted':
+                    raise NativeAuthError(
+                        'This SSO identity belongs to a deleted account; contact your administrator',
+                        403,
+                        code='unavailable',
+                    )
+                if account is None or account.state not in (
+                    'profile_present',
+                    'reonboardable',
+                ):
+                    raise NativeAuthError('Account is unavailable', 403)
+            else:
+                existing = await session.scalar(
+                    select(AuthAccount.id).where(
+                        AuthAccount.normalized_email == normalized,
+                        AuthAccount.state != 'deleted',
+                    )
+                )
+                if existing is not None:
+                    raise NativeAuthError(
+                        'Sign in to your existing account and link SSO in account settings',
+                        409,
+                        code='account_link_required',
+                    )
+                if invitation is None and not allow_jit:
+                    raise NativeAuthError(
+                        'An account invitation is required',
+                        403,
+                        code='invitation_required',
+                    )
+                if invitation is not None and invitation.normalized_email != normalized:
+                    raise NativeAuthError('Sign in as the invited account', 403)
+                account = AuthAccount(
+                    id=invitation.reserved_account_id if invitation else uuid4(),
+                    normalized_email=normalized,
+                    display_email=email.strip(),
+                )
+                session.add(account)
+                await session.flush()
+                user = None
+            if account.normalized_email != normalized:
+                raise NativeAuthError(
+                    'SSO email does not match this account; contact your administrator',
+                    409,
+                    code='email_mismatch',
+                )
+            if (
+                account.normalized_email is None
+                or account.display_email is None
+                or not await email_admitted(
+                    session, account.normalized_email, auth_method
+                )
+                or not await email_admitted(session, normalized, auth_method)
+            ):
+                raise NativeAuthError('Account admission is denied', 403)
+            if user is None and account.state in ('profile_present', 'reonboardable'):
+                # Only a new account or explicitly self-deleted profile can be
+                # provisioned; an unexplained missing profile stays unavailable.
+                if identity is not None and account.state != 'reonboardable':
+                    raise NativeAuthError('Account is unavailable', 403)
+                user = await create_profile(
+                    session, account, account.display_email, auth_method=auth_method
+                )
+            elif account.state != 'profile_present' or user is None or user.is_disabled:
+                raise NativeAuthError('Account is unavailable', 403)
+            if identity is None:
+                identity = ExternalIdentity(
+                    id=uuid4(),
+                    account_id=account.id,
+                    connection_id=connection_id,
+                    issuer=issuer,
+                    subject=subject,
+                    auth_method=auth_method,
+                )
+                session.add(identity)
+                await session.flush()
+            if invitation is not None:
+                if account.normalized_email != invitation.normalized_email:
+                    raise NativeAuthError('Sign in as the invited account', 403)
+                await self._accept(session, invitation, user)
+            if linking:
+                # The completed identity change invalidates old browser proof,
+                # outstanding challenges and concurrent linking transactions.
+                await revoke_account_security(session, account.id)
+                await session.flush()
+                await session.refresh(account)
+            return await self._new_session(
+                session,
+                account,
+                None,
+                user,
+                return_path,
+                auth_method=auth_method,
+                external_identity=identity,
+                auth_time=auth_time,
+                session_expiry_bound=session_expiry_bound,
             )
 
     async def issue_csrf(self, session_token: str | None) -> tuple[str, str | None]:
@@ -871,11 +1074,16 @@ class NativeAuthService:
     async def authentication_methods(
         session: AsyncSession, account_id: UUID
     ) -> list[str]:
-        return (
-            ['password']
-            if await session.get(PasswordCredential, account_id) is not None
-            else []
+        methods = set(
+            await session.scalars(
+                select(ExternalIdentity.auth_method).where(
+                    ExternalIdentity.account_id == account_id
+                )
+            )
         )
+        if await session.get(PasswordCredential, account_id) is not None:
+            methods.add('password')
+        return sorted(methods)
 
     async def profile_metadata(self, account_id: UUID) -> NativeProfileMetadata:
         """Public local identity metadata, with no credentials or IdP subjects."""

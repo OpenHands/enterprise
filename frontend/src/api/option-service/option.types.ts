@@ -71,7 +71,8 @@ export interface ACPProviderConfig {
 export interface WebClientConfig {
   app_mode: "saas" | "oss";
   auth_mode?: "keycloak" | "native";
-  login_methods?: (Provider | "password")[];
+  login_methods?: (Provider | "password" | "saml")[];
+  saml?: { connection_id: string; name: string };
   git_connection_methods?: Partial<Record<Provider, string[]>>;
   posthog_client_key: string | null;
   feature_flags: WebClientFeatureFlags;

@@ -6,6 +6,7 @@ import {
 } from "@react-router/dev/routes";
 
 export default [
+  route("auth/saml/complete", "routes/saml-complete.tsx"),
   route("account-setup", "routes/account-setup.tsx"),
   route("password-reset", "routes/password-reset.tsx"),
   route("login", "routes/login.tsx"),
