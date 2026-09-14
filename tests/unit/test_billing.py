@@ -13,6 +13,9 @@ from sqlalchemy import select
 from starlette.datastructures import URL
 
 from server.constants import ORG_SETTINGS_VERSION
+from server.maintenance_task_processor.credit_delivery_processor import (
+    CreditDeliveryProcessor,
+)
 from server.routes import billing
 from server.routes.billing import (
     CreateBillingSessionResponse,
@@ -28,8 +31,10 @@ from server.routes.billing import (
 from storage.billing_session import BillingSession
 from storage.budget_control import current_budget_control
 from storage.lite_llm_manager import LiteLlmManager
+from storage.maintenance_task import MaintenanceTask
 from storage.org import Org
 from storage.user import User
+from storage.user_store import UserStore
 
 
 @pytest.fixture
@@ -89,7 +94,13 @@ def mock_callback_request():
 @pytest.fixture
 def patched_billing_session_maker(async_session_maker):
     """Patch the billing route session maker."""
-    with patch('server.routes.billing.a_session_maker', async_session_maker):
+    with (
+        patch('server.routes.billing.a_session_maker', async_session_maker),
+        patch(
+            'server.maintenance_task_processor.credit_delivery_processor.a_session_maker',
+            async_session_maker,
+        ),
+    ):
         yield
 
 
@@ -599,7 +610,10 @@ async def test_checkout_credit_stays_with_recorded_org_after_workspace_switch(
             'storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget',
             AsyncMock(),
         ) as write,
-        patch('server.routes.billing.get_analytics_service', return_value=analytics),
+        patch(
+            'server.services.credit_delivery_service.get_analytics_service',
+            return_value=analytics,
+        ),
     ):
         response = await success_callback(session_id, mock_callback_request)
     assert response.status_code == 302
@@ -843,6 +857,7 @@ async def test_success_callback_lite_llm_update_budget_error_rollback(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('retry_via', ['browser', 'worker'])
 @pytest.mark.parametrize(
     'failure',
     [
@@ -862,6 +877,7 @@ async def test_credit_retries_use_one_durable_target(
     mock_stripe_session_retrieve,
     monkeypatch,
     failure,
+    retry_via,
 ):
     """Real PostgreSQL/controller/manager; only Stripe and native HTTP are simulated."""
     session_id = 'lost-credit-response'
@@ -958,13 +974,16 @@ async def test_credit_retries_use_one_durable_target(
     analytics = MagicMock()
     with (
         patch.object(
-            billing.UserStore,
+            UserStore,
             'get_user_by_id',
             AsyncMock(return_value=test_user),
         ),
         patch.object(LiteLlmManager, 'get_user_team_info', native_read),
         patch.object(LiteLlmManager, 'update_team_and_users_budget', deliver),
-        patch('server.routes.billing.get_analytics_service', return_value=analytics),
+        patch(
+            'server.services.credit_delivery_service.get_analytics_service',
+            return_value=analytics,
+        ),
     ):
         with pytest.raises(
             (httpx.ReadError, RuntimeError),
@@ -974,9 +993,15 @@ async def test_credit_retries_use_one_durable_target(
         # A cancel redirect cannot discard a purchase that reached native delivery.
         await cancel_callback(session_id, mock_callback_request)
         for _ in range(2):
-            assert (
-                await success_callback(session_id, mock_callback_request)
-            ).status_code == 302
+            if retry_via == 'worker':
+                processor = CreditDeliveryProcessor(
+                    org_id=test_org.id, checkout_session_id=session_id
+                )
+                assert await processor(MaintenanceTask()) == {'completed': True}
+            else:
+                assert (
+                    await success_callback(session_id, mock_callback_request)
+                ).status_code == 302
 
     assert native == {'team': 125, 'member': 125}
     assert all(target == 125 for _, target in writes)
@@ -1028,9 +1053,7 @@ async def test_credit_callbacks_exclude_concurrent_purchases(
         raise RuntimeError('Lost acknowledgement')
 
     with (
-        patch.object(
-            billing.UserStore, 'get_user_by_id', AsyncMock(return_value=test_user)
-        ),
+        patch.object(UserStore, 'get_user_by_id', AsyncMock(return_value=test_user)),
         patch.object(
             LiteLlmManager,
             'get_user_team_info',
@@ -1109,6 +1132,50 @@ async def test_credit_delivery_requires_matching_paid_checkout(
         write.assert_not_called()
     async with async_session_maker() as session:
         receipt = await session.get(BillingSession, 'unverified')
+        assert receipt.credit_target is None
+        assert receipt.status == 'in_progress'
+
+
+@pytest.mark.asyncio
+async def test_credit_callback_cannot_bootstrap_a_missing_user(
+    async_session_maker,
+    test_org,
+    patched_billing_session_maker,
+    mock_callback_request,
+    mock_stripe_session_retrieve,
+):
+    async with async_session_maker() as session:
+        session.add(
+            BillingSession(
+                id='missing-purchaser',
+                user_id=str(uuid.uuid4()),
+                org_id=test_org.id,
+                price=25,
+                price_code='NA',
+            )
+        )
+        await session.commit()
+    mock_stripe_session_retrieve.return_value = MagicMock(
+        status='complete',
+        payment_status='paid',
+        currency='usd',
+        mode='payment',
+        amount_subtotal=2500,
+    )
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch.object(UserStore, '_acquire_user_creation_lock') as creation,
+        patch.object(UserStore, 'migrate_user') as migration,
+        patch.object(LiteLlmManager, 'update_team_and_users_budget') as write,
+    ):
+        with pytest.raises(HTTPException) as caught:
+            await success_callback('missing-purchaser', mock_callback_request)
+        assert caught.value.status_code == 404
+        creation.assert_not_called()
+        migration.assert_not_called()
+        write.assert_not_called()
+    async with async_session_maker() as session:
+        receipt = await session.get(BillingSession, 'missing-purchaser')
         assert receipt.credit_target is None
         assert receipt.status == 'in_progress'
 
@@ -1264,7 +1331,8 @@ async def test_success_callback_tracks_credit_purchased_analytics(
         ),
         patch('storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget'),
         patch(
-            'server.routes.billing.get_analytics_service', return_value=mock_analytics
+            'server.services.credit_delivery_service.get_analytics_service',
+            return_value=mock_analytics,
         ),
     ):
         mock_stripe_retrieve.return_value = MagicMock(
@@ -1328,7 +1396,10 @@ async def test_success_callback_skips_analytics_when_service_is_none(
             },
         ),
         patch('storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget'),
-        patch('server.routes.billing.get_analytics_service', return_value=None),
+        patch(
+            'server.services.credit_delivery_service.get_analytics_service',
+            return_value=None,
+        ),
     ):
         mock_stripe_retrieve.return_value = MagicMock(
             status='complete',
@@ -1389,7 +1460,8 @@ async def test_success_callback_analytics_respects_consent_false(
         ),
         patch('storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget'),
         patch(
-            'server.routes.billing.get_analytics_service', return_value=mock_analytics
+            'server.services.credit_delivery_service.get_analytics_service',
+            return_value=mock_analytics,
         ),
     ):
         mock_stripe_retrieve.return_value = MagicMock(
@@ -1452,7 +1524,8 @@ async def test_success_callback_analytics_exception_does_not_fail_checkout(
         ),
         patch('storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget'),
         patch(
-            'server.routes.billing.get_analytics_service', return_value=mock_analytics
+            'server.services.credit_delivery_service.get_analytics_service',
+            return_value=mock_analytics,
         ),
     ):
         mock_stripe_retrieve.return_value = MagicMock(

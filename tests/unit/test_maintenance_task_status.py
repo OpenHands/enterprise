@@ -6,6 +6,25 @@ from run_maintenance_tasks import main, maintenance_task_status, run_tasks
 from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
 
 
+@pytest.fixture(autouse=True)
+def isolated_enqueue_paths():
+    with (
+        patch(
+            'server.maintenance_task_processor.credential_retirement_processor.enqueue_credential_retirement_tasks',
+            return_value=0,
+        ),
+        patch(
+            'server.maintenance_task_processor.managed_llm_key_ownership_processor.enqueue_managed_llm_key_ownership_tasks',
+            return_value=0,
+        ),
+        patch(
+            'server.maintenance_task_processor.credit_delivery_processor.enqueue_credit_delivery_tasks',
+            return_value=0,
+        ),
+    ):
+        yield
+
+
 def test_structured_processor_failure_marks_outer_task_error():
     info = {
         'processed': 1,
@@ -35,6 +54,22 @@ async def test_main_exits_nonzero_after_task_failures():
         await main()
 
     assert exc_info.value.code == 1
+
+
+@pytest.mark.asyncio
+async def test_credit_enqueue_failure_is_visible_and_does_not_skip_other_tasks():
+    with (
+        patch('run_maintenance_tasks.set_stale_task_error'),
+        patch(
+            'server.maintenance_task_processor.credit_delivery_processor.enqueue_credit_delivery_tasks',
+            side_effect=RuntimeError('database unavailable'),
+        ),
+        patch('run_maintenance_tasks.run_tasks', new=AsyncMock(return_value=0)) as run,
+        pytest.raises(SystemExit) as caught,
+    ):
+        await main()
+    assert caught.value.code == 1
+    run.assert_awaited_once()
 
 
 @pytest.mark.asyncio

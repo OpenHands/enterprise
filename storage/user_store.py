@@ -740,7 +740,9 @@ class UserStore:
             return user_settings
 
     @staticmethod
-    async def get_user_by_id(user_id: str) -> Optional[User]:
+    async def get_user_by_id(
+        user_id: str, *, allow_migration: bool = True
+    ) -> Optional[User]:
         """Get user by Keycloak user ID."""
         async with a_session_maker() as session:
             result = await session.execute(
@@ -752,6 +754,9 @@ class UserStore:
             if user:
                 user.sync_analytics_consent_with_tos()
                 return user
+
+            if not allow_migration:
+                return None
 
             # Check if we need to migrate from user_settings
             while not await UserStore._acquire_user_creation_lock(user_id):
