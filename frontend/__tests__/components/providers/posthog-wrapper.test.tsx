@@ -1,5 +1,8 @@
 import type { PropsWithChildren } from "react";
 import type { PostHogConfig, CapturedNetworkRequest } from "posthog-js";
+import { WebClientConfig } from "#/api/option-service/option.types";
+import { deferred } from "../../helpers/native-fixtures";
+import { useSecretFragment } from "#/hooks/use-secret-fragment";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 import { PostHogWrapper } from "#/components/providers/posthog-wrapper";
@@ -206,6 +209,24 @@ describe("PostHogWrapper", () => {
 
     expect(mockPostHogProvider).not.toHaveBeenCalled();
   });
+  it("suppresses sensitive entry pages before config resolves and preserves their tokens for the form", async () => {
+    window.history.replaceState({}, "", "/account-setup#token=private-setup&distinct_id=untrusted&session_id=untrusted");
+    const { promise, resolve: resolveConfig } = deferred<WebClientConfig>();
+    vi.mocked(OptionService.getConfig).mockReturnValue(promise);
+    function Recipient(): React.JSX.Element {
+      const [token] = useSecretFragment();
+      return <span data-testid="recipient">{token === "private-setup" ? "retained" : "missing"}</span>;
+    }
+    render(<PostHogWrapper><Recipient /></PostHogWrapper>);
+    expect(screen.getByTestId("recipient")).toHaveTextContent("retained");
+    expect(window.location.hash).toBe("");
+    expect(mockPostHogProvider).not.toHaveBeenCalled();
+    await act(async () => { resolveConfig(createMockWebClientConfig({ auth_mode: "native", app_mode: "saas", posthog_client_key: "configured-key" })); });
+    expect(mockPostHogProvider).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("posthog_bootstrap")).toBeNull();
+    window.history.replaceState({}, "", "/");
+  });
+
   it("preserves analytics on ordinary native app pages and redacts native secret network requests", async () => {
     vi.mocked(OptionService.getConfig).mockResolvedValue(createMockWebClientConfig({ auth_mode: "native", app_mode: "saas", posthog_client_key: "configured-key" }));
     await act(async () => { render(<PostHogWrapper><span>App</span></PostHogWrapper>); });

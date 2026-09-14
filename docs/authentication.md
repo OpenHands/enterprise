@@ -34,3 +34,19 @@ Each duration accepts 60 through 2,592,000 seconds. Logout revokes the browser s
 Disable `ENABLE_LINEAR` and `SLACK_WEBHOOKS_ENABLED` and remove Slack client and signing credentials for this configuration. Keep existing LLM provisioning configuration in place.
 
 For backend development, follow the [local authentication setup](../dev_config/local_saas/AUTH.md).
+
+## Account setup and organization invitations
+
+Administrators with the instance-wide `manage_users` permission can open **Settings > Users** to create account setup links. Organization owner permissions alone do not grant access to this screen.
+
+Enter the recipient's email address. Select a team and role to include organization membership, or leave the invitation scoped to a personal workspace. Share the private link directly with the intended recipient. The link is shown once; reissue it when a replacement is needed.
+
+New recipients set their own password. Existing accounts sign in before accepting the intended organization membership. Matching an email address does not bypass authentication. Users then accept the terms before entering the application.
+
+Set the setup-link lifetime in seconds:
+
+```dotenv
+AUTH_INVITATION_TTL_SECONDS=86400
+```
+
+The Users screen lists accounts and invitations. Administrators can inspect account details, revoke an unused invitation, or reissue an expired link. Links expire after the configured duration and can be consumed only once.
