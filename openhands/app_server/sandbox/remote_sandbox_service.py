@@ -826,8 +826,8 @@ class RemoteSandboxService(SandboxService):
         Uses _get_user_running_sandboxes (runtime /list + DB cross-reference) so
         only sandboxes that are actually running are considered.
         """
-        if max_num_sandboxes <= 0:
-            raise ValueError('max_num_sandboxes must be greater than 0')
+        if max_num_sandboxes < 0:
+            raise ValueError('max_num_sandboxes must not be negative')
 
         running = await self._get_user_running_sandboxes()
 
