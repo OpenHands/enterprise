@@ -405,6 +405,12 @@ async def provision_user(
     Returns the email, the API key bound to the target org, and
     (on a true create) the plaintext password.
     """
+    from server.auth.native_password import NativeAuthError
+
+    try:
+        get_auth_services().profiles.require_programmatic_provisioning()
+    except NativeAuthError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
     email = body.email.lower().strip()
     # Only used in the create path. Pre-generated so the same value is
     # stored in Keycloak and returned in the response — never

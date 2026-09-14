@@ -41,6 +41,9 @@ class ManagedLlmProvisioning(Protocol):
     async def ensure_org_member_key(
         self, session: AsyncSession, org: Org, member: OrgMember
     ) -> str | None: ...
+    async def delete_org_resources(
+        self, session: AsyncSession, org_id: UUID, orphan_ids: list[str]
+    ) -> None: ...
     async def rotate_managed_key(
         self, store: 'SaasSettingsStore'
     ) -> 'ManagedLlmKeyRotation': ...
@@ -108,6 +111,16 @@ class KeycloakManagedLlmProvisioning:
         from storage.org_store import OrgStore
 
         return await OrgStore._ensure_keycloak_managed_member_key(org, member)
+
+    async def delete_org_resources(
+        self, session: AsyncSession, org_id: UUID, orphan_ids: list[str]
+    ) -> None:
+        from storage.lite_llm_manager import LiteLlmManager
+        from storage.org_store import OrgStore
+
+        await LiteLlmManager.delete_team(str(org_id))
+        for user_id in orphan_ids:
+            await OrgStore._delete_litellm_user_best_effort(user_id, org_id)
 
     async def rotate_managed_key(
         self, store: 'SaasSettingsStore'
@@ -191,6 +204,15 @@ class OpenHandsManagedLlmProvisioning:
             return None
         key = await prepare_managed_member(session, member)
         return key.get_secret_value() or None
+
+    async def delete_org_resources(
+        self, session: AsyncSession, org_id: UUID, orphan_ids: list[str]
+    ) -> None:
+        from server.services.native_provisioning_service import queue_external_cleanup
+
+        await queue_external_cleanup(session, org_id=org_id)
+        for user_id in orphan_ids:
+            await queue_external_cleanup(session, account_id=UUID(user_id))
 
     async def rotate_managed_key(
         self, store: 'SaasSettingsStore'

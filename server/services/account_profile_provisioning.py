@@ -31,6 +31,7 @@ from utils.identity import UserIdentityClaims, resolve_display_name
 
 
 class AccountProfileProvisioning(Protocol):
+    def require_programmatic_provisioning(self) -> None: ...
     async def create_user(
         self, user_id: str, user_info: UserIdentityClaims, role_id: int | None = None
     ) -> User | None: ...
@@ -41,6 +42,9 @@ class AccountProfileProvisioning(Protocol):
 
 
 class OpenHandsAccountProfileProvisioning:
+    def require_programmatic_provisioning(self) -> None:
+        raise NativeAuthError('Account setup links require global user management', 403)
+
     async def create_user(
         self, user_id: str, user_info: UserIdentityClaims, role_id: int | None = None
     ) -> User | None:
@@ -56,6 +60,9 @@ class OpenHandsAccountProfileProvisioning:
 
 
 class KeycloakAccountProfileProvisioning:
+    def require_programmatic_provisioning(self) -> None:
+        """Keycloak supports programmatic password provisioning."""
+
     @staticmethod
     async def create_user(
         user_id: str,

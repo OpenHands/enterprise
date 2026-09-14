@@ -8,10 +8,10 @@ import httpx
 import pytest
 from sqlalchemy import select, text
 
+from server.auth.native_types import SessionFactory
 from server.services.admin_user_lifecycle_service import (
-    AdminUserLifecycleService,
+    KeycloakUserLifecycleService,
     LastSuperAdminError,
-    UserDeletionResult,
 )
 from storage.daily_conversation_usage import DailyConversationUsage
 from storage.feature_flag import (
@@ -23,7 +23,7 @@ from storage.user import User
 
 
 @pytest.fixture
-def user():
+def user() -> MagicMock:
     value = MagicMock()
     value.id = uuid4()
     value.email = 'user@example.com'
@@ -34,18 +34,21 @@ def user():
 
 
 @pytest.mark.asyncio
-async def test_disable_user_invalidates_keycloak_keys_and_offline_token(user):
+async def test_disable_user_invalidates_keycloak_keys_and_offline_token(
+    user: MagicMock,
+) -> None:
     token_manager = MagicMock()
     token_manager.disable_keycloak_user = AsyncMock()
-    service = AdminUserLifecycleService(token_manager)
+    service = KeycloakUserLifecycleService(token_manager)
     with (
         patch.object(service, 'get_user', AsyncMock(return_value=user)),
         patch.object(service, '_delete_api_keys', AsyncMock()) as delete_keys,
         patch.object(service, '_delete_offline_token', AsyncMock()) as delete_token,
         patch.object(service, '_set_disabled', AsyncMock()) as set_disabled,
     ):
-        result = await service.disable_user(str(user.id))
+        result = await service.disable_user(str(user.id), actor_user_id=str(uuid4()))
 
+    assert result is not None
     assert result.user_id == str(user.id)
     token_manager.disable_keycloak_user.assert_awaited_once_with(
         str(user.id), user.email
@@ -56,16 +59,17 @@ async def test_disable_user_invalidates_keycloak_keys_and_offline_token(user):
 
 
 @pytest.mark.asyncio
-async def test_enable_user_updates_keycloak_and_local_state(user):
+async def test_enable_user_updates_keycloak_and_local_state(user: MagicMock) -> None:
     token_manager = MagicMock()
     token_manager.enable_keycloak_user = AsyncMock()
-    service = AdminUserLifecycleService(token_manager)
+    service = KeycloakUserLifecycleService(token_manager)
     with (
         patch.object(service, 'get_user', AsyncMock(return_value=user)),
         patch.object(service, '_set_disabled', AsyncMock()) as set_disabled,
     ):
-        result = await service.enable_user(str(user.id))
+        result = await service.enable_user(str(user.id), actor_user_id=str(uuid4()))
 
+    assert result is not None
     assert result.email == user.email
     token_manager.enable_keycloak_user.assert_awaited_once_with(
         str(user.id), user.email
@@ -74,11 +78,11 @@ async def test_enable_user_updates_keycloak_and_local_state(user):
 
 
 @pytest.mark.asyncio
-async def test_delete_user_runs_all_cleanup_steps(user):
+async def test_delete_user_runs_all_cleanup_steps(user: MagicMock) -> None:
     token_manager = MagicMock()
     token_manager.disable_keycloak_user = AsyncMock()
     token_manager.delete_keycloak_user = AsyncMock(return_value=True)
-    service = AdminUserLifecycleService(token_manager)
+    service = KeycloakUserLifecycleService(token_manager)
     with (
         patch.object(service, 'get_user', AsyncMock(return_value=user)),
         patch.object(service, '_delete_api_keys', AsyncMock()) as delete_keys,
@@ -90,10 +94,11 @@ async def test_delete_user_runs_all_cleanup_steps(user):
             AsyncMock(),
         ) as delete_llm,
     ):
-        result = await service.delete_user(str(user.id))
+        result = await service.delete_user(str(user.id), actor_user_id=str(uuid4()))
 
+    assert result is not None
     assert result.user_id == str(user.id)
-    assert isinstance(result, UserDeletionResult)
+    assert result is not None
     assert result.cleanup_warnings == []
     token_manager.disable_keycloak_user.assert_awaited_once_with(
         str(user.id), user.email
@@ -106,11 +111,11 @@ async def test_delete_user_runs_all_cleanup_steps(user):
 
 
 @pytest.mark.asyncio
-async def test_delete_user_reports_external_cleanup_warnings(user):
+async def test_delete_user_reports_external_cleanup_warnings(user: MagicMock) -> None:
     token_manager = MagicMock()
     token_manager.disable_keycloak_user = AsyncMock()
     token_manager.delete_keycloak_user = AsyncMock(return_value=False)
-    service = AdminUserLifecycleService(token_manager)
+    service = KeycloakUserLifecycleService(token_manager)
     with (
         patch.object(service, 'get_user', AsyncMock(return_value=user)),
         patch.object(service, '_delete_api_keys', AsyncMock()),
@@ -122,8 +127,9 @@ async def test_delete_user_reports_external_cleanup_warnings(user):
             AsyncMock(side_effect=httpx.ConnectError('litellm down')),
         ),
     ):
-        result = await service.delete_user(str(user.id))
+        result = await service.delete_user(str(user.id), actor_user_id=str(uuid4()))
 
+    assert result is not None
     assert result.cleanup_warnings == [
         'LiteLLM cleanup failed: litellm down',
         'Keycloak deletion failed or user already absent',
@@ -131,9 +137,9 @@ async def test_delete_user_reports_external_cleanup_warnings(user):
 
 
 @pytest.mark.asyncio
-async def test_disable_user_rejects_last_active_superadmin(user):
+async def test_disable_user_rejects_last_active_superadmin(user: MagicMock) -> None:
     user.role_id = 1
-    service = AdminUserLifecycleService(MagicMock())
+    service = KeycloakUserLifecycleService(MagicMock())
     with (
         patch.object(service, 'get_user', AsyncMock(return_value=user)),
         patch(
@@ -142,14 +148,14 @@ async def test_disable_user_rejects_last_active_superadmin(user):
         ),
     ):
         with pytest.raises(LastSuperAdminError):
-            await service.disable_user(str(user.id))
+            await service.disable_user(str(user.id), actor_user_id=str(uuid4()))
 
 
 @pytest.mark.asyncio
-async def test_disable_user_allows_already_disabled_superadmin(user):
+async def test_disable_user_allows_already_disabled_superadmin(user: MagicMock) -> None:
     user.role_id = 1
     user.is_disabled = True
-    service = AdminUserLifecycleService(MagicMock())
+    service = KeycloakUserLifecycleService(MagicMock())
     with patch(
         'server.services.admin_user_lifecycle_service.UserStore.list_super_admins',
         AsyncMock(return_value=[user]),
@@ -158,11 +164,11 @@ async def test_disable_user_allows_already_disabled_superadmin(user):
 
 
 @pytest.mark.asyncio
-async def test_delete_user_reports_litellm_http_failure(user):
+async def test_delete_user_reports_litellm_http_failure(user: MagicMock) -> None:
     token_manager = MagicMock()
     token_manager.disable_keycloak_user = AsyncMock()
     token_manager.delete_keycloak_user = AsyncMock(return_value=True)
-    service = AdminUserLifecycleService(token_manager)
+    service = KeycloakUserLifecycleService(token_manager)
     with (
         patch.object(service, 'get_user', AsyncMock(return_value=user)),
         patch.object(service, '_delete_api_keys', AsyncMock()),
@@ -174,24 +180,31 @@ async def test_delete_user_reports_litellm_http_failure(user):
             AsyncMock(side_effect=httpx.ConnectError('litellm down')),
         ),
     ):
-        result = await service.delete_user(str(user.id))
+        result = await service.delete_user(str(user.id), actor_user_id=str(uuid4()))
 
+    assert result is not None
     assert result.cleanup_warnings == ['LiteLLM cleanup failed: litellm down']
 
 
 @pytest.mark.asyncio
-async def test_missing_user_is_noop():
-    service = AdminUserLifecycleService(MagicMock())
+async def test_missing_user_is_noop() -> None:
+    service = KeycloakUserLifecycleService(MagicMock())
     with patch.object(service, 'get_user', AsyncMock(return_value=None)):
-        assert await service.disable_user(str(uuid4())) is None
-        assert await service.enable_user(str(uuid4())) is None
-        assert await service.delete_user(str(uuid4())) is None
+        assert (
+            await service.disable_user(str(uuid4()), actor_user_id=str(uuid4())) is None
+        )
+        assert (
+            await service.enable_user(str(uuid4()), actor_user_id=str(uuid4())) is None
+        )
+        assert (
+            await service.delete_user(str(uuid4()), actor_user_id=str(uuid4())) is None
+        )
 
 
 @pytest.mark.asyncio
 async def test_delete_user_data_executes_sql_and_clears_quota_references(
-    async_session_maker,
-):
+    async_session_maker: SessionFactory,
+) -> None:
     target_id = uuid4()
     approver_id = uuid4()
     org_id = uuid4()
@@ -250,7 +263,7 @@ async def test_delete_user_data_executes_sql_and_clears_quota_references(
             )
         await session.commit()
 
-    service = AdminUserLifecycleService(MagicMock())
+    service = KeycloakUserLifecycleService(MagicMock())
     with (
         patch(
             'server.services.admin_user_lifecycle_service.a_session_maker',
@@ -267,7 +280,9 @@ async def test_delete_user_data_executes_sql_and_clears_quota_references(
     ):
         await service._delete_user_data(str(target_id))
 
-    delete_org.assert_awaited_once_with(target_id, requester_user_id=str(target_id))
+    delete_org.assert_awaited_once_with(
+        target_id, requester_user_id=str(target_id), terminal_account_id=target_id
+    )
     async with async_session_maker() as session:
         assert await session.get(User, target_id) is None
         assert (

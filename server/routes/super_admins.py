@@ -24,7 +24,10 @@ from pydantic import BaseModel, Field, model_validator
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
+from server.auth.composition import get_auth_services
+from server.auth.native_password import NativeAuthError
 from server.constants import USER_PROVISIONING_ENABLED
+from storage.user import User
 from storage.user_store import SuperAdminRevokeResult, UserStore
 
 super_admin_router = APIRouter(prefix='/api/admin/super-admins', tags=['Admin'])
@@ -97,7 +100,7 @@ class SuperAdminListResponse(BaseModel):
     super_admins: list[SuperAdminResponse]
 
 
-def _to_response(user) -> SuperAdminResponse:
+def _to_response(user: User) -> SuperAdminResponse:
     return SuperAdminResponse(user_id=str(user.id), email=user.email)
 
 
@@ -131,7 +134,7 @@ async def grant_super_admin(
     returns their record. Requires ``MANAGE_SUPER_ADMINS``.
     """
     if body.email:
-        target = await UserStore.get_user_by_email(body.email)
+        target = await get_auth_services().accounts.get_user_by_email(body.email)
         if target is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -144,10 +147,19 @@ async def grant_super_admin(
         # truthiness -- not ``is not None`` -- to stay consistent with the
         # validator, otherwise an empty-string ``email`` would wrongly take
         # the email branch and 404.
-        target_user_id = body.user_id  # type: ignore[assignment]
+        if not body.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail='A user id or email is required',
+            )
+        target_user_id = body.user_id
 
     try:
-        user = await UserStore.grant_super_admin(target_user_id)
+        user = await get_auth_services().lifecycle.grant_super_admin(
+            target_user_id, actor_user_id=caller_user_id
+        )
+    except NativeAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ValueError as exc:
         # Malformed user_id (not a UUID) or missing seeded admin role.
         raise HTTPException(
@@ -177,7 +189,11 @@ async def revoke_super_admin(
     admin. Requires ``MANAGE_SUPER_ADMINS``.
     """
     try:
-        result = await UserStore.revoke_super_admin(user_id)
+        result = await get_auth_services().lifecycle.revoke_super_admin(
+            user_id, actor_user_id=caller_user_id
+        )
+    except NativeAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
