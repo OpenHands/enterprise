@@ -859,14 +859,15 @@ class LiteLlmManager:
                 )
 
     @staticmethod
-    async def ensure_free_team_models(org_id: str) -> bool:
+    async def ensure_free_team_models(org_id: str) -> bool | None:
         """Repair a free-tier team whose ``models`` allowlist is missing the
         current $0-cost set (e.g. after ``deepseek-v4-flash`` joined
         ``FREE_LLM_MODELS``). Idempotent and convergent.
 
-        Returns True only when a write was performed. Never raises: LiteLLM
-        being unreachable (or unconfigured in self-hosted installs) must not
-        fail an org-version upgrade.
+        Returns True when a write was performed, False when the call completed
+        without needing a write, and None when LiteLLM could not be reconciled.
+        Never raises: LiteLLM being unreachable must not fail an org-version
+        upgrade, while the None result lets the caller retain its retry marker.
         """
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             return False
@@ -910,7 +911,7 @@ class LiteLlmManager:
                 exc_info=True,
                 extra={'org_id': org_id},
             )
-            return False
+            return None
 
     @staticmethod
     async def _team_alias_for_org(org_id: str, keycloak_user_id: str) -> str:
