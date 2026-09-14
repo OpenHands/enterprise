@@ -11,6 +11,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
+from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 from server.auth.token_manager import TokenManager
 from server.constants import (
@@ -29,6 +30,7 @@ from storage.encrypt_utils import (
     encrypt_legacy_value,
 )
 from storage.org import Org
+from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_member import OrgMember
 from storage.role import Role
 from storage.role_store import RoleStore
@@ -154,6 +156,9 @@ class UserStore:
                 for key, value in org_kwargs.items():
                     if hasattr(org, key):
                         setattr(org, key, value)
+                org.agent_settings = apply_configured_org_condenser_default(
+                    org.agent_settings
+                )
 
             user_kwargs = UserStore.get_kwargs_from_settings(settings)
             user = User(
@@ -350,6 +355,10 @@ class UserStore:
             for key, value in org_kwargs.items():
                 if hasattr(org, key):
                     setattr(org, key, value)
+
+            org.agent_settings = apply_configured_org_condenser_default(
+                org.agent_settings
+            )
 
             # Apply DEFAULT_V1_ENABLED for migrated orgs if v1_enabled was not set
             if org.v1_enabled is None:
@@ -1262,17 +1271,14 @@ class UserStore:
         org_agent_settings = OrgStore.get_agent_settings_from_org(org)
         org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
         org_agent_settings_dump.pop('mcp_config', None)
-        agent_settings = {
-            **org_agent_settings_dump,
-            **member_agent_settings_diff,
-        }
+        agent_settings = deep_merge(org_agent_settings_dump, member_agent_settings_diff)
 
         member_conversation_settings_diff = dict(org_member.conversation_settings_diff)
         org_conversation_settings = OrgStore.get_conversation_settings_from_org(org)
-        conversation_settings = {
-            **org_conversation_settings.model_dump(mode='json'),
-            **member_conversation_settings_diff,
-        }
+        conversation_settings = deep_merge(
+            org_conversation_settings.model_dump(mode='json'),
+            member_conversation_settings_diff,
+        )
 
         return UserSettings(
             keycloak_user_id=user_id,

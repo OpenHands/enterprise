@@ -1,11 +1,13 @@
 """Store class for managing organizations."""
 
+from dataclasses import dataclass
 from typing import Any, Optional
 from uuid import UUID
 
 from pydantic import SecretStr
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from openhands.app_server.settings.settings_models import (
@@ -39,12 +41,24 @@ from storage.lite_llm_manager import (
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_threshold import OrgBudgetThreshold
+from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_git_claim import OrgGitClaim
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.user import User
 from storage.user_settings import UserSettings
+
+
+@dataclass(frozen=True)
+class OrgCondenserReconciliationResult:
+    """Summary of org condenser max-token reconciliation."""
+
+    updated_count: int
+    skipped_agent_variant_count: int
+    skipped_condenser_variant_count: int
+    malformed_repaired_count: int
+
 
 _ORG_SETTINGS_EXCLUDED_FIELDS = {
     'id',
@@ -116,12 +130,126 @@ class OrgStore:
                     }
                 },
             )
+            org.agent_settings = apply_configured_org_condenser_default(
+                org.agent_settings
+            )
             if org.v1_enabled is None:
                 org.v1_enabled = DEFAULT_V1_ENABLED
             session.add(org)
             await session.commit()
             await session.refresh(org)
             return org
+
+    @staticmethod
+    async def reconcile_applicable_org_condenser_max_tokens(
+        session: AsyncSession,
+        *,
+        max_tokens: int,
+        overwrite_existing: bool,
+    ) -> OrgCondenserReconciliationResult:
+        """Reconcile org-level LLM-summarizing condenser token thresholds."""
+
+        statement = text(
+            """
+            WITH candidate AS (
+                SELECT id, COALESCE(agent_settings::jsonb, '{}'::jsonb) AS settings
+                FROM org
+            ),
+            classified AS (
+                SELECT
+                    id,
+                    settings,
+                    CASE
+                        WHEN settings ->> 'agent_kind' IS NOT NULL
+                             AND settings ->> 'agent_kind' NOT IN ('openhands', 'llm')
+                            THEN 'skipped_agent'
+                        WHEN jsonb_typeof(settings -> 'condenser') = 'object'
+                             AND settings -> 'condenser' ->> 'condenser_kind' IS NOT NULL
+                             AND settings -> 'condenser' ->> 'condenser_kind' != 'llm_summarizing'
+                            THEN 'skipped_condenser'
+                        WHEN settings -> 'condenser' IS NOT NULL
+                             AND jsonb_typeof(settings -> 'condenser') IS DISTINCT FROM 'object'
+                            THEN 'malformed_applicable'
+                        ELSE 'applicable'
+                    END AS category
+                FROM candidate
+            ),
+            to_update AS (
+                SELECT
+                    id,
+                    category,
+                    jsonb_set(
+                        jsonb_set(
+                            settings,
+                            '{condenser}',
+                            CASE
+                                WHEN jsonb_typeof(settings -> 'condenser') = 'object'
+                                    THEN settings -> 'condenser'
+                                ELSE '{"condenser_kind":"llm_summarizing"}'::jsonb
+                            END,
+                            true
+                        ),
+                        '{condenser,max_tokens}',
+                        to_jsonb(CAST(:max_tokens AS integer)),
+                        true
+                    ) AS new_settings
+                FROM classified
+                WHERE category IN ('applicable', 'malformed_applicable')
+                  AND (
+                    (:overwrite_existing AND settings #> '{condenser,max_tokens}'
+                        IS DISTINCT FROM to_jsonb(CAST(:max_tokens AS integer)))
+                    OR ((NOT :overwrite_existing) AND NULLIF(
+                        settings #> '{condenser,max_tokens}',
+                        'null'::jsonb
+                    ) IS NULL)
+                  )
+            ),
+            updated AS (
+                UPDATE org AS o
+                SET
+                    agent_settings = to_update.new_settings::json,
+                    updated_at = now()
+                FROM to_update
+                WHERE o.id = to_update.id
+                  AND (
+                    (:overwrite_existing AND o.agent_settings::jsonb #> '{condenser,max_tokens}'
+                        IS DISTINCT FROM to_jsonb(CAST(:max_tokens AS integer)))
+                    OR ((NOT :overwrite_existing) AND NULLIF(
+                        o.agent_settings::jsonb #> '{condenser,max_tokens}',
+                        'null'::jsonb
+                    ) IS NULL)
+                  )
+                RETURNING o.id, to_update.category
+            )
+            SELECT
+                (SELECT count(*) FROM updated)::int AS updated_count,
+                (SELECT count(*) FROM classified WHERE category = 'skipped_agent')::int
+                    AS skipped_agent_variant_count,
+                (SELECT count(*) FROM classified WHERE category = 'skipped_condenser')::int
+                    AS skipped_condenser_variant_count,
+                (SELECT count(*) FROM updated WHERE category = 'malformed_applicable')::int
+                    AS malformed_repaired_count
+            """
+        )
+        row = (
+            (
+                await session.execute(
+                    statement,
+                    {
+                        'max_tokens': max_tokens,
+                        'overwrite_existing': overwrite_existing,
+                    },
+                )
+            )
+            .mappings()
+            .one()
+        )
+        return OrgCondenserReconciliationResult(
+            updated_count=row['updated_count'],
+            skipped_agent_variant_count=row['skipped_agent_variant_count'],
+            skipped_condenser_variant_count=row['skipped_condenser_variant_count'],
+            malformed_repaired_count=row['malformed_repaired_count'],
+        )
 
     @staticmethod
     async def get_org_by_id(org_id: UUID) -> Org | None:
