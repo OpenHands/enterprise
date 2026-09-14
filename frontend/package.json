@@ -132,6 +132,7 @@
     "dompurify": "3.4.11",
     "qs": "6.15.2",
     "@opentelemetry/core": "2.8.0",
-    "ws": ">=8.21.0"
+    "ws": ">=8.21.0",
+    "brace-expansion": ">=1.1.18"
   }
 }
