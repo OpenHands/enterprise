@@ -317,7 +317,6 @@ async def create_api_key(
                         ctx = await resolve_analytics_context(user_id)
                         analytics.track_api_key_created(
                             ctx=ctx,
-                            key_name=key_data.name,
                             has_expiration=key_data.expires_at is not None,
                         )
                 except Exception:

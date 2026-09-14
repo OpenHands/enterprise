@@ -355,6 +355,15 @@ async def device_verification_authenticated(
                 )
 
                 analytics.track_cli_device_linked(ctx=ctx)
+
+                # The device flow mints an API key via ApiKeyStore directly
+                # (not the POST /api/keys route), so emit the event here too
+                # so device keys are counted toward last_api_device_link_date
+                # and the api-key aggregation once the cron is switched off.
+                analytics.track_api_key_created(
+                    ctx=ctx,
+                    has_expiration=True,
+                )
             except Exception:
                 logger.exception(
                     'oauth_device:analytics:failed',

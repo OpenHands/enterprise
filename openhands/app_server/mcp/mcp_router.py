@@ -98,7 +98,12 @@ async def get_conversation_link(
 async def save_pr_metadata(
     user_id: str | None, conversation_id: str, tool_result: str
 ) -> None:
-    """Appends a followup link, in the PR body, to the OpenHands conversation that opened the PR"""
+    """Extract the PR number from the tool result and store it on the conversation.
+
+    Also emits a ``pull request created`` analytics event when a PR number is
+    found. Supports GitHub (``pull/``), GitLab (``merge_requests/``), Bitbucket
+    (``pull-requests/``), and Azure DevOps (``pullrequest/``) URL formats.
+    """
     # Manually construct state for background operation (no request context available)
     state = InjectorState()
     setattr(state, USER_CONTEXT_ATTR, SpecifyUserContext(user_id))
@@ -116,12 +121,14 @@ async def save_pr_metadata(
         pull_pattern = r'pull/(\d+)'
         merge_request_pattern = r'merge_requests/(\d+)'
         pull_requests_pattern = r'pull-requests/(\d+)'
+        azure_devops_pattern = r'pullrequest/(\d+)'
 
         # Check if the tool_result contains the PR number
         pr_number = None
         match_pull = re.search(pull_pattern, tool_result)
         match_merge_request = re.search(merge_request_pattern, tool_result)
         match_pull_requests = re.search(pull_requests_pattern, tool_result)
+        match_azure_devops = re.search(azure_devops_pattern, tool_result)
 
         if match_pull:
             pr_number = int(match_pull.group(1))
@@ -129,6 +136,8 @@ async def save_pr_metadata(
             pr_number = int(match_merge_request.group(1))
         elif match_pull_requests:
             pr_number = int(match_pull_requests.group(1))
+        elif match_azure_devops:
+            pr_number = int(match_azure_devops.group(1))
 
         if pr_number:
             logger.info(
@@ -143,21 +152,19 @@ async def save_pr_metadata(
                         get_analytics_service,
                         resolve_analytics_context,
                     )
-                    from openhands.analytics.analytics_constants import (
-                        PULL_REQUEST_CREATED,
-                    )
 
                     analytics = get_analytics_service()
                     if analytics:
                         ctx = await resolve_analytics_context(user_id)
-                        analytics.capture(
+                        analytics.track_pull_request_created(
                             ctx=ctx,
-                            event=PULL_REQUEST_CREATED,
-                            properties={
-                                'conversation_id': conversation_id,
-                                'pr_number': pr_number,
-                                'git_provider': app_conversation_info.git_provider,
-                            },
+                            conversation_id=conversation_id,
+                            pr_number=pr_number,
+                            git_provider=(
+                                app_conversation_info.git_provider.value
+                                if app_conversation_info.git_provider
+                                else None
+                            ),
                         )
                 except Exception:
                     logger.exception('analytics:pull_request_created:failed')

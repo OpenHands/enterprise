@@ -30,6 +30,7 @@ from openhands.analytics.analytics_constants import (
     GIT_PROVIDER_CONNECTED,
     JIRA_INTEGRATION_ENABLED,
     ONBOARDING_COMPLETED,
+    PULL_REQUEST_CREATED,
     SETTINGS_SAVED,
     SLACK_INTEGRATION_ENABLED,
     TEAM_MEMBERS_INVITED,
@@ -511,7 +512,6 @@ class AnalyticsService:
         self,
         ctx: AnalyticsContext,
         *,
-        key_name: str | None = None,
         has_expiration: bool = False,
         session_id: str | None = None,
     ) -> None:
@@ -520,12 +520,16 @@ class AnalyticsService:
         Fired when a user creates a new API key. Maps to the HubSpot
         ``last_api_device_link_date`` property (timestamp of the most recent
         API key creation) and feeds ``number_of_api_keys`` aggregation.
+
+        ``key_name`` is intentionally omitted: it is free-form user input and
+        this event is forwarded to HubSpot contact properties, so we avoid
+        pushing arbitrary user-typed strings into the CRM. ``has_expiration``
+        plus the event timestamp are sufficient for the downstream metrics.
         """
         self.capture(
             ctx=ctx,
             event=API_KEY_CREATED,
             properties={
-                'key_name': key_name,
                 'has_expiration': has_expiration,
             },
             session_id=session_id,
@@ -545,6 +549,33 @@ class AnalyticsService:
         self.capture(
             ctx=ctx,
             event=CLI_DEVICE_LINKED,
+            session_id=session_id,
+        )
+
+    def track_pull_request_created(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        conversation_id: str,
+        pr_number: int,
+        git_provider: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'pull request created' event.
+
+        Fired when OpenHands opens a PR from a conversation. Feeds the HubSpot
+        ``number_of_prs_created`` aggregation. ``git_provider`` must already
+        be a plain string (call ``ProviderType.value`` at the call site)
+        because PostHog's ``clean()`` coerces non-str enum values to ``null``.
+        """
+        self.capture(
+            ctx=ctx,
+            event=PULL_REQUEST_CREATED,
+            properties={
+                'conversation_id': conversation_id,
+                'pr_number': pr_number,
+                'git_provider': git_provider,
+            },
             session_id=session_id,
         )
 

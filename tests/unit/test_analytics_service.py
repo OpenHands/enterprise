@@ -23,6 +23,7 @@ from openhands.analytics.analytics_constants import (
     GIT_PROVIDER_CONNECTED,
     JIRA_INTEGRATION_ENABLED,
     ONBOARDING_COMPLETED,
+    PULL_REQUEST_CREATED,
     SETTINGS_SAVED,
     SLACK_INTEGRATION_ENABLED,
     TEAM_MEMBERS_INVITED,
@@ -913,15 +914,48 @@ class TestTypedEventMethods:
         ctx = make_ctx(user_id='user-1')
         service.track_api_key_created(
             ctx=ctx,
-            key_name='My Key',
             has_expiration=True,
         )
         mock_client.capture.assert_called_once()
         _, kwargs = mock_client.capture.call_args
         assert kwargs['event'] == API_KEY_CREATED
         props = kwargs['properties']
-        assert props['key_name'] == 'My Key'
+        assert 'key_name' not in props
         assert props['has_expiration'] is True
+
+    def test_track_pull_request_created(self, saas_service):
+        """track_pull_request_created calls capture with PULL_REQUEST_CREATED and correct properties."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_pull_request_created(
+            ctx=ctx,
+            conversation_id='conv-1',
+            pr_number=42,
+            git_provider='github',
+        )
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == PULL_REQUEST_CREATED
+        props = kwargs['properties']
+        assert props['conversation_id'] == 'conv-1'
+        assert props['pr_number'] == 42
+        assert props['git_provider'] == 'github'
+
+    def test_track_pull_request_created_none_git_provider(self, saas_service):
+        """track_pull_request_created accepts a None git_provider."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_pull_request_created(
+            ctx=ctx,
+            conversation_id='conv-1',
+            pr_number=7,
+            git_provider=None,
+        )
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == PULL_REQUEST_CREATED
+        props = kwargs['properties']
+        assert props['git_provider'] is None
 
     def test_track_cli_device_linked(self, saas_service):
         """track_cli_device_linked calls capture with CLI_DEVICE_LINKED."""

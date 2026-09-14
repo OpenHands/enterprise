@@ -31,7 +31,7 @@ Every event respects user consent.
 | 11 | **settings saved** | User saves their settings | `settings_changed`\*\* |
 | 12 | **trajectory downloaded** | User downloads a conversation trajectory | `conversation_id` |
 | 13 | **team members invited** | User invites team members to their organization | `invited_count`, `successful_count`, `failed_count`, `role` |
-| 14 | **api key created** | User creates a new API key (settings -> API keys) | `key_name`, `has_expiration` |
+| 14 | **api key created** | User creates a new API key (settings -> API keys, or CLI device-code flow) | `has_expiration` |
 | 15 | **cli device linked** | User completes the OAuth device-code flow (CLI login) | — |
 | 16 | **pull request created** | OpenHands creates a PR from within a conversation | `conversation_id`, `pr_number`, `git_provider` |
 | 17 | **slack integration enabled** | User links their Slack account | — |
