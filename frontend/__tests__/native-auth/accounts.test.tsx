@@ -5,7 +5,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRoutesStub } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AdminUsers from "#/routes/admin-users";
-import { NativeAuthService } from "#/api/native-auth-service/native-auth-service.api";
+import { NativeAuthService, NativeAuthError, NativeAccount } from "#/api/native-auth-service/native-auth-service.api";
 import { useSettingsNavItems } from "#/hooks/use-settings-nav-items";
 
 // Exercise the controller's approved selections; the shared autocomplete is covered in browser QA.
@@ -25,6 +25,7 @@ vi.mock("#/hooks/query/use-me", () => ({ useMe: () => ({ data: { role: "owner", 
 vi.mock("#/hooks/query/use-settings", () => ({ useSettings: () => ({ data: {} }) }));
 vi.mock("#/hooks/use-org-type-and-access", () => ({ useOrgTypeAndAccess: () => ({ isPersonalOrg: true, isTeamOrg: false, organizationId: "personal" }) }));
 
+const account: NativeAccount = { id: "account-id", email: "member@example.com", state: "profile_present", profile_present: true, is_disabled: false, role_id: null, created_at: "2026-01-01", pending_invitations: [] };
 
 function mount(Component: () => React.ReactNode, path: string = "/settings/users"): QueryClient {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -78,6 +79,30 @@ describe("native Users administration", () => {
     fireEvent.click(screen.getByRole("button", { name: "AUTH$CREATE_SETUP_LINK" }));
     await waitFor(() => expect(invite).toHaveBeenCalledWith({ email: "owner@example.com", org_id: "new-team", org_role_id: 1 }));
     await screen.findByDisplayValue("https://app.test/account-setup#token=team-setup");
+  });
+
+  it("reauthenticates to issue a reset link and keeps it out of cached results", async () => {
+    vi.spyOn(NativeAuthService, "invitationOrganizations").mockResolvedValue({ items: [], total: 0 });
+    vi.spyOn(NativeAuthService, "profile").mockResolvedValue({ id: "admin", email: "admin@example.com", global_permissions: ["manage_users"] });
+    vi.spyOn(NativeAuthService, "accounts").mockResolvedValue({ items: [account], total: 1 });
+    vi.spyOn(NativeAuthService, "account").mockResolvedValue(account);
+    vi.spyOn(NativeAuthService, "invitations").mockResolvedValue({ items: [], total: 0 });
+    vi.spyOn(NativeAuthService, "roles").mockResolvedValue([{ id: 3, name: "member" }]);
+    const issue = vi.spyOn(NativeAuthService, "issueReset").mockRejectedValueOnce(new NativeAuthError(401, "Sign in again to perform this action")).mockResolvedValue({ reset_url: "https://app.test/password-reset#token=only-once", expires_at: "2099-01-01" });
+    const login = vi.spyOn(NativeAuthService, "login").mockResolvedValue({ redirect_to: "/", accepted_tos: true });
+    const client = mount(AdminUsers);
+    fireEvent.click(await screen.findByRole("button", { name: "member@example.com" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AUTH$CREATE_RESET_LINK" }));
+    const password = await screen.findByLabelText("AUTH$PASSWORD");
+    expect(screen.getAllByLabelText("AUTH$EMAIL").some((input) => input instanceof HTMLInputElement && input.readOnly && input.value === "admin@example.com")).toBe(true);
+    fireEvent.change(password, { target: { value: "admin-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "AUTH$CONFIRM_IDENTITY" }));
+    await screen.findByDisplayValue("https://app.test/password-reset#token=only-once");
+    expect(issue).toHaveBeenCalledTimes(2);
+    expect(login).toHaveBeenCalledWith(expect.objectContaining({ email: "admin@example.com", password: "admin-password" }));
+    expect(JSON.stringify(client.getMutationCache().getAll().map((mutation) => mutation.state))).not.toMatch(/only-once|admin-password/);
+    fireEvent.click(screen.getByRole("button", { name: "AUTH$CLOSE" }));
+    expect(screen.queryByDisplayValue("https://app.test/password-reset#token=only-once")).not.toBeInTheDocument();
   });
 
 });

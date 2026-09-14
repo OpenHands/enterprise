@@ -116,7 +116,7 @@ const csrf = new NativeCsrf();
 const openhands: AuthenticationAdapter = Object.freeze<AuthenticationAdapter>({
   emailVerification: false,
   logout,
-  accountActions: ["enroll", "profile", "manage"],
+  accountActions: ["enroll", "profile", "manage", "reset_password"],
   prepareMutation(
     client: AxiosInstance,
     request: InternalAxiosRequestConfig<unknown>,

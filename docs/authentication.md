@@ -50,3 +50,25 @@ AUTH_INVITATION_TTL_SECONDS=86400
 ```
 
 The Users screen lists accounts and invitations. Administrators can inspect account details, revoke an unused invitation, or reissue an expired link. Links expire after the configured duration and can be consumed only once.
+
+## Password changes and recovery
+
+Users can change their password in **Settings > User** by entering their current password and confirming the new password.
+
+For account recovery, an administrator selects the account in **Settings > Users** and creates a password reset link. Creating the link requires authentication within the last 15 minutes; the screen prompts the administrator to sign in again when necessary. Share the private link directly with its intended recipient.
+
+Set the reset-link lifetime in seconds:
+
+```dotenv
+AUTH_RESET_TTL_SECONDS=1800
+```
+
+The recipient chooses and confirms a new password, then signs in. Completing the reset revokes existing browser sessions. Reset links expire and can be consumed only once.
+
+An operator with application database access can recover an account by its exact UUID:
+
+```sh
+uv run python -m server.auth.bootstrap recover ACCOUNT_UUID
+```
+
+The command prompts for the new password, revokes browser sessions, and preserves account state and roles. Deleted accounts cannot be recovered.

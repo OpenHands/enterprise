@@ -16,7 +16,9 @@ export function AccountLinkModal({
   const [copyFailed, setCopyFailed] = useState(false);
   const copyLink = async (): Promise<void> => {
     try {
-      await navigator.clipboard.writeText(link.invite_url || "");
+      await navigator.clipboard.writeText(
+        link.invite_url || link.reset_url || "",
+      );
       setCopied(true);
       setCopyFailed(false);
     } catch {
@@ -44,7 +46,7 @@ export function AccountLinkModal({
         type="text"
         label={t("AUTH$PRIVATE_LINK")}
         readOnly
-        value={link.invite_url || ""}
+        value={link.invite_url || link.reset_url || ""}
         onFocus={(event: React.FocusEvent<HTMLInputElement>): void =>
           event.currentTarget.select()
         }

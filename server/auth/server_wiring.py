@@ -99,13 +99,17 @@ def _install_keycloak_routes(base_app: FastAPI) -> None:
 def _install_openhands_routes(base_app: FastAPI) -> None:
     from server.routes.auth_accounts import auth_accounts_router
     from server.routes.auth_invitations import auth_invitations_router
+    from server.routes.auth_passwords import auth_passwords_router
     from server.routes.native_auth import native_auth_router
     from server.routes.native_enrollment import native_enrollment_router
+    from server.routes.native_password import native_password_router
 
     base_app.include_router(native_auth_router)
     base_app.include_router(native_enrollment_router)
     base_app.include_router(auth_invitations_router)
     base_app.include_router(auth_accounts_router)
+    base_app.include_router(native_password_router)
+    base_app.include_router(auth_passwords_router)
 
 
 def install_authentication_middleware(base_app: FastAPI) -> None:

@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuthentication } from "#/hooks/use-authentication";
+import { PasswordChange } from "#/components/features/native-auth/password-change";
+import { AccountSignInMethods } from "#/components/features/native-auth/account-sign-in-methods";
 import { useSettings } from "#/hooks/query/use-settings";
 import { SETTINGS_QUERY_KEYS } from "#/hooks/query/query-keys";
 import { useUpdateEmail } from "#/hooks/mutation/use-update-email";
@@ -133,6 +135,7 @@ function UserSettingsScreen(): React.JSX.Element {
   const { data: settings, isLoading, refetch } = useSettings();
   const { data: config } = useConfig();
   const authentication = useAuthentication();
+  const passwordLogin = config?.login_methods?.includes("password") === true;
   const { organizationId } = useSelectedOrganizationId();
   const [email, setEmail] = useState("");
   const [originalEmail, setOriginalEmail] = useState("");
@@ -252,6 +255,10 @@ function UserSettingsScreen(): React.JSX.Element {
               settings?.email_verified === false && <VerificationAlert />}
           </EmailInputSection>
         )}
+        {authentication.accountActions.includes("profile") && (
+          <AccountSignInMethods />
+        )}
+        {passwordLogin && <PasswordChange />}
       </div>
     </div>
   );

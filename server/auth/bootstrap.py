@@ -4,16 +4,19 @@ Migrations must complete before the SaaS server starts. Running this module is a
 optional way to initialize the installation before startup.
 """
 
+import argparse
 import asyncio
+import getpass
 import os
 from datetime import UTC, datetime
-from uuid import uuid4
+from typing import Literal
+from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth import auth_config
-from server.auth.native_password import hash_password, normalize_email
+from server.auth.native_password import NativeAuthError, hash_password, normalize_email
 from server.auth.native_types import SessionFactory
 from server.services.native_account_service import create_profile, lock_native_lifecycle
 from storage.database import a_session_maker
@@ -127,8 +130,43 @@ async def verify_auth_installation(
             )
 
 
+class BootstrapArgs(argparse.Namespace):
+    command: Literal['initialize', 'recover']
+    account_id: UUID | None
+
+
 def main() -> None:
-    asyncio.run(initialize_auth_installation())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        'command', nargs='?', choices=('initialize', 'recover'), default='initialize'
+    )
+    parser.add_argument('account_id', nargs='?', type=UUID)
+    args = parser.parse_args(namespace=BootstrapArgs())
+    if args.command == 'initialize':
+        asyncio.run(initialize_auth_installation())
+        return
+    if args.account_id is None:
+        parser.error('recover requires the exact account UUID')
+    if auth_config.ENABLE_KEYCLOAK:
+        parser.error('password recovery is unavailable in Keycloak mode')
+    account_id = args.account_id
+    password = getpass.getpass('New password: ')
+    confirm = getpass.getpass('Confirm new password: ')
+    if password != confirm:
+        parser.error('passwords do not match')
+
+    async def recover() -> None:
+        from server.services.native_password_service import get_native_password_service
+
+        await verify_auth_installation()
+        await get_native_password_service().recover_password(account_id, password)
+
+    try:
+        asyncio.run(recover())
+    except NativeAuthError as exc:
+        parser.error(str(exc))
+    # Audit only the exact target; never the password or token.
+    print(f'Password recovered and sessions revoked for account {account_id}')
 
 
 if __name__ == '__main__':
