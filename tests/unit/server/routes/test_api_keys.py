@@ -26,6 +26,7 @@ from server.routes.api_keys import (
     get_llm_api_key_for_byor,
     refresh_managed_llm_api_key,
 )
+from storage.budget_control import BudgetControlConflict, BudgetWriteDenied
 from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
 from storage.org import Org
 from storage.org_member import OrgMember
@@ -432,8 +433,8 @@ class TestRefreshManagedLlmApiKey:
     """Test the managed LLM API key refresh endpoint.
 
     These tests exercise the REAL managed-key lifecycle
-    (``SaasSettingsStore.rotate_managed_llm_key``) against an in-memory SQLite
-    database, mocking only the external LiteLLM HTTP calls. They prove the
+    (``SaasSettingsStore.rotate_managed_llm_key``) against PostgreSQL,
+    mocking the LiteLLM manager methods. They prove the
     actual managed-config classification (from effective org+member settings,
     with org-default precedence), the OpenHands metadata attachment, and the
     persist/missing-member behavior — not stubs of the route helpers.
@@ -652,6 +653,29 @@ class TestRefreshManagedLlmApiKey:
                 is None
             )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('error_type', [BudgetControlConflict, BudgetWriteDenied])
+    async def test_route_preserves_member_credential_when_policy_prevents_rotation(
+        self, async_session_maker, managed_env, error_type
+    ):
+        user_id, org_id = await self._seed(async_session_maker)
+        with self._patched_route(async_session_maker, user_id, org_id) as (
+            delete_alias,
+            generate,
+            delete_token,
+        ):
+            generate.side_effect = error_type('Existing key policy must be preserved')
+            with pytest.raises(HTTPException) as error:
+                await refresh_managed_llm_api_key(
+                    user_id=user_id, effective_org_id=org_id
+                )
+        assert error.value.status_code == 409
+        assert error.value.detail == 'Existing key policy must be preserved'
+        delete_alias.assert_not_awaited()
+        delete_token.assert_not_awaited()
+        member = await self._member_key(async_session_maker, org_id, user_id)
+        assert member.llm_api_key.get_secret_value() == 'sk-old-managed-key'
+
     # --- real rotate_managed_llm_key behavior ---
 
     @pytest.mark.asyncio
@@ -675,8 +699,7 @@ class TestRefreshManagedLlmApiKey:
         assert rotation.new_key == 'sk-new-managed-key'
 
         expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
-        # The alias is deleted before generating, so rotation never orphans.
-        mock_delete_alias.assert_awaited_once_with(key_alias=expected_alias)
+        mock_delete_alias.assert_not_awaited()
         mock_generate.assert_awaited_once_with(
             user_id, str(org_id), expected_alias, {'type': 'openhands'}
         )
@@ -711,7 +734,7 @@ class TestRefreshManagedLlmApiKey:
         assert rotation.status == ManagedLlmKeyStatus.ROTATED
         assert rotation.openhands_type is False
         expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
-        mock_delete_alias.assert_awaited_once_with(key_alias=expected_alias)
+        mock_delete_alias.assert_not_awaited()
         mock_generate.assert_awaited_once_with(
             user_id, str(org_id), expected_alias, None
         )
@@ -845,7 +868,7 @@ class TestRefreshManagedLlmApiKey:
             )
 
         assert result == ManagedLlmApiKeyRefreshResponse(refreshed=True)
-        mock_delete_alias.assert_awaited_once()
+        mock_delete_alias.assert_not_awaited()
         mock_generate.assert_awaited_once()
         # The old token is deleted best-effort after persist.
         mock_delete_token.assert_awaited_once_with('sk-old-managed-key')

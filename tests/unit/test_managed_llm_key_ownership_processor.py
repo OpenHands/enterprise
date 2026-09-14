@@ -297,9 +297,9 @@ async def test_processor_repairs_only_wrong_owned_managed_keys(async_session_mak
         str(org_id),
         openhands_type=True,
     )
-    assert delete_alias.await_count == 2
-    wrong_alias = delete_alias.await_args_list[0].kwargs['key_alias']
-    empty_alias = delete_alias.await_args_list[1].kwargs['key_alias']
+    delete_alias.assert_not_awaited()
+    wrong_alias = generate.await_args_list[0].args[2]
+    empty_alias = generate.await_args_list[1].args[2]
     assert str(wrong_user_id) in wrong_alias
     assert str(empty_user_id) in empty_alias
     generate.assert_any_await(

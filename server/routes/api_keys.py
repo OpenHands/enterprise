@@ -14,6 +14,7 @@ from server.auth.saas_user_auth import SaasUserAuth
 from server.constants import BYOR_KEY_ALIAS_PATTERN
 from storage.api_key import ApiKey
 from storage.api_key_store import ApiKeyStore
+from storage.budget_control import BudgetControlConflict, BudgetWriteDenied
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
@@ -447,7 +448,7 @@ async def refresh_managed_llm_api_key(
     """Refresh the managed OpenHands LiteLLM key for the current user/org.
 
     Delegates the full managed-key lifecycle (effective-config classification,
-    alias cleanup, key generation with OpenHands metadata, and persistence) to
+    guarded key generation with OpenHands metadata, and persistence) to
     ``SaasSettingsStore.rotate_managed_llm_key`` so the route does not
     duplicate the storage-layer machinery. Only managed LiteLLM/OpenHands-
     provider effective configs are rotated; BYOK/custom and non-managed configs
@@ -481,9 +482,7 @@ async def refresh_managed_llm_api_key(
                 detail=(f'User {user_id} is not a member of org {effective_org_id}'),
             )
 
-        # The replacement is already persisted; clean up the previous token
-        # best-effort. The deterministic alias was already deleted by the
-        # rotation, so failure here only leaves a stale token, not an orphan.
+        # Cleanup is restricted to the previous exact token, never its alias.
         if rotation.old_key and rotation.old_key != rotation.new_key:
             try:
                 await LiteLlmManager.delete_key(rotation.old_key)
@@ -502,6 +501,10 @@ async def refresh_managed_llm_api_key(
             extra={'user_id': user_id, 'org_id': str(effective_org_id)},
         )
         return ManagedLlmApiKeyRefreshResponse(refreshed=True)
+    except (BudgetControlConflict, BudgetWriteDenied) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     except HTTPException:
         raise
     except Exception as e:

@@ -4,6 +4,7 @@ Store class for managing organizational settings.
 
 import functools
 import hashlib
+import hmac
 import math
 import os
 from typing import Any, Awaitable, Callable
@@ -27,6 +28,7 @@ from server.constants import (
     should_use_direct_llm_defaults,
 )
 from server.logger import logger
+from storage.litellm_key_policy import key_mutation_scope, key_restrictions
 from storage.user_settings import UserSettings
 
 # Timeout in seconds for LiteLLM management API requests.
@@ -449,31 +451,7 @@ class LiteLlmManager:
 
                 if add_user_to_team:
                     if create_user:
-                        # create_user is True only when no OpenHands User row exists,
-                        # so a pre-existing LiteLLM record under this id is a stale
-                        # orphan (e.g. from an account reset). Reset it so _create_user
-                        # rebuilds a clean record rather than re-attaching it. Best-
-                        # effort: a failed reset must not block onboarding — _create_user
-                        # below still tolerates a surviving record (409).
-                        if await LiteLlmManager._user_exists(client, keycloak_user_id):
-                            logger.info(
-                                'LiteLlmManager:create_entries:reset_stale_litellm_user',
-                                extra={'org_id': org_id, 'user_id': keycloak_user_id},
-                            )
-                            try:
-                                await LiteLlmManager._delete_user(
-                                    client, keycloak_user_id
-                                )
-                            except Exception as exc:
-                                logger.warning(
-                                    'LiteLlmManager:create_entries:reset_stale_litellm_user_failed',
-                                    extra={
-                                        'org_id': org_id,
-                                        'user_id': keycloak_user_id,
-                                        'error': str(exc),
-                                    },
-                                )
-
+                        # A missing OpenHands row does not prove LiteLLM state is disposable.
                         user_created = await LiteLlmManager._create_user(
                             client, keycloak_user_info.get('email'), keycloak_user_id
                         )
@@ -506,20 +484,7 @@ class LiteLlmManager:
                         client, keycloak_user_id, org_id, team_budget
                     )
 
-                    # We delete the key if it already exists. In environments where multiple
-                    # installations are using the same keycloak and litellm instance, this
-                    # will mean other installations will have their key invalidated.
                     key_alias = get_openhands_cloud_key_alias(keycloak_user_id, org_id)
-                    try:
-                        await LiteLlmManager._delete_key_by_alias(client, key_alias)
-                    except httpx.HTTPStatusError as ex:
-                        if ex.response and ex.response.status_code == 404:
-                            logger.debug(
-                                f'Key "{key_alias}" did not exist - continuing'
-                            )
-                        else:
-                            raise
-
                     key = await LiteLlmManager._generate_key(
                         client,
                         keycloak_user_id,
@@ -1016,13 +981,7 @@ class LiteLlmManager:
                 response.status_code == 400
                 and 'already exists. Please use a different team id' in response.text
             ):
-                # team already exists, so update, then return
-                kwargs: dict[str, Any] = {}
-                if free_models is not None:
-                    kwargs['free_models'] = free_models
-                await LiteLlmManager._update_team(
-                    client, team_id, team_alias, max_budget, **kwargs
-                )
+                # Provisioning is not authority to replace an existing team's policy.
                 return
             logger.error(
                 'error_creating_litellm_team',
@@ -1691,48 +1650,99 @@ class LiteLlmManager:
     ) -> str:
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             raise ValueError('LiteLLM API configuration not found')
-        json_data: dict[str, Any] = {
-            'user_id': keycloak_user_id,
-            'models': [],
-        }
-
-        if team_id is not None:
-            json_data['team_id'] = team_id
-
-        if key_alias is not None:
-            json_data['key_alias'] = key_alias
-
-        if metadata is not None:
-            json_data['metadata'] = metadata
-
-        response = await client.post(
-            f'{LITE_LLM_API_URL}/key/generate',
-            json=json_data,
-        )
-        # Failed to generate user key for team - this is an unforeseen error state...
-        if not response.is_success:
-            logger.error(
-                'error_generate_user_team_key',
-                extra={
-                    'status_code': response.status_code,
-                    'text': response.text,
-                    'user_id': keycloak_user_id,
-                    'team_id': team_id,
-                    'key_alias': key_alias,
-                },
+        async with key_mutation_scope(team_id):
+            await LiteLlmManager._check_key_creation(
+                client, keycloak_user_id, team_id, key_alias
             )
-        response.raise_for_status()
-        response_json = response.json()
-        key = response_json['key']
-        logger.info(
-            'LiteLlmManager:_lite_llm_generate_user_team_key:key_created',
-            extra={
+            payload: dict[str, Any] = {
                 'user_id': keycloak_user_id,
                 'team_id': team_id,
-                'key_alias': key_alias,
-            },
+                'models': [],
+            }
+            if key_alias is not None:
+                payload['key_alias'] = key_alias
+            if metadata is not None:
+                payload['metadata'] = metadata
+            response = await client.post(
+                f'{LITE_LLM_API_URL}/key/generate', json=payload
+            )
+            response.raise_for_status()
+            key = response.json().get('key')
+            if not isinstance(key, str) or not key:
+                raise RuntimeError('LiteLLM did not return a credential')
+            return key
+
+    @staticmethod
+    async def _check_key_creation(
+        client: httpx.AsyncClient,
+        user_id: str,
+        team_id: str | None,
+        key_alias: str | None,
+    ) -> None:
+        from storage.budget_control import BudgetWriteDenied
+
+        keys = await LiteLlmManager._get_all_keys_for_user(client, user_id)
+        if keys is None:
+            raise BudgetWriteDenied(
+                'Cannot create a credential while key policy is unavailable'
+            )
+        for key in keys:
+            if key.get('team_id') is None and key_restrictions(key):
+                raise BudgetWriteDenied(
+                    'Unscoped key policy requires explicit credential recovery'
+                )
+            if key.get('team_id') != team_id:
+                continue
+            if (
+                key.get('user_id') != user_id
+                or not isinstance(key.get('token'), str)
+                or not key['token']
+            ):
+                raise BudgetWriteDenied('Key ownership could not be established')
+            if key.get('key_alias') == key_alias or key_restrictions(key):
+                raise BudgetWriteDenied(
+                    'Existing key policy requires explicit credential recovery; it was not replaced'
+                )
+        if key_alias:
+            response = await client.get(
+                f'{LITE_LLM_API_URL}/key/list',
+                params={'key_alias': key_alias, 'return_full_object': True, 'size': 1},
+            )
+            response.raise_for_status()
+            result = response.json()
+            if not isinstance(result, dict) or not isinstance(result.get('keys'), list):
+                raise BudgetWriteDenied(
+                    'Unable to inspect the existing credential alias'
+                )
+            count = result.get('total_count')
+            if type(count) is not int or count < 0:
+                raise BudgetWriteDenied(
+                    'Unable to inspect the existing credential alias'
+                )
+            if result['keys'] or count != 0:
+                raise BudgetWriteDenied(
+                    'Credential alias already exists; no key was deleted'
+                )
+
+    @staticmethod
+    async def ensure_managed_key(
+        keycloak_user_id: str,
+        org_id: str,
+        existing_key: str | None,
+        *,
+        openhands_type: bool = False,
+    ) -> str:
+        """Reuse owned credentials, including operator-blocked or renamed keys."""
+        if existing_key and await LiteLlmManager.verify_existing_key(
+            existing_key, keycloak_user_id, org_id, openhands_type=openhands_type
+        ):
+            return existing_key
+        return await LiteLlmManager.generate_key(
+            keycloak_user_id,
+            org_id,
+            get_openhands_cloud_key_alias(keycloak_user_id, org_id),
+            {'type': 'openhands'} if openhands_type else None,
         )
-        return key
 
     @staticmethod
     async def verify_key(key: str, user_id: str) -> bool:
@@ -1938,8 +1948,10 @@ class LiteLlmManager:
             )
             return None
 
-        # The user/info endpoint returns keys in the 'keys' field
-        return user_json.get('keys', [])
+        keys = user_json.get('keys') if isinstance(user_json, dict) else None
+        if not isinstance(keys, list) or any(not isinstance(key, dict) for key in keys):
+            return None
+        return keys
 
     @staticmethod
     async def _verify_existing_key(
@@ -1949,25 +1961,12 @@ class LiteLlmManager:
         org_id: str,
         openhands_type: bool = False,
     ) -> bool:
-        """Check if an existing key exists for the user/org in LiteLLM.
-
-        Verifies the provided key_value matches a key registered in LiteLLM for
-        the given user and organization. For openhands_type=True, looks for keys
-        with metadata type='openhands' and matching team_id. For openhands_type=False,
-        looks for keys with matching alias and team_id.
-
-        Returns True if the key is found and valid, False otherwise.
-        """
+        """Verify full key identity; aliases and model metadata are not ownership."""
         keys = await LiteLlmManager._get_all_keys_for_user(client, keycloak_user_id)
         if keys is None:
-            logger.warning(
-                'LiteLlmManager:_verify_existing_key:skip_invalidation',
-                extra={
-                    'user_id': keycloak_user_id,
-                    'org_id': org_id,
-                },
+            raise RuntimeError(
+                'Unable to inspect LiteLLM keys without replacing policy'
             )
-            return True
         return LiteLlmManager._key_belongs_to_user_org(
             keys,
             key_value,
@@ -1984,39 +1983,22 @@ class LiteLlmManager:
         org_id: str,
         openhands_type: bool,
     ) -> bool:
+        del openhands_type
+        if not key_value:
+            return False
+        key_hash = hashlib.sha256(key_value.encode()).hexdigest()
         for key_info in keys:
-            metadata = key_info.get('metadata') or {}
-            team_id = key_info.get('team_id')
-            key_alias = key_info.get('key_alias')
-            token = None
+            token = key_info.get('token')
             if (
-                openhands_type
-                and metadata.get('type') == 'openhands'
-                and team_id == org_id
-            ):
-                # Found an existing OpenHands key for this org
-                key_name = key_info.get('key_name')
-                token = key_name[-4:] if key_name else None  # last 4 digits of key
-                if token and key_value.endswith(
-                    token
-                ):  # check if this is our current key
-                    return True
-            if (
-                not openhands_type
-                and team_id == org_id
+                key_info.get('user_id') == keycloak_user_id
+                and key_info.get('team_id') == org_id
+                and isinstance(token, str)
                 and (
-                    key_alias == get_openhands_cloud_key_alias(keycloak_user_id, org_id)
-                    or key_alias == get_byor_key_alias(keycloak_user_id, org_id)
+                    hmac.compare_digest(token.encode(), key_hash.encode())
+                    or hmac.compare_digest(token.encode(), key_value.encode())
                 )
             ):
-                # Found an existing key for this org (regardless of type)
-                key_name = key_info.get('key_name')
-                token = key_name[-4:] if key_name else None  # last 4 digits of key
-                if token and key_value.endswith(
-                    token
-                ):  # check if this is our current key
-                    return True
-
+                return True
         return False
 
     @staticmethod
@@ -2028,13 +2010,8 @@ class LiteLlmManager:
         openhands_type: bool = False,
     ) -> bool:
         """Verify ownership without treating an unavailable lookup as healthy."""
-        keys = await LiteLlmManager._get_all_keys_for_user(client, keycloak_user_id)
-        if keys is None:
-            raise RuntimeError(
-                'Unable to inspect LiteLLM keys for managed-key ownership repair'
-            )
-        return LiteLlmManager._key_belongs_to_user_org(
-            keys,
+        return await LiteLlmManager._verify_existing_key(
+            client,
             key_value,
             keycloak_user_id,
             org_id,
@@ -2109,10 +2086,7 @@ class LiteLlmManager:
         # Failed to delete key...
         if not response.is_success:
             if response.status_code == 404:
-                # Key doesn't exist by key_id. If we have a key_alias,
-                # try deleting by alias to clean up any orphaned alias.
-                if key_alias:
-                    await LiteLlmManager._delete_key_by_alias(client, key_alias)
+                # The alias may now belong to a different credential.
                 return
             logger.error(
                 'error_deleting_key',

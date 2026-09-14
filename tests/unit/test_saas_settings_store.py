@@ -449,7 +449,7 @@ async def test_ensure_api_key_rotates_invalid_fallback_key():
         'org-123',
         openhands_type=True,
     )
-    mock_delete.assert_awaited_once_with(key_alias=expected_alias)
+    mock_delete.assert_not_awaited()
     mock_generate.assert_awaited_once_with(
         'test-user-id-123', 'org-123', expected_alias, {'type': 'openhands'}
     )
@@ -458,11 +458,7 @@ async def test_ensure_api_key_rotates_invalid_fallback_key():
 
 @pytest.mark.asyncio
 async def test_ensure_api_key_generates_new_key_when_verification_fails():
-    """When verification fails, a new managed key is minted under the shared.
-
-    alias after deleting any prior key — symmetric across model types so
-    switching to/from an openhands/* model never orphans a key.
-    """
+    """Missing credentials use guarded creation without deleting existing aliases."""
     from storage.lite_llm_manager import get_openhands_cloud_key_alias
 
     store = SaasSettingsStore('test-user-id-123')
@@ -489,9 +485,7 @@ async def test_ensure_api_key_generates_new_key_when_verification_fails():
         await store._ensure_api_key(item, 'org-123', openhands_type=True)
 
         assert _secret_value(item, 'llm.api_key') == new_key
-        # The openhands branch now deletes the prior key under the shared alias
-        # before minting (previously it skipped the delete and orphaned keys).
-        mock_delete.assert_awaited_once_with(key_alias=expected_alias)
+        mock_delete.assert_not_awaited()
         mock_generate.assert_awaited_once_with(
             'test-user-id-123', 'org-123', expected_alias, {'type': 'openhands'}
         )
@@ -1120,7 +1114,7 @@ async def test_store_clears_member_custom_key_when_switching_to_managed_profile(
         assert member.has_custom_llm_api_key is False
         assert decrypt_value(member._llm_api_key) == 'sk-managed-key'
 
-    mock_delete.assert_awaited_once()
+    mock_delete.assert_not_awaited()
     mock_generate.assert_awaited_once()
 
 

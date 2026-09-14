@@ -123,14 +123,11 @@ class ManagedLlmKeyOwnershipProcessor(MaintenanceTaskProcessor):
                         verified += 1
                         continue
 
-                    # Delete only this member's deterministic alias. The raw key
-                    # currently stored on the row may belong to another user and
-                    # must remain valid for that correct owner.
+                    # Existing aliases and independently restricted keys are not replaced.
                     key_alias = get_openhands_cloud_key_alias(
                         target.user_id,
                         target.org_id,
                     )
-                    await LiteLlmManager.delete_key_by_alias_strict(key_alias=key_alias)
                     new_key = await LiteLlmManager.generate_key(
                         target.user_id,
                         target.org_id,

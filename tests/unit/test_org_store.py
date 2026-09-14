@@ -1941,8 +1941,10 @@ async def test_ensure_managed_key_returns_existing_when_owner_and_auth_valid(
 
 
 @pytest.mark.asyncio
-async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
-    """When the key is registered but fails auth verification, rotate it."""
+async def test_ensure_managed_key_preserves_owned_key_despite_auth_denial(
+    mock_litellm_api,
+):
+    """An operator block must not be bypassed on org-defaults save."""
     user_id = uuid.uuid4()
     org_id = uuid.uuid4()
     managed_url = 'http://test.url'
@@ -1990,8 +1992,8 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
             user_id=str(user_id),
         )
 
-    assert result == 'fresh-rotated-key'
-    assert member.llm_api_key.get_secret_value() == 'fresh-rotated-key'
+    assert result == 'stale-managed-key'
+    assert member.llm_api_key.get_secret_value() == 'stale-managed-key'
 
 
 class TestUsesManagedDefaultLlm:

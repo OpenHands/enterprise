@@ -934,89 +934,20 @@ class SaasSettingsStore(SettingsStore):
         openhands_type: bool = False,
         fallback_api_key: SecretStr | None = None,
     ) -> None:
-        """Generate and set the OpenHands API key for the given settings.
-
-        First checks if an existing key exists for the user and verifies it
-        is valid in LiteLLM. If valid, reuses it. Otherwise, generates a new key.
-        """
+        """Reuse or provision the acting member's managed credential."""
         llm_api_key = item.agent_settings.llm.api_key or fallback_api_key
-        logger.info(
-            'saas_settings_store:ensure_api_key:evaluate',
-            extra={
-                'user_id': self.user_id,
-                'org_id': org_id,
-                'openhands_type': openhands_type,
-                'has_api_key': bool(llm_api_key),
-                'used_fallback_api_key': bool(
-                    fallback_api_key and not item.agent_settings.llm.api_key
-                ),
-            },
+        existing_key = (
+            llm_api_key.get_secret_value()
+            if isinstance(llm_api_key, SecretStr)
+            else llm_api_key
         )
-
-        if not llm_api_key:
-            logger.info(
-                'saas_settings_store:ensure_api_key:missing_api_key',
-                extra={'user_id': self.user_id, 'org_id': org_id},
-            )
-            key_alias = get_openhands_cloud_key_alias(self.user_id, org_id)
-            await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
-            generated_key = await LiteLlmManager.generate_key(
-                self.user_id,
-                org_id,
-                key_alias,
-                {'type': 'openhands'} if openhands_type else None,
-            )
-            item.agent_settings.llm.api_key = SecretStr(generated_key)
-            logger.info(
-                'saas_settings_store:store:generated_openhands_key',
-                extra={
-                    'user_id': self.user_id,
-                    'org_id': org_id,
-                    'openhands_type': openhands_type,
-                },
-            )
-            return
-
-        item.agent_settings.llm.api_key = llm_api_key
-        existing_key_valid = await LiteLlmManager.verify_existing_key(
-            llm_api_key.get_secret_value(),  # type: ignore[union-attr]
+        key = await LiteLlmManager.ensure_managed_key(
             self.user_id,
             org_id,
+            existing_key or None,
             openhands_type=openhands_type,
         )
-        logger.info(
-            'saas_settings_store:ensure_api_key:verify_existing_key',
-            extra={
-                'user_id': self.user_id,
-                'org_id': org_id,
-                'openhands_type': openhands_type,
-                'existing_key_valid': existing_key_valid,
-            },
-        )
-
-        # First, check if our current key is valid
-        if not existing_key_valid:
-            # Both branches mint one managed key per (user, org) under the same
-            # deterministic alias, deleting any prior key first — so switching
-            # the default to/from an openhands/* model never orphans a key.
-            key_alias = get_openhands_cloud_key_alias(self.user_id, org_id)
-            await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
-            generated_key = await LiteLlmManager.generate_key(
-                self.user_id,
-                org_id,
-                key_alias,
-                {'type': 'openhands'} if openhands_type else None,
-            )
-
-            item.agent_settings.llm.api_key = SecretStr(generated_key)
-            logger.info(
-                'saas_settings_store:store:generated_openhands_key',
-                extra={
-                    'user_id': self.user_id,
-                    'org_id': org_id,
-                    'openhands_type': openhands_type,
-                },
-            )
+        item.agent_settings.llm.api_key = SecretStr(key)
 
     async def get_current_managed_llm_key(self) -> str | None:
         """Return the acting member's current managed key, if effective config uses it.
@@ -1121,10 +1052,8 @@ class SaasSettingsStore(SettingsStore):
             old_key = existing_key.get_secret_value() if existing_key else None
 
             org_id_str = str(org_id)
-            # One managed key per (user, org) under the deterministic alias;
-            # delete the alias first so rotation never orphans a prior key.
+            # Generation must not discard an existing key's independent policy.
             key_alias = get_openhands_cloud_key_alias(self.user_id, org_id_str)
-            await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
             new_key = await LiteLlmManager.generate_key(
                 self.user_id,
                 org_id_str,
