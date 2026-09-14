@@ -26,6 +26,11 @@ from server.routes.org_models import (
     MEMBER_PRIVATE_AGENT_KEYS,
     OrgMemberSettingsUpdate,
 )
+from server.verified_models.default_profile import (
+    DEFAULT_LLM_PROFILE_NAME,
+    get_openhands_default_model_name,
+    materialize_default_llm_payload,
+)
 from storage.agent_profile_resolution import (
     OrgLLMProfileLoader,
     load_agent_profiles,
@@ -223,6 +228,7 @@ class SaasSettingsStore(SettingsStore):
         merged_agent_settings: dict[str, Any],
         effective_llm_api_key: SecretStr | None,
         override_agent_profile_id: str | None = None,
+        llm_profiles: LLMProfiles | None = None,
     ) -> tuple[dict[str, Any], str, int] | None:
         """Resolve an agent profile into an ``agent_settings`` dump.
 
@@ -279,7 +285,7 @@ class SaasSettingsStore(SettingsStore):
                 )
                 mcp_config = {}
 
-        llm_store = OrgLLMProfileLoader(load_llm_profiles(org))
+        llm_store = OrgLLMProfileLoader(llm_profiles or load_llm_profiles(org))
         try:
             resolved = resolve_agent_profile(
                 profile,
@@ -505,18 +511,53 @@ class SaasSettingsStore(SettingsStore):
         # Covers both pre-migration rows (llm_profiles is None) and
         # already-migrated orgs whose profiles map is empty.
         seeded_default = False
+        seeded_payload: dict[str, Any] | None = None
         if not (kwargs.get('llm_profiles') or {}).get('profiles'):
             legacy_llm = merged_agent_settings.get('llm')
             if isinstance(legacy_llm, dict) and legacy_llm.get('model'):
-                kwargs['llm_profiles'] = {
+                seeded_payload = {
                     'profiles': {'Default': dict(legacy_llm)},
                     'active': 'Default',
                 }
+                kwargs['llm_profiles'] = seeded_payload
                 seeded_default = True
             else:
                 # No legacy LLM to seed; drop a None value so the non-nullable
                 # Settings.llm_profiles falls back to its default_factory.
                 kwargs.pop('llm_profiles', None)
+
+        async with a_session_maker() as session:
+            openhands_default_model_name = await get_openhands_default_model_name(
+                session
+            )
+        # Persist the seeded legacy Default only when there is no DB-backed
+        # OpenHands default to materialize. When there IS a DB default, the
+        # live ``Default`` profile stays derived from
+        # ``verified_models.is_default`` rather than a stored snapshot.
+        #
+        # Note: ``materialize_default_llm_payload`` removes the logical
+        # ``Default`` when ``openhands_default_model_name`` is ``None`` (it is
+        # a live pointer with no target). The seeded legacy Default is a
+        # concrete user model, not a DB-default pointer, so persist the
+        # pre-materialize ``seeded_payload`` — otherwise the materialized
+        # (Default-stripped) view would be written back and the user's legacy
+        # LLM would be lost on the first load after upgrade.
+        persist_seeded_default = seeded_default and openhands_default_model_name is None
+
+        live_llm_profiles: LLMProfiles | None = None
+        profiles_payload = materialize_default_llm_payload(
+            kwargs.get('llm_profiles'), openhands_default_model_name
+        )
+        if profiles_payload is not None:
+            kwargs['llm_profiles'] = profiles_payload
+            live_llm_profiles = LLMProfiles.model_validate(profiles_payload)
+            if live_llm_profiles.active == DEFAULT_LLM_PROFILE_NAME:
+                default_llm = live_llm_profiles.require(DEFAULT_LLM_PROFILE_NAME)
+                merged_llm = dict(merged_agent_settings.get('llm') or {})
+                merged_llm['model'] = default_llm.model
+                merged_llm['base_url'] = default_llm.base_url
+                merged_agent_settings['llm'] = merged_llm
+                kwargs['agent_settings'] = merged_agent_settings
 
         # Agent Profiles: only on a resolve-requested load (conversation
         # start), resolve the active agent profile and let the result REPLACE
@@ -534,6 +575,7 @@ class SaasSettingsStore(SettingsStore):
                 merged_agent_settings,
                 effective_llm_api_key,
                 override_agent_profile_id,
+                live_llm_profiles,
             )
             if resolved is not None:
                 resolved_dump, resolved_id, resolved_revision = resolved
@@ -547,18 +589,20 @@ class SaasSettingsStore(SettingsStore):
             # Launch view (even when resolution fell back): never persistable.
             settings._resolved_view = True
 
-        # The seed above is in-memory only. Persist it onto the org row so the
-        # legacy LLM becomes a real stored profile — otherwise the profiles
-        # management API (server/routes/org_profiles.py, which reads
-        # org.llm_profiles directly) would still see an empty list and the
-        # user's previous model would never land "inside the profiles".
-        # Persist is best-effort: a transient DB failure here must not block
-        # returning settings the caller already has in memory.
-        if seeded_default:
+        # The legacy seed above is in-memory only. Persist it only when there
+        # is no DB-backed OpenHands default to materialize; a live Default
+        # profile should stay derived from verified_models.is_default, not from
+        # a stored org.llm_profiles snapshot. Persist is best-effort: a
+        # transient DB failure here must not block returning settings.
+        #
+        # Persist the pre-materialize ``seeded_payload`` (the concrete legacy
+        # LLM), not ``settings.llm_profiles``: materialize stripped the
+        # logical ``Default`` because there is no DB default to point at, so
+        # the materialized view has no profile to persist.
+        if persist_seeded_default and seeded_payload is not None:
             try:
-                await self._persist_seeded_default_profile(
-                    org_id, settings.llm_profiles
-                )
+                seeded_profiles = LLMProfiles.model_validate(seeded_payload)
+                await self._persist_seeded_default_profile(org_id, seeded_profiles)
             except Exception:
                 logger.warning(
                     'Failed to persist seeded Default profile for org %s',

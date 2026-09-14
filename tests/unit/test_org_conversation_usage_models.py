@@ -16,7 +16,14 @@ ORG_ID = uuid4()
 USER_ID = uuid4()
 
 
-def _conversation(
+@pytest.fixture(autouse=True)
+def seed_org_and_user(create_org, create_user):
+    """``conversation_metadata_saas`` has foreign keys to both org and user."""
+    create_org(id=ORG_ID)
+    create_user(id=USER_ID, current_org_id=ORG_ID)
+
+
+async def _conversation(
     session,
     conversation_id,
     llm_model,
@@ -46,6 +53,9 @@ def _conversation(
             org_id=ORG_ID,
         )
     )
+    # Cost events reference conversation_metadata, and SQLAlchemy has no
+    # relationship to order the inserts for us.
+    await session.flush()
 
 
 @pytest.mark.asyncio
@@ -54,7 +64,9 @@ async def test_model_usage_ledger_legacy_and_no_event_rows(async_session_maker):
     async with async_session_maker() as session:
         # A: attributed ledger rows across two models; the conversation's own
         # llm_model label must NOT override per-event attribution.
-        _conversation(session, 'conv-a', 'litellm_proxy/current-label', 0.25, 300, 30)
+        await _conversation(
+            session, 'conv-a', 'litellm_proxy/current-label', 0.25, 300, 30
+        )
         session.add(
             StoredConversationCostEvent(
                 conversation_id='conv-a',
@@ -79,7 +91,7 @@ async def test_model_usage_ledger_legacy_and_no_event_rows(async_session_maker):
         )
         # B: pre-migration NULL rows fall back to the conversation label;
         # NULL token fields contribute zero tokens.
-        _conversation(session, 'conv-b', 'legacy-model', 0.30, 999, 99)
+        await _conversation(session, 'conv-b', 'legacy-model', 0.30, 999, 99)
         session.add(
             StoredConversationCostEvent(
                 conversation_id='conv-b',
@@ -88,7 +100,7 @@ async def test_model_usage_ledger_legacy_and_no_event_rows(async_session_maker):
             )
         )
         # C: no ledger rows at all — kept via the legacy aggregation.
-        _conversation(session, 'conv-c', 'old-model', 0.55, 50, 5)
+        await _conversation(session, 'conv-c', 'old-model', 0.55, 50, 5)
         await session.commit()
 
     async with async_session_maker() as session:
@@ -125,7 +137,7 @@ async def test_agent_usage_groups_acp_models_and_deduplicates_conversations(
 ):
     occurred = datetime.now(UTC) - timedelta(hours=2)
     async with async_session_maker() as session:
-        _conversation(
+        await _conversation(
             session,
             'acp-openai',
             'gpt-current',
@@ -150,7 +162,7 @@ async def test_agent_usage_groups_acp_models_and_deduplicates_conversations(
                 ),
             ]
         )
-        _conversation(
+        await _conversation(
             session,
             'acp-claude',
             'claude-current',
@@ -167,7 +179,7 @@ async def test_agent_usage_groups_acp_models_and_deduplicates_conversations(
                 llm_model='claude-sonnet',
             )
         )
-        _conversation(
+        await _conversation(
             session,
             'acp-codex-legacy',
             'codex-mini',
@@ -202,7 +214,7 @@ async def _seed_spend_time_boundary_scenario(async_session_maker):
     recent = now - timedelta(hours=2)
     old = now - timedelta(days=45)
     async with async_session_maker() as session:
-        _conversation(
+        await _conversation(
             session,
             'old-active-a',
             'litellm_proxy/current-label',
@@ -222,7 +234,7 @@ async def _seed_spend_time_boundary_scenario(async_session_maker):
                 completion_tokens=10,
             )
         )
-        _conversation(
+        await _conversation(
             session,
             'old-active-b',
             'litellm_proxy/current-label',
@@ -242,7 +254,7 @@ async def _seed_spend_time_boundary_scenario(async_session_maker):
                 completion_tokens=2,
             )
         )
-        _conversation(
+        await _conversation(
             session,
             'recent-stale',
             'stale-model',
@@ -262,7 +274,7 @@ async def _seed_spend_time_boundary_scenario(async_session_maker):
                 completion_tokens=60,
             )
         )
-        _conversation(
+        await _conversation(
             session,
             'recent-no-ledger',
             'legacy-model',
@@ -271,7 +283,7 @@ async def _seed_spend_time_boundary_scenario(async_session_maker):
             2,
             created_at=now - timedelta(days=1),
         )
-        _conversation(
+        await _conversation(
             session,
             'old-no-ledger',
             'old-model',

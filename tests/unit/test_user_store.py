@@ -197,6 +197,32 @@ async def test_create_user_first_user_is_designated_superadmin(async_session_mak
 
 
 @pytest.mark.asyncio
+async def test_create_user_applies_configured_org_condenser_default(
+    async_session_maker, monkeypatch
+):
+    await _seed_admin_role(async_session_maker)
+    monkeypatch.setenv('OPENHANDS_ORG_DEFAULTS_CONDENSER_MAX_TOKENS', '200000')
+
+    user_id = str(uuid.uuid4())
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        _mock_create_default_settings_returning_default(),
+    ):
+        user = await UserStore.create_user(
+            user_id,
+            {'email': 'configured@example.com', 'preferred_username': 'configured'},
+        )
+
+    assert user is not None
+    async with async_session_maker() as session:
+        org = await session.get(Org, uuid.UUID(user_id))
+
+    assert org is not None
+    assert org.agent_settings['condenser']['max_tokens'] == 200000
+
+
+@pytest.mark.asyncio
 async def test_create_user_subsequent_users_are_not_superadmins(async_session_maker):
     """Only the first user gets the super role; later users do not.
 
@@ -1246,6 +1272,101 @@ def test_create_user_settings_from_entities_with_org_fallback():
     assert result.search_api_key == 'search-key'
 
 
+def test_create_user_settings_deep_merges_partial_condenser_member_override():
+    user_id = str(uuid.uuid4())
+
+    org_member = MagicMock()
+    org_member.llm_api_key = None
+    org_member.llm_api_key_for_byor = None
+    org_member.agent_settings_diff = {'condenser': {'enabled': False}}
+    org_member.effective_mcp_config = None
+    org_member.conversation_settings_diff = {}
+
+    user = MagicMock()
+    user.accepted_tos = None
+    user.enable_sound_notifications = False
+    user.language = 'en'
+    user.user_consents_to_analytics = False
+    user.email = None
+    user.email_verified = None
+    user.git_user_name = None
+    user.git_user_email = None
+
+    org = MagicMock()
+    org.remote_runtime_resource_factor = None
+    org.billing_margin = None
+    org.enable_proactive_conversation_starters = False
+    org.sandbox_base_container_image = None
+    org.sandbox_runtime_container_image = None
+    org.org_version = 2
+    org.agent_settings = {
+        'agent': 'CodeActAgent',
+        'llm': {'model': 'default-model', 'base_url': 'https://default.api.com'},
+        'condenser': {'enabled': True, 'max_tokens': 200000, 'max_size': 240},
+    }
+    org.conversation_settings = {}
+    org.search_api_key = None
+    org.sandbox_api_key = None
+    org.max_budget_per_task = None
+    org.v1_enabled = False
+    org.sandbox_grouping_strategy = None
+
+    result = UserStore._create_user_settings_from_entities(
+        user_id, org_member, user, org
+    )
+
+    assert result.agent_settings['condenser']['enabled'] is False
+    assert result.agent_settings['condenser']['max_tokens'] == 200000
+    assert result.agent_settings['condenser']['max_size'] == 240
+
+
+def test_create_user_settings_preserves_explicit_member_condenser_max_tokens():
+    user_id = str(uuid.uuid4())
+
+    org_member = MagicMock()
+    org_member.llm_api_key = None
+    org_member.llm_api_key_for_byor = None
+    org_member.agent_settings_diff = {'condenser': {'max_tokens': 123456}}
+    org_member.effective_mcp_config = None
+    org_member.conversation_settings_diff = {}
+
+    user = MagicMock()
+    user.accepted_tos = None
+    user.enable_sound_notifications = False
+    user.language = 'en'
+    user.user_consents_to_analytics = False
+    user.email = None
+    user.email_verified = None
+    user.git_user_name = None
+    user.git_user_email = None
+
+    org = MagicMock()
+    org.remote_runtime_resource_factor = None
+    org.billing_margin = None
+    org.enable_proactive_conversation_starters = False
+    org.sandbox_base_container_image = None
+    org.sandbox_runtime_container_image = None
+    org.org_version = 2
+    org.agent_settings = {
+        'agent': 'CodeActAgent',
+        'llm': {'model': 'default-model', 'base_url': 'https://default.api.com'},
+        'condenser': {'max_tokens': 200000, 'max_size': 240},
+    }
+    org.conversation_settings = {}
+    org.search_api_key = None
+    org.sandbox_api_key = None
+    org.max_budget_per_task = None
+    org.v1_enabled = False
+    org.sandbox_grouping_strategy = None
+
+    result = UserStore._create_user_settings_from_entities(
+        user_id, org_member, user, org
+    )
+
+    assert result.agent_settings['condenser']['max_tokens'] == 123456
+    assert result.agent_settings['condenser']['max_size'] == 240
+
+
 def test_user_settings_to_settings_is_not_a_live_mcp_update():
     from storage.user_settings import UserSettings
 
@@ -1416,6 +1537,66 @@ async def test_migrate_user_preserves_normalized_default_tools(monkeypatch):
     assert member.agent_settings_diff['tools'] is None
 
 
+@pytest.mark.asyncio
+async def test_migrate_user_applies_configured_org_condenser_default(monkeypatch):
+    from integrations import stripe_service
+    from storage.lite_llm_manager import LiteLlmManager
+    from storage.role_store import RoleStore
+    from storage.user_settings import UserSettings
+
+    monkeypatch.setenv('OPENHANDS_ORG_DEFAULTS_CONDENSER_MAX_TOKENS', '200000')
+    user_id = str(uuid.uuid4())
+    user_settings = UserSettings(
+        id=1,
+        keycloak_user_id=user_id,
+        llm_api_key='legacy-secret',
+        user_version=1,
+        agent_settings={
+            'llm': {
+                'model': 'custom/model',
+                'base_url': 'https://llm.example.com',
+            },
+        },
+        conversation_settings={},
+        already_migrated=False,
+    )
+
+    billing_result = MagicMock()
+    billing_result.scalars.return_value.first.return_value = None
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=billing_result)
+    session.merge = AsyncMock()
+    session.flush = AsyncMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    session_context = MagicMock()
+    session_context.__aenter__ = AsyncMock(return_value=session)
+    session_context.__aexit__ = AsyncMock(return_value=None)
+
+    monkeypatch.setattr('storage.user_store.a_session_maker', lambda: session_context)
+    monkeypatch.setattr(LiteLlmManager, 'migrate_entries', AsyncMock())
+    monkeypatch.setattr(stripe_service, 'migrate_customer', AsyncMock())
+    monkeypatch.setattr(
+        RoleStore,
+        'get_role_by_name',
+        AsyncMock(return_value=Role(id=1, name='owner', rank=0)),
+    )
+    monkeypatch.setattr('storage.org_member.encrypt_value', lambda value: value)
+
+    await UserStore.migrate_user(
+        user_id,
+        user_settings,
+        {
+            'email': 'user@example.com',
+            'preferred_username': 'test-user',
+        },
+    )
+
+    added = [call.args[0] for call in session.add.call_args_list]
+    org = next(item for item in added if isinstance(item, Org))
+    assert org.agent_settings['condenser']['max_tokens'] == 200000
+
+
 # --- Tests for migrate_user SQL parameter type handling ---
 
 
@@ -1426,7 +1607,6 @@ async def test_migrate_user_sql_type_handling(async_session_maker):
     This test verifies the fixes for SQL parameter binding issues in _migrate_personal_data
     where UUID and string parameters need to be correctly matched to their column types.
 
-    Note: SQLite doesn't natively support UUID types, so we use string representations.
     The key verification is that:
     1. String user_ids in WHERE clauses match source tables correctly
     2. UUID values are inserted into target UUID columns correctly
@@ -1436,17 +1616,12 @@ async def test_migrate_user_sql_type_handling(async_session_maker):
 
     user_id = str(uuid.uuid4())
     user_uuid = uuid.UUID(user_id)
-    # For SQLite raw SQL, use string representation of UUID
     user_uuid_str = str(user_uuid)
 
     # Set up legacy data with string user_ids (as in the old schema)
     async with async_session_maker() as session:
-        # First, add conversation_metadata with user_id as string column
-        # The current model doesn't have user_id, but the real DB did before migration
-        # We use raw SQL to add the column and insert test data
-        await session.execute(
-            text('ALTER TABLE conversation_metadata ADD COLUMN user_id VARCHAR')
-        )
+        # ``conversation_metadata.user_id`` is a legacy column the ORM model no
+        # longer maps, so reach for it with raw SQL.
         await session.execute(
             text(
                 """
@@ -1688,10 +1863,8 @@ async def test_migrate_user_sql_no_matching_records(async_session_maker):
 
     # Set up data for a different user
     async with async_session_maker() as session:
-        # Add conversation_metadata with user_id column for a different user
-        await session.execute(
-            text('ALTER TABLE conversation_metadata ADD COLUMN user_id VARCHAR')
-        )
+        # Legacy row for a different user, written through the unmapped
+        # ``conversation_metadata.user_id`` column.
         await session.execute(
             text(
                 """
@@ -1759,12 +1932,6 @@ async def test_migrate_user_sql_multiple_conversations(async_session_maker):
         session.add(user)
         await session.commit()
 
-        # Add conversation_metadata with user_id column
-        await session.execute(
-            text('ALTER TABLE conversation_metadata ADD COLUMN user_id VARCHAR')
-        )
-        await session.commit()
-
         # Insert multiple conversations for the same user
         for i in range(3):
             await session.execute(
@@ -1806,7 +1973,6 @@ async def test_migrate_user_sql_multiple_conversations(async_session_maker):
         await session.commit()
 
         # Verify all conversations were migrated using raw SQL
-        # (SQLite stores UUIDs as strings, ORM comparison may differ)
         result = await session.execute(
             text(
                 'SELECT conversation_id, user_id, org_id FROM conversation_metadata_saas WHERE user_id = :user_uuid'
@@ -1816,13 +1982,14 @@ async def test_migrate_user_sql_multiple_conversations(async_session_maker):
         saas_rows = result.fetchall()
         assert len(saas_rows) == 3, 'All 3 conversations should be migrated'
 
-        # Verify the user_id and org_id values
+        # Verify the user_id and org_id values. These are ``uuid`` columns, so
+        # the driver hands back UUID objects rather than the string we bound.
         for row in saas_rows:
-            assert row.user_id == user_uuid_str, (
-                f'user_id should match: {row.user_id} vs {user_uuid_str}'
+            assert row.user_id == user_uuid, (
+                f'user_id should match: {row.user_id} vs {user_uuid}'
             )
-            assert row.org_id == user_uuid_str, (
-                f'org_id should match: {row.org_id} vs {user_uuid_str}'
+            assert row.org_id == user_uuid, (
+                f'org_id should match: {row.org_id} vs {user_uuid}'
             )
 
 

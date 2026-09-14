@@ -46,11 +46,11 @@ class TestApiKeyStoreSystemKeys:
 
     @pytest.mark.asyncio
     async def test_get_or_create_system_api_key_creates_new(
-        self, api_key_store, async_session_maker
+        self, api_key_store, async_session_maker, create_org
     ):
         """Test creating a new system API key when none exists."""
         user_id = '5594c7b6-f959-4b81-92e9-b09c206f5081'
-        org_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081')
+        org_id = create_org(id=uuid.UUID(user_id)).id
         key_name = 'automation'
 
         with patch('storage.api_key_store.a_session_maker', async_session_maker):
@@ -75,11 +75,11 @@ class TestApiKeyStoreSystemKeys:
 
     @pytest.mark.asyncio
     async def test_get_or_create_system_api_key_returns_existing(
-        self, api_key_store, async_session_maker
+        self, api_key_store, async_session_maker, create_org
     ):
         """Test that existing valid system key is returned."""
         user_id = '5594c7b6-f959-4b81-92e9-b09c206f5081'
-        org_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081')
+        org_id = create_org(id=uuid.UUID(user_id)).id
         key_name = 'automation'
 
         with patch('storage.api_key_store.a_session_maker', async_session_maker):
@@ -101,11 +101,11 @@ class TestApiKeyStoreSystemKeys:
 
     @pytest.mark.asyncio
     async def test_get_or_create_system_api_key_different_names(
-        self, api_key_store, async_session_maker
+        self, api_key_store, async_session_maker, create_org
     ):
         """Test that different names create different keys."""
         user_id = '5594c7b6-f959-4b81-92e9-b09c206f5081'
-        org_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081')
+        org_id = create_org(id=uuid.UUID(user_id)).id
 
         with patch('storage.api_key_store.a_session_maker', async_session_maker):
             key1 = await api_key_store.get_or_create_system_api_key(
@@ -124,11 +124,11 @@ class TestApiKeyStoreSystemKeys:
 
     @pytest.mark.asyncio
     async def test_get_or_create_system_api_key_reissues_expired(
-        self, api_key_store, async_session_maker
+        self, api_key_store, async_session_maker, create_org
     ):
         """Test that expired system key is replaced with a new one."""
         user_id = '5594c7b6-f959-4b81-92e9-b09c206f5081'
-        org_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081')
+        org_id = create_org(id=uuid.UUID(user_id)).id
         key_name = 'automation'
         system_key_name = '__SYSTEM__:automation'
 
@@ -168,11 +168,11 @@ class TestApiKeyStoreSystemKeys:
 
     @pytest.mark.asyncio
     async def test_list_api_keys_excludes_system_keys(
-        self, api_key_store, async_session_maker
+        self, api_key_store, async_session_maker, create_org
     ):
         """Test that list_api_keys excludes system keys."""
         user_id = '5594c7b6-f959-4b81-92e9-b09c206f5081'
-        org_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081')
+        org_id = create_org(id=uuid.UUID(user_id)).id
 
         # Create a user key and a system key
         async with async_session_maker() as session:
@@ -216,11 +216,11 @@ class TestApiKeyStoreSystemKeys:
 
     @pytest.mark.asyncio
     async def test_delete_api_key_by_id_protects_system_keys(
-        self, api_key_store, async_session_maker
+        self, api_key_store, async_session_maker, create_org
     ):
         """Test that system keys cannot be deleted by users."""
         user_id = '5594c7b6-f959-4b81-92e9-b09c206f5081'
-        org_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081')
+        org_id = create_org(id=uuid.UUID(user_id)).id
 
         # Create a system key
         async with async_session_maker() as session:
@@ -250,11 +250,11 @@ class TestApiKeyStoreSystemKeys:
 
     @pytest.mark.asyncio
     async def test_delete_api_key_by_id_allows_system_with_flag(
-        self, api_key_store, async_session_maker
+        self, api_key_store, async_session_maker, create_org
     ):
         """Test that system keys can be deleted with allow_system=True."""
         user_id = '5594c7b6-f959-4b81-92e9-b09c206f5081'
-        org_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081')
+        org_id = create_org(id=uuid.UUID(user_id)).id
 
         # Create a system key
         async with async_session_maker() as session:
@@ -282,11 +282,11 @@ class TestApiKeyStoreSystemKeys:
 
     @pytest.mark.asyncio
     async def test_delete_api_key_by_id_allows_regular_keys(
-        self, api_key_store, async_session_maker
+        self, api_key_store, async_session_maker, create_org
     ):
         """Test that regular keys can be deleted normally."""
         user_id = '5594c7b6-f959-4b81-92e9-b09c206f5081'
-        org_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081')
+        org_id = create_org(id=uuid.UUID(user_id)).id
 
         # Create a regular key
         async with async_session_maker() as session:

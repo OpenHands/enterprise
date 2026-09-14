@@ -11,7 +11,8 @@ The Python backend is laid out exactly as it is deployed in the Docker image (`/
 - `openhands/` — the OpenHands app server (`openhands.server.listen:app`, `openhands/app_server/`)
 - `server/`, `storage/`, `integrations/`, `sync/`, `analytics/`, `utils/` — the SaaS/enterprise modules that extend it
 - `saas_server.py` — the FastAPI app that Kubernetes runs (`uvicorn saas_server:app`); `run_maintenance_tasks.py`
-  and `run_budget_maintenance.py` are CronJob entrypoints
+  and `run_budget_maintenance.py` are CronJob entrypoints; `run_budget_preflight.py` is the upgrade preflight /
+  post-upgrade gate hook entrypoint
 - `migrations/` and `alembic.ini` — Alembic database migrations (PostgreSQL only)
 - `tests/unit/` — unit tests for all of the above
 - `frontend/` — the React frontend
@@ -317,8 +318,12 @@ Logs will be saved to `logs/llm/CURRENT_DATE/` for troubleshooting.
 uv run pytest ./tests/unit
 ```
 
-The suite covers the app server (`openhands/`) and the SaaS modules (`server/`, `storage/`, ...); the SQLite-backed
-database fixtures live in `tests/unit/conftest.py`.
+The suite covers the app server (`openhands/`) and the SaaS modules (`server/`, `storage/`, ...); the database
+fixtures live in `tests/unit/conftest.py`.
+
+Tests that touch the database run against real PostgreSQL. The first such test starts a `postgres:16` container,
+migrates a template database with `alembic upgrade head`, and then hands every individual test its own clone of
+that template. Docker has to be running; nothing else is needed. The container is removed when the run ends.
 
 ---
 

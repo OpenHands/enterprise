@@ -1,4 +1,3 @@
-import sys
 from datetime import datetime
 from enum import IntEnum
 from typing import Any
@@ -37,10 +36,7 @@ class GitlabWebhook(Base):
     webhook_url: Mapped[str | None] = mapped_column(String, nullable=True)
     webhook_secret: Mapped[str | None] = mapped_column(String, nullable=True)
     webhook_uuid: Mapped[str | None] = mapped_column(String, nullable=True)
-    # Use Text for tests (SQLite compatibility) and ARRAY for production (PostgreSQL)
-    scopes: Mapped[Any] = mapped_column(
-        Text if 'pytest' in sys.modules else ARRAY(Text), nullable=True
-    )
+    scopes: Mapped[Any] = mapped_column(ARRAY(Text), nullable=True)
     last_synced: Mapped[datetime | None] = mapped_column(
         DateTime,
         server_default=text('CURRENT_TIMESTAMP'),

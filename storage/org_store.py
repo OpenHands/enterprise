@@ -1,11 +1,13 @@
 """Store class for managing organizations."""
 
+from dataclasses import dataclass
 from typing import Any, Optional
 from uuid import UUID
 
 from pydantic import SecretStr
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from openhands.app_server.settings.settings_models import (
@@ -39,12 +41,24 @@ from storage.lite_llm_manager import (
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_threshold import OrgBudgetThreshold
+from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_git_claim import OrgGitClaim
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.user import User
 from storage.user_settings import UserSettings
+
+
+@dataclass(frozen=True)
+class OrgCondenserReconciliationResult:
+    """Summary of org condenser max-token reconciliation."""
+
+    updated_count: int
+    skipped_agent_variant_count: int
+    skipped_condenser_variant_count: int
+    malformed_repaired_count: int
+
 
 _ORG_SETTINGS_EXCLUDED_FIELDS = {
     'id',
@@ -116,12 +130,126 @@ class OrgStore:
                     }
                 },
             )
+            org.agent_settings = apply_configured_org_condenser_default(
+                org.agent_settings
+            )
             if org.v1_enabled is None:
                 org.v1_enabled = DEFAULT_V1_ENABLED
             session.add(org)
             await session.commit()
             await session.refresh(org)
             return org
+
+    @staticmethod
+    async def reconcile_applicable_org_condenser_max_tokens(
+        session: AsyncSession,
+        *,
+        max_tokens: int,
+        overwrite_existing: bool,
+    ) -> OrgCondenserReconciliationResult:
+        """Reconcile org-level LLM-summarizing condenser token thresholds."""
+
+        statement = text(
+            """
+            WITH candidate AS (
+                SELECT id, COALESCE(agent_settings::jsonb, '{}'::jsonb) AS settings
+                FROM org
+            ),
+            classified AS (
+                SELECT
+                    id,
+                    settings,
+                    CASE
+                        WHEN settings ->> 'agent_kind' IS NOT NULL
+                             AND settings ->> 'agent_kind' NOT IN ('openhands', 'llm')
+                            THEN 'skipped_agent'
+                        WHEN jsonb_typeof(settings -> 'condenser') = 'object'
+                             AND settings -> 'condenser' ->> 'condenser_kind' IS NOT NULL
+                             AND settings -> 'condenser' ->> 'condenser_kind' != 'llm_summarizing'
+                            THEN 'skipped_condenser'
+                        WHEN settings -> 'condenser' IS NOT NULL
+                             AND jsonb_typeof(settings -> 'condenser') IS DISTINCT FROM 'object'
+                            THEN 'malformed_applicable'
+                        ELSE 'applicable'
+                    END AS category
+                FROM candidate
+            ),
+            to_update AS (
+                SELECT
+                    id,
+                    category,
+                    jsonb_set(
+                        jsonb_set(
+                            settings,
+                            '{condenser}',
+                            CASE
+                                WHEN jsonb_typeof(settings -> 'condenser') = 'object'
+                                    THEN settings -> 'condenser'
+                                ELSE '{"condenser_kind":"llm_summarizing"}'::jsonb
+                            END,
+                            true
+                        ),
+                        '{condenser,max_tokens}',
+                        to_jsonb(CAST(:max_tokens AS integer)),
+                        true
+                    ) AS new_settings
+                FROM classified
+                WHERE category IN ('applicable', 'malformed_applicable')
+                  AND (
+                    (:overwrite_existing AND settings #> '{condenser,max_tokens}'
+                        IS DISTINCT FROM to_jsonb(CAST(:max_tokens AS integer)))
+                    OR ((NOT :overwrite_existing) AND NULLIF(
+                        settings #> '{condenser,max_tokens}',
+                        'null'::jsonb
+                    ) IS NULL)
+                  )
+            ),
+            updated AS (
+                UPDATE org AS o
+                SET
+                    agent_settings = to_update.new_settings::json,
+                    updated_at = now()
+                FROM to_update
+                WHERE o.id = to_update.id
+                  AND (
+                    (:overwrite_existing AND o.agent_settings::jsonb #> '{condenser,max_tokens}'
+                        IS DISTINCT FROM to_jsonb(CAST(:max_tokens AS integer)))
+                    OR ((NOT :overwrite_existing) AND NULLIF(
+                        o.agent_settings::jsonb #> '{condenser,max_tokens}',
+                        'null'::jsonb
+                    ) IS NULL)
+                  )
+                RETURNING o.id, to_update.category
+            )
+            SELECT
+                (SELECT count(*) FROM updated)::int AS updated_count,
+                (SELECT count(*) FROM classified WHERE category = 'skipped_agent')::int
+                    AS skipped_agent_variant_count,
+                (SELECT count(*) FROM classified WHERE category = 'skipped_condenser')::int
+                    AS skipped_condenser_variant_count,
+                (SELECT count(*) FROM updated WHERE category = 'malformed_applicable')::int
+                    AS malformed_repaired_count
+            """
+        )
+        row = (
+            (
+                await session.execute(
+                    statement,
+                    {
+                        'max_tokens': max_tokens,
+                        'overwrite_existing': overwrite_existing,
+                    },
+                )
+            )
+            .mappings()
+            .one()
+        )
+        return OrgCondenserReconciliationResult(
+            updated_count=row['updated_count'],
+            skipped_agent_variant_count=row['skipped_agent_variant_count'],
+            skipped_condenser_variant_count=row['skipped_condenser_variant_count'],
+            malformed_repaired_count=row['malformed_repaired_count'],
+        )
 
     @staticmethod
     async def get_org_by_id(org_id: UUID) -> Org | None:
@@ -250,21 +378,64 @@ class OrgStore:
             return int(result.scalar() or 0)
 
     @staticmethod
+    def _uses_managed_default_llm(org: Org) -> bool:
+        """Whether the org's effective LLM is the managed default (not BYOK).
+
+        A version-bump upgrade must only reset an org's ``llm.model``/``base_url``
+        when it is still on the managed proxy default. BYOK orgs point at a
+        third-party ``base_url`` (or a bare model), so the lazy bump must leave
+        them untouched instead of aiming their custom config at the managed proxy.
+        """
+        llm = dict(org.agent_settings).get('llm') or {}
+        model = llm.get('model')
+        base_url = llm.get('base_url')
+
+        if not isinstance(model, str):
+            return False
+
+        managed_base_url = (LITE_LLM_API_URL or '').rstrip('/')
+        normalized_base_url = (
+            base_url.rstrip('/') if isinstance(base_url, str) else None
+        )
+
+        if normalized_base_url == managed_base_url:
+            return True
+        # Public OpenHands provider model with no explicit (or a managed-host)
+        # base_url is managed.
+        if is_openhands_model(model):
+            return normalized_base_url is None or (
+                'all-hands.dev' in normalized_base_url.lower()
+            )
+        return False
+
+    @staticmethod
     async def _validate_org_version(org: Org | None) -> Org | None:
         """Check if we need to update org version."""
         if org and org.org_version < ORG_SETTINGS_VERSION:
-            org = await OrgStore._update_org_kwargs(
-                org.id,
-                {
-                    'org_version': ORG_SETTINGS_VERSION,
-                    'agent_settings_diff': {
-                        'llm': {
-                            'model': get_default_llm_model(),
-                            'base_url': get_default_llm_base_url(),
-                        },
+            org_kwargs: dict[str, Any] = {'org_version': ORG_SETTINGS_VERSION}
+            # Only rewrite the default LLM config for orgs still on the managed
+            # default; BYOK orgs keep their custom model/base_url on upgrade.
+            if OrgStore._uses_managed_default_llm(org):
+                org_kwargs['agent_settings_diff'] = {
+                    'llm': {
+                        'model': get_default_llm_model(),
+                        'base_url': get_default_llm_base_url(),
                     },
-                },
-            )
+                }
+            org = await OrgStore._update_org_kwargs(org.id, org_kwargs)
+            # One-time, best-effort repair of a stale free-tier LiteLLM team
+            # allowlist (the version bump is the once-per-org trigger). A
+            # failed repair leaves the org upgraded but still 403ing exactly as
+            # before, and is never retried on later loads.
+            if org is not None:
+                try:
+                    await LiteLlmManager.ensure_free_team_models(str(org.id))
+                except Exception:
+                    logger.warning(
+                        'Failed to repair free-tier LiteLLM team allowlist',
+                        exc_info=True,
+                        extra={'org_id': str(org.id)},
+                    )
         return org
 
     @staticmethod

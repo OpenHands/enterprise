@@ -2,6 +2,10 @@
 
 This folder contains unit tests that could be run locally.
 
+Tests that touch the database run against real PostgreSQL, so Docker needs to be running. The first such test
+starts a `postgres:16` container, migrates a template database with `alembic upgrade head`, and gives every test
+its own clone of it. See [`tests/postgres_testdb.py`](../postgres_testdb.py) for the details.
+
 Run all test:
 
 ```bash

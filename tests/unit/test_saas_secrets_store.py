@@ -25,10 +25,10 @@ def jwt_svc():
 
 
 @pytest.fixture
-def mock_user():
-    """Mock user with org_id."""
+def mock_user(create_org):
+    """Mock user whose org exists, so ``custom_secrets.org_id`` resolves."""
     user = MagicMock()
-    user.current_org_id = UUID('a1111111-1111-1111-1111-111111111111')
+    user.current_org_id = create_org(id=UUID('a1111111-1111-1111-1111-111111111111')).id
     return user
 
 
@@ -258,14 +258,15 @@ class TestSaasSecretsStore:
         new_callable=AsyncMock,
     )
     async def test_secrets_isolation_between_organizations(
-        self, mock_get_user, secrets_store, mock_user
+        self, mock_get_user, secrets_store, mock_user, create_org
     ):
         """Test that secrets from one organization are not deleted when storing
         secrets in another organization. This reproduces a bug where switching
         organizations and creating a secret would delete all secrets from the
         user's personal workspace."""
+        # org1 already exists via the ``mock_user`` fixture.
         org1_id = UUID('a1111111-1111-1111-1111-111111111111')
-        org2_id = UUID('b2222222-2222-2222-2222-222222222222')
+        org2_id = create_org(id=UUID('b2222222-2222-2222-2222-222222222222')).id
 
         # Store secrets in org1 (personal workspace)
         mock_user.current_org_id = org1_id

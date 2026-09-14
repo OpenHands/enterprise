@@ -1,38 +1,13 @@
 """Unit tests for VerifiedModelService."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from server.verified_models.verified_model_service import (
+    LiteLLMSyncError,
     VerifiedModelService,
 )
-from storage.base import Base
-
-
-@pytest.fixture
-async def async_engine():
-    """Create an async SQLite engine for testing."""
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-        echo=False,
-    )
-
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield engine
-
-    await engine.dispose()
-
-
-@pytest.fixture
-async def async_session_maker(async_engine):
-    """Create an async session maker for testing."""
-    return async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
 
 
 @pytest.fixture
@@ -224,3 +199,178 @@ class TestDeleteVerifiedModel:
             service = VerifiedModelService(session)
             with pytest.raises(ValueError):
                 assert await service.delete_verified_model('nonexistent', 'openhands')
+
+
+class TestFreeFlag:
+    async def test_create_defaults_to_not_free(self, async_session_maker):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            model = await service.create_verified_model(
+                model_name='m', provider='openhands'
+            )
+            assert model.is_free is False
+
+    async def test_create_free(self, async_session_maker):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            model = await service.create_verified_model(
+                model_name='m', provider='openhands', is_free=True
+            )
+            assert model.is_free is True
+
+    async def test_update_free_flag(self, _seed_models, async_session_maker):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            updated = await service.update_verified_model(
+                model_name='claude-sonnet', provider='openhands', is_free=True
+            )
+            assert updated is not None
+            assert updated.is_free is True
+            # Unrelated flags are untouched.
+            assert updated.is_enabled is True
+
+    async def test_update_free_flag_syncs_litellm_allowlists(
+        self, _seed_models, async_session_maker
+    ):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            with patch.object(
+                service,
+                '_sync_litellm_free_model_allowlists',
+                new=AsyncMock(),
+            ) as sync_allowlists:
+                updated = await service.update_verified_model(
+                    model_name='claude-sonnet',
+                    provider='openhands',
+                    is_free=True,
+                )
+
+            assert updated is not None
+            sync_allowlists.assert_awaited_once_with([])
+
+    async def test_delete_free_model_syncs_litellm_allowlists(
+        self, async_session_maker
+    ):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            with patch.object(
+                service,
+                '_sync_litellm_free_model_allowlists',
+                new=AsyncMock(),
+            ) as sync_allowlists:
+                await service.create_verified_model(
+                    model_name='free-model', provider='openhands', is_free=True
+                )
+                sync_allowlists.reset_mock()
+
+                await service.delete_verified_model('free-model', 'openhands')
+
+            sync_allowlists.assert_awaited_once_with(['free-model'])
+
+    async def test_failed_litellm_sync_surfaces_error_and_keeps_db_change(
+        self, async_session_maker
+    ):
+        """A failed LiteLLM propagation must not be silently acknowledged.
+
+        The DB mutation commits before propagation, so the row must persist
+        (enabling a retry/reconcile) — but the service must raise
+        ``LiteLLMSyncError`` so the admin layer can surface the partial
+        failure instead of claiming success. This proves a failed sync cannot
+        leave the system silently divergent: the caller is always informed.
+        """
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            with patch(
+                'storage.lite_llm_manager.LiteLlmManager.sync_free_model_allowlists',
+                new=AsyncMock(side_effect=RuntimeError('LiteLLM unreachable')),
+            ):
+                with pytest.raises(LiteLLMSyncError):
+                    await service.create_verified_model(
+                        model_name='free-model',
+                        provider='openhands',
+                        is_free=True,
+                    )
+
+            # The DB change committed despite the propagation failure, so a
+            # retry (re-save) or out-of-band reconcile can converge LiteLLM.
+            persisted = await service.get_model('free-model', 'openhands')
+            assert persisted is not None
+            assert persisted.is_free is True
+
+
+class TestVerifiedFlag:
+    async def test_create_defaults_to_verified(self, async_session_maker):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            model = await service.create_verified_model(
+                model_name='m', provider='openhands'
+            )
+            assert model.is_verified is True
+
+    async def test_create_unverified(self, async_session_maker):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            model = await service.create_verified_model(
+                model_name='m', provider='openhands', is_verified=False
+            )
+            assert model.is_verified is False
+
+    async def test_update_verified_flag(self, _seed_models, async_session_maker):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            updated = await service.update_verified_model(
+                model_name='claude-sonnet',
+                provider='openhands',
+                is_verified=False,
+            )
+            assert updated is not None
+            assert updated.is_verified is False
+            assert updated.is_enabled is True
+
+
+class TestDefaultFlag:
+    async def test_create_default_clears_previous(self, async_session_maker):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            await service.create_verified_model(
+                model_name='a', provider='openhands', is_default=True
+            )
+            second = await service.create_verified_model(
+                model_name='b', provider='openhands', is_default=True
+            )
+            assert second.is_default is True
+            refreshed_first = await service.get_model('a', 'openhands')
+            assert refreshed_first is not None
+            assert refreshed_first.is_default is False
+
+    async def test_default_is_per_provider(self, async_session_maker):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            oh = await service.create_verified_model(
+                model_name='a', provider='openhands', is_default=True
+            )
+            anthropic = await service.create_verified_model(
+                model_name='a', provider='anthropic', is_default=True
+            )
+            # Setting a default for a different provider must not clear the
+            # openhands default.
+            assert anthropic.is_default is True
+            refreshed_oh = await service.get_model('a', 'openhands')
+            assert refreshed_oh is not None
+            assert refreshed_oh.is_default is True
+            assert oh.provider == 'openhands'
+
+    async def test_update_default_clears_previous(self, async_session_maker):
+        async with async_session_maker() as session:
+            service = VerifiedModelService(session)
+            await service.create_verified_model(
+                model_name='a', provider='openhands', is_default=True
+            )
+            await service.create_verified_model(model_name='b', provider='openhands')
+            await service.update_verified_model(
+                model_name='b', provider='openhands', is_default=True
+            )
+            a = await service.get_model('a', 'openhands')
+            b = await service.get_model('b', 'openhands')
+            assert a is not None and a.is_default is False
+            assert b is not None and b.is_default is True

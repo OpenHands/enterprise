@@ -80,6 +80,11 @@ PERSONAL_WORKSPACE_VERSION_TO_MODEL = {
     7: 'glm-5.2',
     8: 'kimi-k3',
     9: 'deepseek-v4-flash',
+    # 9 -> 10 keeps the same default model and exists only to drive a
+    # one-time org-version upgrade that repairs stale LiteLLM free-tier team
+    # ``models`` allowlists (see OrgStore._validate_org_version). It must stay
+    # the *same* model as 9 so the lazy bump never rewrites the default.
+    10: 'deepseek-v4-flash',
 }
 
 LITELLM_DEFAULT_MODEL = os.getenv('LITELLM_DEFAULT_MODEL')

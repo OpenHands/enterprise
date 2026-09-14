@@ -2,7 +2,7 @@ This repository contains the code for OpenHands Enterprise, an automated AI soft
 and a React frontend (in the `frontend` directory). The backend is the OpenHands app server (in the `openhands`
 directory) plus the SaaS/enterprise modules that extend it, which sit beside it at the repository root:
 `server/`, `storage/`, `integrations/`, `sync/`, `analytics/`, `utils/`, `migrations/` and the entrypoints
-`saas_server.py`, `run_maintenance_tasks.py`, `run_budget_maintenance.py`. This is the same layout the Docker
+`saas_server.py`, `run_maintenance_tasks.py`, `run_budget_maintenance.py`, `run_budget_preflight.py`. This is the same layout the Docker
 image has in `/app`. Python dependencies are managed with uv (`pyproject.toml` + `uv.lock`).
 
 ## General Setup:
@@ -109,7 +109,7 @@ Backend:
   - All tests are in `tests/unit/test_*.py`
   - To test new code, run `uv run pytest tests/unit/test_xxx.py` where `xxx` is the appropriate file for the current functionality
   - Write all tests with pytest
-  - Tests for the SaaS/enterprise modules live in `tests/unit/server/`, `tests/unit/storage/`, `tests/unit/integrations/`, `tests/unit/sync/`, ...; `tests/unit/conftest.py` provides the SQLite-backed DB fixtures they use
+  - Tests for the SaaS/enterprise modules live in `tests/unit/server/`, `tests/unit/storage/`, `tests/unit/integrations/`, `tests/unit/sync/`, ...; `tests/unit/conftest.py` provides the PostgreSQL-backed DB fixtures they use
 
 
 Frontend:
@@ -143,12 +143,12 @@ Frontend:
 
 The SaaS/enterprise modules extend the OpenHands app server (`openhands/`). They live at the repository root, next to it:
 - `server/` - the SaaS server: authentication and user management (Keycloak integration), org management, billing (Stripe), routes, services
-- `storage/` - SQLAlchemy models and stores (PostgreSQL in production, SQLite in unit tests)
+- `storage/` - SQLAlchemy models and stores (PostgreSQL in production and in unit tests)
 - `integrations/` - GitHub, GitLab, Bitbucket, Azure DevOps, Jira, Linear and Slack integrations
 - `sync/` - CronJob entrypoints (`python -m sync.<job>`)
 - `analytics/`, `utils/` - SaaS analytics user provider and shared helpers
 - `migrations/` + `alembic.ini` - Alembic database migrations
-- `saas_server.py` - the FastAPI app Kubernetes runs (`uvicorn saas_server:app`); `run_maintenance_tasks.py` / `run_budget_maintenance.py` - CronJob entrypoints
+- `saas_server.py` - the FastAPI app Kubernetes runs (`uvicorn saas_server:app`); `run_maintenance_tasks.py` / `run_budget_maintenance.py` - CronJob entrypoints; `run_budget_preflight.py` - upgrade preflight / post-upgrade gate hook entrypoint
 - Email services: Resend remains in `server/services/email_service.py`; SMTPEmailService lives in
   `server/services/smtp_email_service.py` and is used for org invitations/budget alerts plus
   the SMTP-driven UI email-enabled checks (SMTP_HOST).
@@ -217,7 +217,9 @@ Each integration follows a consistent pattern with service classes, storage mode
 **Testing Best Practices:**
 
 **Database Testing:**
-- Use SQLite in-memory databases (`sqlite:///:memory:`) for application unit tests instead of real PostgreSQL
+- Use the `engine` / `session_maker` / `async_engine` / `async_session_maker` fixtures from `tests/unit/conftest.py`
+  for application unit tests. Each test gets its own PostgreSQL database, migrated to head, cloned from a template
+  (see `tests/postgres_testdb.py`); never hand-roll a SQLite engine
 - Do not add SQLite paths to Alembic migrations
 - Create module-specific `conftest.py` files with database fixtures
 - Mock external database connections in unit tests to avoid dependency on running services

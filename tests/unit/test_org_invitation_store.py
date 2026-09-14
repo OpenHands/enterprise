@@ -286,7 +286,11 @@ class TestUpdateInvitationStatus:
 
     @pytest.mark.asyncio
     async def test_update_status_sets_accepted_at_for_accepted(
-        self, async_session_maker, seeded_org_role_user, store_with_session
+        self,
+        async_session_maker,
+        seeded_org_role_user,
+        store_with_session,
+        create_user,
     ):
         """accepted_at and accepted_by_user_id are persisted on acceptance."""
         org_id, role_id, inviter_id = seeded_org_role_user
@@ -306,7 +310,8 @@ class TestUpdateInvitationStatus:
             await session.refresh(invitation)
             invitation_id = invitation.id
 
-        accepter_id = uuid4()
+        # accepted_by_user_id is a foreign key onto ``user``.
+        accepter_id = create_user(current_org_id=org_id).id
         updated = await OrgInvitationStore.update_invitation_status(
             invitation_id=invitation_id,
             status=OrgInvitation.STATUS_ACCEPTED,

@@ -50,6 +50,42 @@ _SCHEDULING_MARKERS = (
     'unbound',  # e.g. "unbound immediate PersistentVolumeClaims"
 )
 
+_INGRESS_FAILURE_PREFIX = 'runtime_ingress:'
+_INGRESS_FAILURE_MESSAGES = {
+    'dns_error': (
+        'The sandbox started, but its runtime hostname could not be resolved. '
+        'Ask your administrator to check the wildcard runtime DNS configuration.'
+    ),
+    'tls_error': (
+        'The sandbox started, but its TLS certificate could not be verified for '
+        'the runtime hostname. Ask your administrator to check the runtime TLS '
+        'certificate and hostname configuration.'
+    ),
+    'timeout': (
+        'The sandbox started, but its runtime ingress did not respond before the '
+        'health-check timeout. Ask your administrator to check ingress and network '
+        'connectivity.'
+    ),
+    'connection_error': (
+        'The sandbox started, but the service could not connect through its runtime '
+        'ingress. Ask your administrator to check ingress routing and network '
+        'connectivity.'
+    ),
+    'request_error': (
+        'The sandbox started, but its runtime ingress readiness check failed before '
+        'receiving a response. Ask your administrator to check runtime ingress.'
+    ),
+    'invalid_response': (
+        'The sandbox started, but its readiness endpoint returned an invalid '
+        'response. Ask your administrator to check runtime routing and sandbox '
+        'image compatibility.'
+    ),
+    'unexpected_status': (
+        'The sandbox started, but its readiness endpoint did not report ready. Ask '
+        'your administrator to check runtime routing and sandbox image compatibility.'
+    ),
+}
+
 _GENERIC_START_FAILURE = (
     'The sandbox failed to start for an unexpected reason. Please try again.'
 )
@@ -65,6 +101,18 @@ def _classify_start_failure(detail: str | None) -> str | None:
     """
     if not detail:
         return None
+    if detail.startswith(_INGRESS_FAILURE_PREFIX):
+        failure_code = detail.removeprefix(_INGRESS_FAILURE_PREFIX)
+        if failure_code.startswith('http_status:'):
+            status_code = failure_code.removeprefix('http_status:')
+            if len(status_code) == 3 and status_code.isdigit():
+                return (
+                    'The sandbox started, but its runtime ingress returned HTTP '
+                    f'{status_code} instead of a ready response. Ask your '
+                    'administrator to check ingress routing and agent-server health.'
+                )
+            return None
+        return _INGRESS_FAILURE_MESSAGES.get(failure_code)
     if any(m in detail for m in _IMAGE_PULL_MARKERS):
         return (
             'The sandbox image could not be pulled. The image tag may be missing, '

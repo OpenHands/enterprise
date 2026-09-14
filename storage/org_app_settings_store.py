@@ -82,15 +82,18 @@ class OrgAppSettingsStore:
         """
         if org.org_version < ORG_SETTINGS_VERSION:
             org.org_version = ORG_SETTINGS_VERSION
-            org.agent_settings = deep_merge(
-                org.agent_settings,
-                {
-                    'llm': {
-                        'model': get_default_llm_model(),
-                        'base_url': get_default_llm_base_url(),
+            # Only rewrite the default LLM config for orgs still on the managed
+            # default; BYOK orgs keep their custom model/base_url on upgrade.
+            if OrgStore._uses_managed_default_llm(org):
+                org.agent_settings = deep_merge(
+                    org.agent_settings,
+                    {
+                        'llm': {
+                            'model': get_default_llm_model(),
+                            'base_url': get_default_llm_base_url(),
+                        },
                     },
-                },
-            )
+                )
             await self.db_session.flush()
             await self.db_session.refresh(org)
 

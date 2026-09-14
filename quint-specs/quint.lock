@@ -1,0 +1,3469 @@
+version = 1
+
+[survey]
+date = "2026-09-10T22:46:07Z"
+schema = 1
+
+[system]
+systemId = "openhands-enterprise"
+
+[[system.composition]]
+name = "Request authorization"
+shape = "star"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "rbac-authorization"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "identity"
+componentKey = "saas-identity-and-session"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "guarded endpoint"
+componentKey = "org-api-surface"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "guarded endpoint"
+componentKey = "org-budgets"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "guarded endpoint"
+componentKey = "org-conversation-insights"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "guarded endpoint"
+componentKey = "api-key-management"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "guarded endpoint"
+componentKey = "billing-and-subscriptions"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "guarded endpoint"
+componentKey = "feature-flags-config"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "guarded endpoint"
+componentKey = "user-account-lifecycle"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "guarded endpoint"
+componentKey = "verified-model-routing"
+cardinality = "many"
+
+[[system.composition.groupProperties]]
+name = "Org isolation"
+statement = "No endpoint reads or writes data of an org the caller is neither a member of nor super-role-eligible for."
+
+[[system.composition.groupProperties]]
+name = "No org spoofing"
+statement = "An `X-Org-Id` header or query-string org id never overrides a path-pinned org id."
+
+[[system.composition.groupProperties]]
+name = "Key scoping"
+statement = "An API key bound to one org never authorizes an action against another."
+
+[[system.composition.bridgeChecks]]
+assumer = "rbac-authorization"
+provider = "saas-identity-and-session"
+requirement = "`_resolve_org_id` returns the same effective org the session authenticated, and reports non-membership rather than defaulting"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "org-api-surface"
+provider = "rbac-authorization"
+requirement = "`require_permission` verified membership and rank before the service layer runs"
+status = "unchecked"
+
+[[system.composition]]
+name = "Webhook to conversation"
+shape = "star"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "webhook-ingress-verification"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "dispatch contract"
+componentKey = "resolver-webhook-dispatch-core"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "provider resolver"
+componentKey = "github-resolver-integration"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "provider resolver"
+componentKey = "git-forge-webhook-integrations"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "provider resolver"
+componentKey = "ticket-tracker-integrations"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "provider resolver"
+componentKey = "slack-chat-integration"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "conversation starter"
+componentKey = "app-conversation-lifecycle"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "Verify before forward"
+statement = "No provider event reaches a resolver or starts a conversation before its signature verifies and its workspace is active."
+
+[[system.composition.groupProperties]]
+name = "Author authorization"
+statement = "A conversation starts only for an event whose author has write access, or an established workspace link."
+
+[[system.composition.groupProperties]]
+name = "Replay safety"
+statement = "With no timestamp or nonce in any receiver, a duplicated delivery must not produce a second conversation."
+
+[[system.composition.bridgeChecks]]
+assumer = "github-resolver-integration"
+provider = "webhook-ingress-verification"
+requirement = "the payload reaching `receive_message` already passed HMAC verification against the right secret"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "webhook-ingress-verification"
+provider = "resolver-webhook-dispatch-core"
+requirement = "`resolve_org_for_repo` distinguishes 'no claim' from 'lookup failed' rather than returning `None` for both"
+status = "unchecked"
+
+[[system.composition]]
+name = "Conversation start saga"
+shape = "star"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "app-conversation-lifecycle"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "sandbox fleet"
+componentKey = "sandbox-provisioning"
+cardinality = "many"
+note = "one sandbox can back several conversations"
+
+[[system.composition.roleGroups]]
+role = "startup reporter"
+componentKey = "sandbox-startup"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "config source"
+componentKey = "settings-secrets-and-profiles"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "quota gate"
+componentKey = "daily-quota-increase"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "queued input"
+componentKey = "pending-messages-queue"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "trajectory sink"
+componentKey = "event-stream-and-callbacks"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "repo access"
+componentKey = "git-provider-services"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "Terminal start"
+statement = "Every start task ends at `READY` or `ERROR`; no interleaving leaves it stalled."
+
+[[system.composition.groupProperties]]
+name = "Quota conservation"
+statement = "A slot reserved for a start that never reaches `READY` is always released."
+
+[[system.composition.groupProperties]]
+name = "Safe teardown"
+statement = "Deleting one conversation never destroys a sandbox another live conversation uses."
+
+[[system.composition.bridgeChecks]]
+assumer = "app-conversation-lifecycle"
+provider = "sandbox-startup"
+requirement = "`wait_for_sandbox_running` raises a `SandboxError` already classified and redacted, so the start task can surface it verbatim"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "app-conversation-lifecycle"
+provider = "daily-quota-increase"
+requirement = "reserve and release compose to a no-op despite running in a separate DB session"
+status = "unchecked"
+
+[[system.composition]]
+name = "Org provisioning and LiteLLM"
+shape = "clique"
+
+[[system.composition.roleGroups]]
+role = "org store"
+componentKey = "org-api-surface"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "proxy adapter"
+componentKey = "litellm-proxy-integration"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "account store"
+componentKey = "user-account-lifecycle"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "key store"
+componentKey = "api-key-management"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "All or nothing"
+statement = "An org not fully created in both the DB and LiteLLM leaves no LiteLLM team, membership or key behind."
+
+[[system.composition.groupProperties]]
+name = "No orphans"
+statement = "Deleting an org never leaves a user with no org, nor a LiteLLM team without its row."
+
+[[system.composition.groupProperties]]
+name = "One live key"
+statement = "At most one live managed key per user and org, in both stores."
+
+[[system.composition.bridgeChecks]]
+assumer = "org-api-surface"
+provider = "litellm-proxy-integration"
+requirement = "the compensating cleanup removes exactly what the failed create made, and its own failure is surfaced"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "api-key-management"
+provider = "litellm-proxy-integration"
+requirement = "a key deleted from LiteLLM is also gone locally, and neither store advertises one the other lacks"
+status = "unchecked"
+
+[[system.composition]]
+name = "Budget enforcement cycle"
+shape = "star"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "org-budgets"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "scheduler"
+componentKey = "maintenance-task-queue"
+cardinality = 1
+note = "two runners can interleave on the non-atomic claim"
+
+[[system.composition.roleGroups]]
+role = "spend source"
+componentKey = "litellm-proxy-integration"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "alert channel"
+componentKey = "email-notifications"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "settings owner"
+componentKey = "org-api-surface"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "Once per cycle"
+statement = "Budget maintenance applies at most once per org per cycle, even with overlapping claims."
+
+[[system.composition.groupProperties]]
+name = "Forward only"
+statement = "A cycle advances only forward, by exactly one reset period per roll."
+
+[[system.composition.groupProperties]]
+name = "Honest spend"
+statement = "A spend figure shown to an operator is current or explicitly marked stale."
+
+[[system.composition.bridgeChecks]]
+assumer = "org-budgets"
+provider = "maintenance-task-queue"
+requirement = "a claimed task is not concurrently processed by another runner, which the non-atomic claim does not guarantee"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "org-budgets"
+provider = "litellm-proxy-integration"
+requirement = "a budget write reporting success is readable back with the value written"
+status = "unchecked"
+
+[[system.composition]]
+name = "Credit purchase"
+shape = "two-party"
+
+[[system.composition.roleGroups]]
+role = "checkout"
+componentKey = "billing-and-subscriptions"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "org context"
+componentKey = "org-api-surface"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "Exactly once"
+statement = "A completed checkout credits the org exactly once, even if the unauthenticated callback arrives twice concurrently."
+
+[[system.composition.groupProperties]]
+name = "Server-side amount"
+statement = "The credited amount comes from the live Stripe session, never the request."
+
+[[system.composition.bridgeChecks]]
+assumer = "billing-and-subscriptions"
+provider = "org-api-surface"
+requirement = "the org resolved for a Stripe customer is the one the session was created for, since resolution logs rather than raising"
+status = "unchecked"
+
+[[system.composition]]
+name = "Session establishment"
+shape = "star"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "saas-identity-and-session"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "account store"
+componentKey = "user-account-lifecycle"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "permission engine"
+componentKey = "rbac-authorization"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "token crypto"
+componentKey = "app-server-user-context"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "verification mail"
+componentKey = "email-notifications"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "bot defence"
+componentKey = "recaptcha-verification"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "Gate holds"
+statement = "A user who has not accepted the TOS or verified their email reaches no route beyond those explicitly exempted."
+
+[[system.composition.groupProperties]]
+name = "One account"
+statement = "A first login creates at most one user row per identity, even when two race and the Redis lock is unavailable."
+
+[[system.composition.groupProperties]]
+name = "Refresh atomicity"
+statement = "A session is marked refreshed only when both tokens were re-encrypted and stored."
+
+[[system.composition.bridgeChecks]]
+assumer = "saas-identity-and-session"
+provider = "user-account-lifecycle"
+requirement = "`create_user` is idempotent per identity, which the fail-open Redis lock does not guarantee during an outage"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "saas-identity-and-session"
+provider = "app-server-user-context"
+requirement = "a token this component issued is rejected once expired, which `decrypt_jwe_token` does not check"
+status = "unchecked"
+
+[[system.composition]]
+name = "Settings and secrets fan-in"
+shape = "star"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "settings-secrets-and-profiles"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "consumer"
+componentKey = "app-conversation-lifecycle"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "consumer"
+componentKey = "sandbox-provisioning"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "org owner"
+componentKey = "org-api-surface"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "caller identity"
+componentKey = "app-server-user-context"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "Active pointer"
+statement = "Exactly one profile is active per user, including right after the active one is deleted or renamed."
+
+[[system.composition.groupProperties]]
+name = "No lost writes"
+statement = "Concurrent secret and profile writes never lose a value, despite two independent locks."
+
+[[system.composition.groupProperties]]
+name = "Scoped secrets"
+statement = "A secret stored under one effective org is never injected into a conversation in another."
+
+[[system.composition.bridgeChecks]]
+assumer = "app-conversation-lifecycle"
+provider = "settings-secrets-and-profiles"
+requirement = "the profile resolved at start is still active when the conversation is configured"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "sandbox-provisioning"
+provider = "settings-secrets-and-profiles"
+requirement = "secrets exposed through a session key are exactly those scoped to that conversation's user and org"
+status = "unchecked"
+
+[[system.composition]]
+name = "Provider API access"
+shape = "star"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "git-provider-services"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "token source"
+componentKey = "settings-secrets-and-profiles"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "caller identity"
+componentKey = "app-server-user-context"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "consumer"
+componentKey = "app-conversation-lifecycle"
+cardinality = "many"
+
+[[system.composition.groupProperties]]
+name = "Scoped access"
+statement = "A repository is only read or written with a token belonging to the requesting user."
+
+[[system.composition.groupProperties]]
+name = "No credential leak"
+statement = "An authenticated git URL never appears in a returned value, error or log line."
+
+[[system.composition.groupProperties]]
+name = "Normalized failure"
+statement = "Every upstream failure surfaces as one of the four declared error types."
+
+[[system.composition.bridgeChecks]]
+assumer = "git-provider-services"
+provider = "settings-secrets-and-profiles"
+requirement = "a token handed over is unexpired at the moment of use, not merely when it was read"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "app-conversation-lifecycle"
+provider = "git-provider-services"
+requirement = "a retried PR-creation tool call does not create a second pull request"
+status = "unchecked"
+
+[[system.composition]]
+name = "Shared conversation reads"
+shape = "two-party"
+
+[[system.composition.roleGroups]]
+role = "publisher"
+componentKey = "shared-conversation-publishing"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "event store"
+componentKey = "event-stream-and-callbacks"
+cardinality = "many"
+note = "filesystem, S3 and GCS each re-verify shared-ness independently"
+
+[[system.composition.groupProperties]]
+name = "Shared only"
+statement = "No event or conversation is served for one that is not currently shared, on any backend or path."
+
+[[system.composition.groupProperties]]
+name = "Un-share is immediate"
+statement = "A conversation un-shared after publication stops being readable, including by direct event id."
+
+[[system.composition.bridgeChecks]]
+assumer = "shared-conversation-publishing"
+provider = "event-stream-and-callbacks"
+requirement = "each backend's shared-ness check agrees with the SQL filter, since a direct id read bypasses the listing"
+status = "unchecked"
+
+[[system.composition]]
+name = "Feature flag gating"
+shape = "star"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "feature-flags-config"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "gated consumer"
+componentKey = "billing-and-subscriptions"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "gated consumer"
+componentKey = "github-resolver-integration"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "gated consumer"
+componentKey = "org-api-surface"
+cardinality = "many"
+
+[[system.composition.groupProperties]]
+name = "Stable buckets"
+statement = "A user stays in the same percentage bucket for a flag across evaluations."
+
+[[system.composition.groupProperties]]
+name = "Read after write"
+statement = "A read following an admin write never returns the pre-write value."
+
+[[system.composition.bridgeChecks]]
+assumer = "billing-and-subscriptions"
+provider = "feature-flags-config"
+requirement = "`ENABLE_BILLING` resolves consistently through the flag and its env fallback, so billing is never half-enabled"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "github-resolver-integration"
+provider = "feature-flags-config"
+requirement = "the proactive-starter flag and the per-org setting agree, and neither alone enables the behavior"
+status = "unchecked"
+
+[[system.composition]]
+name = "Background maintenance"
+shape = "star"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "maintenance-task-queue"
+cardinality = 1
+note = "two cron runners can be live at once"
+
+[[system.composition.roleGroups]]
+role = "job"
+componentKey = "background-sync-jobs"
+cardinality = "many"
+correctnessAssumption = "none required"
+
+[[system.composition.roleGroups]]
+role = "job"
+componentKey = "conversation-repository-metadata"
+cardinality = "many"
+
+[[system.composition.roleGroups]]
+role = "job"
+componentKey = "org-budgets"
+cardinality = "many"
+
+[[system.composition.groupProperties]]
+name = "Terminal is permanent"
+statement = "A task recorded COMPLETED or ERROR never returns to PENDING or WORKING."
+
+[[system.composition.groupProperties]]
+name = "At most once"
+statement = "No task's work is applied twice, and no eligible unit is skipped for a whole cycle."
+
+[[system.composition.groupProperties]]
+name = "Isolated failure"
+statement = "One unit's failure never aborts its batch, nor leaves the batch status contradicting its per-unit results."
+
+[[system.composition.bridgeChecks]]
+assumer = "maintenance-task-queue"
+provider = "conversation-repository-metadata"
+requirement = "a retention sweep deletes only rows past its window, never ones a live conversation needs"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "background-sync-jobs"
+provider = "maintenance-task-queue"
+requirement = "the queue is the only scheduler, so no sync script needs its own lock — which none has"
+status = "unchecked"
+
+[[system.composition]]
+name = "Model catalogue resolution"
+shape = "two-party"
+
+[[system.composition.roleGroups]]
+role = "catalogue"
+componentKey = "verified-model-routing"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "proxy"
+componentKey = "litellm-proxy-integration"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "Offered means verified"
+statement = "Every model offered is one the deployment verified and the proxy can serve."
+
+[[system.composition.groupProperties]]
+name = "No stale allowlist"
+statement = "A model added or removed becomes visible or invisible within its declared cache window."
+
+[[system.composition.bridgeChecks]]
+assumer = "verified-model-routing"
+provider = "litellm-proxy-integration"
+requirement = "the proxy's model list is authoritative, and a timeout yields a stale-but-marked list rather than an empty one"
+status = "unchecked"
+
+[[system.composition]]
+name = "Conversation insights aggregation"
+shape = "star"
+
+[[system.composition.roleGroups]]
+role = "center"
+componentKey = "org-conversation-insights"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "live source"
+componentKey = "app-conversation-lifecycle"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "metadata store"
+componentKey = "conversation-repository-metadata"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "Totals match rows"
+statement = "An aggregate equals the sum of the rows it aggregates, even when a conversation changes mid-read."
+
+[[system.composition.groupProperties]]
+name = "Org isolation"
+statement = "No aggregate or listing includes a conversation from another org."
+
+[[system.composition.bridgeChecks]]
+assumer = "org-conversation-insights"
+provider = "conversation-repository-metadata"
+requirement = "cost events are never orphaned from their conversation, so per-conversation sums are complete"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "org-conversation-insights"
+provider = "app-conversation-lifecycle"
+requirement = "stopping a conversation by id affects only one belonging to the named org"
+status = "unchecked"
+
+[[system.composition]]
+name = "Server composition"
+shape = "two-party"
+
+[[system.composition.roleGroups]]
+role = "wrapper"
+componentKey = "saas-server-bootstrap"
+cardinality = 1
+
+[[system.composition.roleGroups]]
+role = "base app"
+componentKey = "app-server-bootstrap"
+cardinality = 1
+
+[[system.composition.groupProperties]]
+name = "No shadowing"
+statement = "No enterprise route silently shadows an app-server route, and no route is mounted twice."
+
+[[system.composition.groupProperties]]
+name = "Headers everywhere"
+statement = "Every response from either app carries the security headers, including the SPA fallback."
+
+[[system.composition.groupProperties]]
+name = "Honest readiness"
+statement = "The server reports ready only when both the database and Redis answer."
+
+[[system.composition.bridgeChecks]]
+assumer = "saas-server-bootstrap"
+provider = "app-server-bootstrap"
+requirement = "migrations reached a single head before the SaaS app serves its first request"
+status = "unchecked"
+
+[[system.composition.bridgeChecks]]
+assumer = "app-server-bootstrap"
+provider = "saas-server-bootstrap"
+requirement = "the security-headers middleware is still registered last after the SaaS app adds its own"
+status = "unchecked"
+
+[components.api-key-management]
+name = "API Key Management"
+description = "Mint, list, validate, rotate and delete user and system API keys, including the BYOR key flow and the internal service-to-service key endpoint."
+role = "central"
+rank = 18
+paths = [
+    "server/routes/api_keys.py",
+    "server/routes/service.py",
+    "storage/api_key.py",
+    "storage/api_key_store.py",
+]
+tests = [
+    "tests/unit/test_api_key_store.py",
+    "tests/unit/routes/test_service.py",
+    "tests/unit/app_server/test_managed_key_rotation.py",
+]
+dependencies = [
+    "rbac-authorization",
+    "litellm-proxy-integration",
+    "saas-identity-and-session",
+    "org-api-surface",
+    "user-account-lifecycle",
+]
+operations = [
+    "`generate_byor_key(...)` — mutates",
+    "`delete_byor_key_from_litellm(...)` — mutates",
+    "`get_byor_key_from_db(...)` — query",
+    "`store_byor_key_in_db(...)` — mutates",
+    "`check_byor_permitted(...)` — query",
+    "`create_api_key(...)` — mutates (`org_id` omitted, explicit null and set are three cases)",
+    "`list_api_keys(...)` — query",
+    "`delete_api_key(...)` — mutates",
+    "`get_current_api_key(...)` — query",
+    "`refresh_managed_llm_api_key(...)` — mutates",
+    "`get_llm_api_key_for_byor(...)` — query",
+    "`refresh_llm_api_key_for_byor(...)` — mutates",
+    "`validate_service_api_key(...)` — query (static shared secret, 503 when unconfigured)",
+    "`get_or_create_api_key_for_user(...)` — mutates (service-to-service)",
+    "`delete_user_api_key(...)` — mutates (service-to-service)",
+    "`ApiKeyStore.create_api_key(...)` — mutates (raises when the user is missing)",
+    "`ApiKeyStore.get_or_create_system_api_key(...)` — mutates",
+    "`ApiKeyStore.validate_api_key(key)` — query",
+    "`ApiKeyStore.delete_api_key(...)` / `delete_api_key_by_id(...)` / `delete_api_key_by_name(...)` — mutates",
+    "`ApiKeyStore.list_api_keys(...)` — query (raises when the user is missing)",
+    "`ApiKeyStore.is_system_key_name(name)` — query",
+    "`ApiKeyStore.make_system_key_name(...)` — query",
+]
+headlineProperties = [
+    "A deleted API key never validates again",
+    "A key bound to an org only authorizes actions in that org",
+    "A user-supplied name never collides with the reserved system namespace",
+]
+adversarySurface = [
+    "`validate_service_api_key` comparing with `!=` rather than `hmac.compare_digest`",
+    "no enforcement that a user-supplied key name cannot collide with the system namespace",
+    "explicit null versus omitted `org_id` meaning different things",
+    "a rotation where the LiteLLM delete succeeds and the DB write fails",
+]
+specHints = "Model the key as living in TWO stores that can disagree — the local row (`storage/api_key_store.py:85`) and LiteLLM — since every rotation writes both without a transaction (`server/routes/api_keys.py:443`, `:600`). The `org_id` tri-state on `create_api_key` (`:241`) is a real domain, and `validate_service_api_key`'s `!=` compare (`server/routes/service.py:88`) is the weak check to model over a prefix-matching wrong secret."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.app-conversation-lifecycle]
+name = "App Conversation Lifecycle"
+description = "Start, search, update, delete and export sandboxed agent conversations, and the multi-step start saga that reserves quota, waits for a sandbox and seeds profiles."
+role = "central"
+rank = 4
+paths = ["openhands/app_server/app_conversation/"]
+tests = [
+    "tests/unit/app_server/test_app_conversation_router.py",
+    "tests/unit/app_server/test_live_status_app_conversation_service.py",
+    "tests/unit/app_server/test_app_conversation_service_base.py",
+]
+dependencies = [
+    "sandbox-startup",
+    "sandbox-provisioning",
+    "event-stream-and-callbacks",
+    "settings-secrets-and-profiles",
+    "pending-messages-queue",
+    "daily-quota-increase",
+    "git-provider-services",
+    "app-server-user-context",
+]
+operations = [
+    "`search_app_conversations(...)` — query",
+    "`count_app_conversations(...)` — query",
+    "`get_app_conversation(id)` — query",
+    "`batch_get_app_conversations(ids)` — query",
+    "`start_app_conversation(request)` — mutates (async generator of start-task statuses)",
+    "`run_setup_scripts(...)` — mutates",
+    "`update_app_conversation(id, request)` — mutates",
+    "`delete_app_conversation(id, skip_agent_server_delete)` — mutates (returns `False` when already gone)",
+    "`export_conversation(id)` — query (Redis-lock guarded)",
+    "`open_conversation_export(id)` — query",
+    "`send_message_to_conversation(...)` — mutates (proxy)",
+    "`switch_conversation_profile(...)` — mutates",
+    "`switch_conversation_acp_model(...)` — mutates",
+    "`read_conversation_file(...)` — query (fails open to `''`)",
+    "`get_conversation_git_changes(...)` — query",
+    "`get_conversation_git_diff(...)` — query",
+    "`stream_app_conversation_start(...)` — mutates (reserves a quota slot)",
+    "`search_app_conversation_start_tasks(...)` — query",
+    "`count_app_conversation_start_tasks(...)` — query",
+    "`batch_get_app_conversation_start_tasks(...)` — query",
+    "`update_agent_server_conversation_title(...)` — mutates",
+    "`AppConversationInfoService.save/get/search/count/batch_get` — mutates / query",
+    "`AppConversationStartTaskService.save/get/search` — mutates / query",
+    "`ConversationSecretEnricher.enrich(...)` — query",
+    "`hook_loader.load_hooks(...)` — query",
+    "`skill_loader.load_skills(...)` — query",
+]
+headlineProperties = [
+    "A start task always terminates at `READY` or `ERROR`",
+    "A sandbox in any status but `RUNNING` never accepts a message",
+    "`delete_app_conversation` is idempotent",
+    "A quota slot reserved for a failed start is always released",
+]
+adversarySurface = [
+    "malformed UUIDs on batch endpoints",
+    "batch gets over the 99/100 id cap",
+    "path traversal in `read_conversation_file` and the workspace listing",
+    "Codex credentials checked only at start, while `agent_profile_id` can swap the agent mid-flight",
+    "two profiles sharing a default `usage_id`, making the second switch a silent no-op",
+    "the detached delete task failing and rolling back its commit, leaving sandbox and row to the idle reaper",
+]
+specHints = "The machine is `AppConversationStartTask.status` — `WORKING → WAITING_FOR_SANDBOX → PREPARING_REPOSITORY → RUNNING_SETUP_SCRIPT → SETTING_UP_GIT_HOOKS → SETTING_UP_SKILLS → STARTING_CONVERSATION → READY|ERROR` (`app_conversation_models.py:312`), driven by `_start_app_conversation` (`live_status_app_conversation_service.py:451`). Model the quota reserve/release pair (`:421`, `:437`) as a compensating transaction interruptible between the two halves. Sandboxes are shared, so model at least two conversations per sandbox: `_finalize_sandbox_delete`'s `conversation_count == 0` test (`app_conversation_router.py:1030`) runs detached AFTER the response and rolls back its commit on failure (`:993`). The export lock (`:2977`) distinguishes `ConversationExportAlreadyRunning` from `ConversationExportLockUnavailable`."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.app-server-bootstrap]
+name = "App-Server Bootstrap & Plumbing"
+description = "The OSS app server's FastAPI assembly, DI injectors, Alembic lifespan migrations, security/CORS/rate-limit middleware, blob file store and shared utilities."
+role = "cross-cutting"
+rank = 32
+paths = [
+    "openhands/app_server/app.py",
+    "openhands/app_server/v1_router.py",
+    "openhands/app_server/config.py",
+    "openhands/app_server/constants.py",
+    "openhands/app_server/conversation_paths.py",
+    "openhands/app_server/errors.py",
+    "openhands/app_server/middleware.py",
+    "openhands/app_server/static.py",
+    "openhands/app_server/types.py",
+    "openhands/app_server/shared.py",
+    "openhands/app_server/version.py",
+    "openhands/app_server/app_lifespan/",
+    "openhands/app_server/config_api/config_router.py",
+    "openhands/app_server/file_store/",
+    "openhands/app_server/server_config/",
+    "openhands/app_server/services/db_session.py",
+    "openhands/app_server/services/db_session_injector.py",
+    "openhands/app_server/services/httpx_client_injector.py",
+    "openhands/app_server/services/injector.py",
+    "openhands/app_server/status/",
+    "openhands/app_server/utils/",
+    "openhands/app_server/web_client/",
+    "openhands/db/",
+    "openhands/server/",
+    "openhands/analytics/",
+    "openhands/version.py",
+    "storage/base.py",
+    "storage/database.py",
+    "storage/redis.py",
+    "openhands/__init__.py",
+    "openhands/app_server/__init__.py",
+]
+tests = [
+    "tests/unit/app_server/test_config_router.py",
+    "tests/unit/app_server/test_db_session_injector.py",
+    "tests/unit/test_enterprise_migration_integrity.py",
+]
+dependencies = ["saas-server-bootstrap"]
+operations = [
+    "`combine_lifespans(...)` — query",
+    "`authentication_error_handler(...)` — query (401)",
+    "`OssAppLifespanService.__aenter__()` — mutates",
+    "`OssAppLifespanService.run_alembic()` — mutates (migrations at startup)",
+    "`depends_*` / `get_*` injector factories — query (construct-or-cache)",
+    "`SecurityHeadersMiddleware.__call__` — mutates the response (must be registered last)",
+    "`LocalhostCORSMiddleware.__call__` — mutates the response",
+    "`CacheControlMiddleware.__call__` — mutates the response",
+    "`RateLimitMiddleware.__call__` — mutates (process-local token bucket)",
+    "`get_web_client_config(...)` — query",
+    "`search_models(...)` — query",
+    "`search_providers(...)` — query",
+    "`alive()` / `health()` / `get_server_info()` — query",
+    "`system_stats()` — query",
+    "`FileStore.write(path, data)` — mutates",
+    "`FileStore.write_from_path(...)` — mutates",
+    "`FileStore.read(path)` — query",
+    "`FileStore.list(prefix)` — query",
+    "`FileStore.delete(path)` — mutates",
+    "`encryption_key` helpers — query",
+    "`redis_lock` acquire/release — mutates",
+    "`paging_utils` / `search_utils` / `sql_utils` helpers — query",
+    "`a_session_maker()` — mutates",
+    "alembic `001`–`014` `upgrade()` / `downgrade()` — mutates",
+    "`openhands/server/*` re-export shims — no behavior of their own",
+]
+headlineProperties = [
+    "Every response carries the security headers, including the SPA fallback",
+    "Migrations reach a single head before the first request is served",
+    "A `FileStore` write followed by a read returns the same bytes on every backend",
+]
+adversarySurface = [
+    "middleware ordering enforced only by a comment, with no test asserting headers on every route",
+    "`InMemoryRateLimiter` being per-process, so N replicas enforce N times the limit",
+    "a `FileStore` key containing `..` or a leading `/` behaving differently on local vs S3 vs GCS",
+    "a migration failing part-way at startup, leaving a partially migrated schema",
+]
+specHints = "`FileStore` (`file_store/files.py:17`) is the behavior: four backends that must agree, so model write/read/list/delete over keys including traversal-ish and empty ones — local joins paths while S3 and GCS treat the key as opaque. The middleware ordering requirement (`app.py:88`) lives in a comment only. Alembic versions, the `openhands/server/*` re-export shims and the package markers are folded."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.app-server-user-context]
+name = "App-Server User Context & Token Crypto"
+description = "Resolves the authenticated user into a `UserContext` and provides the JWS/JWE token issuance, verification and symmetric value encryption the whole app server depends on."
+role = "cross-cutting"
+rank = 12
+paths = [
+    "openhands/app_server/user/",
+    "openhands/app_server/user_auth/",
+    "openhands/app_server/services/jwt_service.py",
+]
+tests = [
+    "tests/unit/app_server/test_jwt_service.py",
+    "tests/unit/app_server/test_encryption_key.py",
+    "tests/unit/test_saas_user_auth.py",
+]
+dependencies = [
+    "settings-secrets-and-profiles",
+    "git-provider-services",
+    "saas-identity-and-session",
+    "app-server-bootstrap",
+]
+operations = [
+    "`UserAuth.get_user_id()` — query",
+    "`UserAuth.get_access_token()` — query",
+    "`UserAuth.get_provider_tokens()` — query",
+    "`UserAuth.get_secrets()` — query",
+    "`UserAuth.get_user_email()` — query",
+    "`DefaultUserAuth.*` — query (OSS no-auth)",
+    "`AuthUserContext.get_provider_handler()` — query",
+    "`AuthUserContext.get_authenticated_git_url(...)` — query",
+    "`AuthUserContext.get_effective_org_id()` — query",
+    "`SpecifiyUserContext.*` — query",
+    "`get_current_user(...)` — query (401 on invalid session)",
+    "`get_current_user_git_info(...)` — query",
+    "`skills_router` list endpoint — query",
+    "`JwtService.create_jws_token(payload, key_id, expires_in)` — query (always stamps `exp`)",
+    "`JwtService.verify_jws_token(token, key_id)` — query",
+    "`JwtService.create_jwe_token(payload, key_id, expires_in)` — query (stamps `exp` only when passed)",
+    "`JwtService.decrypt_jwe_token(token, key_id)` — query (never checks `exp`)",
+    "`JwtService.encrypt_value(plaintext)` — query",
+    "`JwtService.decrypt_value(ciphertext)` — query (JWE, legacy Fernet fallback)",
+    "`JwtService.get_key(key_id)` — query (raises on unknown)",
+    "`JwtService.key_ids()` — query",
+]
+headlineProperties = [
+    "A token under a key no longer in the key set is always rejected",
+    "A JWE minted with an expiry is rejected once expired",
+    "A tampered payload never verifies, with or without a `kid`",
+    "`decrypt_value(encrypt_value(x)) == x`, including legacy ciphertext",
+]
+adversarySurface = [
+    "`create_jwe_token`'s docstring promises a 1-hour default `exp` the body never sets",
+    "`decrypt_jwe_token` never validating `exp`, so even an expiring JWE is accepted forever",
+    "every `encrypt_value`/`decrypt_value` round trip producing a non-expiring token",
+    "`verify_jws_token` falling back to the default key when a token carries no `kid`",
+    "a retired key still verifying tokens in flight",
+    "the legacy Fernet fallback accepting old ciphertext indefinitely",
+]
+specHints = "The target is the asymmetry between the two mint paths: `create_jws_token` (`services/jwt_service.py:74`) always stamps `exp` (`:103`), while `create_jwe_token` (`:152`) stamps it only when the caller passes `expires_in` (`:184`) despite the identical docstring promise at `:163` — and `decrypt_jwe_token` (`:206`) never reads `exp` at all. Model expiry as a documented guard conjunct on the decrypt action (`exp` present and in the future) over a clock the model advances: the code performs no such check, so a replayed test decrypting an old token reports a contract violation. The other conjuncts are the no-`kid` default-key fallback (`:130`) and retired-key rejection (`:139`); keep the key set small (two live, one retired) so rollover is reachable."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.background-sync-jobs]
+name = "Background Sync Jobs"
+description = "Standalone cron scripts run out of band from the API server: table cleanups, PR enrichment, bulk GitLab webhook installation and paginated Resend contact sync."
+role = "peripheral"
+rank = 28
+paths = [
+    "sync/",
+    "storage/resend_synced_user.py",
+    "storage/resend_synced_user_store.py",
+]
+tests = [
+    "tests/unit/sync/test_install_gitlab_webhooks.py",
+    "tests/unit/sync/test_resend_keycloak.py",
+    "tests/unit/storage/test_resend_synced_user_store.py",
+]
+dependencies = [
+    "saas-identity-and-session",
+    "git-forge-webhook-integrations",
+    "conversation-repository-metadata",
+    "user-account-lifecycle",
+    "email-notifications",
+]
+operations = [
+    "`clean_app_conversation_start_tasks.main()` — mutates (batched delete)",
+    "`clean_proactive_convo_table.main()` — mutates",
+    "`enrich_user_interaction_data.get_unprocessed_prs()` — query",
+    "`enrich_user_interaction_data.process_pr(pr)` — mutates",
+    "`enrich_user_interaction_data.main()` — mutates",
+    "`install_gitlab_webhooks(...)` — mutates (bulk install, rate-limit aware)",
+    "`resend_keycloak.sync_users_to_resend()` — mutates (paginated, locally rate-limited)",
+    "`resend_keycloak._backfill_existing_resend_contacts(...)` — mutates (reconciliation)",
+    "`ResendSyncedUserStore.is_user_synced(user_id)` — query",
+    "`ResendSyncedUserStore.mark_user_synced(...)` — mutates",
+    "`ResendSyncedUserStore.remove_synced_user(...)` — mutates",
+]
+headlineProperties = [
+    "A user receives at most one welcome email across any number of runs, including a crashed one",
+    "A crashed sync resumes without reprocessing or skipping a page",
+    "A cleanup only deletes rows past its retention window",
+]
+adversarySurface = [
+    "no distributed lock on any script — two runs double-process and double-email",
+    "`offset += BATCH_SIZE` pagination over a concurrently written table, skipping rows",
+    "`mark_user_synced` written after the send, so a crash between them re-sends",
+    "a retention boundary moving mid-run during a batched delete",
+]
+specHints = "The exactly-once-email property hinges on ORDER: `sync_users_to_resend` (`sync/resend_keycloak.py:377`) sends, then `mark_user_synced` (`storage/resend_synced_user_store.py:54`) — model the crash between them plus a second concurrent run, since nothing locks. Model `offset += BATCH_SIZE` pagination over a concurrently written table with a batch size of 2 or 3."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.billing-and-subscriptions]
+name = "Billing & Subscriptions"
+description = "Stripe customer resolution, the credit-purchase checkout session with its unauthenticated success/cancel callbacks, and subscription-access entitlement records."
+role = "central"
+rank = 6
+paths = [
+    "server/routes/billing.py",
+    "integrations/stripe_service.py",
+    "storage/billing_session.py",
+    "storage/billing_session_type.py",
+    "storage/stripe_customer.py",
+    "storage/subscription_access.py",
+    "storage/subscription_access_status.py",
+]
+tests = [
+    "tests/unit/test_billing.py",
+    "tests/unit/test_billing_stripe_integration.py",
+    "tests/unit/test_stripe_service_db.py",
+]
+dependencies = [
+    "org-api-surface",
+    "feature-flags-config",
+    "rbac-authorization",
+    "litellm-proxy-integration",
+    "user-account-lifecycle",
+]
+operations = [
+    "`validate_billing_enabled(...)` — query",
+    "`get_credits(...)` — query",
+    "`get_subscription_access(...)` — query",
+    "`has_payment_method(...)` — query",
+    "`create_customer_setup_session(...)` — mutates (creates an `in_progress` row)",
+    "`create_checkout_session(...)` — mutates",
+    "`success_callback(session_id)` — mutates (unauthenticated; `WHERE status == 'in_progress'`)",
+    "`cancel_callback(session_id)` — mutates (unauthenticated)",
+    "`find_customer_id_by_org_id(org_id)` — query (DB, then a live Stripe search)",
+    "`find_customer_id_by_user_id(...)` — query",
+    "`_resolve_org_for_user(...)` — query (logs rather than raising)",
+    "`find_or_create_customer_by_user_id(...)` — mutates",
+    "`has_payment_method_by_user_id(...)` — query",
+    "`migrate_customer(...)` — mutates",
+]
+headlineProperties = [
+    "A session leaves `in_progress` at most once, so a purchase is credited exactly once",
+    "The credited amount always comes from the live Stripe session, never the request",
+    "A replayed success callback after completion credits nothing",
+    "A cancelled session is never later completed",
+]
+adversarySurface = [
+    "both callbacks being unauthenticated, with session-id unguessability the only protection",
+    "two success callbacks for one session both reading `in_progress` before either writes",
+    "no idempotency key on checkout creation, so a retry makes two `in_progress` sessions",
+    "a cancel arriving after a success for the same session",
+    "`org_id` interpolated unescaped into the Stripe search DSL",
+    "the local customer row and Stripe disagreeing, self-healed in only one direction",
+]
+specHints = "`BillingSession.status` is the machine — `in_progress | completed | cancelled | error` (`storage/billing_session.py:26`) — and exactly-once crediting lives in `success_callback` (`server/routes/billing.py:255`): the `WHERE status == 'in_progress'` read (`:265`) is a compare-and-set only if nothing interleaves, so model two concurrent callbacks for one session id — that is the double-credit trace. The callbacks are unauthenticated, so the session id must be a picked value whose domain includes another user's session. `SubscriptionAccess` (`storage/subscription_access.py:19`) is a second machine, `ACTIVE | DISABLED` over `start_at` / `end_at` / `cancelled_at` — model a clock so 'active past `end_at`' is reachable."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.conversation-repository-metadata]
+name = "Conversation & Repository Metadata"
+description = "SaaS-side records around conversations and repositories: the repo cache and user-repo map, conversation metadata and cost events, PR processing state, proactive-conversation dedupe, feedback and telemetry upload state."
+role = "peripheral"
+rank = 27
+paths = [
+    "storage/repository_store.py",
+    "storage/stored_repository.py",
+    "storage/user_repo_map.py",
+    "storage/user_repo_map_store.py",
+    "storage/stored_conversation_metadata.py",
+    "storage/stored_conversation_metadata_saas.py",
+    "storage/stored_conversation_cost_event.py",
+    "storage/conversation_work.py",
+    "storage/proactive_convos.py",
+    "storage/proactive_conversation_store.py",
+    "storage/openhands_pr.py",
+    "storage/openhands_pr_store.py",
+    "storage/feedback.py",
+    "storage/telemetry_identity.py",
+    "storage/telemetry_metrics.py",
+    "storage/__init__.py",
+]
+tests = [
+    "tests/unit/test_repository_store.py",
+    "tests/unit/test_user_repo_map_store.py",
+    "testsile/unit/storage/test_telemetry_metrics.py",
+]
+dependencies = [
+    "app-conversation-lifecycle",
+    "github-resolver-integration",
+    "org-api-surface",
+    "background-sync-jobs",
+]
+operations = [
+    "`RepositoryStore.store_projects(...)` — mutates (bulk upsert)",
+    "`UserRepoMapStore` create/get/delete — mutates / query",
+    "`ProactiveConversationStore.store_workflow_information(...)` — mutates (the dedupe write)",
+    "`ProactiveConversationStore.clean_old_convos(older_than_minutes=30)` — mutates (bulk sweep)",
+    "`OpenhandsPRStore.insert_pr(...)` — mutates",
+    "`OpenhandsPRStore.increment_process_attempts(...)` — mutates (retry budget; returns bool)",
+    "`OpenhandsPRStore.update_pr_openhands_stats(...)` — mutates",
+    "`OpenhandsPRStore.get_unprocessed_prs(...)` — query",
+    "`TelemetryMetrics.mark_uploaded()` — mutates",
+    "`TelemetryMetrics.mark_upload_failed()` — mutates",
+    "`TelemetryMetrics.is_uploaded()` — query",
+    "`TelemetryMetrics.needs_retry()` — query",
+    "`TelemetryIdentity` accessors — query / mutates",
+    "`StoredConversationMetadata` / `StoredConversationMetadataSaas` accessors — query / mutates",
+    "`StoredConversationCostEvent` accessors — query / mutates",
+    "`ConversationWork` accessors — query / mutates",
+    "`Feedback` accessors — query / mutates",
+]
+headlineProperties = [
+    "A proactive conversation is created at most once per workflow failure",
+    "A telemetry row is uploaded at most once until a failure reopens it",
+    "A PR never exceeds its process-attempt budget",
+]
+adversarySurface = [
+    "`clean_old_convos` as a time-based bulk sweep with no visible tenant filter",
+    "two workflow events racing the dedupe write",
+    "`increment_process_attempts` read-modify-writing a counter two workers can both bump",
+    "`store_projects` bulk upsert dropping a repo a concurrent write added",
+]
+specHints = "Two at-most-once latches over concurrent writers: `TelemetryMetrics.mark_uploaded` / `mark_upload_failed` / `needs_retry` (`storage/telemetry_metrics.py:85`–`:106`), where the row must not be both uploaded and needing retry; and `store_workflow_information` (`storage/proactive_conversation_store.py:25`), the dedupe the GitHub starter depends on, with `clean_old_convos` (`:130`) sweeping between two events. `increment_process_attempts` (`storage/openhands_pr_store.py:35`) is a read-modify-write budget."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.daily-quota-increase]
+name = "Daily Conversation Quota & Increase Requests"
+description = "Per-user daily conversation limit resolution (user → org → deployment default, with the `-1` exemption sentinel) plus the quota-increase request lifecycle."
+role = "central"
+rank = 17
+paths = [
+    "server/services/daily_conversation_quota_service.py",
+    "server/services/quota_increase_request_service.py",
+    "server/routes/quota.py",
+    "storage/daily_conversation_usage.py",
+    "storage/quota_increase_request.py",
+]
+tests = [
+    "tests/unit/test_daily_conversation_quota_service.py",
+    "tests/unit/test_quota_increase_request_service.py",
+    "tests/unit/test_org_level_quota.py",
+]
+dependencies = [
+    "rbac-authorization",
+    "org-api-surface",
+    "app-conversation-lifecycle",
+]
+operations = [
+    "`configured_daily_limit()` — query",
+    "`DailyConversationQuotaService.get_status(user_id, org_id)` — query",
+    "`DailyConversationQuotaService.get_limit(user_id, org_id)` — query (three-level precedence)",
+    "`DailyConversationQuotaService.get_default_limit(org_id)` — query",
+    "`DailyConversationQuotaService.reserve(user_id, org_id)` — mutates (read-then-increment)",
+    "`DailyConversationQuotaService.release(user_id)` — mutates",
+    "`QuotaIncreaseRequestService.create_request(...)` — mutates",
+    "`QuotaIncreaseRequestService.approve_request(...)` — mutates",
+    "`QuotaIncreaseRequestService.reject_request(request_id)` — mutates",
+    "`QuotaIncreaseRequestService.list_pending_requests()` — query",
+    "`QuotaIncreaseRequestService.get_latest_for_user(user_id)` — query",
+    "`QuotaIncreaseRequestService.create_verification_token(...)` — query",
+    "`QuotaIncreaseRequestService.verify_token(token)` — query",
+    "`GET /status` → `get_quota_status` — query",
+    "`POST /increase-request` → `create_quota_increase_request` — query (now always 410)",
+    "`GET /verify` → `verify_quota_increase` — query (now always 410)",
+    "`GET /requests` → `list_pending_quota_requests` — query (admin)",
+    "`POST /requests/{id}/approve` → `approve_quota_request` — mutates (admin)",
+    "`POST /requests/{id}/reject` → `reject_quota_request` — mutates (admin)",
+    "`PUT /orgs/{org_id}/quota` → `set_org_quota` — mutates",
+]
+headlineProperties = [
+    "A read reports the first level holding an override — user, then org, then deployment default",
+    "No reported limit or recorded baseline is ever the raw exemption sentinel",
+    "A user holds at most one pending request at a time",
+    "Approval applies at most once, carrying the moment of first approval",
+]
+adversarySurface = [
+    "the `-1` exemption sentinel leaking to a caller as a numeric limit",
+    "two concurrent `reserve` calls racing past the limit (read-then-increment, no row lock)",
+    "`release` decrementing a counter it never incremented",
+    "re-approving an already-approved request and re-applying the grant",
+    "a requested limit above the ten-times-base cap",
+    "a verification token replayed after TTL, or issued for another user's request",
+]
+specHints = "Already modelled in `quint-specs/daily-quota-increase.qnt`. Precedence is `get_limit` (`server/services/daily_conversation_quota_service.py:64`) with `_resolve_sentinel` (`:174`); `reserve` (`:109`) is a read-then-increment with no row lock. DRIFT: the self-service endpoints the spec models now always raise 410 (`server/routes/quota.py:104`, `:113`)."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.email-notifications]
+name = "Email Notifications"
+description = "Transactional email through Resend or SMTP — invitations, budget alerts and address-verification — plus free-domain classification."
+role = "peripheral"
+rank = 30
+paths = [
+    "server/routes/email.py",
+    "server/services/email_service.py",
+    "server/services/smtp_email_service.py",
+    "server/services/free_email_domains.py",
+]
+tests = [
+    "tests/unit/test_smtp_email_service.py",
+    "tests/unit/test_email_validation.py",
+    "tests/unit/test_free_email_domains.py",
+]
+dependencies = [
+    "saas-identity-and-session",
+    "org-api-surface",
+    "org-budgets",
+    "app-server-user-context",
+]
+operations = [
+    "`update_email(...)` — mutates",
+    "`resend_email_verification(...)` — mutates",
+    "`verify_email(...)` — mutates",
+    "`verified_email(...)` — query",
+    "`EmailService.send_invitation_email(...)` — mutates (Resend)",
+    "`EmailService.build_invitation_url(...)` — query",
+    "`EmailService.is_configured()` — query",
+    "`SMTPEmailService.send_invitation_email(...)` — mutates",
+    "`SMTPEmailService.send_budget_alert_email(...)` — mutates",
+    "`SMTPEmailService.build_invitation_url(...)` — query",
+    "`SMTPEmailService.is_configured()` — query",
+    "`is_free_email_domain(email)` — query",
+]
+headlineProperties = [
+    "A verification link only verifies the address it was issued for",
+    "An address is marked verified only after a valid, unexpired link is used",
+    "Changing an address always clears its verified state",
+]
+adversarySurface = [
+    "two backends with separate `is_configured()` checks, so a misconfiguration silently no-ops every send",
+    "a verification link replayed after the address changed again",
+    "`update_email` accepting an address colliding with another account's base email",
+    "an invitation URL built from a caller-influenced base URL",
+]
+specHints = "Model (address, verified flag, outstanding token) per user across `update_email` (`server/routes/email.py:49`), `resend_email_verification` (`:126`) and `verify_email` (`:194`) — the bad state is a token issued for an old address verifying a new one, so model two successive changes with a token outstanding. Neither backend raises when unconfigured, so 'sent' and 'silently skipped' must be distinct states."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.event-stream-and-callbacks]
+name = "Event Stream & Callbacks"
+description = "Persists and reads conversation trajectory events across filesystem/S3/GCS backends and runs registered event callbacks (webhooks, auto-title) as events arrive."
+role = "central"
+rank = 20
+paths = [
+    "openhands/app_server/event/",
+    "openhands/app_server/event_callback/",
+]
+tests = [
+    "tests/unit/app_server/test_event_router.py",
+    "tests/unit/app_server/test_filesystem_event_service.py",
+    "tests/unit/app_server/test_aws_event_service.py",
+]
+dependencies = [
+    "app-conversation-lifecycle",
+    "app-server-bootstrap",
+    "conversation-repository-metadata",
+]
+operations = [
+    "`save_event(conversation_id, event)` — mutates",
+    "`get_event(id)` — query",
+    "`batch_get_events(ids)` — query",
+    "`search_events(...)` — query (in-memory scan)",
+    "`count_events(...)` — query",
+    "`iter_events_for_export(...)` — query",
+    "`create_event_callback(...)` — mutates",
+    "`save_event_callback(...)` — mutates",
+    "`delete_event_callback(id)` — mutates",
+    "`get_active_callbacks(...)` — query",
+    "`persist_callback_results(...)` — mutates",
+    "`execute_callbacks(conversation_id, event)` — mutates (fan-out)",
+    "`SetTitleCallbackProcessor.__call__(...)` — mutates",
+    "`webhook_router.on_event(...)` — mutates",
+    "`webhook_router.on_conversation_update(...)` — mutates",
+    "`webhook_router.valid_sandbox(...)` — query (auth guard)",
+    "`webhook_router.valid_conversation(...)` — query (auth guard)",
+    "`webhook_router.get_secret(...)` — query",
+    "`webhook_router.detect_automation_trigger(...)` — query",
+    "`EventStore` read/append — query / mutates",
+]
+headlineProperties = [
+    "An event is never served for a conversation the caller does not own, on any backend",
+    "Every saved event is retrievable by id afterwards",
+    "A callback executes at most once per (event, callback) pair",
+]
+adversarySurface = [
+    "`search_events` loading a whole conversation into memory before filtering",
+    "the webhook endpoints as the only externally triggerable conversation mutation",
+    "a slow callback holding a DB pool connection against its docstring",
+    "a callback throwing mid-fan-out, skipping later callbacks",
+]
+specHints = "No index: one JSON file per event (`event_service_base.py:66`) and `search_events` (`event_service.py:40`) filters, sorts and pages in memory — model the read as a full scan. `execute_callbacks` (`sql_event_callback_service.py:248`) is the fan-out to model with a failing callback mid-list, and `valid_sandbox` / `valid_conversation` (`webhook_router.py:259`, `:333`) are the whole authorization boundary for inbound events."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.feature-flags-config]
+name = "Feature Flags"
+description = "Boolean flags with user/org/email-pattern/percentage targeting rules, a cache invalidated on every admin write, and an env-var default fallback."
+role = "peripheral"
+rank = 24
+paths = [
+    "server/routes/feature_flags.py",
+    "server/services/feature_flag_service.py",
+    "storage/feature_flag.py",
+    "storage/feature_flag_store.py",
+]
+tests = ["tests/unit/storage/test_feature_flag_store.py"]
+dependencies = [
+    "rbac-authorization",
+    "org-api-surface",
+    "billing-and-subscriptions",
+]
+operations = [
+    "`list_flags(...)` — query",
+    "`get_flag(key)` — query",
+    "`create_flag(...)` — mutates (409 on duplicate)",
+    "`update_flag(...)` — mutates",
+    "`delete_flag(key)` — mutates",
+    "`create_rule(...)` — mutates",
+    "`delete_rule(...)` — mutates",
+    "`evaluate_flag(...)` — query (admin preview)",
+    "`FeatureFlagService.is_enabled(key, context)` — query",
+    "`FeatureFlagService.resolve(key, context)` — query (cache, then env default)",
+    "`FeatureFlagService.register_env_default(...)` — mutates (class-level registry)",
+    "`FeatureFlagService.resolve_env_default(key)` — query",
+    "`FeatureFlagService.invalidate(key)` — mutates",
+    "`FeatureFlagService._rule_matches_context(...)` — query",
+    "`FeatureFlagService._sql_like_match(...)` — query",
+    "`FeatureFlagService._in_percentage_bucket(flag_key, user_id, percentage)` — query (deterministic hash)",
+    "`FeatureFlagStore.get_flag(key)` — query",
+    "`FeatureFlagStore.create_flag/update_flag/delete_flag` — mutates",
+    "`FeatureFlagStore.create_rule/delete_rule` — mutates",
+    "`FeatureFlagStore._get_matching_rules(...)` — query",
+]
+headlineProperties = [
+    "The same user always lands in the same bucket for a given flag",
+    "A read after an admin write never sees the pre-write value",
+    "Rule evaluation is first-match-wins by priority, deterministically",
+]
+adversarySurface = [
+    "bucket stability resting on deterministic hashing, not randomness",
+    "the cache diverging from the DB across its TTL despite write-time invalidation",
+    "an admin `email_pattern` used as a SQL `LIKE` with no overbreadth check",
+    "two rules of equal priority making the outcome order-dependent",
+]
+specHints = "Two independently computed answers must agree: `resolve` (`server/services/feature_flag_service.py:203`) reading its cache and `_get_matching_rules` (`storage/feature_flag_store.py:284`) reading the DB — model the cache as separate state with `invalidate` (`:133`) as its own action. Model `_in_percentage_bucket` (`:362`) as pure in `(flag_key, user_id)`, and give rule priority a small total order WITH ties."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.git-forge-webhook-integrations]
+name = "Git Forge Resolver Integrations"
+description = "The GitLab, Bitbucket Cloud, Bitbucket Data Center and Azure DevOps resolvers and their webhook install/verify lifecycles, sharing one dispatch shape and one admin-access adversary surface."
+role = "central"
+rank = 13
+paths = [
+    "integrations/gitlab/",
+    "integrations/bitbucket/",
+    "integrations/bitbucket_data_center/",
+    "integrations/azure_devops/",
+    "storage/gitlab_webhook.py",
+    "storage/gitlab_webhook_store.py",
+    "storage/bitbucket_webhook.py",
+    "storage/bitbucket_webhook_store.py",
+    "storage/bitbucket_dc_webhook.py",
+    "storage/bitbucket_dc_webhook_store.py",
+]
+tests = [
+    "tests/unit/test_gitlab_resolver.py",
+    "tests/unit/test_azure_devops.py",
+    "tests/unit/storage/test_bitbucket_dc_webhook_store.py",
+]
+dependencies = [
+    "resolver-webhook-dispatch-core",
+    "webhook-ingress-verification",
+    "app-conversation-lifecycle",
+    "saas-identity-and-session",
+    "background-sync-jobs",
+]
+operations = [
+    "`GitlabManager.is_job_requested(message)` — query",
+    "`GitlabManager.receive_message(message)` — mutates",
+    "`GitlabManager.start_job(view)` — mutates (`MissingSettingsError` with no token)",
+    "`GitlabManager.send_message(message, view)` — mutates",
+    "`BitbucketManager.is_job_requested/receive_message/start_job/send_message` — query / mutates",
+    "`BitbucketManager._commenter_has_write_access(...)` — query",
+    "`BitbucketDCManager.receive_message(message)` — mutates (acknowledgement failures never block)",
+    "`BitbucketDCManager.is_job_requested/start_job/send_message` — query / mutates",
+    "`bitbucket_dc_posting_service()` — query (`RuntimeError` when the bot token is unset)",
+    "`AzureDevOpsManager.is_job_requested/receive_message/start_job/send_message` — query / mutates",
+    "per-provider `*_view.py` factories and post methods — query / mutates",
+    "per-provider `*_v1_callback_processor.__call__(...)` — mutates",
+    "per-provider `*_service.py` API wrappers — query",
+    "`verify_webhook_conditions(...)` — query (raises `BreakLoopException`; deletes the stale row)",
+    "`install_webhook_on_resource(...)` — mutates",
+    "`GitlabWebhookStore.get_webhook_by_resource_only(...)` — query (NOT user-filtered)",
+    "`GitlabWebhookStore.reset_webhook_for_reinstallation_by_resource(...)` — mutates (NOT user-filtered)",
+    "`GitlabWebhookStore` create/update/delete by uuid — mutates",
+    "`BitbucketWebhookStore.get_webhook_secret(...)` — query",
+    "`BitbucketWebhookStore.get_webhook_user_id(...)` — query",
+    "`BitbucketDCWebhookStore.ensure_webhook_enrollment(...)` — mutates",
+    "`BitbucketDCWebhookStore.upsert_webhook_enrollment(...)` — mutates",
+    "`BitbucketDCWebhookStore.update_webhook_id(...)` — mutates",
+    "`BitbucketDCWebhookStore.delete_webhook_by_repo(...)` — mutates",
+]
+headlineProperties = [
+    "A webhook install only proceeds when the resource exists and the actor has admin access",
+    "Secret verification is keyed by `webhook_uuid`, independent of which admin last touched the row",
+    "A job only starts for a commenter with write access",
+]
+adversarySurface = [
+    "the GitLab reset path dropping the `user_id` filter, so any org admin resets another's webhook",
+    "two admins racing a reinstall, both seeing `rows_updated > 0`",
+    "`BreakLoopException` conflating 'rate limited' with 'condition failed'",
+    "Bitbucket DC's bot-loop protection resting on convention, with no sender-identity check",
+]
+specHints = "Model ONE parameterized resolver, not four: `(provider, sender_has_write, event_recognized) → job_started | rejected` (`integrations/gitlab/gitlab_manager.py:94` and its Bitbucket, Bitbucket DC and Azure DevOps twins). The richer machine is installation — `verify_webhook_conditions` (`integrations/gitlab/webhook_installation.py:40`) against a reset path that is NOT user-scoped (`storage/gitlab_webhook_store.py:287`): model two admins reinstalling concurrently."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.git-provider-services]
+name = "Git Provider Services"
+description = "The unified `GitService`/`ProviderHandler` layer over GitHub, GitLab, Bitbucket, Bitbucket DC, Azure DevOps and Forgejo, plus the MCP tools an agent calls to open a real PR."
+role = "peripheral"
+rank = 29
+paths = [
+    "openhands/app_server/integrations/",
+    "openhands/app_server/git/",
+    "openhands/app_server/mcp/mcp_router.py",
+]
+tests = [
+    "tests/unit/test_forgejo_service.py",
+    "tests/unit/test_azure_devops.py",
+    "tests/unit/integrations/test_provider_get_user.py",
+]
+dependencies = [
+    "app-server-user-context",
+    "settings-secrets-and-profiles",
+    "app-conversation-lifecycle",
+]
+operations = [
+    "`ProviderHandler.get_user()` — query",
+    "`ProviderHandler.get_repositories(...)` — query",
+    "`ProviderHandler.search_repositories(...)` — query",
+    "`ProviderHandler.get_branches(...)` — query",
+    "`ProviderHandler.search_branches(...)` — query",
+    "`ProviderHandler.get_suggested_tasks()` — query",
+    "`ProviderHandler.verify_repo_provider(...)` — query (raises one of four normalized errors)",
+    "`ProviderHandler.get_authenticated_git_url(...)` — query (embeds a credential)",
+    "`git_router.search_user_installations(...)` — query",
+    "`git_router.search_repositories(...)` — query",
+    "`git_router.search_branches(...)` — query",
+    "`git_router.search_suggested_tasks(...)` — query",
+    "`mcp_router.create_pr(...)` — mutates (opens a real PR)",
+    "`mcp_router.create_mr(...)` — mutates",
+    "`mcp_router.create_bitbucket_pr(...)` — mutates",
+    "`mcp_router.create_bitbucket_data_center_pr(...)` — mutates",
+    "`mcp_router.create_azure_devops_pr(...)` — mutates",
+    "`mcp_router.init_tavily_proxy()` — mutates (mounts a proxy at import)",
+    "per-provider `service/repos.py`, `branches.py`, `prs.py`, `features.py`, `resolver.py` readers — query",
+    "per-provider `service/webhooks.py`, `work_items.py` writers — mutates",
+    "`get_jira_dc_service_account_env_config()` — query (returns an `error` string, never raises)",
+    "`http_client` protocol methods — query",
+]
+headlineProperties = [
+    "Every upstream failure surfaces as one of the four normalized error types",
+    "A repository is only accessed with a token scoped to the requesting user",
+    "An authenticated git URL never appears in a returned error or log line",
+]
+adversarySurface = [
+    "six providers' rate-limit, timeout and auth failures collapsed into four error types, losing retry-vs-fail",
+    "MCP `create_*_pr` carrying no idempotency key, so a retried tool call double-creates a PR",
+    "`get_authenticated_git_url` embedding a token in a URL that may be logged",
+    "an expired `ProviderToken` used mid-request",
+]
+specHints = "`ProviderType` (`integrations/service_types.py:16`) times the four-way error taxonomy (`:171`) is the state space — model 'provider call fails' as one action with four outcomes, not per-provider HTTP detail. The MCP tools (`mcp/mcp_router.py:147`–`:490`) are the only mutating, irreversible operations: model a retried `create_pr`, since no idempotency key exists."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.github-resolver-integration]
+name = "GitHub Resolver Integration"
+description = "The GitHub App resolver: turns `@openhands` mentions, issue/PR comments and inline review comments into agent conversations, gated on the commenter's write access, plus proactive CI-failure starters."
+role = "central"
+rank = 10
+paths = [
+    "integrations/github/",
+    "storage/github_app_installation.py",
+]
+tests = [
+    "tests/unit/test_github_view.py",
+    "tests/unit/test_proactive_conversation_starters.py",
+    "tests/unit/integrations/test_provider_get_user.py",
+]
+dependencies = [
+    "resolver-webhook-dispatch-core",
+    "webhook-ingress-verification",
+    "app-conversation-lifecycle",
+    "saas-identity-and-session",
+    "conversation-repository-metadata",
+    "git-provider-services",
+]
+operations = [
+    "`GithubManager.is_job_requested(message)` — query (bot filter, event type, then a live write-access check)",
+    "`GithubManager.receive_message(message)` — mutates",
+    "`GithubManager.start_job(view)` — mutates",
+    "`GithubManager.send_message(message, view)` — mutates",
+    "`GithubManager._user_has_write_access_to_repo(...)` — query",
+    "`GithubManager._get_ignored_sender_login(...)` — query",
+    "`GithubFactory.create_github_view_from_payload(payload)` — query (`ValueError` on neither issue nor PR)",
+    "`GithubFactory.is_*` predicates — query",
+    "`GithubFactory.trigger_conversation_starter(...)` — mutates",
+    "`GithubFactory.get_user_proactive_conversation_setting(...)` — query",
+    "`GithubIssue` / `GithubIssueComment` / `GithubPRComment` / `GithubInlinePRComment` view methods — query / mutates when posting",
+    "`GithubV1CallbackProcessor.__call__(...)` — mutates (latched by `should_request_summary`)",
+    "`GitHubDataCollector.process_payload(...)` — mutates (never raises)",
+    "`GitHubDataCollector.save_data(...)` — mutates",
+    "`GitHubDataCollector.save_full_pr(...)` — mutates",
+    "`GithubService` API wrappers — query",
+    "GraphQL query builders — query",
+]
+headlineProperties = [
+    "A job only starts for a sender with write or admin access",
+    "The final-response callback fires exactly once per conversation",
+    "The bot never starts a job from its own comment",
+    "A proactive starter is posted at most once per workflow failure",
+]
+adversarySurface = [
+    "the ignore list matching only the literal `openhands-ai[bot]`, so another bot re-triggers a job",
+    "a payload with neither `issue` nor `pull_request`, raising deep in the factory",
+    "the write-access check being a network call — fail open or closed decides who can start a job",
+    "data-collector failures swallowed, so malformed payloads never surface",
+    "`should_request_summary` being an in-memory latch, so a restart posts a second summary",
+    "two workflow events racing the proactive-starter dedupe write",
+]
+specHints = "The authorization property is the point: `is_job_requested` (`integrations/github/github_manager.py:204`) is a three-part guard — sender not ignored (`:207`), event type recognized, and `_user_has_write_access_to_repo` (`:104`) — and only the third is a network call, so model it as failable and check whether failure admits or refuses. Model the sender domain with the exact bot login, a different bot login, and a human without write access, since the ignore list is a literal match (`:44`). `GithubViewType` and the `is_*` predicates (`github_view.py:528`) are a discriminated union — model every arm plus the payload matching none (`:846`). `should_request_summary` (`github_v1_callback_processor.py:67`) is a one-shot latch: model two `finished` callbacks for one conversation."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.litellm-proxy-integration]
+name = "LiteLLM Proxy Adapter"
+description = "`LiteLlmManager` — the adapter that provisions LiteLLM teams, users, memberships, budgets and API keys, and the partial states its orchestrations leave behind when a sub-call fails."
+role = "central"
+rank = 5
+paths = ["storage/lite_llm_manager.py"]
+tests = [
+    "tests/unit/test_lite_llm_manager.py",
+    "tests/unit/test_verified_model/test_litellm_proxy_model_service.py",
+    "tests/unit/app_server/test_managed_key_rotation.py",
+]
+dependencies = [
+    "org-budgets",
+    "verified-model-routing",
+    "saas-identity-and-session",
+    "api-key-management",
+    "org-api-surface",
+]
+operations = [
+    "`get_openhands_cloud_key_alias(user_id, org_id)` — query",
+    "`get_byor_key_alias(user_id, org_id)` — query",
+    "`get_org_team_alias(org_id, org_name, user_id)` — query",
+    "`LiteLlmManager.get_budget_from_team_info(...)` — query",
+    "`LiteLlmManager.create_entries(...)` — mutates (onboarding orchestration)",
+    "`LiteLlmManager.migrate_entries(...)` — mutates",
+    "`LiteLlmManager.downgrade_entries(...)` — mutates",
+    "`LiteLlmManager.update_team_and_users_budget(...)` — mutates (bulk per-member write)",
+    "`LiteLlmManager.verify_key(key, user_id)` — query (fail-open checks)",
+    "`LiteLlmManager.create_team(...)` / `update_team(...)` / `delete_team(...)` — mutates",
+    "`LiteLlmManager.get_team(...)` — query",
+    "`LiteLlmManager.user_exists(...)` — query (fails closed to 'absent')",
+    "`LiteLlmManager.create_user(...)` / `update_user(...)` / `delete_user(...)` — mutates",
+    "`LiteLlmManager.get_user(...)` — query",
+    "`LiteLlmManager.add_user_to_team(...)` / `remove_user_from_team(...)` / `update_user_in_team(...)` — mutates",
+    "`LiteLlmManager.get_user_team_info(...)` — query",
+    "`LiteLlmManager.generate_key(...)` — mutates",
+    "`LiteLlmManager.get_key_info(...)` / `get_user_keys(...)` — query",
+    "`LiteLlmManager.verify_existing_key(...)` — query (alias-structural match)",
+    "`LiteLlmManager.delete_key(...)` / `delete_key_by_alias(...)` — mutates",
+    "`LiteLlmManager.update_user_keys(...)` — mutates (bulk)",
+    "`LiteLlmManager.get_team_members_financial_data(...)` — query",
+    "`LiteLlmManager.with_http_client(fn)` — query (client-injection decorator)",
+]
+headlineProperties = [
+    "A bulk budget update reaches every member, leaving none on a stale cap",
+    "A downgrade never turns an unenforced budget into zero",
+    "No two live keys share an alias",
+    "An accepted key is the one the proxy holds for that user and org",
+]
+adversarySurface = [
+    "a sub-call throwing mid-orchestration, leaving team-without-membership or membership-without-key",
+    "`_user_exists` failing closed and reporting 'absent' for a user who exists",
+    "404 treated as idempotent success on delete, hiding a wrong-target delete",
+    "'already exists' and 'already in team' masking a real conflict",
+    "a local deployment handing the management key to a user",
+    "`_is_free_budget` misclassifying a real budget as free tier",
+]
+specHints = "Already modelled in `quint-specs/litellm-proxy-integration.qnt`. The four orchestrations are `create_entries` (`storage/lite_llm_manager.py:173`), `migrate_entries` (`:367`), `downgrade_entries` (`:546`) and `update_team_and_users_budget` (`:686`); each is a sequence of HTTP calls with no rollback, so the partial-application states are the point. `_is_free_budget` (`:114`) translates a budget on every budget-bearing call and `_verify_existing_key` (`:1707`) matches by alias structure. Responses are reduced to the branch code the handler takes, not the raw status (see the `RES_*` encodings in `enterprise_bak/server/services/quint_spec_ids.py`)."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.maintenance-task-queue]
+name = "Maintenance Task Queue"
+description = "The `INACTIVE/PENDING/WORKING/COMPLETED/ERROR` task-row machine, its non-atomic select→claim→process runner, the deduplicated batch enqueue and the one-hour stale reaper."
+role = "central"
+rank = 8
+paths = [
+    "storage/maintenance_task.py",
+    "run_maintenance_tasks.py",
+    "run_budget_maintenance.py",
+    "server/maintenance_task_processor/",
+]
+tests = [
+    "tests/unit/test_run_maintenance_tasks.py",
+    "tests/unit/test_run_budget_maintenance.py",
+    "tests/unit/test_maintenance_task_runner_standalone.py",
+]
+dependencies = ["org-budgets"]
+operations = [
+    "`MaintenanceTaskProcessor.__call__(task)` — mutates (abstract)",
+    "`MaintenanceTask.get_processor()` — query (deserializes `processor_json`)",
+    "`MaintenanceTask.set_processor(processor)` — mutates",
+    "`OrgBudgetMaintenanceProcessor.__call__(task)` — mutates (per-org loop with rollback)",
+    "`run_maintenance_tasks.main()` — mutates",
+    "`run_maintenance_tasks.set_stale_task_error()` — mutates (bulk one-hour reaper)",
+    "`run_maintenance_tasks.run_tasks()` — mutates (poll → claim → process)",
+    "`run_maintenance_tasks.next_task(session)` — query",
+    "`run_budget_maintenance._chunked(values, size)` — query",
+    "`run_budget_maintenance._eligible_budget_org_ids(session)` — query",
+    "`run_budget_maintenance.enqueue_budget_tasks(batch_size)` — mutates (dedup + chunking)",
+    "`run_budget_maintenance.main()` — mutates",
+]
+headlineProperties = [
+    "A second enqueue round on top of a live one never runs the same maintenance twice",
+    "No org is enqueued twice concurrently",
+    "Every eligible org is covered by the round",
+    "A terminal status is permanent",
+]
+adversarySurface = [
+    "two runners interleaving on the non-atomic select→claim (no `SELECT FOR UPDATE`, no compare-and-set)",
+    "the reaper force-ERRORing a task a live runner then completes",
+    "a malformed non-UUID org id in the task payload",
+    "`processor_json` failing to deserialize after the row is claimed",
+    "the unprotected `session.rollback()` inside the per-org `except` raising",
+    "the dedup guard counting only PENDING and WORKING, so a terminal round re-enqueues at once",
+]
+specHints = "Already modelled in `quint-specs/maintenance-task-queue.qnt`. The claim is not atomic: `next_task` (`run_maintenance_tasks.py:62`) selects and `run_tasks` (`:34`) writes WORKING separately, so model three interleavable steps. The reaper `set_stale_task_error` (`:23`) is a bulk whole-region writer that neither requeues nor writes `info`. Dedup and chunking are in `enqueue_budget_tasks` (`run_budget_maintenance.py:32`), eligibility in `_eligible_budget_org_ids` (`:23`), and the per-org rollback and invalid-UUID branch in `OrgBudgetMaintenanceProcessor.__call__` (`server/maintenance_task_processor/org_budget_maintenance_processor.py:14`)."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.org-api-surface]
+name = "Organization API & Store"
+description = "Org create/update/delete with LiteLLM compensation, membership and role changes under a rank hierarchy, invitations, git-org claims, per-org settings with optimistic locking, and default-org bootstrap."
+role = "central"
+rank = 1
+paths = [
+    "server/routes/orgs.py",
+    "server/routes/org_models.py",
+    "server/routes/org_profiles.py",
+    "server/routes/org_provider_connections.py",
+    "server/routes/agent_profiles.py",
+    "server/routes/org_invitations.py",
+    "server/routes/org_invitation_models.py",
+    "server/services/org_invitation_service.py",
+    "server/services/org_app_settings_service.py",
+    "server/services/org_member_service.py",
+    "storage/org.py",
+    "storage/org_store.py",
+    "storage/org_service.py",
+    "storage/org_member.py",
+    "storage/org_member_store.py",
+    "storage/org_invitation.py",
+    "storage/org_invitation_store.py",
+    "storage/org_git_claim.py",
+    "storage/org_git_claim_store.py",
+    "storage/org_app_settings_store.py",
+    "storage/default_org_service.py",
+]
+tests = [
+    "tests/unit/test_org_service.py",
+    "tests/unit/test_org_invitation_service.py",
+    "tests/unit/storage/test_org_app_settings_store.py",
+]
+dependencies = [
+    "rbac-authorization",
+    "litellm-proxy-integration",
+    "org-budgets",
+    "user-account-lifecycle",
+    "email-notifications",
+    "settings-secrets-and-profiles",
+    "saas-identity-and-session",
+]
+operations = [
+    "`list_user_orgs(...)` — query",
+    "`create_org(...)` — mutates",
+    "`get_org(org_id)` — query",
+    "`update_org(org_id, ...)` — mutates",
+    "`delete_org(org_id)` — mutates",
+    "`switch_org(org_id)` — mutates (requires membership)",
+    "`get_org_members(...)` — query",
+    "`get_org_members_count(...)` — query",
+    "`remove_org_member(...)` — mutates",
+    "`update_org_member(...)` — mutates",
+    "`_can_remove_member(...)` / `_can_update_member_role(...)` — query (rank hierarchy)",
+    "`_is_last_owner(...)` — query",
+    "`get_git_claims(...)` — query",
+    "`create_git_claim(...)` — mutates",
+    "`delete_git_claim(...)` — mutates",
+    "`create_invitation(...)` — mutates (rate-limited)",
+    "`create_invitations_batch(...)` — mutates (bulk)",
+    "`accept_invitation(token, user_id)` — mutates (six steps, NOT atomic)",
+    "`revoke_invitation(...)` — mutates",
+    "org LLM-profile `list/get/save/delete/activate/rename` — query / mutates",
+    "org agent-profile `list/get/save/delete/activate/rename` — query / mutates",
+    "`list_provider_connections(...)` — query",
+    "`create_provider_connection(...)` / `update_...` — mutates",
+    "`delete_provider_connection(...)` — mutates (checks referencing profiles)",
+    "`get_org_app_settings(org_id)` — query",
+    "`update_org_app_settings(...)` — mutates",
+    "`OrgAppSettingsStore.update_org_app_settings(...)` — mutates (`SELECT FOR UPDATE` + `updated_at` compare)",
+    "`OrgService.create_org_with_owner(...)` — mutates (LiteLLM first, then DB)",
+    "`OrgService._persist_with_compensation(...)` — mutates",
+    "`OrgService._handle_failure_with_cleanup(...)` / `_cleanup_litellm_resources(...)` — mutates",
+    "`OrgService.update_org_with_permissions(...)` — mutates",
+    "`OrgService.delete_org_with_cleanup(...)` — mutates (owner only)",
+    "`OrgService.verify_owner_authorization(...)` — query",
+    "`OrgService.switch_org(...)` — mutates",
+    "`OrgService.has_admin_or_owner_role(...)` — query",
+    "`OrgStore.delete_org_cascade(org_id)` — mutates (bulk; raises `OrphanedUserError`)",
+    "`OrgStore.mark_org_as_default(org_id)` — mutates",
+    "`OrgStore.get_default_org()` — query",
+    "`OrgStore.get_current_org_from_keycloak_user_id(...)` — query",
+    "`OrgMemberStore.add_user_to_org(...)` — mutates",
+    "`OrgMemberStore.update_user_role_in_org(...)` — mutates",
+    "`OrgMemberStore.remove_user_from_org(...)` — mutates",
+    "`OrgInvitationStore.create_invitation(...)` — mutates",
+    "`OrgInvitationStore.update_invitation_status(...)` — mutates",
+    "`OrgInvitationStore.mark_expired_if_needed(...)` — mutates",
+    "`OrgInvitationStore.is_token_expired(...)` — query",
+    "`OrgGitClaimStore.create_claim(...)` / `delete_claim(...)` — mutates",
+    "`OrgGitClaimStore.get_claim_by_provider_and_git_org(...)` — query",
+    "`DefaultOrgBootstrapService.apply_for_user(...)` — mutates (returns a `MembershipOutcome`)",
+    "`Org.__init__(**kwargs)` — mutates (raises `TypeError` on an unexpected kwarg)",
+    "`Org.llm_api_key` / `agent_profiles` / `provider_connections` setters — mutates (silently no-op on falsy input)",
+]
+headlineProperties = [
+    "An org always has at least one owner",
+    "Org creation either fully succeeds in DB and LiteLLM, or leaves no LiteLLM resources",
+    "Deleting an org never leaves a user with no org",
+    "An org app-settings update never silently overwrites a concurrent edit",
+]
+adversarySurface = [
+    "`accept_invitation` adding membership then failing to mark accepted, so the retry 400s with `UserAlreadyMemberError`",
+    "the email-match check trusting `User.email` and backfilling from Keycloak mid-flow",
+    "`create_invitations_batch` with one bad address among many",
+    "a LiteLLM create succeeding while the DB persist fails outside the compensation path",
+    "`_cleanup_litellm_resources` itself failing during compensation",
+    "two admins racing an org-settings update against the `updated_at` compare",
+]
+specHints = "Two sagas and one lock. `create_org_with_owner` (`storage/org_service.py:198`) calls LiteLLM BEFORE the DB, then `_persist_with_compensation` (`:310`) and on failure `_handle_failure_with_cleanup` → `_cleanup_litellm_resources` (`:346`–`:390`) — model LiteLLM as external state that can be left behind, and make the compensation itself failable. `accept_invitation` (`server/services/org_invitation_service.py:352`) is six non-atomic steps: model each failing, especially between `add_user_to_org` and `update_invitation_status` (`:497`), the reachable stuck-PENDING-but-already-a-member state. `OrgAppSettingsStore.update_org_app_settings` (`storage/org_app_settings_store.py:99`) is textbook optimistic locking — `SELECT FOR UPDATE` (`:126`) plus a `last_known_updated_at` compare (`:134`), so a two-writer interleaving is the falsifying trace. Model `OrgInvitation.status` as `pending|accepted|revoked|expired` and `Role.rank` as a small total order so `_can_update_member_role` (`server/services/org_member_service.py:344`) and `_is_last_owner` (`:381`) are both falsifiable."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.org-budgets]
+name = "Org Budgets"
+description = "Per-org monthly spend caps: cycle rollover, LiteLLM spend reads with a stale-cache fallback, budget writes verified by read-back, per-user overrides, and percentage threshold alerts."
+role = "central"
+rank = 7
+paths = [
+    "server/services/org_budget_service.py",
+    "server/services/org_member_financial_service.py",
+    "storage/org_budget_settings.py",
+    "storage/org_budget_store.py",
+    "storage/org_budget_threshold.py",
+    "storage/org_user_budget_override.py",
+]
+tests = [
+    "tests/unit/test_org_budget_service.py",
+    "tests/unit/test_org_budget_maintenance_processor.py",
+    "tests/unit/test_org_level_quota.py",
+]
+dependencies = [
+    "litellm-proxy-integration",
+    "maintenance-task-queue",
+    "org-api-surface",
+    "rbac-authorization",
+    "email-notifications",
+]
+operations = [
+    "`get_budget_state(org_id, ...)` — query (rejects personal orgs)",
+    "`run_budget_maintenance(org_id)` — mutates (roll, re-sync, repair, alert)",
+    "`update_budget_settings(...)` — mutates",
+    "`upsert_user_override(...)` — mutates",
+    "`delete_user_override(...)` — mutates",
+    "`_roll_cycle_if_needed(...)` — mutates",
+    "`_current_cycle_start(...)` / `_next_cycle_start(...)` — query",
+    "`_cached_financial_snapshot(...)` / `_get_financial_snapshot(...)` — query (stale fallback)",
+    "`_is_retryable_litellm_read_error(err)` — query",
+    "`_sync_litellm_budgets(...)` — mutates",
+    "`_budget_sync_readback_errors(...)` — query (verifies the write took effect)",
+    "`_effective_user_budget_limit(...)` — query (override precedence)",
+    "`_escape_ilike(term)` — query",
+    "`_maybe_send_alerts(...)` / `_send_alerts(...)` / `_send_slack_alert(...)` — mutates",
+    "`OrgMemberFinancialService.get_org_members_financial_data(...)` — query",
+    "`OrgBudgetStore.get_settings(org_id)` — query",
+    "`OrgBudgetStore.create_settings(...)` — mutates",
+    "`OrgBudgetStore.replace_thresholds(...)` — mutates (bulk replace)",
+    "`OrgBudgetStore.get_override(...)` — query",
+    "`OrgBudgetStore.upsert_override(...)` — mutates",
+    "`OrgBudgetStore.delete_override(...)` — mutates",
+]
+headlineProperties = [
+    "A budget cycle advances only forward, by exactly one reset period per roll",
+    "A snapshot that could not be refreshed is never presented as fresh",
+    "A threshold alert fires at most once per cycle",
+    "A budget write that did not read back is reported, never assumed applied",
+]
+adversarySurface = [
+    "a LiteLLM budget write that reports success but does not read back",
+    "a stale snapshot served under `allow_stale` and mistaken for current spend",
+    "two maintenance runs rolling the same cycle concurrently",
+    "an untrusted search term reaching an ILIKE, guarded only by `_escape_ilike`",
+    "a negative `monthly_limit` override, unconstrained at the column level",
+    "a cycle roll where `reset_day` exceeds the month's length",
+]
+specHints = "State shape is `BudgetCycle`, `LiteLlmFinancialSnapshot` and `BudgetFinancialSnapshotResult` (`server/services/org_budget_service.py:49`–`:70`) over `cycle_start_spend` / `user_cycle_start_spend` (`storage/org_budget_settings.py:34`), the baselines subtracted from live LiteLLM spend — so 'spend since cycle start' is derived and a stale-vs-fresh snapshot changes it. Model `_roll_cycle_if_needed` (`:626`) with `reset_day` values of 29–31 so short months are reachable, and make the LiteLLM read failable with both retryable and non-retryable errors (`:705`). `last_triggered_cycle_start` (`storage/org_budget_threshold.py:23`) is the once-per-cycle latch. Spend is written by `litellm-proxy-integration`; this component only reads it back."
+cardRead = false
+connectionsRead = false
+spec = "quint-specs/org-budgets.qnt"
+version = 6
+observationsConfirmed = true
+propertiesConfirmed = true
+confirmedObservations = [
+    "settings_created_on_demand",
+    "cycle_rolled",
+    "concurrent_roll_reanchored_cycle",
+    "maintenance_skipped_for_personal_org",
+    "maintenance_skipped_without_fresh_spend",
+    "maintenance_skipped_after_repair_failure",
+    "litellm_membership_repaired_before_roll",
+    "spend_read_recovered_by_retry",
+    "spend_read_failed_without_retry",
+    "malformed_spend_response_rejected",
+    "stale_snapshot_presented",
+    "spend_unavailable_presented",
+    "unmapped_litellm_spend_reported",
+    "budget_sync_skipped_while_disabled",
+    "budget_sync_reported_success",
+    "budget_sync_reported_error",
+    "member_missing_from_litellm_reported",
+    "member_cycle_baseline_missing_reported",
+    "threshold_alert_sent",
+    "threshold_alert_emailed",
+    "threshold_alert_slack_delivered",
+    "threshold_alert_slack_suppressed",
+    "invalid_reset_day_crashed_cycle_math",
+    "wildcard_search_term_escaped",
+    "personal_org_settings_created_by_user_row_read",
+    "override_delete_on_missing_row",
+    "override_written_without_litellm_sync",
+    "thresholds_replaced_clearing_alert_latches",
+    "enable_rejected_without_fresh_spend",
+    "member_spend_reported_zero_after_read_failure",
+    "member_listing_auth_error_propagated",
+    "member_listing_page_had_more_rows",
+]
+confirmedProperties = [
+    "cycle_advances_by_one_reset_period",
+    "stale_spend_is_never_presented_as_live",
+    "alert_fires_at_most_once_per_cycle",
+    "unverified_budget_write_is_reported",
+    "member_cap_never_below_cycle_baseline",
+    "search_never_matches_beyond_literal_term",
+    "paged_listing_offers_the_remaining_rows",
+]
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = true
+setupCompleted = true
+cardsDone = false
+
+[components.org-budgets.oracle]
+format = "quint-oracle-config"
+version = 1
+spec = "quint-specs/org-budgets.qnt"
+main = "org_budgets"
+eventScope = "org-budgets"
+observations = [
+    "settings_created_on_demand",
+    "cycle_rolled",
+    "concurrent_roll_reanchored_cycle",
+    "maintenance_skipped_for_personal_org",
+    "maintenance_skipped_without_fresh_spend",
+    "maintenance_skipped_after_repair_failure",
+    "litellm_membership_repaired_before_roll",
+    "spend_read_recovered_by_retry",
+    "spend_read_failed_without_retry",
+    "malformed_spend_response_rejected",
+    "stale_snapshot_presented",
+    "spend_unavailable_presented",
+    "unmapped_litellm_spend_reported",
+    "budget_sync_skipped_while_disabled",
+    "budget_sync_reported_success",
+    "budget_sync_reported_error",
+    "member_missing_from_litellm_reported",
+    "member_cycle_baseline_missing_reported",
+    "threshold_alert_sent",
+    "threshold_alert_emailed",
+    "threshold_alert_slack_delivered",
+    "threshold_alert_slack_suppressed",
+    "invalid_reset_day_crashed_cycle_math",
+    "wildcard_search_term_escaped",
+    "personal_org_settings_created_by_user_row_read",
+    "override_delete_on_missing_row",
+    "override_written_without_litellm_sync",
+    "thresholds_replaced_clearing_alert_latches",
+    "enable_rejected_without_fresh_spend",
+    "member_spend_reported_zero_after_read_failure",
+    "member_listing_auth_error_propagated",
+    "member_listing_page_had_more_rows",
+]
+reportDir = "mc-out-org-budgets"
+testCommand = [
+    ".venv/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "tests/unit/test_org_budget_service.py",
+    "tests/unit/test_run_budget_maintenance.py",
+    "tests/unit/test_org_budget_maintenance_processor.py",
+    "tests/unit/test_org_level_quota.py",
+    "tests/unit/server/services/test_org_member_financial_service.py",
+]
+unguidedStepBudget = 10
+stepReplayBudget = 50
+guardScenarios = true
+
+[components.org-budgets.oracle.studio]
+system = "Org Budgets"
+model = "quint-specs/org-budgets.qnt"
+invariants = [
+    "cycle_advances_by_one_reset_period",
+    "stale_spend_is_never_presented_as_live",
+    "alert_fires_at_most_once_per_cycle",
+    "unverified_budget_write_is_reported",
+    "member_cap_never_below_cycle_baseline",
+    "search_never_matches_beyond_literal_term",
+    "paged_listing_offers_the_remaining_rows",
+]
+
+[[components.org-budgets.oracle.studio.adversaryDispositions]]
+row = "a LiteLLM budget write that reports success but does not read back"
+disposition = "modeled"
+
+[components.org-budgets.oracle.studio.adversaryDispositions.groundedBy]
+actions = [
+    "_sync_litellm_budgets",
+    "env_litellm_write_mode",
+    "update_budget_settings",
+    "upsert_user_override",
+]
+observations = [
+    "budget_sync_reported_error",
+    "budget_sync_reported_success",
+]
+properties = ["unverified_budget_write_is_reported"]
+
+[[components.org-budgets.oracle.studio.adversaryDispositions]]
+row = "a stale snapshot served under `allow_stale` and mistaken for current spend"
+disposition = "modeled"
+
+[components.org-budgets.oracle.studio.adversaryDispositions.groundedBy]
+actions = [
+    "get_budget_state",
+    "get_user_budget_row",
+    "env_litellm_read_fault",
+    "OrgMemberFinancialService_get_org_members_financial_data",
+]
+observations = [
+    "stale_snapshot_presented",
+    "spend_unavailable_presented",
+    "member_spend_reported_zero_after_read_failure",
+]
+properties = ["stale_spend_is_never_presented_as_live"]
+
+[[components.org-budgets.oracle.studio.adversaryDispositions]]
+row = "two maintenance runs rolling the same cycle concurrently"
+disposition = "modeled"
+
+[components.org-budgets.oracle.studio.adversaryDispositions.groundedBy]
+actions = [
+    "concurrent_maintenance_roll",
+    "run_budget_maintenance",
+    "_roll_cycle_if_needed",
+]
+observations = [
+    "concurrent_roll_reanchored_cycle",
+    "cycle_rolled",
+]
+properties = [
+    "cycle_advances_by_one_reset_period",
+    "alert_fires_at_most_once_per_cycle",
+]
+
+[[components.org-budgets.oracle.studio.adversaryDispositions]]
+row = "an untrusted search term reaching an ILIKE, guarded only by `_escape_ilike`"
+disposition = "modeled"
+
+[components.org-budgets.oracle.studio.adversaryDispositions.groundedBy]
+actions = [
+    "get_budget_state",
+    "OrgMemberFinancialService_get_org_members_financial_data",
+]
+observations = ["wildcard_search_term_escaped"]
+properties = ["search_never_matches_beyond_literal_term"]
+
+[[components.org-budgets.oracle.studio.adversaryDispositions]]
+row = "a negative `monthly_limit` override, unconstrained at the column level"
+disposition = "modeled"
+
+[components.org-budgets.oracle.studio.adversaryDispositions.groundedBy]
+actions = [
+    "OrgBudgetStore_upsert_override",
+    "upsert_user_override",
+    "_sync_litellm_budgets",
+]
+observations = ["override_written_without_litellm_sync"]
+properties = ["member_cap_never_below_cycle_baseline"]
+
+[[components.org-budgets.oracle.studio.adversaryDispositions]]
+row = "a cycle roll where `reset_day` exceeds the month's length"
+disposition = "modeled"
+
+[components.org-budgets.oracle.studio.adversaryDispositions.groundedBy]
+actions = [
+    "OrgBudgetStore_create_settings",
+    "_roll_cycle_if_needed",
+    "run_budget_maintenance",
+    "env_advance_time",
+]
+observations = ["invalid_reset_day_crashed_cycle_math"]
+properties = ["cycle_advances_by_one_reset_period"]
+
+[components.org-budgets.fingerprints]
+spec = "fnv1a64:c49e78ac73b285e4"
+oracle = "fnv1a64:30e61b8270b960cf"
+
+[components.org-budgets.fingerprints.code]
+"server/services/org_budget_service.py" = "fnv1a64:52dc5a15ab2dc3b6"
+"server/services/org_member_financial_service.py" = "fnv1a64:3a6b1a3eea528e91"
+"storage/org_budget_settings.py" = "fnv1a64:ad5dc94fd0ecc548"
+"storage/org_budget_store.py" = "fnv1a64:4680defcbc59da9a"
+"storage/org_budget_threshold.py" = "fnv1a64:291a828f6ea4d809"
+"storage/org_user_budget_override.py" = "fnv1a64:16aa0573f5a0df6f"
+
+[components.org-budgets.fingerprints.instrumented]
+"pytest.ini" = "fnv1a64:4e363577fe0a8ed7"
+"quint-specs/oracle-client/python/quint_oracle/__init__.py" = "fnv1a64:37eb261d53b1e295"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/__init__.cpython-313.pyc" = "fnv1a64:0a60368a2f8c524d"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/_itf.cpython-313.pyc" = "fnv1a64:2f40ff4ab2b50163"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/_registry.cpython-313.pyc" = "fnv1a64:96faeb7724d1cb25"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/_transport.cpython-313.pyc" = "fnv1a64:63f07a7208a9a6d4"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/itf.cpython-313.pyc" = "fnv1a64:7527c5c2c059bef5"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/pytest_plugin.cpython-313-pytest-9.0.3.pyc" = "fnv1a64:e885e28d9cebd2d3"
+"quint-specs/oracle-client/python/quint_oracle/_itf.py" = "fnv1a64:3fa2261dee2ce08f"
+"quint-specs/oracle-client/python/quint_oracle/_registry.py" = "fnv1a64:b9c2f7171b169e54"
+"quint-specs/oracle-client/python/quint_oracle/_transport.py" = "fnv1a64:d33de5e8fb672629"
+"quint-specs/oracle-client/python/quint_oracle/itf.py" = "fnv1a64:c143966c101b2c9e"
+"quint-specs/oracle-client/python/quint_oracle/pytest_plugin.py" = "fnv1a64:b14ab8e045400dcb"
+
+[components.org-conversation-insights]
+name = "Org Conversation Insights"
+description = "Admin-side conversation listing, usage/team/agent statistics and export for an org, plus the one mutating action that stops a member's conversation."
+role = "central"
+rank = 22
+paths = ["server/services/org_conversation_service.py"]
+tests = [
+    "tests/unit/test_org_conversation_service_pr_merge.py",
+    "tests/unit/test_org_conversation_usage_models.py",
+    "tests/unit/server/services/test_org_conversation_service_injector.py",
+]
+dependencies = [
+    "org-api-surface",
+    "rbac-authorization",
+    "app-conversation-lifecycle",
+    "conversation-repository-metadata",
+]
+operations = [
+    "`list_org_conversations(...)` — query (raises `OrgConversationFilterError`)",
+    "`get_stats(...)` — query",
+    "`get_usage_stats(...)` — query",
+    "`get_user_usage_stats(...)` — query",
+    "`get_org_conversation(org_id, conversation_id)` — query",
+    "`stop_conversation(org_id, conversation_id)` — mutates (the only mutation)",
+]
+headlineProperties = [
+    "A listing never returns a conversation from another org",
+    "Aggregated totals equal the sum of the rows they aggregate",
+    "Stopping an already-stopped conversation changes nothing",
+]
+adversarySurface = [
+    "cross-org conversation-id guessing, since the service does not re-check ownership itself",
+    "the `@openhands.dev` financial-data bypass on the gate above it",
+    "an invalid filter combination reaching the aggregation query",
+    "a conversation created or deleted mid-aggregation, so totals and rows disagree",
+]
+specHints = "Org isolation plus aggregation: `list_org_conversations` (`server/services/org_conversation_service.py:92`) and the stats readers (`:447`, `:1012`, `:1140`) must agree with the rows they aggregate, so model two orgs and a conversation created mid-read. `stop_conversation` (`:1419`) takes `org_id` and `conversation_id` independently and does not check they match — model the mismatched pair."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.pending-messages-queue]
+name = "Pending Messages Queue"
+description = "FIFO queue of messages submitted while a conversation's sandbox is still starting, re-keyed from the start-task id to the real conversation id and drained once it is ready."
+role = "peripheral"
+rank = 33
+paths = [
+    "openhands/app_server/pending_messages/",
+    "server/utils/saas_pending_message_injector.py",
+]
+tests = [
+    "tests/unit/app_server/test_pending_message_router.py",
+    "tests/unit/app_server/test_pending_message_service.py",
+]
+dependencies = ["app-conversation-lifecycle"]
+operations = [
+    "`add_message(conversation_id, message)` — mutates",
+    "`get_pending_messages(conversation_id)` — query",
+    "`count_pending_messages(conversation_id)` — query",
+    "`delete_messages_for_conversation(conversation_id)` — mutates (returns the count)",
+    "`update_conversation_id(old_id, new_id)` — mutates (bulk re-key)",
+    "`queue_pending_message(...)` — mutates (public HTTP entry point)",
+    "`SaasPendingMessageInjector.inject(...)` — query",
+]
+headlineProperties = [
+    "Every queued message is delivered exactly once, in submission order",
+    "No message is lost across the start-task-id to conversation-id re-key",
+    "A drained queue delivers nothing twice",
+]
+adversarySurface = [
+    "a message added between the bulk re-key and the drain, keyed to the old id and invisible",
+    "`update_conversation_id` as a bulk whole-region writer with no row-level guard",
+    "a re-key onto an id that already has queued messages, interleaving two queues",
+    "the same message queued twice by a client retry, with no idempotency key",
+]
+specHints = "A two-key queue: messages stored under the start-task id, bulk re-keyed by `update_conversation_id` (`pending_message_service.py:66`) and drained by `_process_pending_messages` (`live_status_app_conversation_service.py:2587`). Model the re-key and the add as interleavable over two ids — a message added in that window is the reachable lost-message state."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.rbac-authorization]
+name = "RBAC & Effective-Org Resolution"
+description = "The permission engine every org-scoped route depends on: role and super-role lookup, effective-org resolution from path/header/API key, and the email/provider authorization rules gating signup."
+role = "central"
+rank = 2
+paths = [
+    "server/auth/authorization.py",
+    "server/auth/org_context.py",
+    "server/email_validation.py",
+    "storage/role.py",
+    "storage/role_store.py",
+    "storage/user_authorization.py",
+    "storage/user_authorization_store.py",
+]
+tests = [
+    "tests/unit/test_authorization.py",
+    "tests/unit/test_role_store.py",
+    "tests/unit/storage/test_user_authorization_store.py",
+]
+dependencies = [
+    "saas-identity-and-session",
+    "org-api-surface",
+    "user-account-lifecycle",
+]
+operations = [
+    "`require_permission(permission)(request, org_id, user_id)` — query (401/403)",
+    "`authorize_permission(request, user_id, permission)` — query",
+    "`require_financial_data_access(request, org_id, user_id)` — query (`@openhands.dev` email OR admin/owner)",
+    "`get_user_org_role(user_id, org_id)` — query",
+    "`get_user_super_role(user_id)` — query",
+    "`has_permission(role, permission, is_super)` — query (pure)",
+    "`resolve_effective_org_id(request)` — query (API-key org > `X-Org-Id` > current)",
+    "`resolve_target_org_id_for_permission_check(request)` — query (membership NOT verified)",
+    "`reject_x_org_id_path_mismatch(request, x_org_id)` — query (400 on conflict)",
+    "`get_admin_user_id(request, user_id)` — query (admin iff the email ends `@openhands.dev`)",
+    "`get_org_creator_user_id(request, user_id)` — query",
+    "`RoleStore.create_role(...)` — mutates",
+    "`RoleStore.get_role_by_id(id)` — query",
+    "`RoleStore.get_role_by_name(name)` — query",
+    "`RoleStore.list_roles()` — query",
+    "`UserAuthorizationStore.get_matching_authorizations(email, provider)` — query (SQL `LIKE`; NULL matches all)",
+    "`UserAuthorizationStore.get_authorization_type(...)` — query (whitelist beats blacklist)",
+    "`UserAuthorizationStore.create_authorization(...)` — mutates",
+    "`UserAuthorizationStore.delete_authorization(...)` — mutates",
+]
+headlineProperties = [
+    "A caller never obtains a permission against an org it is neither a member of nor super-role-eligible for",
+    "An `X-Org-Id` header never silently overrides a path-pinned org id",
+    "An API key bound to one org never authorizes another",
+    "A whitelist match always beats a co-matching blacklist rule",
+]
+adversarySurface = [
+    "query-string `org_id` spoofing on routes with no path `{org_id}`",
+    "an API key bound to org A presenting `X-Org-Id: B`",
+    "the super-role path bypassing the membership check by design",
+    "`resolve_target_org_id_for_permission_check` skipping membership, leaving it to the caller",
+    "admin derived from a case-sensitive email suffix rather than a flag",
+    "an `email_pattern` stored verbatim as a SQL `LIKE` — a bare `%` matches everyone",
+]
+specHints = "The core is a dual lookup: `get_user_org_role` (`server/auth/authorization.py:274`) then the `get_user_super_role` fallback (`:299`), combined by `has_permission` (`:360`) — mirror the `RoleName` and `Permission` enums (`:48`, `:127`) one-for-one, since the point is that no (role, permission) pair is silently permissive. `resolve_effective_org_id` (`server/auth/org_context.py:42`) is the second machine: model all three precedence sources and the conflicts `reject_x_org_id_path_mismatch` (`:98`) rejects. Put a non-member, an API-key caller bound to another org and a super-role caller in the domain, and model the `@openhands.dev` suffix checks (`server/email_validation.py:65`, `authorization.py:571`) over an email domain including `sub.openhands.dev` and mixed case."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.recaptcha-verification]
+name = "Recaptcha Verification Log"
+description = "Verifies a client recaptcha token against the enterprise API and appends the score, action and hostname outcome to a SQL log."
+role = "peripheral"
+rank = 34
+paths = [
+    "openhands/app_server/recaptcha/",
+    "server/auth/recaptcha_service.py",
+]
+tests = [
+    "tests/unit/app_server/test_recaptcha_service.py",
+    "tests/unit/test_recaptcha_service.py",
+]
+dependencies = ["saas-identity-and-session"]
+operations = [
+    "`log_recaptcha(...)` — mutates (public HTTP entry point)",
+    "`SqlRecaptchaService.save_log(log)` — mutates (append-only)",
+    "`RecaptchaService.verify(...)` — query (calls reCAPTCHA Enterprise)",
+]
+headlineProperties = [
+    "A verification outcome is recorded for every attempt, including failures",
+    "A recorded score always belongs to the token actually assessed",
+]
+adversarySurface = [
+    "a client-supplied `action` or `hostname` written to the log unvalidated",
+    "the assessment API unreachable — fail-open admits, fail-closed blocks signup",
+    "unbounded log growth: no read or delete path exists in the package",
+    "the same token replayed and assessed twice",
+]
+specHints = "Append-only: `save_log` (`recaptcha/sql_recaptcha_service.py:43`) is the only write and the package has no read or delete path, so the interesting branch is the fail-open/fail-closed decision in `server/auth/recaptcha_service.py` when the assessment fails, and whether a low score blocks the caller."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.resolver-webhook-dispatch-core]
+name = "Resolver Dispatch Core"
+description = "The shared `Manager`/`Message`/`SourceType` contract every provider resolver implements, plus org routing for resolver conversations and the mention/repo-inference parsing that decides whether a job fires."
+role = "cross-cutting"
+rank = 21
+paths = [
+    "integrations/manager.py",
+    "integrations/models.py",
+    "integrations/types.py",
+    "integrations/resolver_context.py",
+    "integrations/resolver_org_router.py",
+    "integrations/utils.py",
+    "integrations/v1_utils.py",
+    "integrations/store_repo_utils.py",
+]
+tests = [
+    "tests/unit/integrations/test_resolver_context.py",
+    "tests/unit/integrations/test_resolver_org_router.py",
+    "tests/unit/integrations/test_utils.py",
+]
+dependencies = [
+    "org-api-surface",
+    "saas-identity-and-session",
+    "app-conversation-lifecycle",
+    "conversation-repository-metadata",
+    "app-server-user-context",
+]
+operations = [
+    "`Manager.receive_message(message)` — mutates (abstract)",
+    "`Manager.send_message(message, view)` — mutates (abstract)",
+    "`Manager.start_job(view)` — mutates (abstract)",
+    "`ResolverUserContext.__init__(...)` — mutates (wraps `SaasUserAuth` with an org override)",
+    "`ResolverUserContext.get_user_id/get_provider_tokens/get_secrets/...` — query",
+    "`resolve_org_for_repo(provider, full_repo_name, keycloak_user_id)` — query (returns `None` on ANY exception)",
+    "`has_exact_mention(text, mention)` — query",
+    "`infer_repo_from_message(text)` — query (deliberately over-broad)",
+    "`filter_potential_repos_by_user_msg(...)` — query",
+    "`handle_callback_error(...)` — mutates",
+    "`get_saas_user_auth(...)` — query (hydrates from the stored offline token)",
+    "`store_repositories_in_db(...)` — mutates (bulk upsert; swallows failures)",
+]
+headlineProperties = [
+    "A resolver conversation is routed to an org only when that org holds the repo's claim AND the user is a member",
+    "Org routing never raises — it degrades to the personal workspace",
+    "Repo inference never grants access on its own",
+]
+adversarySurface = [
+    "`resolve_org_for_repo` swallowing every exception, silently routing an org's conversations to a personal workspace",
+    "that fail-open being indistinguishable from 'no claim exists' — same return value",
+    "over-broad repo inference leaving the downstream access check as the only guard",
+    "a repo name crafted to match another org's claim prefix",
+]
+specHints = "`resolve_org_for_repo` (`integrations/resolver_org_router.py:15`) is the machine and its blanket `except` (`:72`) the thing to model: make the claim lookup and the membership check (`:56`) independently failable so 'personal workspace despite a valid claim' is reachable and distinguishable from 'no claim'. The DTOs in `models.py` and `types.py` are folded; mention parsing (`utils.py:147`) is a pure guard."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.saas-identity-and-session]
+name = "SaaS Identity & Session Lifecycle"
+description = "Keycloak login and callback, the cookie session with its TOS/email-verification gate, per-provider token refresh, the OAuth device-code grant and the provider OAuth proxies."
+role = "central"
+rank = 3
+paths = [
+    "server/auth/auth_error.py",
+    "server/auth/keycloak_manager.py",
+    "server/auth/token_manager.py",
+    "server/auth/saas_user_auth.py",
+    "server/auth/cookie_chunking.py",
+    "server/auth/github_utils.py",
+    "server/auth/gitlab_sync.py",
+    "server/auth/sheets_client.py",
+    "server/auth/email_validation.py",
+    "server/auth/constants.py",
+    "server/auth/user/",
+    "server/middleware.py",
+    "server/models/",
+    "server/routes/auth.py",
+    "server/routes/oauth_device.py",
+    "server/routes/github_proxy.py",
+    "server/routes/bitbucket_dc_proxy.py",
+    "server/routes/users_v1.py",
+    "utils/identity.py",
+    "utils/__init__.py",
+    "storage/auth_token_store.py",
+    "storage/auth_tokens.py",
+    "storage/device_code.py",
+    "storage/device_code_store.py",
+    "storage/offline_token_store.py",
+    "storage/stored_offline_token.py",
+]
+tests = [
+    "tests/unit/test_token_manager.py",
+    "tests/unit/test_keycloak_manager.py",
+    "tests/unit/test_auth_middleware.py",
+]
+dependencies = [
+    "rbac-authorization",
+    "user-account-lifecycle",
+    "org-api-surface",
+    "app-server-user-context",
+    "email-notifications",
+    "recaptcha-verification",
+    "litellm-proxy-integration",
+]
+operations = [
+    "`TokenManager.get_keycloak_tokens(code, ...)` — mutates",
+    "`TokenManager.verify_keycloak_token(token)` — query",
+    "`TokenManager.get_user_info(token)` — query",
+    "`TokenManager._check_expiration_and_refresh(...)` — mutates (300s buffer for Azure DevOps, 14400s otherwise)",
+    "`TokenManager._refresh_github_token(...)` — mutates",
+    "`TokenManager._refresh_gitlab_token(...)` — mutates",
+    "`TokenManager._refresh_bitbucket_token(...)` — mutates",
+    "`TokenManager._refresh_bitbucket_data_center_token(...)` — mutates",
+    "`TokenManager._refresh_azure_devops_token(...)` — mutates",
+    "`TokenManager.create_keycloak_user(...)` — mutates (external IDP)",
+    "`TokenManager.delete_keycloak_user(...)` — mutates",
+    "`TokenManager.disable_keycloak_user(...)` — mutates",
+    "`TokenManager.check_duplicate_base_email(email)` — query",
+    "`SaasUserAuth._resolve_org_id(verify_membership)` — query (per-request cached)",
+    "`SaasUserAuth.get_effective_org_id()` — query",
+    "`SaasUserAuth.get_target_org_id_for_permission_check()` — query",
+    "`SaasUserAuth.refresh()` — mutates",
+    "`keycloak_callback(...)` — mutates",
+    "`keycloak_offline_callback(...)` — mutates",
+    "`refresh_tokens(...)` — mutates",
+    "`logout(...)` — mutates",
+    "`accept_tos(...)` — mutates",
+    "`complete_onboarding(...)` — mutates",
+    "`SetAuthCookieMiddleware.__call__` — mutates (rewrites the cookie; TOS/email gate)",
+    "`ApiKeyAwareCORSMiddleware.__call__` — query",
+    "`PostHogSessionMiddleware.__call__` — query (never raises)",
+    "`device_authorization(...)` — mutates (unauthenticated)",
+    "`device_token(...)` — mutates (polling grant)",
+    "`device_verification_authenticated(...)` — mutates",
+    "`github_proxy.login/oauth/authorize` — mutates",
+    "`github_proxy.callback` — mutates",
+    "`github_proxy.access_token` — mutates",
+    "`github_proxy` passthrough — mutates",
+    "`bitbucket_dc_proxy.userinfo(...)` — query",
+    "`get_current_user_saas(...)` — query",
+    "`get_current_user_git_organizations(...)` — query",
+    "`schedule_gitlab_repo_sync(user_id)` — mutates (fire-and-forget)",
+    "`cookie_chunking` split/join — query",
+    "`extract_base_email(email)` — query",
+    "`has_plus_modifier(email)` — query",
+    "`matches_base_email(email, base)` — query",
+    "`get_base_email_regex_pattern(base)` — query",
+    "`AuthTokenStore.store_tokens(...)` — mutates",
+    "`AuthTokenStore.load_tokens(...)` — query (raises `TokenRefreshError`)",
+    "`AuthTokenStore.is_access_token_valid(...)` — query",
+    "`AuthTokenStore.is_refresh_token_valid(...)` — query",
+    "`DeviceCodeStore.create_device_code(...)` — mutates",
+    "`DeviceCodeStore.authorize_device_code(...)` — mutates",
+    "`DeviceCodeStore.deny_device_code(...)` — mutates",
+    "`DeviceCodeStore.update_poll_time(...)` — mutates",
+    "`DeviceCode.check_rate_limit()` — query (RFC 8628 backoff, capped at 60s)",
+    "`OfflineTokenStore.store_token(...)` — mutates",
+    "`OfflineTokenStore.load_token(...)` — query",
+    "`KeycloakManager` admin operations — mutates",
+]
+headlineProperties = [
+    "A session is marked refreshed only when both tokens were re-encrypted and stored",
+    "A user who has not accepted the TOS reaches no route but `/api/accept_tos`",
+    "A device code is authorized at most once, and a denied code never later authorized",
+    "The device-code polling interval only increases, capped at 60 seconds",
+]
+adversarySurface = [
+    "the `_ignore_paths` allowlist as a hand-maintained auth bypass list",
+    "`_CREDENTIALLESS_PATH_PREFIXES` opening the device flow cross-origin and unauthenticated",
+    "the `accepted_tos` claim trusted from the cookie without re-reading the DB",
+    "concurrent refreshes of one provider token, guarded only by the expiry buffer",
+    "a refresh token rotated by the IDP while an in-flight request writes the stale one back",
+    "cookie chunk reassembly with a missing or reordered chunk",
+]
+specHints = "`_resolve_org_id` (`server/auth/saas_user_auth.py:194`) is the SAME precedence function `rbac-authorization` depends on — model it once and let both read it. The refresh machine is `_check_expiration_and_refresh` (`server/auth/token_manager.py:341`): reproduce the per-provider buffer exactly (300s Azure DevOps, 14400s elsewhere) and model two concurrent refreshes, since nothing single-flights them. The middleware gate (`server/middleware.py:122`) is a three-way guard — no credentials, email unverified, TOS not accepted — plus the `_ignore_paths` bypass (`:167`), which should be modeled as DATA so 'an authenticated-only route is in the list' is reachable. Device codes are a clean created → authorized|denied machine with a monotone, 60s-capped `check_rate_limit` (`storage/device_code.py:92`)."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.saas-server-bootstrap]
+name = "SaaS Server Bootstrap"
+description = "The `saas_server:app` composition root: router mounting over the app server, lifespan with analytics and DB pool teardown, Redis rate limiting, readiness and frontend event capture."
+role = "cross-cutting"
+rank = 31
+paths = [
+    "saas_server.py",
+    "server/app_lifespan/",
+    "server/rate_limit.py",
+    "server/routes/readiness.py",
+    "server/routes/analytics_events.py",
+    "server/config.py",
+    "server/constants.py",
+    "server/logger.py",
+    "server/__init__.py",
+    "server/utils/__init__.py",
+    "server/utils/conversation_utils.py",
+    "server/utils/rate_limit_utils.py",
+    "server/utils/saas_app_conversation_info_injector.py",
+    "server/utils/url_utils.py",
+]
+tests = [
+    "tests/unit/test_saas_server.py",
+    "tests/unit/test_saas_lifespan.py",
+    "tests/unit/server/test_rate_limit.py",
+]
+dependencies = [
+    "app-server-bootstrap",
+    "rbac-authorization",
+    "saas-identity-and-session",
+    "org-api-surface",
+    "app-conversation-lifecycle",
+]
+operations = [
+    "`is_ready()` — query (DB `SELECT 1` plus Redis `ping`)",
+    "`create_redis_rate_limiter(windows)` — query",
+    "`RateLimiter.hit(namespace, key)` — mutates (raises `RateLimitException`; swallows Redis errors)",
+    "`check_rate_limit_by_user_id(...)` — query",
+    "`track_frontend_event(body, user_id)` — mutates (swallows every exception)",
+    "`SaasAppLifespanService.__aenter__()` — mutates",
+    "`SaasAppLifespanService.__aexit__()` — mutates (flushes PostHog, closes the pool)",
+    "`SaasAppConversationInfoInjector.inject(...)` — query",
+    "`conversation_utils` helpers — query",
+    "`url_utils` helpers — query",
+    "router mounting in `saas_server.py` — mutates at import",
+]
+headlineProperties = [
+    "Readiness reports unready when either the DB or Redis is down",
+    "A rate-limited caller is refused before the handler runs",
+    "No route is mounted twice, and no enterprise route shadows one unintentionally",
+]
+adversarySurface = [
+    "`RateLimiter.hit` FAILING OPEN on a Redis error, disabling rate limiting entirely",
+    "the counter's correctness resting wholly on Redis across replicas",
+    "`track_frontend_event` swallowing every exception, hiding a broken path",
+    "mount ORDER deciding which of two same-path handlers wins",
+]
+specHints = "The behavior to ground is `RateLimiter.hit` (`server/rate_limit.py:58`), which on a Redis error returns as if allowed (`:64`) — model Redis as failable so 'over the limit but admitted' is reachable. Readiness (`server/routes/readiness.py:12`) is a two-dependency conjunction; model each independently down. `saas_pending_message_injector.py` belongs to `pending-messages-queue`, not here."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.sandbox-provisioning]
+name = "Sandbox Provisioning"
+description = "Start, pause, resume and delete sandbox runtimes across the Docker, remote-runtime-API and local-process backends, resolve which spec/image to launch, and archive workspaces on teardown."
+role = "central"
+rank = 15
+paths = [
+    "openhands/app_server/sandbox/docker_sandbox_service.py",
+    "openhands/app_server/sandbox/docker_sandbox_spec_service.py",
+    "openhands/app_server/sandbox/dynamic_remote_sandbox_spec_service.py",
+    "openhands/app_server/sandbox/preset_sandbox_spec_service.py",
+    "openhands/app_server/sandbox/process_sandbox_service.py",
+    "openhands/app_server/sandbox/process_sandbox_spec_service.py",
+    "openhands/app_server/sandbox/remote_sandbox_service.py",
+    "openhands/app_server/sandbox/remote_sandbox_spec_service.py",
+    "openhands/app_server/sandbox/sandbox_models.py",
+    "openhands/app_server/sandbox/sandbox_router.py",
+    "openhands/app_server/sandbox/sandbox_spec_models.py",
+    "openhands/app_server/sandbox/sandbox_spec_router.py",
+    "openhands/app_server/sandbox/sandbox_spec_service.py",
+    "openhands/app_server/sandbox/session_auth.py",
+    "openhands/app_server/sandbox/workspace_archive.py",
+]
+tests = [
+    "tests/unit/app_server/test_docker_sandbox_service.py",
+    "tests/unit/app_server/test_remote_sandbox_service.py",
+    "tests/unit/app_server/test_process_sandbox_service.py",
+]
+dependencies = [
+    "sandbox-startup",
+    "app-conversation-lifecycle",
+    "settings-secrets-and-profiles",
+    "app-server-bootstrap",
+]
+operations = [
+    "`start_sandbox(...)` — mutates",
+    "`resume_sandbox(id)` — mutates",
+    "`pause_sandbox(id)` — mutates",
+    "`delete_sandbox(id)` — mutates",
+    "`pause_old_sandboxes(max_num_sandboxes)` — mutates (bulk; guards `> 0`)",
+    "`archive_conversation_workspace(...)` — mutates",
+    "`search_sandboxes(...)` — query",
+    "`get_sandbox(id)` — query",
+    "`batch_get_sandboxes(ids)` — query",
+    "`get_sandbox_by_session_api_key(key)` — query",
+    "`get_sandbox_record_by_session_api_key(key)` — query",
+    "`SandboxSpecService.search/get/batch_get` — query",
+    "`sandbox_router.list_secret_names(...)` — query",
+    "`sandbox_router.get_secret_value(name)` — query (returns the secret VALUE)",
+    "`session_auth.validate_session_key(key)` — query (raises)",
+    "`session_auth.validate_session_key_ownership(...)` — query (raises)",
+    "`remote_sandbox_service.poll_agent_servers()` — mutates (background loop)",
+    "`remote_sandbox_service.refresh_conversation(...)` — mutates",
+    "`workspace_archive.archive_workspace(...)` — mutates",
+    "`workspace_archive.archive_enabled()` — query",
+    "`workspace_archive.archive_required()` — query",
+    "`_hash_session_api_key(key)` — query (unsalted SHA-256)",
+]
+headlineProperties = [
+    "A session API key only reads secrets of the sandbox it was issued for",
+    "A sandbox whose archive is required is never deleted before the archive succeeds",
+    "A paused sandbox never re-reports `STARTING` without a resume",
+]
+adversarySurface = [
+    "the session API key as sole bearer credential for `/secrets`",
+    "`poll_agent_servers` racing a conversation delete with no lock",
+    "a failed archive under the three archive policies (off / best-effort / required)",
+    "`pause_old_sandboxes` choosing which live sandboxes to stop",
+]
+specHints = "`SandboxStatus` (`sandbox_models.py:9`) is the vocabulary every other component branches on — model all five, `MISSING` included. Only the remote backend keeps a row (`remote_sandbox_service.py:81`) while Docker and process derive state live, so 'row says RUNNING, backend says gone' is reachable there alone. `archive_required()` vs `archive_enabled()` (`workspace_archive.py:77`) is a three-valued policy deciding whether a failed archive blocks deletion."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.sandbox-startup]
+name = "Sandbox Startup Failure Reporting"
+description = "`SandboxService.wait_for_sandbox_running`'s poll loop and the classification and redaction of a raw runtime `status_detail` into a user-safe start-failure message."
+role = "central"
+rank = 19
+paths = ["openhands/app_server/sandbox/sandbox_service.py"]
+tests = [
+    "tests/unit/app_server/test_remote_sandbox_service.py",
+    "tests/unit/app_server/test_docker_sandbox_service.py",
+    "tests/unit/app_server/test_live_status_app_conversation_service.py",
+]
+dependencies = [
+    "sandbox-provisioning",
+    "app-conversation-lifecycle",
+]
+operations = [
+    "`_classify_start_failure(detail)` — query",
+    "`_start_failure_error(sandbox_id, detail)` — query",
+    "`SandboxService.search_sandboxes(...)` — query",
+    "`SandboxService.get_sandbox(sandbox_id)` — query",
+    "`SandboxService.get_sandbox_by_session_api_key(...)` — query",
+    "`SandboxService.get_sandbox_record_by_session_api_key(...)` — query",
+    "`SandboxService.batch_get_sandboxes(...)` — query",
+    "`SandboxService.start_sandbox(...)` — mutates",
+    "`SandboxService.resume_sandbox(sandbox_id)` — mutates",
+    "`SandboxService.wait_for_sandbox_running(...)` — query (poll loop; raises `SandboxError`)",
+    "`SandboxService._check_agent_server_alive(...)` — query",
+    "`SandboxService._get_agent_server_url(sandbox)` — query",
+    "`SandboxService.pause_sandbox(sandbox_id)` — mutates",
+    "`SandboxService.delete_sandbox(sandbox_id)` — mutates",
+    "`SandboxService.archive_conversation_workspace(...)` — mutates",
+    "`SandboxService.pause_old_sandboxes(max_num_sandboxes)` — mutates (bulk)",
+]
+headlineProperties = [
+    "Only validated detail text reaches the user — runtime-written text never does",
+    "Every outcome names its sandbox, so the unredacted detail is findable in logs",
+    "Every start failure carries a message; no fallback leaves an empty error",
+    "A successful wait shows no message",
+]
+adversarySurface = [
+    "a runtime-written `status_detail` carrying registry hosts, secret and configmap names, node taints or cluster size",
+    "`get_sandbox` returning `None` mid-poll",
+    "`STARTING` and `MISSING` falling through the loop's unhandled arms",
+    "a transient `/alive` failure while the sandbox is genuinely RUNNING",
+    "the timeout firing while the sandbox is still legitimately starting",
+    "whether the message echoes the caller's sandbox id or an internal one",
+]
+specHints = "Already modelled in `quint-specs/sandbox-startup.qnt` (PR overlay `sandbox-startup.pr-332.qnt`). The loop is `wait_for_sandbox_running` (`openhands/app_server/sandbox/sandbox_service.py:175`); both failure exits funnel through `_classify_start_failure` (`:58`) and `_start_failure_error` (`:104`). A raw `status_detail` must never cross the oracle wire — model it as the enumerable scalars the classifier reads."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.settings-secrets-and-profiles]
+name = "Settings, Secrets & Profiles"
+description = "Per-user and per-org settings, encrypted secrets and provider tokens, plus named agent/LLM profile CRUD with an active-pointer that survives rename and delete."
+role = "central"
+rank = 16
+paths = [
+    "openhands/app_server/settings/",
+    "openhands/app_server/secrets/",
+    "openhands/app_server/config_api/config_models.py",
+    "openhands/app_server/config_api/default_llm_model_service.py",
+    "openhands/app_server/config_api/llm_model_service.py",
+    "storage/saas_secrets_store.py",
+    "storage/saas_settings_store.py",
+    "storage/stored_custom_secrets.py",
+    "storage/user_app_settings_store.py",
+    "storage/agent_profile_resolution.py",
+    "storage/mcp_config.py",
+    "storage/encrypt_utils.py",
+    "server/routes/user_app_settings.py",
+    "server/routes/user_app_settings_models.py",
+    "server/services/user_app_settings_service.py",
+]
+tests = [
+    "tests/unit/app_server/test_profiles_api.py",
+    "tests/unit/app_server/test_resolve_profile_llm.py",
+    "tests/unit/app_server/test_managed_key_rotation.py",
+]
+dependencies = [
+    "app-server-user-context",
+    "saas-identity-and-session",
+    "org-api-surface",
+    "litellm-proxy-integration",
+    "app-server-bootstrap",
+]
+operations = [
+    "`load_settings(...)` — query",
+    "`store_settings(...)` — mutates (silently normalizes via `_post_merge_llm_fixups` and managed-key rotation)",
+    "`list_profiles(...)` — query",
+    "`get_profile(name)` — query",
+    "`save_profile(...)` — mutates",
+    "`delete_profile(name)` — mutates",
+    "`activate_profile(name)` — mutates",
+    "`rename_profile(old, new)` — mutates",
+    "`AgentProfiles._reconcile_active(...)` — mutates",
+    "`LLMProfiles` create/update/delete/activate/rename — mutates (enforces a per-user max)",
+    "`LLMProfiles._reconcile_active(...)` — mutates",
+    "`resolve_profile_llm(...)` — query",
+    "`ProviderConnections.create/update/delete` — mutates (`InUseError` when referenced)",
+    "`check_provider_tokens(...)` — mutates",
+    "`store_provider_tokens(...)` — mutates",
+    "`unset_provider_tokens(...)` — mutates",
+    "`search_custom_secret(...)` — query",
+    "`create_custom_secret(...)` — mutates",
+    "`update_custom_secret(...)` — mutates",
+    "`delete_custom_secret(...)` — mutates",
+    "`SecretsStore.load()` — query",
+    "`SecretsStore.store(secrets)` — mutates",
+    "`SaasSecretsStore.load/store` — query / mutates (scoped by `(user_id, org_id)`)",
+    "`SettingsStore.load()` — query",
+    "`SettingsStore.store(settings)` — mutates",
+    "`UserAppSettingsService.get_user_app_settings(user_id)` — query",
+    "`UserAppSettingsService.update_user_app_settings(user_id, update)` — mutates (partial; `null` clears)",
+    "`load_composed_marketplaces(...)` — query",
+    "`resolve_registered_marketplaces(...)` — query",
+    "`LLMModelService.search_llm_models(...)` — query",
+    "`LLMModelService.search_providers(...)` — query",
+    "`OrgLLMProfileLoader.load(...)` — query",
+    "`OrgLLMProfileMutator.delete(...)` — mutates",
+    "`OrgLLMProfileMutator.rename(...)` — mutates",
+    "`coerce_persisted_mcp_config(raw)` — query",
+    "`serialize_mcp_config(cfg)` — query",
+    "`encrypt_value(v)` — query",
+    "`decrypt_value(v)` — query",
+    "`decrypt_legacy_kwargs(...)` — query",
+]
+headlineProperties = [
+    "Exactly one profile is active per user, including right after the active one is deleted or renamed",
+    "A concurrent read-modify-write of a user's secrets never loses a secret",
+    "A stored secret is never returned to a caller that did not store it",
+]
+adversarySurface = [
+    "two concurrent secret writes racing the write lock",
+    "profile save and secret write taking two independent, non-composing per-user locks",
+    "a load that silently mutates stored settings (LLM fixups, managed-key rotation)",
+    "`decrypt_legacy_kwargs` swallowing decrypt errors, conflating corrupt ciphertext with legacy plaintext",
+]
+specHints = "Two identically shaped profile machines, `AgentProfiles` (`agent_profiles.py:64`) and `LLMProfiles` (`llm_profiles.py:179`), each a name→profile map plus an active pointer reconciled by `_reconcile_active` (`:109`, `:222`) — model delete-the-active and rename-onto-existing. Model the profile and secret locks as SEPARATE mutexes (`settings_router.py:517`, `secrets_router.py:101`); `decrypt_legacy_kwargs` (`storage/encrypt_utils.py:41`) must return the RAW value on failure."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.shared-conversation-publishing]
+name = "Shared Conversation Publishing"
+description = "Unauthenticated read-only access to conversations and events that were explicitly shared, filtered at the SQL layer and re-verified in each storage backend."
+role = "peripheral"
+rank = 23
+paths = ["server/sharing/"]
+tests = [
+    "tests/unit/test_sharing/test_shared_event_filtering.py",
+    "tests/unit/test_sharing/test_shared_event_router.py",
+    "tests/unit/test_sharing/test_sharing_shared_event_service.py",
+]
+dependencies = [
+    "event-stream-and-callbacks",
+    "app-conversation-lifecycle",
+    "conversation-repository-metadata",
+]
+operations = [
+    "`batch_get_shared_conversations(ids)` — query (unauthenticated, 100-id cap)",
+    "`search_shared_events(...)` — query (unauthenticated)",
+    "`count_shared_events(...)` — query",
+    "`batch_get_shared_events(ids)` — query",
+    "`get_shared_event(id)` — query",
+    "`_is_viewable(event)` — query (kind filter)",
+    "`get_shared_conversation_info(conversation_id)` — query (SQL-level shared filter)",
+    "`SharedEventService.get_shared_event/search_shared_events/count_shared_events` — query (abstract; each backend re-verifies)",
+    "`AwsSharedEventService` / `GoogleCloudSharedEventService` / `FilesystemSharedEventService` — query",
+]
+headlineProperties = [
+    "No event or conversation is served for a conversation that is not shared, on any backend or path",
+    "Un-sharing takes effect immediately, including for direct event ids",
+    "Event kinds `_is_viewable` excludes never appear in a shared response",
+]
+adversarySurface = [
+    "unauthenticated endpoints allowing UUID brute force in batches of 100",
+    "no rate limiting, and these paths excluded from the main auth chain",
+    "a direct `get_shared_event(id)` bypassing the listing filter",
+    "three backends re-verifying independently and able to disagree",
+]
+specHints = "One filter that must hold on FOUR paths: the SQL filter (`sql_shared_conversation_info_service.py:46`) and each backend's re-verification behind `SharedEventService` (`shared_event_service.py:20`). Model the shared flag as mutable and the backend check as separately fallible, so 'SQL says private, backend serves it' is reachable. `_is_viewable` (`shared_event_router.py:28`) is a second filter over event kind, reachable by direct id."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.slack-chat-integration]
+name = "Slack Chat Integration"
+description = "The Slack bot: OAuth login linking, a Redis-backed multi-step form for repository selection with a claim step, and job dispatch from mentions and slash commands."
+role = "peripheral"
+rank = 25
+paths = [
+    "integrations/slack/",
+    "storage/slack_conversation.py",
+    "storage/slack_conversation_store.py",
+    "storage/slack_team.py",
+    "storage/slack_team_store.py",
+    "storage/slack_user.py",
+]
+tests = [
+    "tests/unit/test_slack_integration.py",
+    "tests/unit/storage/test_slack_conversation_store.py",
+]
+dependencies = [
+    "resolver-webhook-dispatch-core",
+    "webhook-ingress-verification",
+    "app-conversation-lifecycle",
+    "saas-identity-and-session",
+    "saas-server-bootstrap",
+]
+operations = [
+    "`SlackManager.receive_message(message)` — mutates (raises typed `SlackError`)",
+    "`SlackManager.receive_form_interaction(...)` — mutates",
+    "`SlackManager._process_message(...)` — mutates",
+    "`SlackManager._store_user_msg_for_form(...)` — mutates (Redis)",
+    "`SlackManager._retrieve_user_msg_for_form(...)` — query",
+    "`SlackManager._claim_form_interaction(...)` — mutates (the anti-double-submit claim)",
+    "`SlackManager.is_job_requested(message)` — query",
+    "`SlackManager.start_job(view)` — mutates",
+    "`SlackManager.send_message(message, view)` — mutates",
+    "`slack_view` factories and post methods — query / mutates",
+    "`slack_v1_callback_processor.__call__(...)` — mutates",
+    "`slack_attachments` builders — query",
+    "`SlackConversationStore` create/get — mutates / query",
+    "`SlackTeamStore` create/get/delete — mutates / query",
+]
+headlineProperties = [
+    "A form interaction is claimed at most once, so one selection starts one conversation",
+    "A Slack user with no linked account never starts a conversation",
+    "Pending form state is scoped to the Slack user who created it",
+]
+adversarySurface = [
+    "Slack retrying an interaction, with the claim the only thing making it idempotent",
+    "pending form state in Redis with no visible TTL or ownership check",
+    "another Slack user submitting a form whose pending state is not theirs",
+    "Redis unavailability being a first-class user error here but fail-open elsewhere",
+]
+specHints = "The claim is the property: model `_store_user_msg_for_form` (`integrations/slack/slack_manager.py:110`), `_retrieve_user_msg_for_form` (`:154`) and `_claim_form_interaction` (`:217`) as three actions over Redis state, then interleave two submissions of the SAME interaction id — if the claim is not a compare-and-set, two conversations start. Model Redis failable in both directions (`slack_errors.py:22`)."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.ticket-tracker-integrations]
+name = "Ticket Tracker Integrations"
+description = "Workspace-linked Jira Cloud, Jira Data Center and Linear resolvers, with per-user OAuth token storage and refresh, a single-active-link constraint, and org-scoped secret injection."
+role = "central"
+rank = 14
+paths = [
+    "integrations/jira/",
+    "integrations/jira_dc/",
+    "storage/jira_conversation.py",
+    "storage/jira_integration_store.py",
+    "storage/jira_user.py",
+    "storage/jira_workspace.py",
+    "storage/jira_dc_conversation.py",
+    "storage/jira_dc_integration_store.py",
+    "storage/jira_dc_user.py",
+    "storage/jira_dc_workspace.py",
+    "storage/linear_conversation.py",
+    "storage/linear_integration_store.py",
+    "storage/linear_user.py",
+    "storage/linear_workspace.py",
+]
+tests = [
+    "tests/unit/storage/test_jira_integration_store.py",
+    "tests/unit/storage/test_jira_dc_active_link_constraint.py",
+]
+dependencies = [
+    "resolver-webhook-dispatch-core",
+    "webhook-ingress-verification",
+    "app-conversation-lifecycle",
+    "settings-secrets-and-profiles",
+    "saas-identity-and-session",
+    "org-api-surface",
+]
+operations = [
+    "`JiraManager.receive_message(message)` — mutates",
+    "`JiraManager.start_job(view)` — mutates",
+    "`JiraManager.send_message(message, view)` — mutates",
+    "`JiraManager._authenticate_user(...)` — query (never in OAuth mode)",
+    "`JiraManager` webhook register/delete — mutates",
+    "`JiraDcManager.validate_request(...)` — query",
+    "`JiraDcManager.validate_request_context(...)` — query",
+    "`JiraDcManager.parse_webhook(...)` — query",
+    "`JiraDcManager.register_webhook(...)` — mutates",
+    "`JiraDcManager.delete_webhook(...)` — mutates",
+    "`JiraDcManager._verify_mentioned_repos(...)` — query (case/rename-equivalent repos count once)",
+    "`get_user_jira_dc_token(keycloak_user_id, workspace_id, ...)` — mutates (5-minute freshness buffer, then refresh and store)",
+    "`JiraDcConversationSecretEnricher.enrich(...)` — query (`strict=True` only for `JIRA` starts)",
+    "`JiraDcConversationSecretEnricher._workspace_matches_context(...)` — query (personal-org carve-out)",
+    "`jira_dc_service_account` helpers — query",
+    "per-provider `*_view.py` factories and post methods — query / mutates",
+    "per-provider `*_v1_callback_processor.__call__(...)` — mutates",
+    "`JiraIntegrationStore` workspace/user/conversation CRUD — mutates / query",
+    "`JiraDcIntegrationStore.get_or_create_active_email_link(...)` — mutates",
+    "`JiraDcIntegrationStore.deactivate_user_links_except_workspace(...)` — mutates (bulk)",
+    "`JiraDcIntegrationStore.deactivate_workspace(...)` — mutates",
+    "`JiraDcIntegrationStore.update_user_oauth_tokens(...)` — mutates",
+    "`LinearIntegrationStore.create_workspace(...)` — mutates",
+    "`LinearIntegrationStore.create_workspace_link(...)` — mutates",
+    "`LinearIntegrationStore.deactivate_workspace(...)` — mutates",
+    "`LinearIntegrationStore.create_conversation(...)` — mutates",
+]
+headlineProperties = [
+    "At most one active Jira DC workspace link per user, enforced by a DB constraint",
+    "A strict resolver-triggered conversation never launches without a usable token",
+    "A refresh never replaces a newer token with an older one",
+]
+adversarySurface = [
+    "the code's own TODO: concurrent refreshes writing a stale rotated refresh token back, with no single-flight lock",
+    "the personal-org carve-out where `org_id == admin_user_id` skips org gating entirely",
+    "email-mode workspaces skipping token injection and relying on the agent to notice",
+    "the enricher failing hard for `JIRA` triggers but silently degrading for others",
+]
+specHints = "`get_user_jira_dc_token` (`integrations/jira_dc/jira_dc_user_token.py:37`) is check-then-refresh-then-store and its own TODO (`:48`) names the race — model two concurrent refreshes with a rotated refresh token so the newer token being overwritten is reachable. Also model the single-active-link invariant (`storage/jira_dc_integration_store.py:220`, `:309`, DB index from migration 115) and the `org_id == admin_user_id` carve-out (`jira_dc_conversation_secret_enricher.py:123`). Linear is storage-only here."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.user-account-lifecycle]
+name = "User Account Lifecycle & Provisioning"
+description = "User row creation under a Redis lock, settings tier migrate/downgrade, login bookkeeping, super-admin grant/revoke, and direct provisioning with its partial-failure rollback."
+role = "central"
+rank = 9
+paths = [
+    "storage/user.py",
+    "storage/user_store.py",
+    "storage/user_settings.py",
+    "server/routes/super_admins.py",
+    "server/routes/user_provisioning.py",
+    "analytics/",
+]
+tests = [
+    "tests/unit/test_user_store.py",
+    "tests/unit/test_user_store_login.py",
+    "tests/unit/routes/test_user_provisioning.py",
+]
+dependencies = [
+    "saas-identity-and-session",
+    "rbac-authorization",
+    "org-api-surface",
+    "api-key-management",
+    "litellm-proxy-integration",
+    "settings-secrets-and-profiles",
+]
+operations = [
+    "`UserStore.create_user(...)` — mutates (under a Redis lock)",
+    "`UserStore.migrate_user(...)` — mutates",
+    "`UserStore.downgrade_user(...)` — mutates",
+    "`UserStore.grant_super_admin(user_id)` — mutates",
+    "`UserStore.revoke_super_admin(user_id)` — mutates (returns `SuperAdminRevokeResult`)",
+    "`UserStore.record_login(...)` — mutates",
+    "`UserStore.update_current_org(...)` — mutates",
+    "`UserStore.mark_onboarding_completed(...)` — mutates",
+    "`UserStore._acquire_user_creation_lock(...)` — mutates (returns True when Redis is unavailable)",
+    "`UserStore._release_user_creation_lock(...)` — mutates",
+    "`list_super_admins(...)` — query",
+    "`grant_super_admin(...)` — mutates (idempotent)",
+    "`revoke_super_admin(...)` — mutates (409 on the sole remaining admin)",
+    "`provision_user(...)` — mutates (Keycloak user + personal org + membership + API key)",
+    "`_set_user_provisioned_flags(...)` — mutates",
+    "`_rollback_partial_provision(...)` — mutates (best-effort, order-sensitive)",
+    "`_is_keycloak_user_exists_error(err)` — query",
+    "`SaasAnalyticsUserProvider.get_user_by_id(id)` — query",
+]
+headlineProperties = [
+    "The instance always has at least one super admin",
+    "A user row is created at most once per Keycloak id, even under concurrent first logins",
+    "`provision_user` either fully provisions or leaves no trace",
+    "Granting super admin twice is indistinguishable from granting it once",
+]
+adversarySurface = [
+    "the user-creation lock FAILING OPEN when Redis is unavailable, so two first logins both create the user",
+    "rollback steps swallowing their own failures, so the caller sees a 500 while orphaned rows persist",
+    "a documented TOCTOU between the Keycloak-exists check and creation",
+    "rollback ORDER: membership, then personal-org cascade, then the Keycloak user",
+    "two concurrent revokes each seeing one other super admin present",
+    "`migrate_user` or `downgrade_user` interleaved with a login write on the same row",
+]
+specHints = "Two machines. `create_user` (`storage/user_store.py:68`) sits under a lock that returns True on Redis failure (`:241`) — model the lock as acquirable by both callers so the duplicate-user state is reachable, because that is exactly what an outage allows. `provision_user` (`server/routes/user_provisioning.py:383`) is a four-step saga whose ghost state is the three rollback flags `target_membership_added`, `keycloak_user_created`, `personal_org_created` (`:896`): fail each step in turn and check what the best-effort rollback leaves behind, since its own failures are swallowed at `:906`. `SuperAdminRevokeResult` (`storage/user_store.py:51`) is the guarded-outcome enum for the last-admin property — model two concurrent revokes."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.verified-model-routing]
+name = "Verified Model Routing"
+description = "The admin-managed verified-model allowlist and the two swappable model-discovery strategies that decide which LLM models a deployment offers."
+role = "peripheral"
+rank = 26
+paths = ["server/verified_models/"]
+tests = [
+    "tests/unit/test_verified_model/test_verified_model_service.py",
+    "tests/unit/test_verified_model/test_litellm_proxy_model_service.py",
+]
+dependencies = [
+    "rbac-authorization",
+    "litellm-proxy-integration",
+    "settings-secrets-and-profiles",
+]
+operations = [
+    "`search_verified_models(...)` — query (admin only)",
+    "`get_model(...)` — query",
+    "`create_verified_model(...)` — mutates (`ValueError` on a duplicate pair)",
+    "`update_verified_model(...)` — mutates",
+    "`delete_verified_model(...)` — mutates",
+    "`SaaSLLMModelService._get_models_response(...)` — query (cached, no invalidation)",
+    "`LiteLLMProxyModelService` discovery — query (5s timeout, 60s TTL cache)",
+    "`VerifiedModel` response models — DTOs",
+]
+headlineProperties = [
+    "No two verified models share a `(provider, model_name)`",
+    "A model deleted from the allowlist stops being offered",
+    "A model offered is one the deployment actually verified",
+]
+adversarySurface = [
+    "a newly created model invisible until the service instance is rebuilt",
+    "a `/model/info` timeout serving a 60s-stale list",
+    "`OH_LLM_MODEL_KIND` silently selecting a different offered set",
+    "a duplicate `(provider, model_name)` inserted concurrently past the app-level check",
+]
+specHints = "A real staleness property: `create_verified_model` (`server/verified_models/verified_model_service.py:144`) writes the allowlist while `_get_models_response` (`verified_model_router.py:141`) serves an in-process cache with no invalidation hook — model the cache as state separate from the store so 'created but not offered' is reachable. `OH_LLM_MODEL_KIND` selects one strategy at init, not both."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false
+
+[components.webhook-ingress-verification]
+name = "Webhook Ingress & Signature Verification"
+description = "The HTTP endpoints that receive provider webhooks, verify their signatures, manage workspace OAuth links and webhook installation, and forward verified events to the automation service."
+role = "central"
+rank = 11
+paths = [
+    "server/routes/integration/",
+    "server/services/automation_event_service.py",
+]
+tests = [
+    "tests/unit/test_slack_integration.py",
+    "tests/unit/test_azure_devops.py",
+    "tests/unit/server/services/test_automation_event_service.py",
+]
+dependencies = [
+    "resolver-webhook-dispatch-core",
+    "github-resolver-integration",
+    "git-forge-webhook-integrations",
+    "ticket-tracker-integrations",
+    "slack-chat-integration",
+    "saas-identity-and-session",
+    "org-api-surface",
+    "rbac-authorization",
+]
+operations = [
+    "`verify_github_signature(...)` — query (HMAC via `compare_digest`, global env secret)",
+    "`github_events(request, background_tasks)` — mutates",
+    "`verify_gitlab_signature(...)` / `gitlab_events(...)` — query / mutates",
+    "`get_gitlab_resources(...)` — query",
+    "`reinstall_gitlab_webhook(...)` / `uninstall_gitlab_webhook(...)` — mutates",
+    "`verify_bitbucket_signature(...)` / `bitbucket_events(...)` — query / mutates",
+    "`verify_bitbucket_dc_signature(...)` / `bitbucket_dc_events(...)` — query / mutates (per-workspace secret)",
+    "`get_bitbucket_dc_resources(...)` — query",
+    "`enroll_bitbucket_dc_webhook(...)` / `reinstall_...` / `uninstall_...` — mutates",
+    "`verify_azure_devops_signature(...)` / `azure_devops_events(...)` — query / mutates",
+    "`get_azure_devops_resources(...)` — query",
+    "`reinstall_azure_devops_webhook(...)` / `uninstall_azure_devops_webhook(...)` — mutates",
+    "`verify_jira_signature(...)` — query (per-workspace secret)",
+    "`jira_events(...)` — mutates",
+    "`create_jira_workspace(...)` — mutates",
+    "`create_workspace_link(...)` — mutates",
+    "`jira_callback(...)` — mutates",
+    "`get_current_workspace_link(...)` — query",
+    "`unlink_workspace(...)` — mutates",
+    "`validate_workspace_integration(...)` — query",
+    "`_validate_workspace_update_permissions(...)` — query",
+    "`jira_dc_events(...)` — mutates",
+    "`create_jira_dc_workspace(...)` — mutates",
+    "`slack.install(...)` / `install_callback(...)` / `keycloak_callback(...)` — mutates",
+    "`slack.on_event(...)` / `on_options_load(...)` / `on_form_interaction(...)` — mutates",
+    "`AutomationEventService.forward_event(...)` — mutates (signs; TTL-cached org context)",
+    "`AutomationEventService.forward_jira_dc_event(...)` — mutates",
+    "`AutomationEventService._sign_payload(...)` — query",
+    "`AutomationEventService._is_requested_event_types_cache_fresh(...)` — query",
+]
+headlineProperties = [
+    "No event is forwarded before its signature verifies",
+    "A webhook for an inactive workspace is never forwarded",
+    "A forwarded payload always carries a signature the automation service can verify",
+    "A workspace link is created or removed only by a caller with permission on it",
+]
+adversarySurface = [
+    "no timestamp or nonce in any of the six checks, so a captured webhook replays indefinitely",
+    "an inactive workspace 403'd only after its payload is already logged",
+    "`_validate_workspace_update_permissions` documented but not verified on every mutating route",
+    "two secret sources — global env vs per-workspace decrypted — needing different rotation models",
+    "forwarding after the response returns, so a forward failure is invisible to the sender",
+    "stale org context served from the TTL cache, forwarding under an old configuration",
+]
+specHints = "Model ONE parameterized ingress action rather than six copies: `(provider, signature_valid, workspace_active, secret_source) → forwarded | rejected`, since all six receivers share the verify-then-forward order (`server/routes/integration/github.py:53`, `gitlab.py:83`, `bitbucket.py:71`, `bitbucket_dc.py:727`, `azure_devops.py:370`, `jira_dc.py:475`). Both secret sources must be in the domain — a global env secret (`github.py:33`) versus a per-workspace decrypted one (`jira.py:149`, `bitbucket_dc.py:727`) — because only the latter can be missing or rotated per workspace. There is no replay protection anywhere, so model delivering the SAME signed payload twice rather than idealizing a nonce into existence. `forward_event` (`server/services/automation_event_service.py:123`) runs in a background task: model it as an action that can fail after the HTTP response already succeeded."
+cardRead = false
+connectionsRead = false
+spec = ""
+version = 0
+observationsConfirmed = false
+propertiesConfirmed = false
+confirmedObservations = []
+confirmedProperties = []
+retiredObservations = []
+retiredProperties = []
+wireConfirmed = false
+setupCompleted = false
+cardsDone = false

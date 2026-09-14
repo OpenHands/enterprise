@@ -5,8 +5,6 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from openhands.app_server.integrations.service_types import ProviderType
 from storage.auth_token_store import (
@@ -15,32 +13,6 @@ from storage.auth_token_store import (
     AuthTokenStore,
 )
 from storage.auth_tokens import AuthTokens
-from storage.base import Base
-
-
-@pytest.fixture
-async def async_engine():
-    """Create an async SQLite engine for testing."""
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-    )
-    return engine
-
-
-@pytest.fixture
-async def async_session_maker(async_engine):
-    """Create an async session maker bound to the async engine."""
-    async_session_maker = async_sessionmaker(
-        bind=async_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-    # Create all tables
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    return async_session_maker
 
 
 class TestIsTokenExpired:

@@ -19,6 +19,9 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     TextContent,
 )
+from openhands.app_server.acp_providers import (
+    SURFACED_ACP_PROVIDERS,
+)
 from openhands.app_server.app_conversation.app_conversation_models import (
     AgentType,
     AppConversationInfo,
@@ -37,7 +40,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     _resolve_title_llm_profile,
     effective_disabled_skills,
 )
-from openhands.app_server.errors import SandboxError
+from openhands.app_server.errors import ACPProviderNotAvailableError, SandboxError
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
@@ -61,7 +64,11 @@ from openhands.app_server.utils.redis_lock import RedisLockUnavailable
 from openhands.sdk import Agent, AgentContext, Event
 from openhands.sdk.llm import LLM
 from openhands.sdk.secret import LookupSecret, StaticSecret
-from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
+from openhands.sdk.settings import (
+    ACP_PROVIDERS,
+    ConversationSettings,
+    OpenHandsAgentSettings,
+)
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 
@@ -1594,6 +1601,7 @@ class TestLiveStatusAppConversationService:
         conversation_id = uuid4()
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=conversation_id,
             initial_message=None,
@@ -1629,6 +1637,7 @@ class TestLiveStatusAppConversationService:
         self.service._load_skills_and_update_agent = AsyncMock(return_value=mock_agent)
 
         request = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1669,6 +1678,7 @@ class TestLiveStatusAppConversationService:
         self.service._load_skills_and_update_agent = AsyncMock(return_value=mock_agent)
 
         await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1708,6 +1718,7 @@ class TestLiveStatusAppConversationService:
         self.service._load_skills_and_update_agent = AsyncMock(return_value=mock_agent)
 
         await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1743,6 +1754,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1774,6 +1786,7 @@ class TestLiveStatusAppConversationService:
         conversation_id = uuid4()
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=conversation_id,
             initial_message=None,
@@ -1810,6 +1823,7 @@ class TestLiveStatusAppConversationService:
             'openhands.app_server.app_conversation.live_status_app_conversation_service._logger'
         ) as mock_logger:
             result = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
                 sandbox=self.mock_sandbox,
                 conversation_id=conversation_id,
                 initial_message=None,
@@ -1910,6 +1924,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=test_conversation_id,
             initial_message=None,
@@ -1960,6 +1975,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -1995,6 +2011,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2059,6 +2076,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2105,6 +2123,7 @@ class TestLiveStatusAppConversationService:
         remote_workspace.execute_command = AsyncMock(side_effect=RuntimeError('boom'))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2139,6 +2158,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2179,6 +2199,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2230,6 +2251,7 @@ class TestLiveStatusAppConversationService:
         )
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2273,6 +2295,7 @@ class TestLiveStatusAppConversationService:
             'openhands.app_server.app_conversation.live_status_app_conversation_service._logger'
         ) as mock_logger:
             result = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
                 sandbox=self.mock_sandbox,
                 conversation_id=uuid4(),
                 initial_message=None,
@@ -2312,6 +2335,7 @@ class TestLiveStatusAppConversationService:
         )
 
         await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2342,6 +2366,7 @@ class TestLiveStatusAppConversationService:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2371,6 +2396,7 @@ class TestLiveStatusAppConversationService:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2421,6 +2447,7 @@ class TestLiveStatusAppConversationService:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2464,6 +2491,7 @@ class TestLiveStatusAppConversationService:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -2510,6 +2538,7 @@ class TestLiveStatusAppConversationService:
         }
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=test_conversation_id,
             initial_message=None,
@@ -2568,6 +2597,7 @@ class TestLiveStatusAppConversationService:
         }
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=test_conversation_id,
             initial_message=None,
@@ -2610,6 +2640,7 @@ class TestLiveStatusAppConversationService:
 
         # No API secrets provided (None)
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=test_conversation_id,
             initial_message=None,
@@ -3555,6 +3586,67 @@ class TestLiveStatusAppConversationService:
         assert saved_info.agent_kind == 'acp'
         assert saved_info.tags.get('acpserver') == 'codex'
 
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_builds_and_stamps_the_profile_snapshot_it_validated(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """A profile overwritten after validation (same id, next revision, an
+        unsurfaced provider) must reach neither the build nor the provenance."""
+        from openhands.app_server.app_conversation.app_conversation_models import (
+            ACP_SERVER_TAG_KEY,
+            AGENT_PROFILE_REVISION_TAG_KEY,
+        )
+        from openhands.sdk.settings import ACPAgentSettings
+
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self.service._seed_sandbox_profiles = AsyncMock()
+        self.service._process_pending_messages = AsyncMock()
+        profile_id = str(uuid4())
+
+        def snapshot(acp_server, revision):
+            user = _TestUserInfo(
+                id='test_user_123',
+                sandbox_grouping_strategy=SandboxGroupingStrategy.NO_GROUPING,
+                active_agent_profile_id=profile_id,
+                active_agent_profile_revision=revision,
+            )
+            user.agent_settings = ACPAgentSettings(acp_server=acp_server)
+            return user
+
+        validated = snapshot('claude-code', 1)
+        overwritten = snapshot('pi', 2)
+        resolutions = iter([validated])
+        self.mock_user_context.get_user_info = AsyncMock(
+            side_effect=lambda **_: next(resolutions, overwritten)
+        )
+        build = self.service._build_start_conversation_request_for_user
+        build.return_value.agent = Mock(agent_kind='acp', acp_model=None)
+
+        async for _ in self.service._start_app_conversation(
+            AppConversationStartRequest(agent_profile_id=profile_id)
+        ):
+            pass
+
+        assert build.call_args.args[0] is validated
+        save = self.mock_app_conversation_info_service.save_app_conversation_info
+        saved_info = save.call_args[0][0]
+        assert saved_info.tags[ACP_SERVER_TAG_KEY] == 'claude-code'
+        assert saved_info.tags[AGENT_PROFILE_REVISION_TAG_KEY] == '1'
+        resolved_calls = [
+            call
+            for call in self.mock_user_context.get_user_info.await_args_list
+            if call.kwargs.get('resolve_agent_profile')
+        ]
+        assert len(resolved_calls) == 1
+
     @pytest.mark.asyncio
     async def test_configure_llm_and_mcp_with_custom_remote_servers(self):
         """Test _configure_llm_and_mcp merges custom remote servers."""
@@ -3923,6 +4015,7 @@ class TestLiveStatusAppConversationService:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -3951,6 +4044,7 @@ class TestLiveStatusAppConversationService:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -4335,6 +4429,7 @@ class TestPluginHandling:
         ]
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -4410,6 +4505,7 @@ class TestPluginHandling:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -4447,6 +4543,7 @@ class TestPluginHandling:
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -4485,6 +4582,7 @@ class TestPluginHandling:
         ]
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -4528,6 +4626,7 @@ class TestPluginHandling:
         ]
 
         result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -5235,6 +5334,7 @@ class TestBuildAcpStartConversationRequestSecrets:
         service.user_context.get_provider_tokens = AsyncMock(return_value=None)
         sandbox = Mock(spec=SandboxInfo)
         return service._build_acp_start_conversation_request(
+            user=user,
             sandbox=sandbox,
             conversation_id=uuid4(),
             initial_message=None,
@@ -5596,3 +5696,54 @@ def test_exception_detail_strips_http_status_prefix():
         == 'The system is at capacity right now.'
     )
     assert _exception_detail(ValueError('boom')) == 'boom'
+
+
+class TestACPProviderAllowlistAtServiceStart:
+    """The allowlist is enforced in the shared start path, not only in the HTTP
+    endpoints. The integrations (GitHub, GitLab, Jira, Slack, ...) call
+    ``start_app_conversation`` directly, so an endpoint-only check would let a
+    saved unsupported provider through on every integration-triggered run.
+    """
+
+    @staticmethod
+    def _service_with_saved_provider(acp_server: str):
+        from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+            LiveStatusAppConversationService,
+        )
+        from openhands.sdk.settings import ACPAgentSettings
+
+        service = object.__new__(LiveStatusAppConversationService)
+        user_context = Mock()
+        user_context.get_user_info = AsyncMock(
+            return_value=SimpleNamespace(
+                agent_settings=ACPAgentSettings(acp_server=acp_server)
+            )
+        )
+        user_context.get_user_id = AsyncMock(return_value='u1')
+        user_context.get_user_email = AsyncMock(return_value=None)
+        object.__setattr__(service, 'user_context', user_context)
+        return service
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'acp_server',
+        sorted(set(ACP_PROVIDERS) - set(SURFACED_ACP_PROVIDERS)),
+    )
+    async def test_direct_service_start_rejects_unsurfaced_provider(self, acp_server):
+        """Parametrized off the registry, so a harness added upstream is covered
+        the moment it is registered."""
+        service = self._service_with_saved_provider(acp_server)
+        service._apply_suggested_task = Mock()
+        service._wait_for_sandbox_start = Mock(
+            side_effect=AssertionError('sandbox must not be provisioned')
+        )
+
+        with pytest.raises(ACPProviderNotAvailableError) as exc_info:
+            async for _ in service._start_app_conversation(
+                AppConversationStartRequest()
+            ):
+                pass
+
+        assert exc_info.value.status_code == 400
+        assert acp_server in exc_info.value.detail
+        service._wait_for_sandbox_start.assert_not_called()
