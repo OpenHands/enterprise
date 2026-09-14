@@ -1,6 +1,7 @@
 # TODO: Merge this module with openhands.app_server.config
 import os
 
+from openhands.app_server.config_api.client_config_types import ClientConfig
 from openhands.app_server.types import AppMode, ServerConfigInterface
 from openhands.app_server.utils.import_utils import get_impl
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -27,12 +28,12 @@ class ServerConfig(ServerConfigInterface):
     analytics_user_provider_class: str | None = None
     enable_v1: bool = os.getenv('ENABLE_V1') != '0'
 
-    def verify_config(self):
+    def verify_config(self) -> None:
         if self.config_cls:
             raise ValueError('Unexpected config path provided')
 
-    def get_config(self):
-        config = {
+    def get_config(self) -> ClientConfig:
+        config: ClientConfig = {
             'APP_MODE': self.app_mode,
             'GITHUB_CLIENT_ID': self.github_client_id,
             'POSTHOG_CLIENT_KEY': self.posthog_client_key,

@@ -21,8 +21,6 @@ INSTALLATION_BOUNDARIES = {
     'server/auth/bootstrap.py',
     'server/auth/ancillary_config.py',
     'server/config.py',
-    # HTTP registration moves to server_wiring in the startup layer.
-    'saas_server.py',
 }
 # These guards reject an inactive protocol before parsing its credentials or clients.
 PROTOCOL_BOUNDARIES = {

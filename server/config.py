@@ -2,17 +2,22 @@ import hashlib
 import hmac
 import os
 import time
-import typing
+from dataclasses import dataclass
+from importlib import import_module
 from urllib.parse import urlsplit
 
 import jwt
 import requests  # type: ignore
 from fastapi import HTTPException
 
+from openhands.app_server.config_api.client_config_types import (
+    AuthCapabilities,
+    ClientConfig,
+)
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.server_config.server_config import ServerConfig
 from openhands.app_server.types import AppMode
-from server.auth.auth_config import get_native_auth_settings
+from server.auth.auth_config import AUTH_MODE, ENABLE_KEYCLOAK, get_native_auth_settings
 from server.auth.constants import (
     AZURE_DEVOPS_CLIENT_ID,
     BITBUCKET_APP_CLIENT_ID,
@@ -29,6 +34,61 @@ from server.auth.constants import (
     RECAPTCHA_SITE_KEY,
 )
 from server.constants import DEPLOYMENT_MODE
+
+
+def get_auth_capabilities(
+    configured_providers: list[ProviderType] | None = None,
+) -> AuthCapabilities:
+    """One public login/connection contract for both configuration endpoints."""
+    if not ENABLE_KEYCLOAK:
+        return {
+            'auth_mode': AUTH_MODE,
+            'login_methods': ['password'],
+            'git_connection_methods': {},
+        }
+    providers = configured_providers
+    if providers is None:
+        providers = []
+        for provider, configured in (
+            (ProviderType.GITHUB, GITHUB_APP_CLIENT_ID),
+            (ProviderType.GITLAB, GITLAB_APP_CLIENT_ID),
+            (ProviderType.BITBUCKET, BITBUCKET_APP_CLIENT_ID),
+            (ProviderType.ENTERPRISE_SSO, ENABLE_ENTERPRISE_SSO),
+            (ProviderType.BITBUCKET_DATA_CENTER, BITBUCKET_DATA_CENTER_CLIENT_ID),
+            (ProviderType.AZURE_DEVOPS, AZURE_DEVOPS_CLIENT_ID),
+        ):
+            if configured:
+                providers.append(provider)
+    return {
+        'auth_mode': AUTH_MODE,
+        'login_methods': sorted(provider.value for provider in providers),
+        'git_connection_methods': {
+            provider.value: ['oauth']
+            for provider in providers
+            if provider != ProviderType.ENTERPRISE_SSO
+        },
+    }
+
+
+@dataclass(frozen=True)
+class WebAuthenticationConfig:
+    providers_configured: list[ProviderType]
+    auth_url: str | None
+    email_enabled: bool
+    email_change_enabled: bool
+
+
+def get_web_authentication_config(
+    providers: list[ProviderType],
+    auth_url: str | None,
+    email_enabled: bool,
+    email_change_enabled: bool,
+) -> WebAuthenticationConfig:
+    if ENABLE_KEYCLOAK:
+        return WebAuthenticationConfig(
+            providers, auth_url, email_enabled, email_change_enabled
+        )
+    return WebAuthenticationConfig([], None, False, False)
 
 
 def get_native_cors_origins() -> list[str]:
@@ -66,6 +126,49 @@ def get_native_cors_origins() -> list[str]:
     return list(dict.fromkeys(origins))
 
 
+def validate_native_auth_configuration() -> None:
+    """Reject incompatible selected adapters before constructing application services.
+
+    Extensions may subclass the mode-aware SaaS adapters, retaining their
+    security checks. Independent implementations must explicitly declare
+    ``supports_native_auth = True`` and honor the same identity/session contract.
+    """
+    if ENABLE_KEYCLOAK:
+        return
+    get_native_auth_settings()
+    get_native_cors_origins()
+    get_auth_capabilities()
+    from server.auth.ancillary_config import validate_native_ancillary_config
+
+    validate_native_ancillary_config()
+    for name in ('APP_MODE', 'OH_APP_MODE'):
+        if os.getenv(name, 'saas').lower() != 'saas':
+            raise ValueError(f'{name} must remain saas for Enterprise authentication')
+    selectors = {
+        'OPENHANDS_CONFIG_CLS': 'server.config.SaaSServerConfig',
+        'OH_USER_KIND': 'openhands.app_server.user.auth_user_context.AuthUserContextInjector',
+        'OH_LIFESPAN_KIND': 'server.app_lifespan.saas_app_lifespan_service.SaasAppLifespanService',
+        'OH_WEB_CLIENT_KIND': 'openhands.app_server.web_client.default_web_client_config_injector.DefaultWebClientConfigInjector',
+    }
+    for name, default in selectors.items():
+        selected = os.getenv(name)
+        if not selected or selected == default:
+            continue
+        module, _, class_name = selected.rpartition('.')
+        if not module:
+            raise ValueError(f'{name} must select a mode-aware Enterprise adapter')
+        try:
+            cls = getattr(import_module(module), class_name)
+        except (ImportError, AttributeError) as exc:
+            raise ValueError(
+                f'{name} selects an unavailable authentication adapter'
+            ) from exc
+        if not getattr(cls, 'supports_native_auth', False):
+            raise ValueError(
+                f'{name} selects an adapter incompatible with authentication without Keycloak'
+            )
+
+
 def sign_token(payload: dict[str, object], jwt_secret: str, algorithm='HS256') -> str:
     """Signs a JWT token."""
     return jwt.encode(payload, jwt_secret, algorithm=algorithm)
@@ -91,6 +194,7 @@ def verify_signature(payload: bytes, signature: str):
 
 
 class SaaSServerConfig(ServerConfig):
+    supports_native_auth = True
     config_cls: str = os.environ.get('OPENHANDS_CONFIG_CLS', '')
     app_mode: AppMode = AppMode.SAAS
     posthog_client_key: str = os.environ.get('POSTHOG_CLIENT_KEY', '')
@@ -121,7 +225,12 @@ class SaaSServerConfig(ServerConfig):
     app_slug: None | str = None
 
     def __init__(self) -> None:
-        self._get_app_slug()
+        if ENABLE_KEYCLOAK:
+            self._get_app_slug()
+        else:
+            # Provider metadata must never make local authentication depend on
+            # GitHub availability. Connection actions can resolve it lazily.
+            self.app_slug = os.getenv('GITHUB_APP_SLUG') or None
 
     def _get_app_slug(self):
         """Retrieves the GitHub App slug using the GitHub API's /app endpoint by generating a JWT for the app.
@@ -162,17 +271,17 @@ class SaaSServerConfig(ServerConfig):
         if not self.app_slug:
             raise ValueError("GitHub app slug is missing in the API response.'")
 
-    def verify_config(self):
+    def verify_config(self) -> None:
         if not self.config_cls:
             raise ValueError('Config path not provided!')
 
-        if not self.posthog_client_key:
+        if ENABLE_KEYCLOAK and not self.posthog_client_key:
             raise ValueError('Missing posthog client key in env')
 
         if GITHUB_APP_CLIENT_ID and not self.github_client_id:
             raise ValueError('Missing Github client id')
 
-    def get_config(self):
+    def get_config(self) -> ClientConfig:
         # These providers are configurable via helm charts for self hosted deployments
         # The FE should have this info so that the login buttons reflect the supported IDPs
         providers_configured = []
@@ -194,7 +303,8 @@ class SaaSServerConfig(ServerConfig):
         if AZURE_DEVOPS_CLIENT_ID:
             providers_configured.append(ProviderType.AZURE_DEVOPS)
 
-        config: dict[str, typing.Any] = {
+        config: ClientConfig = {
+            **get_auth_capabilities(providers_configured),
             'APP_MODE': self.app_mode,
             'APP_SLUG': self.app_slug,
             'GITHUB_CLIENT_ID': self.github_client_id,
@@ -211,13 +321,15 @@ class SaaSServerConfig(ServerConfig):
             },
             'PROVIDERS_CONFIGURED': providers_configured,
         }
+        if not ENABLE_KEYCLOAK:
+            config['PROVIDERS_CONFIGURED'] = []
 
         if self.maintenance_start_time:
             config['MAINTENANCE'] = {
                 'startTime': self.maintenance_start_time,
             }
 
-        if self.auth_url:
+        if ENABLE_KEYCLOAK and self.auth_url:
             config['AUTH_URL'] = self.auth_url
 
         if RECAPTCHA_SITE_KEY:

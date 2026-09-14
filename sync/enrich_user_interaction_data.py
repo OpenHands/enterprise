@@ -37,7 +37,11 @@ async def process_pr(pr: OpenhandsPR):
     await store.increment_process_attempts(pr.repo_id, pr.pr_number)
 
 
-async def main():
+async def main() -> None:
+    from server.auth.bootstrap import verify_auth_installation
+
+    await verify_auth_installation()
+
     """
     Main function to retrieve and process unprocessed PRs.
     """

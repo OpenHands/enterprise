@@ -643,60 +643,13 @@ class AutomationEventService:
         return None
 
     async def _get_keycloak_user_id_cached(
-        self, provider: ProviderType, provider_user_id: int | str
+        self, provider: ProviderType, provider_user_id: str | int
     ) -> str | None:
-        """
-        Convert a provider user ID to a Keycloak user ID.
+        from server.auth.composition import get_auth_services
 
-        Uses Redis caching with 24-hour TTL since this mapping never changes.
-        Caches negative results to avoid repeated Keycloak queries.
-
-        Args:
-            provider: The Git provider type
-            provider_user_id: The user ID from the provider
-        """
-        cache_key = f'{USER_ID_CACHE_PREFIX}:{provider.value}:{provider_user_id}'
-
-        # Check cache first
-        cached = await self._get_cached_value(cache_key)
-        if cached is not None:
-            if cached == 'none':
-                logger.debug(
-                    f'[AutomationEventService] Cache hit (negative): '
-                    f'{provider.value} user {provider_user_id} not in Keycloak'
-                )
-                return None
-            logger.debug(
-                f'[AutomationEventService] Cache hit: '
-                f'{provider.value} user {provider_user_id} -> Keycloak {cached}'
-            )
-            return cached
-
-        # Cache miss - query Keycloak
-        try:
-            keycloak_id = await self.token_manager.get_user_id_from_idp_user_id(
-                str(provider_user_id), provider
-            )
-
-            # Cache the result (including negative results)
-            if keycloak_id:
-                await self._set_cached_value(
-                    cache_key, keycloak_id, USER_ID_CACHE_TTL_SECONDS
-                )
-            else:
-                # Cache negative result to prevent repeated Keycloak queries
-                await self._set_cached_value(
-                    cache_key, 'none', USER_ID_CACHE_TTL_SECONDS
-                )
-
-            return keycloak_id
-        except Exception as e:
-            # Log at warning level to surface programmer errors and API issues
-            logger.warning(
-                f'[AutomationEventService] Failed to get keycloak ID for '
-                f'{provider.value} user {provider_user_id}: {e}'
-            )
-            return None
+        return await get_auth_services().actors.for_automation(
+            provider, provider_user_id, self
+        )
 
     # =========================================================================
     # Generic Redis Cache Helpers

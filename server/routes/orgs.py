@@ -1742,6 +1742,7 @@ async def claim_git_organization(
         HTTPException 409: If the Git organization is already claimed
         HTTPException 403: If user lacks permission
     """
+    get_auth_services().integrations.require_provider_connections()
     try:
         # Check if this Git org is already claimed (early feedback for the common case)
         existing_claim = await OrgGitClaimStore.get_claim_by_provider_and_git_org(

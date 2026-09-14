@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from server.auth.account_lookup import AccountLookup
     from server.auth.browser_policy import BrowserPolicy
     from server.auth.integration_link_policy import IntegrationLinkPolicy
+    from server.auth.provider_actor_lookup import ProviderActorLookup
     from server.auth.request_auth import RequestAuth
     from server.services.account_profile_provisioning import AccountProfileProvisioning
     from server.services.admin_user_lifecycle_service import LifecycleOperations
@@ -24,6 +25,7 @@ class AuthServices:
     requests: RequestAuth
     browser: BrowserPolicy
     integrations: IntegrationLinkPolicy
+    actors: ProviderActorLookup
     accounts: AccountLookup
     lifecycle: LifecycleOperations
     profiles: AccountProfileProvisioning
@@ -44,6 +46,10 @@ def build_auth_services() -> AuthServices:
     )
     from server.auth.keycloak_request_auth import KeycloakRequestAuth
     from server.auth.openhands_request_auth import OpenHandsRequestAuth
+    from server.auth.provider_actor_lookup import (
+        KeycloakProviderActorLookup,
+        OpenHandsProviderActorLookup,
+    )
     from server.services.account_profile_provisioning import (
         KeycloakAccountProfileProvisioning,
         OpenHandsAccountProfileProvisioning,
@@ -66,6 +72,7 @@ def build_auth_services() -> AuthServices:
             requests=KeycloakRequestAuth(),
             browser=KeycloakBrowserPolicy(),
             integrations=KeycloakIntegrationLinkPolicy(),
+            actors=KeycloakProviderActorLookup(),
             accounts=KeycloakAccountLookup(),
             lifecycle=KeycloakUserLifecycleService(),
             profiles=KeycloakAccountProfileProvisioning(),
@@ -76,6 +83,7 @@ def build_auth_services() -> AuthServices:
         requests=OpenHandsRequestAuth(),
         browser=OpenHandsBrowserPolicy(),
         integrations=OpenHandsIntegrationLinkPolicy(),
+        actors=OpenHandsProviderActorLookup(),
         accounts=OpenHandsAccountLookup(),
         lifecycle=OpenHandsUserLifecycleService(),
         profiles=OpenHandsAccountProfileProvisioning(),

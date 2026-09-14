@@ -43,6 +43,7 @@ class UserDeletionResult(UserLifecycleResult):
 
 
 class LifecycleOperations(Protocol):
+    async def run_maintenance(self) -> dict[str, int]: ...
     async def disable_user(
         self, user_id: str, *, actor_user_id: str
     ) -> UserLifecycleResult | None: ...
@@ -153,6 +154,9 @@ class _UserDataDeletion:
 
 
 class KeycloakUserLifecycleService(_UserDataDeletion):
+    async def run_maintenance(self) -> dict[str, int]:
+        return {}
+
     def __init__(self, token_manager: TokenManager | None = None) -> None:
         self.token_manager = token_manager or TokenManager()
 
@@ -464,3 +468,20 @@ class OpenHandsUserLifecycleService(_UserDataDeletion):
             except Exception:
                 failures += 1
         return failures
+
+    async def run_maintenance(self) -> dict[str, int]:
+        from server.services.native_auth_service import get_native_auth_service
+        from server.services.native_provisioning_service import (
+            NativeProvisioningService,
+        )
+
+        await get_native_auth_service().cleanup_expired_state()
+        failures = await self.retry_native_deletions()
+        reconciler = NativeProvisioningService()
+        cleaned, cleanup_failed = await reconciler.cleanup()
+        provisioned, provisioning_failed = await reconciler.reconcile()
+        return {
+            'cleaned': cleaned,
+            'provisioned': provisioned,
+            'error_count': failures + cleanup_failed + provisioning_failed,
+        }
