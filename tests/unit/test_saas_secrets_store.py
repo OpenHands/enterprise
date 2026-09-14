@@ -391,7 +391,7 @@ class TestSaasSecretsStoreOrgSharedMerge:
                 org_id=org_id,
                 secret_name='SHARED_TOKEN',
                 secret_value=secrets_store._jwt_svc.encrypt_value('shared_val'),
-                description='org-wide',
+                description=secrets_store._jwt_svc.encrypt_value('org-wide'),
                 is_org_shared=True,
             )
             session.add(shared)
@@ -443,7 +443,7 @@ class TestSaasSecretsStoreOrgSharedMerge:
                 org_id=org_id,
                 secret_name='MY_TOKEN',
                 secret_value=secrets_store._jwt_svc.encrypt_value('shared_val'),
-                description='org-wide',
+                description=secrets_store._jwt_svc.encrypt_value('org-wide'),
                 is_org_shared=True,
             )
             session.add(shared)

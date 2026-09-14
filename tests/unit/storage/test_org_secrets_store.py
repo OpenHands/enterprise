@@ -93,7 +93,7 @@ class TestOrgSecretsStoreCRUD:
         # New name should exist
         new = await org_secrets_store.get_shared('NEW_NAME')
         assert new is not None
-        assert new.description == 'new desc'
+        assert org_secrets_store._jwt_svc.decrypt_value(new.description) == 'new desc'
 
         # Value should be unchanged (decrypted)
         decrypted = org_secrets_store._jwt_svc.decrypt_value(new.secret_value)
@@ -207,7 +207,7 @@ class TestOrgSecretsStoreCRUD:
                 org_id=org_secrets_store.org_id,
                 secret_name='PERSONAL_ONLY',
                 secret_value=org_secrets_store._jwt_svc.encrypt_value('val'),
-                description='personal',
+                description=org_secrets_store._jwt_svc.encrypt_value('personal'),
                 is_org_shared=False,
             )
             session.add(personal)
