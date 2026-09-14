@@ -48,21 +48,21 @@ with patch.dict(sys.modules, {'storage.database': mock_db}):
 NOW = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
 
 
-class _FrozenDateTime:
-    """Pins ``datetime.now()`` so the script evaluates against a fixed clock.
+class _FrozenDateTime(datetime):
+    """``datetime`` whose ``now()`` is pinned to :data:`NOW`.
 
-    ``_run`` stamps ``generated_at`` from the wall clock and passes it to
-    ``evaluate_org`` as ``now``, while every fixture timestamp here is relative
-    to ``NOW``. Without this the measured snapshot age is the real elapsed time
-    since ``NOW``, which drifts past the freshness window and adds a spurious
-    ``SNAPSHOT_STALE`` finding.
+    ``_run`` reads its own clock via ``datetime.now(UTC)`` and feeds it to
+    ``evaluate_org`` as ``now``. Every fixture timestamp here is anchored to
+    ``NOW``, and the evaluator-level tests pin the same instant by passing
+    ``now=NOW`` explicitly, so the script-level tests have to pin it too --
+    otherwise the fixtures age against the real clock and time-relative
+    findings such as ``snapshot_stale`` appear once the freshness window
+    elapses, making the tests fail with the passage of real time.
     """
 
-    def __init__(self, fixed: datetime):
-        self._fixed = fixed
-
-    def now(self, tz=None):
-        return self._fixed
+    @classmethod
+    def now(cls, tz=None):
+        return NOW if tz is None else NOW.astimezone(tz)
 
 
 def _settings(**overrides) -> OrgBudgetSettings:
@@ -351,7 +351,7 @@ def test_build_report_summary_and_exit_codes():
 
 def _script_patches(monkeypatch, *, settings, member_ids, snapshot, reconcile=None):
     org_id = str(settings.org_id)
-    monkeypatch.setattr(run_budget_preflight, 'datetime', _FrozenDateTime(NOW))
+    monkeypatch.setattr(run_budget_preflight, 'datetime', _FrozenDateTime)
     monkeypatch.setattr(run_budget_preflight, 'session_maker', MagicMock())
     monkeypatch.setattr(
         run_budget_preflight, '_read_schema', lambda session: ('160', True)
