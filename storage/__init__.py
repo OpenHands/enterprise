@@ -17,6 +17,7 @@ from storage.linear_conversation import LinearConversation
 from storage.linear_user import LinearUser
 from storage.linear_workspace import LinearWorkspace
 from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
+from storage.native_external_work import NativeExternalWork
 from storage.openhands_pr import OpenhandsPR
 from storage.org import Org
 from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
@@ -47,6 +48,7 @@ from storage.user_repo_map import UserRepositoryMap
 from storage.user_settings import UserSettings
 
 __all__ = [
+    'NativeExternalWork',
     'AuthAccount',
     'AuthChallenge',
     'AuthInstallation',

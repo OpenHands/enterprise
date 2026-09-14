@@ -56,6 +56,7 @@ class OrgMember(Base):
         JSON, nullable=False, default=dict
     )
     status: Mapped[str | None] = mapped_column(String, nullable=True)
+    native_provisioning_id: Mapped[UUID | None] = mapped_column()
 
     # Relationships
     org: Mapped['Org'] = relationship('Org', back_populates='org_members')
