@@ -241,23 +241,27 @@ def append_system_context(existing: str | None, block: str) -> str:
     return f'{existing.rstrip()}\n\n{block}'
 
 
-def effective_disabled_skills(user: UserInfo) -> list[str]:
-    """Union of the member-level and launched-profile-level skill deny-lists.
+def effective_disabled_skills(
+    user: UserInfo, request_disabled_skills: Sequence[str] | None = None
+) -> list[str]:
+    """Union of the member-, launched-profile- and per-request skill deny-lists.
 
-    A skill disabled at EITHER level stays off. The member's deny-list rides
+    A skill disabled at ANY level stays off. The member's deny-list rides
     ``user.disabled_skills``; the launched Agent Profile's rides the resolved
     ``agent_settings.agent_context.disabled_skills`` (the SDK resolver stamps the
-    profile's ``disabled_skills`` there — #4017). On a non-profile launch the
-    resolved context's deny-list is empty, so this is just the member's list.
-    Order-preserving de-dup. Because it is a deny-list, a name absent from the
-    discovered catalog is a harmless no-op, so no reconciliation is needed
-    between the two sources.
+    profile's ``disabled_skills`` there — #4017); ``request_disabled_skills`` is
+    the one-off list a caller passed on the start request. On a non-profile
+    launch the resolved context's deny-list is empty, so this is just the
+    member's list (plus the request's, if any). Order-preserving de-dup.
+    Because it is a deny-list, a name absent from the discovered catalog is a
+    harmless no-op, so no reconciliation is needed between the sources.
     """
     member = list(user.disabled_skills or [])
     agent_settings = getattr(user, 'agent_settings', None)
     agent_context = getattr(agent_settings, 'agent_context', None)
     profile = list(getattr(agent_context, 'disabled_skills', None) or [])
-    return list(dict.fromkeys([*member, *profile]))
+    requested = list(request_disabled_skills or [])
+    return list(dict.fromkeys([*member, *profile, *requested]))
 
 
 def _to_sdk_marketplace_registrations(
@@ -562,6 +566,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     selected_branch=request.selected_branch,
                     plugins=request.plugins,
                     api_secrets=request.secrets,
+                    system_prompt=request.system_prompt,
+                    disabled_skills=request.disabled_skills,
                     request_observability_metadata=request.observability_metadata,
                     request_observability_tags=request.observability_tags,
                     request_observability_span_name=request.observability_span_name,
@@ -1728,14 +1734,24 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         repo_name: str | None = None,
         git_provider: ProviderType | None = None,
         selected_branch: str | None = None,
+        system_prompt: str | None = None,
     ) -> Agent:
         """Apply server-only fields that have no place in ``AgentSettings``.
 
-        * System-prompt filename / kwargs (planning vs default agent).
+        * System prompt: an inline ``system_prompt`` from the start request,
+          else the filename / kwargs (planning vs default agent).
         * LLM tracing metadata for SaaS analytics.
         """
         overrides: dict[str, Any] = {}
-        if agent_type == AgentType.PLAN:
+        if system_prompt is not None:
+            # The inline prompt replaces the built-in static prompt verbatim;
+            # the SDK still appends the dynamic block (skills, suffix, secrets).
+            # The SDK rejects an inline prompt alongside a non-default
+            # system_prompt_filename, so the planning preset is not selected
+            # here — PLAN keeps its tools and the PLANNING_AGENT_INSTRUCTION
+            # riding system_message_suffix.
+            overrides['system_prompt'] = system_prompt
+        elif agent_type == AgentType.PLAN:
             overrides['system_prompt_filename'] = 'system_prompt_planning.j2'
             overrides['system_prompt_kwargs'] = {
                 'plan_structure': format_plan_structure()
@@ -1964,6 +1980,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         selected_branch: str | None = None,
         plugins: list[PluginSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
+        system_prompt: str | None = None,
+        disabled_skills: list[str] | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
@@ -1997,6 +2015,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 These are merged with existing secrets (from database
                 and git providers), with API-provided secrets taking
                 precedence.
+            system_prompt: Optional inline system prompt that replaces the
+                built-in static system prompt verbatim. Ignored (with a
+                warning) for ACP agents, which own their own prompt.
+            disabled_skills: Optional per-request skill deny-list, unioned
+                with the member's and launched profile's deny-lists.
             request_observability_metadata: Optional caller-provided trace metadata to
                 merge with app-server conversation metadata.
             request_observability_tags: Optional caller-provided tags to append to the
@@ -2034,6 +2057,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     'has_api_key': bool(getattr(llm_settings, 'api_key', None)),
                 },
             )
+            if system_prompt is not None:
+                # ACP agents (external CLIs) own their system prompt; there is
+                # nothing to replace, so the request-level prompt is dropped.
+                _logger.warning(
+                    'app_conversation_start:system_prompt_ignored_for_acp_agent',
+                    extra={
+                        'user_id': user.id,
+                        'conversation_id': str(conversation_id),
+                    },
+                )
             acp_request = await self._build_acp_start_conversation_request(
                 user=user,
                 sandbox=sandbox,
@@ -2060,7 +2093,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     remote_workspace,
                     selected_repository,
                     get_project_dir(working_dir, selected_repository),
-                    effective_disabled_skills(user),
+                    effective_disabled_skills(user, disabled_skills),
                     registered_marketplaces,
                 )
             return acp_request
@@ -2187,6 +2220,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             repo_name=selected_repository,
             git_provider=git_provider,
             selected_branch=selected_branch,
+            system_prompt=system_prompt,
         )
 
         # --- hooks (require remote workspace; must precede request build) -----
@@ -2296,7 +2330,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 remote_workspace,
                 selected_repository,
                 project_dir,
-                effective_disabled_skills(user),
+                effective_disabled_skills(user, disabled_skills),
                 registered_marketplaces,
             )
 
