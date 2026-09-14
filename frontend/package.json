@@ -133,6 +133,7 @@
     "qs": "6.15.2",
     "@opentelemetry/core": "2.8.0",
     "ws": ">=8.21.0",
-    "postcss": ">=8.5.18"
+    "postcss": ">=8.5.18",
+    "brace-expansion": "^2.1.4"
   }
 }
