@@ -542,7 +542,9 @@ describe("Settings Screen", () => {
       // Assert
       const navbar = await screen.findByTestId("settings-navbar");
       await waitFor(() => {
-        expect(within(navbar).getByText("Billing & Credits")).toBeInTheDocument();
+        expect(
+          within(navbar).getByText("Billing & Credits"),
+        ).toBeInTheDocument();
       });
 
       getConfigSpy.mockRestore();
@@ -575,7 +577,9 @@ describe("Settings Screen", () => {
 
       // Assert
       const navbar = await screen.findByTestId("settings-navbar");
-      expect(within(navbar).queryByText("Billing & Credits")).not.toBeInTheDocument();
+      expect(
+        within(navbar).queryByText("Billing & Credits"),
+      ).not.toBeInTheDocument();
 
       getConfigSpy.mockRestore();
     });
@@ -1355,6 +1359,27 @@ describe("clientLoader ?org= deep link", () => {
     );
     expect(result.status).toBe(302);
     expect(result.headers.get("Location")).toBe("/settings");
+  });
+
+  it("replaces the history entry when stripping the param so Back returns to the referrer", async () => {
+    // Arrange: the requested org is already current, so only the param is stripped
+    seedConfig("saas");
+    mockQueryClient.setQueryData(["organizations"], {
+      items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_TEAM_ORG_ACME.id,
+    });
+
+    // Act: enter settings from agent-canvas with the org deep link
+    const request = new Request(
+      `http://localhost/settings?org=${MOCK_TEAM_ORG_ACME.id}`,
+    );
+    // @ts-expect-error - test only needs request and params, not full loader args
+    const result = (await clientLoader({ request, params: {} })) as Response;
+
+    // Assert: a replacing redirect, so the pre-switch URL is not left in history
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings");
+    expect(result.headers.get("X-Remix-Replace")).toBe("true");
   });
 
   it("keeps the param and does not redirect when organizations cannot be fetched", async () => {

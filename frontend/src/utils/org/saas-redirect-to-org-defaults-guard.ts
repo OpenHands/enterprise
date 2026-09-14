@@ -1,4 +1,4 @@
-import { redirect } from "react-router";
+import { replace } from "react-router";
 import { queryClient } from "#/query-client-config";
 import OptionService from "#/api/option-service/option-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
@@ -59,5 +59,7 @@ export const requireOrgDefaultsRedirect =
     const currentPath = new URL(request.url).pathname;
     if (currentPath === redirectPath) return null;
 
-    return redirect(redirectPath);
+    // `replace` so Back from the org-defaults page returns to where the user
+    // entered settings from (e.g. agent-canvas), not to this redirecting URL.
+    return replace(redirectPath);
   };

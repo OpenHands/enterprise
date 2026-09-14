@@ -1,9 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { redirect } from "react-router";
+import { replace } from "react-router";
 
 // Mock dependencies before importing the module under test
 vi.mock("react-router", () => ({
-  redirect: vi.fn((path: string) => ({ type: "redirect", path })),
+  replace: vi.fn((path: string) => ({ type: "replace", path })),
 }));
 
 vi.mock("#/utils/org/permission-checks", () => ({
@@ -80,7 +80,7 @@ describe("createPermissionGuard", () => {
       await guard(createMockRequest("/settings/billing"));
 
       // Assert: should redirect to first available path (/settings/user in SaaS mode)
-      expect(redirect).toHaveBeenCalledWith("/settings/user");
+      expect(replace).toHaveBeenCalledWith("/settings/user");
     });
 
     it("should allow access when user has required permission", async () => {
@@ -102,7 +102,7 @@ describe("createPermissionGuard", () => {
       const result = await guard(createMockRequest("/settings/billing"));
 
       // Assert: should not redirect; return concrete loader data
-      expect(redirect).not.toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
       expect(result).toEqual({});
     });
 
@@ -115,7 +115,7 @@ describe("createPermissionGuard", () => {
       await guard(createMockRequest("/settings/billing"));
 
       // Assert: should redirect to first available path
-      expect(redirect).toHaveBeenCalledWith("/settings/user");
+      expect(replace).toHaveBeenCalledWith("/settings/user");
     });
 
     it("should redirect when user is undefined even for member-level permissions", async () => {
@@ -128,7 +128,7 @@ describe("createPermissionGuard", () => {
       await guard(createMockRequest("/settings/secrets"));
 
       // Assert: should redirect, not silently grant member-level access
-      expect(redirect).toHaveBeenCalledWith("/settings/user");
+      expect(replace).toHaveBeenCalledWith("/settings/user");
     });
   });
 
@@ -152,7 +152,7 @@ describe("createPermissionGuard", () => {
       await guard(createMockRequest("/settings/billing"));
 
       // Assert: should redirect to custom path
-      expect(redirect).toHaveBeenCalledWith("/custom/redirect");
+      expect(replace).toHaveBeenCalledWith("/custom/redirect");
     });
   });
 
@@ -169,7 +169,7 @@ describe("createPermissionGuard", () => {
 
       // Assert: guard steps aside so the param survives the loader's redirect
       expect(result).toEqual({});
-      expect(redirect).not.toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
       expect(getActiveOrganizationUser).not.toHaveBeenCalled();
     });
   });
@@ -184,7 +184,7 @@ describe("createPermissionGuard", () => {
       const result = await guard(createMockRequest("/settings/user"));
 
       // Assert: should NOT redirect to avoid infinite loop
-      expect(redirect).not.toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
       expect(result).toEqual({});
     });
   });
@@ -199,7 +199,7 @@ describe("createPermissionGuard", () => {
       const guard = createPermissionGuard("manage_integrations");
       const result = await guard(createMockRequest("/settings/integrations"));
 
-      expect(redirect).not.toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
       expect(result).toEqual({});
     });
   });

@@ -1,4 +1,4 @@
-import { redirect } from "react-router";
+import { replace } from "react-router";
 import { queryClient } from "#/query-client-config";
 import OptionService from "#/api/option-service/option-service.api";
 import { WebClientConfig } from "#/api/option-service/option.types";
@@ -47,7 +47,8 @@ const PERMISSION_GRANTED = {} as const;
 
 /**
  * Creates a clientLoader guard that checks if the user has the required permission.
- * Redirects to the first available settings page if permission is denied.
+ * Redirects (replacing the history entry) to the first available settings
+ * page if permission is denied.
  *
  * In OSS mode, permission checks are bypassed since there are no user roles.
  *
@@ -89,7 +90,7 @@ export const createPermissionGuard =
       if (redirectPath === currentPath) {
         return PERMISSION_GRANTED;
       }
-      return redirect(redirectPath);
+      return replace(redirectPath);
     };
 
     if (!user) {
