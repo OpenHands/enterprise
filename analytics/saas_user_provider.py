@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from openhands.analytics.user_base import UserBase
 from openhands.analytics.user_provider import AnalyticsUserProvider
-from storage.user_store import UserStore
+from server.auth.composition import get_auth_services
 
 
 class SaasAnalyticsUserProvider(AnalyticsUserProvider):
@@ -27,4 +27,4 @@ class SaasAnalyticsUserProvider(AnalyticsUserProvider):
         Returns:
             The User object from the database, or None if not found.
         """
-        return await UserStore.get_user_by_id(user_id)
+        return await get_auth_services().accounts.get_user_by_id(user_id)

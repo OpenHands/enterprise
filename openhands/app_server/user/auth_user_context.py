@@ -1,12 +1,10 @@
 import logging
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, AsyncGenerator, cast
+from typing import AsyncGenerator, ClassVar, Literal, overload
 from uuid import UUID
 
 from fastapi import Request
-from pydantic import PrivateAttr, SecretStr
 
 from openhands.app_server.errors import AuthError
 from openhands.app_server.integrations.provider import (
@@ -16,6 +14,7 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.services.injector import InjectorState
+from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext, UserContextInjector
 from openhands.app_server.user.user_models import UserInfo
@@ -46,7 +45,9 @@ class AuthUserContext(UserContext):
         return await self.user_auth.get_user_email()
 
     @staticmethod
-    def _user_info_from_settings(user_id: str | None, settings: Any | None) -> UserInfo:
+    def _user_info_from_settings(
+        user_id: str | None, settings: Settings | None
+    ) -> UserInfo:
         if settings is None:
             return UserInfo(id=user_id)
         return UserInfo(
@@ -92,6 +93,21 @@ class AuthUserContext(UserContext):
         self._resolved_user_info = None
         self.user_auth.invalidate_user_settings_cache()
 
+    @overload
+    async def get_provider_tokens(
+        self, as_env_vars: Literal[False] = False
+    ) -> PROVIDER_TOKEN_TYPE | None: ...
+
+    @overload
+    async def get_provider_tokens(
+        self, as_env_vars: Literal[True]
+    ) -> dict[str, str]: ...
+
+    @overload
+    async def get_provider_tokens(
+        self, as_env_vars: bool
+    ) -> PROVIDER_TOKEN_TYPE | dict[str, str] | None: ...
+
     async def get_provider_tokens(
         self, as_env_vars: bool = False
     ) -> PROVIDER_TOKEN_TYPE | dict[str, str] | None:
@@ -131,13 +147,12 @@ class AuthUserContext(UserContext):
                         results[env_key] = token_value
         return results
 
-    async def get_provider_handler(self):
+    async def get_provider_handler(self) -> ProviderHandler:
         provider_handler = self._provider_handler
         if not provider_handler:
             provider_tokens = await self.user_auth.get_provider_tokens()
             assert provider_tokens is not None
-            if not isinstance(provider_tokens, MappingProxyType):
-                provider_tokens = MappingProxyType(provider_tokens)
+            provider_tokens = MappingProxyType(provider_tokens)
             user_id = await self.get_user_id()
             provider_handler = ProviderHandler(
                 provider_tokens=provider_tokens, external_auth_id=user_id
@@ -155,12 +170,7 @@ class AuthUserContext(UserContext):
         return url
 
     async def get_latest_token(self, provider_type: ProviderType) -> str | None:
-        provider_handler = await self.get_provider_handler()
-        service = provider_handler.get_service(provider_type)
-        token = await service.get_latest_token()
-        if isinstance(token, SecretStr):
-            return token.get_secret_value()
-        return token
+        return await self.user_auth.get_latest_provider_token(provider_type)
 
     async def get_secrets(self) -> dict[str, SecretSource]:
         results: dict[str, SecretSource] = {}
@@ -190,17 +200,14 @@ class AuthUserContext(UserContext):
         return user_info.default_sandbox_spec_id
 
     async def get_effective_org_id(self) -> UUID | None:
-        get_effective_org_id = getattr(self.user_auth, 'get_effective_org_id', None)
-        if get_effective_org_id is None:
-            return None
-        return await cast(Callable[[], Awaitable[UUID | None]], get_effective_org_id)()
+        return await self.user_auth.get_effective_org_id()
 
 
 USER_ID_ATTR = 'user_id'
 
 
 class AuthUserContextInjector(UserContextInjector):
-    _user_auth_class: Any = PrivateAttr(default=None)
+    supports_native_auth: ClassVar[bool] = True
 
     async def inject(
         self, state: InjectorState, request: Request | None = None

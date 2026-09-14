@@ -9,9 +9,9 @@ from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.composition import get_auth_services
 from storage.database import a_session_maker
 from storage.stored_custom_secrets import StoredCustomSecrets
-from storage.user_store import UserStore
 
 
 def _resolve_unique_name(name: str, taken: set[str]) -> str:
@@ -43,7 +43,7 @@ class SaasSecretsStore(SecretsStore):
     async def load(self) -> Secrets | None:
         if not self.user_id:
             return None
-        user = await UserStore.get_user_by_id(self.user_id)
+        user = await get_auth_services().accounts.get_user_by_id(self.user_id)
         org_id = self.effective_org_id or (user.current_org_id if user else None)
 
         async with a_session_maker() as session:
@@ -115,7 +115,7 @@ class SaasSecretsStore(SecretsStore):
         """
         if not self.user_id:
             return []
-        user = await UserStore.get_user_by_id(self.user_id)
+        user = await get_auth_services().accounts.get_user_by_id(self.user_id)
         org_id = self.effective_org_id or (user.current_org_id if user else None)
 
         async with a_session_maker() as session:
@@ -137,8 +137,8 @@ class SaasSecretsStore(SecretsStore):
                 for row in rows
             ]
 
-    async def store(self, item: Secrets):
-        user = await UserStore.get_user_by_id(self.user_id)
+    async def store(self, item: Secrets) -> None:
+        user = await get_auth_services().accounts.get_user_by_id(self.user_id)
         if user is None:
             raise ValueError(f'User not found: {self.user_id}')
         org_id = self.effective_org_id or user.current_org_id

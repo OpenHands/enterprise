@@ -587,7 +587,9 @@ class TestLiteLlmManager:
                     assert _agent_value(result, 'llm.base_url') == 'http://test.com'
 
     @pytest.mark.asyncio
-    async def test_create_entries_cloud_deployment(self, mock_settings, mock_response):
+    async def test_create_entries_cloud_deployment(
+        self, mock_settings: MagicMock, mock_response: MagicMock
+    ) -> None:
         """Test create_entries in cloud deployment mode."""
         mock_404_response = MagicMock()
         mock_404_response.status_code = 404
@@ -620,7 +622,7 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('server.auth.token_manager.TokenManager', mock_token_manager),
             patch('storage.lite_llm_manager.LITELLM_MANAGEMENT_TIMEOUT', 30.0),
             patch('httpx.AsyncClient', mock_client_class),
         ):
@@ -643,8 +645,8 @@ class TestLiteLlmManager:
             )  # create_team, add_user_to_team, delete_key_by_alias, generate_key
 
     async def _create_entries_with_billing_flag(
-        self, mock_settings, mock_response, billing_enabled: bool
-    ):
+        self, mock_settings: Settings, mock_response: MagicMock, billing_enabled: bool
+    ) -> float | None:
         """Run create_entries with the billing flag stubbed; return team budget."""
         mock_404_response = MagicMock()
         mock_404_response.status_code = 404
@@ -675,7 +677,7 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('server.auth.token_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch(
                 'storage.lite_llm_manager._is_billing_enabled',
@@ -717,8 +719,8 @@ class TestLiteLlmManager:
 
     @pytest.mark.asyncio
     async def test_create_entries_can_create_team_without_adding_user(
-        self, mock_settings, mock_response
-    ):
+        self, mock_settings: MagicMock, mock_response: MagicMock
+    ) -> None:
         """Test org bootstrap can create a team without user membership/key."""
         mock_404_response = MagicMock()
         mock_404_response.status_code = 404
@@ -743,7 +745,7 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('server.auth.token_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
         ):
             result = await LiteLlmManager.create_entries(
@@ -761,8 +763,8 @@ class TestLiteLlmManager:
 
     @pytest.mark.asyncio
     async def test_create_entries_inherits_existing_team_budget(
-        self, mock_settings, mock_response
-    ):
+        self, mock_settings: MagicMock, mock_response: MagicMock
+    ) -> None:
         """Test that create_entries inherits budget from existing team."""
         mock_team_response = MagicMock()
         mock_team_response.is_success = True
@@ -797,7 +799,7 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('server.auth.token_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
         ):
             result = await LiteLlmManager.create_entries(
@@ -824,8 +826,8 @@ class TestLiteLlmManager:
 
     @pytest.mark.asyncio
     async def test_create_entries_new_org_uses_default_initial_budget(
-        self, mock_settings, mock_response
-    ):
+        self, mock_settings: MagicMock, mock_response: MagicMock
+    ) -> None:
         """With billing on, create_entries uses the 0.0 default budget for a
         new org (free tier)."""
         mock_404_response = MagicMock()
@@ -859,7 +861,7 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('server.auth.token_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch(
                 'storage.lite_llm_manager._is_billing_enabled',
@@ -889,8 +891,8 @@ class TestLiteLlmManager:
 
     @pytest.mark.asyncio
     async def test_create_entries_new_org_uses_custom_default_budget(
-        self, mock_settings, mock_response
-    ):
+        self, mock_settings: MagicMock, mock_response: MagicMock
+    ) -> None:
         """With billing on, create_entries uses the DEFAULT_INITIAL_BUDGET
         environment variable value for a new org."""
         mock_404_response = MagicMock()
@@ -928,7 +930,7 @@ class TestLiteLlmManager:
             ),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('server.auth.token_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch(
                 'storage.lite_llm_manager._is_billing_enabled',
@@ -956,8 +958,8 @@ class TestLiteLlmManager:
 
     @pytest.mark.asyncio
     async def test_create_entries_re_derives_free_tier_from_restricted_models(
-        self, mock_settings, mock_response
-    ):
+        self, mock_settings: MagicMock, mock_response: MagicMock
+    ) -> None:
         """An existing free-tier team (max_budget None + restricted models) is
         recognized as free on re-provisioning, preserving the restriction
         instead of being widened to all models."""
@@ -996,7 +998,7 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('server.auth.token_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
         ):
             result = await LiteLlmManager.create_entries(
@@ -1013,7 +1015,9 @@ class TestLiteLlmManager:
         assert create_team_call[1]['json']['models'] == list(FREE_LLM_MODELS)
 
     @pytest.mark.asyncio
-    async def test_create_entries_propagates_non_404_errors(self, mock_settings):
+    async def test_create_entries_propagates_non_404_errors(
+        self, mock_settings: MagicMock
+    ) -> None:
         """Test that create_entries propagates non-404 errors from _get_team."""
         mock_500_response = MagicMock()
         mock_500_response.status_code = 500
@@ -1041,7 +1045,7 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('server.auth.token_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
         ):
             with pytest.raises(httpx.HTTPStatusError) as exc_info:
@@ -1052,7 +1056,9 @@ class TestLiteLlmManager:
             assert exc_info.value.response.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_create_entries_resets_stale_litellm_user(self, mock_settings):
+    async def test_create_entries_resets_stale_litellm_user(
+        self, mock_settings: MagicMock
+    ) -> None:
         """Onboarding a brand-new user must reset a pre-existing LiteLLM record.
 
         A surviving LiteLLM user under the same id is a stale orphan from a
@@ -1072,7 +1078,7 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('server.auth.token_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch.object(LiteLlmManager, '_get_team', new=AsyncMock(return_value=None)),
             patch.object(LiteLlmManager, '_create_team', new=AsyncMock()),
@@ -1105,8 +1111,8 @@ class TestLiteLlmManager:
 
     @pytest.mark.asyncio
     async def test_create_entries_skips_reset_for_fresh_litellm_user(
-        self, mock_settings
-    ):
+        self, mock_settings: MagicMock
+    ) -> None:
         """A genuinely new user (no LiteLLM record) is created without a delete."""
         mock_token_manager = MagicMock()
         mock_token_manager.return_value.get_user_info_from_user_id = AsyncMock(
@@ -1121,7 +1127,7 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('server.auth.token_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch.object(LiteLlmManager, '_get_team', new=AsyncMock(return_value=None)),
             patch.object(LiteLlmManager, '_create_team', new=AsyncMock()),
@@ -1156,8 +1162,8 @@ class TestLiteLlmManager:
 
     @pytest.mark.asyncio
     async def test_create_entries_reset_failure_does_not_block_onboarding(
-        self, mock_settings
-    ):
+        self, mock_settings: MagicMock
+    ) -> None:
         """A failed stale-user reset must not block onboarding (best-effort).
 
         If _delete_user raises (e.g. a transient 5xx from the proxy),
@@ -1177,7 +1183,7 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('server.auth.token_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch.object(LiteLlmManager, '_get_team', new=AsyncMock(return_value=None)),
             patch.object(LiteLlmManager, '_create_team', new=AsyncMock()),
@@ -1217,8 +1223,8 @@ class TestLiteLlmManager:
 
     @pytest.mark.asyncio
     async def test_create_entries_resets_stale_user_via_http(
-        self, mock_settings, mock_response
-    ):
+        self, mock_settings: MagicMock, mock_response: MagicMock
+    ) -> None:
         """Drive the real create_entries body over a mocked HTTP client.
 
         Unlike the method-mocked tests above, this exercises the actual
@@ -1254,7 +1260,7 @@ class TestLiteLlmManager:
             patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}),
             patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
             patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-            patch('storage.lite_llm_manager.TokenManager', mock_token_manager),
+            patch('server.auth.token_manager.TokenManager', mock_token_manager),
             patch('httpx.AsyncClient', mock_client_class),
             patch.object(
                 LiteLlmManager,
@@ -1351,7 +1357,9 @@ class TestLiteLlmManager:
                     )
 
     @pytest.mark.asyncio
-    async def test_migrate_entries_no_user_found(self, mock_user_settings):
+    async def test_migrate_entries_no_user_found(
+        self, mock_user_settings: MagicMock
+    ) -> None:
         """Test migrate_entries when user is not found."""
         with patch.dict(os.environ, {'LOCAL_DEPLOYMENT': ''}):
             with patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'):
@@ -1359,7 +1367,7 @@ class TestLiteLlmManager:
                     'storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'
                 ):
                     with patch(
-                        'storage.lite_llm_manager.TokenManager'
+                        'server.auth.token_manager.TokenManager'
                     ) as mock_token_manager:
                         mock_token_manager.return_value.get_user_info_from_user_id = (
                             AsyncMock(return_value={'email': 'test@example.com'})
@@ -1381,8 +1389,8 @@ class TestLiteLlmManager:
 
     @pytest.mark.asyncio
     async def test_migrate_entries_already_migrated(
-        self, mock_user_settings, mock_user_response
-    ):
+        self, mock_user_settings: MagicMock, mock_user_response: MagicMock
+    ) -> None:
         """Test migrate_entries when user is already migrated (no max_budget)."""
         mock_user_response.json.return_value = {
             'user_info': {
@@ -1397,7 +1405,7 @@ class TestLiteLlmManager:
                     'storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'
                 ):
                     with patch(
-                        'storage.lite_llm_manager.TokenManager'
+                        'server.auth.token_manager.TokenManager'
                     ) as mock_token_manager:
                         mock_token_manager.return_value.get_user_info_from_user_id = (
                             AsyncMock(return_value={'email': 'test@example.com'})
@@ -1420,8 +1428,11 @@ class TestLiteLlmManager:
 
     @pytest.mark.asyncio
     async def test_migrate_entries_successful_migration(
-        self, mock_user_settings, mock_user_response, mock_response
-    ):
+        self,
+        mock_user_settings: MagicMock,
+        mock_user_response: MagicMock,
+        mock_response: MagicMock,
+    ) -> None:
         """Test successful migrate_entries operation."""
         # Mock response for key list
         mock_key_list_response = MagicMock()
@@ -1439,7 +1450,7 @@ class TestLiteLlmManager:
                     'storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'
                 ):
                     with patch(
-                        'storage.lite_llm_manager.TokenManager'
+                        'server.auth.token_manager.TokenManager'
                     ) as mock_token_manager:
                         mock_token_manager.return_value.get_user_info_from_user_id = (
                             AsyncMock(return_value={'email': 'test@example.com'})
@@ -1494,8 +1505,11 @@ class TestLiteLlmManager:
 
     @pytest.mark.asyncio
     async def test_migrate_entries_generates_key_when_db_key_not_in_litellm(
-        self, mock_user_settings, mock_user_response, mock_response
-    ):
+        self,
+        mock_user_settings: MagicMock,
+        mock_user_response: MagicMock,
+        mock_response: MagicMock,
+    ) -> None:
         """Test migrate_entries generates a new key when the DB key doesn't exist in LiteLLM."""
         # Mock response for key list
         mock_key_list_response = MagicMock()
@@ -1520,7 +1534,7 @@ class TestLiteLlmManager:
                     'storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'
                 ):
                     with patch(
-                        'storage.lite_llm_manager.TokenManager'
+                        'server.auth.token_manager.TokenManager'
                     ) as mock_token_manager:
                         mock_token_manager.return_value.get_user_info_from_user_id = (
                             AsyncMock(return_value={'email': 'test@example.com'})
@@ -2278,20 +2292,25 @@ class TestLiteLlmManager:
                 assert call_args[1]['json']['metadata'] == {'test': 'metadata'}
 
     @pytest.mark.asyncio
-    async def test_get_key_info_success(self, mock_http_client, mock_key_info_response):
+    async def test_get_key_info_success(
+        self, mock_http_client: MagicMock, mock_key_info_response: MagicMock
+    ) -> None:
         """Test successful _get_key_info operation."""
         mock_http_client.get.return_value = mock_key_info_response
 
         with patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'):
             with patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'):
-                with patch('storage.user_store.UserStore') as mock_user_store:
+                with patch(
+                    'server.auth.account_lookup.KeycloakAccountLookup.get_user_by_id',
+                    new_callable=AsyncMock,
+                ) as mock_lookup:
                     # Mock user with org member
                     mock_user = MagicMock()
                     mock_org_member = MagicMock()
                     mock_org_member.org_id = 'test-ord-id'
                     mock_org_member.llm_api_key = 'test-api-key'
                     mock_user.org_members = [mock_org_member]
-                    mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+                    mock_lookup.return_value = mock_user
 
                     result = await LiteLlmManager._get_key_info(
                         mock_http_client, 'test-ord-id', 'test-user-id'
@@ -2302,12 +2321,15 @@ class TestLiteLlmManager:
                     assert result['key_spend'] == 25.0
 
     @pytest.mark.asyncio
-    async def test_get_key_info_no_user(self, mock_http_client):
+    async def test_get_key_info_no_user(self, mock_http_client: MagicMock) -> None:
         """Test _get_key_info when user is not found."""
         with patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'):
             with patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'):
-                with patch('storage.user_store.UserStore') as mock_user_store:
-                    mock_user_store.get_user_by_id = AsyncMock(return_value=None)
+                with patch(
+                    'server.auth.account_lookup.KeycloakAccountLookup.get_user_by_id',
+                    new_callable=AsyncMock,
+                ) as mock_lookup:
+                    mock_lookup.return_value = None
 
                     result = await LiteLlmManager._get_key_info(
                         mock_http_client, 'test-ord-id', 'test-user-id'

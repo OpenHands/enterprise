@@ -9,6 +9,8 @@ from openhands.app_server.user_auth import get_user_auth, get_user_id
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import get_user_super_role
+from server.auth.composition import get_auth_services
+from server.auth.native_password import NativeAuthError
 from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.auth.saas_user_auth import SaasUserAuth
 from server.constants import BYOR_KEY_ALIAS_PATTERN
@@ -22,13 +24,12 @@ from storage.saas_settings_store import (
     ManagedLlmKeyStatus,
     SaasSettingsStore,
 )
-from storage.user_store import UserStore
 
 
 # Helper functions for BYOR API key management
 async def get_byor_key_from_db(user_id: str, org_id: UUID) -> str | None:
     """Get the BYOR key from the database for a user in a specific org."""
-    user = await UserStore.get_user_by_id(user_id)
+    user = await get_auth_services().accounts.get_user_by_id(user_id)
     if not user:
         return None
 
@@ -46,7 +47,7 @@ async def get_byor_key_from_db(user_id: str, org_id: UUID) -> str | None:
 
 async def store_byor_key_in_db(user_id: str, org_id: UUID, key: str) -> None:
     """Store the BYOR key in the database for a user in a specific org."""
-    user = await UserStore.get_user_by_id(user_id)
+    user = await get_auth_services().accounts.get_user_by_id(user_id)
     if not user:
         return None
 
@@ -502,6 +503,8 @@ async def refresh_managed_llm_api_key(
             extra={'user_id': user_id, 'org_id': str(effective_org_id)},
         )
         return ManagedLlmApiKeyRefreshResponse(refreshed=True)
+    except NativeAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as e:

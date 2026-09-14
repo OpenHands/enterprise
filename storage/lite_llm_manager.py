@@ -12,7 +12,7 @@ from pydantic import SecretStr
 
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.http_session import httpx_verify_option
-from server.auth.token_manager import TokenManager
+from server.auth.composition import get_auth_services
 from server.constants import (
     LITE_LLM_API_KEY,
     LITE_LLM_API_URL,
@@ -347,9 +347,8 @@ class LiteLlmManager:
         local_deploy = os.environ.get('LOCAL_DEPLOYMENT', None)
         key = LITE_LLM_API_KEY
         if not local_deploy:
-            token_manager = TokenManager()
-            keycloak_user_info = (
-                await token_manager.get_user_info_from_user_id(keycloak_user_id) or {}
+            account_email = await get_auth_services().provisioning.get_account_email(
+                keycloak_user_id
             )
 
             async with httpx.AsyncClient(
@@ -444,7 +443,7 @@ class LiteLlmManager:
                                 )
 
                         user_created = await LiteLlmManager._create_user(
-                            client, keycloak_user_info.get('email'), keycloak_user_id
+                            client, account_email, keycloak_user_id
                         )
                         if not user_created:
                             logger.error(
@@ -1810,12 +1809,12 @@ class LiteLlmManager:
         org_id: str,
         keycloak_user_id: str,
     ) -> dict | None:
-        from storage.user_store import UserStore
+        from server.auth.composition import get_auth_services
 
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return None
-        user = await UserStore.get_user_by_id(keycloak_user_id)
+        user = await get_auth_services().accounts.get_user_by_id(keycloak_user_id)
         if not user:
             return {}
 

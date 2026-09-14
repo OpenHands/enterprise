@@ -1,10 +1,12 @@
 """Instance-level user lifecycle operations for Enterprise administrators."""
 
 from dataclasses import dataclass, field
+from typing import Protocol
 from uuid import UUID
 
 import httpx
 from sqlalchemy import text, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.token_manager import TokenManager
@@ -42,7 +44,7 @@ class UserDeletionResult(UserLifecycleResult):
 class AdminUserLifecycleService:
     """Coordinate user state across Enterprise and external identity systems."""
 
-    def __init__(self, token_manager: TokenManager | None = None):
+    def __init__(self, token_manager: TokenManager | None = None) -> None:
         self.token_manager = token_manager or TokenManager()
 
     async def get_user(self, user_id: str) -> User | None:
@@ -51,7 +53,9 @@ class AdminUserLifecycleService:
             UUID(user_id)
         except ValueError:
             return None
-        return await UserStore.get_user_by_id(user_id)
+        from server.auth.composition import get_auth_services
+
+        return await get_auth_services().accounts.get_user_by_id(user_id)
 
     async def disable_user(self, user_id: str) -> UserLifecycleResult | None:
         """Disable the identity and invalidate all credentials without deleting data."""
@@ -163,7 +167,7 @@ class AdminUserLifecycleService:
         await token_store.delete_token()
 
     async def _delete_user_data(self, user_id: str) -> None:
-        user = await UserStore.get_user_by_id(user_id)
+        user = await self.get_user(user_id)
         if user is None:
             return
 
@@ -251,3 +255,19 @@ __all__ = [
     'UserLifecycleResult',
     'UserDeletionResult',
 ]
+
+
+class LifecycleOperations(Protocol):
+    async def lock_mutation(self, session: AsyncSession) -> None: ...
+
+
+class KeycloakUserLifecycleService:
+    async def lock_mutation(self, session: AsyncSession) -> None:
+        """Acquire any installation-wide lifecycle lock before row locks."""
+
+
+class OpenHandsUserLifecycleService:
+    async def lock_mutation(self, session: AsyncSession) -> None:
+        from server.services.native_account_service import lock_native_lifecycle
+
+        await lock_native_lifecycle(session)

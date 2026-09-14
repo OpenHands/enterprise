@@ -18,6 +18,7 @@ from server.auth.auth_error import (
     NoCredentialsError,
     TokenRefreshError,
 )
+from server.auth.composition import get_auth_services
 from server.auth.saas_user_auth import (
     SaasUserAuth,
     get_api_key_from_header,
@@ -310,9 +311,11 @@ class TestGetProviderTokensBitbucketDCHost:
         """host is populated from BITBUCKET_DATA_CENTER_HOST when user secrets lack it."""
         with (
             patch('server.auth.saas_user_auth.token_manager') as mock_tm,
-            patch('server.auth.saas_user_auth.a_session_maker') as mock_session_maker,
             patch(
-                'server.auth.saas_user_auth.BITBUCKET_DATA_CENTER_HOST',
+                'server.auth.keycloak_request_auth.a_session_maker'
+            ) as mock_session_maker,
+            patch(
+                'server.auth.keycloak_request_auth.BITBUCKET_DATA_CENTER_HOST',
                 'bitbucket.company.com',
             ),
         ):
@@ -335,9 +338,11 @@ class TestGetProviderTokensBitbucketDCHost:
         """User-configured host in secrets takes priority over the HOST fallback."""
         with (
             patch('server.auth.saas_user_auth.token_manager') as mock_tm,
-            patch('server.auth.saas_user_auth.a_session_maker') as mock_session_maker,
             patch(
-                'server.auth.saas_user_auth.BITBUCKET_DATA_CENTER_HOST',
+                'server.auth.keycloak_request_auth.a_session_maker'
+            ) as mock_session_maker,
+            patch(
+                'server.auth.keycloak_request_auth.BITBUCKET_DATA_CENTER_HOST',
                 'bitbucket.company.com',
             ),
         ):
@@ -368,8 +373,10 @@ class TestGetProviderTokensBitbucketDCHost:
         """host stays None when BITBUCKET_DATA_CENTER_HOST is empty."""
         with (
             patch('server.auth.saas_user_auth.token_manager') as mock_tm,
-            patch('server.auth.saas_user_auth.a_session_maker') as mock_session_maker,
-            patch('server.auth.saas_user_auth.BITBUCKET_DATA_CENTER_HOST', ''),
+            patch(
+                'server.auth.keycloak_request_auth.a_session_maker'
+            ) as mock_session_maker,
+            patch('server.auth.keycloak_request_auth.BITBUCKET_DATA_CENTER_HOST', ''),
         ):
             mock_tm.get_idp_token_by_user_id = AsyncMock(
                 return_value='bdc_access_token'
@@ -396,7 +403,9 @@ async def test_get_provider_tokens_skips_enterprise_sso_rows():
 
     with (
         patch('server.auth.saas_user_auth.token_manager') as mock_tm,
-        patch('server.auth.saas_user_auth.a_session_maker') as mock_session_maker,
+        patch(
+            'server.auth.keycloak_request_auth.a_session_maker'
+        ) as mock_session_maker,
     ):
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -462,8 +471,10 @@ async def test_get_user_email_lazy_loads_from_db():
     mock_user.email = 'user@example.com'
     mock_user.email_verified = True
 
-    with patch('server.auth.saas_user_auth.UserStore') as mock_user_store:
-        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+    with patch.object(
+        get_auth_services().accounts, 'get_user_by_id'
+    ) as mock_user_store:
+        mock_user_store.return_value = mock_user
 
         # Act
         email = await user_auth.get_user_email()
@@ -539,7 +550,9 @@ async def test_get_provider_tokens_succeeds_without_offline_session():
 
     with (
         patch('server.auth.saas_user_auth.token_manager') as mock_tm,
-        patch('server.auth.saas_user_auth.a_session_maker') as mock_session_maker,
+        patch(
+            'server.auth.keycloak_request_auth.a_session_maker'
+        ) as mock_session_maker,
     ):
         mock_session_maker.return_value = mock_session
         mock_tm.get_idp_token_by_user_id = AsyncMock(return_value='github_token')
@@ -588,11 +601,11 @@ async def test_get_user_settings_store():
 
     with (
         patch('server.auth.saas_user_auth.SaasSettingsStore') as mock_store_cls,
-        patch('server.auth.saas_user_auth.UserStore') as mock_user_store,
+        patch.object(get_auth_services().accounts, 'get_user_by_id') as mock_user_store,
     ):
         mock_store = MagicMock()
         mock_store_cls.return_value = mock_store
-        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+        mock_user_store.return_value = mock_user
 
         user_auth = SaasUserAuth(
             user_id=user_id,
@@ -721,7 +734,7 @@ async def test_saas_user_auth_from_bearer_success():
     )
 
     with (
-        patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls,
+        patch('server.auth.request_auth.ApiKeyStore') as mock_api_key_store_cls,
         patch('server.auth.saas_user_auth.token_manager') as mock_token_manager,
     ):
         mock_api_key_store = MagicMock()
@@ -760,9 +773,10 @@ async def test_saas_user_auth_from_bearer_rejects_disabled_user():
     disabled_user = MagicMock(is_disabled=True)
 
     with (
-        patch('server.auth.saas_user_auth.ApiKeyStore') as store_cls,
-        patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+        patch('server.auth.request_auth.ApiKeyStore') as store_cls,
+        patch.object(
+            get_auth_services().accounts,
+            'get_user_by_id',
             AsyncMock(return_value=disabled_user),
         ),
     ):
@@ -783,9 +797,10 @@ async def test_saas_user_auth_from_bearer_rejects_deleted_user():
     )
 
     with (
-        patch('server.auth.saas_user_auth.ApiKeyStore') as store_cls,
-        patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+        patch('server.auth.request_auth.ApiKeyStore') as store_cls,
+        patch.object(
+            get_auth_services().accounts,
+            'get_user_by_id',
             AsyncMock(return_value=None),
         ),
     ):
@@ -813,7 +828,7 @@ async def test_saas_user_auth_from_bearer_invalid_api_key():
     mock_request = MagicMock()
     mock_request.headers = {'Authorization': 'Bearer test_api_key'}
 
-    with patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls:
+    with patch('server.auth.request_auth.ApiKeyStore') as mock_api_key_store_cls:
         mock_api_key_store = MagicMock()
         mock_api_key_store.validate_api_key = AsyncMock(return_value=None)
         mock_api_key_store_cls.get_instance.return_value = mock_api_key_store
@@ -830,7 +845,7 @@ async def test_saas_user_auth_from_bearer_key_outside_active_window():
     mock_request = MagicMock()
     mock_request.headers = {'Authorization': 'Bearer scheduled_key'}
 
-    with patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls:
+    with patch('server.auth.request_auth.ApiKeyStore') as mock_api_key_store_cls:
         mock_api_key_store = MagicMock()
         # Simulate what validate_api_key returns when not_before is in the future.
         mock_api_key_store.validate_api_key = AsyncMock(return_value=None)
@@ -847,7 +862,7 @@ async def test_saas_user_auth_from_bearer_exception():
     mock_request = MagicMock()
     mock_request.headers = {'Authorization': 'Bearer test_api_key'}
 
-    with patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls:
+    with patch('server.auth.request_auth.ApiKeyStore') as mock_api_key_store_cls:
         mock_api_key_store_cls.get_instance.side_effect = Exception('Test error')
 
         with pytest.raises(BearerTokenError):
@@ -921,7 +936,7 @@ async def test_saas_user_auth_from_signed_token(mock_config):
 
     # Mock UserAuthorizationStore to avoid database access
     with patch(
-        'server.auth.saas_user_auth.UserAuthorizationStore'
+        'server.auth.keycloak_request_auth.UserAuthorizationStore'
     ) as mock_user_auth_store:
         mock_user_auth_store.get_authorization_type = AsyncMock(return_value=None)
 
@@ -1207,7 +1222,7 @@ async def test_saas_user_auth_from_bearer_via_api_key_cookie():
         key_name='Cookie Key',
     )
 
-    with patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls:
+    with patch('server.auth.request_auth.ApiKeyStore') as mock_api_key_store_cls:
         mock_api_key_store = MagicMock()
         mock_api_key_store.validate_api_key = AsyncMock(
             return_value=mock_validation_result
@@ -1232,7 +1247,7 @@ async def test_saas_user_auth_from_bearer_via_api_key_cookie_invalid():
     mock_request.headers = {}
     mock_request.cookies = {'api_key': 'invalid_cookie_key'}
 
-    with patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls:
+    with patch('server.auth.request_auth.ApiKeyStore') as mock_api_key_store_cls:
         mock_api_key_store = MagicMock()
         mock_api_key_store.validate_api_key = AsyncMock(return_value=None)
         mock_api_key_store_cls.get_instance.return_value = mock_api_key_store
@@ -1261,8 +1276,9 @@ async def test_saas_user_auth_from_signed_token_rejects_disabled_user(mock_confi
         algorithm='HS256',
     )
 
-    with patch(
-        'server.auth.saas_user_auth.UserStore.get_user_by_id',
+    with patch.object(
+        get_auth_services().accounts,
+        'get_user_by_id',
         AsyncMock(return_value=MagicMock(is_disabled=True)),
     ):
         with pytest.raises(AuthError, match='user account is disabled'):
@@ -1286,8 +1302,9 @@ async def test_saas_user_auth_from_signed_token_rejects_deleted_user(mock_config
         algorithm='HS256',
     )
 
-    with patch(
-        'server.auth.saas_user_auth.UserStore.get_user_by_id',
+    with patch.object(
+        get_auth_services().accounts,
+        'get_user_by_id',
         AsyncMock(return_value=None),
     ):
         with pytest.raises(AuthError, match='user account not found'):
@@ -1313,7 +1330,7 @@ async def test_saas_user_auth_from_signed_token_blocked_domain(mock_config):
     signed_token = jwt.encode(token_payload, 'test_secret', algorithm='HS256')
 
     with patch(
-        'server.auth.saas_user_auth.UserAuthorizationStore'
+        'server.auth.keycloak_request_auth.UserAuthorizationStore'
     ) as mock_user_auth_store:
         mock_user_auth_store.get_authorization_type = AsyncMock(
             return_value=UserAuthorizationType.BLACKLIST
@@ -1348,7 +1365,7 @@ async def test_saas_user_auth_from_signed_token_allowed_domain(mock_config):
     signed_token = jwt.encode(token_payload, 'test_secret', algorithm='HS256')
 
     with patch(
-        'server.auth.saas_user_auth.UserAuthorizationStore'
+        'server.auth.keycloak_request_auth.UserAuthorizationStore'
     ) as mock_user_auth_store:
         mock_user_auth_store.get_authorization_type = AsyncMock(return_value=None)
 
@@ -1383,7 +1400,7 @@ async def test_saas_user_auth_from_signed_token_domain_blocking_inactive(mock_co
     signed_token = jwt.encode(token_payload, 'test_secret', algorithm='HS256')
 
     with patch(
-        'server.auth.saas_user_auth.UserAuthorizationStore'
+        'server.auth.keycloak_request_auth.UserAuthorizationStore'
     ) as mock_user_auth_store:
         mock_user_auth_store.get_authorization_type = AsyncMock(return_value=None)
 
@@ -1423,10 +1440,12 @@ class TestOpenHandsApiKey:
         )
 
         with (
-            patch('server.auth.saas_user_auth.UserStore') as mock_user_store,
+            patch.object(
+                get_auth_services().accounts, 'get_user_by_id'
+            ) as mock_user_store,
             patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls,
         ):
-            mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+            mock_user_store.return_value = mock_user
 
             mock_api_key_store = MagicMock()
             mock_api_key_store.get_or_create_system_api_key = AsyncMock(
@@ -1439,7 +1458,7 @@ class TestOpenHandsApiKey:
 
             # Assert
             assert result == expected_api_key
-            mock_user_store.get_user_by_id.assert_called_once_with(user_id)
+            mock_user_store.assert_called_once_with(user_id)
             mock_api_key_store.get_or_create_system_api_key.assert_called_once_with(
                 user_id=user_id,
                 org_id=org_id,
@@ -1462,8 +1481,10 @@ class TestOpenHandsApiKey:
             refresh_token=SecretStr('refresh_token'),
         )
 
-        with patch('server.auth.saas_user_auth.UserStore') as mock_user_store:
-            mock_user_store.get_user_by_id = AsyncMock(return_value=None)
+        with patch.object(
+            get_auth_services().accounts, 'get_user_by_id'
+        ) as mock_user_store:
+            mock_user_store.return_value = None
 
             # Act & Assert
             with pytest.raises(
@@ -1485,8 +1506,10 @@ class TestOpenHandsApiKey:
             refresh_token=SecretStr('refresh_token'),
         )
 
-        with patch('server.auth.saas_user_auth.UserStore') as mock_user_store:
-            mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+        with patch.object(
+            get_auth_services().accounts, 'get_user_by_id'
+        ) as mock_user_store:
+            mock_user_store.return_value = mock_user
 
             # Act & Assert
             with pytest.raises(ValueError, match='has no current organization'):
@@ -1519,13 +1542,15 @@ class TestOpenHandsApiKey:
         )
 
         with (
-            patch('server.auth.saas_user_auth.UserStore') as mock_user_store,
+            patch.object(
+                get_auth_services().accounts, 'get_user_by_id'
+            ) as mock_user_store,
             patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls,
             patch(
                 'server.auth.saas_user_auth.SaasSecretsStore'
             ) as mock_secrets_store_cls,
         ):
-            mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+            mock_user_store.return_value = mock_user
 
             mock_api_key_store = MagicMock()
             mock_api_key_store.get_or_create_system_api_key = AsyncMock(
@@ -1574,13 +1599,15 @@ class TestOpenHandsApiKey:
         )
 
         with (
-            patch('server.auth.saas_user_auth.UserStore') as mock_user_store,
+            patch.object(
+                get_auth_services().accounts, 'get_user_by_id'
+            ) as mock_user_store,
             patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls,
             patch(
                 'server.auth.saas_user_auth.SaasSecretsStore'
             ) as mock_secrets_store_cls,
         ):
-            mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+            mock_user_store.return_value = mock_user
 
             mock_api_key_store = MagicMock()
             mock_api_key_store.get_or_create_system_api_key = AsyncMock(
@@ -1621,13 +1648,15 @@ class TestOpenHandsApiKey:
         )
 
         with (
-            patch('server.auth.saas_user_auth.UserStore') as mock_user_store,
+            patch.object(
+                get_auth_services().accounts, 'get_user_by_id'
+            ) as mock_user_store,
             patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls,
             patch(
                 'server.auth.saas_user_auth.SaasSecretsStore'
             ) as mock_secrets_store_cls,
         ):
-            mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+            mock_user_store.return_value = mock_user
 
             mock_api_key_store = MagicMock()
             mock_api_key_store.get_or_create_system_api_key = AsyncMock(

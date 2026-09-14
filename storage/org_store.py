@@ -554,6 +554,9 @@ class OrgStore:
         org_kwargs = dict(org_kwargs)
 
         async with a_session_maker() as session:
+            from server.auth.composition import get_auth_services
+
+            await get_auth_services().lifecycle.lock_mutation(session)
             result = await session.execute(select(Org).filter(Org.id == org_id))
             org = result.scalars().first()
             if not org:
@@ -565,7 +568,7 @@ class OrgStore:
                 org_kwargs.pop('id')
 
             # Pop the diff-style kwargs before the setattr loop — otherwise
-            # ``hasattr(org, 'agent_settings')`` is True and the loop would
+            # ``hasattr(org, 'agent_settings')`` is the loop would
             # *overwrite* the JSON column instead of deep-merging into it.
             agent_settings_diff = (
                 update_data.agent_settings_diff
@@ -620,6 +623,10 @@ class OrgStore:
                         member_updates.has_custom_llm_api_key = False
                     await OrgMemberStore.update_all_members_settings_async(
                         session, org_id, member_updates
+                    )
+                if update_data.touches_llm_defaults():
+                    await get_auth_services().provisioning.reconcile_org_members(
+                        session, org
                     )
 
             await session.commit()
@@ -994,7 +1001,7 @@ class OrgStore:
 
     @staticmethod
     async def _ensure_managed_llm_key_for_user(
-        session,
+        session: AsyncSession,
         updated_org: Org,
         user_id: str,
     ) -> str | None:
@@ -1027,6 +1034,20 @@ class OrgStore:
             )
             return None
 
+        from server.auth.composition import get_auth_services
+
+        return await get_auth_services().provisioning.ensure_org_member_key(
+            session, updated_org, acting_member
+        )
+
+    @staticmethod
+    async def _ensure_keycloak_managed_member_key(
+        updated_org: Org, acting_member: OrgMember
+    ) -> str | None:
+        user_id = str(acting_member.user_id)
+        openhands_type = is_openhands_model(
+            OrgStore.get_agent_settings_from_org(updated_org).llm.model
+        )
         existing_key = acting_member.llm_api_key
         existing_key_raw = existing_key.get_secret_value() if existing_key else None
         if existing_key_raw and await LiteLlmManager.verify_existing_key(

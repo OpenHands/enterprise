@@ -12,6 +12,10 @@ from pydantic import SecretStr
 from sqlalchemy import select
 
 from openhands.app_server.settings.settings_models import Settings
+from server.auth.native_types import SessionFactory
+from server.services.account_profile_provisioning import (
+    KeycloakAccountProfileProvisioning,
+)
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.role import Role
@@ -173,7 +177,9 @@ def _mock_create_default_settings_returning_default():
 
 
 @pytest.mark.asyncio
-async def test_create_user_first_user_is_designated_superadmin(async_session_maker):
+async def test_create_user_first_user_is_designated_superadmin(
+    async_session_maker: SessionFactory,
+) -> None:
     """The very first user created must receive the ``admin`` super role.
 
     The super role is attached via ``user.role_id`` (not the
@@ -186,11 +192,14 @@ async def test_create_user_first_user_is_designated_superadmin(async_session_mak
     user_info = {'email': 'first@example.com', 'preferred_username': 'first'}
 
     with (
-        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch(
+            'server.services.account_profile_provisioning.a_session_maker',
+            async_session_maker,
+        ),
         patch('storage.role_store.a_session_maker', async_session_maker),
         _mock_create_default_settings_returning_default(),
     ):
-        user = await UserStore.create_user(user_id, user_info)
+        user = await KeycloakAccountProfileProvisioning.create_user(user_id, user_info)
 
     assert user is not None
     assert user.role_id == admin_role_id
@@ -198,18 +207,21 @@ async def test_create_user_first_user_is_designated_superadmin(async_session_mak
 
 @pytest.mark.asyncio
 async def test_create_user_applies_configured_org_condenser_default(
-    async_session_maker, monkeypatch
-):
+    async_session_maker: SessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     await _seed_admin_role(async_session_maker)
     monkeypatch.setenv('OPENHANDS_ORG_DEFAULTS_CONDENSER_MAX_TOKENS', '200000')
 
     user_id = str(uuid.uuid4())
     with (
-        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch(
+            'server.services.account_profile_provisioning.a_session_maker',
+            async_session_maker,
+        ),
         patch('storage.role_store.a_session_maker', async_session_maker),
         _mock_create_default_settings_returning_default(),
     ):
-        user = await UserStore.create_user(
+        user = await KeycloakAccountProfileProvisioning.create_user(
             user_id,
             {'email': 'configured@example.com', 'preferred_username': 'configured'},
         )
@@ -223,7 +235,9 @@ async def test_create_user_applies_configured_org_condenser_default(
 
 
 @pytest.mark.asyncio
-async def test_create_user_subsequent_users_are_not_superadmins(async_session_maker):
+async def test_create_user_subsequent_users_are_not_superadmins(
+    async_session_maker: SessionFactory,
+) -> None:
     """Only the first user gets the super role; later users do not.
 
     Without this guard the super-role hand-out would be unbounded and
@@ -236,14 +250,17 @@ async def test_create_user_subsequent_users_are_not_superadmins(async_session_ma
     second_user_id = str(uuid.uuid4())
 
     with (
-        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch(
+            'server.services.account_profile_provisioning.a_session_maker',
+            async_session_maker,
+        ),
         patch('storage.role_store.a_session_maker', async_session_maker),
         _mock_create_default_settings_returning_default(),
     ):
-        first_user = await UserStore.create_user(
+        first_user = await KeycloakAccountProfileProvisioning.create_user(
             first_user_id, {'email': 'a@example.com'}
         )
-        second_user = await UserStore.create_user(
+        second_user = await KeycloakAccountProfileProvisioning.create_user(
             second_user_id, {'email': 'b@example.com'}
         )
 
@@ -255,8 +272,8 @@ async def test_create_user_subsequent_users_are_not_superadmins(async_session_ma
 
 @pytest.mark.asyncio
 async def test_create_user_explicit_role_id_is_respected_for_first_user(
-    async_session_maker,
-):
+    async_session_maker: SessionFactory,
+) -> None:
     """Caller-supplied ``role_id`` wins over the first-user auto-designation.
 
     This keeps the auto-promotion strictly opt-in for the default
@@ -279,11 +296,14 @@ async def test_create_user_explicit_role_id_is_respected_for_first_user(
     user_id = str(uuid.uuid4())
 
     with (
-        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch(
+            'server.services.account_profile_provisioning.a_session_maker',
+            async_session_maker,
+        ),
         patch('storage.role_store.a_session_maker', async_session_maker),
         _mock_create_default_settings_returning_default(),
     ):
-        user = await UserStore.create_user(
+        user = await KeycloakAccountProfileProvisioning.create_user(
             user_id, {'email': 'first@example.com'}, role_id=other_role_id
         )
 
@@ -407,7 +427,9 @@ async def test_create_default_settings_v1_enabled_false_when_default_is_false(
 
 
 @pytest.mark.asyncio
-async def test_create_user_reuses_existing_org(async_session_maker):
+async def test_create_user_reuses_existing_org(
+    async_session_maker: SessionFactory,
+) -> None:
     user_id = str(uuid.uuid4())
     user_uuid = uuid.UUID(user_id)
     user_info = {
@@ -443,7 +465,10 @@ async def test_create_user_reuses_existing_org(async_session_maker):
         await session.commit()
 
     with (
-        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch(
+            'server.services.account_profile_provisioning.a_session_maker',
+            async_session_maker,
+        ),
         patch('storage.role_store.a_session_maker', async_session_maker),
         patch(
             'storage.user_store.UserStore.create_default_settings',
@@ -451,7 +476,7 @@ async def test_create_user_reuses_existing_org(async_session_maker):
             return_value=mock_settings,
         ),
     ):
-        user = await UserStore.create_user(user_id, user_info)
+        user = await KeycloakAccountProfileProvisioning.create_user(user_id, user_info)
 
     assert user is not None
     assert user.id == user_uuid
@@ -1476,7 +1501,9 @@ async def test_release_user_creation_lock_released():
 
 
 @pytest.mark.asyncio
-async def test_migrate_user_preserves_normalized_default_tools(monkeypatch):
+async def test_migrate_user_preserves_normalized_default_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from integrations import stripe_service
     from storage.lite_llm_manager import LiteLlmManager
     from storage.role_store import RoleStore
@@ -1511,7 +1538,10 @@ async def test_migrate_user_preserves_normalized_default_tools(monkeypatch):
     session_context.__aenter__ = AsyncMock(return_value=session)
     session_context.__aexit__ = AsyncMock(return_value=None)
 
-    monkeypatch.setattr('storage.user_store.a_session_maker', lambda: session_context)
+    monkeypatch.setattr(
+        'server.services.account_profile_provisioning.a_session_maker',
+        lambda: session_context,
+    )
     monkeypatch.setattr(LiteLlmManager, 'migrate_entries', AsyncMock())
     monkeypatch.setattr(stripe_service, 'migrate_customer', AsyncMock())
     monkeypatch.setattr(
@@ -1521,7 +1551,7 @@ async def test_migrate_user_preserves_normalized_default_tools(monkeypatch):
     )
     monkeypatch.setattr('storage.org_member.encrypt_value', lambda value: value)
 
-    await UserStore.migrate_user(
+    await KeycloakAccountProfileProvisioning.migrate_user(
         user_id,
         user_settings,
         {
@@ -1531,14 +1561,16 @@ async def test_migrate_user_preserves_normalized_default_tools(monkeypatch):
     )
 
     added = [call.args[0] for call in session.add.call_args_list]
-    org = next(item for item in added if isinstance(item, Org))
-    member = next(item for item in added if isinstance(item, OrgMember))
+    org = next(item for item in added if hasattr(item, 'agent_settings'))
+    member = next(item for item in added if hasattr(item, 'agent_settings_diff'))
     assert org.agent_settings.get('tools') is None
     assert member.agent_settings_diff['tools'] is None
 
 
 @pytest.mark.asyncio
-async def test_migrate_user_applies_configured_org_condenser_default(monkeypatch):
+async def test_migrate_user_applies_configured_org_condenser_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from integrations import stripe_service
     from storage.lite_llm_manager import LiteLlmManager
     from storage.role_store import RoleStore
@@ -1573,7 +1605,10 @@ async def test_migrate_user_applies_configured_org_condenser_default(monkeypatch
     session_context.__aenter__ = AsyncMock(return_value=session)
     session_context.__aexit__ = AsyncMock(return_value=None)
 
-    monkeypatch.setattr('storage.user_store.a_session_maker', lambda: session_context)
+    monkeypatch.setattr(
+        'server.services.account_profile_provisioning.a_session_maker',
+        lambda: session_context,
+    )
     monkeypatch.setattr(LiteLlmManager, 'migrate_entries', AsyncMock())
     monkeypatch.setattr(stripe_service, 'migrate_customer', AsyncMock())
     monkeypatch.setattr(
@@ -1583,7 +1618,7 @@ async def test_migrate_user_applies_configured_org_condenser_default(monkeypatch
     )
     monkeypatch.setattr('storage.org_member.encrypt_value', lambda value: value)
 
-    await UserStore.migrate_user(
+    await KeycloakAccountProfileProvisioning.migrate_user(
         user_id,
         user_settings,
         {
@@ -1593,7 +1628,7 @@ async def test_migrate_user_applies_configured_org_condenser_default(monkeypatch
     )
 
     added = [call.args[0] for call in session.add.call_args_list]
-    org = next(item for item in added if isinstance(item, Org))
+    org = next(item for item in added if hasattr(item, 'agent_settings'))
     assert org.agent_settings['condenser']['max_tokens'] == 200000
 
 

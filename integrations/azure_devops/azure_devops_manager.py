@@ -35,6 +35,7 @@ from openhands.app_server.types import (
     SessionExpiredError,
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.composition import get_auth_services
 from server.auth.token_manager import TokenManager
 
 
@@ -67,7 +68,7 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
         email = actor_email(actor)
         if email:
             try:
-                return await self.token_manager.get_user_id_from_user_email(email)
+                return await get_auth_services().accounts.get_user_id_by_email(email)
             except Exception as e:
                 logger.info(
                     f'[Azure DevOps] Keycloak email lookup failed for actor '

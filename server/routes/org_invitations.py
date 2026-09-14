@@ -9,6 +9,7 @@ from openhands.analytics import get_analytics_service
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
+from server.auth.composition import get_auth_services
 from server.auth.org_context import REJECT_X_ORG_ID_PATH_MISMATCH
 from server.routes.org_invitation_models import (
     AcceptInvitationRequest,
@@ -24,7 +25,6 @@ from server.routes.org_invitation_models import (
     PendingInvitationsResponse,
     UserAlreadyMemberError,
 )
-from server.services.org_invitation_service import OrgInvitationService
 from server.services.smtp_email_service import SMTPEmailService
 from server.utils.rate_limit_utils import (
     RATE_LIMIT_ORG_INVITATION_USER_SECONDS,
@@ -60,7 +60,7 @@ async def create_invitation(
     invitation_data: InvitationCreate,
     request: Request,
     user_id: str = Depends(get_user_id),
-):
+) -> BatchInvitationResponse:
     """Create organization invitations for multiple email addresses.
 
     Sends emails to invitees with secure links to join the organization.
@@ -96,7 +96,10 @@ async def create_invitation(
     )
 
     try:
-        successful, failed = await OrgInvitationService.create_invitations_batch(
+        (
+            successful,
+            failed,
+        ) = await get_auth_services().invitations.create_invitations_batch(
             org_id=org_id,
             emails=[str(email) for email in invitation_data.emails],
             role_name=invitation_data.role,
@@ -119,9 +122,8 @@ async def create_invitation(
             analytics = get_analytics_service()
             if analytics and user_id:
                 from openhands.analytics.analytics_context import AnalyticsContext
-                from storage.user_store import UserStore
 
-                user_obj = await UserStore.get_user_by_id(user_id)
+                user_obj = await get_auth_services().accounts.get_user_by_id(user_id)
                 ctx = AnalyticsContext(
                     user_id=user_id,
                     consented=user_obj.user_consents_to_analytics is True
@@ -230,7 +232,7 @@ async def revoke_invitation(
     org_id: UUID,
     invitation_id: int,
     user_id: str = Depends(require_permission(Permission.INVITE_USER_TO_ORGANIZATION)),
-):
+) -> None:
     """Revoke a pending invitation, invalidating its token and invite link.
 
     Gated on the invite permission (admins/owners), same as creating and
@@ -241,7 +243,9 @@ async def revoke_invitation(
         HTTPException 409: Invitation is not pending (already accepted/expired)
     """
     try:
-        revoked = await OrgInvitationService.revoke_invitation(org_id, invitation_id)
+        revoked = await get_auth_services().invitations.revoke_invitation(
+            org_id, invitation_id
+        )
     except InvitationInvalidError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     except Exception:
@@ -298,7 +302,7 @@ async def accept_invitation_redirect(
 async def accept_invitation(
     request_data: AcceptInvitationRequest,
     user_id: str = Depends(get_user_id),
-):
+) -> AcceptInvitationResponse:
     """Accept an organization invitation via authenticated POST request.
 
     This endpoint is called by the frontend after displaying the acceptance modal.
@@ -319,7 +323,9 @@ async def accept_invitation(
     token = request_data.token
 
     try:
-        invitation = await OrgInvitationService.accept_invitation(token, UUID(user_id))
+        invitation = await get_auth_services().invitations.accept_invitation(
+            token, UUID(user_id)
+        )
 
         # Get organization and role details for response
         org = await OrgStore.get_org_by_id(invitation.org_id)

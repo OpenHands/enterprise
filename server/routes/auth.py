@@ -33,6 +33,7 @@ from openhands.app_server.user_auth import get_access_token
 from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.auth_error import TokenRefreshError
+from server.auth.composition import get_auth_services
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_REALM_NAME,
@@ -61,7 +62,6 @@ from server.services.org_invitation_service import (
     EmailMismatchError,
     InvitationExpiredError,
     InvitationInvalidError,
-    OrgInvitationService,
     UserAlreadyMemberError,
 )
 from server.utils.conversation_utils import get_session_api_key, get_user_id
@@ -341,7 +341,9 @@ async def keycloak_callback(
         # (only if they're not already in our UserStore, i.e., they're a new user)
         if authorization.error_detail == 'duplicate_email':
             try:
-                existing_user = await UserStore.get_user_by_id(user_info.sub)
+                existing_user = await get_auth_services().accounts.get_user_by_id(
+                    user_info.sub
+                )
                 if not existing_user:
                     # New user created during OAuth should be deleted from Keycloak
                     await token_manager.delete_keycloak_user(user_info.sub)
@@ -365,10 +367,10 @@ async def keycloak_callback(
     user_info_dict = IDENTITY_CLAIMS.validate_python(
         user_info.model_dump(exclude_none=True)
     )
-    user = await UserStore.get_user_by_id(user_id)
+    user = await get_auth_services().accounts.get_user_by_id(user_id)
     is_new_user: bool = False
     if not user:
-        user = await UserStore.create_user(user_id, user_info_dict)
+        user = await get_auth_services().profiles.create_user(user_id, user_info_dict)
         is_new_user = True
     else:
         # Existing user — gradually backfill contact_name if it still has a username-style value
@@ -610,7 +612,7 @@ async def keycloak_callback(
                 },
             )
 
-            await OrgInvitationService.accept_invitation(
+            await get_auth_services().invitations.accept_invitation(
                 invitation_token, parse_uuid(user_id)
             )
             logger.info(
@@ -678,10 +680,12 @@ async def keycloak_callback(
     # over the bootstrap's auto-add member role for the same org.
     try:
         accepted_invitations = (
-            await OrgInvitationService.accept_pending_invitations_for_user(user)
+            await get_auth_services().invitations.accept_pending_invitations_for_user(
+                user
+            )
         )
         if accepted_invitations:
-            user = await UserStore.get_user_by_id(user_id) or user
+            user = await get_auth_services().accounts.get_user_by_id(user_id) or user
     except Exception:
         logger.exception(
             'Unexpected error accepting pending invitations at login',
@@ -786,7 +790,7 @@ async def keycloak_offline_callback(code: str, state: str, request: Request):
         user_id=user_info.sub, offline_token=keycloak_refresh_token
     )
 
-    user = await UserStore.get_user_by_id(user_info.sub)
+    user = await get_auth_services().accounts.get_user_by_id(user_info.sub)
     redirect_url, _, _, _ = _extract_oauth_state(state)
     default_url = redirect_url if redirect_url else web_url
     final_url = await _get_post_auth_redirect(user_info.sub, default_url, web_url, user)
@@ -1044,7 +1048,7 @@ async def _get_post_auth_redirect(
         The URL to redirect the user to.
     """
     if not user:
-        user = await UserStore.get_user_by_id(user_id)
+        user = await get_auth_services().accounts.get_user_by_id(user_id)
     if user and await _should_redirect_to_onboarding(user_id, user):
         logger.info(
             'Redirecting user to onboarding',
@@ -1174,7 +1178,7 @@ async def onboarding_status(request: Request):
             content={'error': 'User is not authenticated'},
         )
 
-    user = await UserStore.get_user_by_id(user_id)
+    user = await get_auth_services().accounts.get_user_by_id(user_id)
     if not user:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,

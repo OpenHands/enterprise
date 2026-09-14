@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import func, select
 
-from server.auth import auth_config
+from server.auth import auth_config, composition
 from server.auth.bootstrap import initialize_auth_installation, verify_auth_installation
 from server.auth.native_password import (
     NativeAuthError,
@@ -57,6 +57,7 @@ async def configured(
     monkeypatch.setenv('SUPERADMIN_EMAIL', 'Admin@Example.test')
     monkeypatch.setenv('SUPERADMIN_PASSWORD', PASSWORD)
     monkeypatch.setenv('OPENHANDS_DEFAULT_ORG_ENABLED', 'false')
+    composition.get_auth_services.cache_clear()
     auth_config.get_native_auth_settings.cache_clear()
     async with async_session_maker() as session, session.begin():
         session.add_all(
@@ -67,6 +68,7 @@ async def configured(
             ]
         )
     yield async_session_maker
+    composition.get_auth_services.cache_clear()
     auth_config.get_native_auth_settings.cache_clear()
 
 

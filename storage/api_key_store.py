@@ -9,9 +9,9 @@ from uuid import UUID
 from sqlalchemy import or_, select, update
 
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.composition import get_auth_services
 from storage.api_key import ApiKey
 from storage.database import a_session_maker
-from storage.user_store import UserStore
 
 
 @dataclass
@@ -119,7 +119,7 @@ class ApiKeyStore:
         """
         api_key = self.generate_api_key()
         if org_id is None and use_current_org_fallback:
-            user = await UserStore.get_user_by_id(user_id)
+            user = await get_auth_services().accounts.get_user_by_id(user_id)
             if user is None:
                 raise ValueError(f'User not found: {user_id}')
             org_id = user.current_org_id
@@ -382,7 +382,7 @@ class ApiKeyStore:
                 current selection is honored.
         """
         if org_id is None:
-            user = await UserStore.get_user_by_id(user_id)
+            user = await get_auth_services().accounts.get_user_by_id(user_id)
             if user is None:
                 raise ValueError(f'User not found: {user_id}')
             org_id = user.current_org_id
@@ -417,7 +417,7 @@ class ApiKeyStore:
         self, user_id: str, org_id: UUID | None = None
     ) -> str | None:
         if org_id is None:
-            user = await UserStore.get_user_by_id(user_id)
+            user = await get_auth_services().accounts.get_user_by_id(user_id)
             if user is None:
                 raise ValueError(f'User not found: {user_id}')
             org_id = user.current_org_id

@@ -18,6 +18,7 @@ from server.auth.authorization import (
     require_financial_data_access,
     require_permission,
 )
+from server.auth.composition import get_auth_services
 from server.auth.org_context import EFFECTIVE_ORG_ID, REJECT_X_ORG_ID_PATH_MISMATCH
 from server.routes.org_models import (
     CannotModifySelfError,
@@ -79,7 +80,6 @@ from server.services.org_member_service import OrgMemberService
 from storage.org_git_claim_store import OrgGitClaimStore
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
-from storage.user_store import UserStore
 
 # Initialize API router
 org_router = APIRouter(
@@ -170,7 +170,7 @@ async def list_user_orgs(
 
     try:
         # Fetch user to get current_org_id
-        user = await UserStore.get_user_by_id(user_id)
+        user = await get_auth_services().accounts.get_user_by_id(user_id)
         current_org_id = (
             str(user.current_org_id) if user and user.current_org_id else None
         )

@@ -31,7 +31,7 @@ Pre-flight:
      skip Keycloak create, offline-token store, and ``create_user``;
      only ensure target-org membership + return/reissue API key.
    - **Keycloak only** — recovery: re-attach the OpenHands DB to
-     the existing Keycloak user via ``UserStore.create_user`` (it
+     the existing Keycloak user via ``KeycloakAccountProfileProvisioning.create_user`` (it
      is idempotent on the ``sub``), then proceed as case b.
    - **OpenHands DB only** — fail with a structured 409; manual
      Keycloak intervention is required to repair the split state.
@@ -83,7 +83,7 @@ state that *this call* created:
 * ``keycloak_user_created`` — set once ``create_keycloak_user``
   returns successfully; gating the Keycloak delete in rollback so
   we do not destroy a user that existed before this request.
-* ``personal_org_created`` — set once ``UserStore.create_user``
+* ``personal_org_created`` — set once ``KeycloakAccountProfileProvisioning.create_user``
   actually inserts a new ``User``/``Org`` (the method is itself
   idempotent and returns the existing row if one was found, so this
   flag is False on the idempotent re-provision path).
@@ -97,7 +97,7 @@ removed *before* the cascade runs. See ``_rollback_partial_provision``
 for the full ordering and the rationale behind it.
 
 **Known partial-cleanup gap (offline token).** Step 3 stores the
-offline token before ``UserStore.create_user`` runs, mirroring the
+offline token before ``KeycloakAccountProfileProvisioning.create_user`` runs, mirroring the
 production OAuth flow (``keycloak_offline_callback`` stores the
 token before any ``UserStore`` interaction). The rollback path
 removes the Keycloak user, which makes the orphaned offline token
@@ -145,6 +145,7 @@ from sqlalchemy import select
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
+from server.auth.composition import get_auth_services
 from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.auth.token_manager import TokenManager
 from storage.api_key_store import ApiKeyStore
@@ -154,7 +155,6 @@ from storage.org_service import OrgService
 from storage.org_store import OrgStore
 from storage.role_store import RoleStore
 from storage.user import User
-from storage.user_store import UserStore
 from utils.identity import UserIdentityClaims
 
 # Routes that read the target org from ``X-Org-Id`` rather than the URL
@@ -338,7 +338,7 @@ class ProvisionUserResponse(BaseModel):
 async def _set_user_provisioned_flags(user_id: str) -> None:
     """Stamp ``email_verified``, ``accepted_tos`` and analytics consent.
 
-    ``UserStore.create_user`` already wires up the user, personal org,
+    ``KeycloakAccountProfileProvisioning.create_user`` already wires up the user, personal org,
     and org-member rows. The provisioning flow then bypasses the UI
     onboarding interstitials by stamping the flags directly so the
     provisioned account is fully usable immediately. Kept as a focused
@@ -430,7 +430,7 @@ async def provision_user(
     # Reject provisioning into a personal workspace.
     #
     # The personal-workspace invariant is ``Org.id == User.id == UUID(
-    # keycloak.sub)`` (see ``UserStore.create_user``), so a personal
+    # keycloak.sub)`` (see ``KeycloakAccountProfileProvisioning.create_user``), so a personal
     # workspace is detected by comparing ``target_org_id`` to the
     # *caller's* user id. ``require_permission(PROVISION_USER)`` lets
     # the call through because every user is the owner of their own
@@ -460,10 +460,12 @@ async def provision_user(
     # row - matching by email would provision that orphan.
     existing_kc_user_id = await token_manager.get_user_id_from_user_email(email)
     if existing_kc_user_id:
-        existing_oh_user = await UserStore.get_user_by_id(existing_kc_user_id)
+        existing_oh_user = await get_auth_services().accounts.get_user_by_id(
+            existing_kc_user_id
+        )
 
     if not existing_oh_user:
-        existing_oh_user = await UserStore.get_user_by_email(email)
+        existing_oh_user = await get_auth_services().accounts.get_user_by_email(email)
 
     if existing_oh_user is not None and existing_kc_user_id is None:
         # OpenHands DB row exists but no Keycloak user — split state
@@ -500,7 +502,7 @@ async def provision_user(
 
     # ---------------------------------------------------------------------------
     # Identity-establishment branch: actually create the Keycloak user,
-    # the offline token, and the OpenHands User row. ``UserStore.create_user``
+    # the offline token, and the OpenHands User row. ``KeycloakAccountProfileProvisioning.create_user``
     # is idempotent on the Keycloak sub, so the recover case reuses it
     # to attach a freshly-discovered Keycloak ``sub`` to the OpenHands DB.
     # ---------------------------------------------------------------------------
@@ -609,10 +611,14 @@ async def provision_user(
             # via federated OAuth keeps their email but gets a new sub, orphaning the old OH
             # row - matching by email would provision that orphan.
             assert kc_user_id is not None
-            existing_oh_user = await UserStore.get_user_by_id(kc_user_id)
+            existing_oh_user = await get_auth_services().accounts.get_user_by_id(
+                kc_user_id
+            )
 
             if not existing_oh_user:
-                existing_oh_user = await UserStore.get_user_by_email(email)
+                existing_oh_user = await get_auth_services().accounts.get_user_by_email(
+                    email
+                )
 
             if existing_oh_user is None:
                 # The Keycloak user exists but the OpenHands DB has
@@ -672,7 +678,7 @@ async def provision_user(
                 assert kc_user_id is not None
                 block_kc_user_id = kc_user_id
 
-            # 3. Create the OpenHands user. ``UserStore.create_user``
+            # 3. Create the OpenHands user. ``KeycloakAccountProfileProvisioning.create_user``
             # is idempotent on the Keycloak ``sub`` (returns the
             # existing row if found), so the recover case reuses it
             # to attach the freshly-discovered Keycloak identity to
@@ -683,9 +689,13 @@ async def provision_user(
                 'email_verified': True,
                 'preferred_username': email,
             }
-            new_user = await UserStore.create_user(block_kc_user_id, user_info_dict)
+            new_user = await get_auth_services().profiles.create_user(
+                block_kc_user_id, user_info_dict
+            )
             if new_user is None:
-                raise RuntimeError('UserStore.create_user returned None')
+                raise RuntimeError(
+                    'KeycloakAccountProfileProvisioning.create_user returned None'
+                )
             personal_org_created = new_user.id != (
                 existing_oh_user.id if existing_oh_user else None
             )
@@ -699,7 +709,7 @@ async def provision_user(
         # 5. Add the user to the *target* org if they are not already a
         # member. Skipped when the caller-selected org happens to be
         # the user's personal org (id == sub) — the personal-org
-        # owner membership was just created by ``UserStore.create_user``
+        # owner membership was just created by ``KeycloakAccountProfileProvisioning.create_user``
         # and re-adding it would violate the ``(org_id, user_id)``
         # uniqueness constraint. Skipped on the idempotent path when
         # ``OrgMemberStore.get_org_member`` confirms an existing row.
@@ -738,7 +748,7 @@ async def provision_user(
                 # the same way. Defaulting to empty string lets
                 # LiteLLM-disabled deployments still create
                 # memberships.
-                if llm_api_key_secret is None:
+                if not True or llm_api_key_secret is None:
                     llm_api_key = ''
                 elif isinstance(llm_api_key_secret, SecretStr):
                     llm_api_key = llm_api_key_secret.get_secret_value()
@@ -918,7 +928,7 @@ async def _rollback_partial_provision(
       ran ``create_keycloak_user``; gating the Keycloak delete so we
       do not destroy a user that existed before this request (case b
       idempotent, TOCTOU fallthrough, case c recover).
-    * ``personal_org_created`` — True iff ``UserStore.create_user``
+    * ``personal_org_created`` — True iff ``KeycloakAccountProfileProvisioning.create_user``
       actually inserted a new ``User``/``Org`` in this call. The method
       is itself idempotent (returns the existing row when found), so
       this flag is False on the idempotent re-provision path.

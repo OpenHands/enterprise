@@ -1,7 +1,10 @@
 """Service for managing organization invitations."""
 
 import asyncio
+from datetime import UTC, datetime
 from uuid import UUID
+
+from sqlalchemy import select
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import (
@@ -9,7 +12,8 @@ from server.auth.authorization import (
     get_user_super_role,
     has_permission,
 )
-from server.auth.token_manager import TokenManager
+from server.auth.composition import get_auth_services
+from server.auth.native_password import normalize_email
 from server.constants import ROLE_ADMIN, ROLE_OWNER
 from server.routes.org_invitation_models import (
     EmailMismatchError,
@@ -19,6 +23,7 @@ from server.routes.org_invitation_models import (
     UserAlreadyMemberError,
 )
 from server.services.smtp_email_service import SMTPEmailService
+from storage.org import Org
 from storage.org_invitation import OrgInvitation
 from storage.org_invitation_store import OrgInvitationStore
 from storage.org_member_store import OrgMemberStore
@@ -31,6 +36,121 @@ from storage.user_store import UserStore
 
 class OrgInvitationService:
     """Service for organization invitation operations."""
+
+    @staticmethod
+    async def deliver_invitation(
+        org: Org, inviter_id: UUID, role_name: str, invitation: OrgInvitation
+    ) -> None:
+        try:
+            inviter_user = await get_auth_services().accounts.get_user_by_id(
+                str(inviter_id)
+            )
+            inviter_name = 'A team member'
+            if inviter_user and inviter_user.email:
+                inviter_name = inviter_user.email.split('@')[0]
+
+            await asyncio.to_thread(
+                SMTPEmailService.send_invitation_email,
+                to_email=invitation.email,
+                org_name=org.name,
+                inviter_name=inviter_name,
+                role_name=role_name,
+                invitation_token=invitation.token,
+                invitation_id=invitation.id,
+            )
+        except Exception:
+            logger.exception(
+                'Failed to send invitation email',
+                extra={
+                    'invitation_id': invitation.id,
+                    'email': invitation.email,
+                },
+                stack_info=True,
+            )
+            # Don't fail the invitation creation if email fails
+            # The user can still access via direct link
+
+    @staticmethod
+    async def _accept_native_invitation(token: str, user_id: UUID) -> OrgInvitation:
+        from server.services.native_account_service import (
+            account_admitted,
+            add_membership,
+            lock_native_lifecycle,
+        )
+        from storage.database import a_session_maker
+        from storage.native_auth import AuthAccount
+        from storage.org import Org
+        from storage.org_member import OrgMember
+        from storage.role import Role
+
+        async with a_session_maker() as session, session.begin():
+            await lock_native_lifecycle(session)
+            invitation = await session.scalar(
+                select(OrgInvitation)
+                .where(OrgInvitation.token == token)
+                .with_for_update()
+            )
+            account = await session.get(AuthAccount, user_id)
+            user = await session.get(User, user_id)
+            if (
+                invitation is None
+                or account is None
+                or user is None
+                or user.is_disabled
+                or account.state != 'profile_present'
+                or invitation.status != OrgInvitation.STATUS_PENDING
+            ):
+                raise InvitationInvalidError(
+                    'Invalid invitation or unavailable account'
+                )
+            if OrgInvitationStore.is_token_expired(invitation):
+                raise InvitationExpiredError('Invitation has expired')
+            if not await account_admitted(session, account):
+                raise InvitationInvalidError('Account admission is denied')
+            if account.normalized_email != normalize_email(invitation.email):
+                raise EmailMismatchError()
+            org = await session.get(Org, invitation.org_id)
+            inviter = await session.get(User, invitation.inviter_id)
+            inviter_account = await session.get(AuthAccount, invitation.inviter_id)
+            role = await session.get(Role, invitation.role_id)
+            if (
+                org is None
+                or inviter is None
+                or inviter.is_disabled
+                or inviter_account is None
+                or inviter_account.state != 'profile_present'
+                or not await account_admitted(session, inviter_account)
+                or role is None
+                or role.name not in ('owner', 'admin', 'member')
+            ):
+                raise InvitationInvalidError(
+                    'Invitation authority is no longer available'
+                )
+            global_role = (
+                await session.get(Role, inviter.role_id) if inviter.role_id else None
+            )
+            membership = await session.get(OrgMember, (org.id, inviter.id))
+            inviter_role = (
+                await session.get(Role, membership.role_id) if membership else None
+            )
+            is_admin = global_role is not None and global_role.name == 'admin'
+            if not is_admin and (
+                inviter_role is None
+                or inviter_role.name not in ('owner', 'admin')
+                or (role.name == 'owner' and inviter_role.name != 'owner')
+            ):
+                raise InsufficientPermissionError(
+                    'Invitation authority is no longer available'
+                )
+            if await session.get(OrgMember, (org.id, user_id)) is not None:
+                raise UserAlreadyMemberError(
+                    'You are already a member of this organization'
+                )
+            await add_membership(session, user, org, role.id)
+            invitation.status = OrgInvitation.STATUS_ACCEPTED
+            invitation.accepted_by_user_id = user_id
+            invitation.accepted_at = datetime.now(UTC).replace(tzinfo=None)
+            return invitation
 
     @staticmethod
     async def _authorize_inviter(
@@ -100,8 +220,9 @@ class OrgInvitationService:
         ):
             raise InsufficientPermissionError('Only owners can invite with owner role')
 
-    @staticmethod
+    @classmethod
     async def create_invitation(
+        cls,
         org_id: UUID,
         email: str,
         role_name: str,
@@ -168,7 +289,7 @@ class OrgInvitationService:
         if not target_role:
             raise ValueError(f'Invalid role: {role_name}')
 
-        existing_user = await UserStore.get_user_by_email(email)
+        existing_user = await get_auth_services().accounts.get_user_by_email(email)
         if existing_user:
             existing_member = await OrgMemberStore.get_org_member(
                 org_id, existing_user.id
@@ -185,37 +306,13 @@ class OrgInvitationService:
             inviter_id=inviter_id,
         )
 
-        try:
-            inviter_user = await UserStore.get_user_by_id(str(inviter_id))
-            inviter_name = 'A team member'
-            if inviter_user and inviter_user.email:
-                inviter_name = inviter_user.email.split('@')[0]
-
-            await asyncio.to_thread(
-                SMTPEmailService.send_invitation_email,
-                to_email=email,
-                org_name=org.name,
-                inviter_name=inviter_name,
-                role_name=target_role.name,
-                invitation_token=invitation.token,
-                invitation_id=invitation.id,
-            )
-        except Exception:
-            logger.exception(
-                'Failed to send invitation email',
-                extra={
-                    'invitation_id': invitation.id,
-                    'email': email,
-                },
-                stack_info=True,
-            )
-            # Don't fail the invitation creation if email fails
-            # The user can still access via direct link
+        await cls.deliver_invitation(org, inviter_id, target_role.name, invitation)
 
         return invitation
 
-    @staticmethod
+    @classmethod
     async def create_invitations_batch(
+        cls,
         org_id: UUID,
         emails: list[str],
         role_name: str,
@@ -275,7 +372,7 @@ class OrgInvitationService:
         ) -> tuple[str, OrgInvitation | None, str | None]:
             """Create single invitation, return (email, invitation, error)."""
             try:
-                invitation = await OrgInvitationService.create_invitation(
+                invitation = await cls.create_invitation(
                     org_id=org_id,
                     email=email,
                     role_name=role_name,
@@ -470,7 +567,7 @@ class OrgInvitationService:
             raise InvitationExpiredError('Invitation has expired')
 
         # Step 2.5: Verify user email matches invitation email
-        user = await UserStore.get_user_by_id(str(user_id))
+        user = await get_auth_services().accounts.get_user_by_id(str(user_id))
         if not user:
             raise InvitationInvalidError('User not found')
 
@@ -479,16 +576,17 @@ class OrgInvitationService:
         # When found, persist it back to User.email so the members list shows it
         # without requiring the user to log out and log back in.
         if not user_email:
-            token_manager = TokenManager()
-            user_info = await token_manager.get_user_info_from_user_id(str(user_id))
+            user_info = await get_auth_services().accounts.get_account_info(
+                str(user_id)
+            )
             if user_info:
-                user_email = user_info.get('email')
+                user_email = user_info.email
                 if user_email:
                     await UserStore.backfill_user_email(
                         str(user_id),
                         {
                             'email': user_email,
-                            'email_verified': user_info.get('emailVerified', False),
+                            'email_verified': user_info.email_verified or False,
                         },
                     )
 
@@ -611,3 +709,23 @@ class OrgInvitationService:
             extra={'invitation_id': invitation_id, 'org_id': str(org_id)},
         )
         return revoked
+
+
+class KeycloakOrgInvitationService(OrgInvitationService):
+    """Email invitations and accept matching verified sign-in identities."""
+
+
+class OpenHandsOrgInvitationService(OrgInvitationService):
+    @staticmethod
+    async def deliver_invitation(
+        org: Org, inviter_id: UUID, role_name: str, invitation: OrgInvitation
+    ) -> None:
+        """Account setup links are delivered by account enrollment."""
+
+    @staticmethod
+    async def accept_pending_invitations_for_user(user: User) -> list[OrgInvitation]:
+        return []
+
+    @staticmethod
+    async def accept_invitation(token: str, user_id: UUID) -> OrgInvitation:
+        return await OrgInvitationService._accept_native_invitation(token, user_id)
