@@ -358,6 +358,21 @@ def _script_patches(monkeypatch, *, settings, member_ids, snapshot, reconcile=No
     )
     reconcile_mock = AsyncMock(return_value=reconcile or {})
     monkeypatch.setattr(run_budget_preflight, '_reconcile_orgs', reconcile_mock)
+
+    # Freeze the wall clock the script reads. ``_run`` and ``main`` call
+    # ``datetime.now(UTC)`` for ``generated_at``; the fixtures below are
+    # built against the frozen ``NOW`` constant (snapshot 5 min old). Without
+    # this patch the freshness check drifts as real time advances past
+    # ``NOW`` and spuriously emits ``SNAPSHOT_STALE`` findings.
+    monkeypatch.setattr(
+        run_budget_preflight,
+        'datetime',
+        type(
+            '_FrozenDatetime',
+            (datetime,),
+            {'now': classmethod(lambda cls, tz=None: NOW)},
+        ),
+    )
     return org_id, reconcile_mock
 
 
