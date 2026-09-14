@@ -8,6 +8,7 @@ import {
   useNativeAccounts,
   useNativeAccount,
   useNativeInvitations,
+  useNativeSuperadmins,
   useNativeRoles,
   useNativeInvitationOrganizations,
 } from "#/hooks/query/use-native-accounts";
@@ -16,6 +17,8 @@ import {
   useReissueAccountInvitation,
   useRevokeAccountInvitation,
   useIssuePasswordReset,
+  useChangeAccountState,
+  useSetSuperadmin,
 } from "#/hooks/mutation/use-native-auth";
 import {
   AccountLink,
@@ -34,6 +37,8 @@ import { SettingsDropdownInput } from "#/components/features/settings/settings-d
 import { Typography } from "#/ui/typography";
 import { Pagination } from "#/ui/pagination";
 
+type AccountAction = "enable" | "disable" | "delete" | "grant" | "revoke";
+
 export default function AdminUsers(): React.JSX.Element {
   const { t } = useTranslation();
   const authentication = useAuthentication();
@@ -48,6 +53,7 @@ export default function AdminUsers(): React.JSX.Element {
   const [invitationOffset, setInvitationOffset] = useState(0);
   const accounts = useNativeAccounts(offset);
   const invitations = useNativeInvitations(invitationOffset);
+  const { data: superadmins } = useNativeSuperadmins();
   const { data: roles } = useNativeRoles();
   const organizations = useNativeInvitationOrganizations();
   const [orgId, setOrgId] = useState("");
@@ -56,21 +62,31 @@ export default function AdminUsers(): React.JSX.Element {
   const { data: selected } = useNativeAccount(selectedId);
   const [link, setLink] = useState<AccountLink | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<{
+    account: NativeAccount;
+    action: AccountAction;
+  } | null>(null);
   const [resetAccount, setResetAccount] = useState<string | null>(null);
   const issueInvitation = useIssueAccountInvitation();
   const reissue = useReissueAccountInvitation();
   const revokeInvitation = useRevokeAccountInvitation();
   const issueReset = useIssuePasswordReset();
+  const lifecycle = useChangeAccountState();
+  const setSuperadmin = useSetSuperadmin();
   const busy =
     issueInvitation.isPending ||
     reissue.isPending ||
     revokeInvitation.isPending ||
-    issueReset.isPending;
+    issueReset.isPending ||
+    lifecycle.isPending ||
+    setSuperadmin.isPending;
 
   const refresh = async (): Promise<void> => {
     await Promise.all([
       client.invalidateQueries({ queryKey: ["native-accounts"] }),
       client.invalidateQueries({ queryKey: ["native-invitations"] }),
+      client.invalidateQueries({ queryKey: ["native-superadmins"] }),
       client.invalidateQueries({ queryKey: ["native-profile"] }),
     ]);
   };
@@ -113,6 +129,30 @@ export default function AdminUsers(): React.JSX.Element {
       else report(cause);
     }
   };
+  const performAction = async (): Promise<void> => {
+    if (!confirm) return;
+    setError(null);
+    setNotice(null);
+    try {
+      if (confirm.action === "grant" || confirm.action === "revoke")
+        await setSuperadmin.run({
+          id: confirm.account.id,
+          enabled: confirm.action === "grant",
+        });
+      else {
+        const result = await lifecycle.run({
+          id: confirm.account.id,
+          action: confirm.action,
+        });
+        if (result.warnings?.length) setNotice(result.warnings.join(" "));
+      }
+      setConfirm(null);
+      await refresh();
+    } catch (cause) {
+      setConfirm(null);
+      report(cause);
+    }
+  };
   const accountStatus = (account: NativeAccount): string => {
     if (account.state === "deleted") return t("AUTH$DELETED");
     if (account.is_disabled) return t("AUTH$DISABLED");
@@ -124,6 +164,17 @@ export default function AdminUsers(): React.JSX.Element {
       );
     return t("AUTH$ACTIVE");
   };
+  const actionLabel = (action: AccountAction): string =>
+    t(
+      {
+        enable: "AUTH$ENABLE",
+        disable: "AUTH$DISABLE",
+        delete: "AUTH$DELETE",
+        grant: "AUTH$GRANT_ADMIN",
+        revoke: "AUTH$REVOKE_ADMIN",
+      }[action],
+    );
+
   if (!authentication.accountActions.includes("manage"))
     return <Navigate to="/settings" replace />;
   if (profilePending) return <p>{t("HOME$LOADING")}</p>;
@@ -134,6 +185,7 @@ export default function AdminUsers(): React.JSX.Element {
     <div className="flex flex-col gap-8 pb-8">
       <p>{t("AUTH$USERS_HELP")}</p>
       <AuthError message={error} />
+      {notice && <p role="status">{notice}</p>}
       <form
         onSubmit={createInvitation}
         className="max-w-[680px] flex flex-col gap-4 pb-8 border-b border-tertiary"
@@ -242,6 +294,19 @@ export default function AdminUsers(): React.JSX.Element {
           <p className="text-sm text-tertiary-alt">{selected.id}</p>
           {selected.state !== "deleted" && (
             <div className="flex flex-wrap gap-3">
+              <BrandButton
+                type="button"
+                variant="secondary"
+                isDisabled={busy}
+                onClick={() =>
+                  setConfirm({
+                    account: selected,
+                    action: selected.is_disabled ? "enable" : "disable",
+                  })
+                }
+              >
+                {actionLabel(selected.is_disabled ? "enable" : "disable")}
+              </BrandButton>
               {!selected.is_disabled &&
                 (selected.authentication_methods?.includes("password") ??
                   true) && (
@@ -254,6 +319,43 @@ export default function AdminUsers(): React.JSX.Element {
                     {t("AUTH$CREATE_RESET_LINK")}
                   </BrandButton>
                 )}
+              {!selected.is_disabled &&
+                selected.profile_present &&
+                profile?.global_permissions.includes("manage_super_admins") && (
+                  <BrandButton
+                    type="button"
+                    variant="secondary"
+                    isDisabled={busy || !superadmins}
+                    onClick={() =>
+                      setConfirm({
+                        account: selected,
+                        action: superadmins?.super_admins.some(
+                          (admin) => admin.user_id === selected.id,
+                        )
+                          ? "revoke"
+                          : "grant",
+                      })
+                    }
+                  >
+                    {actionLabel(
+                      superadmins?.super_admins.some(
+                        (admin) => admin.user_id === selected.id,
+                      )
+                        ? "revoke"
+                        : "grant",
+                    )}
+                  </BrandButton>
+                )}
+              <BrandButton
+                type="button"
+                variant="danger"
+                isDisabled={busy}
+                onClick={() =>
+                  setConfirm({ account: selected, action: "delete" })
+                }
+              >
+                {actionLabel("delete")}
+              </BrandButton>
             </div>
           )}
           {selected.pending_invitations.map((invitation) => (
@@ -333,6 +435,27 @@ export default function AdminUsers(): React.JSX.Element {
         />
       </section>
       {link && <AccountLinkModal link={link} onClose={() => setLink(null)} />}
+      {confirm && (
+        <OrgModal
+          title={actionLabel(confirm.action)}
+          ariaLabel={actionLabel(confirm.action)}
+          description={t(
+            confirm.action === "delete"
+              ? "AUTH$DELETE_HELP"
+              : "AUTH$ADMIN_ACTION_HELP",
+          )}
+          primaryButtonText={t("AUTH$CONFIRM")}
+          secondaryButtonText={t("AUTH$CANCEL")}
+          onPrimaryClick={performAction}
+          onClose={(): void => setConfirm(null)}
+          isLoading={busy}
+          className="max-w-full"
+        >
+          <p className="text-sm">
+            {confirm.account.email || confirm.account.id}
+          </p>
+        </OrgModal>
+      )}
       {resetAccount && (
         <OrgModal
           title={t("AUTH$REAUTH_REQUIRED")}

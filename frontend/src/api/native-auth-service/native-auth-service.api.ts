@@ -115,6 +115,17 @@ export interface NativeRole {
   id: number;
   name: string;
 }
+export interface NativeSuperadmin {
+  user_id: string;
+  email: string | null;
+}
+export interface NativeSuperadmins {
+  super_admins: NativeSuperadmin[];
+}
+export interface AccountLifecycleResult {
+  warnings: string[];
+}
+
 export const NativeAuthService = {
   profile: async (): Promise<NativeProfile> =>
     (await openHands.get<NativeProfile>("/api/v1/users/me")).data,
@@ -199,6 +210,19 @@ export const NativeAuthService = {
         `/api/admin/auth-accounts/${id}/password-reset`,
       )
     ).data,
+  lifecycle: async ({
+    id,
+    action,
+  }: {
+    id: string;
+    action: "enable" | "disable" | "delete";
+  }): Promise<AccountLifecycleResult> => {
+    const path = `/api/admin/users/${id}`;
+    if (action === "delete")
+      return (await openHands.delete<{ warnings: string[] }>(path)).data;
+    return (await openHands.post<{ warnings: string[] }>(`${path}/${action}`))
+      .data;
+  },
   roles: async (): Promise<NativeRole[]> =>
     (
       await openHands.get<{ id: number; name: string }[]>(
@@ -214,4 +238,21 @@ export const NativeAuthService = {
         total: number;
       }>("/api/admin/auth-organizations", { params: { offset, limit: 100 } })
     ).data,
+  superadmins: async (): Promise<NativeSuperadmins> =>
+    (
+      await openHands.get<{
+        super_admins: { user_id: string; email: string | null }[];
+      }>("/api/admin/super-admins")
+    ).data,
+  setSuperadmin: async ({
+    id,
+    enabled,
+  }: {
+    id: string;
+    enabled: boolean;
+  }): Promise<void> => {
+    if (enabled)
+      await openHands.post("/api/admin/super-admins", { user_id: id });
+    else await openHands.delete(`/api/admin/super-admins/${id}`);
+  },
 };

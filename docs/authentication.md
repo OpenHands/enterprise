@@ -72,3 +72,13 @@ uv run python -m server.auth.bootstrap recover ACCOUNT_UUID
 ```
 
 The command prompts for the new password, revokes browser sessions, and preserves account state and roles. Deleted accounts cannot be recovered.
+
+## Account administration
+
+Administrators can select an account in **Settings > Users** to disable, enable, or delete it. Disabling an account blocks sign-in and revokes its active credentials while retaining application data. Enabling the account restores sign-in access.
+
+Deleting an account permanently removes its application data and blocks that identity from signing in. The screen asks for confirmation and displays cleanup results. Failed external cleanup remains pending for retry.
+
+Only administrators with `manage_super_admins` can grant or revoke instance administrator access. The application prevents disabling, deleting, or demoting the last active administrator. Organization ownership does not grant these permissions.
+
+Deleting a personal workspace can retain its account for a fresh login with the same UUID and ordinary permissions. Sign-in waits for pending cleanup before recreating the workspace. Account deletion from Users is permanent.

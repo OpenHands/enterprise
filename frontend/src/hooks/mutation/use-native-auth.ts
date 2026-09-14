@@ -31,3 +31,9 @@ export const useRevokeAccountInvitation = (): EphemeralMutationFor<
 export const useIssuePasswordReset = (): EphemeralMutationFor<
   typeof NativeAuthService.issueReset
 > => useEphemeralMutation(NativeAuthService.issueReset);
+export const useChangeAccountState = (): EphemeralMutationFor<
+  typeof NativeAuthService.lifecycle
+> => useEphemeralMutation(NativeAuthService.lifecycle);
+export const useSetSuperadmin = (): EphemeralMutationFor<
+  typeof NativeAuthService.setSuperadmin
+> => useEphemeralMutation(NativeAuthService.setSuperadmin);
