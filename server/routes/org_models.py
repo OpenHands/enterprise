@@ -825,6 +825,10 @@ class OrgBudgetUserMutationResponse(OrgBudgetUserResponse):
 
 
 class OrgBudgetSettingsResponse(BaseModel):
+    control_mode: Literal['managed', 'external', 'needs_adoption'] = 'external'
+    control_generation: int = 0
+    current_cycle_allowance: float | None = None
+    current_cycle_default_member_allowance: float | None = None
     enabled: bool
     monthly_limit: float | None = None
     litellm_last_sync_at: datetime | None = None

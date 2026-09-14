@@ -20,6 +20,7 @@ from typing import Any
 from server.services.org_budget_service import (
     LiteLlmFinancialSnapshot,
     _budget_sync_readback_errors,
+    _desired_team_budget,
     _effective_user_budget_limit,
 )
 from storage.org_budget_settings import OrgBudgetSettings
@@ -57,11 +58,13 @@ SNAPSHOT_STALE = 'snapshot_stale'
 SYNC_NEVER_RAN = 'sync_never_ran'
 SCHEMA_MISSING_COLUMNS = 'schema_missing_columns'
 SCHEMA_TABLE_MISSING = 'schema_table_missing'
+CONTROL_NOT_MANAGED = 'budget_control_not_managed'
 
 _JSON_COLUMNS = (
     'user_cycle_start_spend',
     'litellm_last_member_spend',
     'litellm_known_member_ids',
+    'cycle_user_allowances',
 )
 _ERROR_DETAIL_MAX_CHARS = 500
 
@@ -81,6 +84,10 @@ def settings_from_row(row: Mapping[str, Any]) -> tuple[OrgBudgetSettings, list[s
         value = present.get(name)
         if isinstance(value, str):
             present[name] = json.loads(value)
+    if 'control_mode' not in present:
+        present['control_mode'] = (
+            'needs_adoption' if present.get('enabled') else 'external'
+        )
     return OrgBudgetSettings(**present), missing
 
 
@@ -126,7 +133,7 @@ def evaluate_org(
     nothing enforced, so the same observations are informational.
     """
     now = now or datetime.now(UTC)
-    enforced = bool(settings.enabled)
+    enforced = bool(settings.enabled) and settings.control_mode == 'managed'
     policy_severity = SEVERITY_BLOCKING if enforced else SEVERITY_INFO
     findings: list[dict[str, Any]] = []
 
@@ -136,6 +143,12 @@ def evaluate_org(
         findings.append(finding)
 
     org_ids = {str(user_id) for user_id in org_member_ids}
+    if settings.control_mode != 'managed':
+        add(
+            CONTROL_NOT_MANAGED,
+            SEVERITY_INFO,
+            'OpenHands will not reconcile externally controlled budget policy',
+        )
     missing_columns = sorted(schema_missing_columns)
     if missing_columns:
         add(
@@ -152,7 +165,7 @@ def evaluate_org(
     last_sync_status = settings.litellm_last_sync_status
     last_sync_error = _truncate(settings.litellm_last_sync_error)
     if last_sync_status == 'error':
-        add(LAST_SYNC_ERROR, SEVERITY_BLOCKING, last_sync_error or 'unknown')
+        add(LAST_SYNC_ERROR, policy_severity, last_sync_error or 'unknown')
     elif last_sync_status is None and enforced:
         add(SYNC_NEVER_RAN, SEVERITY_INFO, 'budgets enabled but never synchronized')
 
@@ -169,9 +182,7 @@ def evaluate_org(
     override_map = {str(override.user_id): override for override in overrides}
     default_limit = settings.default_user_monthly_limit
 
-    desired_team_cap: float | None = None
-    if enforced and settings.monthly_limit:
-        desired_team_cap = (settings.cycle_start_spend or 0.0) + settings.monthly_limit
+    desired_team_cap = _desired_team_budget(settings) if enforced else None
 
     members_missing_baseline: list[str] = []
     members_missing_from_litellm: list[str] = []
@@ -185,7 +196,7 @@ def evaluate_org(
     if snapshot is None:
         add(
             LITELLM_UNREACHABLE,
-            SEVERITY_BLOCKING,
+            policy_severity,
             _truncate(snapshot_error) or 'unknown',
         )
         litellm_block = {'status': 'unavailable', 'error': _truncate(snapshot_error)}
@@ -224,7 +235,10 @@ def evaluate_org(
                 if user_id in members_missing_baseline:
                     continue
                 effective_limit, is_disabled, _ = _effective_user_budget_limit(
-                    override_map.get(user_id), default_limit
+                    override_map.get(user_id),
+                    default_limit,
+                    settings=settings,
+                    user_id=user_id,
                 )
                 if is_disabled or effective_limit is None:
                     desired_members[user_id] = None
@@ -278,7 +292,9 @@ def evaluate_org(
 
     return {
         'org_id': org_id,
-        'enabled': enforced,
+        'enabled': bool(settings.enabled),
+        'control_mode': settings.control_mode or 'needs_adoption',
+        'reconciliation_expected': enforced,
         'monthly_limit': settings.monthly_limit,
         'default_user_monthly_limit': default_limit,
         'reset_day': settings.reset_day,

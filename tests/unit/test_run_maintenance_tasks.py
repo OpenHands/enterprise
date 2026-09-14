@@ -6,26 +6,18 @@ that processes pending maintenance tasks.
 """
 
 import asyncio
-import sys
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-# Mock the database module while importing the module under test, so importing
-# it never touches Google Cloud SQL. The real module is put back afterwards:
-# `storage.database` is shared with the rest of the suite, and leaving a stub in
-# sys.modules would break every later test in this worker that imports it.
-mock_db = MagicMock()
-mock_db.session_maker = MagicMock()
-with patch.dict(sys.modules, {'storage.database': mock_db}):
-    from run_maintenance_tasks import (
-        main,
-        next_task,
-        run_tasks,
-        set_stale_task_error,
-    )
-from storage.maintenance_task import (  # noqa: E402
+from run_maintenance_tasks import (
+    main,
+    next_task,
+    run_tasks,
+    set_stale_task_error,
+)
+from storage.maintenance_task import (
     MaintenanceTask,
     MaintenanceTaskProcessor,
     MaintenanceTaskStatus,
@@ -146,6 +138,59 @@ class TestRunMaintenanceTasks:
                 assert task is not None
                 assert task.id == older_pending_id
                 assert task.status == MaintenanceTaskStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_next_task_skips_another_workers_uncommitted_claim(
+        self, session_maker
+    ):
+        with session_maker() as setup:
+            tasks = [
+                MaintenanceTask(
+                    status=MaintenanceTaskStatus.PENDING,
+                    processor_type='test.processor',
+                    processor_json='{}',
+                    created_at=datetime(2026, 9, 1),
+                )
+                for _ in range(2)
+            ]
+            setup.add_all(tasks)
+            setup.commit()
+            task_ids = [task.id for task in tasks]
+
+        with session_maker() as first, session_maker() as second:
+            first_task = await next_task(first)
+            second_task = await next_task(second)
+
+            assert first_task.id == task_ids[0]
+            assert second_task.id == task_ids[1]
+
+            first_task.status = MaintenanceTaskStatus.WORKING
+            second_task.status = MaintenanceTaskStatus.WORKING
+            first.commit()
+            second.commit()
+
+        with session_maker() as third:
+            assert await next_task(third) is None
+
+    @pytest.mark.asyncio
+    async def test_next_task_releases_abandoned_claim_on_rollback(self, session_maker):
+        with session_maker() as setup:
+            task = MaintenanceTask(
+                status=MaintenanceTaskStatus.PENDING,
+                processor_type='test.processor',
+                processor_json='{}',
+            )
+            setup.add(task)
+            setup.commit()
+            task_id = task.id
+
+        with session_maker() as first, session_maker() as second:
+            assert (await next_task(first)).id == task_id
+            assert await next_task(second) is None
+
+            first.rollback()
+
+            assert (await next_task(second)).id == task_id
 
     @pytest.mark.asyncio
     async def test_next_task_with_no_pending_tasks(self, session_maker):
@@ -450,9 +495,16 @@ class TestRunMaintenanceTasks:
         processor.return_value = {'processed': True}
 
         # Mock the functions
-        with patch(
-            'storage.maintenance_task.MaintenanceTask.get_processor',
-            return_value=processor,
+        with (
+            patch(
+                'storage.maintenance_task.MaintenanceTask.get_processor',
+                return_value=processor,
+            ),
+            patch(
+                'server.maintenance_task_processor.managed_llm_key_ownership_processor.'
+                'enqueue_managed_llm_key_ownership_tasks',
+                return_value=0,
+            ),
         ):
             with patch(
                 'run_maintenance_tasks.session_maker', return_value=session_maker()

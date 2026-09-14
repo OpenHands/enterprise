@@ -84,6 +84,7 @@ def test_budget_policy_comparison_reports_verified_healthy_state():
     user_id = str(uuid4())
     applied_at = datetime.now(UTC)
     settings = OrgBudgetSettings(
+        control_mode='managed',
         org_id=uuid4(),
         enabled=True,
         monthly_limit=100.0,
@@ -115,6 +116,7 @@ def test_budget_policy_comparison_reports_verified_healthy_state():
 @pytest.mark.asyncio
 async def test_get_reconciliation_state_reports_sync_error_as_degraded():
     settings = OrgBudgetSettings(
+        control_mode='managed',
         org_id=uuid4(),
         enabled=True,
         monthly_limit=100.0,
@@ -134,6 +136,7 @@ async def test_get_reconciliation_state_reports_sync_error_as_degraded():
 def test_budget_policy_comparison_reports_live_drift_as_degraded():
     user_id = str(uuid4())
     settings = OrgBudgetSettings(
+        control_mode='managed',
         org_id=uuid4(),
         enabled=True,
         monthly_limit=100.0,
@@ -162,6 +165,7 @@ def test_budget_policy_comparison_reports_live_drift_as_degraded():
 
 def test_budget_policy_comparison_reports_unreadable_failed_state():
     settings = OrgBudgetSettings(
+        control_mode='managed',
         org_id=uuid4(),
         enabled=True,
         monthly_limit=100.0,
@@ -190,6 +194,7 @@ def test_budget_policy_comparison_reports_unreadable_failed_state():
 def test_budget_policy_comparison_reports_beta_missing_baseline_shape():
     user_id = str(uuid4())
     settings = OrgBudgetSettings(
+        control_mode='managed',
         org_id=uuid4(),
         enabled=True,
         monthly_limit=1000.0,
@@ -287,6 +292,7 @@ def test_budget_maintenance_scheduler_excludes_personal_and_disabled_orgs(
         session.add_all(
             [
                 OrgBudgetSettings(
+                    control_mode='managed',
                     org_id=personal_id,
                     enabled=False,
                     reset_day=1,
@@ -294,6 +300,7 @@ def test_budget_maintenance_scheduler_excludes_personal_and_disabled_orgs(
                     cycle_start_spend=0.0,
                 ),
                 OrgBudgetSettings(
+                    control_mode='managed',
                     org_id=disabled_team_id,
                     enabled=False,
                     reset_day=1,
@@ -301,6 +308,7 @@ def test_budget_maintenance_scheduler_excludes_personal_and_disabled_orgs(
                     cycle_start_spend=0.0,
                 ),
                 OrgBudgetSettings(
+                    control_mode='managed',
                     org_id=team_id,
                     enabled=True,
                     monthly_limit=100.0,
@@ -347,12 +355,14 @@ def test_cleanup_migration_removes_only_personal_org_settings(session_maker):
         session.add_all(
             [
                 OrgBudgetSettings(
+                    control_mode='managed',
                     org_id=personal_id,
                     reset_day=1,
                     cycle_start_at=now,
                     cycle_start_spend=0.0,
                 ),
                 OrgBudgetSettings(
+                    control_mode='managed',
                     org_id=team_id,
                     reset_day=1,
                     cycle_start_at=now,
@@ -403,6 +413,7 @@ async def test_update_budget_settings_marks_explicit_disable_for_cap_clear(
 ):
     async with async_session_maker() as session:
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             monthly_limit=100.0,
@@ -454,6 +465,7 @@ async def test_run_budget_maintenance_skips_legacy_personal_org_settings(
     async with async_session_maker() as session:
         session.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=personal_org.id,
                 enabled=False,
                 reset_day=1,
@@ -480,6 +492,7 @@ async def test_roll_cycle_if_needed_updates_cycle(async_session_maker, budget_or
         reset_day = 1
         past_cycle_start = _current_cycle_start(now - timedelta(days=40), reset_day)
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=reset_day,
@@ -535,6 +548,7 @@ async def test_roll_cycle_if_needed_noop(async_session_maker, budget_org):
         reset_day = 1
         current_cycle_start = _current_cycle_start(now, reset_day)
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=reset_day,
@@ -575,6 +589,8 @@ async def test_run_budget_maintenance_syncs_when_cycle_not_rolled(
     async_session_maker, budget_org
 ):
     async with async_session_maker() as session:
+        session.add(OrgBudgetSettings(org_id=budget_org.id, control_mode='managed'))
+        await session.commit()
         service = OrgBudgetService(session)
         snapshot = _snapshot(team_spend=0.0)
         with (
@@ -602,6 +618,7 @@ async def test_run_budget_maintenance_uses_cycle_roll_sync(
     async with async_session_maker() as session:
         reset_day = 1
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=reset_day,
@@ -652,6 +669,7 @@ async def test_cycle_roll_repairs_missing_litellm_member(
 
     async with async_session_maker() as session:
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -721,6 +739,7 @@ async def test_cycle_roll_does_not_advance_when_membership_repair_fails(
 
     async with async_session_maker() as session:
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -800,6 +819,7 @@ async def test_get_budget_state_uses_litellm_cycle_spend(
                     status='active',
                 ),
                 OrgBudgetSettings(
+                    control_mode='managed',
                     org_id=budget_org.id,
                     enabled=True,
                     reset_day=1,
@@ -837,6 +857,7 @@ async def test_get_budget_state_reports_unmapped_litellm_spend(
     async with async_session_maker() as session:
         session.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=budget_org.id,
                 enabled=True,
                 reset_day=1,
@@ -873,6 +894,7 @@ async def test_get_budget_state_uses_last_known_good_snapshot_on_fetch_failure(
     async with async_session_maker() as session:
         session.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=budget_org.id,
                 enabled=True,
                 reset_day=1,
@@ -912,6 +934,7 @@ async def test_get_budget_state_retries_transient_fetch_failure(
     async with async_session_maker() as session:
         session.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=budget_org.id,
                 enabled=True,
                 reset_day=1,
@@ -952,6 +975,7 @@ async def test_get_budget_state_never_turns_malformed_data_into_zero(
     async with async_session_maker() as session:
         session.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=budget_org.id,
                 enabled=True,
                 reset_day=1,
@@ -983,6 +1007,7 @@ async def test_enabling_budget_requires_fresh_snapshot_and_preserves_baseline(
     async with async_session_maker() as session:
         session.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=budget_org.id,
                 enabled=False,
                 reset_day=1,
@@ -1021,6 +1046,7 @@ async def test_maintenance_does_not_roll_cycle_without_fresh_snapshot(
     old_cycle_start = _current_cycle_start(datetime.now(UTC) - timedelta(days=40), 1)
     async with async_session_maker() as session:
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -1061,6 +1087,7 @@ async def test_budget_maintenance_alerts_on_litellm_spend(
     async with async_session_maker() as session:
         cycle_start = _current_cycle_start(datetime.now(UTC), 1)
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -1107,6 +1134,7 @@ async def test_sync_litellm_budgets_updates_team_and_members(
         service = OrgBudgetService(session)
         now = datetime.now(UTC)
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -1262,6 +1290,7 @@ async def test_sync_litellm_budgets_reports_member_readback_mismatch(
 
     async with async_session_maker() as session:
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -1324,6 +1353,7 @@ async def test_sync_litellm_budgets_reports_missing_governed_member(
 
     async with async_session_maker() as session:
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -1401,6 +1431,7 @@ async def test_sync_recovers_known_member_cycle_baseline_when_missing(
 
     async with async_session_maker() as session:
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -1503,6 +1534,7 @@ async def test_sync_recovered_baseline_is_not_renewed_on_later_sync(
     ):
         async with async_session_maker() as session:
             settings = OrgBudgetSettings(
+                control_mode='managed',
                 org_id=budget_org.id,
                 enabled=True,
                 reset_day=1,
@@ -1575,6 +1607,7 @@ async def test_sync_initializes_baseline_for_member_added_after_migration(
 
     async with async_session_maker() as session:
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -1648,6 +1681,7 @@ async def test_sync_preserves_unmapped_member_cycle_baseline(
 
     async with async_session_maker() as session:
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -1729,6 +1763,7 @@ async def test_sync_litellm_budgets_keeps_member_cap_stable_across_sessions(
     ):
         async with async_session_maker() as session:
             settings = OrgBudgetSettings(
+                control_mode='managed',
                 org_id=budget_org.id,
                 enabled=True,
                 reset_day=1,
@@ -1791,6 +1826,7 @@ async def test_sync_litellm_budgets_skips_passive_disabled_team_org(
     async with async_session_maker() as session:
         service = OrgBudgetService(session)
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=False,
             reset_day=1,
@@ -1815,6 +1851,7 @@ async def test_sync_litellm_budgets_clears_explicitly_disabled_team_org_cap(
     async with async_session_maker() as session:
         service = OrgBudgetService(session)
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=False,
             reset_day=1,
@@ -1851,6 +1888,7 @@ async def test_maybe_send_alerts_tracks_thresholds(async_session_maker, budget_o
         service = OrgBudgetService(session)
         now = datetime.now(UTC)
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -1898,6 +1936,7 @@ async def test_send_alerts_emails_and_slack(async_session_maker, budget_org):
     async with async_session_maker() as session:
         service = OrgBudgetService(session)
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -1967,6 +2006,7 @@ async def test_concurrent_maintenance_runs_roll_the_cycle_only_once(
     async with async_session_maker() as setup:
         setup.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=budget_org.id,
                 enabled=True,
                 reset_day=reset_day,
@@ -2051,6 +2091,7 @@ async def test_maintenance_survives_a_stored_reset_day_the_month_lacks(
     async with async_session_maker() as session:
         session.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=budget_org.id,
                 enabled=True,
                 reset_day=31,
@@ -2146,6 +2187,7 @@ async def test_override_write_reports_failure_when_litellm_is_unreachable(
                     status='active',
                 ),
                 OrgBudgetSettings(
+                    control_mode='managed',
                     org_id=budget_org.id,
                     enabled=True,
                     reset_day=1,
@@ -2196,6 +2238,7 @@ async def test_maintenance_advances_the_cycle_by_one_reset_period(
     async with async_session_maker() as session:
         session.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=budget_org.id,
                 enabled=True,
                 reset_day=reset_day,
@@ -2261,6 +2304,7 @@ async def test_override_cap_is_never_written_below_the_cycle_baseline(
                     status='active',
                 ),
                 OrgBudgetSettings(
+                    control_mode='managed',
                     org_id=budget_org.id,
                     enabled=True,
                     reset_day=1,
@@ -2331,6 +2375,7 @@ async def test_threshold_alerts_once_per_cycle_across_a_settings_edit(
         session.add_all(
             [
                 OrgBudgetSettings(
+                    control_mode='managed',
                     org_id=budget_org.id,
                     enabled=True,
                     reset_day=reset_day,
@@ -2408,6 +2453,7 @@ async def test_roll_cycle_records_live_rollover_baseline_rows(
     async with async_session_maker() as session:
         now = datetime.now(UTC)
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -2451,6 +2497,7 @@ async def test_enabling_budget_replaces_the_cycle_baseline_rows(
     async with async_session_maker() as session:
         session.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=budget_org.id,
                 enabled=False,
                 reset_day=1,
@@ -2518,6 +2565,7 @@ async def test_sync_records_recovered_and_added_baseline_rows(
 
     async with async_session_maker() as session:
         settings = OrgBudgetSettings(
+            control_mode='managed',
             org_id=budget_org.id,
             enabled=True,
             reset_day=1,
@@ -2590,6 +2638,7 @@ async def test_settings_loader_prefers_baseline_rows_and_imports_json_only_keys(
     async with async_session_maker() as session:
         session.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=budget_org.id,
                 enabled=True,
                 reset_day=1,

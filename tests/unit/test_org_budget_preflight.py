@@ -50,6 +50,7 @@ NOW = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
 
 def _settings(**overrides) -> OrgBudgetSettings:
     values = dict(
+        control_mode='managed',
         org_id=uuid4(),
         enabled=True,
         monthly_limit=100.0,
@@ -275,7 +276,8 @@ def test_settings_from_row_tolerates_an_older_schema():
         schema_missing_columns=missing,
     )
     codes = _codes(entry)
-    assert codes[MEMBER_BASELINE_MISSING] == SEVERITY_BLOCKING
+    assert settings.control_mode == 'needs_adoption'
+    assert codes[MEMBER_BASELINE_MISSING] == SEVERITY_INFO
     assert codes[SCHEMA_MISSING_COLUMNS] == SEVERITY_INFO
     assert entry['schema_missing_columns'] == missing
 
@@ -479,6 +481,45 @@ async def test_reconcile_orgs_commits_per_org_and_records_failures(monkeypatch):
 
     errors = await run_budget_preflight._reconcile_orgs([ok, skipped, failed])
 
-    assert errors == {skipped: 'skipped: personal_org', failed: 'boom'}
+    assert errors == {failed: 'boom'}
     assert session.commit.await_count == 2
     assert session.rollback.await_count == 1
+
+
+@pytest.mark.parametrize('mode', ['external', 'needs_adoption'])
+def test_unowned_legacy_policy_drift_and_errors_are_informational(mode):
+    user_id = str(uuid4())
+    settings = _settings(
+        control_mode=mode,
+        monthly_limit=1,
+        litellm_last_sync_status='error',
+        litellm_last_sync_error='legacy overwrite failed',
+    )
+    entry = _evaluate(
+        settings,
+        {user_id},
+        _snapshot(team_max_budget=1000, members={user_id: (40, 500, False)}),
+    )
+    assert entry['control_mode'] == mode
+    assert entry['blocking'] is False
+    assert entry['reconciliation_expected'] is False
+    assert entry['desired'] == {'team_max_budget': None, 'members': {}}
+    assert entry['litellm']['team_max_budget'] == 1000
+    assert _codes(entry)[LAST_SYNC_ERROR] == SEVERITY_INFO
+
+
+@pytest.mark.parametrize('mode', ['external', 'needs_adoption'])
+def test_read_outage_does_not_create_authority_or_a_policy_failure(mode):
+    entry = _evaluate(_settings(control_mode=mode), [], None, snapshot_error='offline')
+    assert entry['blocking'] is False
+    assert _codes(entry)[LITELLM_UNREACHABLE] == SEVERITY_INFO
+
+
+def test_pending_operation_failure_still_blocks_even_before_adoption_completes():
+    entry = _evaluate(
+        _settings(control_mode='needs_adoption'),
+        [],
+        _snapshot(),
+        maintenance_error='pending adoption readback failed',
+    )
+    assert _codes(entry)[MAINTENANCE_FAILED] == SEVERITY_BLOCKING

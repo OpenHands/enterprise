@@ -176,7 +176,11 @@ async def _reconcile_orgs(org_ids: list[str]) -> dict[str, str]:
                 errors[org_id] = str(exc)
                 continue
             skipped = result.get('skipped')
-            if skipped:
+            if skipped and skipped not in {
+                'external',
+                'needs_adoption',
+                'personal_org',
+            }:
                 errors[org_id] = f'skipped: {skipped}'
     return errors
 

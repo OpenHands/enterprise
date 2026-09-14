@@ -169,7 +169,10 @@ def _parse_litellm_financial_snapshot(
             raise ValueError(f'members.{user_id}.uses_shared_budget must be a boolean')
         members[user_id] = LiteLlmMemberFinancialSnapshot(
             spend=_required_nonnegative_float(
-                member_data.get('spend'), f'members.{user_id}.spend'
+                financial_data.get('member_counters', {})
+                .get(user_id, {})
+                .get('spend', member_data.get('spend')),
+                f'members.{user_id}.spend',
             ),
             max_budget=_optional_nonnegative_float(
                 member_data.get('max_budget'), f'members.{user_id}.max_budget'
@@ -193,7 +196,7 @@ def _litellm_cycle_spend(
     settings: OrgBudgetSettings,
     snapshot: LiteLlmFinancialSnapshot | None,
 ) -> float | None:
-    if snapshot is None:
+    if snapshot is None or settings.control_mode != 'managed':
         return None
     return max(snapshot.team_spend - settings.cycle_start_spend, 0.0)
 
@@ -203,7 +206,7 @@ def _litellm_member_cycle_spend(
     user_id: str,
     member_info: LiteLlmMemberFinancialSnapshot | None,
 ) -> float | None:
-    if member_info is None:
+    if member_info is None or settings.control_mode != 'managed':
         return None
     baseline = (settings.user_cycle_start_spend or {}).get(user_id)
     if baseline is None:
@@ -239,7 +242,16 @@ def _litellm_unmapped_cycle_spend(
 def _effective_user_budget_limit(
     override: OrgUserBudgetOverride | None,
     default_limit: float | None,
+    *,
+    settings: OrgBudgetSettings | None = None,
+    user_id: str | None = None,
 ) -> tuple[float | None, bool, bool]:
+    if settings is not None and settings.cycle_end_at is not None:
+        allowances = settings.cycle_user_allowances or {}
+        if user_id is not None and user_id in allowances:
+            allowance = allowances[user_id]
+            return allowance, allowance is None, True
+        return settings.cycle_default_user_allowance, False, False
     if override:
         if override.is_disabled:
             return None, True, True
@@ -292,9 +304,20 @@ def _budget_sync_readback_errors(
 
 
 def _desired_team_budget(settings: OrgBudgetSettings) -> float | None:
-    if settings.enabled and settings.monthly_limit:
-        return settings.cycle_start_spend + settings.monthly_limit
+    if settings.control_mode != 'managed':
+        return None
+    allowance = _cycle_allowance(settings)
+    if settings.enabled and allowance is not None:
+        return settings.cycle_start_spend + allowance
     return None
+
+
+def _cycle_allowance(settings: OrgBudgetSettings) -> float | None:
+    return (
+        settings.cycle_allowance
+        if settings.cycle_end_at is not None
+        else settings.monthly_limit
+    )
 
 
 def _budget_policy_comparison(
@@ -307,6 +330,16 @@ def _budget_policy_comparison(
     desired_team_budget = _desired_team_budget(settings)
     snapshot = snapshot_result.snapshot if snapshot_result.status == 'live' else None
     applied_team_budget = snapshot.team_max_budget if snapshot is not None else None
+    if settings.control_mode != 'managed':
+        return {
+            'reconciliation_state': 'inactive',
+            'reconciliation_error': None,
+            'desired_team_max_budget': None,
+            'applied_team_max_budget': applied_team_budget,
+            'budget_policy_matches': None,
+            'applied_at': None,
+            'applied_policy_observed_at': snapshot.observed_at if snapshot else None,
+        }
 
     policy_matches: bool | None = None
     drift_errors: list[str] = []
@@ -319,7 +352,10 @@ def _budget_policy_comparison(
                 drift_errors.append(f'member_missing_from_litellm: {user_id}')
                 continue
             effective_limit, is_disabled, _ = _effective_user_budget_limit(
-                override_map.get(user_id), settings.default_user_monthly_limit
+                override_map.get(user_id),
+                settings.default_user_monthly_limit,
+                settings=settings,
+                user_id=user_id,
             )
             if settings.enabled and not is_disabled and effective_limit is not None:
                 baseline = baselines.get(user_id)
@@ -416,6 +452,17 @@ class OrgBudgetService:
                 detail='Organization budgets are not available for personal workspaces',
             )
 
+    def _require_managed(self, settings: OrgBudgetSettings) -> None:
+        if settings.control_mode != 'managed':
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    'code': 'budget_control_required',
+                    'control_mode': settings.control_mode or 'needs_adoption',
+                    'message': 'Review and adopt budgets before changing OpenHands policy.',
+                },
+            )
+
     async def get_budget_state(
         self,
         org_id: UUID,
@@ -497,6 +544,16 @@ class OrgBudgetService:
             }
 
         settings = await self._get_or_create_settings(org_id)
+        if settings.control_mode != 'managed':
+            return {
+                'cycle_start_at': settings.cycle_start_at,
+                'cycle_end_at': settings.cycle_end_at,
+                'cycle_rolled': False,
+                'current_spend': None,
+                'skipped': settings.control_mode or 'needs_adoption',
+                'reconciliation_status': 'skipped',
+                'reconciliation_error': None,
+            }
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
         cycle = self._current_cycle(settings)
@@ -608,6 +665,7 @@ class OrgBudgetService:
     ):
         await self._reject_personal_org(org_id, 'update_budget_settings')
         settings = await self._get_or_create_settings(org_id)
+        self._require_managed(settings)
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
 
@@ -762,13 +820,14 @@ class OrgBudgetService:
         is_disabled: bool,
     ) -> OrgUserBudgetOverride:
         await self._reject_personal_org(org_id, 'upsert_user_override')
+        settings = await self._get_or_create_settings(org_id)
+        self._require_managed(settings)
         override = await self.store.upsert_override(
             org_id=org_id,
             user_id=user_id,
             monthly_limit=monthly_limit,
             is_disabled=is_disabled,
         )
-        settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         await self._sync_litellm_budgets(org_id, settings, overrides)
         quint_oracle.log(
@@ -781,6 +840,8 @@ class OrgBudgetService:
 
     async def delete_user_override(self, org_id: UUID, user_id: UUID) -> None:
         await self._reject_personal_org(org_id, 'delete_user_override')
+        settings = await self._get_or_create_settings(org_id)
+        self._require_managed(settings)
         override = await self._get_override(org_id, user_id)
         if override is None:
             # The early return: no row, so no resync and no post-state count to read.
@@ -791,7 +852,6 @@ class OrgBudgetService:
             )
             return
         await self.store.delete_override(override)
-        settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         await self._sync_litellm_budgets(org_id, settings, overrides)
         quint_oracle.log(
@@ -803,6 +863,8 @@ class OrgBudgetService:
 
     async def get_reconciliation_state(self, org_id: UUID) -> BudgetReconciliationState:
         settings = await self._get_or_create_settings(org_id)
+        if settings.control_mode != 'managed':
+            return 'inactive'
         if settings.litellm_last_sync_status == 'error':
             return 'degraded'
         if settings.enabled and settings.litellm_last_sync_status != 'success':
@@ -812,7 +874,8 @@ class OrgBudgetService:
     async def _get_or_create_settings(self, org_id: UUID) -> OrgBudgetSettings:
         settings = await self.store.get_settings(org_id)
         if settings:
-            await self._hydrate_cycle_baselines(settings)
+            if settings.control_mode == 'managed':
+                await self._hydrate_cycle_baselines(settings)
             return settings
 
         return await self.store.create_settings(
@@ -880,7 +943,9 @@ class OrgBudgetService:
 
     def _current_cycle(self, settings: OrgBudgetSettings) -> BudgetCycle:
         start_at = settings.cycle_start_at
-        end_at = _next_cycle_start(start_at, settings.reset_day)
+        end_at = settings.cycle_end_at or _next_cycle_start(
+            start_at, settings.reset_day
+        )
         return BudgetCycle(start_at=start_at, end_at=end_at)
 
     async def _roll_cycle_if_needed(
@@ -890,6 +955,7 @@ class OrgBudgetService:
         overrides: list[OrgUserBudgetOverride],
         snapshot: LiteLlmFinancialSnapshot,
     ) -> bool:
+        self._require_managed(settings)
         now = datetime.now(UTC)
         next_cycle = _next_cycle_start(settings.cycle_start_at, settings.reset_day)
         if now < next_cycle:
@@ -1120,7 +1186,10 @@ class OrgBudgetService:
         for org_member, user, override in result:
             user_id = str(org_member.user_id)
             effective_limit, is_disabled, is_override = _effective_user_budget_limit(
-                override, settings.default_user_monthly_limit
+                override,
+                settings.default_user_monthly_limit,
+                settings=settings,
+                user_id=user_id,
             )
             row = {
                 'user_id': user_id,
@@ -1169,7 +1238,10 @@ class OrgBudgetService:
             None,
         )
         effective_limit, is_disabled, is_override = _effective_user_budget_limit(
-            override, settings.default_user_monthly_limit
+            override,
+            settings.default_user_monthly_limit,
+            settings=settings,
+            user_id=str(user_id),
         )
         user_id_str = str(user_id)
         user_row = {
@@ -1221,6 +1293,7 @@ class OrgBudgetService:
         overrides: list[OrgUserBudgetOverride],
         snapshot: LiteLlmFinancialSnapshot,
     ) -> BudgetFinancialSnapshotResult:
+        self._require_managed(settings)
         org_member_ids = await self._org_member_ids(org_id)
         missing_member_ids = sorted(org_member_ids - set(snapshot.members))
         if not missing_member_ids:
@@ -1279,6 +1352,8 @@ class OrgBudgetService:
         clear_disabled: bool = False,
         snapshot: LiteLlmFinancialSnapshot | None = None,
     ) -> LiteLlmFinancialSnapshot | None:
+        if settings.control_mode != 'managed':
+            return snapshot
         if not settings.enabled and not clear_disabled:
             await self._record_litellm_sync(settings, 'skipped')
             return snapshot
