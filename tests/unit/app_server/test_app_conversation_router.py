@@ -17,6 +17,10 @@ from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import SecretStr
 
+from openhands.app_server.acp_providers import (
+    SURFACED_ACP_PROVIDERS,
+    validate_acp_provider_surfaced,
+)
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversation,
     AppConversationInfo,
@@ -33,6 +37,7 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     _finalize_sandbox_delete,
     _release_daily_conversation_quota,
     _reserve_daily_conversation_quota,
+    _resolve_acp_agent_settings,
     _resolve_file_path,
     _stream_app_conversation_start,
     _validate_codex_credentials,
@@ -61,7 +66,11 @@ from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.settings.settings_models import Settings
 from openhands.sdk.llm import LLM
-from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
+from openhands.sdk.settings import (
+    ACP_PROVIDERS,
+    ACPAgentSettings,
+    OpenHandsAgentSettings,
+)
 
 
 def _make_mock_app_conversation(
@@ -97,14 +106,7 @@ def _make_mock_service(
     return service
 
 
-def _codex_user_context():
-    user_context = MagicMock()
-    user_context.get_user_info = AsyncMock(
-        return_value=SimpleNamespace(
-            agent_settings=ACPAgentSettings(acp_server='codex')
-        )
-    )
-    return user_context
+_CODEX_SETTINGS = ACPAgentSettings(acp_server='codex')
 
 
 @pytest.fixture
@@ -155,7 +157,6 @@ def _quota_modules(reserve_result=True, release_error=None):
 @pytest.mark.parametrize(
     'agent_settings',
     [
-        OpenHandsAgentSettings(),
         ACPAgentSettings(acp_server='claude-code'),
         None,
     ],
@@ -165,16 +166,57 @@ async def test_codex_preflight_skips_non_codex_agents(
     file_secrets_store,
     agent_settings,
 ):
+    await _validate_codex_credentials(
+        agent_settings,
+        AppConversationStartRequest(),
+        file_secrets_store,
+    )
+
+
+@pytest.mark.parametrize(
+    'agent_settings',
+    [OpenHandsAgentSettings(), None],
+)
+@pytest.mark.asyncio
+async def test_resolve_acp_agent_settings_returns_none_for_non_acp_agents(
+    agent_settings,
+):
     user_context = MagicMock()
     user_context.get_user_info = AsyncMock(
         return_value=SimpleNamespace(agent_settings=agent_settings)
     )
 
-    await _validate_codex_credentials(
-        AppConversationStartRequest(),
-        user_context,
-        file_secrets_store,
+    resolved = await _resolve_acp_agent_settings(
+        AppConversationStartRequest(), user_context
     )
+
+    assert resolved is None
+
+
+@pytest.mark.parametrize('acp_server', SURFACED_ACP_PROVIDERS + ('custom',))
+def test_surfaced_acp_providers_start(acp_server):
+    validate_acp_provider_surfaced(ACPAgentSettings(acp_server=acp_server))
+
+
+def test_non_acp_agents_are_never_rejected():
+    validate_acp_provider_surfaced(None)
+
+
+@pytest.mark.parametrize(
+    'acp_server',
+    sorted(set(ACP_PROVIDERS) - set(SURFACED_ACP_PROVIDERS)),
+)
+def test_unsurfaced_acp_providers_are_rejected_at_start(acp_server):
+    """A harness the pinned SDK registers but Cloud does not offer.
+
+    Parametrized off the registry rather than a literal list so a new upstream
+    harness is covered the moment it is registered.
+    """
+    with pytest.raises(HTTPException) as exc_info:
+        validate_acp_provider_surfaced(ACPAgentSettings(acp_server=acp_server))
+
+    assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert acp_server in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -193,8 +235,8 @@ async def test_codex_preflight_rejects_missing_or_invalid_credentials(
 
     with pytest.raises(HTTPException) as exc_info:
         await _validate_codex_credentials(
+            _CODEX_SETTINGS,
             AppConversationStartRequest(),
-            _codex_user_context(),
             file_secrets_store,
         )
 
@@ -227,8 +269,8 @@ async def test_codex_preflight_allows_stored_credentials(
     await file_secrets_store.store(Secrets(custom_secrets=custom_secrets))
 
     await _validate_codex_credentials(
+        _CODEX_SETTINGS,
         AppConversationStartRequest(),
-        _codex_user_context(),
         file_secrets_store,
     )
 
@@ -236,6 +278,7 @@ async def test_codex_preflight_allows_stored_credentials(
 @pytest.mark.asyncio
 async def test_codex_preflight_allows_request_scoped_auth(file_secrets_store):
     await _validate_codex_credentials(
+        _CODEX_SETTINGS,
         AppConversationStartRequest(
             secrets={
                 'CODEX_AUTH_JSON': SecretStr(
@@ -243,7 +286,6 @@ async def test_codex_preflight_allows_request_scoped_auth(file_secrets_store):
                 )
             }
         ),
-        _codex_user_context(),
         file_secrets_store,
     )
 
@@ -452,7 +494,7 @@ async def test_stream_start_endpoint_hands_reservation_to_service():
     secrets_store = MagicMock()
     with (
         patch(
-            'openhands.app_server.app_conversation.app_conversation_router._validate_codex_credentials',
+            'openhands.app_server.app_conversation.app_conversation_router._validate_acp_start',
             new_callable=AsyncMock,
         ),
         patch(
@@ -603,7 +645,7 @@ async def test_start_app_conversation_returns_first_task_and_schedules_remainder
 
     with (
         patch(
-            'openhands.app_server.app_conversation.app_conversation_router._validate_codex_credentials',
+            'openhands.app_server.app_conversation.app_conversation_router._validate_acp_start',
             new_callable=AsyncMock,
         ),
         patch(
@@ -645,7 +687,7 @@ async def test_start_app_conversation_closes_resources_on_failure():
     httpx_client = AsyncMock()
 
     with patch(
-        'openhands.app_server.app_conversation.app_conversation_router._validate_codex_credentials',
+        'openhands.app_server.app_conversation.app_conversation_router._validate_acp_start',
         new_callable=AsyncMock,
     ):
         with pytest.raises(RuntimeError, match='start failed'):

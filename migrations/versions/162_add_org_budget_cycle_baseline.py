@@ -1,7 +1,7 @@
 """Add per-member budget cycle baselines with provenance.
 
-Revision ID: 161
-Revises: 160
+Revision ID: 162
+Revises: 161
 Create Date: 2026-09-11 00:00:00.000000
 """
 
@@ -10,8 +10,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '161'
-down_revision: str | None = '160'
+revision: str = '162'
+down_revision: str | None = '161'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
