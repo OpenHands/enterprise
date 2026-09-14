@@ -493,8 +493,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             from storage.database import a_session_maker
         except ImportError:
             return False
-        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
-        org_id = await get_effective_org_id() if get_effective_org_id else None
+        org_id = await self.user_context.get_effective_org_id()
         if server_config.app_mode.value != 'saas' or org_id is None:
             return False
         async with a_session_maker() as session:

@@ -1,0 +1,94 @@
+# Add after docker-compose.gcp.yml. See containers/compose/gcp/AUTHENTIK.md.
+x-authentik-environment: &authentik-environment
+  AUTHENTIK_POSTGRESQL__HOST: authentik-postgresql
+  AUTHENTIK_POSTGRESQL__NAME: authentik
+  AUTHENTIK_POSTGRESQL__USER: authentik
+  AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD:?Run authentik_setup.py prepare}
+  AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?Run authentik_setup.py prepare}
+  AUTHENTIK_WEB__BASE_URL: https://${AUTHENTIK_HOST:?Set AUTHENTIK_HOST}
+  AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS: ${COMPOSE_INGRESS_SUBNET:-172.30.40.0/24}
+  AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+
+x-authentik-saml-environment: &authentik-saml-environment
+  NATIVE_SAML_ENABLED: ${NATIVE_SAML_ENABLED:-false}
+  NATIVE_SAML_CONNECTION_ID: authentik
+  NATIVE_SAML_DISPLAY_NAME: Demo SSO
+  NATIVE_SAML_IDP_ENTITY_ID: https://${AUTHENTIK_HOST}/application/saml/openhands/metadata/
+  NATIVE_SAML_IDP_SSO_URL: https://${AUTHENTIK_HOST}/application/saml/openhands/
+  NATIVE_SAML_IDP_CERT_FILE: /run/secrets/saml/authentik-idp.pem
+  NATIVE_SAML_EMAIL_ATTRIBUTE: email
+  NATIVE_SAML_JIT_ENABLED: "true"
+
+services:
+  init:
+    environment: *authentik-saml-environment
+    volumes:
+      - &authentik-trust
+        type: bind
+        source: ./.gcp/authentik-idp-certificate.pem
+        target: /run/secrets/saml/authentik-idp.pem
+        read_only: true
+        bind:
+          create_host_path: false
+
+  openhands:
+    environment: *authentik-saml-environment
+    volumes:
+      - *authentik-trust
+
+  authentik-postgresql:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: authentik
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: ${AUTHENTIK_DB_PASSWORD}
+    volumes:
+      - authentik-database:/var/lib/postgresql/data
+    networks:
+      - authentik-database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik -d authentik"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2026.8.2
+    command: server
+    restart: unless-stopped
+    shm_size: 512mb
+    environment: *authentik-environment
+    volumes:
+      - authentik-data:/data
+    networks:
+      - authentik-database
+      - ingress
+    depends_on:
+      authentik-postgresql:
+        condition: service_healthy
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2026.8.2
+    command: worker
+    restart: unless-stopped
+    shm_size: 512mb
+    user: "0:0"
+    environment: *authentik-environment
+    env_file:
+      - ./.gcp/authentik-bootstrap.env
+    volumes:
+      - authentik-data:/data
+    networks:
+      - authentik-database
+    depends_on:
+      authentik-postgresql:
+        condition: service_healthy
+
+networks:
+  authentik-database:
+    internal: true
+
+volumes:
+  authentik-database:
+  authentik-data:

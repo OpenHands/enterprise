@@ -166,7 +166,7 @@ class NativeGitCredentialService:
         email: str | None = None,
     ) -> GitConnectionView:
         config = git_config(provider, host)
-        method = 'pat'
+        method = 'api_token' if provider == 'bitbucket' else 'pat'
         if method not in config.methods:
             raise GitCredentialError('manual_connection_disabled', 403)
         if (
@@ -175,7 +175,16 @@ class NativeGitCredentialService:
             or any(ord(c) < 33 or ord(c) > 126 for c in token)
         ):
             raise GitCredentialError('invalid_credential')
-        if email:
+        if provider == 'bitbucket':
+            if (
+                not email
+                or ':' in email
+                or '@' not in email
+                or len(email) > 320
+                or any(ord(c) < 33 for c in email)
+            ):
+                raise GitCredentialError('bitbucket_email_required')
+        elif email:
             raise GitCredentialError('unexpected_email')
         account_id = UUID(str(user_id))
         async with self.sessions() as session, session.begin():
@@ -241,6 +250,10 @@ class NativeGitCredentialService:
                 row.generation += 1
                 await session.flush()
                 result = connection_view(row)
+            if provider == 'gitlab':
+                from server.auth.gitlab_sync import schedule_gitlab_repo_sync
+
+                schedule_gitlab_repo_sync(str(account_id))
             return result
         except IntegrityError as exc:
             raise GitCredentialError('provider_account_conflict', 409) from exc
@@ -252,7 +265,7 @@ class NativeGitCredentialService:
         if 'oauth' not in config.methods:
             raise GitCredentialError('oauth_connection_disabled', 403)
         state = new_token()
-        verifier = new_token()
+        verifier = new_token() if provider in ('github', 'gitlab') else None
         async with self.sessions() as session, session.begin():
             await self._browser(session, principal)
             row = await self._connection(
@@ -298,7 +311,12 @@ class NativeGitCredentialService:
                 .decode(),
                 code_challenge_method='S256',
             )
-        params['scope'] = 'repo read:user'
+        if provider == 'gitlab':
+            params['scope'] = 'api'
+        elif provider == 'github':
+            params['scope'] = 'repo read:user'
+        # Bitbucket confidential consumers use client-secret authentication;
+        # its documented OAuth endpoint has no PKCE support.
         return f'{config.authorize_url}?{urlencode(params)}'
 
     async def complete_oauth(
@@ -445,6 +463,9 @@ class NativeGitCredentialService:
             crypto = get_jwt_service()
             value = crypto.decrypt_value(row.encrypted_access_token)
             expected = f'Bearer {value}'
+            if row.auth_type == 'api_token' and row.encrypted_email:
+                value = f'{crypto.decrypt_value(row.encrypted_email)}:{value}'
+                expected = 'Basic ' + base64.b64encode(value.encode()).decode()
             if compare_digest(expected, authorization):
                 row.last_error = 'credential_rejected'
 
@@ -563,6 +584,10 @@ class NativeGitCredentialService:
                     row.last_error = exc.code
             if not failure:
                 value = crypto.decrypt_value(row.encrypted_access_token)
+                # The provider abstraction already supports Basic username:token
+                # for Bitbucket; OAuth access tokens remain plain Bearer values.
+                if row.auth_type == 'api_token' and row.encrypted_email:
+                    value = f'{crypto.decrypt_value(row.encrypted_email)}:{value}'
                 result = ProviderToken(
                     token=SecretStr(value), user_id=row.subject, host=row.host
                 )
@@ -611,6 +636,8 @@ class NativeGitCredentialService:
             assert token.token is not None
             value = token.token.get_secret_value()
             email = None
+            if provider == ProviderType.BITBUCKET and ':' in value:
+                email, value = value.split(':', 1)
             identity = await verify_provider_identity(config, value, email)
             if identity.id != subject:
                 return None

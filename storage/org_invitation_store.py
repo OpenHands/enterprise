@@ -84,7 +84,7 @@ class OrgInvitationStore:
                 .options(joinedload(OrgInvitation.role))
                 .filter(OrgInvitation.id == invitation.id)
             )
-            invitation = result.scalars().first()
+            invitation = result.scalars().one()
 
             logger.info(
                 'Created organization invitation',

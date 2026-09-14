@@ -7,6 +7,8 @@ from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.types import AppMode
 from openhands.app_server.utils.logger import openhands_logger as logger
 
+_sync_tasks: set[asyncio.Task[None]] = set()
+
 
 async def _user_has_gitlab_provider(user_id: str) -> bool:
     """Check if the user has authenticated with GitLab.
@@ -17,6 +19,20 @@ async def _user_has_gitlab_provider(user_id: str) -> bool:
     Returns:
         True if the user has a GitLab provider token, False otherwise
     """
+    from server.auth.auth_config import ENABLE_KEYCLOAK
+
+    if not ENABLE_KEYCLOAK:
+        from server.auth.native_git_config import git_config
+        from server.services.native_git_credentials import get_native_git_service
+        from server.services.native_git_provider import GitCredentialError
+
+        try:
+            token = await get_native_git_service().get_token(
+                user_id, ProviderType.GITLAB
+            )
+            return token.host == git_config('gitlab').host
+        except (GitCredentialError, ValueError):
+            return False
     # Lazy import to avoid circular dependency issues at module load time
     from storage.auth_tokens import AuthTokens
     from storage.database import a_session_maker
@@ -43,7 +59,7 @@ def schedule_gitlab_repo_sync(
     The sync is only performed if the user has authenticated with GitLab.
     """
 
-    async def _run():
+    async def _run() -> None:
         try:
             # Check if the user has a GitLab provider token before syncing
             if not await _user_has_gitlab_provider(user_id):
@@ -68,4 +84,6 @@ def schedule_gitlab_repo_sync(
         except Exception:
             logger.warning('gitlab_repo_sync_failed', exc_info=True)
 
-    _ = asyncio.create_task(_run())
+    task = asyncio.create_task(_run())
+    _sync_tasks.add(task)
+    task.add_done_callback(_sync_tasks.discard)

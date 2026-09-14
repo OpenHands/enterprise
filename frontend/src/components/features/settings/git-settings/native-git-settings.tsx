@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router";
 import { useTranslation } from "react-i18next";
+import { GitLabWebhookManager } from "./gitlab-webhook-manager";
 import { useMe } from "#/hooks/query/use-me";
 import { ProjectManagementIntegration } from "../project-management/project-management-integration";
 import { useGitConnections } from "#/hooks/query/use-git-connections";
@@ -23,12 +24,16 @@ import { SettingsDropdownInput } from "../settings-dropdown-input";
 import { KeyStatusIcon } from "../key-status-icon";
 import { GitProviderConnection } from "./git-provider-connection";
 import { GitHubTokenHelpAnchor } from "./github-token-help-anchor";
+import { GitLabTokenHelpAnchor } from "./gitlab-token-help-anchor";
+import { BitbucketTokenHelpAnchor } from "./bitbucket-token-help-anchor";
 import { Typography } from "#/ui/typography";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { AuthError } from "#/components/features/native-auth/auth-form";
 
 const providerNames: Record<NativeGitProviderName, string> = {
   github: "GitHub",
+  gitlab: "GitLab",
+  bitbucket: "Bitbucket",
 };
 
 function NativeGitProvider({
@@ -68,7 +73,9 @@ function NativeGitProvider({
     connect.isPending ||
     disconnect.isPending ||
     install.isPending;
-  const manual = capability.methods.includes("pat");
+  const manual =
+    capability.methods.includes("pat") ||
+    capability.methods.includes("api_token");
   const report = (cause: unknown): void =>
     setError(
       cause instanceof Error ? cause.message : t("NATIVE_GIT$UNAVAILABLE"),
@@ -86,6 +93,9 @@ function NativeGitProvider({
         provider,
         host,
         token: String(fields.get("token")),
+        ...(provider === "bitbucket"
+          ? { email: String(fields.get("email")) }
+          : {}),
       });
       form.reset();
       await refresh();
@@ -160,9 +170,23 @@ function NativeGitProvider({
           className="ph-no-capture ph-mask flex flex-col gap-4"
           onSubmit={submit}
         >
+          {provider === "bitbucket" && (
+            <SettingsInput
+              className="w-full max-w-[680px]"
+              label={t("NATIVE_GIT$BITBUCKET_EMAIL")}
+              type="email"
+              name="email"
+              autoComplete="off"
+              required
+            />
+          )}
           <SettingsInput
             className="w-full max-w-[680px]"
-            label={t("NATIVE_GIT$PAT")}
+            label={t(
+              provider === "bitbucket"
+                ? "NATIVE_GIT$API_TOKEN"
+                : "NATIVE_GIT$PAT",
+            )}
             type="password"
             name="token"
             autoComplete="off"
@@ -175,6 +199,8 @@ function NativeGitProvider({
             {t("NATIVE_GIT$TOKEN_HELP")}
           </p>
           {provider === "github" && <GitHubTokenHelpAnchor />}
+          {provider === "gitlab" && <GitLabTokenHelpAnchor />}
+          {provider === "bitbucket" && <BitbucketTokenHelpAnchor />}
           <BrandButton
             type="submit"
             variant="primary"
@@ -246,6 +272,9 @@ function NativeGitProvider({
             {t("GITHUB$CONFIGURE_REPOS")}
           </BrandButton>
         )}
+      {provider === "gitlab" &&
+        current?.status === "connected" &&
+        current.host === capability.webhook_host && <GitLabWebhookManager />}
     </>
   );
   return (

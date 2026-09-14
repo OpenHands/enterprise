@@ -26,8 +26,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import SecretStr
 
 from openhands.app_server.user_auth.user_auth import AuthType
+from server.auth.saas_user_auth import SaasUserAuth
+from server.auth.token_manager import KeycloakUserInfo
 from server.routes.auth import keycloak_offline_callback, logout
 
 
@@ -103,8 +106,8 @@ class TestOfflineTokenSurvivesLogout:
 
     @pytest.mark.asyncio
     async def test_offline_token_survives_user_logout(
-        self, mock_request, create_keycloak_user_info
-    ):
+        self, mock_request: MagicMock
+    ) -> None:
         """Simulate: new user -> offline auth -> logout -> offline token still valid.
 
         After PR #14387 the offline callback only persists the offline
@@ -131,7 +134,9 @@ class TestOfflineTokenSurvivesLogout:
                 return_value=('online_access_token', offline_refresh_token)
             )
             mock_token_manager.get_user_info = AsyncMock(
-                return_value=create_keycloak_user_info(sub=user_id)
+                return_value=KeycloakUserInfo(
+                    sub=user_id, preferred_username='test_user'
+                )
             )
             mock_token_manager.store_offline_token = AsyncMock()
             mock_token_manager.logout = AsyncMock()
@@ -153,15 +158,14 @@ class TestOfflineTokenSurvivesLogout:
             logout_request.cookies = {}
             logout_request.headers = {}
 
-            mock_user_auth = MagicMock()
             # The user is logging out via the browser, so the resolved
             # auth is the cookie session — express that explicitly so the
             # logout route's bearer-vs-cookie guard exercises the
             # cookie-auth branch.
-            mock_user_auth.auth_type = AuthType.COOKIE
-            mock_user_auth.refresh_token = MagicMock()
-            mock_user_auth.refresh_token.get_secret_value.return_value = (
-                online_refresh_token
+            mock_user_auth = SaasUserAuth(
+                user_id=user_id,
+                auth_type=AuthType.COOKIE,
+                refresh_token=SecretStr(online_refresh_token),
             )
 
             with patch(

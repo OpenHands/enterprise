@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from integrations.types import GitLabResourceType
 from openhands.app_server.utils.logger import openhands_logger as logger
-from storage.database import a_session_maker
+from storage.database import a_session_maker, affected_row_count
 from storage.gitlab_webhook import GitlabWebhook
 
 
@@ -132,7 +132,7 @@ class GitlabWebhookStore:
                     )
 
                 result = await session.execute(query)
-                rows_deleted = result.rowcount
+                rows_deleted = affected_row_count(result)
 
                 if rows_deleted > 0:
                     logger.info(
@@ -271,7 +271,11 @@ class GitlabWebhookStore:
                 )
                 result = await session.execute(project_query)
                 project_webhooks = result.scalars().all()
-                project_webhook_map = {wh.project_id: wh for wh in project_webhooks}
+                project_webhook_map = {
+                    wh.project_id: wh
+                    for wh in project_webhooks
+                    if wh.project_id is not None
+                }
 
             # Fetch all group webhooks in a single query
             if group_ids:
@@ -280,7 +284,9 @@ class GitlabWebhookStore:
                 )
                 result = await session.execute(group_query)
                 group_webhooks = result.scalars().all()
-                group_webhook_map = {wh.group_id: wh for wh in group_webhooks}
+                group_webhook_map = {
+                    wh.group_id: wh for wh in group_webhooks if wh.group_id is not None
+                }
 
             return project_webhook_map, group_webhook_map
 
@@ -324,7 +330,7 @@ class GitlabWebhookStore:
                     )
 
                 result = await session.execute(update_statement)
-                rows_updated = result.rowcount
+                rows_updated = affected_row_count(result)
 
                 logger.info(
                     'Reset webhook for reinstallation (organization-wide)',

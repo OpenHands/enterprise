@@ -66,6 +66,9 @@ describe("native authentication translation distribution", () => {
       );
     }
     expect(english["NATIVE_AUTH$SIGN_IN"]).toBe("Sign in");
+    expect(english["NATIVE_AUTH$SIGN_IN_EMAIL"]).toBe("Sign in with Email");
+    expect(english["NATIVE_AUTH$SIGN_IN_SSO"]).toBe("Sign in with SSO");
+    expect(english["NATIVE_GIT$CONNECT"]).toBe("Connect");
   });
 
   it("does not distribute character indexes as language codes", () => {

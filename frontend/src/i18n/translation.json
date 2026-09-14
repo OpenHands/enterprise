@@ -29904,5 +29904,11 @@
     "de": "Sandbox vorübergehend nicht verfügbar",
     "uk": "Пісочниця тимчасово недоступна",
     "ca": "Sandbox temporalment no disponible"
+  },
+  "NATIVE_GIT$BITBUCKET_EMAIL": {
+    "en": "Atlassian account email"
+  },
+  "NATIVE_GIT$API_TOKEN": {
+    "en": "API token"
   }
 }

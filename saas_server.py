@@ -166,7 +166,7 @@ if (ENABLE_KEYCLOAK and GITHUB_APP_CLIENT_ID) or (
     )  # Add additional route for integration webhook events
 
 # Add GitLab integration router only if GITLAB_APP_CLIENT_ID is set
-if ENABLE_KEYCLOAK and GITLAB_APP_CLIENT_ID:
+if GITLAB_APP_CLIENT_ID or not ENABLE_KEYCLOAK:
     # Make sure that the callback processor is loaded here so we don't get an error when deserializing
     from integrations.gitlab.gitlab_v1_callback_processor import (  # noqa: E402
         GitlabV1CallbackProcessor,
@@ -179,7 +179,7 @@ if ENABLE_KEYCLOAK and GITLAB_APP_CLIENT_ID:
     base_app.include_router(gitlab_integration_router)
 
 # Add Bitbucket Cloud integration router only if BITBUCKET_APP_CLIENT_ID is set
-if ENABLE_KEYCLOAK and BITBUCKET_APP_CLIENT_ID:
+if BITBUCKET_APP_CLIENT_ID or not ENABLE_KEYCLOAK:
     from integrations.bitbucket.bitbucket_v1_callback_processor import (  # noqa: E402
         BitbucketV1CallbackProcessor,
     )

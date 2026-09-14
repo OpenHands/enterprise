@@ -4,6 +4,7 @@ import secrets
 import string
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import overload
 from uuid import UUID
 
 from sqlalchemy import or_, select, update
@@ -37,6 +38,14 @@ def _as_naive(value: datetime | None) -> datetime | None:
     if value is None or value.tzinfo is None:
         return value
     return value.astimezone(UTC).replace(tzinfo=None)
+
+
+@overload
+def _as_utc_aware(value: datetime) -> datetime: ...
+
+
+@overload
+def _as_utc_aware(value: None) -> None: ...
 
 
 def _as_utc_aware(value: datetime | None) -> datetime | None:

@@ -64,6 +64,10 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
                     f'[Azure DevOps] Keycloak id lookup failed for actor {actor_id}: {e}'
                 )
 
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+
+        if not ENABLE_KEYCLOAK:
+            return None
         email = actor_email(actor)
         if email:
             try:

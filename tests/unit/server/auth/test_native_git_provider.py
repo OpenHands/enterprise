@@ -1,5 +1,6 @@
-"""Direct GitHub HTTP contracts and credential redaction."""
+"""Direct provider HTTP contracts, including modern Bitbucket API tokens."""
 
+import base64
 import traceback
 from urllib.parse import parse_qs
 
@@ -33,27 +34,39 @@ def http_provider(monkeypatch: pytest.MonkeyPatch) -> HttpProvider:
         )
 
     monkeypatch.setattr(native_git_provider.httpx, 'AsyncClient', client)
-    return (requests, responses)
+    return requests, responses
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'provider,email',
+    [('github', None), ('gitlab', None), ('bitbucket', 'dev@example.com')],
+)
 async def test_identity_endpoint_and_transport(
-    http_provider: HttpProvider,
+    http_provider: HttpProvider, provider: str, email: str | None
 ) -> None:
     requests, responses = http_provider
-    responses.append((200, {}, {'id': 123, 'login': 'developer'}))
-    config = NativeGitConfig('github', 'github.com', ())
-    result = await native_git_provider.verify_provider_identity(
-        config, 'provider-secret'
+    responses.append(
+        (200, {}, {'id': 123, 'uuid': '{bitbucket-id}', 'login': 'developer'})
     )
-    assert result.id == '123'
+    config = NativeGitConfig(
+        provider, f'{provider}.com' if provider != 'bitbucket' else 'bitbucket.org', ()
+    )
+    result = await native_git_provider.verify_provider_identity(
+        config, 'provider-secret', email
+    )
+    assert result.id == ('{bitbucket-id}' if email else '123')
     authorization = requests[0].headers['Authorization']
-    assert authorization == 'Bearer provider-secret'
+    assert authorization == (
+        'Basic ' + base64.b64encode(b'dev@example.com:provider-secret').decode()
+        if email
+        else 'Bearer provider-secret'
+    )
     assert str(requests[0].url) == config.api_url + '/user'
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('provider', ['github'])
+@pytest.mark.parametrize('provider', ['github', 'gitlab', 'bitbucket'])
 async def test_confidential_oauth_code_and_rotation(
     http_provider: HttpProvider, monkeypatch: pytest.MonkeyPatch, provider: str
 ) -> None:
@@ -86,9 +99,13 @@ async def test_confidential_oauth_code_and_rotation(
             ),
         ]
     )
-    config = NativeGitConfig(provider, f'{provider}.com', ('oauth',))
+    config = NativeGitConfig(
+        provider,
+        'bitbucket.org' if provider == 'bitbucket' else f'{provider}.com',
+        ('oauth',),
+    )
     grant = await native_git_provider.exchange_grant(
-        config, code='code', verifier='verifier'
+        config, code='code', verifier='verifier' if provider != 'bitbucket' else None
     )
     rotated = await native_git_provider.exchange_grant(
         config, refresh_token=grant.refresh_token
@@ -98,8 +115,17 @@ async def test_confidential_oauth_code_and_rotation(
     assert body['redirect_uri'] == [
         f'https://native.example.com/oauth/git/{provider}/callback'
     ]
-    assert 'code_verifier' in body
-    assert body['client_secret'] == ['client-secret']
+    assert ('code_verifier' in body) == (provider != 'bitbucket')
+    if provider == 'bitbucket':
+        assert requests[0].headers['Authorization'].startswith('Basic ')
+        assert 'client_secret' not in body
+    else:
+        assert body['client_secret'] == ['client-secret']
+    if provider == 'gitlab':
+        assert (
+            parse_qs(requests[1].content.decode())['redirect_uri']
+            == body['redirect_uri']
+        )
     get_native_auth_settings.cache_clear()
 
 
@@ -135,14 +161,20 @@ async def test_provider_errors_are_safe_and_not_app_auth(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('provider', ['github'])
+@pytest.mark.parametrize('provider', ['github', 'gitlab'])
 async def test_manual_tokens_with_insufficient_scopes_are_rejected(
     http_provider: HttpProvider, provider: str
 ) -> None:
     _, responses = http_provider
     responses.append(
-        (200, {'X-OAuth-Scopes': 'read:user'}, {'id': 123, 'login': 'developer'})
+        (
+            200,
+            {'X-OAuth-Scopes': 'read:user'} if provider == 'github' else {},
+            {'id': 123, 'login': 'developer'},
+        )
     )
+    if provider == 'gitlab':
+        responses.append((200, {}, {'scopes': ['read_user']}))
     config = NativeGitConfig(provider, f'{provider}.com', ('pat',))
     with pytest.raises(GitCredentialError, match='insufficient_scope'):
         await native_git_provider.verify_provider_identity(

@@ -11,6 +11,7 @@ from integrations.gitlab.gitlab_service import SaaSGitLabService
 from integrations.gitlab.webhook_installation import (
     BreakLoopException,
     install_webhook_on_resource,
+    require_native_gitlab_webhook_host,
     verify_webhook_conditions,
 )
 from integrations.models import Message, SourceType
@@ -20,6 +21,7 @@ from openhands.app_server.integrations.gitlab.gitlab_service import GitLabServic
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.token_manager import TokenManager
+from server.services.native_git_provider import GitCredentialError
 from storage.gitlab_webhook import GitlabWebhook
 from storage.gitlab_webhook_store import GitlabWebhookStore
 from storage.redis import get_redis_client_async
@@ -85,7 +87,7 @@ async def gitlab_events(
     x_gitlab_token: str = Header(None),
     x_openhands_webhook_id: str = Header(None),
     x_openhands_user_id: str = Header(None),
-):
+) -> JSONResponse:
     try:
         await verify_gitlab_signature(
             header_webhook_secret=x_gitlab_token,
@@ -93,6 +95,11 @@ async def gitlab_events(
             user_id=x_openhands_user_id,
         )
 
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+
+        if not ENABLE_KEYCLOAK:
+            service = GitLabServiceImpl(external_auth_id=x_openhands_user_id)
+            await require_native_gitlab_webhook_host(service)
         payload_data = await request.json()
         object_attributes = payload_data.get('object_attributes', {})
         dedup_key = object_attributes.get('id')
@@ -143,6 +150,7 @@ async def get_gitlab_resources(
     try:
         # Get GitLab service for the user
         gitlab_service = GitLabServiceImpl(external_auth_id=user_id)
+        await require_native_gitlab_webhook_host(gitlab_service)
 
         if not isinstance(gitlab_service, SaaSGitLabService):
             raise HTTPException(
@@ -258,6 +266,8 @@ async def get_gitlab_resources(
 
         return GitLabResourcesResponse(resources=resources)
 
+    except GitCredentialError:
+        raise
     except HTTPException:
         raise
     except Exception as e:
@@ -281,6 +291,7 @@ async def reinstall_gitlab_webhook(
     try:
         # Get GitLab service for the user
         gitlab_service = GitLabServiceImpl(external_auth_id=user_id)
+        await require_native_gitlab_webhook_host(gitlab_service)
 
         if not isinstance(gitlab_service, SaaSGitLabService):
             raise HTTPException(
@@ -387,6 +398,8 @@ async def reinstall_gitlab_webhook(
                 detail='Webhook installation conditions not met or webhook already exists',
             )
 
+    except GitCredentialError:
+        raise
     except HTTPException:
         raise
     except Exception as e:

@@ -1,5 +1,6 @@
 """Git-info keeps native app ownership across real routes and provider failures."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from ssl import SSLContext
 
@@ -10,10 +11,13 @@ from pydantic import JsonValue
 from sqlalchemy import select
 
 from integrations import native_git_mixin
+from integrations.bitbucket import bitbucket_service
 from integrations.github import github_service
+from integrations.gitlab import gitlab_service
 from openhands.app_server.user import user_router
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user_auth.user_auth import get_user_auth
+from server.auth import gitlab_sync
 from server.auth.native_session import csrf_for_token
 from server.auth.native_types import SessionFactory
 from server.routes import native_git
@@ -44,6 +48,8 @@ async def native_git_info(
     monkeypatch.setenv('ENABLE_KEYCLOAK', 'false')
     for module, provider, class_name, default_host in (
         (github_service, 'GITHUB', 'SaaSGitHubService', 'github.com'),
+        (gitlab_service, 'GITLAB', 'SaaSGitLabService', 'gitlab.com'),
+        (bitbucket_service, 'BITBUCKET', 'SaaSBitBucketService', 'bitbucket.org'),
     ):
         monkeypatch.setattr(module, 'ENABLE_KEYCLOAK', False)
         monkeypatch.setenv(
@@ -52,7 +58,8 @@ async def native_git_info(
         monkeypatch.setenv(f'NATIVE_GIT_{provider}_MANUAL_ENABLED', 'true')
         monkeypatch.setenv(f'NATIVE_GIT_{provider}_OAUTH_ENABLED', 'false')
         hosts = default_host
-        hosts += f',{provider.lower()}.alternate.example'
+        if provider != 'BITBUCKET':
+            hosts += f',{provider.lower()}.alternate.example'
         monkeypatch.setenv(f'NATIVE_GIT_{provider}_HOSTS', hosts)
     monkeypatch.setattr(native_git_mixin, 'ENABLE_KEYCLOAK', False)
     upstream = ProviderState()
@@ -123,20 +130,26 @@ async def native_git_info(
         cookies={'openhands_session': login.token},
         headers={'Origin': ORIGIN, 'X-CSRF-Token': csrf_for_token(login.token)},
     ) as client:
-        yield (client, upstream, login.principal.account_id)
+        yield client, upstream, login.principal.account_id
 
 
 async def connect(
     client: httpx.AsyncClient, provider: str, host: str | None = None
 ) -> None:
     body = {'token': 'git-info-test-token'}
+    if provider == 'bitbucket':
+        body['email'] = 'git-user@example.test'
     if host:
         body['host'] = host
     response = await client.put(f'/api/git-connections/{provider}', json=body)
     assert response.status_code == 200
+    if provider == 'gitlab':
+        # Finish the real post-connect sync against empty fake provider lists
+        # before changing the HTTP status for the foreground git-info request.
+        await asyncio.gather(*tuple(gitlab_sync._sync_tasks))
 
 
-@pytest.mark.parametrize('provider', ['github'])
+@pytest.mark.parametrize('provider', ['github', 'gitlab', 'bitbucket'])
 @pytest.mark.parametrize('upstream_status', [200, 401, 503])
 async def test_native_git_info_provider_status_keeps_app_identity(
     native_git_info: NativeGitInfo,
@@ -165,6 +178,7 @@ async def test_native_git_info_provider_status_keeps_app_identity(
         assert response.json()['error'] == (
             'credential_rejected' if upstream_status == 401 else 'provider_unavailable'
         )
+    # The known application owner needs no extra provider-actor proof request.
     assert len([url for url in upstream.requests if url.endswith('/user')]) == 1
     connections = (await client.get('/api/git-connections')).json()['connections']
     assert connections[0]['status'] == (
@@ -182,7 +196,7 @@ async def test_native_git_info_provider_status_keeps_app_identity(
         assert (await client.get('/api/v1/users/git-info')).status_code == 200
 
 
-@pytest.mark.parametrize('provider', ['github'])
+@pytest.mark.parametrize('provider', ['github', 'gitlab'])
 async def test_native_git_info_uses_connected_approved_host(
     native_git_info: NativeGitInfo, provider: str
 ) -> None:
@@ -193,7 +207,7 @@ async def test_native_git_info_uses_connected_approved_host(
     response = await client.get('/api/v1/users/git-info')
     assert response.status_code == 200
     assert response.json()['id'] == '31415'
-    version = 'v3'
+    version = 'v3' if provider == 'github' else 'v4'
     assert upstream.requests == [f'https://{host}/api/{version}/user']
 
 

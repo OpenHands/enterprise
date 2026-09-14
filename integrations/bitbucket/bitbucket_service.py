@@ -1,14 +1,18 @@
-from pydantic import SecretStr
+from collections.abc import Mapping
 
+from pydantic import JsonValue, SecretStr, TypeAdapter
+
+from integrations.native_git_mixin import NativeGitMixin, native_service_token
 from openhands.app_server.integrations.bitbucket.bitbucket_service import (
     BitBucketService,
 )
-from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.integrations.service_types import ProviderType, RequestMethod
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.token_manager import TokenManager
 
 
-class SaaSBitBucketService(BitBucketService):
+class SaaSBitBucketService(NativeGitMixin, BitBucketService):
     def __init__(
         self,
         user_id: str | None = None,
@@ -17,10 +21,16 @@ class SaaSBitBucketService(BitBucketService):
         token: SecretStr | None = None,
         external_token_manager: bool = False,
         base_domain: str | None = None,
-    ):
+    ) -> None:
         logger.info(
             f'SaaSBitBucketService created with user_id {user_id}, external_auth_id {external_auth_id}, external_auth_token {"set" if external_auth_token else "None"}, bitbucket_token {"set" if token else "None"}, external_token_manager {external_token_manager}'
         )
+        self._native_requested_host = base_domain
+        if not ENABLE_KEYCLOAK:
+            from server.auth.native_git_config import git_config
+
+            base_domain = git_config('bitbucket', base_domain).host
+        self.base_domain = base_domain
         super().__init__(
             user_id=user_id,
             external_auth_token=external_auth_token,
@@ -34,7 +44,24 @@ class SaaSBitBucketService(BitBucketService):
         self.external_auth_id = external_auth_id
         self.token_manager = TokenManager(external=external_token_manager)
 
+    async def _legacy_headers(self) -> dict[str, str]:
+        return TypeAdapter(dict[str, str]).validate_python(
+            await BitBucketService._get_headers(self)
+        )
+
+    async def _legacy_request(
+        self, url: str, params: Mapping[str, JsonValue] | None, method: RequestMethod
+    ) -> tuple[JsonValue, dict[str, str]]:
+        data, headers = await BitBucketService._make_request(
+            self, url, dict(params) if params is not None else None, method
+        )
+        return TypeAdapter(JsonValue).validate_python(data), TypeAdapter(
+            dict[str, str]
+        ).validate_python(headers)
+
     async def get_latest_token(self) -> SecretStr | None:
+        if not ENABLE_KEYCLOAK:
+            return await native_service_token(self, ProviderType.BITBUCKET)
         bitbucket_token = None
         if self.external_auth_token:
             bitbucket_token = SecretStr(

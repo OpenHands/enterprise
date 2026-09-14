@@ -1,5 +1,7 @@
 # Instructions for developing SAAS locally
 
+For a fresh installation without Keycloak, use the [native authentication setup](NATIVE_AUTH.md).
+
 You have a few options here, which are expanded on below:
 
 - A simple local development setup, with live reloading for both OpenHands and this repo

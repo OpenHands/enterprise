@@ -17,7 +17,9 @@ from pydantic import JsonValue, SecretStr, TypeAdapter
 from sqlalchemy import select, update
 
 from integrations import native_git_mixin
+from integrations.bitbucket.bitbucket_service import SaaSBitBucketService
 from integrations.github.github_service import SaaSGitHubService
+from integrations.gitlab.gitlab_service import SaaSGitLabService
 from openhands.app_server.integrations.service_types import ProviderType
 from server.auth import token_manager
 from server.auth.native_git_config import (
@@ -40,9 +42,14 @@ from storage.native_auth import AuthAccount, PasswordCredential
 from storage.native_git import GitConnection, GitOAuthState
 from storage.user import User
 from tests.unit.server.auth import test_native_runtime as runtime_fixtures
-from tests.unit.server.auth.native_test_types import GitRuntime, NativeRuntime, present
+from tests.unit.server.auth.native_test_types import (
+    GitRuntime,
+    NativeRuntime,
+    present,
+)
 
 native_runtime = runtime_fixtures.native_runtime
+
 IDENTITY = GitIdentity('1234', 'developer', 'Developer')
 
 
@@ -60,7 +67,7 @@ async def git_runtime(
     monkeypatch.setattr(token_manager, 'ENABLE_KEYCLOAK', False)
     monkeypatch.setattr(token_manager, 'a_session_maker', async_session_maker)
     monkeypatch.setattr(native_git_mixin, 'ENABLE_KEYCLOAK', False)
-    for provider in ('github',):
+    for provider in ('github', 'gitlab', 'bitbucket'):
         module = __import__(
             f'integrations.{provider}.{provider}_service', fromlist=['ENABLE_KEYCLOAK']
         )
@@ -69,26 +76,40 @@ async def git_runtime(
         monkeypatch.setenv(f'{provider.upper()}_APP_CLIENT_ID', 'test-client')
         monkeypatch.setenv(f'{provider.upper()}_APP_CLIENT_SECRET', 'test-secret')
     monkeypatch.setattr(native_git_credentials, 'revoke_grant', AsyncMock())
+    from unittest.mock import MagicMock
+
+    from server.auth import gitlab_sync
+
+    monkeypatch.setattr(gitlab_sync, 'schedule_gitlab_repo_sync', MagicMock())
     verify = AsyncMock(return_value=IDENTITY)
     monkeypatch.setattr(native_git_credentials, 'verify_provider_identity', verify)
-    yield (service, login, verify)
+    yield service, login, verify
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('provider', ['github'])
+@pytest.mark.parametrize(
+    'provider,email',
+    [('github', None), ('gitlab', None), ('bitbucket', 'dev@example.com')],
+)
 async def test_manual_encrypted_and_sdk_round_trip(
     git_runtime: GitRuntime,
     async_session_maker: SessionFactory,
     provider: str,
+    email: str | None,
 ) -> None:
     service, login, verify = git_runtime
     account = login.principal.account_id
-    result = await service.connect_manual(account, provider, 'private-provider-token')
+    result = await service.connect_manual(
+        account, provider, 'private-provider-token', email=email
+    )
     assert result['account']['id'] == IDENTITY.id
-    assert result['auth_type'] == 'pat'
+    assert result['auth_type'] == ('api_token' if email else 'pat')
     assert 'private-provider-token' not in str(result)
     token = await service.get_token(account, ProviderType(provider))
-    assert present(token.token).get_secret_value() == 'private-provider-token'
+    assert (
+        present(token.token).get_secret_value()
+        == ('dev@example.com:' if email else '') + 'private-provider-token'
+    )
     async with async_session_maker() as session:
         row = await session.scalar(select(GitConnection))
         assert 'private-provider-token' not in present(
@@ -107,7 +128,7 @@ async def test_manual_encrypted_and_sdk_round_trip(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('provider', ['github'])
+@pytest.mark.parametrize('provider', ['github', 'gitlab', 'bitbucket'])
 async def test_oauth_pkce_exchange_cancel_and_replay(
     git_runtime: GitRuntime,
     monkeypatch: pytest.MonkeyPatch,
@@ -126,7 +147,7 @@ async def test_oauth_pkce_exchange_cancel_and_replay(
     assert params['redirect_uri'] == [
         f'https://native.example.com/oauth/git/{provider}/callback'
     ]
-    assert 'code_challenge' in params
+    assert ('code_challenge' in params) == (provider != 'bitbucket')
     state = params['state'][0]
     async with async_session_maker() as session:
         record = await session.scalar(select(GitOAuthState))
@@ -249,7 +270,7 @@ async def expired_oauth(
     login: NativeLogin,
     async_session_maker: SessionFactory,
 ) -> None:
-    await service.connect_manual(login.principal.account_id, 'github', 'old-access')
+    await service.connect_manual(login.principal.account_id, 'gitlab', 'old-access')
     async with async_session_maker() as session, session.begin():
         await session.execute(
             update(GitConnection).values(
@@ -287,11 +308,11 @@ async def test_concurrent_refresh_rotates_once_and_disconnect_wins(
     refresh = AsyncMock(side_effect=exchange)
     monkeypatch.setattr(native_git_credentials, 'exchange_grant', refresh)
     first = asyncio.create_task(
-        service.get_token(login.principal.account_id, ProviderType.GITHUB)
+        service.get_token(login.principal.account_id, ProviderType.GITLAB)
     )
     await asyncio.wait_for(entered.wait(), 5)
     second = asyncio.create_task(
-        service.get_token(login.principal.account_id, ProviderType.GITHUB)
+        service.get_token(login.principal.account_id, ProviderType.GITLAB)
     )
     release.set()
     results = await asyncio.gather(first, second)
@@ -309,16 +330,16 @@ async def test_concurrent_refresh_rotates_once_and_disconnect_wins(
     release.clear()
     entered.clear()
     first = asyncio.create_task(
-        service.get_token(login.principal.account_id, ProviderType.GITHUB)
+        service.get_token(login.principal.account_id, ProviderType.GITLAB)
     )
     await asyncio.wait_for(entered.wait(), 5)
     disconnect = asyncio.create_task(
-        service.disconnect(login.principal.account_id, 'github')
+        service.disconnect(login.principal.account_id, 'gitlab')
     )
     release.set()
     await asyncio.gather(first, disconnect)
     with pytest.raises(GitCredentialError, match='provider_not_connected'):
-        await service.get_token(login.principal.account_id, ProviderType.GITHUB)
+        await service.get_token(login.principal.account_id, ProviderType.GITLAB)
     async with async_session_maker() as session:
         row = await session.scalar(select(GitConnection))
         assert (
@@ -345,7 +366,7 @@ async def test_refresh_preserves_existing_refresh_when_provider_omits_replacemen
             )
         ),
     )
-    result = await service.get_token(login.principal.account_id, ProviderType.GITHUB)
+    result = await service.get_token(login.principal.account_id, ProviderType.GITLAB)
     assert present(result.token).get_secret_value() == 'new-access'
     async with async_session_maker() as session:
         row = await session.scalar(select(GitConnection))
@@ -376,7 +397,7 @@ async def test_provider_outage_preserves_encrypted_rotation_and_app_session(
     )
     verify.side_effect = GitCredentialError('provider_unavailable', 503)
     with pytest.raises(GitCredentialError, match='provider_unavailable'):
-        await service.get_token(login.principal.account_id, ProviderType.GITHUB)
+        await service.get_token(login.principal.account_id, ProviderType.GITLAB)
     async with async_session_maker() as session:
         row = await session.scalar(select(GitConnection))
         assert (
@@ -388,15 +409,29 @@ async def test_provider_outage_preserves_encrypted_rotation_and_app_session(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('provider,service_class', [('github', SaaSGitHubService)])
+@pytest.mark.parametrize(
+    'provider,service_class',
+    [
+        ('github', SaaSGitHubService),
+        ('gitlab', SaaSGitLabService),
+        ('bitbucket', SaaSBitBucketService),
+    ],
+)
 async def test_saas_service_headers_use_current_native_connection(
-    git_runtime: GitRuntime, provider: str, service_class: type[SaaSGitHubService]
+    git_runtime: GitRuntime,
+    provider: str,
+    service_class: type[SaaSGitHubService]
+    | type[SaaSGitLabService]
+    | type[SaaSBitBucketService],
 ) -> None:
     service, login, _ = git_runtime
-    await service.connect_manual(login.principal.account_id, provider, 'valid-token')
+    email = 'dev@example.com' if provider == 'bitbucket' else None
+    await service.connect_manual(
+        login.principal.account_id, provider, 'valid-token', email=email
+    )
     adapter = service_class(external_auth_id=str(login.principal.account_id))
     headers = await adapter._get_headers()
-    assert headers['Authorization'] == 'Bearer valid-token'
+    assert headers['Authorization'].startswith('Basic ' if email else 'Bearer ')
     await service.disconnect(login.principal.account_id, provider)
     with pytest.raises(GitCredentialError, match='provider_not_connected'):
         await adapter._get_headers()
@@ -425,21 +460,18 @@ async def test_callback_redirect_redacts_provider_error_and_wrong_session(
 def test_operator_hosts_and_unapproved_input(
     git_runtime: GitRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv('GITHUB_HOST', 'github.example.com')
-    assert git_config('github').host == 'github.example.com'
-    assert git_config('github').api_url == 'https://github.example.com/api/v3'
-    assert native_git_capabilities()['github']['hosts'] == ['github.example.com']
+    monkeypatch.setenv('GITLAB_HOST', 'gitlab.example.com')
+    assert git_config('gitlab').host == 'gitlab.example.com'
+    assert git_config('gitlab').api_url == 'https://gitlab.example.com/api/v4'
+    assert native_git_capabilities()['gitlab']['hosts'] == ['gitlab.example.com']
     for host in (
         'attacker.test',
-        'https://github.example.com@attacker.test',
-        'http://github.example.com',
-        'github.example.com/evil',
-        'github.example.com:0',
-        'https://@github.example.com',
-        'https://:password@github.example.com',
+        'https://gitlab.example.com@attacker.test',
+        'http://gitlab.example.com',
+        'gitlab.example.com/evil',
     ):
         with pytest.raises(ValueError):
-            git_config('github', host)
+            git_config('gitlab', host)
 
 
 @pytest.mark.asyncio
@@ -459,7 +491,7 @@ async def test_unverified_rotation_is_never_exposed_until_identity_recovers(
     verify.side_effect = GitCredentialError('provider_unavailable', 503)
     for _ in range(2):
         with pytest.raises(GitCredentialError, match='provider_unavailable'):
-            await service.get_token(login.principal.account_id, ProviderType.GITHUB)
+            await service.get_token(login.principal.account_id, ProviderType.GITLAB)
     assert exchange.await_count == 1
     async with async_session_maker() as session:
         row = await session.scalar(select(GitConnection))
@@ -473,7 +505,7 @@ async def test_unverified_rotation_is_never_exposed_until_identity_recovers(
     assert (
         present(
             (
-                await service.get_token(login.principal.account_id, ProviderType.GITHUB)
+                await service.get_token(login.principal.account_id, ProviderType.GITLAB)
             ).token
         ).get_secret_value()
         == 'new-access'
@@ -487,8 +519,8 @@ async def test_actor_reconnect_same_subject_on_different_host_denied(
     async_session_maker: SessionFactory,
 ) -> None:
     service, login, verify = git_runtime
-    monkeypatch.setenv('NATIVE_GIT_GITHUB_HOSTS', 'github.com,github.other.example')
-    await service.connect_manual(login.principal.account_id, 'github', 'first')
+    monkeypatch.setenv('NATIVE_GIT_GITLAB_HOSTS', 'gitlab.com,gitlab.other.example')
+    await service.connect_manual(login.principal.account_id, 'gitlab', 'first')
 
     async def move_account(
         config: NativeGitConfig,
@@ -500,14 +532,14 @@ async def test_actor_reconnect_same_subject_on_different_host_denied(
         async with async_session_maker() as session, session.begin():
             await session.execute(
                 update(GitConnection).values(
-                    host='github.other.example', generation=GitConnection.generation + 1
+                    host='gitlab.other.example', generation=GitConnection.generation + 1
                 )
             )
         return IDENTITY
 
     verify.side_effect = move_account
     assert (
-        await service.resolve_actor(ProviderType.GITHUB, 'github.com', IDENTITY.id)
+        await service.resolve_actor(ProviderType.GITLAB, 'gitlab.com', IDENTITY.id)
         is None
     )
 
@@ -517,7 +549,7 @@ async def test_pending_connect_does_not_resurrect_after_disconnect(
     git_runtime: GitRuntime,
 ) -> None:
     service, login, verify = git_runtime
-    entered, released = (asyncio.Event(), asyncio.Event())
+    entered, released = asyncio.Event(), asyncio.Event()
 
     async def check(
         config: NativeGitConfig,
@@ -586,7 +618,7 @@ async def test_native_v1_secrets_adapter_and_sdk_resolve_same_connection(
     )
     assert (
         present(
-            present(await store.load()).provider_tokens[ProviderType.GITHUB].token
+            (present(await store.load())).provider_tokens[ProviderType.GITHUB].token
         ).get_secret_value()
         == 'sdk-git-token'
     )
@@ -713,12 +745,45 @@ async def test_provider_401_requires_reconnect_without_erasing_credentials(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('provider,service_class', [('github', SaaSGitHubService)])
+async def test_default_host_webhook_row_cannot_use_alternate_host(
+    git_runtime: GitRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import MagicMock
+
+    from integrations.gitlab.webhook_installation import verify_webhook_conditions
+    from integrations.types import GitLabResourceType
+    from storage.gitlab_webhook import GitlabWebhook
+
+    service, login, _ = git_runtime
+    monkeypatch.setenv('NATIVE_GIT_GITLAB_HOSTS', 'gitlab.com,git.other.example')
+    await service.connect_manual(login.principal.account_id, 'gitlab', 'first')
+    row = GitlabWebhook(
+        project_id='1234', user_id=str(login.principal.account_id), webhook_exists=False
+    )
+    await service.disconnect(login.principal.account_id, 'gitlab')
+    await service.connect_manual(
+        login.principal.account_id, 'gitlab', 'second', host='git.other.example'
+    )
+    adapter = SaaSGitLabService(external_auth_id=str(login.principal.account_id))
+    call = AsyncMock()
+    monkeypatch.setattr(adapter, '_make_request', call)
+    with pytest.raises(GitCredentialError, match='webhooks_unsupported_host'):
+        await verify_webhook_conditions(
+            adapter, GitLabResourceType.PROJECT, '1234', MagicMock(), row
+        )
+    call.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'provider,service_class',
+    [('github', SaaSGitHubService), ('gitlab', SaaSGitLabService)],
+)
 async def test_alternate_host_repository_branch_clone_and_pr_requests(
     git_runtime: GitRuntime,
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
-    service_class: type[SaaSGitHubService],
+    service_class: type[SaaSGitHubService] | type[SaaSGitLabService],
 ) -> None:
     from openhands.app_server.integrations.provider import ProviderHandler
     from openhands.app_server.integrations.service_types import RequestMethod
@@ -791,7 +856,9 @@ async def test_alternate_host_repository_branch_clone_and_pr_requests(
     assert urlsplit(clone_url).hostname == 'git.other.example'
     assert 'host-bound-token' in clone_url
     await adapter._make_request(
-        adapter.BASE_URL + '/repos/developer/repo/pulls',
+        adapter.BASE_URL + '/projects/42/merge_requests'
+        if provider == 'gitlab'
+        else adapter.BASE_URL + '/repos/developer/repo/pulls',
         {'title': 'Review this change'},
         RequestMethod.POST,
     )

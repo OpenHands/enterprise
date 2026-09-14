@@ -70,4 +70,7 @@ If you are interested in collaborating with us or contributing to OpenHands Ente
 
 ## Development
 
+For a local Enterprise instance with email/password login and Docker sandboxes,
+follow the [Docker Compose guide](./containers/compose/README.md).
+
 See the [Development guide](./Development.md) for setup instructions, the repository layout, and development workflows. Python dependencies are managed with [uv](https://docs.astral.sh/uv/).

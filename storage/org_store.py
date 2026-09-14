@@ -565,8 +565,8 @@ class OrgStore:
                 from server.services.native_account_service import lock_native_lifecycle
 
                 await lock_native_lifecycle(session)
-            result = await session.execute(select(Org).filter(Org.id == org_id))
-            org = result.scalars().first()
+            org_result = await session.execute(select(Org).filter(Org.id == org_id))
+            org = org_result.scalars().first()
             if not org:
                 return None
 
@@ -577,7 +577,7 @@ class OrgStore:
                 org_kwargs.pop('id')
 
             # Pop the diff-style kwargs before the setattr loop — otherwise
-            # ``hasattr(org, 'agent_settings')`` is the loop would
+            # ``hasattr(org, 'agent_settings')`` is True and the loop would
             # *overwrite* the JSON column instead of deep-merging into it.
             agent_settings_diff = (
                 update_data.agent_settings_diff
@@ -802,8 +802,8 @@ class OrgStore:
 
                 await lock_native_lifecycle(session)
             # First get the organization to return it
-            result = await session.execute(select(Org).filter(Org.id == org_id))
-            org = result.scalars().first()
+            org_result = await session.execute(select(Org).filter(Org.id == org_id))
+            org = org_result.scalars().first()
             if not org:
                 return None
 
@@ -1147,6 +1147,7 @@ class OrgStore:
                 return None
             key = await prepare_managed_member(session, acting_member)
             return key.get_secret_value() or None
+
         existing_key = (
             acting_member.llm_api_key
             if reuse_existing and not acting_member.has_custom_llm_api_key

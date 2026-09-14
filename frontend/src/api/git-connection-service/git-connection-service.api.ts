@@ -1,8 +1,8 @@
 import { openHands } from "../open-hands-axios";
 
-export const NATIVE_GIT_PROVIDERS = ["github"] as const;
+export const NATIVE_GIT_PROVIDERS = ["github", "gitlab", "bitbucket"] as const;
 export type NativeGitProvider = (typeof NATIVE_GIT_PROVIDERS)[number];
-export type GitAuthMethod = "pat" | "oauth";
+export type GitAuthMethod = "pat" | "api_token" | "oauth";
 
 export interface GitConnection {
   provider: NativeGitProvider;
@@ -19,6 +19,7 @@ export interface GitConnection {
 }
 export interface GitCapability {
   installation_available?: boolean;
+  webhook_host?: string;
   methods: GitAuthMethod[];
   hosts: string[];
   default_host: string;

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 
@@ -113,7 +113,7 @@ class VerifyWebhookStatus:
             webhook=webhook,
         )
 
-    async def install_webhooks(self):
+    async def install_webhooks(self) -> None:
         """
         Periodically check the conditions for installing a webhook on resource as valid
         Rows with valid conditions with contain (webhook_exists=False, status=WebhookStatus.VERIFIED)
@@ -128,6 +128,10 @@ class VerifyWebhookStatus:
                 - resource was never setup with webhook
 
         """
+
+        from server.auth.bootstrap import verify_auth_installation
+
+        await verify_auth_installation()
 
         from integrations.gitlab.gitlab_service import SaaSGitLabService
 
@@ -171,9 +175,11 @@ class VerifyWebhookStatus:
                 # GitLabServiceImpl returns SaaSGitLabService in enterprise context
                 from integrations.gitlab.gitlab_service import SaaSGitLabService
 
-                gitlab_service = cast(
-                    SaaSGitLabService, GitLabServiceImpl(external_auth_id=user_id)
-                )
+                gitlab_service = GitLabServiceImpl(external_auth_id=user_id)
+                if not isinstance(gitlab_service, SaaSGitLabService):
+                    raise TypeError(
+                        'Configured GitLab service does not support SaaS webhook installation'
+                    )
 
                 await self.verify_conditions_are_met(
                     gitlab_service=gitlab_service,

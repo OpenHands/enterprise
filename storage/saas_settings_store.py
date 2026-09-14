@@ -68,6 +68,7 @@ from storage.org_store import OrgStore
 from storage.user import User
 from storage.user_settings import UserSettings
 from storage.user_store import UserStore
+from utils.identity import IDENTITY_CLAIMS
 
 
 class _EffectiveLLMTransport(BaseModel):
@@ -787,7 +788,9 @@ class SaasSettingsStore(SettingsStore):
                         logger.error(f'User info not found for ID {self.user_id}')
                         return None
                     user = await UserStore.migrate_user(
-                        self.user_id, user_settings, user_info
+                        self.user_id,
+                        user_settings,
+                        IDENTITY_CLAIMS.validate_python(user_info),
                     )
                     if not user:
                         logger.error(f'Failed to migrate user {self.user_id}')

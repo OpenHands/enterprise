@@ -1,0 +1,50 @@
+{
+	email {$ACME_EMAIL}
+	admin localhost:2019
+	servers {
+		strict_sni_host on
+	}
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				# Redirect parameters can contain nested, encoded SAML credentials.
+				request>uri regexp "[?].*$" ""
+			}
+		}
+	}
+}
+
+(dns_tls) {
+	tls {
+		dns googleclouddns {
+			gcp_project {$GCP_PROJECT}
+			gcp_application_default /run/secrets/caddy-dns.json
+		}
+	}
+	header Strict-Transport-Security "max-age=31536000"
+}
+
+{$OPENHANDS_HOST} {
+	import dns_tls
+	reverse_proxy openhands-ingress:3000
+}
+
+{$AUTHENTIK_HOST} {
+	import dns_tls
+	reverse_proxy authentik-server:9000
+}
+
+*.{$SANDBOX_DOMAIN} {
+	import dns_tls
+	# The site matcher fixes the suffix. Only managed container names and these
+	# service ports can become upstreams; request paths never select a backend.
+	@managed header_regexp managed Host "^(8000|8001|8011|8012)-([a-f0-9]{32})\.[a-z0-9.-]+(?::443)?$"
+	handle @managed {
+		reverse_proxy oh-managed-{re.managed.2}:{re.managed.1}
+	}
+	handle {
+		respond 404
+	}
+}

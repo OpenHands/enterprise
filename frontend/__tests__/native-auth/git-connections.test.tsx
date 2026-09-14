@@ -287,4 +287,36 @@ describe("native Git connections", () => {
     expect(client.getQueryData(["user", "authenticated", "saas"])).toBe(true);
     expect(logout).not.toHaveBeenCalled();
   });
+
+  it("shows optional PAT and API-token setup without a login broker and sends Bitbucket email separately", async () => {
+    vi.spyOn(GitConnectionService, "list").mockResolvedValue({ connections: [], capabilities: {
+      github: { methods: ["pat"], hosts: ["github.com"], default_host: "github.com" },
+      bitbucket: { methods: ["api_token"], hosts: ["bitbucket.org"], default_host: "bitbucket.org" },
+    } });
+    const save = vi.spyOn(GitConnectionService, "save").mockResolvedValue(undefined);
+    const authorize = vi.spyOn(GitConnectionService, "authorize");
+    const logout = vi.spyOn(AuthService, "logout");
+    const client = mount(NativeGitSettings, "/settings/integrations");
+    await screen.findByLabelText("NATIVE_GIT$PAT");
+    expect(screen.getByText("NATIVE_GIT$OPTIONAL_HELP")).toBeInTheDocument();
+    expect(authorize).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("NATIVE_GIT$BITBUCKET_EMAIL"), { target: { value: "atlassian@example.com" } });
+    fireEvent.change(screen.getByLabelText("NATIVE_GIT$API_TOKEN"), { target: { value: "private-bitbucket-token" } });
+    fireEvent.submit(containingForm(screen.getByLabelText("NATIVE_GIT$API_TOKEN")));
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ provider: "bitbucket", host: "bitbucket.org", token: "private-bitbucket-token", email: "atlassian@example.com" }));
+    await screen.findByText("NATIVE_GIT$SAVED");
+    expect(screen.getByLabelText("NATIVE_GIT$API_TOKEN")).toHaveValue("");
+    expect(JSON.stringify(client.getMutationCache().getAll().map((mutation) => mutation.state))).not.toContain("private-bitbucket-token");
+    expect(logout).not.toHaveBeenCalled();
+  });
+
+
+  it("shows GitLab reconnect choices without repeating an absent account label", async () => {
+    vi.spyOn(GitConnectionService, "list").mockResolvedValue({ connections: [{ provider: "gitlab", host: "gitlab.com", auth_type: "pat", status: "reconnect_required", account: { id: null, login: null, display_name: null, avatar_url: null }, last_error: "expired" }], capabilities: { gitlab: { methods: ["pat", "oauth"], hosts: ["gitlab.com"], default_host: "gitlab.com" } } });
+    mount(NativeGitSettings, "/settings/integrations");
+    await screen.findByLabelText("NATIVE_GIT$PAT");
+    expect(screen.getAllByText("gitlab.com")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "NATIVE_GIT$CONNECT_OAUTH" })).toBeInTheDocument();
+  });
+
 });

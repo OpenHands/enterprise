@@ -55,7 +55,11 @@ async def test_public_config_sources_share_native_capabilities(
     assert legacy['login_methods'] == modern.login_methods
     assert legacy['git_connection_methods'] == modern.git_connection_methods
     assert legacy['login_methods'] == ['password']
-    assert legacy['git_connection_methods'] == {'github': ['pat']}
+    assert legacy['git_connection_methods'] == {
+        'github': ['pat'],
+        'gitlab': ['pat'],
+        'bitbucket': ['api_token'],
+    }
     assert legacy['PROVIDERS_CONFIGURED'] == modern.providers_configured == []
     assert 'AUTH_URL' not in legacy
     assert modern.auth_url is None

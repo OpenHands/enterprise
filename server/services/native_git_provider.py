@@ -38,12 +38,30 @@ class ProviderPayload(BaseModel):
     error: str | None = None
 
 
+class ProviderAvatar(BaseModel):
+    model_config = ConfigDict(strict=True, hide_input_in_errors=True)
+    href: str | None = None
+
+
+class BitbucketLinks(BaseModel):
+    avatar: ProviderAvatar | None = None
+
+
 class ProviderIdentityPayload(ProviderPayload):
     id: str | int | None = None
+    uuid: str | None = None
     state: str = 'active'
     login: str | None = None
+    username: str | None = None
+    nickname: str | None = None
     name: str | None = None
+    display_name: str | None = None
     avatar_url: str | None = None
+    links: BitbucketLinks | None = None
+
+
+class GitlabTokenDetails(ProviderPayload):
+    scopes: list[str] = []
 
 
 class GrantPayload(ProviderPayload):
@@ -124,23 +142,52 @@ async def verify_provider_identity(
     *,
     manual: bool = False,
 ) -> GitIdentity:
-    headers = {'Accept': 'application/json', 'Authorization': f'Bearer {token}'}
-    response = await provider_request('GET', f'{config.api_url}/user', headers=headers)
+    headers = {'Accept': 'application/json'}
+    auth = None
+    if config.provider == 'bitbucket' and email:
+        auth = httpx.BasicAuth(email, token)
+    else:
+        headers['Authorization'] = f'Bearer {token}'
+    response = await provider_request(
+        'GET', f'{config.api_url}/user', headers=headers, auth=auth
+    )
     data = _payload(response, ProviderIdentityPayload)
     oauth_scopes = response.headers.get('X-OAuth-Scopes')
     if manual and config.provider == 'github' and oauth_scopes is not None:
         scopes = {scope.strip() for scope in oauth_scopes.split(',')}
         if not scopes.intersection({'repo', 'public_repo'}):
             raise GitCredentialError('insufficient_scope')
-    subject = data.id
+    if manual and config.provider == 'gitlab':
+        details = _payload(
+            await provider_request(
+                'GET',
+                f'{config.api_url}/personal_access_tokens/self',
+                headers=headers,
+                auth=auth,
+            ),
+            GitlabTokenDetails,
+        )
+        if 'api' not in details.scopes:
+            raise GitCredentialError('insufficient_scope')
+    if manual and config.provider == 'bitbucket':
+        await provider_request(
+            'GET',
+            f'{config.api_url}/user/permissions/repositories',
+            params={'pagelen': 1},
+            headers=headers,
+            auth=auth,
+        )
+    subject = data.uuid if config.provider == 'bitbucket' else data.id
     if not subject or data.state not in ('active', 'ACTIVE'):
         raise GitCredentialError('provider_identity_invalid')
-    login = data.login or str(subject)
+    login = data.login or data.username or data.nickname or str(subject)
     avatar = data.avatar_url
+    if config.provider == 'bitbucket':
+        avatar = data.links.avatar.href if data.links and data.links.avatar else None
     return GitIdentity(
         str(subject),
         login,
-        data.name,
+        data.name or data.display_name,
         avatar if avatar and avatar.startswith('https://') else None,
     )
 
@@ -155,26 +202,40 @@ async def exchange_grant(
     data = {'grant_type': 'refresh_token' if refresh_token else 'authorization_code'}
     if refresh_token:
         data['refresh_token'] = refresh_token
+        if config.provider == 'gitlab':
+            data['redirect_uri'] = config.callback_url
     else:
         data.update(code=code or '', redirect_uri=config.callback_url)
         if verifier:
             data['code_verifier'] = verifier
-    data.update(client_id=config.client_id, client_secret=config.client_secret)
+    auth = None
+    if config.provider == 'bitbucket':
+        auth = httpx.BasicAuth(config.client_id, config.client_secret)
+    else:
+        data.update(client_id=config.client_id, client_secret=config.client_secret)
     response = _payload(
         await provider_request(
             'POST',
             config.token_url,
             data=data,
             headers={'Accept': 'application/json'},
+            auth=auth,
         ),
         GrantPayload,
     )
     scope_value = response.scope or response.scopes
     if scope_value is not None:
         scopes = set(scope_value.replace(',', ' ').split())
+        if config.provider == 'gitlab' and 'api' not in scopes:
+            raise GitCredentialError('insufficient_scope')
         if config.provider == 'github' and not scopes.intersection(
             {'repo', 'public_repo'}
         ):
+            raise GitCredentialError('insufficient_scope')
+        if config.provider == 'bitbucket' and not {
+            'repository:write',
+            'pullrequest:write',
+        }.issubset(scopes):
             raise GitCredentialError('insufficient_scope')
     if not response.access_token:
         raise GitCredentialError('oauth_exchange_failed')
@@ -202,15 +263,32 @@ async def exchange_grant(
 
 
 async def revoke_grant(config: NativeGitConfig, access_token: str) -> None:
-    """Revoke this OAuth token after local disconnect; PATs remain user-owned."""
+    """Best-effort revocation of this OAuth token after local disconnect commits.
+
+    Bitbucket documents no token-revocation endpoint. PAT/API tokens remain
+    user-owned and are never globally revoked by disconnecting OpenHands.
+    """
+    if config.provider == 'bitbucket':
+        return
     for _ in range(2):
         try:
-            await provider_request(
-                'DELETE',
-                f'{config.api_url}/applications/{config.client_id}/token',
-                auth=httpx.BasicAuth(config.client_id, config.client_secret),
-                json={'access_token': access_token},
-            )
+            if config.provider == 'github':
+                await provider_request(
+                    'DELETE',
+                    f'{config.api_url}/applications/{config.client_id}/token',
+                    auth=httpx.BasicAuth(config.client_id, config.client_secret),
+                    json={'access_token': access_token},
+                )
+            else:
+                await provider_request(
+                    'POST',
+                    f'https://{config.host}/oauth/revoke',
+                    data={
+                        'client_id': config.client_id,
+                        'client_secret': config.client_secret,
+                        'token': access_token,
+                    },
+                )
             return
         except GitCredentialError as exc:
             if exc.status_code != 503:

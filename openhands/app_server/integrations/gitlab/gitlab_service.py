@@ -85,9 +85,14 @@ gitlab_service_cls = os.environ.get(
 _gitlab_service_impl = None
 
 
-def get_gitlab_service_impl():
+def get_gitlab_service_impl() -> type[GitLabService]:
     """Get the GitLab service implementation with lazy loading."""
     global _gitlab_service_impl
+    if os.getenv('ENABLE_KEYCLOAK', 'true').lower() in ('false', '0'):
+        from server.auth.native_git_config import validate_native_git_selectors
+
+        validate_native_git_selectors()
+        return get_impl(GitLabService, os.environ['OPENHANDS_GITLAB_SERVICE_CLS'])
     if _gitlab_service_impl is None:
         _gitlab_service_impl = get_impl(GitLabService, gitlab_service_cls)
     return _gitlab_service_impl

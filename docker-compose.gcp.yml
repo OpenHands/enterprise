@@ -1,0 +1,62 @@
+# Combine with docker-compose.yml and docker-compose.authentik.yml.
+x-public-environment: &public-environment
+  WEB_HOST: ${OPENHANDS_HOST:?Set the public application hostname}
+  OH_WEB_URL: https://${OPENHANDS_HOST:?Set the public application hostname}
+  OH_PERMITTED_CORS_ORIGINS_0: https://${OPENHANDS_HOST:?Set the public application hostname}
+  PERMITTED_CORS_ORIGINS: https://${OPENHANDS_HOST:?Set the public application hostname}
+  NATIVE_AUTH_APP_ORIGIN: https://${OPENHANDS_HOST:?Set the public application hostname}
+  NATIVE_AUTH_ALLOW_INSECURE_LOCALHOST: "false"
+  COMPOSE_SANDBOX_DOMAIN: ${SANDBOX_DOMAIN:?Set the wildcard sandbox DNS suffix}
+
+services:
+  init:
+    environment: *public-environment
+
+  openhands:
+    environment:
+      <<: *public-environment
+      FORWARDED_ALLOW_IPS: ${COMPOSE_INGRESS_SUBNET:-172.30.40.0/24}
+      NATIVE_GIT_GITHUB_OAUTH_ENABLED: ${NATIVE_GIT_GITHUB_OAUTH_ENABLED:-false}
+      GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
+      GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
+    networks:
+      ingress:
+        aliases:
+          - openhands-ingress
+
+  caddy:
+    image: ${COMPOSE_PROJECT_NAME:-openhands-enterprise}-caddy:local
+    build:
+      context: containers/compose/gcp
+    restart: unless-stopped
+    environment:
+      OPENHANDS_HOST: ${OPENHANDS_HOST:?Set the public application hostname}
+      AUTHENTIK_HOST: ${AUTHENTIK_HOST:?Set the public identity provider hostname}
+      SANDBOX_DOMAIN: ${SANDBOX_DOMAIN:?Set the wildcard sandbox DNS suffix}
+      GCP_PROJECT: ${GCP_PROJECT:?Set the Cloud DNS project ID}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in the remote environment file}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+      - type: bind
+        source: ${CADDY_DNS_CREDENTIALS_FILE:-./.gcp/caddy-dns.json}
+        target: /run/secrets/caddy-dns.json
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - ingress
+      - sandboxes
+
+networks:
+  ingress:
+    ipam:
+      config:
+        - subnet: ${COMPOSE_INGRESS_SUBNET:-172.30.40.0/24}
+
+volumes:
+  caddy-data:
+  caddy-config:

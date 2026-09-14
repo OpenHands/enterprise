@@ -1,29 +1,143 @@
 
+name: ${COMPOSE_PROJECT_NAME:-openhands-enterprise}
+
+x-enterprise-image: &enterprise-image
+  image: ${COMPOSE_PROJECT_NAME:-openhands-enterprise}:local
+  build:
+    context: .
+    dockerfile: containers/app/Dockerfile
+
+x-enterprise-environment: &enterprise-environment
+  ENABLE_KEYCLOAK: "false"
+  ENABLE_LITELLM: "false"
+  APP_MODE: saas
+  OH_APP_MODE: saas
+  OH_DEPLOYMENT_MODE: self_hosted
+  OPENHANDS_CONFIG_CLS: server.config.SaaSServerConfig
+  NO_SETUP: "true"
+  WEB_HOST: localhost
+  OH_WEB_URL: http://localhost:${OPENHANDS_PORT:-3000}
+  OH_PERMITTED_CORS_ORIGINS_0: http://localhost:${OPENHANDS_PORT:-3000}
+  PERMITTED_CORS_ORIGINS: http://localhost:${OPENHANDS_PORT:-3000}
+  OH_SANDBOX_CALLBACK_URL: http://openhands:3000
+  NATIVE_AUTH_APP_ORIGIN: http://localhost:${OPENHANDS_PORT:-3000}
+  NATIVE_AUTH_ALLOW_INSECURE_LOCALHOST: "true"
+  ENABLE_ENTERPRISE_SSO: "false"
+  ENABLE_LINEAR: "false"
+  SLACK_WEBHOOKS_ENABLED: "false"
+  OPENHANDS_DEFAULT_ORG_ENABLED: "true"
+  OPENHANDS_DEFAULT_ORG_AUTO_ADD_USERS: "true"
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: ${DB_NAME:-openhands}
+  DB_USER: ${DB_USER:-openhands}
+  DB_PASS: ${DB_PASSWORD:?Run python3 containers/compose/setup.py first}
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  JWT_SECRET: ${JWT_SECRET:?Run python3 containers/compose/setup.py first}
+  FILE_STORE: local
+  FILE_STORE_PATH: /data/openhands
+  OH_PERSISTENCE_DIR: /data/openhands
+  SANDBOX_PROVIDER: docker
+  SANDBOX_DEFAULT_TEMPLATE: python
+  DOCKER_HOST: unix:///var/run/docker.sock
+  COMPOSE_SANDBOX_NETWORK: ${COMPOSE_PROJECT_NAME:-openhands-enterprise}_sandboxes
+  COMPOSE_AGENT_SERVER_IMAGE: ${COMPOSE_AGENT_SERVER_IMAGE:-}
+
 services:
-  openhands:
-    build:
-      context: ./
-      dockerfile: ./containers/app/Dockerfile
-    image: openhands:latest
-    # The image's default command is `saas_server:app` running as the `openhands`
-    # user (what Kubernetes deploys). This compose file runs the plain app server,
-    # and the entrypoint needs root to set up the sandbox user.
-    user: root
-    command: ["uvicorn", "openhands.server.listen:app", "--host", "0.0.0.0", "--port", "3000"]
-    container_name: openhands-app-${DATE:-}
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      - AGENT_SERVER_IMAGE_REPOSITORY=${AGENT_SERVER_IMAGE_REPOSITORY:-ghcr.io/openhands/agent-server}
-      - AGENT_SERVER_IMAGE_TAG=${AGENT_SERVER_IMAGE_TAG:-1.47.0-python}
-      #- SANDBOX_USER_ID=${SANDBOX_USER_ID:-1234} # enable this only if you want a specific non-root sandbox user but you will have to manually adjust permissions of ~/.openhands for this user
-      - WORKSPACE_MOUNT_PATH=${WORKSPACE_BASE:-$PWD/workspace}
+      POSTGRES_DB: ${DB_NAME:-openhands}
+      POSTGRES_USER: ${DB_USER:-openhands}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Run python3 containers/compose/setup.py first}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  init:
+    <<: *enterprise-image
+    user: "0:0"
+    entrypoint: ["python", "/app/compose-start.py"]
+    command: ["init"]
+    environment:
+      <<: *enterprise-environment
+      SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:?Run python3 containers/compose/setup.py first}
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:?Run python3 containers/compose/setup.py first}
+    volumes:
+      - app-data:/data/openhands
+    networks:
+      - database
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  openhands:
+    <<: *enterprise-image
+    user: "0:0"
+    init: true
+    restart: unless-stopped
+    entrypoint: ["python", "/app/compose-start.py"]
+    command: ["serve"]
+    environment: *enterprise-environment
     ports:
-      - "3000:3000"
+      - "127.0.0.1:${OPENHANDS_PORT:-3000}:3000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ~/.openhands:/.openhands
-      - ${WORKSPACE_BASE:-$PWD/workspace}:/opt/workspace_base
-    pull_policy: build
-    stdin_open: true
-    tty: true
+      - app-data:/data/openhands
+      - type: bind
+        source: ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
+    networks:
+      - database
+      - sandboxes
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:3000/ready"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 12
+
+networks:
+  database:
+    internal: true
+  sandboxes:
+    name: ${COMPOSE_PROJECT_NAME:-openhands-enterprise}_sandboxes
+
+volumes:
+  postgres-data:
+  redis-data:
+  app-data:

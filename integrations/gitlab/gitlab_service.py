@@ -1,7 +1,10 @@
 import asyncio
+from collections.abc import Mapping
 
-from pydantic import SecretStr
+from pydantic import JsonValue, SecretStr, TypeAdapter
 
+from integrations.native_git_mixin import NativeGitMixin, native_service_token
+from integrations.native_git_types import GitLabResource
 from integrations.store_repo_utils import store_repositories_in_db
 from integrations.types import GitLabResourceType
 from openhands.app_server.integrations.gitlab.gitlab_service import GitLabService
@@ -13,12 +16,14 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.types import AppMode
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.auth_config import ENABLE_KEYCLOAK
+from server.auth.native_git_config import NativeGitConfig
 from server.auth.token_manager import TokenManager
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
 from storage.gitlab_webhook_store import GitlabWebhookStore
 
 
-class SaaSGitLabService(GitLabService):
+class SaaSGitLabService(NativeGitMixin, GitLabService):
     def __init__(
         self,
         user_id: str | None = None,
@@ -27,10 +32,16 @@ class SaaSGitLabService(GitLabService):
         token: SecretStr | None = None,
         external_token_manager: bool = False,
         base_domain: str | None = None,
-    ):
+    ) -> None:
         logger.info(
             f'SaaSGitLabService created with user_id {user_id}, external_auth_id {external_auth_id}, external_auth_token {"set" if external_auth_token else "None"}, gitlab_token {"set" if token else "None"}, external_token_manager {external_token_manager}'
         )
+        self._native_requested_host = base_domain
+        if not ENABLE_KEYCLOAK:
+            from server.auth.native_git_config import git_config
+
+            base_domain = git_config('gitlab', base_domain).host
+        self.base_domain = base_domain
         super().__init__(
             user_id=user_id,
             external_auth_token=external_auth_token,
@@ -44,7 +55,28 @@ class SaaSGitLabService(GitLabService):
         self.external_auth_id = external_auth_id
         self.token_manager = TokenManager(external=external_token_manager)
 
+    def _configure_native_urls(self, config: NativeGitConfig) -> None:
+        super()._configure_native_urls(config)
+        self.GRAPHQL_URL = f'https://{config.host}/api/graphql'
+
+    async def _legacy_headers(self) -> dict[str, str]:
+        return TypeAdapter(dict[str, str]).validate_python(
+            await GitLabService._get_headers(self)
+        )
+
+    async def _legacy_request(
+        self, url: str, params: Mapping[str, JsonValue] | None, method: RequestMethod
+    ) -> tuple[JsonValue, dict[str, str]]:
+        data, headers = await GitLabService._make_request(
+            self, url, dict(params) if params is not None else None, method
+        )
+        return TypeAdapter(JsonValue).validate_python(data), TypeAdapter(
+            dict[str, str]
+        ).validate_python(headers)
+
     async def get_latest_token(self) -> SecretStr | None:
+        if not ENABLE_KEYCLOAK:
+            return await native_service_token(self, ProviderType.GITLAB)
         gitlab_token = None
         if self.external_auth_token:
             gitlab_token = SecretStr(
@@ -82,7 +114,9 @@ class SaaSGitLabService(GitLabService):
             logger.warning('external_auth_token and user_id not set!')
         return gitlab_token
 
-    async def get_owned_groups(self, min_access_level: int = 40) -> list[dict]:
+    async def get_owned_groups(
+        self, min_access_level: int = 40
+    ) -> list[GitLabResource]:
         """
         Get all top-level groups where the current user has admin access.
 
@@ -97,20 +131,23 @@ class SaaSGitLabService(GitLabService):
         Returns:
             list[dict]: A list of groups where user has the specified access level or higher.
         """
-        groups_with_admin_access = []
+        groups_with_admin_access: list[GitLabResource] = []
         page = 1
         per_page = 100
 
         while True:
             try:
                 url = f'{self.BASE_URL}/groups'
-                params = {
+                params: dict[str, JsonValue] = {
                     'page': str(page),
                     'per_page': str(per_page),
                     'min_access_level': min_access_level,
                     'top_level_only': 'true',
                 }
-                response, headers = await self._make_request(url, params)
+                raw_response, headers = await self._make_request(url, params)
+                response = TypeAdapter(list[GitLabResource]).validate_python(
+                    raw_response
+                )
 
                 if not response:
                     break
@@ -128,17 +165,30 @@ class SaaSGitLabService(GitLabService):
 
         return groups_with_admin_access
 
-    async def add_owned_projects_and_groups_to_db(self, owned_personal_projects):
+    async def add_owned_projects_and_groups_to_db(
+        self, owned_personal_projects: list[GitLabResource]
+    ) -> None:
         """
         Add owned projects and groups to the database for webhook tracking.
 
         Args:
             owned_personal_projects: List of personal projects owned by the user
         """
+        if not ENABLE_KEYCLOAK:
+            from server.auth.native_git_config import git_config
+
+            await self.get_latest_token()
+            if self.base_domain != git_config('gitlab').host:
+                logger.info(
+                    'GitLab webhook enrollment requires the configured default host'
+                )
+                return
         owned_groups = await self.get_owned_groups()
         webhooks = []
 
-        def build_group_webhook_entries(groups):
+        def build_group_webhook_entries(
+            groups: list[GitLabResource],
+        ) -> list[GitlabWebhook]:
             return [
                 GitlabWebhook(
                     group_id=str(group['id']),
@@ -149,7 +199,9 @@ class SaaSGitLabService(GitLabService):
                 for group in groups
             ]
 
-        def build_project_webhook_entries(projects):
+        def build_project_webhook_entries(
+            projects: list[GitLabResource],
+        ) -> list[GitlabWebhook]:
             return [
                 GitlabWebhook(
                     group_id=None,
@@ -176,7 +228,9 @@ class SaaSGitLabService(GitLabService):
                 logger.warning('Failed to add Gitlab webhooks to db', exc_info=True)
 
     async def store_repository_data(
-        self, users_personal_projects: list[dict], repositories: list[Repository]
+        self,
+        users_personal_projects: list[GitLabResource],
+        repositories: list[Repository],
     ) -> None:
         """
         Store repository data in the database.
@@ -186,6 +240,14 @@ class SaaSGitLabService(GitLabService):
             users_personal_projects: List of personal projects owned by the user
             repositories: List of Repository objects to store
         """
+        if not ENABLE_KEYCLOAK:
+            from server.auth.native_git_config import git_config
+
+            if (
+                not self.external_auth_id
+                or self.base_domain != git_config('gitlab').host
+            ):
+                return
         # If external_auth_id is not set, try to determine it from the Keycloak token
         if not self.external_auth_id and self.external_auth_token:
             try:
@@ -239,8 +301,8 @@ class SaaSGitLabService(GitLabService):
         """
         MAX_REPOS = 1000
         PER_PAGE = 100  # Maximum allowed by GitLab API
-        all_repos: list[dict] = []
-        users_personal_projects: list[dict] = []
+        all_repos: list[GitLabResource] = []
+        users_personal_projects: list[GitLabResource] = []
         page = 1
 
         url = f'{self.BASE_URL}/projects'
@@ -260,7 +322,7 @@ class SaaSGitLabService(GitLabService):
             logger.warning(f'Could not fetch user id: {e}')
 
         while len(all_repos) < MAX_REPOS:
-            params = {
+            params: dict[str, JsonValue] = {
                 'page': str(page),
                 'per_page': str(PER_PAGE),
                 'order_by': order_by,
@@ -269,7 +331,10 @@ class SaaSGitLabService(GitLabService):
             }
 
             try:
-                response, headers = await self._make_request(url, params)
+                raw_response, headers = await self._make_request(url, params)
+                response = TypeAdapter(list[GitLabResource]).validate_python(
+                    raw_response
+                )
 
                 if not response:  # No more repositories
                     break
@@ -344,7 +409,8 @@ class SaaSGitLabService(GitLabService):
             url = f'{self.BASE_URL}/projects/{resource_id}'
 
         try:
-            response, _ = await self._make_request(url)
+            raw_response, _ = await self._make_request(url)
+            response = TypeAdapter(GitLabResource).validate_python(raw_response)
             # If we get a response, the resource exists and the user has access to it
             return bool(response and 'id' in response), None
         except RateLimitError:
@@ -378,7 +444,8 @@ class SaaSGitLabService(GitLabService):
 
         try:
             # Get all webhooks for the resource
-            response, _ = await self._make_request(url)
+            raw_response, _ = await self._make_request(url)
+            response = TypeAdapter(list[GitLabResource]).validate_python(raw_response)
 
             # Check if any webhook has the specified URL
             exists = False
@@ -415,7 +482,10 @@ class SaaSGitLabService(GitLabService):
         if resource_type == GitLabResourceType.GROUP:
             url = f'{self.BASE_URL}/groups/{resource_id}/members/all'
             try:
-                response, _ = await self._make_request(url)
+                raw_response, _ = await self._make_request(url)
+                response = TypeAdapter(list[GitLabResource]).validate_python(
+                    raw_response
+                )
                 # Check if the current user is in the members list with access level >= 40 (Maintainer or Owner)
 
                 exists = False
@@ -438,7 +508,10 @@ class SaaSGitLabService(GitLabService):
         else:
             url = f'{self.BASE_URL}/projects/{resource_id}/members/all'
             try:
-                response, _ = await self._make_request(url)
+                raw_response, _ = await self._make_request(url)
+                response = TypeAdapter(list[GitLabResource]).validate_python(
+                    raw_response
+                )
                 exists = False
                 # Check if the current user is in the members list with access level >= 40 (Maintainer)
                 if response:
@@ -487,7 +560,7 @@ class SaaSGitLabService(GitLabService):
         description = 'Cloud OpenHands Resolver'
 
         # Set up webhook parameters
-        webhook_data = {
+        webhook_data: dict[str, JsonValue] = {
             'url': webhook_url,
             'name': webhook_name,
             'enable_ssl_verification': True,
@@ -512,9 +585,10 @@ class SaaSGitLabService(GitLabService):
 
         try:
             # Make the API request
-            response, _ = await self._make_request(
+            raw_response, _ = await self._make_request(
                 url=url, params=webhook_data, method=RequestMethod.POST
             )
+            response = TypeAdapter(GitLabResource).validate_python(raw_response)
 
             if response and 'id' in response:
                 return str(response['id']), None
@@ -531,7 +605,8 @@ class SaaSGitLabService(GitLabService):
     async def user_has_write_access(self, project_id: str) -> bool:
         url = f'{self.BASE_URL}/projects/{project_id}'
         try:
-            response, _ = await self._make_request(url)
+            raw_response, _ = await self._make_request(url)
+            response = TypeAdapter(GitLabResource).validate_python(raw_response)
             # Check if the current user is in the members list with access level >= 30 (Developer)
 
             if 'permissions' not in response:
@@ -554,7 +629,7 @@ class SaaSGitLabService(GitLabService):
 
     async def reply_to_issue(
         self, project_id: str, issue_number: str, discussion_id: str | None, body: str
-    ):
+    ) -> None:
         """
         Either create new comment thread, or reply to comment thread (depending on discussion_id param)
         """
@@ -563,7 +638,7 @@ class SaaSGitLabService(GitLabService):
                 url = f'{self.BASE_URL}/projects/{project_id}/issues/{issue_number}/discussions/{discussion_id}/notes'
             else:
                 url = f'{self.BASE_URL}/projects/{project_id}/issues/{issue_number}/discussions'
-            params = {'body': body}
+            params: dict[str, JsonValue] = {'body': body}
 
             await self._make_request(url=url, params=params, method=RequestMethod.POST)
         except Exception:
@@ -571,13 +646,13 @@ class SaaSGitLabService(GitLabService):
 
     async def reply_to_mr(
         self, project_id: str, merge_request_iid: str, discussion_id: str, body: str
-    ):
+    ) -> None:
         """
         Reply to comment thread on MR
         """
         try:
             url = f'{self.BASE_URL}/projects/{project_id}/merge_requests/{merge_request_iid}/discussions/{discussion_id}/notes'
-            params = {'body': body}
+            params: dict[str, JsonValue] = {'body': body}
 
             await self._make_request(url=url, params=params, method=RequestMethod.POST)
         except Exception:
@@ -585,17 +660,17 @@ class SaaSGitLabService(GitLabService):
 
     async def get_user_resources_with_admin_access(
         self,
-    ) -> tuple[list[dict], list[dict]]:
+    ) -> tuple[list[GitLabResource], list[GitLabResource]]:
         """
         Get all projects and groups where the current user has admin access (maintainer or owner).
 
         Returns:
-            tuple[list[dict], list[dict]]: A tuple containing:
+            tuple[list[GitLabResource], list[GitLabResource]]: A tuple containing:
                 - list of projects where user has admin access
                 - list of groups where user has admin access
         """
-        projects_with_admin_access = []
-        groups_with_admin_access = []
+        projects_with_admin_access: list[GitLabResource] = []
+        groups_with_admin_access: list[GitLabResource] = []
 
         # Fetch all projects the user is a member of
         page = 1
@@ -603,13 +678,16 @@ class SaaSGitLabService(GitLabService):
         while True:
             try:
                 url = f'{self.BASE_URL}/projects'
-                params = {
+                params: dict[str, JsonValue] = {
                     'page': str(page),
                     'per_page': str(per_page),
                     'membership': 1,
                     'min_access_level': 40,  # Maintainer or Owner
                 }
-                response, headers = await self._make_request(url, params)
+                raw_response, headers = await self._make_request(url, params)
+                response = TypeAdapter(list[GitLabResource]).validate_python(
+                    raw_response
+                )
 
                 if not response:
                     break

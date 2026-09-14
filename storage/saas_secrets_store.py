@@ -9,6 +9,7 @@ from sqlalchemy import delete, select
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     CustomSecret,
+    ProviderType,
 )
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
@@ -82,8 +83,13 @@ class SaasSecretsStore(SecretsStore):
             if not credential.token:
                 raise GitCredentialError('credential_required')
             token = credential.token.get_secret_value()
+            email = None
+            if provider == ProviderType.BITBUCKET:
+                if ':' not in token:
+                    raise GitCredentialError('bitbucket_email_required')
+                email, token = token.split(':', 1)
             await service.connect_manual(
-                self.user_id, provider.value, token, credential.host
+                self.user_id, provider.value, token, credential.host, email
             )
 
     async def unset_native_provider_tokens(self) -> None:

@@ -17,6 +17,7 @@ from storage.gitlab_webhook_store import GitlabWebhookStore
 
 if TYPE_CHECKING:
     from integrations.gitlab.gitlab_service import SaaSGitLabService
+    from openhands.app_server.integrations.gitlab.gitlab_service import GitLabService
 
 # Webhook configuration constants
 WEBHOOK_NAME = 'OpenHands Resolver'
@@ -37,6 +38,19 @@ class BreakLoopException(Exception):
     pass
 
 
+async def require_native_gitlab_webhook_host(service: GitLabService) -> None:
+    """Legacy webhook resource IDs belong to the operator's default host only."""
+    from server.auth.auth_config import ENABLE_KEYCLOAK
+
+    if not ENABLE_KEYCLOAK:
+        from server.auth.native_git_config import git_config
+        from server.services.native_git_provider import GitCredentialError
+
+        await service.get_latest_token()
+        if service.base_domain != git_config('gitlab').host:
+            raise GitCredentialError('webhooks_unsupported_host', 409)
+
+
 async def verify_webhook_conditions(
     gitlab_service: SaaSGitLabService,
     resource_type: GitLabResourceType,
@@ -55,6 +69,7 @@ async def verify_webhook_conditions(
         webhook_store: Webhook store instance
         webhook: Webhook object to verify
     """
+    await require_native_gitlab_webhook_host(gitlab_service)
     # Check if resource exists
     does_resource_exist, status = await gitlab_service.check_resource_exists(
         resource_type, resource_id

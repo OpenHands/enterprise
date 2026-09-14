@@ -86,6 +86,7 @@ class GitProviderCapability(TypedDict):
     methods: list[str]
     hosts: list[str]
     default_host: str
+    webhook_host: NotRequired[str]
     installation_available: NotRequired[bool]
 
 

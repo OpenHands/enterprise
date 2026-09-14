@@ -128,6 +128,7 @@ RUN find /app \! -group openhands -exec chgrp openhands {} +
 
 COPY --chown=openhands:openhands --chmod=770 --from=frontend-builder /app/build ./frontend/build
 COPY --chown=openhands:openhands --chmod=770 ./containers/app/entrypoint.sh /app/entrypoint.sh
+COPY --chown=openhands:openhands ./containers/compose/start.py /app/compose-start.py
 
 # Default the enterprise service-injector kinds in the image (overridable via env).
 # Keeping these next to the classes they name means the chart never references an

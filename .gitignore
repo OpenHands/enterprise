@@ -121,6 +121,7 @@ celerybeat.pid
 
 # Environments
 .env
+/.env.native
 frontend/.env
 .venv
 env/
@@ -238,6 +239,9 @@ ralph/
 
 # agent
 .envrc
+/.mocksaml/
+/.gcp/
+/.playwright-cli/
 /workspace
 /_test_workspace
 /debug

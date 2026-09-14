@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from sqlalchemy import and_, delete, or_, select, update
 
 from storage.bitbucket_dc_webhook import BitbucketDCWebhook
-from storage.database import a_session_maker
+from storage.database import a_session_maker, affected_row_count
 
 
 @dataclass
@@ -190,7 +190,7 @@ class BitbucketDCWebhookStore:
                     )
                 )
                 result = await session.execute(stmt)
-                return result.rowcount > 0
+                return affected_row_count(result) > 0
 
     async def delete_webhook_by_repo(self, *, project_key: str, repo_slug: str) -> bool:
         """Remove the enrollment row for ``(project_key, repo_slug)``.
@@ -206,7 +206,7 @@ class BitbucketDCWebhookStore:
                     BitbucketDCWebhook.repo_slug == repo_slug,
                 )
                 result = await session.execute(stmt)
-                return result.rowcount > 0
+                return affected_row_count(result) > 0
 
     @classmethod
     async def get_instance(cls) -> BitbucketDCWebhookStore:

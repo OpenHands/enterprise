@@ -8,7 +8,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from openhands.app_server.utils.logger import openhands_logger as logger
-from storage.database import a_session_maker
+from storage.database import a_session_maker, affected_row_count
 from storage.jira_dc_conversation import JiraDcConversation
 from storage.jira_dc_user import JiraDcUser
 from storage.jira_dc_workspace import JiraDcWorkspace
@@ -322,7 +322,7 @@ class JiraDcIntegrationStore:
             )
             await session.commit()
 
-        deactivated_count = result.rowcount or 0
+        deactivated_count = affected_row_count(result) or 0
         if deactivated_count:
             logger.info(
                 '[Jira DC] Deactivated %s stale active user links for user %s',
@@ -387,7 +387,7 @@ class JiraDcIntegrationStore:
                         oauth_refresh_token_expires_at=refresh_token_expires_at,
                     )
                 )
-                return result.rowcount or 0
+                return affected_row_count(result) or 0
 
     async def get_user_oauth_tokens(
         self,

@@ -69,9 +69,14 @@ bitbucket_service_cls = os.environ.get(
 _bitbucket_service_impl = None
 
 
-def get_bitbucket_service_impl():
+def get_bitbucket_service_impl() -> type[BitBucketService]:
     """Get the BitBucket service implementation with lazy loading."""
     global _bitbucket_service_impl
+    if os.getenv('ENABLE_KEYCLOAK', 'true').lower() in ('false', '0'):
+        from server.auth.native_git_config import validate_native_git_selectors
+
+        validate_native_git_selectors()
+        return get_impl(BitBucketService, os.environ['OPENHANDS_BITBUCKET_SERVICE_CLS'])
     if _bitbucket_service_impl is None:
         _bitbucket_service_impl = get_impl(BitBucketService, bitbucket_service_cls)
     return _bitbucket_service_impl

@@ -138,7 +138,9 @@ async def complete_oauth(
     except ValueError:
         error_code = 'invalid_provider_configuration'
     params = {
-        'git_provider': provider if provider == 'github' else '',
+        'git_provider': provider
+        if provider in ('github', 'gitlab', 'bitbucket')
+        else '',
         'git_result': result,
     }
     if error_code:

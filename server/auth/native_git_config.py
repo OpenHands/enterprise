@@ -11,6 +11,8 @@ from server.auth.native_types import GitProviderCapability
 
 CORE_HOSTS = {
     'github': 'github.com',
+    'gitlab': 'gitlab.com',
+    'bitbucket': 'bitbucket.org',
 }
 
 
@@ -40,19 +42,33 @@ class NativeGitConfig:
 
     @property
     def api_url(self) -> str:
-        return (
-            'https://api.github.com'
-            if self.host == 'github.com'
-            else f'https://{self.host}/api/v3'
-        )
+        if self.provider == 'github':
+            return (
+                'https://api.github.com'
+                if self.host == 'github.com'
+                else f'https://{self.host}/api/v3'
+            )
+        if self.provider == 'gitlab':
+            return f'https://{self.host}/api/v4'
+        return 'https://api.bitbucket.org/2.0'
 
     @property
     def authorize_url(self) -> str:
-        return f'https://{self.host}/login/oauth/authorize'
+        path = {
+            'github': '/login/oauth/authorize',
+            'gitlab': '/oauth/authorize',
+            'bitbucket': '/site/oauth2/authorize',
+        }[self.provider]
+        return f'https://{self.host}{path}'
 
     @property
     def token_url(self) -> str:
-        return f'https://{self.host}/login/oauth/access_token'
+        path = {
+            'github': '/login/oauth/access_token',
+            'gitlab': '/oauth/token',
+            'bitbucket': '/site/oauth2/access_token',
+        }[self.provider]
+        return f'https://{self.host}{path}'
 
     @property
     def callback_url(self) -> str:
@@ -84,11 +100,15 @@ def native_git_capabilities() -> dict[str, GitProviderCapability]:
                 ).split(',')
             )
         )
+        if provider == 'bitbucket' and hosts != ['bitbucket.org']:
+            raise ValueError('Bitbucket Cloud requires bitbucket.org')
         result[provider] = {
             'methods': provider_methods,
             'hosts': hosts,
             'default_host': hosts[0],
         }
+        if provider == 'gitlab':
+            result[provider]['webhook_host'] = hosts[0]
         if provider == 'github':
             result[provider]['installation_available'] = bool(
                 (os.getenv('GITHUB_APP_ID') or os.getenv('GITHUB_APP_CLIENT_ID'))
@@ -112,7 +132,11 @@ def validate_native_git_selectors() -> None:
     """Select SaaS token resolvers before the base app imports provider factories."""
     from importlib import import_module
 
-    for provider, class_name in (('github', 'SaaSGitHubService'),):
+    for provider, class_name in (
+        ('github', 'SaaSGitHubService'),
+        ('gitlab', 'SaaSGitLabService'),
+        ('bitbucket', 'SaaSBitBucketService'),
+    ):
         name = f'OPENHANDS_{provider.upper()}_SERVICE_CLS'
         default = f'integrations.{provider}.{provider}_service.{class_name}'
         selected = os.environ.setdefault(name, default)
@@ -127,13 +151,7 @@ def validate_native_git_selectors() -> None:
             ) from exc
         if not getattr(cls, 'supports_native_auth', False):
             raise ValueError(f'{name} must select a native-compatible SaaS Git adapter')
-    for provider in (
-        'GITLAB',
-        'BITBUCKET',
-        'BITBUCKET_DATA_CENTER',
-        'AZURE_DEVOPS',
-        'FORGEJO',
-    ):
+    for provider in ('BITBUCKET_DATA_CENTER', 'AZURE_DEVOPS', 'FORGEJO'):
         # Stale optional selectors cannot expose unsupported integrations.
         for method in ('MANUAL', 'OAUTH'):
             if os.getenv(

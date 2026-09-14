@@ -176,19 +176,28 @@ class BitbucketManager(Manager[BitbucketViewType]):
                 # arbitrary commenters back to a Keycloak user. The
                 # commenter's Bitbucket account_id stays on
                 # ``ProviderToken.user_id`` for audit/display.
-                offline_token = await self.token_manager.load_offline_token(
-                    user_info.keycloak_user_id
-                )
-                if not offline_token:
-                    logger.warning(
-                        f'[Bitbucket] No offline token for installer '
-                        f'{user_info.keycloak_user_id}'
-                    )
-                    raise MissingSettingsError('Missing settings')
+                from server.auth.auth_config import ENABLE_KEYCLOAK
 
-                user_token = await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.BITBUCKET
-                )
+                if not ENABLE_KEYCLOAK:
+                    user_token = await self.token_manager.get_idp_token_by_user_id(
+                        user_info.keycloak_user_id, ProviderType.BITBUCKET
+                    )
+                else:
+                    offline_token = await self.token_manager.load_offline_token(
+                        user_info.keycloak_user_id
+                    )
+                    if not offline_token:
+                        logger.warning(
+                            f'[Bitbucket] No offline token for installer '
+                            f'{user_info.keycloak_user_id}'
+                        )
+                        raise MissingSettingsError('Missing settings')
+
+                    user_token = (
+                        await self.token_manager.get_idp_token_from_offline_token(
+                            offline_token, ProviderType.BITBUCKET
+                        )
+                    )
                 if not user_token:
                     logger.warning(
                         f'[Bitbucket] No Bitbucket token for installer '

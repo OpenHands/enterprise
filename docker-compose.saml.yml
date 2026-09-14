@@ -1,0 +1,54 @@
+# Optional localhost test IdP. See containers/compose/SAML.md.
+x-saml-environment: &saml-environment
+  NATIVE_SAML_ENABLED: "true"
+  NATIVE_SAML_CONNECTION_ID: mocksaml
+  NATIVE_SAML_DISPLAY_NAME: MockSAML
+  NATIVE_SAML_IDP_ENTITY_ID: urn:openhands:compose:mocksaml
+  NATIVE_SAML_IDP_SSO_URL: http://localhost:${MOCKSAML_PORT:-4000}/api/saml/sso
+  NATIVE_SAML_IDP_CERT_FILE: /run/secrets/mocksaml/idp.crt
+  NATIVE_SAML_EMAIL_ATTRIBUTE: email
+  NATIVE_SAML_JIT_ENABLED: "true"
+
+services:
+  init:
+    environment: *saml-environment
+    volumes:
+      - &mocksaml-certificate
+        type: bind
+        source: ./.mocksaml/idp.crt
+        target: /run/secrets/mocksaml/idp.crt
+        read_only: true
+        bind:
+          create_host_path: false
+
+  openhands:
+    environment: *saml-environment
+    volumes:
+      - *mocksaml-certificate
+
+  mocksaml:
+    image: ${COMPOSE_PROJECT_NAME:-openhands-enterprise}-mocksaml:local
+    build:
+      context: containers/compose/mocksaml
+      additional_contexts:
+        upstream: https://github.com/ory/mocksaml.git#ee99e97dfef4217ccfd008910fdc95a68276d6ec
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ./.mocksaml/mocksaml.env
+    environment:
+      APP_URL: http://localhost:${MOCKSAML_PORT:-4000}
+      ENTITY_ID: urn:openhands:compose:mocksaml
+    ports:
+      - "127.0.0.1:${MOCKSAML_PORT:-4000}:4000"
+    networks:
+      - saml
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/saml/metadata').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 12
+
+networks:
+  saml:

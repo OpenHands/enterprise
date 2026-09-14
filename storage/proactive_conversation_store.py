@@ -13,13 +13,13 @@ from integrations.github.github_types import (
 )
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.utils.logger import openhands_logger as logger
-from storage.database import a_session_maker
+from storage.database import a_session_maker, affected_row_count
 from storage.proactive_convos import ProactiveConversation
 
 
 @dataclass
 class ProactiveConversationStore:
-    def get_repo_id(self, provider: ProviderType, repo_id):
+    def get_repo_id(self, provider: ProviderType, repo_id: str) -> str:
         return f'{provider.value}##{repo_id}'
 
     async def store_workflow_information(
@@ -29,7 +29,7 @@ class ProactiveConversationStore:
         incoming_commit: str,
         workflow: WorkflowRun,
         pr_number: int,
-        get_all_workflows: Callable,
+        get_all_workflows: Callable[[], WorkflowRunGroup],
     ) -> WorkflowRunGroup | None:
         """
         1. Get the workflow based on repo_id, pr_number, commit
@@ -72,16 +72,10 @@ class ProactiveConversationStore:
                     return None
 
                 # Get current workflow statuses
-                workflow_runs = (
+                workflow_run_group = (
                     get_all_workflows()
                     if not commit_entry
-                    else commit_entry.workflow_runs
-                )
-
-                workflow_run_group = (
-                    workflow_runs
-                    if isinstance(workflow_runs, WorkflowRunGroup)
-                    else WorkflowRunGroup(**workflow_runs)
+                    else WorkflowRunGroup.model_validate(commit_entry.workflow_runs)
                 )
 
                 # Update with latest incoming workflow information
@@ -127,7 +121,7 @@ class ProactiveConversationStore:
 
         return final_workflow_group
 
-    async def clean_old_convos(self, older_than_minutes=30):
+    async def clean_old_convos(self, older_than_minutes: int = 30) -> None:
         """
         Clean up proactive conversation records that are older than the specified time.
 
@@ -148,7 +142,7 @@ class ProactiveConversationStore:
                 result = await session.execute(delete_stmt)
 
                 # Log the number of deleted records
-                deleted_count = result.rowcount
+                deleted_count = affected_row_count(result)
                 logger.info(
                     f'Deleted {deleted_count} proactive conversation records older than {older_than_minutes} minutes'
                 )

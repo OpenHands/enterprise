@@ -14,7 +14,7 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.ext.asyncio.engine import AsyncEngine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 from sqlalchemy.util import await_only
 
@@ -48,8 +48,10 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
     # Private attrs
     _engine: Engine | None = PrivateAttr(default=None)
     _async_engine: AsyncEngine | None = PrivateAttr(default=None)
-    _session_maker: sessionmaker | None = PrivateAttr(default=None)
-    _async_session_maker: async_sessionmaker | None = PrivateAttr(default=None)
+    _session_maker: sessionmaker[Session] | None = PrivateAttr(default=None)
+    _async_session_maker: async_sessionmaker[AsyncSession] | None = PrivateAttr(
+        default=None
+    )
     _gcp_connector: Any = PrivateAttr(default=None)
 
     @model_validator(mode='after')
@@ -264,14 +266,14 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
         self._engine = engine
         return engine
 
-    def get_session_maker(self) -> sessionmaker:
+    def get_session_maker(self) -> sessionmaker[Session]:
         session_maker = self._session_maker
         if session_maker is None:
             session_maker = sessionmaker(bind=self.get_db_engine())
             self._session_maker = session_maker
         return session_maker
 
-    async def get_async_session_maker(self) -> async_sessionmaker:
+    async def get_async_session_maker(self) -> async_sessionmaker[AsyncSession]:
         async_session_maker = self._async_session_maker
         if async_session_maker is None:
             db_engine = await self.get_async_db_engine()

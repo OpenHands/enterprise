@@ -1,5 +1,6 @@
 """Native provider adapter shared by the existing SaaS Git services."""
 
+import base64
 from abc import abstractmethod
 from collections.abc import Mapping
 from urllib.parse import urlsplit
@@ -102,6 +103,8 @@ class NativeGitMixin(HTTPClient):
         # concurrent reconnect cannot combine a new host's token with an old URL.
         value = token.get_secret_value() if token else ''
         authorization = f'Bearer {value}'
+        if provider == 'bitbucket' and ':' in value:
+            authorization = 'Basic ' + base64.b64encode(value.encode()).decode()
         headers = {'Authorization': authorization, 'Accept': 'application/json'}
         try:
             async with httpx.AsyncClient(

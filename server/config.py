@@ -67,8 +67,8 @@ def get_auth_capabilities(
     methods: dict[str, list[str]] = {}
     for provider_name, manual_method, default in (
         ('github', 'pat', 'true'),
-        ('gitlab', 'pat', 'false'),
-        ('bitbucket', 'pat', 'false'),
+        ('gitlab', 'pat', 'true'),
+        ('bitbucket', 'api_token', 'true'),
         ('bitbucket_data_center', 'pat', 'false'),
         ('azure_devops', 'pat', 'false'),
         ('forgejo', 'pat', 'false'),
@@ -76,13 +76,13 @@ def get_auth_capabilities(
         enabled: list[str] = []
         prefix = f'NATIVE_GIT_{provider_name.upper()}'
         if os.getenv(f'{prefix}_MANUAL_ENABLED', default).lower() in ('true', '1'):
-            if provider_name != 'github':
+            if provider_name not in ('github', 'gitlab', 'bitbucket'):
                 raise ValueError(
                     f'Native Git connections are unsupported for {provider_name}'
                 )
             enabled.append(manual_method)
         if os.getenv(f'{prefix}_OAUTH_ENABLED', 'false').lower() in ('true', '1'):
-            if provider_name != 'github':
+            if provider_name not in ('github', 'gitlab', 'bitbucket'):
                 raise ValueError(f'Native OAuth is unsupported for {provider_name}')
             registration = f'{provider_name.upper()}_APP'
             if not all(
