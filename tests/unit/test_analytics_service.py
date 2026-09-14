@@ -11,6 +11,8 @@ from openhands.analytics import (
     init_analytics_service,
 )
 from openhands.analytics.analytics_constants import (
+    API_KEY_CREATED,
+    CLI_DEVICE_LINKED,
     CONVERSATION_CREATED,
     CONVERSATION_DELETED,
     CONVERSATION_ERRORED,
@@ -19,8 +21,10 @@ from openhands.analytics.analytics_constants import (
     CREDIT_LIMIT_REACHED,
     CREDIT_PURCHASED,
     GIT_PROVIDER_CONNECTED,
+    JIRA_INTEGRATION_ENABLED,
     ONBOARDING_COMPLETED,
     SETTINGS_SAVED,
+    SLACK_INTEGRATION_ENABLED,
     TEAM_MEMBERS_INVITED,
     TRAJECTORY_DOWNLOADED,
     USER_LOGGED_IN,
@@ -902,6 +906,89 @@ class TestTypedEventMethods:
         assert props['successful_count'] == 4
         assert props['failed_count'] == 1
         assert props['role'] == 'member'
+
+    def test_track_api_key_created(self, saas_service):
+        """track_api_key_created calls capture with API_KEY_CREATED and correct properties."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_api_key_created(
+            ctx=ctx,
+            key_name='My Key',
+            has_expiration=True,
+        )
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == API_KEY_CREATED
+        props = kwargs['properties']
+        assert props['key_name'] == 'My Key'
+        assert props['has_expiration'] is True
+
+    def test_track_cli_device_linked(self, saas_service):
+        """track_cli_device_linked calls capture with CLI_DEVICE_LINKED."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_cli_device_linked(ctx=ctx)
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == CLI_DEVICE_LINKED
+
+    def test_track_slack_integration_enabled(self, saas_service):
+        """track_slack_integration_enabled calls capture with SLACK_INTEGRATION_ENABLED."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_slack_integration_enabled(ctx=ctx)
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == SLACK_INTEGRATION_ENABLED
+
+    def test_track_jira_integration_enabled(self, saas_service):
+        """track_jira_integration_enabled calls capture with JIRA_INTEGRATION_ENABLED and workspace_name."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_jira_integration_enabled(
+            ctx=ctx,
+            workspace_name='my-workspace',
+        )
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == JIRA_INTEGRATION_ENABLED
+        props = kwargs['properties']
+        assert props['workspace_name'] == 'my-workspace'
+
+    def test_identify_user_with_first_last_name(self, saas_service):
+        """identify_user sets first_name and last_name as person properties."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1', org_id='org-1')
+        service.identify_user(
+            ctx=ctx,
+            email='alice@example.com',
+            org_name='Acme',
+            idp='github',
+            first_name='Alice',
+            last_name='Smith',
+        )
+        mock_client.set.assert_called_once()
+        _, kwargs = mock_client.set.call_args
+        props = kwargs['properties']
+        assert props['first_name'] == 'Alice'
+        assert props['last_name'] == 'Smith'
+        assert props['email'] == 'alice@example.com'
+
+    def test_identify_user_without_names_omits_them(self, saas_service):
+        """identify_user does not set first_name/last_name when they are None."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1', org_id='org-1')
+        service.identify_user(
+            ctx=ctx,
+            email='bob@example.com',
+            org_name='Acme',
+            idp='github',
+        )
+        mock_client.set.assert_called_once()
+        _, kwargs = mock_client.set.call_args
+        props = kwargs['properties']
+        assert 'first_name' not in props
+        assert 'last_name' not in props
 
     def test_typed_method_consent_false_is_noop(self, saas_service):
         """A typed method with consented=False results in no capture call."""

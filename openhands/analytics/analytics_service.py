@@ -18,6 +18,8 @@ from typing import Any
 from posthog import Posthog
 
 from openhands.analytics.analytics_constants import (
+    API_KEY_CREATED,
+    CLI_DEVICE_LINKED,
     CONVERSATION_CREATED,
     CONVERSATION_DELETED,
     CONVERSATION_ERRORED,
@@ -26,8 +28,10 @@ from openhands.analytics.analytics_constants import (
     CREDIT_LIMIT_REACHED,
     CREDIT_PURCHASED,
     GIT_PROVIDER_CONNECTED,
+    JIRA_INTEGRATION_ENABLED,
     ONBOARDING_COMPLETED,
     SETTINGS_SAVED,
+    SLACK_INTEGRATION_ENABLED,
     TEAM_MEMBERS_INVITED,
     TRAJECTORY_DOWNLOADED,
     USER_LOGGED_IN,
@@ -503,6 +507,85 @@ class AnalyticsService:
             session_id=session_id,
         )
 
+    def track_api_key_created(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        key_name: str | None = None,
+        has_expiration: bool = False,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'api key created' event.
+
+        Fired when a user creates a new API key. Maps to the HubSpot
+        ``last_api_device_link_date`` property (timestamp of the most recent
+        API key creation) and feeds ``number_of_api_keys`` aggregation.
+        """
+        self.capture(
+            ctx=ctx,
+            event=API_KEY_CREATED,
+            properties={
+                'key_name': key_name,
+                'has_expiration': has_expiration,
+            },
+            session_id=session_id,
+        )
+
+    def track_cli_device_linked(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'cli device linked' event.
+
+        Fired when a user completes the OAuth device-code flow (CLI login).
+        Maps to the HubSpot ``last_cli_device_link_date`` property.
+        """
+        self.capture(
+            ctx=ctx,
+            event=CLI_DEVICE_LINKED,
+            session_id=session_id,
+        )
+
+    def track_slack_integration_enabled(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'slack integration enabled' event.
+
+        Fired when a user links their Slack account. Feeds the HubSpot
+        ``enabled_integrations`` property (Slack).
+        """
+        self.capture(
+            ctx=ctx,
+            event=SLACK_INTEGRATION_ENABLED,
+            session_id=session_id,
+        )
+
+    def track_jira_integration_enabled(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        workspace_name: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'jira integration enabled' event.
+
+        Fired when a user links their Jira workspace. Feeds the HubSpot
+        ``enabled_integrations`` property (Jira).
+        """
+        self.capture(
+            ctx=ctx,
+            event=JIRA_INTEGRATION_ENABLED,
+            properties={
+                'workspace_name': workspace_name,
+            },
+            session_id=session_id,
+        )
+
     def identify_user(
         self,
         ctx: AnalyticsContext,
@@ -511,6 +594,8 @@ class AnalyticsService:
         org_name: str | None = None,
         idp: str | None = None,
         orgs: list[dict[str, Any]] | None = None,
+        first_name: str | None = None,
+        last_name: str | None = None,
     ) -> None:
         """Identify a user and their org memberships in PostHog.
 
@@ -529,6 +614,10 @@ class AnalyticsService:
             idp: Identity provider (e.g. ``"github"``, ``"google"``).
             orgs: List of org dicts with keys ``id``, ``name``,
                   ``member_count`` for group_identify calls.
+            first_name: User first name (from Keycloak ``given_name``).
+                Feeds the HubSpot ``firstname`` contact property.
+            last_name: User last name (from Keycloak ``family_name``).
+                Feeds the HubSpot ``lastname`` contact property.
         """
         if not ctx.consented:
             return
@@ -537,16 +626,21 @@ class AnalyticsService:
 
         try:
             # Person properties
+            person_properties: dict[str, Any] = {
+                'email': email,
+                'org_id': ctx.org_id,
+                'org_name': org_name,
+                'plan_tier': None,
+                'idp': idp,
+                'last_login_at': datetime.now(timezone.utc).isoformat(),
+            }
+            if first_name:
+                person_properties['first_name'] = first_name
+            if last_name:
+                person_properties['last_name'] = last_name
             self.set_person_properties(
                 ctx=ctx,
-                properties={
-                    'email': email,
-                    'org_id': ctx.org_id,
-                    'org_name': org_name,
-                    'plan_tier': None,
-                    'idp': idp,
-                    'last_login_at': datetime.now(timezone.utc).isoformat(),
-                },
+                properties=person_properties,
             )
 
             # Group identify for each org membership
