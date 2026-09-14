@@ -1,5 +1,6 @@
 import React from "react";
 import { useNavigate, useSearchParams, useLocation } from "react-router";
+import { getSafeReturnTo } from "#/utils/safe-return-to";
 import { useIsAuthed } from "#/hooks/query/use-is-authed";
 import { useConfig } from "#/hooks/query/use-config";
 import { useGitHubAuthUrl } from "#/hooks/use-github-auth-url";
@@ -14,14 +15,7 @@ interface LocationState {
   showRequestSubmittedModal?: boolean;
 }
 
-export function getSafeReturnTo(searchParams: URLSearchParams): string {
-  const destination =
-    searchParams.get("returnTo") || searchParams.get("redirect") || "/";
-  if (!destination.startsWith("/") || destination.startsWith("//")) {
-    return "/";
-  }
-  return destination;
-}
+export { getSafeReturnTo } from "#/utils/safe-return-to";
 
 export default function LoginPage() {
   const navigate = useNavigate();

@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useAuthentication } from "./use-authentication";
 import { useConfig } from "./query/use-config";
 import { useIsAuthed } from "./query/use-is-authed";
 import { getLoginMethod, LoginMethod } from "#/utils/local-storage";
@@ -9,7 +10,8 @@ import { useIsOnIntermediatePage } from "./use-is-on-intermediate-page";
  * Hook to automatically log in the user if they have a login method stored in local storage
  * Only works in SAAS mode and when the user is not already logged in
  */
-export const useAutoLogin = () => {
+export const useAutoLogin = (): void => {
+  const authentication = useAuthentication();
   const { data: config, isLoading: isConfigLoading } = useConfig();
   const { data: isAuthed, isLoading: isAuthLoading } = useIsAuthed();
   const isOnIntermediatePage = useIsOnIntermediatePage();
@@ -56,7 +58,7 @@ export const useAutoLogin = () => {
 
   useEffect(() => {
     // Only auto-login in SAAS mode
-    if (config?.app_mode !== "saas") {
+    if (!authentication.providerLoginEnabled(config?.app_mode)) {
       return;
     }
 
@@ -107,6 +109,7 @@ export const useAutoLogin = () => {
     }
   }, [
     config?.app_mode,
+    authentication,
     isAuthed,
     isConfigLoading,
     isAuthLoading,

@@ -1,9 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoutesStub } from "react-router";
 import DeviceVerify from "#/routes/device-verify";
+import AuthService from "#/api/auth-service/auth-service.api";
+import { deferred } from "../helpers/native-fixtures";
 
 const { useIsAuthedMock, mockUseAppMode } = vi.hoisted(() => ({
   useIsAuthedMock: vi.fn(() => ({
@@ -65,16 +67,7 @@ describe("DeviceVerify", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal("close", vi.fn());
-    // Mock fetch for API calls
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({}),
-        }),
-      ),
-    );
+    vi.spyOn(AuthService, "verifyDevice").mockResolvedValue(true);
     // Reset useAppMode to SaaS Cloud (CTA enabled) by default
     mockUseAppMode.mockReturnValue({
       isOss: false,
@@ -163,14 +156,6 @@ describe("DeviceVerify", () => {
         isLoading: false,
       });
 
-      const mockFetch = vi.fn(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({}),
-        }),
-      );
-      vi.stubGlobal("fetch", mockFetch);
-
       render(<RouterStub initialEntries={["/device-verify"]} />, {
         wrapper: createWrapper(),
       });
@@ -188,17 +173,7 @@ describe("DeviceVerify", () => {
       await user.click(submitButton);
 
       await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalledWith(
-          "/oauth/device/verify-authenticated",
-          expect.objectContaining({
-            method: "POST",
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body: "user_code=TESTCODE",
-            credentials: "include",
-          }),
-        );
+        expect(AuthService.verifyDevice).toHaveBeenCalledWith("TESTCODE");
       });
     });
   });
@@ -384,14 +359,6 @@ describe("DeviceVerify", () => {
         isLoading: false,
       });
 
-      const mockFetch = vi.fn(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({}),
-        }),
-      );
-      vi.stubGlobal("fetch", mockFetch);
-
       render(
         <RouterStub initialEntries={["/device-verify?user_code=ABC-123"]} />,
         {
@@ -411,17 +378,7 @@ describe("DeviceVerify", () => {
       await user.click(authorizeButton);
 
       await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalledWith(
-          "/oauth/device/verify-authenticated",
-          expect.objectContaining({
-            method: "POST",
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body: "user_code=ABC-123",
-            credentials: "include",
-          }),
-        );
+        expect(AuthService.verifyDevice).toHaveBeenCalledWith("ABC-123");
       });
     });
   });
@@ -434,9 +391,8 @@ describe("DeviceVerify", () => {
         isLoading: false,
       });
 
-      // Make fetch hang to show processing state
-      const mockFetch = vi.fn(() => new Promise(() => {}));
-      vi.stubGlobal("fetch", mockFetch);
+      const verification = deferred<boolean>();
+      vi.mocked(AuthService.verifyDevice).mockReturnValue(verification.promise);
 
       render(
         <RouterStub initialEntries={["/device-verify?user_code=ABC-123"]} />,
@@ -461,6 +417,11 @@ describe("DeviceVerify", () => {
         expect(spinner).toBeInTheDocument();
         expect(screen.getByText("DEVICE$PROCESSING")).toBeInTheDocument();
       });
+      expect(AuthService.verifyDevice).toHaveBeenCalledWith("ABC-123");
+      await act(async (): Promise<void> => {
+        verification.resolve(true);
+      });
+      await screen.findByText("DEVICE$SUCCESS_TITLE");
     });
   });
 
@@ -471,14 +432,6 @@ describe("DeviceVerify", () => {
         data: true,
         isLoading: false,
       });
-
-      const mockFetch = vi.fn(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({}),
-        }),
-      );
-      vi.stubGlobal("fetch", mockFetch);
 
       render(
         <RouterStub initialEntries={["/device-verify?user_code=ABC-123"]} />,
@@ -515,14 +468,6 @@ describe("DeviceVerify", () => {
         isLoading: false,
       });
 
-      const mockFetch = vi.fn(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({}),
-        }),
-      );
-      vi.stubGlobal("fetch", mockFetch);
-
       render(
         <RouterStub initialEntries={["/device-verify?user_code=ABC-123"]} />,
         {
@@ -552,21 +497,14 @@ describe("DeviceVerify", () => {
   });
 
   describe("Error State", () => {
-    it("should show error message when verification fails with non-ok response", async () => {
+    it("should show error message when verification is rejected", async () => {
       const user = userEvent.setup();
       useIsAuthedMock.mockReturnValue({
         data: true,
         isLoading: false,
       });
 
-      const mockFetch = vi.fn(() =>
-        Promise.resolve({
-          ok: false,
-          status: 400,
-          json: () => Promise.resolve({ error: "invalid_code" }),
-        }),
-      );
-      vi.stubGlobal("fetch", mockFetch);
+      vi.mocked(AuthService.verifyDevice).mockResolvedValue(false);
 
       render(
         <RouterStub initialEntries={["/device-verify?user_code=INVALID"]} />,
@@ -596,15 +534,16 @@ describe("DeviceVerify", () => {
       expect(errorIcon).toBeInTheDocument();
     });
 
-    it("should show error message when fetch throws an exception", async () => {
+    it("should show error message when the API throws an exception", async () => {
       const user = userEvent.setup();
       useIsAuthedMock.mockReturnValue({
         data: true,
         isLoading: false,
       });
 
-      const mockFetch = vi.fn(() => Promise.reject(new Error("Network error")));
-      vi.stubGlobal("fetch", mockFetch);
+      vi.mocked(AuthService.verifyDevice).mockRejectedValue(
+        new Error("Network error"),
+      );
 
       render(
         <RouterStub initialEntries={["/device-verify?user_code=ABC-123"]} />,
@@ -638,13 +577,7 @@ describe("DeviceVerify", () => {
         isLoading: false,
       });
 
-      const mockFetch = vi.fn(() =>
-        Promise.resolve({
-          ok: false,
-          status: 400,
-        }),
-      );
-      vi.stubGlobal("fetch", mockFetch);
+      vi.mocked(AuthService.verifyDevice).mockResolvedValue(false);
 
       render(
         <RouterStub initialEntries={["/device-verify?user_code=INVALID"]} />,
@@ -678,13 +611,7 @@ describe("DeviceVerify", () => {
         isLoading: false,
       });
 
-      const mockFetch = vi.fn(() =>
-        Promise.resolve({
-          ok: false,
-          status: 400,
-        }),
-      );
-      vi.stubGlobal("fetch", mockFetch);
+      vi.mocked(AuthService.verifyDevice).mockResolvedValue(false);
 
       const reloadMock = vi.fn();
       vi.stubGlobal("location", { reload: reloadMock });

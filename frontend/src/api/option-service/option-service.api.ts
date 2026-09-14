@@ -1,3 +1,4 @@
+import { configureAuthentication } from "../auth-adapter";
 import { openHands } from "../open-hands-axios";
 import { ModelsResponse, WebClientConfig } from "./option.types";
 
@@ -35,6 +36,7 @@ class OptionService {
     const { data } = await openHands.get<WebClientConfig>(
       "/api/v1/web-client/config",
     );
+    configureAuthentication(data.auth_mode);
     return data;
   }
 }

@@ -126,7 +126,7 @@ export const getSettingsQueryFn = async (
 
 export const useSettings = (scope: SettingsScope = "personal") => {
   const isOnIntermediatePage = useIsOnIntermediatePage();
-  const { data: userIsAuthenticated } = useIsAuthed();
+  const { data: userIsAuthenticated, acceptedTos } = useIsAuthed();
   const { organizationId } = useSelectedOrganizationId();
   const { data: config } = useConfig();
 
@@ -142,6 +142,7 @@ export const useSettings = (scope: SettingsScope = "personal") => {
     enabled:
       !isOnIntermediatePage &&
       !!userIsAuthenticated &&
+      acceptedTos !== false &&
       (isOss || !!organizationId),
     meta: {
       disableToast: true,

@@ -1,3 +1,5 @@
+import axios, { AxiosResponse } from "axios";
+import { getAuthentication } from "../auth-adapter";
 import { openHands } from "../open-hands-axios";
 import { AuthenticateResponse, GitHubAccessTokenResponse } from "./auth.types";
 import { WebClientConfig } from "../option-service/option.types";
@@ -6,6 +8,44 @@ import { WebClientConfig } from "../option-service/option.types";
  * Authentication service for handling all authentication-related API calls
  */
 class AuthService {
+  static async nativeSession(): Promise<{ accepted_tos: boolean }> {
+    return (
+      await openHands.post<{ accepted_tos: boolean }>("/api/authenticate")
+    ).data;
+  }
+
+  static async verifyDevice(code: string): Promise<boolean> {
+    try {
+      await openHands.post(
+        "/oauth/device/verify-authenticated",
+        new URLSearchParams({ user_code: code }),
+        {
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          withCredentials: true,
+        },
+      );
+      return true;
+    } catch (error) {
+      if (axios.isAxiosError<unknown, unknown>(error) && error.response)
+        return false;
+      throw error;
+    }
+  }
+
+  static acceptTos(
+    redirectUrl: string,
+  ): Promise<
+    AxiosResponse<{ redirect_url?: string }, { redirect_url: string }>
+  > {
+    return openHands.post<
+      { redirect_url?: string },
+      AxiosResponse<{ redirect_url?: string }, { redirect_url: string }>,
+      { redirect_url: string }
+    >("/api/accept_tos", {
+      redirect_url: redirectUrl,
+    });
+  }
+
   /**
    * Authenticate with GitHub token
    * @param appMode The application mode (saas or oss)
@@ -43,9 +83,7 @@ class AuthService {
    * @param appMode The application mode (saas or oss)
    */
   static async logout(appMode: WebClientConfig["app_mode"]): Promise<void> {
-    const endpoint =
-      appMode === "saas" ? "/api/logout" : "/api/unset-provider-tokens";
-    await openHands.post(endpoint);
+    await getAuthentication().logout(openHands, appMode);
   }
 }
 

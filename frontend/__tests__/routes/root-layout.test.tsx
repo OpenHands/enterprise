@@ -1,3 +1,4 @@
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -203,6 +204,7 @@ describe("MainApp", () => {
     });
 
     vi.spyOn(AuthService, "authenticate").mockResolvedValue(true);
+    vi.spyOn(AuthService, "nativeSession").mockResolvedValue({ accepted_tos: true });
 
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
       MOCK_DEFAULT_USER_SETTINGS,
@@ -655,4 +657,35 @@ describe("MainApp", () => {
       expect(screen.queryByTestId("outlet-content")).not.toBeInTheDocument();
     });
   });
+  it("redirects an expired native session with stale LOGIN_METHOD to password login preserving the device code", async () => {
+    vi.mocked(OptionService.getConfig).mockResolvedValue(createMockWebClientConfig({ app_mode: "saas", auth_mode: "native", providers_configured: [] }));
+    vi.mocked(AuthService.nativeSession).mockRejectedValue({ isAxiosError: true, response: { status: 401 } });
+    vi.mocked(localStorage.getItem).mockReturnValue("github");
+    renderWithLoginStub(RouterStubWithDeviceVerify, ["/oauth/device/verify?user_code=NATIVE-CODE"]);
+    await screen.findByTestId("login-page");
+    expect(screen.getByTestId("return-to-param")).toHaveTextContent("/oauth/device/verify?user_code=NATIVE-CODE");
+  });
+
+  it("allows native users with no Git account and unverified email into the app", async () => {
+    vi.mocked(OptionService.getConfig).mockResolvedValue(createMockWebClientConfig({ app_mode: "saas", auth_mode: "native", providers_configured: [] }));
+    vi.mocked(SettingsService.getSettings).mockResolvedValue({ ...MOCK_DEFAULT_USER_SETTINGS, email_verified: false, provider_tokens_set: {} });
+    renderMainApp();
+    await screen.findByTestId("outlet-content");
+    expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
+  });
+
+  it("routes a valid native session with unaccepted terms to TOS on direct entry, preserving the destination", async () => {
+    vi.mocked(OptionService.getConfig).mockResolvedValue(createMockWebClientConfig({ app_mode: "saas", auth_mode: "native", providers_configured: [] }));
+    vi.mocked(AuthService.nativeSession).mockResolvedValue({ accepted_tos: false });
+    function TosDestination(): React.JSX.Element { const [params] = useSearchParams(); return <p>{params.get("redirect_url")}</p>; }
+    const Routes = createRoutesStub([
+      { path: "/", Component: MainApp, children: [{ path: "/oauth/device/verify", Component: () => <p>Protected page</p> }] },
+      { path: "/accept-tos", Component: TosDestination },
+    ]);
+    renderWithLoginStub(Routes, ["/oauth/device/verify?user_code=KEEP-CODE"]);
+    await screen.findByText("/oauth/device/verify?user_code=KEEP-CODE");
+    expect(screen.queryByText("Protected page")).not.toBeInTheDocument();
+    expect(SettingsService.getSettings).not.toHaveBeenCalled();
+  });
+
 });
