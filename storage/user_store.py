@@ -36,7 +36,7 @@ from storage.role import Role
 from storage.role_store import RoleStore
 from storage.user import User
 from storage.user_settings import UserSettings
-from utils.identity import resolve_display_name
+from utils.identity import UserIdentityClaims, resolve_display_name
 
 # The max possible time to wait for another process to finish creating a user before retrying
 _REDIS_CREATE_TIMEOUT_SECONDS = 30
@@ -69,7 +69,7 @@ class UserStore:
     @staticmethod
     async def create_user(
         user_id: str,
-        user_info: dict,
+        user_info: UserIdentityClaims,
         role_id: Optional[int] = None,
     ) -> User | None:
         """Create a new user.
@@ -275,7 +275,7 @@ class UserStore:
     async def migrate_user(
         user_id: str,
         user_settings: UserSettings,
-        user_info: dict,
+        user_info: UserIdentityClaims,
     ) -> User | None:
         kwargs = decrypt_legacy_model(
             [
@@ -1038,7 +1038,9 @@ class UserStore:
             return result.scalars().first()
 
     @staticmethod
-    async def backfill_contact_name(user_id: str, user_info: dict) -> None:
+    async def backfill_contact_name(
+        user_id: str, user_info: UserIdentityClaims
+    ) -> None:
         """Update contact_name on the personal org if it still has a username-style value.
 
         Called during login to gradually fix existing users whose contact_name
@@ -1123,7 +1125,7 @@ class UserStore:
             await session.commit()
 
     @staticmethod
-    async def backfill_user_email(user_id: str, user_info: dict) -> None:
+    async def backfill_user_email(user_id: str, user_info: UserIdentityClaims) -> None:
         """Set User.email and email_verified from IDP if they are still NULL.
 
         Called during login to gradually fix existing users whose email

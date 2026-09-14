@@ -5,8 +5,6 @@ import time
 from urllib.parse import parse_qs
 
 import httpx
-import jwt
-from jwt.exceptions import DecodeError
 from keycloak.exceptions import (
     KeycloakAuthenticationError,
     KeycloakConnectionError,
@@ -50,7 +48,22 @@ from server.auth.email_validation import (
     get_base_email_regex_pattern,
     matches_base_email,
 )
-from server.auth.keycloak_manager import get_keycloak_admin, get_keycloak_openid
+from server.auth.keycloak_manager import (
+    get_keycloak_admin,
+    get_keycloak_openid,
+)
+from server.auth.keycloak_response_types import (
+    ADMIN_USER,
+    ADMIN_USERS,
+    OFFLINE_TOKEN,
+    REFRESH_TOKENS,
+    USER_ID,
+    KeycloakAdminUser,
+    KeycloakRefreshTokens,
+    KeycloakUserCreation,
+    parse_keycloak_response,
+    parse_stored_token_envelope,
+)
 from server.logger import logger
 from storage.auth_token_store import AuthTokenStore
 from storage.database import a_session_maker
@@ -91,7 +104,7 @@ def _before_sleep_callback(retry_state: RetryCallState) -> None:
 
 
 class TokenManager:
-    def __init__(self, external: bool = False):
+    def __init__(self, external: bool = False) -> None:
         self.external = external
         from storage.encrypt_utils import get_jwt_service
 
@@ -636,7 +649,10 @@ class TokenManager:
         self, idp_user_id: str, idp: ProviderType
     ) -> str | None:
         keycloak_admin = get_keycloak_admin(self.external)
-        users = await keycloak_admin.a_get_users({'q': f'{idp.value}_id:{idp_user_id}'})
+        users = parse_keycloak_response(
+            ADMIN_USERS,
+            await keycloak_admin.a_get_users({'q': f'{idp.value}_id:{idp_user_id}'}),
+        )
         if not users:
             logger.info(f'{idp.value} user with IDP ID {idp_user_id} not found.')
             return None
@@ -646,7 +662,9 @@ class TokenManager:
 
     async def get_user_id_from_user_email(self, email: str) -> str | None:
         keycloak_admin = get_keycloak_admin(self.external)
-        users = await keycloak_admin.a_get_users({'q': f'email:{email}'})
+        users = parse_keycloak_response(
+            ADMIN_USERS, await keycloak_admin.a_get_users({'q': f'email:{email}'})
+        )
         # Keycloak's email query is a substring match, so narrow to an exact,
         # unique match -- otherwise users[0] could be a different user whose email
         # merely contains this one (e.g. bob@acme.com vs bob@acme.com.au).
@@ -919,7 +937,7 @@ class TokenManager:
         # and no user row is created — there is no orphan window
         # between an existing user and a failed password setup.
         # See https://www.keycloak.org/docs-api/26.0.0/rest-api/index.html#UserRepresentation
-        payload: dict = {
+        payload: KeycloakUserCreation = {
             'email': email,
             'username': email,
             'enabled': True,
@@ -932,7 +950,9 @@ class TokenManager:
                 }
             ],
         }
-        user_id = await keycloak_admin.a_create_user(payload, exist_ok=False)
+        user_id = parse_keycloak_response(
+            USER_ID, await keycloak_admin.a_create_user(dict(payload), exist_ok=False)
+        )
         logger.info(
             'Created Keycloak user',
             extra={'user_id': user_id, 'email': email},
@@ -965,7 +985,9 @@ class TokenManager:
             grant_type='password',
             scope='openid offline_access',
         )
-        refresh_token = token_response.get('refresh_token')
+        refresh_token = parse_keycloak_response(OFFLINE_TOKEN, token_response).get(
+            'refresh_token'
+        )
         if not refresh_token:
             raise ValueError(
                 'Keycloak token response did not include a refresh_token; '
@@ -973,13 +995,15 @@ class TokenManager:
             )
         return refresh_token
 
-    async def get_user_info_from_user_id(self, user_id: str) -> dict | None:
+    async def get_user_info_from_user_id(
+        self, user_id: str
+    ) -> KeycloakAdminUser | None:
         keycloak_admin = get_keycloak_admin(self.external)
         user = await keycloak_admin.a_get_user(user_id)
         if not user:
             logger.error(f'User with ID {user_id} not found.')
             return None
-        return user
+        return parse_keycloak_response(ADMIN_USER, user)
 
     async def get_github_id_from_user_id(self, user_id: str) -> str | None:
         user_info = await self.get_user_info_from_user_id(user_id)
@@ -1107,7 +1131,7 @@ class TokenManager:
             token = self.decrypt_text(installation.encrypted_token)
             return token
 
-    async def store_offline_token(self, user_id: str, offline_token: str):
+    async def store_offline_token(self, user_id: str, offline_token: str) -> None:
         token_store = await OfflineTokenStore.get_instance(user_id)
         encrypted_tokens = self.encrypt_payload({'refresh_token': offline_token})
         payload = {'tokens': encrypted_tokens}
@@ -1118,31 +1142,16 @@ class TokenManager:
         retry=retry_if_exception_type(KeycloakConnectionError),
         before_sleep=_before_sleep_callback,
     )
-    async def refresh(self, refresh_token: str) -> dict:
+    async def refresh(self, refresh_token: str) -> KeycloakRefreshTokens:
         try:
-            return await get_keycloak_openid(self.external).a_refresh_token(
+            tokens = await get_keycloak_openid(self.external).a_refresh_token(
                 refresh_token
             )
-        except KeycloakError as e:
-            try:
-                # We can log the token payload without the signature
-                refresh_token_payload = jwt.decode(
-                    refresh_token, options={'verify_signature': False}
-                )
-                logger.info(
-                    'error_with_refresh_token',
-                    extra={
-                        'refresh_token': refresh_token_payload,
-                        'error': str(e),
-                    },
-                )
-            except DecodeError:
-                # Whatever was passed in as a refresh token was completely wrong.
-                # We can log this on the basis of it not being a real secret.
-                logger.info(
-                    'refresh_token_was_not_a_jwt',
-                    extra={'refresh_token': refresh_token},
-                )
+            return parse_keycloak_response(REFRESH_TOKENS, tokens)
+        except KeycloakError as error:
+            logger.info(
+                'error_with_refresh_token', extra={'error_type': type(error).__name__}
+            )
             raise
 
     async def validate_offline_token(self, user_id: str) -> bool:
@@ -1181,12 +1190,14 @@ class TokenManager:
         payload = await token_store.load_token()
         if not payload:
             return None
-        cred = json.loads(payload)
+        cred = parse_stored_token_envelope(payload)
         encrypted_tokens = cred['tokens']
-        tokens = self.decrypt_payload(encrypted_tokens)
+        tokens = parse_keycloak_response(
+            OFFLINE_TOKEN, self.decrypt_payload(encrypted_tokens)
+        )
         return tokens['refresh_token']
 
-    async def logout(self, refresh_token: str):
+    async def logout(self, refresh_token: str) -> None:
         try:
             await get_keycloak_openid(self.external).a_logout(
                 refresh_token=refresh_token

@@ -17,10 +17,10 @@ logger.debug(
     f'KEYCLOAK_SERVER_URL:{KEYCLOAK_SERVER_URL}, KEYCLOAK_SERVER_URL_EXT:{KEYCLOAK_SERVER_URL_EXT}, KEYCLOAK_CLIENT_ID:{KEYCLOAK_CLIENT_ID}'
 )
 
-_keycloak_instances = {}
+_keycloak_instances: dict[bool, KeycloakOpenID] = {}
 
 
-def get_keycloak_openid(external=False) -> KeycloakOpenID:
+def get_keycloak_openid(external: bool = False) -> KeycloakOpenID:
     """Returns a singleton instance of KeycloakOpenID based on the 'external' flag."""
     if external not in _keycloak_instances:
         _keycloak_instances[external] = KeycloakOpenID(
@@ -34,10 +34,10 @@ def get_keycloak_openid(external=False) -> KeycloakOpenID:
     return _keycloak_instances[external]
 
 
-_keycloak_admin_instances = {}
+_keycloak_admin_instances: dict[bool, KeycloakAdmin] = {}
 
 
-def get_keycloak_admin(external=False) -> KeycloakAdmin:
+def get_keycloak_admin(external: bool = False) -> KeycloakAdmin:
     """Returns a singleton instance of KeycloakAdmin based on the 'external' flag."""
     if external not in _keycloak_admin_instances:
         keycloak_admin = KeycloakAdmin(

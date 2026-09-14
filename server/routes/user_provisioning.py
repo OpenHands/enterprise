@@ -155,6 +155,7 @@ from storage.org_store import OrgStore
 from storage.role_store import RoleStore
 from storage.user import User
 from storage.user_store import UserStore
+from utils.identity import UserIdentityClaims
 
 # Routes that read the target org from ``X-Org-Id`` rather than the URL
 # path live under ``/api/organizations`` so they sit alongside the rest
@@ -676,7 +677,7 @@ async def provision_user(
             # existing row if found), so the recover case reuses it
             # to attach the freshly-discovered Keycloak identity to
             # the OpenHands DB.
-            user_info_dict = {
+            user_info_dict: UserIdentityClaims = {
                 'sub': block_kc_user_id,
                 'email': email,
                 'email_verified': True,

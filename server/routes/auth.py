@@ -75,6 +75,7 @@ from storage.database import a_session_maker
 from storage.default_org_service import DefaultOrgBootstrapService
 from storage.user import User
 from storage.user_store import UserStore
+from utils.identity import IDENTITY_CLAIMS
 
 with warnings.catch_warnings():
     warnings.simplefilter('ignore')
@@ -361,7 +362,9 @@ async def keycloak_callback(
 
     email = user_info.email
     user_id = user_info.sub
-    user_info_dict = user_info.model_dump(exclude_none=True)
+    user_info_dict = IDENTITY_CLAIMS.validate_python(
+        user_info.model_dump(exclude_none=True)
+    )
     user = await UserStore.get_user_by_id(user_id)
     is_new_user: bool = False
     if not user:
