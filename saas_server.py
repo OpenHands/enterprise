@@ -8,6 +8,18 @@ load_dotenv()
 if not os.getenv('OPENHANDS_CONFIG_CLS'):
     os.environ['OPENHANDS_CONFIG_CLS'] = 'server.config.SaaSServerConfig'
 
+from server.auth.auth_config import ENABLE_KEYCLOAK  # noqa: E402
+from server.config import validate_native_auth_configuration  # noqa: E402
+
+validate_native_auth_configuration()
+if not ENABLE_KEYCLOAK:
+    os.environ.setdefault('APP_MODE', 'saas')
+    os.environ.setdefault('OH_APP_MODE', 'saas')
+    os.environ.setdefault(
+        'OH_LIFESPAN_KIND',
+        'server.app_lifespan.saas_app_lifespan_service.SaasAppLifespanService',
+    )
+
 # SaaS registers enterprise routes below, then mounts the frontend last. Avoid
 # the base app's import-time SPA mount from shadowing those routes.
 os.environ['SERVE_FRONTEND'] = 'false'
@@ -97,7 +109,14 @@ def is_saas():
 
 base_app.include_router(readiness_router)  # Add routes for readiness checks
 base_app.include_router(api_router)  # Add additional route for github auth
-base_app.include_router(oauth_router)  # Add additional route for oauth callback
+if ENABLE_KEYCLOAK:
+    base_app.include_router(oauth_router)
+else:
+    from server.routes.auth_accounts import auth_accounts_router  # noqa: E402
+    from server.routes.native_auth import native_auth_router  # noqa: E402
+
+    base_app.include_router(native_auth_router)
+    base_app.include_router(auth_accounts_router)
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings
 base_app.include_router(
@@ -106,8 +125,8 @@ base_app.include_router(
 base_app.include_router(shared_conversation_router)
 base_app.include_router(shared_event_router)
 
-# Add GitHub integration router only if GITHUB_APP_CLIENT_ID is set
-if GITHUB_APP_CLIENT_ID:
+# Provider-backed integrations require Keycloak in this mode.
+if ENABLE_KEYCLOAK and GITHUB_APP_CLIENT_ID:
     # Make sure that the callback processor is loaded here so we don't get an error when deserializing
     from integrations.github.github_v1_callback_processor import (  # noqa: E402
         GithubV1CallbackProcessor,
@@ -122,7 +141,7 @@ if GITHUB_APP_CLIENT_ID:
     )  # Add additional route for integration webhook events
 
 # Add GitLab integration router only if GITLAB_APP_CLIENT_ID is set
-if GITLAB_APP_CLIENT_ID:
+if ENABLE_KEYCLOAK and GITLAB_APP_CLIENT_ID:
     # Make sure that the callback processor is loaded here so we don't get an error when deserializing
     from integrations.gitlab.gitlab_v1_callback_processor import (  # noqa: E402
         GitlabV1CallbackProcessor,
@@ -135,7 +154,7 @@ if GITLAB_APP_CLIENT_ID:
     base_app.include_router(gitlab_integration_router)
 
 # Add Bitbucket Cloud integration router only if BITBUCKET_APP_CLIENT_ID is set
-if BITBUCKET_APP_CLIENT_ID:
+if ENABLE_KEYCLOAK and BITBUCKET_APP_CLIENT_ID:
     from integrations.bitbucket.bitbucket_v1_callback_processor import (  # noqa: E402
         BitbucketV1CallbackProcessor,
     )
@@ -148,7 +167,7 @@ if BITBUCKET_APP_CLIENT_ID:
     base_app.include_router(bitbucket_integration_router)
 
 # Add Azure DevOps integration router only if Azure DevOps OAuth is configured.
-if AZURE_DEVOPS_CLIENT_ID:
+if ENABLE_KEYCLOAK and AZURE_DEVOPS_CLIENT_ID:
     from integrations.azure_devops.azure_devops_v1_callback_processor import (  # noqa: E402
         AzureDevOpsV1CallbackProcessor,
     )
@@ -198,13 +217,15 @@ override_users_me_endpoint(base_app)
 
 base_app.include_router(invitation_router)  # Add routes for org invitation management
 base_app.include_router(invitation_accept_router)  # Add route for accepting invitations
-add_github_proxy_routes(base_app)
-base_app.include_router(slack_router)
+if ENABLE_KEYCLOAK:
+    add_github_proxy_routes(base_app)
+if ENABLE_KEYCLOAK:
+    base_app.include_router(slack_router)
 if ENABLE_JIRA:
     base_app.include_router(jira_integration_router)
 if ENABLE_JIRA_DC:
     base_app.include_router(jira_dc_integration_router)
-if BITBUCKET_DATA_CENTER_HOST:
+if ENABLE_KEYCLOAK and BITBUCKET_DATA_CENTER_HOST:
     from server.routes.bitbucket_dc_proxy import (
         router as bitbucket_dc_proxy_router,  # noqa: E402
     )
@@ -232,12 +253,20 @@ base_app.include_router(
 )  # Add admin routes for quota (org-level + increase requests)
 
 
-base_app.add_middleware(
-    ApiKeyAwareCORSMiddleware,
-    allow_origins=PERMITTED_CORS_ORIGINS,
-)
+if ENABLE_KEYCLOAK:
+    base_app.add_middleware(
+        ApiKeyAwareCORSMiddleware,
+        allow_origins=PERMITTED_CORS_ORIGINS,
+    )
 base_app.add_middleware(CacheControlMiddleware)
 base_app.middleware('http')(SetAuthCookieMiddleware())
+if not ENABLE_KEYCLOAK:
+    from server.config import get_native_cors_origins  # noqa: E402
+
+    # Native auth errors must also carry the authoritative CORS policy.
+    base_app.add_middleware(
+        ApiKeyAwareCORSMiddleware, allow_origins=get_native_cors_origins()
+    )
 
 base_app.mount('/', SPAStaticFiles(directory=directory, html=True), name='dist')
 

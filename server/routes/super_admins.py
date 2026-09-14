@@ -22,7 +22,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.authorization import Permission, require_permission
+from server.auth.native_password import NativeAuthError
 from storage.user_store import SuperAdminRevokeResult, UserStore
 
 super_admin_router = APIRouter(prefix='/api/admin/super-admins', tags=['Admin'])
@@ -106,10 +108,20 @@ async def grant_super_admin(
         # truthiness -- not ``is not None`` -- to stay consistent with the
         # validator, otherwise an empty-string ``email`` would wrongly take
         # the email branch and 404.
-        target_user_id = body.user_id  # type: ignore[assignment]
+        if not body.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail='A user id or email is required',
+            )
+        target_user_id = body.user_id
 
     try:
-        user = await UserStore.grant_super_admin(target_user_id)
+        user = await UserStore.grant_super_admin(
+            target_user_id,
+            **({'actor_user_id': caller_user_id} if not ENABLE_KEYCLOAK else {}),
+        )
+    except NativeAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ValueError as exc:
         # Malformed user_id (not a UUID) or missing seeded admin role.
         raise HTTPException(
@@ -139,7 +151,12 @@ async def revoke_super_admin(
     admin. Requires ``MANAGE_SUPER_ADMINS``.
     """
     try:
-        result = await UserStore.revoke_super_admin(user_id)
+        result = await UserStore.revoke_super_admin(
+            user_id,
+            **({'actor_user_id': caller_user_id} if not ENABLE_KEYCLOAK else {}),
+        )
+    except NativeAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)

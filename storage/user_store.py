@@ -13,6 +13,8 @@ from sqlalchemy.orm import selectinload
 
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
+from server.auth.auth_config import ENABLE_KEYCLOAK
+from server.auth.native_password import NativeAuthError, normalize_email
 from server.auth.token_manager import TokenManager
 from server.constants import (
     DEFAULT_V1_ENABLED,
@@ -30,13 +32,15 @@ from storage.encrypt_utils import (
     encrypt_legacy_value,
 )
 from storage.org import Org
-from storage.org_default_settings import apply_configured_org_condenser_default
+from storage.org_default_settings import (
+    apply_configured_org_condenser_default,
+)
 from storage.org_member import OrgMember
 from storage.role import Role
 from storage.role_store import RoleStore
 from storage.user import User
 from storage.user_settings import UserSettings
-from utils.identity import resolve_display_name
+from utils.identity import IDENTITY_CLAIMS, UserIdentityClaims, resolve_display_name
 
 # The max possible time to wait for another process to finish creating a user before retrying
 _REDIS_CREATE_TIMEOUT_SECONDS = 30
@@ -69,7 +73,7 @@ class UserStore:
     @staticmethod
     async def create_user(
         user_id: str,
-        user_info: dict,
+        user_info: UserIdentityClaims,
         role_id: Optional[int] = None,
     ) -> User | None:
         """Create a new user.
@@ -91,6 +95,8 @@ class UserStore:
         deleted-tenant IDs, breaking any external reference that pinned
         on the old values.
         """
+        if not ENABLE_KEYCLOAK:
+            raise NativeAuthError('Native accounts require an account setup link', 403)
         async with a_session_maker() as session:
             user_uuid = uuid.UUID(user_id)
             result = await session.execute(
@@ -275,8 +281,10 @@ class UserStore:
     async def migrate_user(
         user_id: str,
         user_settings: UserSettings,
-        user_info: dict,
+        user_info: UserIdentityClaims,
     ) -> User | None:
+        if not ENABLE_KEYCLOAK:
+            raise NativeAuthError('Legacy identity migration is unavailable', 403)
         kwargs = decrypt_legacy_model(
             [
                 'llm_api_key',
@@ -515,6 +523,8 @@ class UserStore:
             The user_settings if downgrade was successful, None otherwise.
             Returns None if the org has multiple members (not a personal org).
         """
+        if not ENABLE_KEYCLOAK:
+            raise NativeAuthError('Native identities cannot be downgraded', 403)
         logger.info(
             'user_store:downgrade_user:start',
             extra={'user_id': user_id},
@@ -536,10 +546,10 @@ class UserStore:
                 return None
 
             # Get the user's personal org (org_id == user_id)
-            result = await session.execute(
+            org_result = await session.execute(
                 select(Org).filter(Org.id == uuid.UUID(user_id))
             )
-            org = result.scalars().first()
+            org = org_result.scalars().first()
             if not org:
                 logger.warning(
                     'user_store:downgrade_user:org_not_found',
@@ -548,10 +558,10 @@ class UserStore:
                 return None
 
             # Get org_members for this org - should only be one for personal orgs
-            result = await session.execute(
+            members_result = await session.execute(
                 select(OrgMember).filter(OrgMember.org_id == org.id)
             )
-            org_members = result.scalars().all()
+            org_members = members_result.scalars().all()
 
             if len(org_members) != 1:
                 logger.error(
@@ -567,13 +577,13 @@ class UserStore:
             org_member = org_members[0]
 
             # Get the user_settings (for migrated users)
-            result = await session.execute(
+            settings_result = await session.execute(
                 select(UserSettings).filter(
                     UserSettings.keycloak_user_id == user_id,
                     UserSettings.already_migrated.is_(True),
                 )
             )
-            user_settings = result.scalars().first()
+            user_settings = settings_result.scalars().first()
 
             # For new sign-ups after migration, user_settings won't exist
             # Fall back to getting data from org_members
@@ -750,8 +760,17 @@ class UserStore:
             )
             user = result.scalars().first()
             if user:
+                if not ENABLE_KEYCLOAK:
+                    from storage.native_auth import AuthAccount
+
+                    account = await session.get(AuthAccount, user.id)
+                    if account is None or account.state != 'profile_present':
+                        return None
                 user.sync_analytics_consent_with_tos()
                 return user
+
+            if not ENABLE_KEYCLOAK:
+                return None
 
             # Check if we need to migrate from user_settings
             while not await UserStore._acquire_user_creation_lock(user_id):
@@ -774,13 +793,13 @@ class UserStore:
                     user.sync_analytics_consent_with_tos()
                     return user
 
-                result = await session.execute(
+                settings_result = await session.execute(
                     select(UserSettings).filter(
                         UserSettings.keycloak_user_id == user_id,
                         UserSettings.already_migrated.is_(False),
                     )
                 )
-                user_settings = result.scalars().first()
+                user_settings = settings_result.scalars().first()
                 if user_settings:
                     token_manager = TokenManager()
                     user_info = await token_manager.get_user_info_from_user_id(user_id)
@@ -793,7 +812,7 @@ class UserStore:
                     user = await UserStore.migrate_user(
                         user_id,
                         user_settings,
-                        user_info,
+                        IDENTITY_CLAIMS.validate_python(user_info),
                     )
                     if user:
                         user.sync_analytics_consent_with_tos()
@@ -820,6 +839,19 @@ class UserStore:
             return None
 
         async with a_session_maker() as session:
+            if not ENABLE_KEYCLOAK:
+                from storage.native_auth import AuthAccount
+
+                native_result = await session.execute(
+                    select(User)
+                    .options(selectinload(User.org_members))
+                    .join(AuthAccount, AuthAccount.id == User.id)
+                    .where(
+                        AuthAccount.normalized_email == normalize_email(email),
+                        AuthAccount.state == 'profile_present',
+                    )
+                )
+                return native_result.scalar_one_or_none()
             result = await session.execute(
                 select(User)
                 .options(selectinload(User.org_members))
@@ -920,7 +952,9 @@ class UserStore:
             return list(result.scalars().all())
 
     @staticmethod
-    async def grant_super_admin(user_id: str) -> Optional[User]:
+    async def grant_super_admin(
+        user_id: str, *, actor_user_id: str | None = None
+    ) -> Optional[User]:
         """Grant the instance-level super-admin role to an existing user.
 
         Sets ``user.role_id`` to the ``admin`` role row. Idempotent: if the
@@ -933,6 +967,22 @@ class UserStore:
             The updated (or already-super-admin) user, or ``None`` if no user
             exists with the given id.
         """
+        if not ENABLE_KEYCLOAK:
+            from server.services.native_account_service import (
+                lock_native_lifecycle,
+                require_active_admin,
+                set_superadmin,
+            )
+
+            async with a_session_maker() as session, session.begin():
+                await lock_native_lifecycle(session)
+                if actor_user_id is None:
+                    raise NativeAuthError(
+                        'Global user management permission required', 403
+                    )
+                await require_active_admin(session, UUID(actor_user_id))
+                await set_superadmin(session, UUID(user_id), True)
+                return await session.get(User, UUID(user_id))
         async with a_session_maker() as session:
             admin_role_id = await UserStore._get_super_admin_role_id(session)
             result = await session.execute(
@@ -953,7 +1003,9 @@ class UserStore:
             return user
 
     @staticmethod
-    async def revoke_super_admin(user_id: str) -> SuperAdminRevokeResult:
+    async def revoke_super_admin(
+        user_id: str, *, actor_user_id: str | None = None
+    ) -> SuperAdminRevokeResult:
         """Revoke the instance-level super-admin role from a user.
 
         Clears ``user.role_id``. Refuses to remove the **last** remaining
@@ -976,6 +1028,32 @@ class UserStore:
             A :class:`SuperAdminRevokeResult` describing the outcome.
         """
         target_uuid = uuid.UUID(user_id)
+        if not ENABLE_KEYCLOAK:
+            from server.services.native_account_service import (
+                lock_native_lifecycle,
+                require_active_admin,
+                set_superadmin,
+            )
+
+            async with a_session_maker() as session, session.begin():
+                await lock_native_lifecycle(session)
+                if actor_user_id is None:
+                    raise NativeAuthError(
+                        'Global user management permission required', 403
+                    )
+                await require_active_admin(session, UUID(actor_user_id))
+                target = await session.get(User, target_uuid)
+                if target is None:
+                    return SuperAdminRevokeResult.NOT_FOUND
+                if target.role_id != await UserStore._get_super_admin_role_id(session):
+                    return SuperAdminRevokeResult.NOT_SUPER_ADMIN
+                try:
+                    await set_superadmin(session, target_uuid, False)
+                except NativeAuthError as exc:
+                    if exc.status_code == 409:
+                        return SuperAdminRevokeResult.LAST_SUPER_ADMIN
+                    raise
+                return SuperAdminRevokeResult.REVOKED
         async with a_session_maker() as session:
             admin_role_id = await UserStore._get_super_admin_role_id(session)
             result = await session.execute(
@@ -1038,7 +1116,9 @@ class UserStore:
             return result.scalars().first()
 
     @staticmethod
-    async def backfill_contact_name(user_id: str, user_info: dict) -> None:
+    async def backfill_contact_name(
+        user_id: str, user_info: UserIdentityClaims
+    ) -> None:
         """Update contact_name on the personal org if it still has a username-style value.
 
         Called during login to gradually fix existing users whose contact_name
@@ -1057,10 +1137,10 @@ class UserStore:
         username = user_info.get('username', '')
 
         async with a_session_maker() as session:
-            result = await session.execute(
+            org_result = await session.execute(
                 select(Org).filter(Org.id == uuid.UUID(user_id))
             )
-            org = result.scalars().first()
+            org = org_result.scalars().first()
             if not org:
                 logger.debug(
                     'backfill_contact_name:org_not_found',
@@ -1123,7 +1203,7 @@ class UserStore:
             await session.commit()
 
     @staticmethod
-    async def backfill_user_email(user_id: str, user_info: dict) -> None:
+    async def backfill_user_email(user_id: str, user_info: UserIdentityClaims) -> None:
         """Set User.email and email_verified from IDP if they are still NULL.
 
         Called during login to gradually fix existing users whose email

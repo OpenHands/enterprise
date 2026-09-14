@@ -5,7 +5,7 @@ import textwrap
 from pathlib import Path
 
 
-def test_oauth_callback_route_precedes_spa_mount(tmp_path):
+def test_oauth_callback_route_precedes_spa_mount(tmp_path: Path) -> None:
     frontend_build = tmp_path / 'frontend' / 'build'
     frontend_build.mkdir(parents=True)
     (frontend_build / 'index.html').write_text('<html></html>')

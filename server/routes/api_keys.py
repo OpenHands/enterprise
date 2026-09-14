@@ -9,6 +9,7 @@ from openhands.app_server.user_auth import get_user_auth, get_user_id
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import get_user_super_role
+from server.auth.native_password import NativeAuthError
 from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.auth.saas_user_auth import SaasUserAuth
 from server.constants import BYOR_KEY_ALIAS_PATTERN
@@ -502,6 +503,8 @@ async def refresh_managed_llm_api_key(
             extra={'user_id': user_id, 'org_id': str(effective_org_id)},
         )
         return ManagedLlmApiKeyRefreshResponse(refreshed=True)
+    except NativeAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as e:

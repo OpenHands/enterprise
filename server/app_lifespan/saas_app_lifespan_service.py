@@ -9,7 +9,10 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+from types import TracebackType
+from typing import TYPE_CHECKING, ClassVar, Self
 
+from pydantic import PrivateAttr
 from sqlalchemy.exc import DBAPIError, OperationalError
 
 from openhands.analytics import get_analytics_service, init_analytics_service
@@ -17,6 +20,9 @@ from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanSe
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
 from server.constants import DEPLOYMENT_MODE, IS_FEATURE_ENV
+
+if TYPE_CHECKING:
+    from storage.org_store import OrgCondenserReconciliationResult
 
 _ORG_CONDENSER_RECONCILIATION_LOCK_ID = 865115708052677401
 _TRANSIENT_SQLSTATES = {
@@ -65,7 +71,16 @@ class SaasAppLifespanService(AppLifespanService):
     On exit: calls ``analytics_service.shutdown()`` to flush any buffered events.
     """
 
-    async def __aenter__(self):
+    supports_native_auth: ClassVar[bool] = True
+    _native_maintenance_task: asyncio.Task[None] | None = PrivateAttr(default=None)
+
+    async def __aenter__(self) -> Self:
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+        from server.auth.bootstrap import initialize_auth_installation
+
+        # Migrations run before the application starts. Initialization is
+        # idempotent and verifies the durable installation mode on every start.
+        await initialize_auth_installation()
         # OHE must not initialize telemetry when a legacy key is configured.
         api_key = (
             ''
@@ -80,6 +95,14 @@ class SaasAppLifespanService(AppLifespanService):
             app_mode=AppMode.SAAS,
             is_feature_env=IS_FEATURE_ENV,
         )
+        if not ENABLE_KEYCLOAK:
+            from server.services.native_maintenance_service import (
+                native_maintenance_loop,
+            )
+
+            self._native_maintenance_task = asyncio.create_task(
+                native_maintenance_loop()
+            )
         await self._reconcile_org_condenser_defaults()
         return self
 
@@ -144,7 +167,7 @@ class SaasAppLifespanService(AppLifespanService):
         *,
         max_tokens: int,
         overwrite_existing: bool,
-    ):
+    ) -> OrgCondenserReconciliationResult:
         from sqlalchemy import text
 
         from storage.database import a_session_maker
@@ -176,7 +199,15 @@ class SaasAppLifespanService(AppLifespanService):
                 raise TransientReconciliationError from exc
             raise
 
-    async def __aexit__(self, exc_type, exc_value, traceback):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if self._native_maintenance_task is not None:
+            self._native_maintenance_task.cancel()
+            await asyncio.gather(self._native_maintenance_task, return_exceptions=True)
         try:
             svc = get_analytics_service()
             if svc is not None:

@@ -41,6 +41,12 @@ export interface SettingsNavItem {
 
 export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
   {
+    icon: <FiUsers size={22} />,
+    to: "/settings/users",
+    text: "NATIVE_AUTH$USERS",
+    section: "user",
+  },
+  {
     icon: <FiBriefcase size={22} />,
     to: "/settings/org",
     text: "SETTINGS$NAV_ORGANIZATION",

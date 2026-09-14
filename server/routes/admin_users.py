@@ -3,7 +3,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.authorization import Permission, require_permission
+from server.auth.native_password import NativeAuthError
 from server.services.admin_user_lifecycle_service import (
     AdminUserLifecycleService,
     LastSuperAdminError,
@@ -37,10 +39,14 @@ def _deletion_response(result: UserDeletionResult) -> UserLifecycleResponse:
 @admin_user_router.post('/{user_id}/disable', response_model=UserLifecycleResponse)
 async def disable_user(
     user_id: str,
-    _: str = Depends(require_permission(Permission.MANAGE_USERS)),
+    actor_user_id: str = Depends(require_permission(Permission.MANAGE_USERS)),
 ) -> UserLifecycleResponse:
     try:
-        result = await AdminUserLifecycleService().disable_user(user_id)
+        result = await AdminUserLifecycleService().disable_user(
+            user_id, **({'actor_user_id': actor_user_id} if not ENABLE_KEYCLOAK else {})
+        )
+    except NativeAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except LastSuperAdminError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
@@ -55,9 +61,14 @@ async def disable_user(
 @admin_user_router.post('/{user_id}/enable', response_model=UserLifecycleResponse)
 async def enable_user(
     user_id: str,
-    _: str = Depends(require_permission(Permission.MANAGE_USERS)),
+    actor_user_id: str = Depends(require_permission(Permission.MANAGE_USERS)),
 ) -> UserLifecycleResponse:
-    result = await AdminUserLifecycleService().enable_user(user_id)
+    try:
+        result = await AdminUserLifecycleService().enable_user(
+            user_id, **({'actor_user_id': actor_user_id} if not ENABLE_KEYCLOAK else {})
+        )
+    except NativeAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
@@ -68,10 +79,14 @@ async def enable_user(
 @admin_user_router.delete('/{user_id}', response_model=UserLifecycleResponse)
 async def delete_user(
     user_id: str,
-    _: str = Depends(require_permission(Permission.MANAGE_USERS)),
+    actor_user_id: str = Depends(require_permission(Permission.MANAGE_USERS)),
 ) -> UserLifecycleResponse:
     try:
-        result = await AdminUserLifecycleService().delete_user(user_id)
+        result = await AdminUserLifecycleService().delete_user(
+            user_id, **({'actor_user_id': actor_user_id} if not ENABLE_KEYCLOAK else {})
+        )
+    except NativeAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except LastSuperAdminError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)

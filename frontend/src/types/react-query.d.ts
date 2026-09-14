@@ -7,7 +7,7 @@ interface MyMeta extends Record<string, unknown> {
 
 declare module "@tanstack/react-query" {
   interface Register {
-    defaultError: AxiosError;
+    defaultError: AxiosError<unknown, unknown>;
 
     queryMeta: MyMeta;
     mutationMeta: MyMeta;

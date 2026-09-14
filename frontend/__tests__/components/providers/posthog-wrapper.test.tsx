@@ -1,3 +1,8 @@
+import type { PropsWithChildren } from "react";
+import type { PostHogConfig, CapturedNetworkRequest } from "posthog-js";
+import { WebClientConfig } from "#/api/option-service/option.types";
+import { deferred } from "../../helpers/native-fixtures";
+import { useSecretFragment } from "#/hooks/use-secret-fragment";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 import { PostHogWrapper } from "#/components/providers/posthog-wrapper";
@@ -6,9 +11,10 @@ import { queryClient } from "#/query-client-config";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 
 // Mock PostHogProvider to capture the options passed to it
-const mockPostHogProvider = vi.fn();
+type ProviderProps = PropsWithChildren<{ options?: Partial<PostHogConfig> }>;
+const mockPostHogProvider = vi.fn<(props: ProviderProps) => void>();
 vi.mock("posthog-js/react", () => ({
-  PostHogProvider: (props: Record<string, unknown>) => {
+  PostHogProvider: (props: ProviderProps): React.ReactNode => {
     mockPostHogProvider(props);
     return props.children;
   },
@@ -18,8 +24,8 @@ describe("PostHogWrapper", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     queryClient.clear();
-    // Reset URL hash
-    window.location.hash = "";
+    // Reset URL and hash
+    window.history.replaceState({}, "", "/");
     // Clear sessionStorage
     sessionStorage.clear();
     // Mock the config fetch
@@ -203,4 +209,38 @@ describe("PostHogWrapper", () => {
 
     expect(mockPostHogProvider).not.toHaveBeenCalled();
   });
+  it("suppresses sensitive entry pages before config resolves and preserves their tokens for the form", async () => {
+    window.history.replaceState({}, "", "/account-setup#token=private-setup&distinct_id=untrusted&session_id=untrusted");
+    const { promise, resolve: resolveConfig } = deferred<WebClientConfig>();
+    vi.mocked(OptionService.getConfig).mockReturnValue(promise);
+    function Recipient(): React.JSX.Element {
+      const [token] = useSecretFragment();
+      return <span data-testid="recipient">{token === "private-setup" ? "retained" : "missing"}</span>;
+    }
+    render(<PostHogWrapper><Recipient /></PostHogWrapper>);
+    expect(screen.getByTestId("recipient")).toHaveTextContent("retained");
+    expect(window.location.hash).toBe("");
+    expect(mockPostHogProvider).not.toHaveBeenCalled();
+    await act(async () => { resolveConfig(createMockWebClientConfig({ auth_mode: "native", app_mode: "saas", posthog_client_key: "configured-key" })); });
+    expect(mockPostHogProvider).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("posthog_bootstrap")).toBeNull();
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("preserves analytics on ordinary native app pages and redacts native secret network requests", async () => {
+    vi.mocked(OptionService.getConfig).mockResolvedValue(createMockWebClientConfig({ auth_mode: "native", app_mode: "saas", posthog_client_key: "configured-key" }));
+    await act(async () => { render(<PostHogWrapper><span>App</span></PostHogWrapper>); });
+    expect(mockPostHogProvider).toHaveBeenCalled();
+    const options = mockPostHogProvider.mock.calls.at(-1)?.[0].options;
+    const maskRequest = options?.session_recording?.maskCapturedNetworkRequestFn;
+    const beforeSend = options?.before_send;
+    if (typeof maskRequest !== "function" || typeof beforeSend !== "function") throw new Error("Expected privacy callbacks");
+    const request = (name: string, bodies: Partial<Pick<CapturedNetworkRequest, "requestBody" | "responseBody">> = {}): CapturedNetworkRequest => ({ name, entryType: "resource", duration: 0, startTime: 0, ...bodies });
+    expect(maskRequest(request("https://app.test/api/admin/auth-invitations", { responseBody: "secret" }))).toBeNull();
+    expect(maskRequest(request("https://app.test/api/auth/password/login", { requestBody: "secret" }))).toBeNull();
+    window.history.replaceState({}, "", "/");
+  });
+
+
+
 });

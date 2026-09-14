@@ -5,8 +5,6 @@ user endpoints with organization context (org_id, org_name, role, permissions).
 """
 
 import logging
-from types import MappingProxyType
-from typing import Any, cast
 from uuid import UUID
 
 from fastapi import (
@@ -19,12 +17,12 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from openhands.app_server.config import (
     depends_user_context,
     resolve_provider_llm_base_url,
 )
-from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.session_auth import validate_session_key_ownership
 from openhands.app_server.settings.llm_profiles import resolve_profile_llm
@@ -35,6 +33,8 @@ from openhands.app_server.settings.provider_connections import (
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.dependencies import get_dependencies
+from server.auth import authorization
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
 from server.constants import LITE_LLM_API_URL
@@ -54,8 +54,35 @@ user_dependency = depends_user_context()
 token_manager = TokenManager()
 
 
+class _SDKCompatLLM(BaseModel):
+    model_config = ConfigDict(strict=True, hide_input_in_errors=True)
+
+    model: str | None = None
+    base_url: str | None = None
+    api_key: str | dict[str, JsonValue] | None = Field(default=None, repr=False)
+
+
+class _SDKCompatAgentSettings(BaseModel):
+    model_config = ConfigDict(strict=True, hide_input_in_errors=True)
+
+    llm: _SDKCompatLLM | None = None
+    mcp_config: dict[str, JsonValue] | None = Field(default=None, repr=False)
+
+
+class _SDKCompatFields(BaseModel):
+    model_config = ConfigDict(strict=True, hide_input_in_errors=True)
+
+    agent_settings: _SDKCompatAgentSettings | None = None
+    has_password: bool | None = None
+
+
+_USER_WIRE: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(
+    dict[str, JsonValue], config=ConfigDict(hide_input_in_errors=True)
+)
+
+
 def _inject_sdk_compat_fields(
-    content: dict[str, Any], *, include_api_key: bool
+    content: dict[str, JsonValue], *, include_api_key: bool
 ) -> None:
     """Inject flat top-level convenience fields for the SDK.
 
@@ -68,14 +95,18 @@ def _inject_sdk_compat_fields(
     The canonical representation is ``agent_settings``; these flat fields
     exist solely for SDK backward compatibility.
     """
-    agent_settings = content.get('agent_settings') or {}
-    llm = agent_settings.get('llm') or {}
-    model = llm.get('model')
-    content['llm_model'] = model
-    content['llm_base_url'] = resolve_provider_llm_base_url(model, llm.get('base_url'))
+    projection = _SDKCompatFields.model_validate(content)
+    agent_settings = projection.agent_settings or _SDKCompatAgentSettings()
+    if projection.has_password is None:
+        # Native account capabilities do not alter Keycloak response shape.
+        content.pop('has_password', None)
+        content.pop('authentication_methods', None)
+    llm = agent_settings.llm or _SDKCompatLLM()
+    content['llm_model'] = llm.model
+    content['llm_base_url'] = resolve_provider_llm_base_url(llm.model, llm.base_url)
     if include_api_key:
-        content['llm_api_key'] = llm.get('api_key')
-    content['mcp_config'] = agent_settings.get('mcp_config')
+        content['llm_api_key'] = llm.api_key
+    content['mcp_config'] = agent_settings.mcp_config
 
 
 def _resolve_exposed_llm_profiles(user_info: SaasUserInfo) -> None:
@@ -92,11 +123,10 @@ def _resolve_exposed_llm_profiles(user_info: SaasUserInfo) -> None:
     streaming, and fall back to the user's effective settings key for keyless
     profiles; BYOR profiles with real keys keep their own key.
     """
-    # ACP agent-settings variants have no ``llm`` field, hence the getattrs.
-    settings_llm = getattr(user_info.agent_settings, 'llm', None)
-    fallback_api_key = getattr(settings_llm, 'api_key', None)
+    settings_llm = user_info.agent_settings.llm
+    fallback_api_key = settings_llm.api_key
     profiles = user_info.llm_profiles.profiles
-    for name, profile_llm in profiles.items():
+    for name, profile_llm in list(profiles.items()):
         profiles[name] = resolve_profile_llm(
             profile_llm,
             managed_proxy_url=LITE_LLM_API_URL,
@@ -140,7 +170,7 @@ def _provider_connection_422(exc: ProviderConnectionNotFoundError) -> HTTPExcept
     )
 
 
-@saas_users_v1_router.get('/me')
+@saas_users_v1_router.get('/me', response_model=SaasUserInfo)
 async def get_current_user_saas(
     user_context: UserContext = user_dependency,
     expose_secrets: bool = Query(
@@ -150,7 +180,7 @@ async def get_current_user_saas(
         'owned by the authenticated user.',
     ),
     x_session_api_key: str | None = Header(default=None),
-) -> SaasUserInfo:
+) -> JSONResponse:
     """Get the current authenticated user with SAAS-specific org info.
 
     Returns user settings along with organization context:
@@ -165,8 +195,8 @@ async def get_current_user_saas(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail='Not authenticated')
 
     # Build SAAS user info from base settings
-    user_info_data = base_user_info.model_dump(
-        mode='json', context={'expose_secrets': True}
+    user_info_data = _USER_WIRE.validate_python(
+        base_user_info.model_dump(mode='json', context={'expose_secrets': True})
     )
 
     # Add org info if available (from SaasUserAuth)
@@ -174,18 +204,54 @@ async def get_current_user_saas(
     if org_info:
         user_info_data.update(org_info)
 
-    user_info = SaasUserInfo(**user_info_data)
+    if isinstance(user_context, AuthUserContext) and isinstance(
+        user_context.user_auth, SaasUserAuth
+    ):
+        super_role = await authorization.get_user_super_role(
+            user_context.user_auth.user_id
+        )
+        user_info_data['global_permissions'] = (
+            [
+                permission
+                for permission in sorted(
+                    permission.value
+                    for permission in authorization.get_super_role_permissions(
+                        super_role.name
+                    )
+                )
+            ]
+            if super_role
+            else []
+        )
+
+    if not ENABLE_KEYCLOAK:
+        from server.services.native_auth_service import get_native_auth_service
+
+        native_user_id = await user_context.get_user_id()
+        if native_user_id is None:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, detail='Not authenticated'
+            )
+        user_info_data.update(
+            _USER_WIRE.validate_python(
+                await get_native_auth_service().profile_metadata(UUID(native_user_id))
+            )
+        )
+
+    user_info = SaasUserInfo.model_validate(user_info_data)
 
     if expose_secrets:
         await validate_session_key_ownership(user_context, x_session_api_key)
         _resolve_exposed_llm_profiles(user_info)
-        content = user_info.model_dump(mode='json', context={'expose_secrets': True})
+        content = _USER_WIRE.validate_python(
+            user_info.model_dump(mode='json', context={'expose_secrets': True})
+        )
         _inject_sdk_compat_fields(content, include_api_key=True)
-        return JSONResponse(content=content)  # type: ignore[return-value]
+        return JSONResponse(content=content)
 
-    content = user_info.model_dump(mode='json')
+    content = _USER_WIRE.validate_python(user_info.model_dump(mode='json'))
     _inject_sdk_compat_fields(content, include_api_key=False)
-    return JSONResponse(content=content)  # type: ignore[return-value]
+    return JSONResponse(content=content)
 
 
 @saas_users_v1_router.get('/git-organizations')
@@ -206,13 +272,11 @@ async def get_current_user_git_organizations(
             detail='Git provider token required.',
         )
 
-    user_id = await user_context.get_user_id()
-    client = ProviderHandler(
-        provider_tokens=MappingProxyType(provider_tokens),  # type: ignore[arg-type]
-        external_auth_id=user_id,
-    )
-
-    provider = cast(ProviderType, next(iter(provider_tokens)))
+    client = await user_context.get_provider_handler()
+    provider_tokens = client.provider_tokens
+    provider = next(iter(provider_tokens))
+    if not ENABLE_KEYCLOAK:
+        raise HTTPException(409, 'No native Git provider connection is available')
     if provider == ProviderType.GITHUB:
         orgs = await client.get_github_organizations()
     elif provider == ProviderType.GITLAB:
@@ -260,7 +324,9 @@ async def disconnect_git_provider(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-async def _get_org_info_from_context(user_context: UserContext) -> dict | None:
+async def _get_org_info_from_context(
+    user_context: UserContext,
+) -> dict[str, JsonValue] | None:
     """Extract org info from the user context if available.
 
     This works by checking if the underlying user_auth is a SaasUserAuth
@@ -270,7 +336,10 @@ async def _get_org_info_from_context(user_context: UserContext) -> dict | None:
     if isinstance(user_context, AuthUserContext):
         user_auth = user_context.user_auth
         if isinstance(user_auth, SaasUserAuth):
-            return await user_auth.get_org_info()
+            org_info = await user_auth.get_org_info()
+            return (
+                _USER_WIRE.validate_python(org_info) if org_info is not None else None
+            )
     return None
 
 

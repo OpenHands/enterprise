@@ -642,6 +642,8 @@ class SaasSettingsStore(SettingsStore):
             await session.commit()
 
     async def store(self, item: Settings):
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+
         if item is not None and (
             item._resolved_view or item.active_agent_profile_id is not None
         ):
@@ -657,6 +659,10 @@ class SaasSettingsStore(SettingsStore):
         async with a_session_maker() as session:
             if not item:
                 return None
+            if not ENABLE_KEYCLOAK:
+                from server.services.native_account_service import lock_native_lifecycle
+
+                await lock_native_lifecycle(session)
             result = await session.execute(
                 select(User)
                 .options(joinedload(User.org_members))
@@ -665,6 +671,8 @@ class SaasSettingsStore(SettingsStore):
             user = result.scalars().first()
 
             if not user:
+                if not ENABLE_KEYCLOAK:
+                    return None
                 # Check if we need to migrate from user_settings
                 user_settings = None
                 async with a_session_maker() as new_session:
@@ -688,6 +696,9 @@ class SaasSettingsStore(SettingsStore):
                 else:
                     logger.error(f'User not found for ID {self.user_id}')
                     return None
+
+            if not ENABLE_KEYCLOAK and user.is_disabled:
+                return None
 
             org_id = self._resolve_org_id(user)
 
@@ -734,12 +745,23 @@ class SaasSettingsStore(SettingsStore):
                     and org_member._llm_api_key
                     else None
                 )
-                await self._ensure_api_key(
-                    item,
-                    str(org_id),
-                    openhands_type=is_openhands_model(llm_model),
-                    fallback_api_key=fallback_api_key,
-                )
+                if ENABLE_KEYCLOAK:
+                    await self._ensure_api_key(
+                        item,
+                        str(org_id),
+                        openhands_type=is_openhands_model(llm_model),
+                        fallback_api_key=fallback_api_key,
+                    )
+                else:
+                    from server.services.native_provisioning_service import (
+                        prepare_managed_member,
+                    )
+
+                    item.agent_settings.llm.api_key = (
+                        org.llm_api_key
+                        if org._llm_api_key
+                        else await prepare_managed_member(session, org_member)
+                    )
                 item.sync_active_profile_from_settings()
                 self._strip_managed_profile_api_keys(item)
 
@@ -796,17 +818,18 @@ class SaasSettingsStore(SettingsStore):
 
             # A non-managed (BYOR) key is the org's key for the shared
             # provider, so it does reach every member row.
-            await OrgMemberStore.update_all_members_settings_async(
-                session,
-                org_id,
-                OrgMemberSettingsUpdate(
-                    llm_api_key=(
-                        current_member_llm_api_key_raw  # type: ignore[arg-type]
-                        if not uses_managed_llm_key
-                        else None
+            if ENABLE_KEYCLOAK:
+                await OrgMemberStore.update_all_members_settings_async(
+                    session,
+                    org_id,
+                    OrgMemberSettingsUpdate(
+                        llm_api_key=(
+                            current_member_llm_api_key_raw  # type: ignore[arg-type]
+                            if not uses_managed_llm_key
+                            else None
+                        ),
                     ),
-                ),
-            )
+                )
 
             member_mcp_config = org_member.effective_mcp_config
             member_agent_settings_diff = dict(org_member.agent_settings_diff)
@@ -847,6 +870,13 @@ class SaasSettingsStore(SettingsStore):
             elif org_default_llm_api_key_raw is not None:
                 # No member key, falling back to org default
                 org_member.has_custom_llm_api_key = False
+
+            if not ENABLE_KEYCLOAK and (not uses_managed_llm_key or org._llm_api_key):
+                from server.services.native_provisioning_service import (
+                    release_managed_member,
+                )
+
+                await release_managed_member(session, org_member)
 
             await session.commit()
 
@@ -1082,6 +1112,10 @@ class SaasSettingsStore(SettingsStore):
         swallowed. The previous key token is returned for best-effort cleanup
         and is only exposed after a successful persist.
         """
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+
+        if not ENABLE_KEYCLOAK:
+            return await self._rotate_native_managed_llm_key()
         settings = await self.load()
         if settings is None:
             return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
@@ -1148,3 +1182,47 @@ class SaasSettingsStore(SettingsStore):
                 new_key=new_key,
                 openhands_type=config.openhands_type,
             )
+
+    async def _rotate_native_managed_llm_key(self) -> ManagedLlmKeyRotation:
+        from server.auth.native_password import NativeAuthError
+        from server.services.native_account_service import lock_native_lifecycle
+        from server.services.native_provisioning_service import (
+            NativeProvisioningService,
+            prepare_managed_member,
+        )
+
+        settings = await self.load()
+        if settings is None:
+            return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
+        llm = settings.agent_settings.llm
+        if managed_llm_key_config_from_model(llm.model, llm.base_url) is None:
+            return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.NOT_MANAGED)
+        async with a_session_maker() as session, session.begin():
+            await lock_native_lifecycle(session)
+            user = await session.get(User, UUID(self.user_id))
+            if user is None or user.is_disabled:
+                return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
+            org_id = self._resolve_org_id(user)
+            org = await session.get(Org, org_id)
+            member = await session.get(OrgMember, (org_id, user.id))
+            if org is None or member is None:
+                return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
+            if org._llm_api_key or member.has_custom_llm_api_key:
+                return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.BYOK)
+            await prepare_managed_member(
+                session, member, force=member.status != 'pending_llm_provisioning'
+            )
+            work_id = member.native_provisioning_id
+        await NativeProvisioningService().reconcile(only_work_id=work_id)
+        async with a_session_maker() as session:
+            member = await session.get(OrgMember, (org_id, UUID(self.user_id)))
+            if (
+                member is None
+                or member.native_provisioning_id != work_id
+                or member.status != 'active'
+            ):
+                raise NativeAuthError(
+                    'Managed LLM key provisioning is pending; retry shortly', 503
+                )
+        # Old keys remain attached to durable cleanup work, never caller cleanup.
+        return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.ROTATED)

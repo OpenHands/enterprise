@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Literal, overload
 
 from fastapi import Request
 
@@ -34,6 +35,21 @@ class SpecifyUserContext(UserContext):
         self, repository: str, is_optional: bool = False
     ) -> str:
         raise NotImplementedError()
+
+    @overload
+    async def get_provider_tokens(
+        self, as_env_vars: Literal[False] = False
+    ) -> PROVIDER_TOKEN_TYPE | None: ...
+
+    @overload
+    async def get_provider_tokens(
+        self, as_env_vars: Literal[True]
+    ) -> dict[str, str]: ...
+
+    @overload
+    async def get_provider_tokens(
+        self, as_env_vars: bool
+    ) -> PROVIDER_TOKEN_TYPE | dict[str, str] | None: ...
 
     async def get_provider_tokens(
         self, as_env_vars: bool = False

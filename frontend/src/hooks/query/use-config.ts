@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import OptionService from "#/api/option-service/option-service.api";
 import { useIsOnIntermediatePage } from "#/hooks/use-is-on-intermediate-page";
+import OptionService from "#/api/option-service/option-service.api";
 import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "./query-keys";
 
 interface UseConfigOptions {

@@ -1,5 +1,6 @@
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from types import MappingProxyType
 from uuid import UUID
 
@@ -8,6 +9,7 @@ from fastapi import HTTPException, Request
 from keycloak.exceptions import KeycloakConnectionError
 from pydantic import SecretStr
 from sqlalchemy import delete, select
+from sqlalchemy.exc import SQLAlchemyError
 from tenacity import (
     RetryError,
 )
@@ -15,13 +17,16 @@ from tenacity import (
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     CustomSecret,
+    ProviderHandler,
     ProviderToken,
     ProviderType,
 )
+from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth.user_auth import AuthType, UserAuth
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.auth_error import (
     AuthError,
     BearerTokenError,
@@ -82,6 +87,11 @@ class SaasUserAuth(UserAuth):
     _secrets: Secrets | None = None
     accepted_tos: bool | None = None
     auth_type: AuthType = AuthType.COOKIE
+    # AuthType describes the credential, while transport governs CSRF policy.
+    # In particular, an API key supplied in a cookie is not bearer transport.
+    credential_transport: str = 'keycloak_cookie'
+    native_session_id: UUID | None = None
+    auth_time: datetime | None = None
     # API key context fields - populated when authenticated via API key
     api_key_org_id: UUID | None = None  # Org bound to the API key used for auth
     api_key_id: int | None = None
@@ -380,7 +390,9 @@ class SaasUserAuth(UserAuth):
                 self.email_verified = user.email_verified
         return self.email
 
-    async def refresh(self):
+    async def refresh(self) -> None:
+        if not ENABLE_KEYCLOAK:
+            raise RuntimeError('Keycloak token refresh is unavailable in native mode')
         # API-key (bearer) auth does not carry an offline token. Load it lazily
         # here, and only when a Keycloak access token is genuinely needed, so
         # that authentication itself never depends on the offline session.
@@ -507,6 +519,9 @@ class SaasUserAuth(UserAuth):
         return user_secrets
 
     async def get_access_token(self) -> SecretStr | None:
+        if not ENABLE_KEYCLOAK:
+            # Native application sessions have no external identity token.
+            return None
         logger.debug('saas_user_auth_get_access_token')
         try:
             if self.access_token is None or self._is_token_expired(self.access_token):
@@ -532,7 +547,22 @@ class SaasUserAuth(UserAuth):
                 ) from e
             raise AuthError() from e
 
+    async def get_user_git_info(self) -> UserGitInfo | None:
+        if ENABLE_KEYCLOAK:
+            return await super().get_user_git_info()
+        provider_tokens = await self.get_provider_tokens()
+        if not provider_tokens:
+            return None
+        # The authenticated app owner is already known. Resolve their connected
+        # host/credential directly, preserving provider failure and rejection state.
+        client = ProviderHandler(
+            provider_tokens=provider_tokens, external_auth_id=self.user_id
+        )
+        return await client.get_user()
+
     async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
+        if not ENABLE_KEYCLOAK:
+            return MappingProxyType({})
         logger.debug('saas_user_auth_get_provider_tokens')
         if self.provider_tokens is not None:
             return self.provider_tokens
@@ -738,11 +768,19 @@ class SaasUserAuth(UserAuth):
             return None
 
     @classmethod
-    async def get_instance(cls, request: Request) -> UserAuth:
+    async def get_instance(cls, request: Request) -> 'SaasUserAuth':
         logger.debug('saas_user_auth_get_instance')
-        # First we check for for an API Key...
-        logger.debug('saas_user_auth_get_instance:check_bearer')
-        instance = await saas_user_auth_from_bearer(request)
+        instance = None
+        if not ENABLE_KEYCLOAK and not _has_explicit_api_key(request):
+            # The native browser session owns browser identity even if an old
+            # API-key cookie remains at a scope that login cannot expire.
+            instance = await saas_user_auth_from_cookie(request)
+        if instance is None:
+            logger.debug('saas_user_auth_get_instance:check_bearer')
+            instance = await saas_user_auth_from_bearer(request)
+        if not ENABLE_KEYCLOAK and instance is None and _has_explicit_api_key(request):
+            # Never let a bad explicit credential fall back to browser identity.
+            raise BearerTokenError('Invalid API credential')
         if instance is None:
             logger.debug('saas_user_auth_get_instance:check_cookie')
             instance = await saas_user_auth_from_cookie(request)
@@ -753,6 +791,10 @@ class SaasUserAuth(UserAuth):
         # lazily by `get_effective_org_id()` the first time the request
         # needs an org context. See `server.auth.org_context`.
         instance._x_org_id_header = request.headers.get('X-Org-Id')
+        request.state.credential_transport = instance.credential_transport
+        request.state.authenticated_non_cookie = (
+            instance.credential_transport == 'bearer'
+        )
         if not getattr(request.state, 'user_rate_limit_processed', False):
             user_id = await instance.get_user_id()
             if user_id:
@@ -764,7 +806,20 @@ class SaasUserAuth(UserAuth):
         return instance
 
     @classmethod
-    async def get_for_user(cls, user_id: str) -> UserAuth:
+    async def get_for_user(cls, user_id: str) -> 'SaasUserAuth':
+        if not ENABLE_KEYCLOAK:
+            from server.services.native_auth_service import get_native_auth_service
+
+            principal = await get_native_auth_service().get_identity(UUID(user_id))
+            if principal is None:
+                raise NoCredentialsError('User account is unavailable')
+            return SaasUserAuth(
+                user_id=str(principal.account_id),
+                email=principal.email,
+                refresh_token=SecretStr(''),
+                auth_type=AuthType.BEARER,
+                credential_transport='background',
+            )
         # Background / integration resolver contexts must not depend on the
         # user's Keycloak offline session either. The offline token (if any) is
         # loaded lazily by refresh() only when a Keycloak access token is
@@ -776,8 +831,18 @@ class SaasUserAuth(UserAuth):
         )
 
 
-def get_api_key_from_header(request: Request):
+def _has_explicit_api_key(request: Request) -> bool:
+    return any(
+        name in request.headers
+        for name in ('Authorization', 'X-Session-API-Key', 'X-Access-Token')
+    )
+
+
+def get_api_key_from_header(request: Request) -> str | None:
     auth_header = request.headers.get('Authorization')
+    if not ENABLE_KEYCLOAK and 'Authorization' in request.headers:
+        scheme, _, token = (auth_header or '').partition(' ')
+        return token if scheme.lower() == 'bearer' and token else None
     if auth_header and auth_header.startswith('Bearer '):
         return auth_header.replace('Bearer ', '')
 
@@ -785,11 +850,15 @@ def get_api_key_from_header(request: Request):
     # Streamable HTTP MCP Client works via redirect requests, but drops the Authorization header for reason
     # We include `X-Session-API-Key` header by default due to nested runtimes, so it used as a drop in replacement here
     session_api_key = request.headers.get('X-Session-API-Key')
+    if not ENABLE_KEYCLOAK and 'X-Session-API-Key' in request.headers:
+        return session_api_key or None
     if session_api_key:
         return session_api_key
 
     # Fallback to X-Access-Token header as an additional option
     x_access_token = request.headers.get('X-Access-Token')
+    if not ENABLE_KEYCLOAK and 'X-Access-Token' in request.headers:
+        return x_access_token or None
     if x_access_token:
         return x_access_token
 
@@ -809,6 +878,16 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
         validation_result = await api_key_store.validate_api_key(api_key)
         if not validation_result:
             return None
+        native_email = None
+        if not ENABLE_KEYCLOAK:
+            from server.services.native_auth_service import get_native_auth_service
+
+            principal = await get_native_auth_service().get_identity(
+                UUID(validation_result.user_id)
+            )
+            if principal is None:
+                return None
+            native_email = principal.email
         try:
             UUID(validation_result.user_id)
         except ValueError:
@@ -827,17 +906,51 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
         # turns a valid key into a 401 BearerTokenError.
         return SaasUserAuth(
             user_id=validation_result.user_id,
+            email=native_email,
+            email_verified=user.email_verified
+            if not ENABLE_KEYCLOAK and user is not None
+            else None,
             refresh_token=SecretStr(''),
             auth_type=AuthType.BEARER,
             api_key_org_id=validation_result.org_id,
             api_key_id=validation_result.key_id,
             api_key_name=validation_result.key_name,
+            credential_transport=(
+                'bearer' if _has_explicit_api_key(request) else 'api_key_cookie'
+            ),
         )
+    except SQLAlchemyError as exc:
+        if not ENABLE_KEYCLOAK:
+            raise TokenRefreshError('Authentication temporarily unavailable') from exc
+        raise BearerTokenError from exc
     except Exception as exc:
         raise BearerTokenError from exc
 
 
 async def saas_user_auth_from_cookie(request: Request) -> SaasUserAuth | None:
+    if not ENABLE_KEYCLOAK:
+        from server.auth.native_session import SESSION_COOKIE
+        from server.services.native_auth_service import get_native_auth_service
+
+        session_token = request.cookies.get(SESSION_COOKIE)
+        if not session_token:
+            return None
+        principal = await get_native_auth_service().authenticate_session(session_token)
+        if principal is None:
+            raise CookieError('Invalid or expired session')
+        user = await UserStore.get_user_by_id(str(principal.account_id))
+        if user is None or user.is_disabled:
+            raise CookieError('User account is unavailable')
+        return SaasUserAuth(
+            user_id=str(principal.account_id),
+            email=principal.email,
+            email_verified=user.email_verified,
+            refresh_token=SecretStr(''),
+            accepted_tos=user.accepted_tos is not None,
+            credential_transport='native_cookie',
+            native_session_id=principal.session_id,
+            auth_time=principal.auth_time,
+        )
     try:
         signed_token = read_chunked_cookie(request, 'keycloak_auth')
         if not signed_token:
@@ -848,6 +961,8 @@ async def saas_user_auth_from_cookie(request: Request) -> SaasUserAuth | None:
 
 
 async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
+    if not ENABLE_KEYCLOAK:
+        raise CookieError('Keycloak sessions are unavailable in native mode')
     logger.debug('saas_user_auth_from_signed_token')
     from storage.encrypt_utils import get_jwt_service
 
@@ -906,6 +1021,8 @@ async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
 
 
 async def get_user_auth_from_keycloak_id(keycloak_user_id: str) -> UserAuth:
+    if not ENABLE_KEYCLOAK:
+        return await SaasUserAuth.get_for_user(keycloak_user_id)
     # Like get_for_user, this is a background / integration entry point that must
     # not require the offline session. Mark it BEARER so get_access_token()
     # degrades gracefully and refresh() lazily loads the offline token only if a

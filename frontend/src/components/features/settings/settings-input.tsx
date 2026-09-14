@@ -22,6 +22,11 @@ interface SettingsInputProps {
   pattern?: string;
   labelClassName?: string;
   autoComplete?: string;
+  minLength?: number;
+  maxLength?: number;
+  readOnly?: boolean;
+  inputRef?: React.Ref<HTMLInputElement>;
+  onFocus?: React.FocusEventHandler<HTMLInputElement>;
 }
 
 export function SettingsInput({
@@ -45,7 +50,12 @@ export function SettingsInput({
   pattern,
   labelClassName,
   autoComplete,
-}: SettingsInputProps) {
+  minLength,
+  maxLength,
+  readOnly,
+  inputRef,
+  onFocus,
+}: SettingsInputProps): React.JSX.Element {
   return (
     <label className={cn("flex flex-col gap-2.5 w-fit", className)}>
       <div className="flex items-center gap-2">
@@ -56,7 +66,9 @@ export function SettingsInput({
       {description}
       <input
         data-testid={testId}
-        onChange={(e) => onChange && onChange(e.target.value)}
+        onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
+          onChange?.(e.target.value)
+        }
         name={name}
         disabled={isDisabled}
         type={type}
@@ -69,6 +81,11 @@ export function SettingsInput({
         required={required}
         pattern={pattern}
         autoComplete={autoComplete}
+        minLength={minLength}
+        maxLength={maxLength}
+        readOnly={readOnly}
+        ref={inputRef}
+        onFocus={onFocus}
         className={cn(
           "bg-tertiary border border-[#717888] h-10 w-full max-w-[680px] rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt",
           "disabled:bg-[#2D2F36] disabled:border-[#2D2F36] disabled:cursor-not-allowed",

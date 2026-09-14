@@ -1,14 +1,19 @@
 """Service for managing organization invitations."""
 
 import asyncio
+from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy import select
+
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.authorization import (
     Permission,
     get_user_super_role,
     has_permission,
 )
+from server.auth.native_password import normalize_email
 from server.auth.token_manager import TokenManager
 from server.constants import ROLE_ADMIN, ROLE_OWNER
 from server.routes.org_invitation_models import (
@@ -31,6 +36,88 @@ from storage.user_store import UserStore
 
 class OrgInvitationService:
     """Service for organization invitation operations."""
+
+    @staticmethod
+    async def _accept_native_invitation(token: str, user_id: UUID) -> OrgInvitation:
+        from server.services.native_account_service import (
+            account_admitted,
+            add_membership,
+            lock_native_lifecycle,
+        )
+        from storage.database import a_session_maker
+        from storage.native_auth import AuthAccount
+        from storage.org import Org
+        from storage.org_member import OrgMember
+        from storage.role import Role
+
+        async with a_session_maker() as session, session.begin():
+            await lock_native_lifecycle(session)
+            invitation = await session.scalar(
+                select(OrgInvitation)
+                .where(OrgInvitation.token == token)
+                .with_for_update()
+            )
+            account = await session.get(AuthAccount, user_id)
+            user = await session.get(User, user_id)
+            if (
+                invitation is None
+                or account is None
+                or user is None
+                or user.is_disabled
+                or account.state != 'profile_present'
+                or invitation.status != OrgInvitation.STATUS_PENDING
+            ):
+                raise InvitationInvalidError(
+                    'Invalid invitation or unavailable account'
+                )
+            if OrgInvitationStore.is_token_expired(invitation):
+                raise InvitationExpiredError('Invitation has expired')
+            if not await account_admitted(session, account):
+                raise InvitationInvalidError('Account admission is denied')
+            if account.normalized_email != normalize_email(invitation.email):
+                raise EmailMismatchError()
+            org = await session.get(Org, invitation.org_id)
+            inviter = await session.get(User, invitation.inviter_id)
+            inviter_account = await session.get(AuthAccount, invitation.inviter_id)
+            role = await session.get(Role, invitation.role_id)
+            if (
+                org is None
+                or inviter is None
+                or inviter.is_disabled
+                or inviter_account is None
+                or inviter_account.state != 'profile_present'
+                or not await account_admitted(session, inviter_account)
+                or role is None
+                or role.name not in ('owner', 'admin', 'member')
+            ):
+                raise InvitationInvalidError(
+                    'Invitation authority is no longer available'
+                )
+            global_role = (
+                await session.get(Role, inviter.role_id) if inviter.role_id else None
+            )
+            membership = await session.get(OrgMember, (org.id, inviter.id))
+            inviter_role = (
+                await session.get(Role, membership.role_id) if membership else None
+            )
+            is_admin = global_role is not None and global_role.name == 'admin'
+            if not is_admin and (
+                inviter_role is None
+                or inviter_role.name not in ('owner', 'admin')
+                or (role.name == 'owner' and inviter_role.name != 'owner')
+            ):
+                raise InsufficientPermissionError(
+                    'Invitation authority is no longer available'
+                )
+            if await session.get(OrgMember, (org.id, user_id)) is not None:
+                raise UserAlreadyMemberError(
+                    'You are already a member of this organization'
+                )
+            await add_membership(session, user, org, role.id)
+            invitation.status = OrgInvitation.STATUS_ACCEPTED
+            invitation.accepted_by_user_id = user_id
+            invitation.accepted_at = datetime.now(UTC).replace(tzinfo=None)
+            return invitation
 
     @staticmethod
     async def _authorize_inviter(
@@ -185,6 +272,9 @@ class OrgInvitationService:
             inviter_id=inviter_id,
         )
 
+        if not ENABLE_KEYCLOAK:
+            return invitation
+
         try:
             inviter_user = await UserStore.get_user_by_id(str(inviter_id))
             inviter_name = 'A team member'
@@ -320,6 +410,8 @@ class OrgInvitationService:
         Returns:
             The invitations this call newly accepted with a membership.
         """
+        if not ENABLE_KEYCLOAK:
+            return []
         user_email = (user.email or '').strip().lower()
         if not user_email:
             return []
@@ -368,9 +460,13 @@ class OrgInvitationService:
                 continue
 
             llm_api_key_secret = settings.agent_settings.llm.api_key
-            llm_api_key = (
-                llm_api_key_secret.get_secret_value() if llm_api_key_secret else ''  # type: ignore[union-attr]
-            )
+            llm_api_key = ''
+            if llm_api_key_secret:
+                llm_api_key = (
+                    llm_api_key_secret
+                    if isinstance(llm_api_key_secret, str)
+                    else llm_api_key_secret.get_secret_value()
+                )
             # Status flips LAST: any failure leaves the invitation pending so
             # the next sign-in retries it (the already-member branch above
             # reconciles a member whose status update was lost).
@@ -429,6 +525,8 @@ class OrgInvitationService:
             InvitationExpiredError: If invitation has expired
             UserAlreadyMemberError: If user is already a member
         """
+        if not ENABLE_KEYCLOAK:
+            return await OrgInvitationService._accept_native_invitation(token, user_id)
         logger.info(
             'Accepting organization invitation',
             extra={
@@ -547,9 +645,13 @@ class OrgInvitationService:
         # personal agent-setting overrides so future org default changes
         # continue to flow through automatically.
         llm_api_key_secret = settings.agent_settings.llm.api_key
-        llm_api_key = (
-            llm_api_key_secret.get_secret_value() if llm_api_key_secret else ''  # type: ignore[union-attr]
-        )
+        llm_api_key = ''
+        if llm_api_key_secret:
+            llm_api_key = (
+                llm_api_key_secret
+                if isinstance(llm_api_key_secret, str)
+                else llm_api_key_secret.get_secret_value()
+            )
 
         await OrgMemberStore.add_user_to_org(
             org_id=invitation.org_id,

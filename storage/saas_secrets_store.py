@@ -3,15 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from pydantic import SecretStr
 from sqlalchemy import delete, select
 
+from openhands.app_server.integrations.provider import (
+    PROVIDER_TOKEN_TYPE,
+    CustomSecret,
+)
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.settings.settings_models import POSTProviderModel
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.database import a_session_maker
 from storage.stored_custom_secrets import StoredCustomSecrets
 from storage.user_store import UserStore
+
+type SecretTree = dict[str, str | None | SecretTree]
 
 
 @dataclass
@@ -41,21 +49,28 @@ class SaasSecretsStore(SecretsStore):
             result = await session.execute(query)
             settings = result.scalars().all()
 
-            if not settings:
-                return Secrets()
+            custom_secrets = {
+                secret.secret_name: CustomSecret(
+                    secret=SecretStr(self._jwt_svc.decrypt_value(secret.secret_value)),
+                    description=self._jwt_svc.decrypt_value(secret.description)
+                    if secret.description is not None
+                    else '',
+                )
+                for secret in settings
+            }
 
-            kwargs = {}
-            for secret in settings:
-                kwargs[secret.secret_name] = {
-                    'secret': secret.secret_value,
-                    'description': secret.description,
-                }
+            provider_tokens: PROVIDER_TOKEN_TYPE = {}
+            return Secrets(
+                custom_secrets=custom_secrets, provider_tokens=provider_tokens
+            )
 
-            self._decrypt_kwargs(kwargs)
+    async def store_native_provider_tokens(self, item: POSTProviderModel) -> None:
+        raise ValueError('No native Git provider connection is available')
 
-            return Secrets(custom_secrets=kwargs)  # type: ignore[arg-type]
+    async def unset_native_provider_tokens(self) -> None:
+        raise ValueError('No native Git provider connection is available')
 
-    async def store(self, item: Secrets):
+    async def store(self, item: Secrets) -> None:
         user = await UserStore.get_user_by_id(self.user_id)
         if user is None:
             raise ValueError(f'User not found: {self.user_id}')
@@ -72,37 +87,24 @@ class SaasSecretsStore(SecretsStore):
             )
             await session.execute(delete_query)
 
-            # Prepare the new secrets data
-            kwargs = item.model_dump(context={'expose_secrets': True})
-            del kwargs[
-                'provider_tokens'
-            ]  # Assuming provider_tokens is not part of custom_secrets
-            self._encrypt_kwargs(kwargs)
-
-            secrets_json = kwargs.get('custom_secrets', {})
-
-            # Extract the secrets into tuples for insertion or updating
-            secret_tuples = []
-            for secret_name, secret_info in secrets_json.items():
-                secret_value = secret_info.get('secret')
-                description = secret_info.get('description')
-
-                secret_tuples.append((secret_name, secret_value, description))
-
-            # Add the new secrets
-            for secret_name, secret_value, description in secret_tuples:
-                new_secret = StoredCustomSecrets(
-                    keycloak_user_id=self.user_id,
-                    org_id=org_id,
-                    secret_name=secret_name,
-                    secret_value=secret_value,
-                    description=description,
+            for secret_name, secret in item.custom_secrets.items():
+                session.add(
+                    StoredCustomSecrets(
+                        keycloak_user_id=self.user_id,
+                        org_id=org_id,
+                        secret_name=secret_name,
+                        secret_value=self._jwt_svc.encrypt_value(
+                            secret.secret.get_secret_value()
+                        ),
+                        description=self._jwt_svc.encrypt_value(secret.description)
+                        if secret.description is not None
+                        else None,
+                    )
                 )
-                session.add(new_secret)
 
             await session.commit()
 
-    def _decrypt_kwargs(self, kwargs: dict):
+    def _decrypt_kwargs(self, kwargs: SecretTree) -> None:
         for key, value in kwargs.items():
             if isinstance(value, dict):
                 self._decrypt_kwargs(value)
@@ -113,7 +115,7 @@ class SaasSecretsStore(SecretsStore):
             else:
                 kwargs[key] = self._jwt_svc.decrypt_value(value)
 
-    def _encrypt_kwargs(self, kwargs: dict):
+    def _encrypt_kwargs(self, kwargs: SecretTree) -> None:
         for key, value in kwargs.items():
             if isinstance(value, dict):
                 self._encrypt_kwargs(value)

@@ -372,7 +372,7 @@ async def on_options_load(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
     form = await request.form()
     payload_str = form.get('payload')
-    if not payload_str:
+    if not isinstance(payload_str, str) or not payload_str:
         logger.warning('slack_on_options_load: No payload in request')
         return JSONResponse({'options': []})
 
@@ -479,7 +479,10 @@ async def on_form_interaction(request: Request, background_tasks: BackgroundTask
 
     body = await request.body()
     form = await request.form()
-    payload = json.loads(form.get('payload'))
+    payload_str = form.get('payload')
+    if not isinstance(payload_str, str) or not payload_str:
+        raise HTTPException(status_code=400, detail='invalid_request')
+    payload = json.loads(payload_str)
 
     logger.info('slack_on_form_interaction', extra={'payload': payload})
 

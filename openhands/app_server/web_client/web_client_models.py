@@ -70,6 +70,9 @@ class ACPProviderConfig(BaseModel):
 
 
 class WebClientConfig(DiscriminatedUnionMixin):
+    auth_mode: str = 'keycloak'
+    login_methods: list[str] = Field(default_factory=list)
+    git_connection_methods: dict[str, list[str]] = Field(default_factory=dict)
     app_mode: AppMode
     posthog_client_key: str | None
     feature_flags: WebClientFeatureFlags

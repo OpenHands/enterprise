@@ -50,6 +50,18 @@ class ManagedLlmKeyOwnershipProcessor(MaintenanceTaskProcessor):
 
     async def __call__(self, task: MaintenanceTask) -> dict:
         del task
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+
+        if not ENABLE_KEYCLOAK:
+            # Native memberships carry durable generation-specific work. The
+            # legacy repair deletes aliases and cannot coordinate those claims.
+            return {
+                'verified': 0,
+                'repaired': 0,
+                'skipped': len(self.targets),
+                'error_count': 0,
+                'errors': [],
+            }
         verified = 0
         repaired = 0
         skipped = 0

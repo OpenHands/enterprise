@@ -11,6 +11,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.app_server.web_client.email_change_config import (
     is_email_change_enabled,
 )
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.constants import KEYCLOAK_CLIENT_ID
 from server.auth.keycloak_manager import get_keycloak_admin
 from server.auth.saas_user_auth import SaasUserAuth
@@ -27,7 +28,17 @@ from storage.user_store import UserStore
 # Email validation regex pattern
 EMAIL_REGEX = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
-api_router = APIRouter(prefix='/api/email')
+
+def require_keycloak_email() -> None:
+    if not ENABLE_KEYCLOAK:
+        raise HTTPException(
+            403, 'Email changes and verification are unavailable in native mode'
+        )
+
+
+api_router = APIRouter(
+    prefix='/api/email', dependencies=[Depends(require_keycloak_email)]
+)
 
 
 class EmailUpdate(BaseModel):

@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING
 
 from openhands.app_server.config_api.config_models import AppMode
+
+if TYPE_CHECKING:
+    from openhands.app_server.config_api.client_config_types import ClientConfig
 
 
 class ServerConfigInterface(ABC):
@@ -11,7 +14,7 @@ class ServerConfigInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_config(self) -> dict[str, Any]:
+    def get_config(self) -> 'ClientConfig':
         """Configure attributes for frontend"""
         raise NotImplementedError
 

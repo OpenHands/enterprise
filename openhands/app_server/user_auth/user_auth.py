@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum
+from uuid import UUID
 
 from fastapi import Request
 from pydantic import SecretStr
@@ -48,6 +49,10 @@ class UserAuth(ABC):
     # Separate memo for the resolved (effective launch) view; a class-level
     # default so subclasses need not declare it.
     _resolved_settings: Settings | None = None
+
+    async def get_effective_org_id(self) -> UUID | None:
+        """Return the selected organization, if this authentication context has one."""
+        return None
 
     @abstractmethod
     async def get_user_id(self) -> str | None:

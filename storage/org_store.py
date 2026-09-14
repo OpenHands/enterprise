@@ -554,6 +554,12 @@ class OrgStore:
         org_kwargs = dict(org_kwargs)
 
         async with a_session_maker() as session:
+            from server.auth.auth_config import ENABLE_KEYCLOAK
+
+            if not ENABLE_KEYCLOAK:
+                from server.services.native_account_service import lock_native_lifecycle
+
+                await lock_native_lifecycle(session)
             result = await session.execute(select(Org).filter(Org.id == org_id))
             org = result.scalars().first()
             if not org:
@@ -565,7 +571,7 @@ class OrgStore:
                 org_kwargs.pop('id')
 
             # Pop the diff-style kwargs before the setattr loop — otherwise
-            # ``hasattr(org, 'agent_settings')`` is True and the loop would
+            # ``hasattr(org, 'agent_settings')`` is the loop would
             # *overwrite* the JSON column instead of deep-merging into it.
             agent_settings_diff = (
                 update_data.agent_settings_diff
@@ -621,6 +627,26 @@ class OrgStore:
                     await OrgMemberStore.update_all_members_settings_async(
                         session, org_id, member_updates
                     )
+                if not ENABLE_KEYCLOAK and update_data.touches_llm_defaults():
+                    from server.services.native_provisioning_service import (
+                        prepare_managed_member,
+                        release_managed_member,
+                    )
+                    from storage.saas_settings_store import (
+                        managed_llm_key_config_from_model,
+                    )
+
+                    llm = OrgStore.get_agent_settings_from_org(org).llm
+                    managed = managed_llm_key_config_from_model(llm.model, llm.base_url)
+                    members = await session.scalars(
+                        select(OrgMember).where(OrgMember.org_id == org_id)
+                    )
+                    for member in members:
+                        if managed is not None and not org._llm_api_key:
+                            if not member.has_custom_llm_api_key:
+                                await prepare_managed_member(session, member)
+                        else:
+                            await release_managed_member(session, member)
 
             await session.commit()
             await session.refresh(org)
@@ -686,7 +712,10 @@ class OrgStore:
 
     @staticmethod
     async def delete_org_cascade(
-        org_id: UUID, requester_user_id: str | None = None
+        org_id: UUID,
+        requester_user_id: str | None = None,
+        *,
+        terminal_account_id: UUID | None = None,
     ) -> Org | None:
         """Delete organization and all associated data in cascade, including external LiteLLM cleanup.
 
@@ -725,7 +754,13 @@ class OrgStore:
                 left without any organization by the deletion.
             Exception: If database operations or LiteLLM cleanup fail
         """
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+
         async with a_session_maker() as session:
+            if not ENABLE_KEYCLOAK:
+                from server.services.native_account_service import lock_native_lifecycle
+
+                await lock_native_lifecycle(session)
             # First get the organization to return it
             result = await session.execute(select(Org).filter(Org.id == org_id))
             org = result.scalars().first()
@@ -786,6 +821,24 @@ class OrgStore:
                 requester_orphan_ids = [
                     uid for uid in orphaned_user_ids if uid == requester_user_id
                 ]
+
+                if not ENABLE_KEYCLOAK:
+                    from server.services.native_account_service import mark_self_deleted
+                    from storage.api_key import ApiKey
+                    from storage.native_auth import AuthAccount
+
+                    for uid in requester_orphan_ids:
+                        account_id = UUID(uid)
+                        account = await session.get(AuthAccount, account_id)
+                        if (
+                            terminal_account_id != account_id
+                            or account is None
+                            or account.state != 'deleted'
+                        ):
+                            await mark_self_deleted(session, account_id)
+                        await session.execute(
+                            delete(ApiKey).where(ApiKey.user_id == uid)
+                        )
 
                 # 1. Delete conversation data for organization conversations
                 await session.execute(
@@ -956,9 +1009,18 @@ class OrgStore:
                     'Deleting LiteLLM team within database transaction',
                     extra={'org_id': str(org_id)},
                 )
-                await LiteLlmManager.delete_team(str(org_id))
+                if not ENABLE_KEYCLOAK:
+                    from server.services.native_provisioning_service import (
+                        queue_external_cleanup,
+                    )
 
-                if requester_orphan_ids:
+                    await queue_external_cleanup(session, org_id=org_id)
+                    for uid in requester_orphan_ids:
+                        await queue_external_cleanup(session, account_id=UUID(uid))
+                else:
+                    await LiteLlmManager.delete_team(str(org_id))
+
+                if ENABLE_KEYCLOAK and requester_orphan_ids:
                     for user_id in requester_orphan_ids:
                         await OrgStore._delete_litellm_user_best_effort(user_id, org_id)
 
@@ -1028,6 +1090,19 @@ class OrgStore:
             return None
 
         existing_key = acting_member.llm_api_key
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+
+        if not ENABLE_KEYCLOAK:
+            from server.services.native_provisioning_service import (
+                prepare_managed_member,
+                release_managed_member,
+            )
+
+            if updated_org._llm_api_key:
+                await release_managed_member(session, acting_member)
+                return None
+            key = await prepare_managed_member(session, acting_member)
+            return key.get_secret_value() or None
         existing_key_raw = existing_key.get_secret_value() if existing_key else None
         if existing_key_raw and await LiteLlmManager.verify_existing_key(
             existing_key_raw,

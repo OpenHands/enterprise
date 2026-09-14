@@ -3,6 +3,7 @@ import os
 import warnings
 
 from fastapi.routing import Mount
+from starlette.types import Lifespan
 
 with warnings.catch_warnings():
     warnings.simplefilter('ignore')
@@ -46,7 +47,7 @@ def combine_lifespans(*lifespans):
     return combined_lifespan
 
 
-lifespans = [mcp_app.lifespan]
+lifespans: list[Lifespan[FastAPI]] = [mcp_app.lifespan]
 app_lifespan_ = get_app_lifespan_service()
 if app_lifespan_:
     lifespans.append(app_lifespan_.lifespan)

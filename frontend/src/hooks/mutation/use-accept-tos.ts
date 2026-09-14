@@ -1,7 +1,9 @@
-import { useMutation } from "@tanstack/react-query";
+import type { UseMutationResult, DefaultError } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { usePostHog } from "posthog-js/react";
 import { useNavigate } from "react-router";
-import { openHands } from "#/api/open-hands-axios";
+import { useConfig } from "../query/use-config";
+import AuthService from "#/api/auth-service/auth-service.api";
 import { handleCaptureConsent } from "#/utils/handle-capture-consent";
 import { navigateOrHardRedirect } from "#/utils/cross-app-redirect";
 
@@ -9,13 +11,16 @@ interface AcceptTosVariables {
   redirectUrl: string;
 }
 
-interface AcceptTosResponse {
-  redirect_url?: string;
-}
-
-export const useAcceptTos = () => {
+export const useAcceptTos = (): UseMutationResult<
+  Awaited<ReturnType<typeof AuthService.acceptTos>>,
+  DefaultError,
+  AcceptTosVariables,
+  unknown
+> => {
   const posthog = usePostHog();
   const navigate = useNavigate();
+  const client = useQueryClient();
+  const { data: config } = useConfig();
 
   return useMutation({
     mutationFn: async ({ redirectUrl }: AcceptTosVariables) => {
@@ -23,11 +28,16 @@ export const useAcceptTos = () => {
       handleCaptureConsent(posthog, true);
 
       // Call the API to record TOS acceptance in the database
-      return openHands.post<AcceptTosResponse>("/api/accept_tos", {
-        redirect_url: redirectUrl,
-      });
+      return AuthService.acceptTos(redirectUrl);
     },
-    onSuccess: (response, { redirectUrl }) => {
+    onSuccess: async (response, { redirectUrl }) => {
+      if (config?.auth_mode === "native") {
+        client.setQueryData(["user", "authenticated", "saas", "native"], {
+          authenticated: true,
+          acceptedTos: true,
+        });
+        await client.invalidateQueries({ queryKey: ["user", "authenticated"] });
+      }
       // Get the redirect URL from the response
       const finalRedirectUrl = response.data.redirect_url || redirectUrl;
 

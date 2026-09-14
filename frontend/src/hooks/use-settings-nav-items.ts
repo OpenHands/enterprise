@@ -1,3 +1,4 @@
+import { useCanManageUsers } from "./query/use-native-profile";
 import { useConfig } from "#/hooks/query/use-config";
 import {
   SAAS_NAV_ITEMS,
@@ -44,6 +45,7 @@ const SECTION_HEADERS: Partial<Record<SettingsNavSection, I18nKey>> = {
  */
 export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const { data: config } = useConfig();
+  const { canManageUsers } = useCanManageUsers();
   const { data: user } = useMe();
   const { data: settings } = useSettings();
   const userRole: OrganizationUserRole = user?.role ?? "member";
@@ -65,6 +67,12 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     : null;
 
   let items = isSaasMode ? [...SAAS_NAV_ITEMS] : [...OSS_NAV_ITEMS];
+
+  items = items.filter(
+    (item) =>
+      item.to !== "/settings/users" ||
+      (config?.auth_mode === "native" && canManageUsers),
+  );
 
   // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));

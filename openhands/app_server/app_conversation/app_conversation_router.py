@@ -548,7 +548,7 @@ async def start_app_conversation(
                     ctx = await resolve_analytics_context(user_id)
                     analytics.track_conversation_requested(
                         ctx=ctx,
-                        request_id=result.id,
+                        request_id=str(result.id),
                         trigger=start_request.trigger.value
                         if start_request.trigger
                         else None,
@@ -1191,7 +1191,7 @@ async def stream_app_conversation_start(
     request: AppConversationStartRequest,
     user_context: UserContext = user_context_dependency,
     secrets_store: SecretsStore = Depends(get_secrets_store),
-) -> list[AppConversationStartTask]:
+) -> StreamingResponse:
     """Start an app conversation start task and stream updates from it.
     Leaves the connection open until either the conversation starts or there was an error
     """

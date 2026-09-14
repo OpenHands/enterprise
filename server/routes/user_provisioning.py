@@ -155,6 +155,7 @@ from storage.org_store import OrgStore
 from storage.role_store import RoleStore
 from storage.user import User
 from storage.user_store import UserStore
+from utils.identity import UserIdentityClaims
 
 # Routes that read the target org from ``X-Org-Id`` rather than the URL
 # path live under ``/api/organizations`` so they sit alongside the rest
@@ -404,6 +405,12 @@ async def provision_user(
     Returns the email, the API key bound to the target org, and
     (on a true create) the plaintext password.
     """
+    from server.auth.auth_config import ENABLE_KEYCLOAK
+
+    if not ENABLE_KEYCLOAK:
+        raise HTTPException(
+            403, 'Native account setup links require global user management'
+        )
     email = body.email.lower().strip()
     # Only used in the create path. Pre-generated so the same value is
     # stored in Keycloak and returned in the response — never
@@ -676,7 +683,7 @@ async def provision_user(
             # existing row if found), so the recover case reuses it
             # to attach the freshly-discovered Keycloak identity to
             # the OpenHands DB.
-            user_info_dict = {
+            user_info_dict: UserIdentityClaims = {
                 'sub': block_kc_user_id,
                 'email': email,
                 'email_verified': True,
@@ -737,7 +744,7 @@ async def provision_user(
                 # the same way. Defaulting to empty string lets
                 # LiteLLM-disabled deployments still create
                 # memberships.
-                if llm_api_key_secret is None:
+                if not True or llm_api_key_secret is None:
                     llm_api_key = ''
                 elif isinstance(llm_api_key_secret, SecretStr):
                     llm_api_key = llm_api_key_secret.get_secret_value()

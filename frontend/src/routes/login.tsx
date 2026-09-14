@@ -1,5 +1,7 @@
 import React from "react";
 import { useNavigate, useSearchParams, useLocation } from "react-router";
+import NativeLoginPage from "./native-login";
+import { getSafeReturnTo } from "#/utils/safe-return-to";
 import { useIsAuthed } from "#/hooks/query/use-is-authed";
 import { useConfig } from "#/hooks/query/use-config";
 import { useGitHubAuthUrl } from "#/hooks/use-github-auth-url";
@@ -14,16 +16,9 @@ interface LocationState {
   showRequestSubmittedModal?: boolean;
 }
 
-export function getSafeReturnTo(searchParams: URLSearchParams): string {
-  const destination =
-    searchParams.get("returnTo") || searchParams.get("redirect") || "/";
-  if (!destination.startsWith("/") || destination.startsWith("//")) {
-    return "/";
-  }
-  return destination;
-}
+export { getSafeReturnTo } from "#/utils/safe-return-to";
 
-export default function LoginPage() {
+function LegacyLoginPage(): React.JSX.Element | null {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -125,5 +120,20 @@ export default function LoginPage() {
         <RequestSubmittedModal onClose={handleRequestModalClose} />
       )}
     </>
+  );
+}
+
+export default function LoginPage(): React.JSX.Element {
+  const { data: config, isLoading } = useConfig({ enabled: true });
+  if (isLoading)
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-base">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
+      </div>
+    );
+  return config?.auth_mode === "native" ? (
+    <NativeLoginPage />
+  ) : (
+    <LegacyLoginPage />
   );
 }

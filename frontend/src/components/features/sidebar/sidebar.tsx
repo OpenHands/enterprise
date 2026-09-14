@@ -16,7 +16,7 @@ import { displayErrorToast } from "#/utils/custom-toast-handlers";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 
-export function Sidebar() {
+export function Sidebar(): React.JSX.Element {
   const { t } = useTranslation();
   const { pathname } = useLocation();
   const user = useGitUser();
@@ -27,6 +27,9 @@ export function Sidebar() {
     isError: settingsIsError,
     isFetching: isFetchingSettings,
   } = useSettings();
+
+  const verificationRequired =
+    config?.auth_mode !== "native" && settings?.email_verified === false;
 
   const [settingsModalIsOpen, setSettingsModalIsOpen] = React.useState(false);
 
@@ -77,21 +80,19 @@ export function Sidebar() {
               <OpenHandsLogoButton />
             </div>
             <div className="flex items-center justify-center">
-              <NewProjectButton disabled={settings?.email_verified === false} />
+              <NewProjectButton disabled={verificationRequired} />
             </div>
             <ConversationPanelButton
               isOpen={conversationPanelIsOpen}
               onClick={() =>
-                settings?.email_verified === false
+                verificationRequired
                   ? null
                   : setConversationPanelIsOpen((prev) => !prev)
               }
-              disabled={settings?.email_verified === false}
+              disabled={verificationRequired}
             />
             {config?.feature_flags?.enable_automations && (
-              <AutomationsButton
-                disabled={settings?.email_verified === false}
-              />
+              <AutomationsButton disabled={verificationRequired} />
             )}
           </div>
 

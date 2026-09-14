@@ -86,6 +86,10 @@ async def handle_callback_error(
 async def get_saas_user_auth(
     keycloak_user_id: str, token_manager: TokenManager
 ) -> UserAuth:
+    from server.auth.auth_config import ENABLE_KEYCLOAK
+
+    if not ENABLE_KEYCLOAK:
+        return await SaasUserAuth.get_for_user(keycloak_user_id)
     offline_token = await token_manager.load_offline_token(keycloak_user_id)
     if offline_token is None:
         logger.info('no_offline_token_found')

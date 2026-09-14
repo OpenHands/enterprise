@@ -25,9 +25,9 @@ import {
  * token is simply submitted as soon as a session exists and the outcome is
  * reported via a toast.
  */
-export function useAutoAcceptInvitation() {
+export function useAutoAcceptInvitation(): void {
   const { t } = useTranslation();
-  const { data: isAuthed } = useIsAuthed();
+  const { data: isAuthed, acceptedTos } = useIsAuthed();
   const isOnIntermediatePage = useIsOnIntermediatePage();
   const { invitationToken, clearInvitation } = useInvitation();
   const { mutate: acceptInvitation } = useAcceptInvitation();
@@ -35,7 +35,13 @@ export function useAutoAcceptInvitation() {
   const attemptedTokenRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
-    if (!isAuthed || !invitationToken || isOnIntermediatePage) return;
+    if (
+      !isAuthed ||
+      acceptedTos === false ||
+      !invitationToken ||
+      isOnIntermediatePage
+    )
+      return;
     if (attemptedTokenRef.current === invitationToken) return;
     attemptedTokenRef.current = invitationToken;
 

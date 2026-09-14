@@ -9,7 +9,7 @@ import { useIsOnIntermediatePage } from "./use-is-on-intermediate-page";
  * Hook to automatically log in the user if they have a login method stored in local storage
  * Only works in SAAS mode and when the user is not already logged in
  */
-export const useAutoLogin = () => {
+export const useAutoLogin = (): void => {
   const { data: config, isLoading: isConfigLoading } = useConfig();
   const { data: isAuthed, isLoading: isAuthLoading } = useIsAuthed();
   const isOnIntermediatePage = useIsOnIntermediatePage();
@@ -19,44 +19,44 @@ export const useAutoLogin = () => {
 
   // Get the auth URLs for all providers
   const githubAuthUrl = useAuthUrl({
-    appMode: config?.app_mode || null,
+    appMode: config?.auth_mode === "native" ? null : config?.app_mode || null,
     identityProvider: "github",
     authUrl: config?.auth_url,
   });
 
   const gitlabAuthUrl = useAuthUrl({
-    appMode: config?.app_mode || null,
+    appMode: config?.auth_mode === "native" ? null : config?.app_mode || null,
     identityProvider: "gitlab",
     authUrl: config?.auth_url,
   });
 
   const bitbucketAuthUrl = useAuthUrl({
-    appMode: config?.app_mode || null,
+    appMode: config?.auth_mode === "native" ? null : config?.app_mode || null,
     identityProvider: "bitbucket",
     authUrl: config?.auth_url,
   });
 
   const bitbucketDataCenterUrl = useAuthUrl({
-    appMode: config?.app_mode || null,
+    appMode: config?.auth_mode === "native" ? null : config?.app_mode || null,
     identityProvider: "bitbucket_data_center",
     authUrl: config?.auth_url,
   });
 
   const azureDevOpsUrl = useAuthUrl({
-    appMode: config?.app_mode || null,
+    appMode: config?.auth_mode === "native" ? null : config?.app_mode || null,
     identityProvider: "azure_devops",
     authUrl: config?.auth_url,
   });
 
   const enterpriseSsoUrl = useAuthUrl({
-    appMode: config?.app_mode || null,
+    appMode: config?.auth_mode === "native" ? null : config?.app_mode || null,
     identityProvider: "enterprise_sso",
     authUrl: config?.auth_url,
   });
 
   useEffect(() => {
     // Only auto-login in SAAS mode
-    if (config?.app_mode !== "saas") {
+    if (config?.auth_mode === "native" || config?.app_mode !== "saas") {
       return;
     }
 
@@ -107,6 +107,7 @@ export const useAutoLogin = () => {
     }
   }, [
     config?.app_mode,
+    config?.auth_mode,
     isAuthed,
     isConfigLoading,
     isAuthLoading,

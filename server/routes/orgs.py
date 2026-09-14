@@ -1742,6 +1742,10 @@ async def claim_git_organization(
         HTTPException 409: If the Git organization is already claimed
         HTTPException 403: If user lacks permission
     """
+    from server.auth.auth_config import ENABLE_KEYCLOAK
+
+    if not ENABLE_KEYCLOAK:
+        raise HTTPException(409, 'No native Git provider connection is available')
     try:
         # Check if this Git org is already claimed (early feedback for the common case)
         existing_claim = await OrgGitClaimStore.get_claim_by_provider_and_git_org(

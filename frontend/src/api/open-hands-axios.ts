@@ -1,8 +1,11 @@
 import axios, { AxiosError, AxiosResponse } from "axios";
+import { installNativeCsrf, isNativeAuth } from "./native-csrf";
 
 export const openHands = axios.create({
   baseURL: `${window.location.protocol}//${import.meta.env.VITE_BACKEND_BASE_URL || window?.location.host}`,
 });
+
+installNativeCsrf(openHands);
 
 // Helper function to check if a response contains an email verification error
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -43,9 +46,10 @@ const checkForEmailVerificationError = (data: any): boolean => {
 // Set up the global interceptor
 openHands.interceptors.response.use(
   (response: AxiosResponse) => response,
-  (error: AxiosError) => {
+  (error: AxiosError<unknown, unknown>) => {
     // Check if it's a 403 error with the email verification message
     if (
+      !isNativeAuth() &&
       error.response?.status === 403 &&
       checkForEmailVerificationError(error.response?.data)
     ) {

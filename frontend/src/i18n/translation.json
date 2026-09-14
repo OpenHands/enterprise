@@ -29578,5 +29578,203 @@
     "tr": "Git sağlayıcısına bağlanılamadı. Lütfen tekrar deneyin.",
     "uk": "Не вдалося підключити Git-провайдера. Спробуйте ще раз.",
     "ca": "No s'ha pogut connectar el proveïdor de Git. Torna-ho a provar."
+  },
+  "NATIVE_AUTH$EMAIL": {
+    "en": "Email"
+  },
+  "NATIVE_AUTH$PASSWORD": {
+    "en": "Password"
+  },
+  "NATIVE_AUTH$SIGN_IN": {
+    "en": "Sign in"
+  },
+  "NATIVE_AUTH$CONFIRM_IDENTITY": {
+    "en": "Confirm identity"
+  },
+  "NATIVE_AUTH$CONTACT_ADMIN": {
+    "en": "Contact your administrator for an account setup or password reset link."
+  },
+  "NATIVE_AUTH$REQUEST_FAILED": {
+    "en": "The request could not be completed. Please try again."
+  },
+  "NATIVE_AUTH$NEW_PASSWORD": {
+    "en": "New password"
+  },
+  "NATIVE_AUTH$CONFIRM_PASSWORD": {
+    "en": "Confirm new password"
+  },
+  "NATIVE_AUTH$PASSWORD_HELP": {
+    "en": "Use at least 15 characters. Longer, uncommon passphrases work well."
+  },
+  "NATIVE_AUTH$PASSWORD_MISMATCH": {
+    "en": "The passwords do not match."
+  },
+  "NATIVE_AUTH$SET_UP_ACCOUNT": {
+    "en": "Set up your account"
+  },
+  "NATIVE_AUTH$LINK_UNAVAILABLE": {
+    "en": "If this link is missing, expired, or already used, ask your administrator to issue a new one."
+  },
+  "NATIVE_AUTH$INVITED_ORG": {
+    "en": "You have been invited to {{name}}."
+  },
+  "NATIVE_AUTH$EXISTING_ACCOUNT": {
+    "en": "This account already exists. Sign in to accept the invitation."
+  },
+  "NATIVE_AUTH$BACK_TO_LOGIN": {
+    "en": "Back to sign in"
+  },
+  "NATIVE_AUTH$RESET_PASSWORD": {
+    "en": "Reset password"
+  },
+  "NATIVE_AUTH$PASSWORD_RESET_COMPLETE": {
+    "en": "Your password has been reset. Sign in with your new password."
+  },
+  "NATIVE_AUTH$CHANGE_PASSWORD": {
+    "en": "Change password"
+  },
+  "NATIVE_AUTH$CURRENT_PASSWORD": {
+    "en": "Current password"
+  },
+  "NATIVE_AUTH$PASSWORD_CHANGED": {
+    "en": "Your password has been changed. Other sessions have been signed out."
+  },
+  "NATIVE_AUTH$REAUTH_REQUIRED": {
+    "en": "Confirm your identity to continue."
+  },
+  "NATIVE_AUTH$USERS": {
+    "en": "Users"
+  },
+  "NATIVE_AUTH$USERS_HELP": {
+    "en": "Manage application accounts. Share setup and password reset links with the intended recipient. Git connections are optional and managed by each user."
+  },
+  "NATIVE_AUTH$INVITE_USER": {
+    "en": "Invite a user"
+  },
+  "NATIVE_AUTH$OPTIONAL_ORG": {
+    "en": "Organization (optional)"
+  },
+  "NATIVE_AUTH$PERSONAL_WORKSPACE_ONLY": {
+    "en": "Personal workspace only"
+  },
+  "NATIVE_AUTH$ORG_ROLE": {
+    "en": "Organization role"
+  },
+  "NATIVE_AUTH$SELECT_ROLE": {
+    "en": "Select a role"
+  },
+  "NATIVE_AUTH$CREATE_SETUP_LINK": {
+    "en": "Create setup link"
+  },
+  "NATIVE_AUTH$ACCOUNTS": {
+    "en": "Accounts"
+  },
+  "NATIVE_AUTH$NO_ACCOUNTS": {
+    "en": "No accounts found."
+  },
+  "NATIVE_AUTH$NO_INVITATIONS": {
+    "en": "No invitations found."
+  },
+  "NATIVE_AUTH$INVITATIONS": {
+    "en": "Account invitations"
+  },
+  "NATIVE_AUTH$ACTIVE": {
+    "en": "Active"
+  },
+  "NATIVE_AUTH$DISABLED": {
+    "en": "Disabled"
+  },
+  "NATIVE_AUTH$DELETED": {
+    "en": "Permanently deleted"
+  },
+  "NATIVE_AUTH$PROFILE_ABSENT": {
+    "en": "Profile removed; sign in again to restore access"
+  },
+  "NATIVE_AUTH$ENABLE": {
+    "en": "Enable account"
+  },
+  "NATIVE_AUTH$DISABLE": {
+    "en": "Disable account"
+  },
+  "NATIVE_AUTH$DELETE": {
+    "en": "Permanently delete account"
+  },
+  "NATIVE_AUTH$GRANT_ADMIN": {
+    "en": "Grant superadmin"
+  },
+  "NATIVE_AUTH$REVOKE_ADMIN": {
+    "en": "Revoke superadmin"
+  },
+  "NATIVE_AUTH$CREATE_RESET_LINK": {
+    "en": "Create password reset link"
+  },
+  "NATIVE_AUTH$PENDING_SETUP": {
+    "en": "Pending setup link expires {{date}}"
+  },
+  "NATIVE_AUTH$ACCEPTED": {
+    "en": "Accepted"
+  },
+  "NATIVE_AUTH$REVOKED": {
+    "en": "Revoked"
+  },
+  "NATIVE_AUTH$EXPIRED": {
+    "en": "Expired"
+  },
+  "NATIVE_AUTH$PENDING": {
+    "en": "Pending"
+  },
+  "NATIVE_AUTH$REISSUE": {
+    "en": "Reissue link"
+  },
+  "NATIVE_AUTH$REVOKE": {
+    "en": "Revoke link"
+  },
+  "NATIVE_AUTH$DELETE_HELP": {
+    "en": "This permanently deletes the account and its access. The account cannot sign in again."
+  },
+  "NATIVE_AUTH$ADMIN_ACTION_HELP": {
+    "en": "This changes access to the entire application. The server protects the last active superadmin."
+  },
+  "NATIVE_AUTH$CONFIRM": {
+    "en": "Confirm"
+  },
+  "NATIVE_AUTH$CANCEL": {
+    "en": "Cancel"
+  },
+  "NATIVE_AUTH$SHARE_LINK": {
+    "en": "Share this private link"
+  },
+  "NATIVE_AUTH$COPY_ONCE_HELP": {
+    "en": "Copy this link now and share it securely with the intended recipient. It is shown only once. Reissuing an invitation invalidates the previous link."
+  },
+  "NATIVE_AUTH$EXPIRES": {
+    "en": "Expires {{date}}"
+  },
+  "NATIVE_AUTH$PRIVATE_LINK": {
+    "en": "Private link"
+  },
+  "NATIVE_AUTH$COPY_MANUALLY": {
+    "en": "Clipboard access is unavailable. Select the link and copy it manually."
+  },
+  "NATIVE_AUTH$COPY_LINK": {
+    "en": "Copy link"
+  },
+  "NATIVE_AUTH$COPIED": {
+    "en": "Copied"
+  },
+  "NATIVE_AUTH$CLOSE": {
+    "en": "Close"
+  },
+  "NATIVE_AUTH$PROFILE_UNAVAILABLE": {
+    "en": "Profile unavailable; contact an administrator"
+  },
+  "NATIVE_AUTH$NO_LOGIN_METHODS": {
+    "en": "No sign-in methods are available. Contact your administrator."
+  },
+  "NATIVE_AUTH$SIGN_IN_METHODS": {
+    "en": "Sign-in methods"
+  },
+  "NATIVE_AUTH$EMAIL_PASSWORD_METHOD": {
+    "en": "Email and password"
   }
 }

@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from typing import ClassVar
 from urllib.parse import urlparse
 
 from pydantic import Field
@@ -276,6 +277,7 @@ async def _resolve_flag(key: str, env_fallback: bool) -> bool:
 
 
 class DefaultWebClientConfigInjector(WebClientConfigInjector):
+    supports_native_auth: ClassVar[bool] = True
     posthog_client_key: str = Field(default_factory=_get_posthog_client_key)
     feature_flags: WebClientFeatureFlags = Field(default_factory=_get_feature_flags)
     providers_configured: list[ProviderType] = Field(
@@ -340,6 +342,10 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         from openhands.app_server.config import get_global_config
 
         config = get_global_config()
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+        from server.config import get_auth_capabilities
+
+        auth_capabilities = get_auth_capabilities(self.providers_configured)
         # enable_billing is a registered default flag (ENABLE_BILLING): the
         # database overlay wins, the env var baked into self.feature_flags at
         # init is the fallback.
@@ -347,17 +353,19 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             update={
                 'enable_billing': await _resolve_flag(
                     'ENABLE_BILLING', self.feature_flags.enable_billing
-                )
+                ),
             }
         )
+        db_feature_flags = await _get_db_feature_flags()
         result = WebClientConfig(
+            **auth_capabilities,
             app_mode=config.app_mode,
             posthog_client_key=self.posthog_client_key,
             feature_flags=feature_flags,
-            db_feature_flags=await _get_db_feature_flags(),
-            providers_configured=self.providers_configured,
+            db_feature_flags=db_feature_flags,
+            providers_configured=self.providers_configured if ENABLE_KEYCLOAK else [],
             maintenance_start_time=self.maintenance_start_time,
-            auth_url=self.auth_url,
+            auth_url=self.auth_url if ENABLE_KEYCLOAK else None,
             recaptcha_site_key=self.recaptcha_site_key,
             faulty_models=self.faulty_models,
             error_message=self.error_message,
@@ -366,8 +374,10 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             gitlab_enabled=self.gitlab_enabled,
             provider_default_hosts=self.provider_default_hosts,
             slack_enabled=self.slack_enabled,
-            email_enabled=self.email_enabled,
-            email_change_enabled=self.email_change_enabled,
+            email_enabled=self.email_enabled if ENABLE_KEYCLOAK else False,
+            email_change_enabled=self.email_change_enabled
+            if ENABLE_KEYCLOAK
+            else False,
             jira_dc_oauth_host=self.jira_dc_oauth_host,
             jira_dc_service_account_managed=self.jira_dc_service_account_managed,
             jira_dc_service_account_email=self.jira_dc_service_account_email,

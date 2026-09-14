@@ -347,10 +347,25 @@ class LiteLlmManager:
         local_deploy = os.environ.get('LOCAL_DEPLOYMENT', None)
         key = LITE_LLM_API_KEY
         if not local_deploy:
-            token_manager = TokenManager()
-            keycloak_user_info = (
-                await token_manager.get_user_info_from_user_id(keycloak_user_id) or {}
-            )
+            from server.auth.auth_config import ENABLE_KEYCLOAK
+
+            if ENABLE_KEYCLOAK:
+                token_manager = TokenManager()
+                keycloak_user_info = (
+                    await token_manager.get_user_info_from_user_id(keycloak_user_id)
+                    or {}
+                )
+            else:
+                from uuid import UUID
+
+                from server.services.native_auth_service import get_native_auth_service
+
+                identity = await get_native_auth_service().get_identity(
+                    UUID(keycloak_user_id)
+                )
+                if identity is None:
+                    raise ValueError('Native account is not available for provisioning')
+                keycloak_user_info = {'email': identity.email}
 
             async with httpx.AsyncClient(
                 headers={

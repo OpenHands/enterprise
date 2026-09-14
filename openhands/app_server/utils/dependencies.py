@@ -1,6 +1,6 @@
 import os
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, params, status
 from fastapi.security import APIKeyHeader
 
 from openhands.app_server.config import get_global_config
@@ -20,7 +20,7 @@ def check_session_api_key(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
 
-def get_dependencies() -> list[Depends]:
+def get_dependencies() -> list[params.Depends]:
     result = []
     if _SESSION_API_KEY:
         result.append(Depends(check_session_api_key))

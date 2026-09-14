@@ -1,9 +1,18 @@
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from run_maintenance_tasks import main, maintenance_task_status, run_tasks
 from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
+
+
+@pytest.fixture(autouse=True)
+def verified_installation() -> Iterator[None]:
+    with patch(
+        'server.auth.bootstrap.verify_auth_installation', new_callable=AsyncMock
+    ):
+        yield
 
 
 def test_structured_processor_failure_marks_outer_task_error():

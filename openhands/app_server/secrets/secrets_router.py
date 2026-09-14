@@ -251,6 +251,13 @@ async def store_provider_tokens(
         401: Invalid token
         500: Error storing git providers
     """
+    native_store = getattr(secrets_store, 'store_native_provider_tokens', None)
+    if native_store:
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+
+        if not ENABLE_KEYCLOAK:
+            await native_store(provider_info)
+            return EditResponse(message='Git providers stored')
     await check_provider_tokens(provider_info, provider_tokens)
 
     async with _secrets_write_lock(user_id, secrets_store):
@@ -312,6 +319,13 @@ async def unset_provider_tokens(
         200: Git provider tokens unset successfully
         500: Error unsetting git provider tokens
     """
+    native_unset = getattr(secrets_store, 'unset_native_provider_tokens', None)
+    if native_unset:
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+
+        if not ENABLE_KEYCLOAK:
+            await native_unset()
+            return EditResponse(message='Unset Git provider tokens')
     async with _secrets_write_lock(user_id, secrets_store):
         user_secrets = await secrets_store.load()
         if user_secrets:

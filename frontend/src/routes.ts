@@ -6,6 +6,8 @@ import {
 } from "@react-router/dev/routes";
 
 export default [
+  route("account-setup", "routes/account-setup.tsx"),
+  route("password-reset", "routes/password-reset.tsx"),
   route("login", "routes/login.tsx"),
   route("onboarding", "routes/onboarding-form.tsx"),
   route("information-request", "routes/information-request.tsx"),
@@ -36,6 +38,7 @@ export default [
       ),
       route("mcp", "routes/mcp-settings.tsx"),
       route("skills", "routes/skills-settings.tsx"),
+      route("users", "routes/admin-users.tsx"),
       route("user", "routes/user-settings.tsx"),
       route("integrations", "routes/git-settings.tsx"),
       route("app", "routes/app-settings.tsx"),

@@ -26,6 +26,7 @@ from integrations.models import Message, SourceType
 from integrations.utils import HOST_URL
 from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.authorization import Permission, require_permission
 from server.auth.constants import (
     JIRA_CLIENT_ID,
@@ -34,6 +35,10 @@ from server.auth.constants import (
 )
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
+from server.services.native_integration_auth import (
+    native_integration_session,
+    verify_native_integration_session,
+)
 from storage.jira_workspace import JiraWorkspace
 from storage.redis import get_redis_client
 
@@ -424,7 +429,7 @@ async def create_jira_workspace(
     request: Request,
     workspace_data: JiraWorkspaceCreate,
     _: str = Depends(require_permission(Permission.MANAGE_INTEGRATION_PROVIDERS)),
-):
+) -> JSONResponse:
     """Create a new Jira workspace registration.
 
     Setting up the workspace connection (service account, webhook secret) is an
@@ -458,6 +463,11 @@ async def create_jira_workspace(
                 'is_active': workspace_data.is_active,
                 'state': state,
             }
+
+            if not ENABLE_KEYCLOAK:
+                integration_session[
+                    'native_session_id'
+                ] = await native_integration_session(request, user_id)
 
             created = redis_client.setex(
                 state,
@@ -568,7 +578,9 @@ async def create_jira_workspace(
 
 
 @jira_integration_router.post('/workspaces/link')
-async def create_workspace_link(request: Request, link_data: JiraLinkCreate):
+async def create_workspace_link(
+    request: Request, link_data: JiraLinkCreate
+) -> JSONResponse:
     """Register a user mapping to a Jira workspace."""
     try:
         user_auth = cast(SaasUserAuth, await get_user_auth(request))
@@ -605,6 +617,11 @@ async def create_workspace_link(request: Request, link_data: JiraLinkCreate):
             'target_workspace': link_data.workspace_name,
             'state': state,
         }
+
+        if not ENABLE_KEYCLOAK:
+            integration_session['native_session_id'] = await native_integration_session(
+                request, user_id
+            )
 
         created = redis_client.setex(
             state,
@@ -648,7 +665,7 @@ async def create_workspace_link(request: Request, link_data: JiraLinkCreate):
 
 
 @jira_integration_router.get('/callback')
-async def jira_callback(request: Request, code: str, state: str):
+async def jira_callback(request: Request, code: str, state: str) -> RedirectResponse:
     integration_session_json = redis_client.get(state)
     if not integration_session_json:
         raise HTTPException(
@@ -656,6 +673,9 @@ async def jira_callback(request: Request, code: str, state: str):
         )
 
     integration_session = json.loads(integration_session_json)
+    if not ENABLE_KEYCLOAK:
+        await verify_native_integration_session(request, integration_session)
+        redis_client.delete(state)
 
     # Security check: verify the state parameter
     if integration_session.get('state') != state:

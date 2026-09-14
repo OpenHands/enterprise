@@ -19,8 +19,9 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, RedirectResponse
 from keycloak.exceptions import KeycloakConnectionError
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr, TypeAdapter, with_config
 from sqlalchemy import select
+from typing_extensions import TypedDict
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.integrations.provider import (
@@ -32,6 +33,7 @@ from openhands.app_server.integrations.service_types import ProviderType, TokenR
 from openhands.app_server.user_auth import get_access_token
 from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.auth_error import TokenRefreshError
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
@@ -75,6 +77,7 @@ from storage.database import a_session_maker
 from storage.default_org_service import DefaultOrgBootstrapService
 from storage.user import User
 from storage.user_store import UserStore
+from utils.identity import IDENTITY_CLAIMS
 
 with warnings.catch_warnings():
     warnings.simplefilter('ignore')
@@ -83,6 +86,14 @@ api_router = APIRouter(prefix='/api')
 oauth_router = APIRouter(prefix='/oauth')
 
 token_manager = TokenManager()
+
+
+@with_config(ConfigDict(strict=True, hide_input_in_errors=True))
+class AcceptTosBody(TypedDict, total=False):
+    redirect_url: str
+
+
+_ACCEPT_TOS_BODY = TypeAdapter(AcceptTosBody)
 
 
 async def _get_keycloak_tokens_or_unavailable(
@@ -283,7 +294,9 @@ async def keycloak_callback(
     error_description: Optional[str] = None,
     kc_action_status: Optional[str] = None,
     user_authorizer: UserAuthorizer = depends_user_authorizer(),
-):
+) -> Response:
+    if not ENABLE_KEYCLOAK:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Not found')
     # Extract redirect URL, reCAPTCHA token, invitation token, and link provider
     redirect_url, recaptcha_token, invitation_token, link_provider = (
         _extract_oauth_state(state)
@@ -361,7 +374,9 @@ async def keycloak_callback(
 
     email = user_info.email
     user_id = user_info.sub
-    user_info_dict = user_info.model_dump(exclude_none=True)
+    user_info_dict = IDENTITY_CLAIMS.validate_python(
+        user_info.model_dump(exclude_none=True)
+    )
     user = await UserStore.get_user_by_id(user_id)
     is_new_user: bool = False
     if not user:
@@ -747,7 +762,11 @@ async def keycloak_callback(
 
 
 @oauth_router.get('/keycloak/offline/callback')
-async def keycloak_offline_callback(code: str, state: str, request: Request):
+async def keycloak_offline_callback(
+    code: str, state: str, request: Request
+) -> Response:
+    if not ENABLE_KEYCLOAK:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Not found')
     if not code:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -803,7 +822,20 @@ async def github_dummy_callback(request: Request):
 
 
 @api_router.post('/authenticate')
-async def authenticate(request: Request):
+async def authenticate(request: Request) -> JSONResponse:
+    if not ENABLE_KEYCLOAK:
+        user_auth = await get_user_auth(request)
+        user_id = await user_auth.get_user_id()
+        if user_id is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'Not authenticated')
+        user = await UserStore.get_user_by_id(user_id)
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                'message': 'User authenticated',
+                'accepted_tos': bool(user and user.accepted_tos is not None),
+            },
+        )
     try:
         await get_access_token(request)
         return JSONResponse(
@@ -1055,13 +1087,18 @@ async def _get_post_auth_redirect(
 
 
 @api_router.post('/accept_tos')
-async def accept_tos(request: Request):
-    user_auth = cast(SaasUserAuth, await get_user_auth(request))
+async def accept_tos(request: Request) -> JSONResponse:
+    user_auth = await get_user_auth(request)
+    if not isinstance(user_auth, SaasUserAuth):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='SaaS authentication required',
+        )
     access_token = await user_auth.get_access_token()
     refresh_token = user_auth.refresh_token
     user_id = await user_auth.get_user_id()
 
-    if not access_token or not refresh_token or not user_id:
+    if not user_id or (ENABLE_KEYCLOAK and (not access_token or not refresh_token)):
         logger.warning(
             'accept_tos: missing authentication state',
             extra={
@@ -1076,9 +1113,22 @@ async def accept_tos(request: Request):
         )
 
     # Get redirect URL from request body
-    body = await request.json()
+    try:
+        body = _ACCEPT_TOS_BODY.validate_python(await request.json())
+    except ValueError:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, 'Invalid request body'
+        ) from None
     web_url = get_web_url(request)
     redirect_url = body.get('redirect_url', str(web_url))
+    if not ENABLE_KEYCLOAK:
+        # Native completion accepts only local destinations; identity-provider
+        # and offline-session redirects are part of the Keycloak strategy.
+        from server.auth.native_session import get_app_origin
+        from server.services.native_auth_service import safe_return_path
+
+        web_url = get_app_origin()
+        redirect_url = safe_return_path(redirect_url)
 
     # Update user settings with TOS acceptance
     accepted_tos: datetime = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -1131,7 +1181,7 @@ async def accept_tos(request: Request):
 
     # Determine final redirect - but don't override if it's the offline token flow
     # (the offline callback will handle post-auth redirect after storing the token)
-    is_offline_flow = 'offline' in redirect_url
+    is_offline_flow = ENABLE_KEYCLOAK and 'offline' in redirect_url
     if not is_offline_flow:
         redirect_url = await _get_post_auth_redirect(user_id, redirect_url, web_url)
 
@@ -1139,14 +1189,16 @@ async def accept_tos(request: Request):
         status_code=status.HTTP_200_OK, content={'redirect_url': redirect_url}
     )
 
-    set_response_cookie(
-        request=request,
-        response=response,
-        keycloak_access_token=access_token.get_secret_value(),
-        keycloak_refresh_token=refresh_token.get_secret_value(),
-        secure=True if web_url.startswith('https') else False,
-        accepted_tos=True,
-    )
+    if ENABLE_KEYCLOAK:
+        assert access_token is not None
+        set_response_cookie(
+            request=request,
+            response=response,
+            keycloak_access_token=access_token.get_secret_value(),
+            keycloak_refresh_token=refresh_token.get_secret_value(),
+            secure=True if web_url.startswith('https') else False,
+            accepted_tos=True,
+        )
     return response
 
 
@@ -1274,7 +1326,24 @@ async def complete_onboarding(
 
 
 @api_router.post('/logout')
-async def logout(request: Request):
+async def logout(request: Request) -> JSONResponse:
+    if not ENABLE_KEYCLOAK:
+        from server.auth.native_session import (
+            SESSION_COOKIE,
+            clear_api_key_cookie,
+            clear_session_cookie,
+        )
+        from server.services.native_auth_service import get_native_auth_service
+
+        # Revoke the actual browser session even when a separate API key
+        # authenticated this request. API keys have an independent lifecycle.
+        session_token = request.cookies.get(SESSION_COOKIE)
+        if session_token:
+            await get_native_auth_service().revoke_session(session_token)
+        response = JSONResponse(content={'message': 'User logged out'})
+        clear_session_cookie(response, request)
+        clear_api_key_cookie(response, request)
+        return response
     # Always create the response object first to ensure we can return it even if errors occur
     response = JSONResponse(
         status_code=status.HTTP_200_OK,
@@ -1302,9 +1371,9 @@ async def logout(request: Request):
     # above; we just must not nuke an offline session that belongs to a
     # different auth surface.
     try:
-        user_auth = cast(SaasUserAuth, await get_user_auth(request))
+        user_auth = await get_user_auth(request)
         if (
-            user_auth
+            isinstance(user_auth, SaasUserAuth)
             and user_auth.refresh_token
             and user_auth.auth_type == AuthType.COOKIE
         ):
@@ -1330,6 +1399,10 @@ async def refresh_tokens(
     session_api_key = await get_session_api_key(sid)
     if session_api_key != x_session_api_key:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Forbidden')
+    if not ENABLE_KEYCLOAK:
+        if not user_id or not session_api_key:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, 'Forbidden')
+        await SaasUserAuth.get_for_user(user_id)
 
     logger.info(f'Refreshing token for conversation {sid}')
     provider_handler = ProviderHandler(

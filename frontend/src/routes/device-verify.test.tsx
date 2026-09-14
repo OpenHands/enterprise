@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import AuthService from "#/api/auth-service/auth-service.api";
 import DeviceVerify from "./device-verify";
 
 // ---- Hoisted mocks ----------------------------------------------------------
@@ -369,13 +370,13 @@ describe("DeviceVerify", () => {
     /**
      * Even with a stale failure flag, clicking the disabled Authorize
      * button must not call processDeviceVerification. We assert by
-     * spying on fetch — the component posts to /oauth/device/verify-authenticated
+     * spying on the API layer — the mutation posts to /oauth/device/verify-authenticated
      * on click, and a disabled button does not trigger the click handler.
      */
     it("does not call the device-verification endpoint when Authorize is disabled after a switch failure", async () => {
-      const fetchSpy = vi
-        .spyOn(globalThis, "fetch")
-        .mockResolvedValue(new Response("", { status: 200 }));
+      const verifySpy = vi
+        .spyOn(AuthService, "verifyDevice")
+        .mockResolvedValue(true);
 
       renderDeviceVerify();
 
@@ -392,11 +393,8 @@ describe("DeviceVerify", () => {
       // Attempt to click the disabled Authorize button.
       fireEvent.click(getAuthorizeButton());
 
-      expect(fetchSpy).not.toHaveBeenCalledWith(
-        "/oauth/device/verify-authenticated",
-        expect.anything(),
-      );
-      fetchSpy.mockRestore();
+      expect(verifySpy).not.toHaveBeenCalled();
+      verifySpy.mockRestore();
     });
   });
 });

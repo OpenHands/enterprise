@@ -6,30 +6,34 @@ that processes pending maintenance tasks.
 """
 
 import asyncio
-import sys
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-# Mock the database module while importing the module under test, so importing
-# it never touches Google Cloud SQL. The real module is put back afterwards:
-# `storage.database` is shared with the rest of the suite, and leaving a stub in
-# sys.modules would break every later test in this worker that imports it.
-mock_db = MagicMock()
-mock_db.session_maker = MagicMock()
-with patch.dict(sys.modules, {'storage.database': mock_db}):
-    from run_maintenance_tasks import (
-        main,
-        next_task,
-        run_tasks,
-        set_stale_task_error,
-    )
-from storage.maintenance_task import (  # noqa: E402
+# storage.database initializes connections lazily. Import the actual module so
+# patches below reach the globals of these functions; importing inside a
+# patch.dict(sys.modules) block leaves references to a discarded module copy.
+from run_maintenance_tasks import (
+    main,
+    next_task,
+    run_tasks,
+    set_stale_task_error,
+)
+from storage.maintenance_task import (
     MaintenanceTask,
     MaintenanceTaskProcessor,
     MaintenanceTaskStatus,
 )
+
+
+@pytest.fixture(autouse=True)
+def verified_installation() -> Iterator[None]:
+    with patch(
+        'server.auth.bootstrap.verify_auth_installation', new_callable=AsyncMock
+    ):
+        yield
 
 
 class MockMaintenanceTaskProcessor(MaintenanceTaskProcessor):

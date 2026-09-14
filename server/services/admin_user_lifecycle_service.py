@@ -4,9 +4,11 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 import httpx
-from sqlalchemy import text, update
+from sqlalchemy import delete, select, text, update
 
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.auth_config import ENABLE_KEYCLOAK
+from server.auth.native_password import NativeAuthError
 from server.auth.token_manager import TokenManager
 from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager
@@ -53,8 +55,12 @@ class AdminUserLifecycleService:
             return None
         return await UserStore.get_user_by_id(user_id)
 
-    async def disable_user(self, user_id: str) -> UserLifecycleResult | None:
+    async def disable_user(
+        self, user_id: str, *, actor_user_id: str | None = None
+    ) -> UserLifecycleResult | None:
         """Disable the identity and invalidate all credentials without deleting data."""
+        if not ENABLE_KEYCLOAK:
+            return await self._native_mutation(user_id, actor_user_id, 'disable')
         user = await self.get_user(user_id)
         if user is None:
             return None
@@ -67,8 +73,12 @@ class AdminUserLifecycleService:
         logger.info('admin_user_lifecycle:disabled', extra={'user_id': user_id})
         return UserLifecycleResult(user_id=user_id, email=user.email)
 
-    async def enable_user(self, user_id: str) -> UserLifecycleResult | None:
+    async def enable_user(
+        self, user_id: str, *, actor_user_id: str | None = None
+    ) -> UserLifecycleResult | None:
         """Re-enable a locally and externally disabled identity."""
+        if not ENABLE_KEYCLOAK:
+            return await self._native_mutation(user_id, actor_user_id, 'enable')
         user = await self.get_user(user_id)
         if user is None:
             return None
@@ -78,13 +88,31 @@ class AdminUserLifecycleService:
         logger.info('admin_user_lifecycle:enabled', extra={'user_id': user_id})
         return UserLifecycleResult(user_id=user_id, email=user.email)
 
-    async def delete_user(self, user_id: str) -> UserDeletionResult | None:
+    async def delete_user(
+        self, user_id: str, *, actor_user_id: str | None = None
+    ) -> UserDeletionResult | None:
         """Delete all Enterprise-owned data and the external identity.
 
         Local database deletion is attempted before the Keycloak identity
         is removed, so retrying can reconcile any failed local cleanup.
         External cleanup failures are returned as warnings for reconciliation.
         """
+        if not ENABLE_KEYCLOAK:
+            result = await self._native_mutation(user_id, actor_user_id, 'delete')
+            if result is None:
+                return None
+            native_warnings = []
+            try:
+                await self._finish_native_deletion(UUID(user_id))
+            except Exception:
+                # Tombstone and credential revocation are already committed.
+                # Recurring maintenance retries the remaining local cleanup.
+                native_warnings.append(
+                    'Account access revoked; data cleanup is pending'
+                )
+            return UserDeletionResult(
+                user_id=user_id, email=result.email, notes=tuple(native_warnings)
+            )
         user = await self.get_user(user_id)
         if user is None:
             return None
@@ -112,6 +140,79 @@ class AdminUserLifecycleService:
         return UserDeletionResult(
             user_id=user_id, email=user.email, notes=tuple(warnings)
         )
+
+    async def _native_mutation(
+        self, user_id: str, actor_user_id: str | None, operation: str
+    ) -> UserLifecycleResult | None:
+        from server.services.native_account_service import (
+            lock_native_lifecycle,
+            require_active_admin,
+            set_account_enabled,
+            tombstone_account,
+        )
+        from server.services.native_provisioning_service import queue_external_cleanup
+        from storage.api_key import ApiKey
+        from storage.native_auth import AuthAccount
+
+        try:
+            account_id = UUID(user_id)
+        except ValueError:
+            return None
+        async with a_session_maker() as session, session.begin():
+            await lock_native_lifecycle(session)
+            if actor_user_id is None:
+                raise NativeAuthError('Global user management permission required', 403)
+            await require_active_admin(session, UUID(actor_user_id))
+            account = await session.get(AuthAccount, account_id)
+            if account is None:
+                return None
+            email = account.display_email
+            if operation == 'delete':
+                await tombstone_account(session, account_id)
+                account.provisioning_status = 'cleanup_pending'
+                await queue_external_cleanup(session, account_id=account_id)
+            else:
+                await set_account_enabled(session, account_id, operation == 'enable')
+            if operation != 'enable':
+                await session.execute(delete(ApiKey).where(ApiKey.user_id == user_id))
+                await session.execute(
+                    text('DELETE FROM offline_tokens WHERE user_id = :uid'),
+                    {'uid': user_id},
+                )
+            return UserLifecycleResult(user_id=user_id, email=email)
+
+    async def _finish_native_deletion(self, account_id: UUID) -> None:
+        from server.services.native_account_service import lock_native_lifecycle
+        from storage.native_auth import AuthAccount
+
+        await self._delete_user_data(str(account_id))
+        async with a_session_maker() as session, session.begin():
+            await lock_native_lifecycle(session)
+            account = await session.get(AuthAccount, account_id)
+            if account is not None and account.state == 'deleted':
+                account.provisioning_status = 'complete'
+
+    async def retry_native_deletions(self) -> int:
+        from storage.native_auth import AuthAccount
+
+        async with a_session_maker() as session:
+            ids = list(
+                await session.scalars(
+                    select(AuthAccount.id)
+                    .where(
+                        AuthAccount.state == 'deleted',
+                        AuthAccount.provisioning_status == 'cleanup_pending',
+                    )
+                    .limit(100)
+                )
+            )
+        failures = 0
+        for account_id in ids:
+            try:
+                await self._finish_native_deletion(account_id)
+            except Exception:
+                failures += 1
+        return failures
 
     async def _ensure_not_last_active_superadmin(self, user: User) -> None:
         if user.role_id is None:
@@ -163,15 +264,24 @@ class AdminUserLifecycleService:
         await token_store.delete_token()
 
     async def _delete_user_data(self, user_id: str) -> None:
-        user = await UserStore.get_user_by_id(user_id)
-        if user is None:
-            return
-
-        user_uuid = user.id
-        await OrgStore.delete_org_cascade(user_uuid, requester_user_id=user_id)
+        if ENABLE_KEYCLOAK:
+            user = await UserStore.get_user_by_id(user_id)
+            if user is None:
+                return
+            user_uuid = user.id
+            await OrgStore.delete_org_cascade(user_uuid, requester_user_id=user_id)
+        else:
+            user_uuid = UUID(user_id)
+            await OrgStore.delete_org_cascade(
+                user_uuid, requester_user_id=user_id, terminal_account_id=user_uuid
+            )
 
         user_id_str = str(user_uuid)
         async with a_session_maker() as session:
+            if not ENABLE_KEYCLOAK:
+                from server.services.native_account_service import lock_native_lifecycle
+
+                await lock_native_lifecycle(session)
             # Personal org was cascade-deleted above; these DELETEs cover
             # identity-level rows and shared-org leftovers.
             await session.execute(

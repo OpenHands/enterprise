@@ -39,7 +39,8 @@ from openhands.app_server.utils.git import (
     configure_git_user_settings,
     ensure_valid_git_branch_name,
 )
-from openhands.sdk import Agent, LLMSummarizingCondenser
+from openhands.sdk import LLMSummarizingCondenser
+from openhands.sdk.agent import AgentBase
 from openhands.sdk.context import AgentContext
 from openhands.sdk.llm import LLM
 from openhands.sdk.secret import SecretSource
@@ -188,7 +189,9 @@ class AppConversationServiceBase(AppConversationService, ABC):
             # Return empty list on failure - skills will be loaded again later if needed
             return []
 
-    def _create_agent_with_skills(self, agent, skills: list[Skill]):
+    def _create_agent_with_skills[AgentT: AgentBase](
+        self, agent: AgentT, skills: list[Skill]
+    ) -> AgentT:
         """Create or update agent with skills in its context.
 
         Args:
@@ -235,16 +238,16 @@ class AppConversationServiceBase(AppConversationService, ABC):
 
         return list(skills_by_name.values())
 
-    async def _load_skills_and_update_agent(
+    async def _load_skills_and_update_agent[AgentT: AgentBase](
         self,
         sandbox: SandboxInfo,
-        agent: Agent,
+        agent: AgentT,
         remote_workspace: AsyncRemoteWorkspace,
         selected_repository: str | None,
         project_dir: str,
         disabled_skills: list[str] | None = None,
         registered_marketplaces: list[MarketplaceRegistration] | None = None,
-    ):
+    ) -> AgentT:
         """Load all skills and update agent with them.
 
         Args:

@@ -31,6 +31,10 @@ BATCH_SIZE = 1000
 
 
 async def main() -> None:
+    from server.auth.bootstrap import verify_auth_installation
+
+    await verify_auth_installation()
+
     from datetime import UTC, datetime, timedelta
 
     from openhands.app_server.app_conversation.sql_app_conversation_start_task_service import (

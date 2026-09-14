@@ -1,5 +1,9 @@
 import asyncio
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+
+from pydantic import BaseModel, ConfigDict, JsonValue
+from sqlalchemy.orm import Session
 
 from server.logger import logger
 from storage.database import session_maker
@@ -12,16 +16,31 @@ NUM_RETRIES = 3
 RETRY_DELAY = 60
 
 
-def maintenance_task_status(info: dict) -> MaintenanceTaskStatus:
+class _TaskDiagnostics(BaseModel):
+    model_config = ConfigDict(strict=True)
+    error_count: int | float = 0
+
+
+def maintenance_task_status(info: Mapping[str, JsonValue]) -> MaintenanceTaskStatus:
     """Derive outer task status without discarding processor diagnostics."""
     return (
         MaintenanceTaskStatus.ERROR
-        if info.get('error_count', 0) > 0
+        if _TaskDiagnostics.model_validate(info).error_count > 0
         else MaintenanceTaskStatus.COMPLETED
     )
 
 
-async def main():
+async def main() -> None:
+    from server.auth.auth_config import ENABLE_KEYCLOAK
+    from server.auth.bootstrap import verify_auth_installation
+
+    await verify_auth_installation()
+    if not ENABLE_KEYCLOAK:
+        from server.services.native_maintenance_service import run_native_maintenance
+
+        result = await run_native_maintenance()
+        if result.get('error_count'):
+            logger.warning('Native maintenance has pending retries', extra=result)
     # Imported lazily so the generic task runner remains usable in tooling
     # that stubs database initialization while importing this module.
     from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
@@ -47,7 +66,7 @@ async def main():
         raise SystemExit(1)
 
 
-def set_stale_task_error():
+def set_stale_task_error() -> None:
     # started_at is naive UTC; strip tzinfo before comparing.
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
     with session_maker() as session:
@@ -58,7 +77,10 @@ def set_stale_task_error():
         session.commit()
 
 
-async def run_tasks():
+async def run_tasks() -> int:
+    from server.auth.bootstrap import verify_auth_installation
+
+    await verify_auth_installation()
     failed_task_count = 0
     while True:
         with session_maker() as session:
@@ -90,7 +112,7 @@ async def run_tasks():
                 await asyncio.sleep(task.delay)
 
 
-async def next_task(session) -> MaintenanceTask | None:
+async def next_task(session: Session) -> MaintenanceTask | None:
     num_retries = NUM_RETRIES
     while True:
         task = (
@@ -101,7 +123,6 @@ async def next_task(session) -> MaintenanceTask | None:
         )
         if task:
             return task
-        task = next_task
         num_retries -= 1
         if num_retries < 0:
             return None

@@ -5,8 +5,6 @@ import time
 from urllib.parse import parse_qs
 
 import httpx
-import jwt
-from jwt.exceptions import DecodeError
 from keycloak.exceptions import (
     KeycloakAuthenticationError,
     KeycloakConnectionError,
@@ -22,6 +20,7 @@ from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.types import SessionExpiredError
 from openhands.app_server.utils.http_session import httpx_verify_option
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.auth_error import ExpiredError
 from server.auth.constants import (
     AZURE_DEVOPS_CLIENT_ID,
@@ -50,7 +49,23 @@ from server.auth.email_validation import (
     get_base_email_regex_pattern,
     matches_base_email,
 )
-from server.auth.keycloak_manager import get_keycloak_admin, get_keycloak_openid
+from server.auth.keycloak_manager import (
+    get_keycloak_admin,
+    get_keycloak_openid,
+    require_keycloak,
+)
+from server.auth.keycloak_response_types import (
+    ADMIN_USER,
+    ADMIN_USERS,
+    OFFLINE_TOKEN,
+    REFRESH_TOKENS,
+    USER_ID,
+    KeycloakAdminUser,
+    KeycloakRefreshTokens,
+    KeycloakUserCreation,
+    parse_keycloak_response,
+    parse_stored_token_envelope,
+)
 from server.logger import logger
 from storage.auth_token_store import AuthTokenStore
 from storage.database import a_session_maker
@@ -113,6 +128,7 @@ class TokenManager:
     async def get_keycloak_tokens(
         self, code: str, redirect_uri: str
     ) -> tuple[str | None, str | None]:
+        require_keycloak()
         try:
             token_response = await get_keycloak_openid(self.external).a_token(
                 grant_type='authorization_code',
@@ -144,6 +160,7 @@ class TokenManager:
     async def verify_keycloak_token(
         self, keycloak_token: str, refresh_token: str
     ) -> tuple[str, str]:
+        require_keycloak()
         try:
             await get_keycloak_openid(self.external).a_userinfo(keycloak_token)
             return keycloak_token, refresh_token
@@ -171,6 +188,7 @@ class TokenManager:
             KeycloakAuthenticationError: If the token is invalid
             ValidationError: If the response is missing the required 'sub' field
         """
+        require_keycloak()
         user_info = await get_keycloak_openid(self.external).a_userinfo(access_token)
         # Pydantic validation will raise ValidationError if 'sub' is missing
         return KeycloakUserInfo.model_validate(user_info)
@@ -229,6 +247,7 @@ class TokenManager:
         access_token: str,
         idp: ProviderType,
     ) -> dict[str, str | int]:
+        require_keycloak()
         async with httpx.AsyncClient(
             verify=httpx_verify_option(), timeout=IDP_HTTP_TIMEOUT
         ) as client:
@@ -313,6 +332,8 @@ class TokenManager:
         ``_check_expiration_and_refresh``). No Keycloak round-trip is required,
         so it keeps working after the offline session is revoked or expires.
         """
+        if not ENABLE_KEYCLOAK:
+            raise ValueError('No native Git provider connection is available')
         logger.info(f'Getting token for user {user_id} and IDP {idp}')
         token_store = await AuthTokenStore.get_instance(
             keycloak_user_id=user_id, idp=idp
@@ -583,6 +604,7 @@ class TokenManager:
     async def get_idp_token_from_offline_token(
         self, offline_token: str, idp: ProviderType
     ) -> str:
+        require_keycloak()
         logger.info('Getting IDP token from offline token')
 
         try:
@@ -612,6 +634,11 @@ class TokenManager:
     async def get_idp_token_from_idp_user_id(
         self, idp_user_id: str, idp: ProviderType
     ) -> str | None:
+        if not ENABLE_KEYCLOAK:
+            user_id = await self.get_user_id_from_idp_user_id(idp_user_id, idp)
+            return (
+                await self.get_idp_token_by_user_id(user_id, idp) if user_id else None
+            )
         logger.info(f'Getting IDP token from IDP user_id: {idp_user_id}')
         user_id = await self.get_user_id_from_idp_user_id(idp_user_id, idp)
         if not user_id:
@@ -635,8 +662,13 @@ class TokenManager:
     async def get_user_id_from_idp_user_id(
         self, idp_user_id: str, idp: ProviderType
     ) -> str | None:
+        if not ENABLE_KEYCLOAK:
+            return None
         keycloak_admin = get_keycloak_admin(self.external)
-        users = await keycloak_admin.a_get_users({'q': f'{idp.value}_id:{idp_user_id}'})
+        users = parse_keycloak_response(
+            ADMIN_USERS,
+            await keycloak_admin.a_get_users({'q': f'{idp.value}_id:{idp_user_id}'}),
+        )
         if not users:
             logger.info(f'{idp.value} user with IDP ID {idp_user_id} not found.')
             return None
@@ -645,8 +677,32 @@ class TokenManager:
         return keycloak_user_id
 
     async def get_user_id_from_user_email(self, email: str) -> str | None:
+        if not ENABLE_KEYCLOAK:
+            from server.auth.native_password import normalize_email
+            from storage.native_auth import AuthAccount
+            from storage.user import User
+
+            async with a_session_maker() as session:
+                account_result = await session.execute(
+                    select(AuthAccount.id)
+                    .join(User, User.id == AuthAccount.id)
+                    .where(
+                        AuthAccount.normalized_email == normalize_email(email),
+                        AuthAccount.state == 'profile_present',
+                        User.is_disabled.is_(False),
+                    )
+                )
+                account_id = account_result.scalar_one_or_none()
+            if account_id:
+                from server.services.native_auth_service import get_native_auth_service
+
+                if await get_native_auth_service().get_identity(account_id):
+                    return str(account_id)
+            return None
         keycloak_admin = get_keycloak_admin(self.external)
-        users = await keycloak_admin.a_get_users({'q': f'email:{email}'})
+        users = parse_keycloak_response(
+            ADMIN_USERS, await keycloak_admin.a_get_users({'q': f'email:{email}'})
+        )
         # Keycloak's email query is a substring match, so narrow to an exact,
         # unique match -- otherwise users[0] could be a different user whose email
         # merely contains this one (e.g. bob@acme.com vs bob@acme.com.au).
@@ -781,6 +837,7 @@ class TokenManager:
         Returns:
             True if a duplicate is found (excluding current user), False otherwise
         """
+        require_keycloak()
         if not email:
             return False
 
@@ -827,6 +884,7 @@ class TokenManager:
         Returns:
             True if deletion was successful, False otherwise
         """
+        require_keycloak()
         try:
             keycloak_admin = get_keycloak_admin(self.external)
             # Use the sync method (python-keycloak doesn't have async delete_user)
@@ -866,6 +924,8 @@ class TokenManager:
         stored provider tokens, which ``SaasUserAuth.get_provider_tokens``
         treats as the set of connected providers.
         """
+        if not ENABLE_KEYCLOAK:
+            raise ValueError('No native Git provider connection is available')
         keycloak_admin = get_keycloak_admin(self.external)
         try:
             await keycloak_admin.a_delete_user_social_login(user_id, idp.value)
@@ -911,6 +971,7 @@ class TokenManager:
         Raises:
             KeycloakError: If creation fails (e.g. user already exists).
         """
+        require_keycloak()
         keycloak_admin = get_keycloak_admin(self.external)
         # Include the password inline in the UserRepresentation's
         # ``credentials`` array so creation and password setup are a
@@ -919,7 +980,7 @@ class TokenManager:
         # and no user row is created — there is no orphan window
         # between an existing user and a failed password setup.
         # See https://www.keycloak.org/docs-api/26.0.0/rest-api/index.html#UserRepresentation
-        payload: dict = {
+        payload: KeycloakUserCreation = {
             'email': email,
             'username': email,
             'enabled': True,
@@ -932,7 +993,9 @@ class TokenManager:
                 }
             ],
         }
-        user_id = await keycloak_admin.a_create_user(payload, exist_ok=False)
+        user_id = parse_keycloak_response(
+            USER_ID, await keycloak_admin.a_create_user(dict(payload), exist_ok=False)
+        )
         logger.info(
             'Created Keycloak user',
             extra={'user_id': user_id, 'email': email},
@@ -959,13 +1022,16 @@ class TokenManager:
                 or the realm does not have ROPC enabled.
             ValueError: If the response is missing ``refresh_token``.
         """
+        require_keycloak()
         token_response = await get_keycloak_openid(self.external).a_token(
             username=username,
             password=password,
             grant_type='password',
             scope='openid offline_access',
         )
-        refresh_token = token_response.get('refresh_token')
+        refresh_token = parse_keycloak_response(OFFLINE_TOKEN, token_response).get(
+            'refresh_token'
+        )
         if not refresh_token:
             raise ValueError(
                 'Keycloak token response did not include a refresh_token; '
@@ -973,13 +1039,30 @@ class TokenManager:
             )
         return refresh_token
 
-    async def get_user_info_from_user_id(self, user_id: str) -> dict | None:
+    async def get_user_info_from_user_id(
+        self, user_id: str
+    ) -> KeycloakAdminUser | None:
+        if not ENABLE_KEYCLOAK:
+            from uuid import UUID
+
+            from server.services.native_auth_service import get_native_auth_service
+
+            identity = await get_native_auth_service().get_identity(UUID(user_id))
+            if identity is None:
+                return None
+            return {
+                'id': user_id,
+                'email': identity.email,
+                'username': identity.email,
+                'enabled': True,
+                'attributes': {},
+            }
         keycloak_admin = get_keycloak_admin(self.external)
         user = await keycloak_admin.a_get_user(user_id)
         if not user:
             logger.error(f'User with ID {user_id} not found.')
             return None
-        return user
+        return parse_keycloak_response(ADMIN_USER, user)
 
     async def get_github_id_from_user_id(self, user_id: str) -> str | None:
         user_info = await self.get_user_info_from_user_id(user_id)
@@ -995,11 +1078,9 @@ class TokenManager:
         self, user_id: str, email: str | None = None
     ) -> None:
         """Enable a Keycloak account while preserving its user attributes."""
+        require_keycloak()
         keycloak_admin = get_keycloak_admin(self.external)
         user = await keycloak_admin.a_get_user(user_id)
-        if user is None:
-            logger.warning('Keycloak user not found while enabling: %s', user_id)
-            return
         await keycloak_admin.a_update_user(
             user_id=user_id,
             payload={
@@ -1023,6 +1104,7 @@ class TokenManager:
         This method attempts to disable the user account but will not raise exceptions.
         Errors are logged but do not prevent the operation from completing.
         """
+        require_keycloak()
         try:
             keycloak_admin = get_keycloak_admin(self.external)
             # Get current user to preserve other fields
@@ -1107,7 +1189,8 @@ class TokenManager:
             token = self.decrypt_text(installation.encrypted_token)
             return token
 
-    async def store_offline_token(self, user_id: str, offline_token: str):
+    async def store_offline_token(self, user_id: str, offline_token: str) -> None:
+        require_keycloak()
         token_store = await OfflineTokenStore.get_instance(user_id)
         encrypted_tokens = self.encrypt_payload({'refresh_token': offline_token})
         payload = {'tokens': encrypted_tokens}
@@ -1118,34 +1201,21 @@ class TokenManager:
         retry=retry_if_exception_type(KeycloakConnectionError),
         before_sleep=_before_sleep_callback,
     )
-    async def refresh(self, refresh_token: str) -> dict:
+    async def refresh(self, refresh_token: str) -> KeycloakRefreshTokens:
+        require_keycloak()
         try:
-            return await get_keycloak_openid(self.external).a_refresh_token(
+            tokens = await get_keycloak_openid(self.external).a_refresh_token(
                 refresh_token
             )
-        except KeycloakError as e:
-            try:
-                # We can log the token payload without the signature
-                refresh_token_payload = jwt.decode(
-                    refresh_token, options={'verify_signature': False}
-                )
-                logger.info(
-                    'error_with_refresh_token',
-                    extra={
-                        'refresh_token': refresh_token_payload,
-                        'error': str(e),
-                    },
-                )
-            except DecodeError:
-                # Whatever was passed in as a refresh token was completely wrong.
-                # We can log this on the basis of it not being a real secret.
-                logger.info(
-                    'refresh_token_was_not_a_jwt',
-                    extra={'refresh_token': refresh_token},
-                )
+            return parse_keycloak_response(REFRESH_TOKENS, tokens)
+        except KeycloakError as error:
+            logger.info(
+                'error_with_refresh_token', extra={'error_type': type(error).__name__}
+            )
             raise
 
     async def validate_offline_token(self, user_id: str) -> bool:
+        require_keycloak()
         offline_token = await self.load_offline_token(user_id=user_id)
         if not offline_token:
             return False
@@ -1160,6 +1230,7 @@ class TokenManager:
         return validated
 
     async def check_offline_token_is_active(self, user_id: str) -> bool:
+        require_keycloak()
         offline_token = await self.load_offline_token(user_id=user_id)
         if not offline_token:
             return False
@@ -1177,16 +1248,20 @@ class TokenManager:
         return active
 
     async def load_offline_token(self, user_id: str) -> str | None:
+        require_keycloak()
         token_store = await OfflineTokenStore.get_instance(user_id)
         payload = await token_store.load_token()
         if not payload:
             return None
-        cred = json.loads(payload)
+        cred = parse_stored_token_envelope(payload)
         encrypted_tokens = cred['tokens']
-        tokens = self.decrypt_payload(encrypted_tokens)
+        tokens = parse_keycloak_response(
+            OFFLINE_TOKEN, self.decrypt_payload(encrypted_tokens)
+        )
         return tokens['refresh_token']
 
-    async def logout(self, refresh_token: str):
+    async def logout(self, refresh_token: str) -> None:
+        require_keycloak()
         try:
             await get_keycloak_openid(self.external).a_logout(
                 refresh_token=refresh_token

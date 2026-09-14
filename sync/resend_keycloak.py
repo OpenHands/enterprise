@@ -506,4 +506,9 @@ def sync_users_to_resend():
 
 
 if __name__ == '__main__':
+    import asyncio
+
+    from server.auth.bootstrap import verify_auth_installation
+
+    asyncio.run(verify_auth_installation())
     sync_users_to_resend()

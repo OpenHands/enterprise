@@ -6,6 +6,7 @@ import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
 
 const POSTHOG_BOOTSTRAP_KEY = "posthog_bootstrap";
+const sensitiveRoutes = ["/account-setup", "/password-reset"];
 
 function getBootstrapIds() {
   // Try to extract from URL hash (e.g. #distinct_id=abc&session_id=xyz)
@@ -39,12 +40,22 @@ function getBootstrapIds() {
   return undefined;
 }
 
-export function PostHogWrapper({ children }: { children: React.ReactNode }) {
+export function PostHogWrapper({
+  children,
+}: {
+  children: React.ReactNode;
+}): React.ReactNode {
   const [posthogClientKey, setPosthogClientKey] = React.useState<string | null>(
     null,
   );
   const [isLoading, setIsLoading] = React.useState(true);
-  const bootstrapIds = React.useMemo(() => getBootstrapIds(), []);
+  const [sensitiveEntry] = React.useState(() =>
+    sensitiveRoutes.includes(window.location.pathname),
+  );
+  const bootstrapIds = React.useMemo(
+    () => (sensitiveEntry ? undefined : getBootstrapIds()),
+    [sensitiveEntry],
+  );
 
   React.useEffect(() => {
     (async () => {
@@ -59,7 +70,9 @@ export function PostHogWrapper({ children }: { children: React.ReactNode }) {
           config.app_mode === "saas" &&
           config.feature_flags?.deployment_mode === "self_hosted";
         setPosthogClientKey(
-          isEnterpriseSelfHosted ? null : config.posthog_client_key,
+          isEnterpriseSelfHosted || sensitiveEntry
+            ? null
+            : config.posthog_client_key,
         );
       } catch {
         displayErrorToast("Error fetching PostHog client key");
@@ -84,6 +97,19 @@ export function PostHogWrapper({ children }: { children: React.ReactNode }) {
           web_vitals: true,
         },
         capture_exceptions: true,
+        before_send: (event) =>
+          sensitiveRoutes.includes(window.location.pathname) ? null : event,
+        session_recording: {
+          maskCapturedNetworkRequestFn: (request) => {
+            const name = request.name || "";
+            if (
+              /\/api\/(auth\/|admin\/auth-|git-connections)/.test(name) ||
+              /\/(account-setup|password-reset)([?#]|$)/.test(name)
+            )
+              return null;
+            return request;
+          },
+        },
         bootstrap: bootstrapIds,
         __add_tracing_headers: [window.location.hostname],
       }}

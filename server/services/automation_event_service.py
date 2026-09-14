@@ -655,6 +655,14 @@ class AutomationEventService:
             provider: The Git provider type
             provider_user_id: The user ID from the provider
         """
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+
+        if not ENABLE_KEYCLOAK:
+            # Native links can be revoked or transferred. A cached subject mapping
+            # must never bypass live account and provider credential checks.
+            return await self.token_manager.get_user_id_from_idp_user_id(
+                str(provider_user_id), provider
+            )
         cache_key = f'{USER_ID_CACHE_PREFIX}:{provider.value}:{provider_user_id}'
 
         # Check cache first

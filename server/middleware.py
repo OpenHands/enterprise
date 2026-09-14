@@ -1,13 +1,18 @@
-from typing import Callable, cast
+import re
+from collections.abc import Awaitable
+from typing import Callable, Protocol, cast, runtime_checkable
+from urllib.parse import urlsplit
 
 import jwt
-from fastapi import Request, Response, status
+from fastapi import HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
+from sqlalchemy.exc import SQLAlchemyError
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from openhands.app_server.user_auth.user_auth import AuthType, UserAuth, get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.auth_error import (
     AuthError,
     EmailNotVerifiedError,
@@ -22,13 +27,26 @@ from server.routes.auth import set_response_cookie
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite
 
 
+@runtime_checkable
+class NativeRequestIdentity(Protocol):
+    @property
+    def credential_transport(self) -> str: ...
+
+    @property
+    def accepted_tos(self) -> bool | None: ...
+
+
 class SetAuthCookieMiddleware:
     """
     Update the auth cookie with the current authentication state if it was refreshed before sending response to user.
     Deleting invalid cookies is handled by CookieError using FastAPIs standard error handling mechanism
     """
 
-    async def __call__(self, request: Request, call_next: Callable):
+    async def __call__(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if not ENABLE_KEYCLOAK:
+            return await self._native_request(request, call_next)
         keycloak_auth_cookie = read_chunked_cookie(request, 'keycloak_auth')
         logger.debug('request_with_cookie', extra={'cookie': keycloak_auth_cookie})
         try:
@@ -113,6 +131,118 @@ class SetAuthCookieMiddleware:
                 )
             return response
 
+    async def _native_request(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        """Authenticate and protect browser mutations without legacy token handling."""
+        from server.auth.native_password import NativeAuthError
+        from server.auth.native_session import (
+            ANONYMOUS_CSRF_COOKIE,
+            SESSION_COOKIE,
+        )
+        from server.services.native_auth_service import get_native_auth_service
+
+        if request.url.path.startswith(('/oauth/keycloak/', '/api/keycloak/')):
+            return JSONResponse({'detail': 'Not found'}, status.HTTP_404_NOT_FOUND)
+
+        public_auth_paths = {
+            '/api/auth/csrf',
+            '/api/auth/password/login',
+            '/api/auth/password/reset/complete',
+            '/api/auth/enrollment/inspect',
+            '/api/auth/enrollment/complete',
+        }
+        path = request.url.path
+        protected = self._should_attach(request) and path not in public_auth_paths
+        if (
+            request.method == 'GET'
+            and 'X-Session-API-Key' in request.headers
+            and 'Authorization' not in request.headers
+            and 'X-Access-Token' not in request.headers
+            and (
+                path == '/api/refresh-tokens'
+                or re.fullmatch(
+                    r'/api/v1/sandboxes/[^/]+/settings/secrets(?:/[^/]+)?', path
+                )
+            )
+        ):
+            # These read-only routes validate the sandbox credential themselves,
+            # including running state/ownership, and resolve its native owner.
+            # A sandbox key must not become general application authentication.
+            protected = False
+        session_token = request.cookies.get(SESSION_COOKIE)
+        user_auth: NativeRequestIdentity | None = None
+        try:
+            if protected:
+                configured_identity = await get_user_auth(request)
+                # Configured adapters may be independent native implementations.
+                # Validate the required interface at this dynamic integration boundary.
+                if not isinstance(configured_identity, NativeRequestIdentity):
+                    raise AuthError(
+                        'Authentication adapter lacks native identity state'
+                    )
+                user_auth = configured_identity
+
+            mutation = request.method not in ('GET', 'HEAD', 'OPTIONS')
+            if mutation and (protected or path in public_auth_paths):
+                # Header presence is insufficient: provenance comes only from
+                # a credential that was validated by SaasUserAuth.
+                non_cookie_auth = bool(
+                    user_auth and user_auth.credential_transport == 'bearer'
+                )
+                requires_browser_proof = (
+                    path == '/api/auth/password/change'
+                    or (path == '/api/logout' and session_token is not None)
+                    or (path.startswith('/integration/') and session_token is not None)
+                    or (
+                        path.startswith('/api/admin/auth-accounts/')
+                        and path.endswith('/password-reset')
+                    )
+                )
+                if not non_cookie_auth or requires_browser_proof:
+                    if not _trusted_native_origin(request):
+                        raise HTTPException(403, 'Untrusted request origin')
+                    valid = await get_native_auth_service().validate_csrf(
+                        session_token,
+                        request.cookies.get(ANONYMOUS_CSRF_COOKIE),
+                        request.headers.get('X-CSRF-Token'),
+                    )
+                    if not valid:
+                        raise HTTPException(403, 'Invalid CSRF token')
+
+            if (
+                user_auth
+                and user_auth.credential_transport == 'native_cookie'
+                and user_auth.accepted_tos is False
+                and path
+                not in {
+                    '/api/accept_tos',
+                    '/api/authenticate',
+                    '/api/logout',
+                    '/api/v1/users/me',
+                    '/api/auth/enrollment/accept-membership',
+                }
+            ):
+                raise TosNotAcceptedError
+            return await call_next(request)
+        except HTTPException as exc:
+            return JSONResponse(
+                {'detail': exc.detail}, exc.status_code, headers=exc.headers
+            )
+        except NativeAuthError as exc:
+            return JSONResponse({'error': str(exc)}, exc.status_code)
+        except (SQLAlchemyError, TokenRefreshError):
+            return JSONResponse(
+                {'error': 'Authentication temporarily unavailable'},
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except AuthError as exc:
+            # Do not log raw credentials or invoke Keycloak on this path.
+            return JSONResponse(
+                {'error': str(exc) or exc.__class__.__name__},
+                status.HTTP_401_UNAUTHORIZED,
+            )
+
     def _get_user_auth(self, request: Request) -> SaasUserAuth | None:
         user_auth: UserAuth | None = getattr(request.state, 'user_auth', None)
         if user_auth is None:
@@ -163,6 +293,22 @@ class SetAuthCookieMiddleware:
         if request.method == 'OPTIONS':
             return False
         path = request.url.path
+
+        if not ENABLE_KEYCLOAK and path.startswith('/integration/'):
+            # Provider webhooks carry their own signature/shared-secret proof.
+            # All other integration routes use the authenticated app identity.
+            return not path.endswith('/events')
+
+        if (
+            not ENABLE_KEYCLOAK
+            and path
+            in (
+                '/api/organizations/members/invite/accept',
+                '/oauth/device/verify-authenticated',
+            )
+            and request.method not in ('GET', 'HEAD')
+        ):
+            return True
 
         ignore_paths = (
             '/api/options/config',
@@ -236,6 +382,35 @@ _CREDENTIALLESS_PATH_PREFIXES = (
 )
 
 
+def _trusted_native_origin(request: Request) -> bool:
+    """Check the original browser origin against operator-configured origins."""
+    from server.config import get_native_cors_origins
+
+    origin = request.headers.get('Origin')
+    try:
+        if origin is None:
+            referer = request.headers.get('Referer')
+            if not referer:
+                return False
+            parsed = urlsplit(referer)
+            origin = f'{parsed.scheme}://{parsed.netloc}'
+        parsed = urlsplit(origin)
+        parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme not in ('http', 'https')
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ('', '/')
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    return origin.rstrip('/') in get_native_cors_origins()
+
+
 class _OriginStrippingApp:
     """Hide Origin from inner middleware after outer CORS classifies the request."""
 
@@ -256,6 +431,26 @@ class _OriginStrippingApp:
         await self.app(inner_scope, receive, send)
 
 
+class _NativeCorsApp:
+    """Retain Origin for CSRF while making the outer CORS policy authoritative."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def filtered_send(message: Message) -> None:
+            if message['type'] == 'http.response.start':
+                message = dict(message)
+                message['headers'] = [
+                    (name, value)
+                    for name, value in message.get('headers', [])
+                    if not name.lower().startswith(b'access-control-')
+                ]
+            await send(message)
+
+        await self.app(scope, receive, filtered_send)
+
+
 class ApiKeyAwareCORSMiddleware:
     """CORS dispatcher that loosens the policy for credential-less requests.
 
@@ -273,14 +468,14 @@ class ApiKeyAwareCORSMiddleware:
 
     def __init__(self, app: ASGIApp, allow_origins: list[str]) -> None:
         self._permissive = CORSMiddleware(
-            _OriginStrippingApp(app),
+            _OriginStrippingApp(app) if ENABLE_KEYCLOAK else _NativeCorsApp(app),
             allow_origins=['*'],
             allow_credentials=False,
             allow_methods=['*'],
             allow_headers=['*'],
         )
         self._strict = CORSMiddleware(
-            app,
+            app if ENABLE_KEYCLOAK else _NativeCorsApp(app),
             allow_origins=allow_origins,
             allow_credentials=True,
             allow_methods=['*'],
@@ -333,6 +528,8 @@ class PostHogSessionMiddleware:
     to ``None`` — never raises, never blocks.
     """
 
-    async def __call__(self, request: Request, call_next: Callable):
+    async def __call__(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         request.state.posthog_session_id = request.headers.get('X-POSTHOG-SESSION-ID')
         return await call_next(request)

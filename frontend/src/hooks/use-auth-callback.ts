@@ -8,7 +8,7 @@ import { navigateOrHardRedirect } from "#/utils/cross-app-redirect";
 /**
  * Hook to handle authentication callback and set login method after successful authentication
  */
-export const useAuthCallback = () => {
+export const useAuthCallback = (): void => {
   const location = useLocation();
   const { data: isAuthed, isLoading: isAuthLoading } = useIsAuthed();
   const { data: config } = useConfig();
@@ -16,7 +16,7 @@ export const useAuthCallback = () => {
 
   useEffect(() => {
     // Only run in SAAS mode
-    if (config?.app_mode !== "saas") {
+    if (config?.auth_mode === "native" || config?.app_mode !== "saas") {
       return;
     }
 
@@ -64,6 +64,7 @@ export const useAuthCallback = () => {
     location.search,
     location.pathname,
     config?.app_mode,
+    config?.auth_mode,
     navigate,
   ]);
 };
