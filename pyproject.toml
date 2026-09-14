@@ -1,6 +1,6 @@
 [project]
 name = "openhands-ai"
-version = "1.61.0"
+version = "1.62.0"
 description = "OpenHands Enterprise: the OpenHands app server plus the SaaS/enterprise server that runs on top of it"
 requires-python = ">=3.12,<3.14"
 
