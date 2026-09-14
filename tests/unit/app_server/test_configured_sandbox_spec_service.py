@@ -1,6 +1,7 @@
 """Stable catalog identities are separated from private provider launch settings."""
 
 import asyncio
+import json
 import logging
 from collections.abc import Iterator
 from typing import TypedDict
@@ -15,6 +16,7 @@ from openhands.app_server.sandbox.configured_sandbox_spec_service import (
     ConfiguredSandboxSpecServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_provider_config import (
+    DockerLaunchSpec,
     RuntimeAPITemplate,
     SandboxProviderConfig,
 )
@@ -316,6 +318,100 @@ async def test_stale_user_default_falls_back_but_explicit_missing_id_errors(
         await resolve_sandbox_spec(
             'removed', 'other', service, logging.getLogger(__name__)
         )
+
+
+async def test_docker_private_launch_has_startup_defaults_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = {
+        'SANDBOX_PROVIDER': 'docker',
+        'SANDBOX_DEFAULT_TEMPLATE': 'python',
+        'SANDBOX_TEMPLATES': json.dumps(
+            [
+                {
+                    'id': 'python',
+                    'image': 'registry/image:custom',
+                    'initial_env': {'PRIVATE': 'env-secret'},
+                    'docker': {
+                        'ports': {'AGENT_SERVER': 9000},
+                        'user': '123:123',
+                        'mem_limit': '2g',
+                        'nano_cpus': 1000000000,
+                        'mounts': [
+                            {
+                                'source': '/operator/data',
+                                'target': '/data',
+                                'read_only': True,
+                            }
+                        ],
+                    },
+                }
+            ]
+        ),
+    }
+    # App or image credentials are unrelated to this catalog's launch data.
+    monkeypatch.setenv('OH_SECRET_KEY', 'app-secret')
+    monkeypatch.setenv('OH_SESSION_API_KEYS_0', 'app-session-key')
+    service = ConfiguredSandboxSpecService(present(SandboxProviderConfig.from_env(env)))
+    launch = await service.get_launch_spec('python')
+    assert isinstance(launch, DockerLaunchSpec)
+    assert 'init_api_key' not in launch.model_dump()
+    assert 'OH_SECRET_KEY' not in launch.initial_env
+    assert not any(
+        name.startswith('OH_SESSION_API_KEYS') for name in launch.initial_env
+    )
+    assert launch.initial_env['OH_DEFERRED_INIT'].get_secret_value() == 'true'
+    assert (
+        launch.initial_env['OH_PERSISTENCE_DIR'].get_secret_value()
+        == '/workspace/.openhands'
+    )
+    assert (
+        launch.initial_env['OH_CONVERSATIONS_PATH'].get_secret_value()
+        == '/workspace/conversations'
+    )
+    assert (
+        launch.initial_env['OH_CONVERSATION_WORKTREE_ROOT'].get_secret_value()
+        == '/workspace/worktrees'
+    )
+    assert (
+        launch.initial_env['OH_WORKSPACE_PATH'].get_secret_value()
+        == '/workspace/project'
+    )
+    assert launch.command == ['--port', '9000']
+    assert launch.docker.mounts[0].read_only is True
+    assert 'env-secret' not in repr(launch)
+    assert 'env-secret' not in launch.model_dump_json()
+    spec = await service.get_sandbox_spec('python')
+    assert spec is not None
+    assert spec.id == 'python'
+    assert spec.initial_env == {}
+    assert spec.command is None
+    assert await service.get_sandbox_spec('registry/image:custom') is None
+
+    # Credentials belong to a private allocation snapshot, never the template.
+    launch.initial_env['OH_SECRET_KEY'] = SecretStr('sandbox-workspace-key')
+    launch.initial_env['OH_SESSION_API_KEYS_0'] = SecretStr('sandbox-service-key')
+    present(launch.command).append('--custom')
+    launch.docker.mounts[0].read_only = False
+    recovered = DockerLaunchSpec.model_validate(launch.model_dump())
+    assert recovered.initial_env['OH_SECRET_KEY'].get_secret_value() == (
+        'sandbox-workspace-key'
+    )
+    fresh = await service.get_launch_spec('python')
+    assert 'OH_SECRET_KEY' not in fresh.initial_env
+    assert 'OH_SESSION_API_KEYS_0' not in fresh.initial_env
+    assert fresh.command == ['--port', '9000']
+    assert fresh.provider == 'docker'
+    assert fresh.docker.mounts[0].read_only is True
+    public: list[SandboxSpecInfo | SandboxSpecInfoPage | None] = [
+        await service.search_sandbox_specs()
+    ]
+    public.extend(await service.batch_get_sandbox_specs(['python', 'python']))
+    for item in public:
+        serialized = present(item).model_dump_json()
+        assert 'env-secret' not in serialized
+        assert 'sandbox-workspace-key' not in serialized
+        assert 'sandbox-service-key' not in serialized
 
 
 async def test_runtime_optional_init_key_reference_does_not_replace_native_startup(

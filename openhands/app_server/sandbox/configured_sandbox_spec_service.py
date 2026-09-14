@@ -22,9 +22,11 @@ from openhands.app_server.sandbox.remote_sandbox_spec_service import (
     get_default_sandbox_specs,
 )
 from openhands.app_server.sandbox.sandbox_provider_config import (
+    DockerLaunchSpec,
     RuntimeAPILaunchSpec,
     SandboxProviderConfig,
     _bootstrap_key,
+    _docker_environment,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import (
     SandboxSpecInfo,
@@ -120,7 +122,9 @@ class ConfiguredSandboxSpecService(SandboxSpecService):
             self._cache_expires_at = time.monotonic() + self.cache_ttl_seconds
             return native
 
-    async def get_launch_spec(self, sandbox_spec_id: str) -> RuntimeAPILaunchSpec:
+    async def get_launch_spec(
+        self, sandbox_spec_id: str
+    ) -> RuntimeAPILaunchSpec | DockerLaunchSpec:
         template = next(
             (
                 item
@@ -129,6 +133,17 @@ class ConfiguredSandboxSpecService(SandboxSpecService):
             ),
             None,
         )
+        if template is not None and template.provider == 'docker':
+            return DockerLaunchSpec(
+                id=template.id,
+                image=template.image,
+                command=template.command
+                if template.command
+                else ['--port', str(template.docker.ports['AGENT_SERVER'])],
+                working_dir=template.working_dir,
+                initial_env=_docker_environment(template),
+                docker=template.docker.model_copy(deep=True),
+            )
         if template is not None and template.provider == 'runtime_api':
             configs = await self._fetch_native_configs()
             native = configs.get(template.config_name)

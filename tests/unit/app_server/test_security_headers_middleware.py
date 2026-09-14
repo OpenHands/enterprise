@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.app_server.middleware import SecurityHeadersMiddleware
+from openhands.app_server.sandbox.managed_docker_sandbox_service import (
+    ManagedDockerSandboxServiceInjector,
+)
+from openhands.app_server.sandbox.sandbox_provider_config import (
+    DockerLaunchOptions,
+    DockerTemplate,
+    SandboxProviderConfig,
+)
 
 
 @pytest.fixture
@@ -64,6 +73,115 @@ def clear_csp_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 def _csp(response) -> str:
     return response.headers['Content-Security-Policy']
+
+
+@pytest.mark.parametrize(
+    ('public_url', 'sandbox_url', 'managed', 'expected'),
+    [
+        (
+            'http://localhost:13000',
+            'http://localhost:{port}',
+            True,
+            'http://localhost:*',
+        ),
+        (
+            'http://127.0.0.1:13000',
+            'http://127.0.0.1:{port}',
+            True,
+            'http://127.0.0.1:*',
+        ),
+        (
+            'http://localhost:13000',
+            'http://127.0.0.1:{port}',
+            True,
+            'http://127.0.0.1:*',
+        ),
+        ('http://localhost:13000', 'http://localhost:{port}', False, None),
+        ('https://app.example.com', 'http://localhost:{port}', True, None),
+        ('http://localhost.evil.example', 'http://localhost:{port}', True, None),
+        ('http://localhost:13000', 'http://other-host:{port}', True, None),
+    ],
+)
+def test_local_managed_docker_csp_allows_only_configured_loopback_origins(
+    client: TestClient,
+    clear_csp_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    public_url: str | None,
+    sandbox_url: str,
+    managed: bool,
+    expected: str,
+) -> None:
+    provider = SandboxProviderConfig(
+        provider='docker',
+        default_template='local',
+        templates=[
+            DockerTemplate(
+                id='local',
+                image='test-image',
+                docker=DockerLaunchOptions(container_url_pattern=sandbox_url),
+            )
+        ],
+    )
+    config = SimpleNamespace(
+        web_url=public_url,
+        sandbox=ManagedDockerSandboxServiceInjector(provider_config=provider)
+        if managed
+        else None,
+    )
+    monkeypatch.setattr(
+        'openhands.app_server.middleware.get_global_config', lambda: config
+    )
+    monkeypatch.setenv('WEB_HOST', 'app.example.com')
+    csp = _csp(client.get('/sample'))
+    directives = dict(part.strip().split(' ', 1) for part in csp.split(';'))
+    for name in ('connect-src', 'frame-src'):
+        if expected:
+            assert expected in directives[name].split()
+        else:
+            assert 'http://localhost:*' not in directives[name]
+            assert 'http://127.0.0.1:*' not in directives[name]
+            assert 'https://*.example.com' in directives[name]
+        assert 'http:' not in directives[name].split()
+    assert directives['frame-ancestors'] == "'self'"
+
+    monkeypatch.setenv('CONTENT_SECURITY_POLICY', "default-src 'none'")
+    assert _csp(client.get('/sample')) == "default-src 'none'"
+
+
+def test_managed_https_csp_is_scoped_to_configured_sandbox_domain(
+    client: TestClient, clear_csp_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = SandboxProviderConfig(
+        provider='docker',
+        default_template='remote',
+        templates=[
+            DockerTemplate(
+                id='remote',
+                image='test-image',
+                docker=DockerLaunchOptions(
+                    public_url_pattern=(
+                        'https://{container_port}-{resource_id}.sandboxes.example.com'
+                    ),
+                ),
+            )
+        ],
+    )
+    config = SimpleNamespace(
+        web_url='https://app.example.com',
+        sandbox=ManagedDockerSandboxServiceInjector(provider_config=provider),
+    )
+    monkeypatch.setattr(
+        'openhands.app_server.middleware.get_global_config', lambda: config
+    )
+    monkeypatch.setenv('WEB_HOST', 'app.example.com')
+    directives = dict(
+        part.strip().split(' ', 1) for part in _csp(client.get('/sample')).split(';')
+    )
+    for name in ('connect-src', 'frame-src'):
+        assert 'https://*.sandboxes.example.com' in directives[name].split()
+        assert 'https://*.example.com' not in directives[name].split()
+        assert 'http://localhost:*' not in directives[name].split()
+    assert directives['frame-ancestors'] == "'self'"
 
 
 class TestSecurityHeadersMiddleware:

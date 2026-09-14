@@ -87,11 +87,13 @@ def _runtime_hosts_from_web_host() -> str:
     (``<sandbox>.<sibling>.<registrable>``) and the VS Code iframe
     (``vscode-<sandbox>.<sibling>.<registrable>``).
 
-    Returns an empty string when ``WEB_HOST`` is unset or single-label
-    (e.g. ``localhost``), where the wildcard would either be invalid or
-    too broad — ``frame-src 'self'`` already covers ``localhost`` in that
-    case.
+    Managed Docker on a local app uses the configured loopback hosts with
+    dynamic published ports. Those are separate origins from the app itself.
+    Other single-label hosts have no safe domain wildcard.
     """
+    managed_docker_hosts = _managed_docker_hosts()
+    if managed_docker_hosts:
+        return managed_docker_hosts
     web_host = os.getenv('WEB_HOST', '').strip().rstrip('/')
     if not web_host:
         return ''
@@ -112,6 +114,29 @@ def _runtime_hosts_from_web_host() -> str:
         return ''
     registrable = '.'.join(parts[1:])
     return f'https://*.{registrable}'
+
+
+def _managed_docker_hosts() -> str:
+    """Allow configured HTTPS ingress or local loopback sandbox origins."""
+    from openhands.app_server.sandbox.managed_docker_sandbox_service import (
+        ManagedDockerSandboxServiceInjector,
+    )
+
+    config = get_global_config()
+    loopback_hosts = ('localhost', '127.0.0.1')
+    if not isinstance(config.sandbox, ManagedDockerSandboxServiceInjector):
+        return ''
+    local_app = urlparse(config.web_url or '').hostname in loopback_hosts
+    origins = set()
+    for template in config.sandbox.provider_config.templates:
+        if template.provider == 'docker':
+            if domain := template.docker.public_url_domain:
+                origins.add(f'https://*.{domain}')
+                continue
+            url = urlparse(template.docker.container_url_pattern.format(port=12345))
+            if local_app and url.hostname in loopback_hosts:
+                origins.add(f'{url.scheme}://{url.hostname}:*')
+    return ' '.join(sorted(origins))
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

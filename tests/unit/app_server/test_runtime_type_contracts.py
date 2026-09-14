@@ -2,7 +2,8 @@
 
 import httpx
 import pytest
-from pydantic import JsonValue, ValidationError
+from docker.types import HostConfig
+from pydantic import JsonValue, SecretStr, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.utils import utc_now
@@ -19,6 +20,8 @@ from openhands.app_server.sandbox.runtime_api_models import (
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 from openhands.app_server.sandbox.sandbox_provider_config import (
+    DockerLaunchOptions,
+    DockerLaunchSpec,
     SandboxProviderConfig,
 )
 from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
@@ -153,3 +156,35 @@ def test_gateway_guard_handles_sdk_models_and_nested_tool_schema(
         validate_agent_llm_payload(
             {'plugin': {'planning': {'llm': {'model': 'openhands/retired'}}}}
         )
+
+
+def test_random_docker_port_preserves_requested_host() -> None:
+    host_config = HostConfig(
+        version='1.45', port_bindings={'8000/tcp': ('127.0.0.1', 0)}
+    )
+    assert host_config['PortBindings'] == {
+        '8000/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '0'}]
+    }
+
+
+def test_launch_keeps_secrets_for_python_round_trip_and_encrypted_json() -> None:
+    launch = DockerLaunchSpec(
+        id='python',
+        image='agent-server:test',
+        command=['--port', '8000'],
+        working_dir='/workspace/project',
+        initial_env={'OH_SECRET_KEY': SecretStr('private-workspace-key')},
+        docker=DockerLaunchOptions(),
+    )
+    python_copy = DockerLaunchSpec.model_validate(launch.model_dump())
+    assert (
+        python_copy.initial_env['OH_SECRET_KEY'].get_secret_value()
+        == 'private-workspace-key'
+    )
+    assert 'private-workspace-key' not in launch.model_dump_json()
+    encrypted_payload = launch.model_dump_json(context={'expose_secrets': True})
+    recovered = DockerLaunchSpec.model_validate_json(encrypted_payload)
+    assert (
+        recovered.initial_env['OH_SECRET_KEY'].get_secret_value()
+        == 'private-workspace-key'
+    )

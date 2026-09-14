@@ -16,6 +16,9 @@ from alembic import context  # noqa: E402
 from google.cloud.sql.connector import Connector  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
 
+from openhands.app_server.sandbox.sql_sandbox_store import (  # noqa: E402
+    StoredManagedSandbox,  # noqa: F401
+)
 from openhands.db.ssl import build_db_url_query, build_pg8000_connect_args  # noqa: E402
 from storage.base import Base  # noqa: E402
 

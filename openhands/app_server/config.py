@@ -320,6 +320,14 @@ def config_from_env() -> AppServerConfig:
             )
             if not provider_config.templates:
                 config.sandbox_spec = RemoteSandboxSpecServiceInjector()
+        else:
+            from openhands.app_server.sandbox.managed_docker_sandbox_service import (
+                ManagedDockerSandboxServiceInjector,
+            )
+
+            config.sandbox = ManagedDockerSandboxServiceInjector(
+                provider_config=provider_config
+            )
         if provider_config.templates:
             from openhands.app_server.sandbox.configured_sandbox_spec_service import (
                 ConfiguredSandboxSpecServiceInjector,
