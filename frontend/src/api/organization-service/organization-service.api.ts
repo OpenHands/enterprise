@@ -35,6 +35,11 @@ export type OrganizationAppSettingsUpdate = {
   last_known_updated_at?: string | null;
 };
 
+export type OrganizationMemberRemovalResponse = {
+  message: string;
+  revocation_pending?: boolean;
+};
+
 export const organizationService = {
   getMe: async ({ orgId }: { orgId: string }) => {
     const { data } = await openHands.get<OrganizationMember>(
@@ -160,7 +165,10 @@ export const organizationService = {
     orgId: string;
     userId: string;
   }) => {
-    await openHands.delete(`/api/organizations/${orgId}/members/${userId}`);
+    const { data } = await openHands.delete<OrganizationMemberRemovalResponse>(
+      `/api/organizations/${orgId}/members/${userId}`,
+    );
+    return data;
   },
 
   inviteMembers: async ({

@@ -12,6 +12,7 @@ Everything here is pure: callers load the rows and the LiteLLM snapshot.
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from typing import Any
 from server.services.org_budget_service import (
     LiteLlmFinancialSnapshot,
     _budget_sync_readback_errors,
+    _desired_team_budget,
     _effective_user_budget_limit,
 )
 from storage.org_budget_settings import OrgBudgetSettings
@@ -46,6 +48,7 @@ MAINTENANCE_FAILED = 'maintenance_failed'
 MEMBER_MISSING_FROM_LITELLM = 'member_missing_from_litellm'
 MEMBER_BASELINE_MISSING = 'member_baseline_missing'
 CAP_DRIFT = 'cap_drift'
+INVALID_BASELINE = 'invalid_legacy_member_baseline'
 # Reserved for managed-key ownership verification (OHE-3252); never emitted yet.
 KEY_OWNER_MISMATCH = 'key_owner_mismatch'
 
@@ -57,11 +60,13 @@ SNAPSHOT_STALE = 'snapshot_stale'
 SYNC_NEVER_RAN = 'sync_never_ran'
 SCHEMA_MISSING_COLUMNS = 'schema_missing_columns'
 SCHEMA_TABLE_MISSING = 'schema_table_missing'
+CONTROL_NOT_MANAGED = 'budget_control_not_managed'
 
 _JSON_COLUMNS = (
     'user_cycle_start_spend',
     'litellm_last_member_spend',
     'litellm_known_member_ids',
+    'cycle_user_allowances',
 )
 _ERROR_DETAIL_MAX_CHARS = 500
 
@@ -80,7 +85,14 @@ def settings_from_row(row: Mapping[str, Any]) -> tuple[OrgBudgetSettings, list[s
     for name in _JSON_COLUMNS:
         value = present.get(name)
         if isinstance(value, str):
-            present[name] = json.loads(value)
+            try:
+                present[name] = json.loads(value)
+            except json.JSONDecodeError:
+                pass
+    if 'control_mode' not in present:
+        present['control_mode'] = (
+            'needs_adoption' if present.get('enabled') else 'external'
+        )
     return OrgBudgetSettings(**present), missing
 
 
@@ -126,7 +138,7 @@ def evaluate_org(
     nothing enforced, so the same observations are informational.
     """
     now = now or datetime.now(UTC)
-    enforced = bool(settings.enabled)
+    enforced = bool(settings.enabled) and settings.control_mode == 'managed'
     policy_severity = SEVERITY_BLOCKING if enforced else SEVERITY_INFO
     findings: list[dict[str, Any]] = []
 
@@ -136,6 +148,12 @@ def evaluate_org(
         findings.append(finding)
 
     org_ids = {str(user_id) for user_id in org_member_ids}
+    if settings.control_mode != 'managed':
+        add(
+            CONTROL_NOT_MANAGED,
+            SEVERITY_INFO,
+            'OpenHands will not reconcile externally controlled budget policy',
+        )
     missing_columns = sorted(schema_missing_columns)
     if missing_columns:
         add(
@@ -152,7 +170,7 @@ def evaluate_org(
     last_sync_status = settings.litellm_last_sync_status
     last_sync_error = _truncate(settings.litellm_last_sync_error)
     if last_sync_status == 'error':
-        add(LAST_SYNC_ERROR, SEVERITY_BLOCKING, last_sync_error or 'unknown')
+        add(LAST_SYNC_ERROR, policy_severity, last_sync_error or 'unknown')
     elif last_sync_status is None and enforced:
         add(SYNC_NEVER_RAN, SEVERITY_INFO, 'budgets enabled but never synchronized')
 
@@ -165,13 +183,34 @@ def evaluate_org(
             age_seconds=snapshot_age,
         )
 
-    baselines: dict[str, float] = dict(settings.user_cycle_start_spend or {})
+    raw_baselines: Any = settings.user_cycle_start_spend
+    baselines: dict[str, float] = {}
+    invalid_baseline = not isinstance(raw_baselines, dict) and raw_baselines is not None
+    if isinstance(raw_baselines, dict):
+        for user_id, value in raw_baselines.items():
+            try:
+                valid = (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                    and value >= 0
+                )
+            except OverflowError:
+                valid = False
+            if valid:
+                baselines[user_id] = value
+            else:
+                invalid_baseline = True
+    if invalid_baseline:
+        add(
+            INVALID_BASELINE,
+            policy_severity,
+            'Invalid legacy member baselines are preserved but cannot authorize caps',
+        )
     override_map = {str(override.user_id): override for override in overrides}
     default_limit = settings.default_user_monthly_limit
 
-    desired_team_cap: float | None = None
-    if enforced and settings.monthly_limit:
-        desired_team_cap = (settings.cycle_start_spend or 0.0) + settings.monthly_limit
+    desired_team_cap = _desired_team_budget(settings) if enforced else None
 
     members_missing_baseline: list[str] = []
     members_missing_from_litellm: list[str] = []
@@ -185,7 +224,7 @@ def evaluate_org(
     if snapshot is None:
         add(
             LITELLM_UNREACHABLE,
-            SEVERITY_BLOCKING,
+            policy_severity,
             _truncate(snapshot_error) or 'unknown',
         )
         litellm_block = {'status': 'unavailable', 'error': _truncate(snapshot_error)}
@@ -214,8 +253,8 @@ def evaluate_org(
             add(
                 MEMBER_BASELINE_MISSING,
                 policy_severity,
-                'members without a cycle-start baseline; the next sync anchors '
-                'them to live cumulative spend',
+                'members without a valid cycle-start baseline; explicit adoption '
+                'or a verified repair is required',
                 user_ids=members_missing_baseline,
             )
 
@@ -224,7 +263,10 @@ def evaluate_org(
                 if user_id in members_missing_baseline:
                     continue
                 effective_limit, is_disabled, _ = _effective_user_budget_limit(
-                    override_map.get(user_id), default_limit
+                    override_map.get(user_id),
+                    default_limit,
+                    settings=settings,
+                    user_id=user_id,
                 )
                 if is_disabled or effective_limit is None:
                     desired_members[user_id] = None
@@ -278,7 +320,9 @@ def evaluate_org(
 
     return {
         'org_id': org_id,
-        'enabled': enforced,
+        'enabled': bool(settings.enabled),
+        'control_mode': settings.control_mode or 'needs_adoption',
+        'reconciliation_expected': enforced,
         'monthly_limit': settings.monthly_limit,
         'default_user_monthly_limit': default_limit,
         'reset_day': settings.reset_day,

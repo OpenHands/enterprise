@@ -35,7 +35,6 @@ from server.routes.org_models import OrgUpdate, OrphanedUserError
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
     LiteLlmManager,
-    get_openhands_cloud_key_alias,
     get_org_team_alias,
 )
 from storage.org import Org
@@ -630,10 +629,9 @@ class OrgStore:
             # never fail an org update because the proxy is briefly unreachable.
             if org.name != old_name:
                 try:
-                    await LiteLlmManager.update_team(
+                    await LiteLlmManager.rename_team(
                         str(org.id),
                         get_org_team_alias(str(org.id), org.name, user_id),
-                        None,
                     )
                 except Exception:
                     logger.warning(
@@ -1029,36 +1027,11 @@ class OrgStore:
 
         existing_key = acting_member.llm_api_key
         existing_key_raw = existing_key.get_secret_value() if existing_key else None
-        if existing_key_raw and await LiteLlmManager.verify_existing_key(
+        generated_key = await LiteLlmManager.ensure_managed_key(
+            user_id,
+            str(updated_org.id),
             existing_key_raw,
-            user_id,
-            str(updated_org.id),
             openhands_type=openhands_type,
-        ):
-            # The key is registered in LiteLLM, but it may still be stale
-            # (e.g. revoked server-side). Do a real auth check before reusing it.
-            if await LiteLlmManager.verify_key(existing_key_raw, user_id):
-                return existing_key_raw
-            logger.info(
-                'Managed LLM key exists but failed auth verification; '
-                'rotating on org-defaults save',
-                extra={'user_id': user_id, 'org_id': str(updated_org.id)},
-            )
-
-        # One managed key per (user, org) under the same deterministic alias,
-        # deleting any prior key first — symmetric across openhands/* and BYOR
-        # defaults so switching between them never orphans a key.
-        key_alias = get_openhands_cloud_key_alias(user_id, str(updated_org.id))
-        await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
-        logger.info(
-            'Generated managed LLM key for acting user on org-defaults save',
-            extra={'user_id': user_id, 'org_id': str(updated_org.id)},
-        )
-        generated_key = await LiteLlmManager.generate_key(
-            user_id,
-            str(updated_org.id),
-            key_alias,
-            {'type': 'openhands'} if openhands_type else None,
         )
         acting_member.llm_api_key = SecretStr(generated_key)
         return generated_key

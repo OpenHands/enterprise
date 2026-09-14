@@ -4,6 +4,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from server.routes.org_models import OrgMemberFinancialPage
 from server.services.org_member_financial_service import OrgMemberFinancialService
@@ -51,6 +52,41 @@ class TestOrgMemberFinancialServiceGetFinancialData:
     """Test cases for OrgMemberFinancialService.get_org_members_financial_data."""
 
     @pytest.mark.asyncio
+    async def test_member_headroom_uses_its_counter_not_historical_key_usage(
+        self, org_id, mock_org_member
+    ):
+        user_id = str(mock_org_member.user_id)
+        financial_data = {
+            'team_spend': 100.0,
+            'members': {
+                user_id: {
+                    'spend': 40.0,
+                    'max_budget': 25.0,
+                    'uses_shared_budget': False,
+                }
+            },
+            'member_counters': {user_id: {'spend': 0.0}},
+        }
+        with (
+            patch(
+                'server.services.org_member_financial_service.OrgMemberStore.'
+                'get_org_members_paginated',
+                AsyncMock(return_value=([mock_org_member], False)),
+            ),
+            patch(
+                'server.services.org_member_financial_service.LiteLlmManager.'
+                'get_team_members_financial_data',
+                AsyncMock(return_value=financial_data),
+            ),
+        ):
+            result = await OrgMemberFinancialService.get_org_members_financial_data(
+                org_id
+            )
+
+        assert result.items[0].lifetime_spend == 40.0
+        assert result.items[0].current_budget == 25.0
+
+    @pytest.mark.asyncio
     async def test_returns_paginated_financial_data_with_individual_budget(
         self, org_id, mock_org_member
     ):
@@ -79,7 +115,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = litellm_data
 
             # Act
@@ -134,7 +170,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = litellm_data
 
             # Act
@@ -169,7 +205,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -188,12 +224,8 @@ class TestOrgMemberFinancialServiceGetFinancialData:
             assert result.items[0].current_budget == 0
 
     @pytest.mark.asyncio
-    async def test_handles_litellm_failure_gracefully(self, org_id, mock_org_member):
-        """
-        GIVEN: LiteLLM service throws an exception
-        WHEN: get_org_members_financial_data is called
-        THEN: Returns financial data with default values (doesn't fail)
-        """
+    async def test_reports_litellm_failure(self, org_id, mock_org_member):
+        """An unobserved balance must not be reported as zero."""
         # Arrange
         with (
             patch(
@@ -205,18 +237,12 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.side_effect = Exception('LiteLLM unavailable')
 
-            # Act
-            result = await OrgMemberFinancialService.get_org_members_financial_data(
-                org_id=org_id,
-            )
-
-            # Assert - should not raise, returns defaults
-            assert len(result.items) == 1
-            assert result.items[0].lifetime_spend == 0
-            assert result.items[0].max_budget is None
+            with pytest.raises(HTTPException) as exc:
+                await OrgMemberFinancialService.get_org_members_financial_data(org_id)
+            assert exc.value.status_code == 503
 
     @pytest.mark.asyncio
     async def test_pagination_returns_next_page_id(self, org_id, mock_org_member):
@@ -236,7 +262,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 25)  # 25 total
+            mock_get_paginated.return_value = ([mock_org_member], True)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -272,7 +298,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 5)  # 5 total
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -301,7 +327,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
             'server.services.org_member_financial_service.OrgMemberStore.get_org_members_paginated',
             new_callable=AsyncMock,
         ) as mock_get_paginated:
-            mock_get_paginated.return_value = ([], 0)
+            mock_get_paginated.return_value = ([], False)
 
             # Act
             result = await OrgMemberFinancialService.get_org_members_financial_data(
@@ -362,7 +388,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -404,7 +430,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([member_no_user], 1)
+            mock_get_paginated.return_value = ([member_no_user], False)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -422,15 +448,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='reproduces obs:member_spend_reported_zero_after_read_failure '
-    '— fails on current code'
-)
 async def test_failed_spend_read_is_not_reported_as_zero_spend(org_id, mock_org_member):
-    # GET /orgs/{org_id}/members/financial. Only a 401/403 from LiteLLM is re-raised;
-    # every other failure is swallowed into financial_data = {}, and each row is then
-    # built with `user_financial.get('spend', 0) or 0`. The page reports a spend of 0
-    # for every member with nothing to tell the caller the figure was never observed.
     with (
         patch(
             'server.services.org_member_financial_service.OrgMemberStore.get_org_members_paginated',
@@ -441,33 +459,20 @@ async def test_failed_spend_read_is_not_reported_as_zero_spend(org_id, mock_org_
             new_callable=AsyncMock,
         ) as mock_get_financial,
     ):
-        mock_get_paginated.return_value = ([mock_org_member], 1)
+        mock_get_paginated.return_value = ([mock_org_member], False)
         mock_get_financial.side_effect = TimeoutError('timed out')
 
-        try:
-            result = await OrgMemberFinancialService.get_org_members_financial_data(
+        with pytest.raises(HTTPException) as exc:
+            await OrgMemberFinancialService.get_org_members_financial_data(
                 org_id=org_id,
                 page_id=None,
                 limit=10,
             )
-        except Exception:
-            # Surfacing the failed read to the caller is a correct outcome.
-            return
-
-    # A spend the proxy never reported must not be presented as an observed zero.
-    assert result.items[0].lifetime_spend is None
+    assert exc.value.status_code == 503
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='pins paged_listing_offers_the_remaining_rows — fails on current code'
-)
 async def test_paged_member_listing_offers_the_remaining_rows(async_session_maker):
-    # OrgMemberStore.get_org_members_paginated returns (rows, has_more: bool), but the
-    # service binds the flag as `total_count` and then computes
-    # `next_page_id = str(next_offset) if next_offset < total_count else None`.
-    # Comparing the offset against a bool makes that `next_offset < 1`, which is never
-    # true, so an org large enough to page can only ever see its first page.
     from server.constants import ORG_SETTINGS_VERSION
     from storage.org import Org
     from storage.role import Role
@@ -525,23 +530,26 @@ async def test_paged_member_listing_offers_the_remaining_rows(async_session_make
             limit=1,
         )
 
-    # Three members, one per page: the first page must hand back the id that fetches
-    # the rest, or the remaining members are unreachable through the API.
+        seen = [item.user_id for item in result.items]
+        page = result
+        while page.next_page_id is not None:
+            page = await OrgMemberFinancialService.get_org_members_financial_data(
+                org_id, page_id=page.next_page_id, limit=1
+            )
+            seen.extend(item.user_id for item in page.items)
+            assert len(seen) <= 3
+
     assert len(result.items) == 1
     assert result.next_page_id is not None
+    assert len(set(seen)) == 3
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='pins search_never_matches_beyond_literal_term — fails on current code'
-)
+@pytest.mark.parametrize('search_term', ['%', '_', '\\'])
 async def test_member_search_never_matches_beyond_the_literal_term(
     async_session_maker,
+    search_term,
 ):
-    # _build_user_budget_rows runs its search term through _escape_ilike, but
-    # OrgMemberStore.get_org_members_paginated interpolates the filter straight into
-    # `User.email.ilike(f'%{email_filter}%')`. A metacharacter an admin types into the
-    # members search box survives into the pattern and matches the whole org.
     from server.constants import ORG_SETTINGS_VERSION
     from storage.org import Org
     from storage.role import Role
@@ -597,7 +605,7 @@ async def test_member_search_never_matches_beyond_the_literal_term(
             org_id=org_id,
             page_id=None,
             limit=10,
-            email_filter='%',
+            email_filter=search_term,
         )
 
     # No member's email literally contains a percent sign, so the search must match

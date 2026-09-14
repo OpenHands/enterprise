@@ -13,6 +13,7 @@ import pytest
 
 from server.services.org_budget_preflight import (
     CAP_DRIFT,
+    INVALID_BASELINE,
     LAST_SYNC_ERROR,
     LITELLM_UNREACHABLE,
     MAINTENANCE_FAILED,
@@ -48,17 +49,43 @@ with patch.dict(sys.modules, {'storage.database': mock_db}):
 NOW = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
 
 
-class _FrozenDateTime(datetime):
-    """``datetime`` whose ``now()`` is pinned to :data:`NOW`.
+@pytest.mark.parametrize('mode', ['managed', 'external', 'needs_adoption'])
+@pytest.mark.parametrize(
+    'baselines',
+    [
+        [],
+        'invalid-json',
+        '"decoded-string"',
+        10,
+        {'member': -1},
+        {'member': float('nan')},
+        {'member': True},
+        {'member': '1'},
+        {'member': 10**1000},
+    ],
+)
+def test_invalid_legacy_baselines_are_reported_without_mutation(mode, baselines):
+    settings, _ = settings_from_row(
+        {'control_mode': mode, 'enabled': True, 'user_cycle_start_spend': baselines}
+    )
+    report = _evaluate(
+        settings, ['member'], _snapshot(members={'member': (5, 10, False)})
+    )
+    finding = next(
+        item for item in report['findings'] if item['code'] == INVALID_BASELINE
+    )
+    assert finding['severity'] == (
+        SEVERITY_BLOCKING if mode == 'managed' else SEVERITY_INFO
+    )
+    assert report['members_missing_baseline'] == ['member']
+    assert report['desired']['members'] == {}
+    assert settings.user_cycle_start_spend == (
+        baselines if baselines != '"decoded-string"' else 'decoded-string'
+    )
 
-    ``_run`` reads its own clock via ``datetime.now(UTC)`` and feeds it to
-    ``evaluate_org`` as ``now``. Every fixture timestamp here is anchored to
-    ``NOW``, and the evaluator-level tests pin the same instant by passing
-    ``now=NOW`` explicitly, so the script-level tests have to pin it too --
-    otherwise the fixtures age against the real clock and time-relative
-    findings such as ``snapshot_stale`` appear once the freshness window
-    elapses, making the tests fail with the passage of real time.
-    """
+
+class _FrozenDateTime(datetime):
+    """Keep script freshness checks on the same clock as the fixtures."""
 
     @classmethod
     def now(cls, tz=None):
@@ -67,6 +94,7 @@ class _FrozenDateTime(datetime):
 
 def _settings(**overrides) -> OrgBudgetSettings:
     values = dict(
+        control_mode='managed',
         org_id=uuid4(),
         enabled=True,
         monthly_limit=100.0,
@@ -292,7 +320,8 @@ def test_settings_from_row_tolerates_an_older_schema():
         schema_missing_columns=missing,
     )
     codes = _codes(entry)
-    assert codes[MEMBER_BASELINE_MISSING] == SEVERITY_BLOCKING
+    assert settings.control_mode == 'needs_adoption'
+    assert codes[MEMBER_BASELINE_MISSING] == SEVERITY_INFO
     assert codes[SCHEMA_MISSING_COLUMNS] == SEVERITY_INFO
     assert entry['schema_missing_columns'] == missing
 
@@ -377,20 +406,6 @@ def _script_patches(monkeypatch, *, settings, member_ids, snapshot, reconcile=No
     reconcile_mock = AsyncMock(return_value=reconcile or {})
     monkeypatch.setattr(run_budget_preflight, '_reconcile_orgs', reconcile_mock)
 
-    # Freeze the wall clock the script reads. ``_run`` and ``main`` call
-    # ``datetime.now(UTC)`` for ``generated_at``; the fixtures below are
-    # built against the frozen ``NOW`` constant (snapshot 5 min old). Without
-    # this patch the freshness check drifts as real time advances past
-    # ``NOW`` and spuriously emits ``SNAPSHOT_STALE`` findings.
-    monkeypatch.setattr(
-        run_budget_preflight,
-        'datetime',
-        type(
-            '_FrozenDatetime',
-            (datetime,),
-            {'now': classmethod(lambda cls, tz=None: NOW)},
-        ),
-    )
     return org_id, reconcile_mock
 
 
@@ -495,6 +510,45 @@ async def test_reconcile_orgs_commits_per_org_and_records_failures(monkeypatch):
 
     errors = await run_budget_preflight._reconcile_orgs([ok, skipped, failed])
 
-    assert errors == {skipped: 'skipped: personal_org', failed: 'boom'}
+    assert errors == {failed: 'boom'}
     assert session.commit.await_count == 2
     assert session.rollback.await_count == 1
+
+
+@pytest.mark.parametrize('mode', ['external', 'needs_adoption'])
+def test_unowned_legacy_policy_drift_and_errors_are_informational(mode):
+    user_id = str(uuid4())
+    settings = _settings(
+        control_mode=mode,
+        monthly_limit=1,
+        litellm_last_sync_status='error',
+        litellm_last_sync_error='legacy overwrite failed',
+    )
+    entry = _evaluate(
+        settings,
+        {user_id},
+        _snapshot(team_max_budget=1000, members={user_id: (40, 500, False)}),
+    )
+    assert entry['control_mode'] == mode
+    assert entry['blocking'] is False
+    assert entry['reconciliation_expected'] is False
+    assert entry['desired'] == {'team_max_budget': None, 'members': {}}
+    assert entry['litellm']['team_max_budget'] == 1000
+    assert _codes(entry)[LAST_SYNC_ERROR] == SEVERITY_INFO
+
+
+@pytest.mark.parametrize('mode', ['external', 'needs_adoption'])
+def test_read_outage_does_not_create_authority_or_a_policy_failure(mode):
+    entry = _evaluate(_settings(control_mode=mode), [], None, snapshot_error='offline')
+    assert entry['blocking'] is False
+    assert _codes(entry)[LITELLM_UNREACHABLE] == SEVERITY_INFO
+
+
+def test_pending_operation_failure_still_blocks_even_before_adoption_completes():
+    entry = _evaluate(
+        _settings(control_mode='needs_adoption'),
+        [],
+        _snapshot(),
+        maintenance_error='pending adoption readback failed',
+    )
+    assert _codes(entry)[MAINTENANCE_FAILED] == SEVERITY_BLOCKING

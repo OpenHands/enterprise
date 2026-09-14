@@ -12,20 +12,19 @@ from pydantic import SecretStr
 
 from openhands.app_server.user_auth.user_auth import AuthType
 from server.auth.saas_user_auth import SaasUserAuth
-from server.constants import BYOR_KEY_ALIAS_PATTERN, ORG_SETTINGS_VERSION
+from server.constants import ORG_SETTINGS_VERSION
 from server.routes.api_keys import (
     ByorPermittedResponse,
     CurrentApiKeyResponse,
     LlmApiKeyResponse,
     ManagedLlmApiKeyRefreshResponse,
-    _create_byor_key_alias,
     check_byor_permitted,
-    delete_byor_key_from_litellm,
-    generate_byor_key,
     get_current_api_key,
     get_llm_api_key_for_byor,
+    refresh_llm_api_key_for_byor,
     refresh_managed_llm_api_key,
 )
+from storage.budget_control import BudgetControlConflict, BudgetWriteDenied
 from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
 from storage.org import Org
 from storage.org_member import OrgMember
@@ -228,212 +227,81 @@ class TestVerifyByorKeyInLitellm:
         assert result is False
 
 
-class TestGetLlmApiKeyForByor:
-    """Test the get_llm_api_key_for_byor endpoint."""
-
-    @pytest.mark.asyncio
-    @patch('storage.org_service.OrgService.check_byor_export_enabled')
-    @patch('server.routes.api_keys.store_byor_key_in_db')
-    @patch('server.routes.api_keys.generate_byor_key')
-    @patch('server.routes.api_keys.get_byor_key_from_db')
-    async def test_no_key_in_database_generates_new(
-        self, mock_get_key, mock_generate_key, mock_store_key, mock_check_enabled
+@pytest.mark.parametrize(
+    'route,rotate',
+    [(get_llm_api_key_for_byor, False), (refresh_llm_api_key_for_byor, True)],
+)
+@pytest.mark.asyncio
+async def test_byor_routes_delegate_to_durable_credential_store(route, rotate):
+    user_id, org_id = uuid.uuid4(), uuid.uuid4()
+    with (
+        patch(
+            'storage.org_service.OrgService.check_byor_export_enabled',
+            return_value=True,
+        ) as allowed,
+        patch(
+            'server.routes.api_keys.ensure_byor_credential', return_value='sk-owned'
+        ) as ensure,
     ):
-        """Test that when no key exists in database, a new one is generated."""
-        # Arrange
-        user_id = 'user-123'
-        org_id = uuid.uuid4()
-        new_key = 'sk-new-generated-key'
-        mock_check_enabled.return_value = True
-        mock_get_key.return_value = None
-        mock_generate_key.return_value = new_key
-        mock_store_key.return_value = None
+        result = await route(user_id=str(user_id), effective_org_id=org_id)
+    assert result == LlmApiKeyResponse(key='sk-owned')
+    allowed.assert_awaited_once_with(str(user_id), org_id=org_id)
+    ensure.assert_awaited_once_with(org_id, user_id, rotate=rotate)
 
-        # Act
-        result = await get_llm_api_key_for_byor(
-            user_id=user_id, effective_org_id=org_id
-        )
 
-        # Assert
-        assert result == LlmApiKeyResponse(key=new_key)
-        mock_check_enabled.assert_called_once_with(user_id, org_id=org_id)
-        mock_get_key.assert_called_once_with(user_id, org_id)
-        mock_generate_key.assert_called_once_with(user_id, org_id)
-        mock_store_key.assert_called_once_with(user_id, org_id, new_key)
-
-    @pytest.mark.asyncio
-    @patch('storage.org_service.OrgService.check_byor_export_enabled')
-    @patch('storage.lite_llm_manager.LiteLlmManager.verify_key')
-    @patch('server.routes.api_keys.get_byor_key_from_db')
-    async def test_valid_key_in_database_returns_key(
-        self, mock_get_key, mock_verify_key, mock_check_enabled
+@pytest.mark.parametrize(
+    'route', [get_llm_api_key_for_byor, refresh_llm_api_key_for_byor]
+)
+@pytest.mark.parametrize(
+    'error,code',
+    [
+        (BudgetWriteDenied('restricted'), 409),
+        (BudgetControlConflict('pending'), 409),
+        (RuntimeError('secret-provider-error'), 503),
+    ],
+)
+@pytest.mark.asyncio
+async def test_byor_routes_report_unavailable_without_replacing_or_exposing_keys(
+    route, error, code, caplog
+):
+    with (
+        patch(
+            'storage.org_service.OrgService.check_byor_export_enabled',
+            return_value=True,
+        ),
+        patch('server.routes.api_keys.ensure_byor_credential', side_effect=error),
     ):
-        """Test that when a valid key exists in database, it is returned."""
-        # Arrange
-        user_id = 'user-123'
-        org_id = uuid.uuid4()
-        existing_key = 'sk-existing-valid-key'
-        mock_check_enabled.return_value = True
-        mock_get_key.return_value = existing_key
-        mock_verify_key.return_value = True
+        with pytest.raises(HTTPException) as caught:
+            await route(user_id=str(uuid.uuid4()), effective_org_id=uuid.uuid4())
+    assert caught.value.status_code == code
+    assert 'secret-provider-error' not in str(caught.value.detail)
+    assert 'secret-provider-error' not in caplog.text
 
-        # Act
-        result = await get_llm_api_key_for_byor(
-            user_id=user_id, effective_org_id=org_id
-        )
 
-        # Assert
-        assert result == LlmApiKeyResponse(key=existing_key)
-        mock_check_enabled.assert_called_once_with(user_id, org_id=org_id)
-        mock_get_key.assert_called_once_with(user_id, org_id)
-        mock_verify_key.assert_called_once_with(existing_key, user_id)
-
-    @pytest.mark.asyncio
-    @patch('storage.org_service.OrgService.check_byor_export_enabled')
-    @patch('server.routes.api_keys.store_byor_key_in_db')
-    @patch('server.routes.api_keys.generate_byor_key')
-    @patch('server.routes.api_keys.delete_byor_key_from_litellm')
-    @patch('storage.lite_llm_manager.LiteLlmManager.verify_key')
-    @patch('server.routes.api_keys.get_byor_key_from_db')
-    async def test_invalid_key_in_database_regenerates(
-        self,
-        mock_get_key,
-        mock_verify_key,
-        mock_delete_key,
-        mock_generate_key,
-        mock_store_key,
-        mock_check_enabled,
+@pytest.mark.parametrize(
+    'route', [get_llm_api_key_for_byor, refresh_llm_api_key_for_byor]
+)
+@pytest.mark.asyncio
+async def test_byor_routes_require_export_entitlement_before_credential_access(route):
+    with (
+        patch(
+            'storage.org_service.OrgService.check_byor_export_enabled',
+            return_value=False,
+        ),
+        patch('server.routes.api_keys.ensure_byor_credential') as ensure,
     ):
-        """Test that when an invalid key exists in database, it is regenerated."""
-        # Arrange
-        user_id = 'user-123'
-        org_id = uuid.uuid4()
-        invalid_key = 'sk-invalid-key'
-        new_key = 'sk-new-generated-key'
-        mock_check_enabled.return_value = True
-        mock_get_key.return_value = invalid_key
-        mock_verify_key.return_value = False
-        mock_delete_key.return_value = True
-        mock_generate_key.return_value = new_key
-        mock_store_key.return_value = None
-
-        # Act
-        result = await get_llm_api_key_for_byor(
-            user_id=user_id, effective_org_id=org_id
-        )
-
-        # Assert
-        assert result == LlmApiKeyResponse(key=new_key)
-        mock_check_enabled.assert_called_once_with(user_id, org_id=org_id)
-        mock_get_key.assert_called_once_with(user_id, org_id)
-        mock_verify_key.assert_called_once_with(invalid_key, user_id)
-        mock_delete_key.assert_called_once_with(user_id, org_id, invalid_key)
-        mock_generate_key.assert_called_once_with(user_id, org_id)
-        mock_store_key.assert_called_once_with(user_id, org_id, new_key)
-
-    @pytest.mark.asyncio
-    @patch('storage.org_service.OrgService.check_byor_export_enabled')
-    @patch('server.routes.api_keys.store_byor_key_in_db')
-    @patch('server.routes.api_keys.generate_byor_key')
-    @patch('server.routes.api_keys.delete_byor_key_from_litellm')
-    @patch('storage.lite_llm_manager.LiteLlmManager.verify_key')
-    @patch('server.routes.api_keys.get_byor_key_from_db')
-    async def test_invalid_key_deletion_failure_still_regenerates(
-        self,
-        mock_get_key,
-        mock_verify_key,
-        mock_delete_key,
-        mock_generate_key,
-        mock_store_key,
-        mock_check_enabled,
-    ):
-        """Test that even if deletion fails, regeneration still proceeds."""
-        # Arrange
-        user_id = 'user-123'
-        org_id = uuid.uuid4()
-        invalid_key = 'sk-invalid-key'
-        new_key = 'sk-new-generated-key'
-        mock_check_enabled.return_value = True
-        mock_get_key.return_value = invalid_key
-        mock_verify_key.return_value = False
-        mock_delete_key.return_value = False  # Deletion fails
-        mock_generate_key.return_value = new_key
-        mock_store_key.return_value = None
-
-        # Act
-        result = await get_llm_api_key_for_byor(
-            user_id=user_id, effective_org_id=org_id
-        )
-
-        # Assert
-        assert result == LlmApiKeyResponse(key=new_key)
-        mock_check_enabled.assert_called_once_with(user_id, org_id=org_id)
-        mock_delete_key.assert_called_once_with(user_id, org_id, invalid_key)
-        mock_generate_key.assert_called_once_with(user_id, org_id)
-        mock_store_key.assert_called_once_with(user_id, org_id, new_key)
-
-    @pytest.mark.asyncio
-    @patch('storage.org_service.OrgService.check_byor_export_enabled')
-    @patch('server.routes.api_keys.generate_byor_key')
-    @patch('server.routes.api_keys.get_byor_key_from_db')
-    async def test_key_generation_failure_raises_exception(
-        self, mock_get_key, mock_generate_key, mock_check_enabled
-    ):
-        """Test that when key generation fails, an HTTPException is raised."""
-        # Arrange
-        user_id = 'user-123'
-        mock_check_enabled.return_value = True
-        mock_get_key.return_value = None
-        mock_generate_key.return_value = None
-
-        # Act & Assert
-        with pytest.raises(HTTPException) as exc_info:
-            await get_llm_api_key_for_byor(user_id=user_id)
-
-        assert exc_info.value.status_code == 500
-        assert 'Failed to generate new BYOR LLM API key' in exc_info.value.detail
-
-    @pytest.mark.asyncio
-    @patch('storage.org_service.OrgService.check_byor_export_enabled')
-    @patch('server.routes.api_keys.get_byor_key_from_db')
-    async def test_database_error_raises_exception(
-        self, mock_get_key, mock_check_enabled
-    ):
-        """Test that database errors are properly handled."""
-        # Arrange
-        user_id = 'user-123'
-        mock_check_enabled.return_value = True
-        mock_get_key.side_effect = Exception('Database connection error')
-
-        # Act & Assert
-        with pytest.raises(HTTPException) as exc_info:
-            await get_llm_api_key_for_byor(user_id=user_id)
-
-        assert exc_info.value.status_code == 500
-        assert 'Failed to retrieve BYOR LLM API key' in exc_info.value.detail
-
-    @pytest.mark.asyncio
-    @patch('storage.org_service.OrgService.check_byor_export_enabled')
-    async def test_byor_export_disabled_returns_402(self, mock_check_enabled):
-        """Test that when BYOR export is disabled, 402 is returned."""
-        # Arrange
-        user_id = 'user-123'
-        mock_check_enabled.return_value = False
-
-        # Act & Assert
-        with pytest.raises(HTTPException) as exc_info:
-            await get_llm_api_key_for_byor(user_id=user_id)
-
-        assert exc_info.value.status_code == 402
-        assert 'BYOR key export is not enabled' in exc_info.value.detail
+        with pytest.raises(HTTPException) as caught:
+            await route(user_id=str(uuid.uuid4()), effective_org_id=uuid.uuid4())
+    assert caught.value.status_code == 402
+    ensure.assert_not_called()
 
 
 class TestRefreshManagedLlmApiKey:
     """Test the managed LLM API key refresh endpoint.
 
     These tests exercise the REAL managed-key lifecycle
-    (``SaasSettingsStore.rotate_managed_llm_key``) against an in-memory SQLite
-    database, mocking only the external LiteLLM HTTP calls. They prove the
+    (``SaasSettingsStore.rotate_managed_llm_key``) against PostgreSQL,
+    mocking the LiteLLM manager methods. They prove the
     actual managed-config classification (from effective org+member settings,
     with org-default precedence), the OpenHands metadata attachment, and the
     persist/missing-member behavior — not stubs of the route helpers.
@@ -533,6 +401,11 @@ class TestRefreshManagedLlmApiKey:
     def _session_patches(async_session_maker):
         """Point every store's session maker at the test DB."""
         return (
+            patch(
+                'storage.saas_settings_store.activate_credential',
+                new_callable=AsyncMock,
+            ),
+            patch('storage.database.a_session_maker', async_session_maker),
             patch('storage.user_store.a_session_maker', async_session_maker),
             patch('storage.org_store.a_session_maker', async_session_maker),
             patch('storage.saas_settings_store.a_session_maker', async_session_maker),
@@ -542,10 +415,6 @@ class TestRefreshManagedLlmApiKey:
     def _litellm_patches(*, generated_key='sk-new-managed-key'):
         """Patch only the external LiteLLM HTTP calls."""
         return (
-            patch(
-                'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
-                new_callable=AsyncMock,
-            ),
             patch(
                 'storage.lite_llm_manager.LiteLlmManager.generate_key',
                 new_callable=AsyncMock,
@@ -562,16 +431,16 @@ class TestRefreshManagedLlmApiKey:
     def _patched(cls, async_session_maker, *, generated_key='sk-new-managed-key'):
         """Enter session + LiteLLM patches together, yielding the LiteLLM mocks.
 
-        (mock_delete_alias, mock_generate, mock_delete_token)
+        (mock_generate, mock_delete_token)
         """
         with contextlib.ExitStack() as stack:
             for p in cls._session_patches(async_session_maker):
                 stack.enter_context(p)
-            mock_delete_alias, mock_generate, mock_delete_token = (
+            mock_generate, mock_delete_token = (
                 stack.enter_context(p)
                 for p in cls._litellm_patches(generated_key=generated_key)
             )
-            yield mock_delete_alias, mock_generate, mock_delete_token
+            yield mock_generate, mock_delete_token
 
     @classmethod
     @contextlib.contextmanager
@@ -585,7 +454,7 @@ class TestRefreshManagedLlmApiKey:
         with contextlib.ExitStack() as stack:
             for p in cls._session_patches(async_session_maker):
                 stack.enter_context(p)
-            mock_delete_alias, mock_generate, mock_delete_token = (
+            mock_generate, mock_delete_token = (
                 stack.enter_context(p)
                 for p in cls._litellm_patches(generated_key=generated_key)
             )
@@ -596,7 +465,7 @@ class TestRefreshManagedLlmApiKey:
                     return_value=SaasSettingsStore(user_id, effective_org_id=org_id),
                 )
             )
-            yield mock_delete_alias, mock_generate, mock_delete_token
+            yield mock_generate, mock_delete_token
 
     # --- pure classification (no DB) ---
 
@@ -652,6 +521,27 @@ class TestRefreshManagedLlmApiKey:
                 is None
             )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('error_type', [BudgetControlConflict, BudgetWriteDenied])
+    async def test_route_preserves_member_credential_when_policy_prevents_rotation(
+        self, async_session_maker, managed_env, error_type
+    ):
+        user_id, org_id = await self._seed(async_session_maker)
+        with self._patched_route(async_session_maker, user_id, org_id) as (
+            generate,
+            delete_token,
+        ):
+            generate.side_effect = error_type('Existing key policy must be preserved')
+            with pytest.raises(HTTPException) as error:
+                await refresh_managed_llm_api_key(
+                    user_id=user_id, effective_org_id=org_id
+                )
+        assert error.value.status_code == 409
+        assert error.value.detail == 'Existing key policy must be preserved'
+        delete_token.assert_not_awaited()
+        member = await self._member_key(async_session_maker, org_id, user_id)
+        assert member.llm_api_key.get_secret_value() == 'sk-old-managed-key'
+
     # --- real rotate_managed_llm_key behavior ---
 
     @pytest.mark.asyncio
@@ -662,7 +552,6 @@ class TestRefreshManagedLlmApiKey:
         user_id, org_id = await self._seed(async_session_maker)
 
         with self._patched(async_session_maker) as (
-            mock_delete_alias,
             mock_generate,
             mock_delete_token,
         ):
@@ -675,10 +564,12 @@ class TestRefreshManagedLlmApiKey:
         assert rotation.new_key == 'sk-new-managed-key'
 
         expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
-        # The alias is deleted before generating, so rotation never orphans.
-        mock_delete_alias.assert_awaited_once_with(key_alias=expected_alias)
         mock_generate.assert_awaited_once_with(
-            user_id, str(org_id), expected_alias, {'type': 'openhands'}
+            user_id,
+            str(org_id),
+            expected_alias,
+            {'type': 'openhands'},
+            replacing_key='sk-old-managed-key',
         )
         # The previous token is NOT deleted by the store; the route does that.
         mock_delete_token.assert_not_called()
@@ -701,7 +592,6 @@ class TestRefreshManagedLlmApiKey:
         )
 
         with self._patched(async_session_maker) as (
-            mock_delete_alias,
             mock_generate,
             _mock_delete_token,
         ):
@@ -711,9 +601,12 @@ class TestRefreshManagedLlmApiKey:
         assert rotation.status == ManagedLlmKeyStatus.ROTATED
         assert rotation.openhands_type is False
         expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
-        mock_delete_alias.assert_awaited_once_with(key_alias=expected_alias)
         mock_generate.assert_awaited_once_with(
-            user_id, str(org_id), expected_alias, None
+            user_id,
+            str(org_id),
+            expected_alias,
+            None,
+            replacing_key='sk-old-managed-key',
         )
 
     @pytest.mark.asyncio
@@ -730,7 +623,6 @@ class TestRefreshManagedLlmApiKey:
         )
 
         with self._patched(async_session_maker) as (
-            mock_delete_alias,
             mock_generate,
             mock_delete_token,
         ):
@@ -738,7 +630,6 @@ class TestRefreshManagedLlmApiKey:
             rotation = await store.rotate_managed_llm_key()
 
         assert rotation.status == ManagedLlmKeyStatus.NOT_MANAGED
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
         mock_delete_token.assert_not_called()
 
@@ -755,7 +646,6 @@ class TestRefreshManagedLlmApiKey:
         user_id, org_id = await self._seed(async_session_maker, member_custom=True)
 
         with self._patched(async_session_maker) as (
-            mock_delete_alias,
             mock_generate,
             _mock_delete_token,
         ):
@@ -763,7 +653,6 @@ class TestRefreshManagedLlmApiKey:
             rotation = await store.rotate_managed_llm_key()
 
         assert rotation.status == ManagedLlmKeyStatus.BYOK
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -776,7 +665,6 @@ class TestRefreshManagedLlmApiKey:
         user_id, org_id = await self._seed(async_session_maker, org_key='sk-org-byok')
 
         with self._patched(async_session_maker) as (
-            mock_delete_alias,
             mock_generate,
             _mock_delete_token,
         ):
@@ -786,7 +674,6 @@ class TestRefreshManagedLlmApiKey:
 
         assert rotation.status == ManagedLlmKeyStatus.BYOK
         assert current_key is None
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -810,7 +697,6 @@ class TestRefreshManagedLlmApiKey:
             sync_session.commit()
 
         with self._patched(async_session_maker) as (
-            mock_delete_alias,
             mock_generate,
             mock_delete_token,
         ):
@@ -820,7 +706,6 @@ class TestRefreshManagedLlmApiKey:
         assert rotation.status == ManagedLlmKeyStatus.MISSING_MEMBER
         assert rotation.old_key is None
         assert rotation.new_key is None
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
         mock_delete_token.assert_not_called()
 
@@ -836,7 +721,6 @@ class TestRefreshManagedLlmApiKey:
         user_id, org_id = await self._seed(async_session_maker)
 
         with self._patched_route(async_session_maker, user_id, org_id) as (
-            mock_delete_alias,
             mock_generate,
             mock_delete_token,
         ):
@@ -845,7 +729,6 @@ class TestRefreshManagedLlmApiKey:
             )
 
         assert result == ManagedLlmApiKeyRefreshResponse(refreshed=True)
-        mock_delete_alias.assert_awaited_once()
         mock_generate.assert_awaited_once()
         # The old token is deleted best-effort after persist.
         mock_delete_token.assert_awaited_once_with('sk-old-managed-key')
@@ -861,7 +744,6 @@ class TestRefreshManagedLlmApiKey:
         )
 
         with self._patched_route(async_session_maker, user_id, org_id) as (
-            mock_delete_alias,
             mock_generate,
             mock_delete_token,
         ):
@@ -872,7 +754,6 @@ class TestRefreshManagedLlmApiKey:
 
         assert exc_info.value.status_code == 400
         assert 'non-managed LLM API key' in exc_info.value.detail
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
         mock_delete_token.assert_not_called()
 
@@ -883,7 +764,6 @@ class TestRefreshManagedLlmApiKey:
         user_id, org_id = await self._seed(async_session_maker, member_custom=True)
 
         with self._patched_route(async_session_maker, user_id, org_id) as (
-            mock_delete_alias,
             mock_generate,
             _mock_delete_token,
         ):
@@ -894,7 +774,6 @@ class TestRefreshManagedLlmApiKey:
 
         assert exc_info.value.status_code == 400
         assert 'custom BYOK' in exc_info.value.detail
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -916,7 +795,6 @@ class TestRefreshManagedLlmApiKey:
             await session.commit()
 
         with self._patched_route(async_session_maker, user_id, other_org_id) as (
-            mock_delete_alias,
             mock_generate,
             mock_delete_token,
         ):
@@ -926,7 +804,6 @@ class TestRefreshManagedLlmApiKey:
                 )
 
         assert exc_info.value.status_code == 404
-        mock_delete_alias.assert_not_called()
         mock_generate.assert_not_called()
         mock_delete_token.assert_not_called()
 
@@ -938,7 +815,6 @@ class TestRefreshManagedLlmApiKey:
 
         with (
             self._patched_route(async_session_maker, user_id, org_id) as (
-                _mock_delete_alias,
                 _mock_generate,
                 _mock_delete_token_ok,
             ),
@@ -973,174 +849,6 @@ class TestRefreshManagedLlmApiKey:
 
         assert exc_info.value.status_code == 500
         assert 'Failed to refresh managed LLM API key' in exc_info.value.detail
-
-
-class TestDeleteByorKeyFromLitellm:
-    """Test the delete_byor_key_from_litellm function with alias cleanup."""
-
-    @pytest.mark.asyncio
-    @patch('storage.lite_llm_manager.LiteLlmManager.delete_key')
-    async def test_delete_constructs_alias_from_org(self, mock_delete_key):
-        """Test that delete_byor_key_from_litellm builds the key alias from the effective org."""
-        # Arrange
-        user_id = 'user-123'
-        org_id = uuid.uuid4()
-        byor_key = 'sk-byor-key-to-delete'
-        expected_alias = BYOR_KEY_ALIAS_PATTERN.format(
-            user_id=user_id, org_id=str(org_id)
-        )
-        mock_delete_key.return_value = None
-
-        # Act
-        result = await delete_byor_key_from_litellm(user_id, org_id, byor_key)
-
-        # Assert
-        assert result is True
-        mock_delete_key.assert_called_once_with(byor_key, key_alias=expected_alias)
-
-    @pytest.mark.asyncio
-    @patch('server.routes.api_keys.BYOR_KEY_ALIAS_PATTERN', 'env/{org_id}/u={user_id}')
-    @patch('storage.lite_llm_manager.LiteLlmManager.delete_key')
-    async def test_delete_uses_env_override_alias(self, mock_delete_key):
-        """An overridden BYOR_KEY_ALIAS_PATTERN flows through to delete_key.
-
-        Patches the imported constant in the api_keys module since the env
-        var is read once at import time (see constants.py).
-        """
-        # Arrange
-        user_id = 'user-123'
-        org_id = uuid.uuid4()
-        byor_key = 'sk-byor-key-to-delete'
-        mock_delete_key.return_value = None
-        expected_alias = f'env/{org_id}/u={user_id}'
-
-        # Act
-        result = await delete_byor_key_from_litellm(user_id, org_id, byor_key)
-
-        # Assert
-        assert result is True
-        mock_delete_key.assert_called_once_with(byor_key, key_alias=expected_alias)
-
-    @pytest.mark.asyncio
-    @patch('storage.lite_llm_manager.LiteLlmManager.delete_key')
-    async def test_delete_returns_false_on_exception(self, mock_delete_key):
-        """Test that exceptions during deletion return False."""
-        # Arrange
-        user_id = 'user-123'
-        org_id = uuid.uuid4()
-        byor_key = 'sk-byor-key-to-delete'
-        mock_delete_key.side_effect = Exception('LiteLLM API error')
-
-        # Act
-        result = await delete_byor_key_from_litellm(user_id, org_id, byor_key)
-
-        # Assert
-        assert result is False
-
-
-class TestCreateByorKeyAlias:
-    """Test the _create_byor_key_alias helper."""
-
-    def test_uses_default_pattern(self):
-        """Default pattern formats user_id and org_id with the literal defaults."""
-        # Arrange
-        user_id = 'user-123'
-        org_id_str = str(uuid.uuid4())
-        expected = BYOR_KEY_ALIAS_PATTERN.format(user_id=user_id, org_id=org_id_str)
-
-        # Act
-        result = _create_byor_key_alias(user_id, org_id_str)
-
-        # Assert
-        assert result == expected
-        # The default should keep the production literal that LiteLLM
-        # currently has provisioned keys tagged with.
-        assert 'BYOR Key' in result
-        assert user_id in result
-        assert org_id_str in result
-
-    def test_respects_env_override_pattern(self):
-        """An overridden BYOR_KEY_ALIAS_PATTERN flows through the helper.
-
-        Patches the imported constant in the api_keys module since it's
-        read once at import time (mirrors the env-var read in constants.py).
-        """
-        custom_pattern = 'env/{org_id}/u={user_id}'
-        with patch('server.routes.api_keys.BYOR_KEY_ALIAS_PATTERN', custom_pattern):
-            result = _create_byor_key_alias('user-9', 'org-7')
-
-        assert result == 'env/org-7/u=user-9'
-
-    def test_missing_placeholder_raises_keyerror(self):
-        """A pattern with an unexpected placeholder fails loudly (str.format KeyError)."""
-        bad_pattern = '{environment}/{something_else}'
-        with patch('server.routes.api_keys.BYOR_KEY_ALIAS_PATTERN', bad_pattern):
-            with pytest.raises(KeyError):
-                _create_byor_key_alias('user-9', 'org-7')
-
-
-class TestGenerateByorKey:
-    """Test the generate_byor_key function."""
-
-    @pytest.mark.asyncio
-    @patch('storage.lite_llm_manager.LiteLlmManager.generate_key')
-    async def test_passes_default_alias_and_team_id_to_litellm(self, mock_generate_key):
-        """generate_byor_key builds the alias from the helper and passes org_id as str."""
-        # Arrange
-        user_id = 'user-123'
-        org_id = uuid.uuid4()
-        org_id_str = str(org_id)
-        new_key = 'sk-new-generated-key'
-        mock_generate_key.return_value = new_key
-        expected_alias = BYOR_KEY_ALIAS_PATTERN.format(
-            user_id=user_id, org_id=org_id_str
-        )
-
-        # Act
-        result = await generate_byor_key(user_id, org_id)
-
-        # Assert
-        assert result == new_key
-        mock_generate_key.assert_called_once_with(
-            user_id,
-            org_id_str,
-            expected_alias,
-            {'type': 'byor'},
-        )
-
-    @pytest.mark.asyncio
-    @patch('storage.lite_llm_manager.LiteLlmManager.generate_key')
-    async def test_uses_env_override_alias(self, mock_generate_key):
-        """An overridden pattern flows through to LiteLLM.generate_key."""
-        # Arrange
-        user_id = 'user-123'
-        org_id = uuid.uuid4()
-        mock_generate_key.return_value = 'sk-key'
-        custom_pattern = 'custom/{org_id}/{user_id}'
-
-        with patch('server.routes.api_keys.BYOR_KEY_ALIAS_PATTERN', custom_pattern):
-            await generate_byor_key(user_id, org_id)
-
-        # Assert
-        mock_generate_key.assert_called_once_with(
-            user_id,
-            str(org_id),
-            custom_pattern.format(user_id=user_id, org_id=str(org_id)),
-            {'type': 'byor'},
-        )
-
-    @pytest.mark.asyncio
-    @patch('storage.lite_llm_manager.LiteLlmManager.generate_key')
-    async def test_returns_none_on_exception(self, mock_generate_key):
-        """Exceptions during generation surface as None (caller handles 500)."""
-        # Arrange
-        mock_generate_key.side_effect = Exception('LiteLLM API error')
-
-        # Act
-        result = await generate_byor_key('user-123', uuid.uuid4())
-
-        # Assert
-        assert result is None
 
 
 class TestCheckByorPermitted:

@@ -5,7 +5,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
 from openhands.analytics import get_analytics_service
@@ -19,6 +19,7 @@ from server.auth.authorization import (
     require_permission,
 )
 from server.auth.org_context import EFFECTIVE_ORG_ID, REJECT_X_ORG_ID_PATH_MISMATCH
+from server.routes.budget_control import budget_control_router
 from server.routes.org_models import (
     CannotModifySelfError,
     GitOrgAlreadyClaimedError,
@@ -76,6 +77,7 @@ from server.services.org_conversation_service import (
 )
 from server.services.org_member_financial_service import OrgMemberFinancialService
 from server.services.org_member_service import OrgMemberService
+from storage.budget_control import BudgetControlConflict, BudgetWriteDenied
 from storage.org_git_claim_store import OrgGitClaimStore
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
@@ -87,6 +89,7 @@ org_router = APIRouter(
     tags=['Orgs'],
     dependencies=[REJECT_X_ORG_ID_PATH_MISMATCH],
 )
+org_router.include_router(budget_control_router)
 
 
 _org_budget_service_injector = OrgBudgetServiceInjector()
@@ -1153,6 +1156,8 @@ async def get_org_members_financial(
             limit=limit,
             email_filter=email,
         )
+    except HTTPException:
+        raise
     except ValueError as e:
         logger.warning(
             'Invalid page_id for financial data request',
@@ -1179,7 +1184,12 @@ def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
     thresholds = state['thresholds']
     cycle = state['cycle']
     current_spend = state['current_spend']
-    monthly_limit = settings.monthly_limit or 0
+    current_allowance = (
+        settings.cycle_allowance
+        if settings.cycle_end_at is not None
+        else settings.monthly_limit
+    )
+    monthly_limit = current_allowance or 0
     percentage = (
         (current_spend / monthly_limit * 100)
         if current_spend is not None and monthly_limit
@@ -1187,6 +1197,19 @@ def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
     )
 
     return OrgBudgetSettingsResponse(
+        control_mode=settings.control_mode or 'needs_adoption',
+        control_generation=settings.control_generation or 0,
+        pending_operation_id=state.get('pending_operation_id'),
+        current_cycle_member_allowances=state.get(
+            'current_cycle_member_allowances', {}
+        ),
+        future_member_limits=state.get('future_member_limits', {}),
+        current_cycle_allowance=current_allowance,
+        current_cycle_default_member_allowance=(
+            settings.cycle_default_user_allowance
+            if settings.cycle_end_at is not None
+            else settings.default_user_monthly_limit
+        ),
         enabled=settings.enabled,
         monthly_limit=settings.monthly_limit,
         litellm_last_sync_at=settings.litellm_last_sync_at,
@@ -1473,8 +1496,20 @@ async def remove_org_member(
             )
             raise HTTPException(status_code=status_code, detail=detail)
 
+        if error == 'revocation_pending':
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={
+                    'message': 'Member removed from OpenHands; LLM access revocation is not yet confirmed.',
+                    'revocation_pending': True,
+                },
+            )
         return {'message': 'Member removed successfully'}
 
+    except (BudgetControlConflict, BudgetWriteDenied) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     except HTTPException:
         raise
     except ValueError:

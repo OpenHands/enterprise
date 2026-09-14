@@ -42,10 +42,23 @@ def upgrade() -> None:
         ),
     )
 
-    # Import the JSON map as the current cycle's baselines so every existing
-    # cap references a row from the first post-upgrade load onwards. The map
-    # holds one float per member and the settings row is unique per org, so
-    # the rows cannot collide.
+    # Preserve malformed legacy evidence; only import finite, nonnegative numbers.
+    op.execute("""
+        CREATE FUNCTION pg_temp.budget_baseline_number(value json)
+        RETURNS double precision LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+        DECLARE result double precision;
+        BEGIN
+            IF json_typeof(value) <> 'number' THEN RETURN NULL; END IF;
+            result := (value #>> '{}')::double precision;
+            IF result >= 0 AND result < 'Infinity'::double precision THEN
+                RETURN result;
+            END IF;
+            RETURN NULL;
+        EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+            RETURN NULL;
+        END;
+        $$;
+    """)
     op.execute(
         """
         INSERT INTO org_budget_cycle_baseline (
@@ -62,16 +75,20 @@ def upgrade() -> None:
             settings.org_id,
             baseline.key,
             settings.cycle_start_at,
-            baseline.value::double precision,
+            pg_temp.budget_baseline_number(baseline.value),
             'imported',
             CURRENT_TIMESTAMP,
             CURRENT_TIMESTAMP,
             CURRENT_TIMESTAMP
         FROM org_budget_settings AS settings
-        CROSS JOIN LATERAL json_each_text(settings.user_cycle_start_spend) AS baseline
-        WHERE baseline.value IS NOT NULL
+        CROSS JOIN LATERAL json_each(CASE
+            WHEN json_typeof(settings.user_cycle_start_spend) = 'object'
+                THEN settings.user_cycle_start_spend
+            ELSE '{}'::json END) AS baseline
+        WHERE pg_temp.budget_baseline_number(baseline.value) IS NOT NULL
         """
     )
+    op.execute('DROP FUNCTION pg_temp.budget_baseline_number(json)')
 
 
 def downgrade() -> None:

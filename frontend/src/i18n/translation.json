@@ -22065,6 +22065,23 @@
     "uk": "Не вдалося видалити учасника з організації. Будь ласка, спробуйте ще раз.",
     "ca": "No s'ha pogut eliminar el membre de l'organització. Torneu-ho a intentar."
   },
+  "ORG$REMOVE_MEMBER_REVOCATION_PENDING": {
+    "en": "Member removed from OpenHands, but LLM access revocation is not yet confirmed. Do not consider LLM access revoked until reconciliation completes.",
+    "ja": "メンバーは OpenHands から削除されましたが、LLM アクセスの取り消しはまだ確認されていません。整合処理が完了するまで、LLM アクセスが取り消されたと見なさないでください。",
+    "zh-CN": "成员已从 OpenHands 移除，但尚未确认 LLM 访问权限已撤销。在协调处理完成之前，请勿认为 LLM 访问权限已撤销。",
+    "zh-TW": "成員已從 OpenHands 移除，但尚未確認 LLM 存取權限已撤銷。在協調處理完成之前，請勿認為 LLM 存取權限已撤銷。",
+    "ko-KR": "멤버가 OpenHands에서 제거되었지만 LLM 접근 권한 취소는 아직 확인되지 않았습니다. 상태 조정이 완료될 때까지 LLM 접근 권한이 취소된 것으로 간주하지 마세요.",
+    "no": "Medlemmet er fjernet fra OpenHands, men tilbakekalling av LLM-tilgang er ennå ikke bekreftet. Ikke regn LLM-tilgangen som tilbakekalt før avstemmingen er fullført.",
+    "ar": "تمت إزالة العضو من OpenHands، لكن إلغاء الوصول إلى LLM لم يُؤكَّد بعد. لا تعتبر الوصول إلى LLM ملغى حتى تكتمل تسوية الحالة.",
+    "de": "Das Mitglied wurde aus OpenHands entfernt, aber der Entzug des LLM-Zugriffs ist noch nicht bestätigt. Betrachten Sie den LLM-Zugriff erst nach Abschluss des Abgleichs als entzogen.",
+    "fr": "Le membre a été supprimé d’OpenHands, mais la révocation de l’accès LLM n’est pas encore confirmée. Ne considérez pas l’accès LLM comme révoqué tant que la réconciliation n’est pas terminée.",
+    "it": "Il membro è stato rimosso da OpenHands, ma la revoca dell’accesso LLM non è ancora confermata. Non considerare revocato l’accesso LLM finché la riconciliazione non è completata.",
+    "pt": "O membro foi removido do OpenHands, mas a revogação do acesso ao LLM ainda não foi confirmada. Não considere o acesso ao LLM revogado até que a reconciliação seja concluída.",
+    "es": "El miembro se ha eliminado de OpenHands, pero la revocación del acceso al LLM aún no está confirmada. No considere revocado el acceso al LLM hasta que finalice la reconciliación.",
+    "ca": "El membre s’ha eliminat d’OpenHands, però la revocació de l’accés a l’LLM encara no està confirmada. No considereu revocat l’accés a l’LLM fins que finalitzi la reconciliació.",
+    "tr": "Üye OpenHands’ten kaldırıldı, ancak LLM erişiminin iptali henüz doğrulanmadı. Uzlaştırma tamamlanana kadar LLM erişimini iptal edilmiş kabul etmeyin.",
+    "uk": "Учасника видалено з OpenHands, але відкликання доступу до LLM ще не підтверджено. Не вважайте доступ до LLM відкликаним, доки узгодження стану не завершиться."
+  },
   "ORG$REMOVE_MEMBER_SUCCESS": {
     "en": "Member removed successfully",
     "ja": "メンバーを削除しました",

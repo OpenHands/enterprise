@@ -2,6 +2,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -825,6 +826,15 @@ class OrgBudgetUserMutationResponse(OrgBudgetUserResponse):
 
 
 class OrgBudgetSettingsResponse(BaseModel):
+    control_mode: Literal['managed', 'external', 'needs_adoption'] = 'external'
+    control_generation: int = 0
+    pending_operation_id: UUID | None = None
+    current_cycle_allowance: float | None = None
+    current_cycle_default_member_allowance: float | None = None
+    current_cycle_member_allowances: dict[str, float | None] = Field(
+        default_factory=dict
+    )
+    future_member_limits: dict[str, float | None] = Field(default_factory=dict)
     enabled: bool
     monthly_limit: float | None = None
     litellm_last_sync_at: datetime | None = None
