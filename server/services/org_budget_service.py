@@ -18,6 +18,7 @@ from server.auth.authorization import RoleName
 from server.services.smtp_email_service import SMTPEmailService
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
+from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_store import OrgBudgetStore
 from storage.org_budget_threshold import OrgBudgetThreshold
@@ -26,6 +27,20 @@ from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
 from storage.slack_team import SlackTeam
 from storage.user import User
+
+# The Quint oracle client is vendored under quint-specs/, which the application
+# image does not ship. Without it the instrumentation below is a no-op, so the
+# app must not depend on it being importable.
+try:
+    import quint_oracle
+except ModuleNotFoundError:  # pragma: no cover
+    from types import SimpleNamespace
+
+    quint_oracle = SimpleNamespace(
+        log=lambda *args, **kwargs: None,
+        In=lambda value, domain: value,
+    )
+
 
 try:
     from slack_sdk.web.async_client import AsyncWebClient
@@ -385,8 +400,17 @@ class OrgBudgetService:
         result = await self.db_session.execute(select(User.id).where(User.id == org_id))
         return result.scalar_one_or_none() is not None
 
-    async def _reject_personal_org(self, org_id: UUID) -> None:
+    async def _reject_personal_org(
+        self, org_id: UUID, quint_action: str | None = None
+    ) -> None:
         if await self._is_personal_org(org_id):
+            if quint_action is not None:
+                quint_oracle.log(
+                    quint_action,
+                    'org-budgets',
+                    org_id=quint_oracle.In('personal', 'ORG_IDS'),
+                    outcome='rejected',
+                )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='Organization budgets are not available for personal workspaces',
@@ -400,7 +424,7 @@ class OrgBudgetService:
         users_search: str | None = None,
         users_status: str | None = None,
     ):
-        await self._reject_personal_org(org_id)
+        await self._reject_personal_org(org_id, 'get_budget_state')
         settings = await self._get_or_create_settings(org_id)
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
@@ -422,6 +446,12 @@ class OrgBudgetService:
             users_per_page=users_per_page,
             users_search=users_search,
             users_status=users_status,
+        )
+        quint_oracle.log(
+            'get_budget_state',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            spend_status=snapshot_result.status,
         )
         policy_comparison = _budget_policy_comparison(
             settings,
@@ -452,6 +482,12 @@ class OrgBudgetService:
 
     async def run_budget_maintenance(self, org_id: UUID) -> dict:
         if await self._is_personal_org(org_id):
+            quint_oracle.log(
+                'run_budget_maintenance',
+                'org-budgets',
+                org_id=quint_oracle.In('personal', 'ORG_IDS'),
+                cycle_rolled=False,
+            )
             return {
                 'cycle_start_at': None,
                 'cycle_end_at': None,
@@ -476,6 +512,12 @@ class OrgBudgetService:
                 settings,
                 'error',
                 reconciliation_error,
+            )
+            quint_oracle.log(
+                'run_budget_maintenance',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+                cycle_rolled=False,
             )
             return {
                 'cycle_start_at': cycle.start_at,
@@ -502,6 +544,12 @@ class OrgBudgetService:
                     settings,
                     'error',
                     reconciliation_error,
+                )
+                quint_oracle.log(
+                    'run_budget_maintenance',
+                    'org-budgets',
+                    org_id=quint_oracle.In('org', 'ORG_IDS'),
+                    cycle_rolled=False,
                 )
                 return {
                     'cycle_start_at': cycle.start_at,
@@ -534,6 +582,12 @@ class OrgBudgetService:
                 org_id, settings, overrides, snapshot=snapshot
             )
 
+        quint_oracle.log(
+            'run_budget_maintenance',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            cycle_rolled=cycle_rolled,
+        )
         return {
             'cycle_start_at': cycle.start_at,
             'cycle_end_at': cycle.end_at,
@@ -552,7 +606,7 @@ class OrgBudgetService:
         users_search: str | None = None,
         users_status: str | None = None,
     ):
-        await self._reject_personal_org(org_id)
+        await self._reject_personal_org(org_id, 'update_budget_settings')
         settings = await self._get_or_create_settings(org_id)
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
@@ -579,6 +633,12 @@ class OrgBudgetService:
         if settings.enabled and (
             settings.monthly_limit is None or settings.monthly_limit <= 0
         ):
+            quint_oracle.log(
+                'update_budget_settings',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+                outcome='rejected',
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='monthly_limit is required when budgets are enabled',
@@ -592,6 +652,11 @@ class OrgBudgetService:
                 require_complete_membership=True,
             )
             if snapshot_result.snapshot is None:
+                quint_oracle.log(
+                    'update_budget_settings',
+                    'org-budgets',
+                    org_id=quint_oracle.In('org', 'ORG_IDS'),
+                )
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=self._snapshot_unavailable_detail(),
@@ -605,6 +670,15 @@ class OrgBudgetService:
                 user_id: member.spend
                 for user_id, member in baseline_snapshot.members.items()
             }
+            # An explicit admin re-baseline: replace any row for this cycle.
+            await self.store.record_cycle_baselines(
+                org_id,
+                settings.cycle_start_at,
+                settings.user_cycle_start_spend,
+                source=OrgBudgetCycleBaseline.SOURCE_ENABLEMENT,
+                observed_at=baseline_snapshot.observed_at,
+                replace=True,
+            )
             settings.litellm_known_member_ids = sorted(
                 await self._org_member_ids(org_id)
             )
@@ -647,6 +721,12 @@ class OrgBudgetService:
             users_search=users_search,
             users_status=users_status,
         )
+        quint_oracle.log(
+            'update_budget_settings',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            budget_enabled=settings.enabled,
+        )
         policy_comparison = _budget_policy_comparison(
             settings,
             overrides,
@@ -681,7 +761,7 @@ class OrgBudgetService:
         monthly_limit: float | None,
         is_disabled: bool,
     ) -> OrgUserBudgetOverride:
-        await self._reject_personal_org(org_id)
+        await self._reject_personal_org(org_id, 'upsert_user_override')
         override = await self.store.upsert_override(
             org_id=org_id,
             user_id=user_id,
@@ -691,17 +771,35 @@ class OrgBudgetService:
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         await self._sync_litellm_budgets(org_id, settings, overrides)
+        quint_oracle.log(
+            'upsert_user_override',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            override_count=len(overrides),
+        )
         return override
 
     async def delete_user_override(self, org_id: UUID, user_id: UUID) -> None:
-        await self._reject_personal_org(org_id)
+        await self._reject_personal_org(org_id, 'delete_user_override')
         override = await self._get_override(org_id, user_id)
         if override is None:
+            # The early return: no row, so no resync and no post-state count to read.
+            quint_oracle.log(
+                'delete_user_override',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+            )
             return
         await self.store.delete_override(override)
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         await self._sync_litellm_budgets(org_id, settings, overrides)
+        quint_oracle.log(
+            'delete_user_override',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            override_count=len(overrides),
+        )
 
     async def get_reconciliation_state(self, org_id: UUID) -> BudgetReconciliationState:
         settings = await self._get_or_create_settings(org_id)
@@ -714,6 +812,7 @@ class OrgBudgetService:
     async def _get_or_create_settings(self, org_id: UUID) -> OrgBudgetSettings:
         settings = await self.store.get_settings(org_id)
         if settings:
+            await self._hydrate_cycle_baselines(settings)
             return settings
 
         return await self.store.create_settings(
@@ -722,6 +821,43 @@ class OrgBudgetService:
             cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
             thresholds=DEFAULT_THRESHOLDS,
         )
+
+    async def _hydrate_cycle_baselines(self, settings: OrgBudgetSettings) -> None:
+        """Make the baseline table authoritative for the current cycle.
+
+        Rows win over the ``user_cycle_start_spend`` JSON map, which is still
+        dual-written during the compatibility window. Keys only the JSON holds
+        (written by a release before migration 162) are imported so the window
+        converges; the log line is the signal that it has not converged yet.
+        """
+        json_baselines = dict(settings.user_cycle_start_spend or {})
+        rows = await self.store.get_cycle_baselines(
+            settings.org_id, settings.cycle_start_at
+        )
+        json_only = {
+            user_id: baseline
+            for user_id, baseline in json_baselines.items()
+            if user_id not in rows
+        }
+        if json_only:
+            logger.info(
+                'org_budget_cycle_baseline_json_only',
+                extra={
+                    'org_id': str(settings.org_id),
+                    'cycle_start_at': str(settings.cycle_start_at),
+                    'user_ids': sorted(json_only),
+                },
+            )
+            await self.store.record_cycle_baselines(
+                settings.org_id,
+                settings.cycle_start_at,
+                json_only,
+                source=OrgBudgetCycleBaseline.SOURCE_IMPORTED,
+                observed_at=datetime.now(UTC),
+            )
+        merged = {**json_baselines, **rows}
+        if merged != json_baselines:
+            settings.user_cycle_start_spend = merged
 
     async def _get_thresholds(self, org_id: UUID) -> list[OrgBudgetThreshold]:
         return await self.store.get_thresholds(org_id)
@@ -765,6 +901,13 @@ class OrgBudgetService:
         settings.user_cycle_start_spend = {
             user_id: member.spend for user_id, member in snapshot.members.items()
         }
+        await self.store.record_cycle_baselines(
+            org_id,
+            settings.cycle_start_at,
+            settings.user_cycle_start_spend,
+            source=OrgBudgetCycleBaseline.SOURCE_LIVE_ROLLOVER,
+            observed_at=snapshot.observed_at,
+        )
         settings.litellm_known_member_ids = sorted(await self._org_member_ids(org_id))
         for threshold in thresholds:
             threshold.last_triggered_at = None
@@ -1204,6 +1347,8 @@ class OrgBudgetService:
         override_map = {str(o.user_id): o for o in overrides}
         existing_user_baselines = settings.user_cycle_start_spend or {}
         active_user_baselines: dict[str, float] = {}
+        added_baselines: dict[str, float] = {}
+        recovered_baselines: dict[str, float] = {}
         expected_member_budgets: dict[str, float | None] = {}
 
         for user_id in sorted(org_member_ids & litellm_member_ids):
@@ -1211,7 +1356,9 @@ class OrgBudgetService:
             baseline = existing_user_baselines.get(user_id)
             if baseline is None:
                 baseline = info.spend
+                added_baselines[user_id] = baseline
                 if settings.enabled and user_id not in new_member_ids:
+                    recovered_baselines[user_id] = added_baselines.pop(user_id)
                     # Legacy rows: migration 149 added baselines without a
                     # backfill and migration 156 marked every member known, so
                     # there is no cycle-start history. Anchor to live cumulative
@@ -1271,6 +1418,17 @@ class OrgBudgetService:
                 active_user_baselines[user_id] = baseline
 
         settings.user_cycle_start_spend = active_user_baselines
+        for initialized, source in (
+            (added_baselines, OrgBudgetCycleBaseline.SOURCE_MEMBER_ADDED),
+            (recovered_baselines, OrgBudgetCycleBaseline.SOURCE_UPGRADE_RECOVERY),
+        ):
+            await self.store.record_cycle_baselines(
+                org_id,
+                settings.cycle_start_at,
+                initialized,
+                source=source,
+                observed_at=snapshot.observed_at,
+            )
         settings.litellm_known_member_ids = sorted(
             (known_member_ids & org_member_ids) | (org_member_ids & litellm_member_ids)
         )
