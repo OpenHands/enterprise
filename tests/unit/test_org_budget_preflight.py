@@ -332,8 +332,25 @@ def test_build_report_summary_and_exit_codes():
     assert exit_code(MODE_STRICT, failed) == 1
 
 
+class _FrozenClock:
+    """Stands in for ``datetime`` so the script observes the fixtures' clock.
+
+    ``_run`` stamps ``generated_at`` from its own clock and passes it to
+    ``evaluate_org`` as ``now``, while every fixture above is expressed
+    relative to the fixed ``NOW``. Left unpinned, a fixture's "5 minutes ago"
+    spend snapshot keeps ageing with wall-clock time and every script test
+    picks up a spurious ``SNAPSHOT_STALE`` finding once ``NOW`` falls outside
+    the freshness window.
+    """
+
+    @staticmethod
+    def now(tz=None) -> datetime:
+        return NOW
+
+
 def _script_patches(monkeypatch, *, settings, member_ids, snapshot, reconcile=None):
     org_id = str(settings.org_id)
+    monkeypatch.setattr(run_budget_preflight, 'datetime', _FrozenClock)
     monkeypatch.setattr(run_budget_preflight, 'session_maker', MagicMock())
     monkeypatch.setattr(
         run_budget_preflight, '_read_schema', lambda session: ('160', True)
