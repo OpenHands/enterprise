@@ -65,7 +65,13 @@ def client_for(keys, *, alias_result=None, user_status=200):
     async def handle(request):
         calls.append(request)
         if request.url.path == '/user/info':
-            return httpx.Response(user_status, json={'keys': keys})
+            return httpx.Response(
+                user_status,
+                json={
+                    'keys': keys,
+                    'user_info': {'user_id': request.url.params['user_id']},
+                },
+            )
         if request.url.path == '/key/list':
             assert request.url.params['size'] == '1'
             return httpx.Response(
@@ -157,7 +163,7 @@ def test_counter_observations_and_empty_policy_are_not_restrictions():
     )
 
 
-@pytest.mark.parametrize('mode', ['external', 'needs_adoption', 'managed'])
+@pytest.mark.parametrize('mode', ['external', 'needs_adoption'])
 @pytest.mark.asyncio
 async def test_new_unrestricted_identity_does_not_change_budget_ownership(
     key_org, async_session_maker, mode
@@ -228,6 +234,33 @@ async def test_unavailable_or_malformed_key_policy_never_mints(
                 client, 'user-1', str(key_org), 'new-alias', None
             )
     assert all(call.method == 'GET' for call in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'user_status,user_info',
+    [
+        (404, None),
+        (200, None),
+        (200, {}),
+        (200, {'user_id': 'different'}),
+    ],
+)
+async def test_issuance_cannot_recreate_missing_or_unverified_global_user(
+    key_org, user_status, user_info
+):
+    calls = []
+
+    async def handle(request):
+        calls.append(request)
+        return httpx.Response(user_status, json={'keys': [], 'user_info': user_info})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(BudgetWriteDenied, match='unavailable'):
+            await LiteLlmManager._generate_key(
+                client, 'user-1', str(key_org), 'alias', None
+            )
+    assert len(calls) == 1 and calls[0].method == 'GET'
 
 
 @pytest.mark.asyncio
@@ -308,7 +341,14 @@ async def test_cancellation_during_key_creation_releases_org_lock(
 
     async def handle(request):
         if request.method == 'GET':
-            return httpx.Response(200, json={'keys': [], 'total_count': 0})
+            return httpx.Response(
+                200,
+                json={
+                    'keys': [],
+                    'total_count': 0,
+                    'user_info': {'user_id': request.url.params.get('user_id')},
+                },
+            )
         current_budget_control(key_org).assert_locked()
         reached_write.set()
         await asyncio.Event().wait()
@@ -355,7 +395,7 @@ async def test_key_authority_requires_an_async_database_engine():
     session.bind = None
     session.__aenter__.return_value = session
     with patch('storage.database.a_session_maker', MagicMock(return_value=session)):
-        with pytest.raises(BudgetWriteDenied, match='write authority'):
+        with pytest.raises(BudgetWriteDenied, match='database is not bound'):
             async with key_mutation_scope('11111111-1111-1111-1111-111111111111'):
                 pytest.fail('Invalid database binding allowed credential creation')
 
@@ -391,6 +431,7 @@ async def test_response_loss_never_deletes_or_mints_a_second_credential(key_org)
                     if created
                     else [],
                     'total_count': int(created),
+                    'user_info': {'user_id': request.url.params.get('user_id')},
                 },
             )
         assert request.url.path == '/key/generate'
@@ -421,7 +462,14 @@ async def test_candidate_is_durable_and_encrypted_before_remote_effect(
 
     async def handle(request):
         if request.method == 'GET':
-            return httpx.Response(200, json={'keys': keys, 'total_count': 0})
+            return httpx.Response(
+                200,
+                json={
+                    'keys': keys,
+                    'total_count': 0,
+                    'user_info': {'user_id': request.url.params.get('user_id')},
+                },
+            )
         payload = json.loads(request.content)
         async with async_session_maker() as session:
             operation = await session.scalar(select(LlmCredentialOperation))
@@ -484,7 +532,14 @@ async def test_issuance_retry_uses_original_candidate_after_failure(key_org, fai
             if failure == 'verification' and candidates and fail:
                 fail = False
                 return httpx.Response(503)
-            return httpx.Response(200, json={'keys': keys, 'total_count': 0})
+            return httpx.Response(
+                200,
+                json={
+                    'keys': keys,
+                    'total_count': 0,
+                    'user_info': {'user_id': request.url.params.get('user_id')},
+                },
+            )
         payload = json.loads(request.content)
         candidates.append(payload['key'])
         if failure == 'before_effect' and fail:
@@ -564,7 +619,7 @@ async def test_issued_credential_intent_cannot_be_rewritten(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['external', 'needs_adoption', 'managed'])
+@pytest.mark.parametrize('mode', ['external', 'needs_adoption'])
 async def test_unrestricted_owned_rotation_is_recoverable_without_changing_budgets(
     key_org, async_session_maker, mode
 ):
@@ -593,6 +648,29 @@ async def test_unrestricted_owned_rotation_is_recoverable_without_changing_budge
     assert len(writes) == 1
     assert writes[0].url.path == '/key/generate'
     assert json.loads(writes[0].content)['key_alias'].startswith('openhands-rotation-')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('replacing_key', [None, 'sk-existing'])
+async def test_unadopted_managed_mode_cannot_issue_credentials(
+    key_org, async_session_maker, replacing_key
+):
+    async with async_session_maker() as session:
+        settings = await session.scalar(select(OrgBudgetSettings))
+        settings.control_mode = 'managed'
+        await session.commit()
+    client, calls = client_for([existing_key(key_org)])
+    async with client:
+        with pytest.raises(BudgetWriteDenied, match='verified budget adoption'):
+            await LiteLlmManager._generate_key(
+                client,
+                'user-1',
+                str(key_org),
+                'alias',
+                None,
+                replacing_key=replacing_key,
+            )
+    assert calls == []
 
 
 @pytest.mark.asyncio

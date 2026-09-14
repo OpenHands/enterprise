@@ -242,7 +242,9 @@ class OrgMemberService:
             if await OrgMemberService._is_last_owner(org_id, target_user_id):
                 return False, 'cannot_remove_last_owner'
 
-        success = await OrgMemberStore.remove_user_from_org(org_id, target_user_id)
+        success = await OrgMemberStore.remove_user_from_org(
+            org_id, target_user_id, actor=str(current_user_id)
+        )
         if not success:
             return False, 'removal_failed'
 

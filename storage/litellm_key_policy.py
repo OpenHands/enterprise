@@ -5,12 +5,12 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
-
 from storage.budget_control import (
     BudgetControlConflict,
+    BudgetControlSession,
     BudgetWriteDenied,
     budget_control_session,
+    budget_engine,
 )
 
 _OBSERVATION_FIELDS = {
@@ -61,21 +61,17 @@ def key_restrictions(key: dict[str, Any]) -> list[str]:
 @asynccontextmanager
 async def key_mutation_scope(
     team_id: str | None, *, allow_pending_budget: bool = False
-) -> AsyncIterator[None]:
+) -> AsyncIterator[BudgetControlSession]:
     from storage.database import a_session_maker
 
     if team_id is None:
         raise BudgetWriteDenied('Managed credentials require an organization')
     org_id = UUID(team_id)
     async with a_session_maker() as session:
-        engine = session.bind
-        if isinstance(engine, AsyncConnection):
-            engine = engine.engine
-        if not isinstance(engine, AsyncEngine):
-            raise BudgetWriteDenied('Unable to establish credential write authority')
+        engine = budget_engine(session)
     async with budget_control_session(engine, org_id) as control:
         if not allow_pending_budget and await control.pending_operation() is not None:
             raise BudgetControlConflict(
                 'Finish the pending budget operation before changing keys'
             )
-        yield
+        yield control

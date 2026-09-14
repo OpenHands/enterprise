@@ -114,7 +114,9 @@ async def issue_credential(
                 'This credential was revoked; it cannot be recreated'
             )
         key = operation.payload['key']
-        keys = await LiteLlmManager._get_all_keys_for_user(client, payload['user_id'])
+        keys = await LiteLlmManager._get_all_keys_for_user(
+            client, payload['user_id'], require_user=True
+        )
         if keys is None:
             raise BudgetWriteDenied(
                 'Cannot recover a credential while policy is unavailable'
@@ -160,7 +162,9 @@ async def issue_credential(
     )
     response.raise_for_status()
     key = operation.payload['key']
-    keys = await LiteLlmManager._get_all_keys_for_user(client, payload['user_id'])
+    keys = await LiteLlmManager._get_all_keys_for_user(
+        client, payload['user_id'], require_user=True
+    )
     if keys is None or not LiteLlmManager._key_belongs_to_user_org(
         keys, key, payload['user_id'], str(org_id), False
     ):

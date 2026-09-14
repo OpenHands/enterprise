@@ -162,7 +162,9 @@ class BudgetAdoptionService:
         await control.require_executable(operation)
         plan = operation.plan
         try:
-            if set(plan['member_baselines']) != await self._member_ids(control):
+            if set(plan['member_baselines']) - set(
+                plan.get('inactive_member_ids', [])
+            ) != await self._member_ids(control):
                 raise BudgetControlConflict(
                     'Membership changed during adoption; hand off and preview again'
                 )
@@ -177,6 +179,15 @@ class BudgetAdoptionService:
             self._check_counter_continuity(plan, readback, after_write=True)
             self._verify_targets(plan, readback)
             self._check_preserved_policy(plan, readback)
+            for user_id in plan.get('revoked_member_ids', []):
+                await LiteLlmManager.revoke_member_credentials(
+                    user_id, str(control.org_id)
+                )
+            if plan.get('revoked_member_ids'):
+                readback = await self._observe(control.org_id)
+                self._check_counter_continuity(plan, readback, after_write=True)
+                self._verify_targets(plan, readback)
+                self._check_preserved_policy(plan, readback)
         except Exception as error:
             await control.record_failure(operation, f'{type(error).__name__}: {error}')
             return
@@ -352,7 +363,12 @@ class BudgetAdoptionService:
                 raise BudgetWriteDenied(
                     'Independent member restrictions changed during adoption'
                 )
-        if stable_key_policy(original['keys']) != stable_key_policy(current['keys']):
+        revoked = set(plan.get('revoked_member_ids', []))
+        if stable_key_policy(
+            [key for key in original['keys'] if key.get('user_id') not in revoked]
+        ) != stable_key_policy(
+            [key for key in current['keys'] if key.get('user_id') not in revoked]
+        ):
             raise BudgetWriteDenied('Key policy changed during adoption')
 
     def _verify_targets(

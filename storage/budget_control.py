@@ -14,7 +14,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import event, select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 from sqlalchemy.orm import Session
 
 from storage.org_budget_operation import OrgBudgetOperation
@@ -27,6 +27,15 @@ class BudgetControlConflict(RuntimeError):
 
 class BudgetWriteDenied(RuntimeError):
     """There is no durable authority to make this budget mutation."""
+
+
+def budget_engine(session: AsyncSession) -> AsyncEngine:
+    bound = session.bind
+    if isinstance(bound, AsyncConnection):
+        bound = bound.engine
+    if not isinstance(bound, AsyncEngine):
+        raise BudgetWriteDenied('Organization budget database is not bound')
+    return bound
 
 
 def budget_request_hash(value: dict[str, Any]) -> str:
@@ -69,6 +78,10 @@ class BudgetControlSession:
     def assert_locked(self) -> None:
         if not self.active or self.task is not asyncio.current_task():
             raise BudgetWriteDenied('Budget lock is not owned by this task')
+
+    @property
+    def engine(self) -> AsyncEngine:
+        return budget_engine(self.session)
 
     async def settings(self) -> OrgBudgetSettings:
         self.assert_locked()
@@ -251,6 +264,10 @@ class BudgetControlSession:
             raise ValueError('An actor is required')
         settings = await self.settings()
         pending = await self.pending_operation()
+        if pending is not None and pending.plan.get('revoked_member_ids'):
+            raise BudgetControlConflict(
+                'Finish pending member revocation before handing off budgets'
+            )
         if pending is not None:
             pending.status = 'abandoned'
             pending.finished_at = datetime.now(UTC)

@@ -739,7 +739,9 @@ class TestOrgMemberServiceRemoveOrgMember:
             # Assert
             assert success is True
             assert error is None
-            mock_remove.assert_called_once_with(org_id, target_user_id)
+        mock_remove.assert_called_once_with(
+            org_id, target_user_id, actor=str(current_user_id)
+        )
 
     @pytest.mark.asyncio
     async def test_owner_removes_admin_succeeds(

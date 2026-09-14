@@ -379,6 +379,21 @@ class SaasSettingsStore(SettingsStore):
                 break
         if not org_member:
             return None
+        if org_member.managed_llm_key_ownership_version == 0 and (
+            not org_member._llm_api_key or not org_member.llm_api_key.get_secret_value()
+        ):
+            from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
+                ManagedLlmKeyOwnershipProcessor,
+            )
+
+            await ManagedLlmKeyOwnershipProcessor.repair_member(
+                org_id, uuid.UUID(self.user_id)
+            )
+            org_member = await OrgMemberStore.get_org_member(
+                org_id, uuid.UUID(self.user_id)
+            )
+            if org_member is None:
+                return None
         org = await OrgStore.get_org_by_id_async(org_id)
         if not org:
             logger.error(

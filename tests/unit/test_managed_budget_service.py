@@ -3,7 +3,7 @@
 import asyncio
 from copy import deepcopy
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -14,9 +14,12 @@ from server.services.managed_budget_service import (
 )
 from server.services.org_budget_service import OrgBudgetService
 from storage.budget_control import BudgetControlConflict, BudgetWriteDenied
+from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
 from storage.org_budget_operation import OrgBudgetOperation
 from storage.org_budget_settings import OrgBudgetSettings
+from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
+from storage.role import Role
 from tests.unit.test_budget_adoption_service import adoption as adoption_fixture
 
 adoption = adoption_fixture
@@ -57,6 +60,148 @@ async def managed(adoption, async_engine):
     org_id, user_id, service, request, proxy = adoption
     assert (await service.confirm(org_id, 'admin', request))['status'] == 'applied'
     yield org_id, user_id, ManagedBudgetService(async_engine), proxy
+
+
+@pytest.fixture
+async def added_member(managed, create_user, async_session_maker):
+    org_id, existing_id, service, proxy = managed
+    user = create_user(current_org_id=org_id)
+    user_id = str(user.id)
+    async with async_session_maker() as session:
+        role_id = await session.scalar(select(Role.id))
+        session.add(
+            OrgMember(
+                org_id=org_id,
+                user_id=user.id,
+                role_id=role_id,
+                _llm_api_key='test-only',
+            )
+        )
+        await session.commit()
+    proxy.state['member_counters'][user_id] = {
+        **deepcopy(proxy.state['member_counters'][existing_id]),
+        'spend': 0,
+        'budget_id': 'new-private',
+        'effective_budget_id': 'new-private',
+    }
+    proxy.state['members'][user_id] = {
+        'spend': 800,
+        'max_budget': 9000,
+        'uses_shared_budget': False,
+    }
+    proxy.state['control_policy']['members'][user_id] = {
+        'max_budget': 9000,
+        'rpm_limit': 17,
+    }
+    with patch(
+        'storage.lite_llm_manager.LiteLlmManager.prepare_new_managed_member',
+        new_callable=AsyncMock,
+    ):
+        yield org_id, existing_id, user_id, service, proxy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('counter_spend', [0, 42])
+async def test_member_admission_uses_current_allowance_and_preserves_existing_baselines(
+    added_member, async_session_maker, counter_spend
+):
+    org_id, existing_id, user_id, service, proxy = added_member
+    proxy.state['member_counters'][user_id]['spend'] = counter_spend
+    async with async_session_maker() as session:
+        settings = await session.scalar(select(OrgBudgetSettings))
+        cycle_start = settings.cycle_start_at
+        now = settings.cycle_end_at - timedelta(seconds=1)
+    proxy.writes.clear()
+    first = await service.maintain(org_id, now=now)
+    assert first['status'] == 'applied', first
+    assert first['members_reconciled'] == [user_id]
+    assert proxy.state['team_max_budget'] == 140
+    assert proxy.state['members'][existing_id]['max_budget'] == 22
+    assert proxy.state['members'][user_id]['max_budget'] == counter_spend + 10
+    assert proxy.state['control_policy']['members'][user_id]['rpm_limit'] == 17
+    writes = len(proxy.writes)
+    proxy.state['member_counters'][user_id]['spend'] += 2
+    assert (await service.maintain(org_id, now=now))['status'] == 'healthy'
+    assert len(proxy.writes) == writes
+    async with async_session_maker() as session:
+        settings = await session.scalar(select(OrgBudgetSettings))
+        assert settings.cycle_start_at == cycle_start
+        assert settings.user_cycle_start_spend == {
+            existing_id: 12,
+            user_id: counter_spend,
+        }
+        assert settings.default_user_monthly_limit == 80
+        records = (await session.scalars(select(OrgBudgetCycleBaseline))).all()
+        assert len(records) == 2
+        assert (
+            next(record for record in records if str(record.user_id) == user_id).source
+            == 'member_added'
+        )
+
+
+@pytest.mark.asyncio
+async def test_lost_member_repair_response_replays_original_baseline(
+    added_member, async_session_maker
+):
+    org_id, existing_id, user_id, service, proxy = added_member
+    async with async_session_maker() as session:
+        now = (
+            await session.scalar(select(OrgBudgetSettings))
+        ).cycle_end_at - timedelta(seconds=1)
+    proxy.lose_next_response = True
+    first = await service.maintain(org_id, now=now)
+    assert first['status'] == 'pending'
+    assert first['members_reconciled'] == []
+    proxy.state['member_counters'][user_id]['spend'] = 3
+    second = await service.maintain(org_id, now=now)
+    assert second['status'] == 'applied', second
+    assert first['operation_id'] == second['operation_id']
+    assert proxy.state['members'][user_id]['max_budget'] == 10
+    assert proxy.state['members'][existing_id]['max_budget'] == 22
+    async with async_session_maker() as session:
+        assert (await session.scalar(select(OrgBudgetSettings))).user_cycle_start_spend[
+            user_id
+        ] == 0
+
+
+@pytest.mark.asyncio
+async def test_member_admission_at_expired_cycle_renews_once(
+    added_member, async_session_maker
+):
+    org_id, existing_id, user_id, service, proxy = added_member
+    async with async_session_maker() as session:
+        now = (
+            await session.scalar(select(OrgBudgetSettings))
+        ).cycle_end_at + timedelta(days=90)
+    result = await service.maintain(org_id, now=now)
+    assert result['status'] == 'applied', result
+    assert result['cycle_rolled'] is True
+    assert proxy.state['members'][user_id]['max_budget'] == 80
+    assert proxy.state['members'][existing_id]['max_budget'] == 92
+    assert proxy.state['team_max_budget'] == 740
+    async with async_session_maker() as session:
+        operations = (
+            await session.scalars(
+                select(OrgBudgetOperation).order_by(OrgBudgetOperation.generation)
+            )
+        ).all()
+        assert [operation.kind for operation in operations] == ['adopt', 'rollover']
+        assert operations[-1].plan['added_member_ids'] == [user_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'field,value', [('budget_duration', '1d'), ('budget_reset_at', '2026-10-01')]
+)
+async def test_member_admission_does_not_clear_unconfirmed_native_reset(
+    added_member, field, value
+):
+    org_id, _, user_id, service, proxy = added_member
+    proxy.state['member_counters'][user_id][field] = value
+    proxy.writes.clear()
+    with pytest.raises(BudgetWriteDenied, match='independent native reset'):
+        await service.maintain(org_id)
+    assert proxy.writes == []
 
 
 @pytest.mark.asyncio
