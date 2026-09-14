@@ -165,6 +165,29 @@ def test_actual_alembic_downgrade_preserves_ownership_and_evidence(
             }
 
     before = snapshot()
+    refused = subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            """
+from alembic import command
+from alembic.config import Config
+from migrations.exceptions import BudgetOwnershipDowngradeError
+try:
+    command.downgrade(Config('alembic.ini'), '163')
+except BudgetOwnershipDowngradeError:
+    print('ownership downgrade refused')
+else:
+    raise AssertionError('Ownership downgrade was allowed')
+""",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert refused.returncode == 0, refused.stdout + refused.stderr
+    assert 'ownership downgrade refused' in refused.stdout
+    assert snapshot() == before
     subprocess.run(
         [sys.executable, '-m', 'scripts.check_enterprise_migration_roundtrip'],
         check=True,
@@ -175,7 +198,7 @@ def test_actual_alembic_downgrade_preserves_ownership_and_evidence(
     assert snapshot() == before
     with engine.connect() as connection:
         assert (
-            connection.scalar(text('SELECT version_num FROM alembic_version')) == '164'
+            connection.scalar(text('SELECT version_num FROM alembic_version')) == '165'
         )
     with pytest.raises(DBAPIError, match='verification evidence is immutable'):
         with engine.begin() as connection:
@@ -191,6 +214,11 @@ def test_actual_alembic_downgrade_preserves_ownership_and_evidence(
 def test_ci_cannot_accept_missing_fence_or_unrelated_downgrade_failure(
     monkeypatch, failure
 ):
+    script = Mock()
+    script.get_current_head.return_value = '164'
+    monkeypatch.setattr(
+        roundtrip.ScriptDirectory, 'from_config', Mock(return_value=script)
+    )
     monkeypatch.setattr(roundtrip, 'current_heads', lambda config: ('164',))
     monkeypatch.setattr(roundtrip.command, 'downgrade', Mock(side_effect=failure))
     upgrade = Mock()

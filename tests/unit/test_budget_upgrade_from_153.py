@@ -116,7 +116,7 @@ def test_full_upgrade_from_153_preserves_legacy_policy_without_adopting(
         with engine.connect() as connection:
             assert (
                 connection.scalar(text('SELECT version_num FROM alembic_version'))
-                == '164'
+                == '165'
             )
             rows = (
                 connection.execute(select(OrgBudgetSettings.__table__)).mappings().all()

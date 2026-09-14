@@ -17,6 +17,8 @@ from server.constants import (
     get_default_litellm_model,
 )
 from server.verified_models.verified_model_service import VerifiedModelService
+from storage.billing_session import BillingSession
+from storage.budget_control import budget_control_session
 from storage.lite_llm_manager import (
     _DEFAULT_FREE_LLM_MODELS,
     FREE_LLM_MODELS,
@@ -35,6 +37,24 @@ def _agent_value(settings: Settings, key: str):
     for part in key.split('.'):
         obj = getattr(obj, part)
     return obj
+
+
+@pytest.fixture
+async def committed_credit_delivery(async_engine, async_session_maker, create_org):
+    org = create_org()
+    async with async_session_maker() as session:
+        session.add(
+            BillingSession(
+                id='paid-session',
+                org_id=org.id,
+                user_id='user',
+                price=100,
+                price_code='NA',
+                credit_target=100,
+            )
+        )
+        await session.commit()
+    return budget_control_session(async_engine, org.id)
 
 
 def _secret_value(settings: Settings, key: str):
@@ -1618,16 +1638,20 @@ class TestLiteLlmManager:
                             assert mock_client.post.call_count == 6
 
     @pytest.mark.asyncio
-    async def test_update_team_and_users_budget_missing_config(self):
+    async def test_update_team_and_users_budget_missing_config(
+        self, committed_credit_delivery
+    ):
         """Test update_team_and_users_budget when LiteLLM config is missing."""
-        with patch('storage.lite_llm_manager.LITE_LLM_API_KEY', None):
-            with patch('storage.lite_llm_manager.LITE_LLM_API_URL', None):
-                # Should not raise an exception, just return early
-                await LiteLlmManager.update_team_and_users_budget('test-team-id', 100.0)
+        async with committed_credit_delivery as control:
+            with patch('storage.lite_llm_manager.LITE_LLM_API_KEY', None):
+                with pytest.raises(RuntimeError, match='configuration not found'):
+                    await LiteLlmManager.update_team_and_users_budget(
+                        str(control.org_id), 100.0, billing_session_id='paid-session'
+                    )
 
     @pytest.mark.asyncio
     async def test_update_team_and_users_budget_successful(
-        self, mock_team_response, mock_response
+        self, mock_team_response, mock_response, committed_credit_delivery
     ):
         """Test successful update_team_and_users_budget operation."""
         with patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'):
@@ -1638,9 +1662,19 @@ class TestLiteLlmManager:
                     mock_client.post.return_value = mock_response
                     mock_client.get.return_value = mock_team_response
 
-                    await LiteLlmManager.update_team_and_users_budget(
-                        'test-team-id', 100.0
-                    )
+                    async with committed_credit_delivery as control:
+                        mock_team_response.json.return_value['team_info'] = {
+                            'team_id': str(control.org_id),
+                            'max_budget': 100,
+                        }
+                        mock_team_response.json.return_value['team_memberships'][0][
+                            'litellm_budget_table'
+                        ] = {'max_budget': 100}
+                        await LiteLlmManager.update_team_and_users_budget(
+                            str(control.org_id),
+                            100.0,
+                            billing_session_id='paid-session',
+                        )
 
                     # Verify update_team and update_user_in_team were called
                     assert (

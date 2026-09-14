@@ -3,7 +3,17 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import DECIMAL, DateTime, Enum, ForeignKey, String
+from sqlalchemy import (
+    DECIMAL,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    String,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from storage.base import Base
@@ -19,6 +29,20 @@ class BillingSession(Base):
     """
 
     __tablename__ = 'billing_sessions'
+    __table_args__ = (
+        CheckConstraint(
+            "credit_target IS NULL OR (credit_target >= 0 AND credit_target < 'Infinity'::float AND org_id IS NOT NULL AND status IN ('in_progress', 'completed'))",
+            name='ck_billing_credit_target',
+        ),
+        Index(
+            'uq_pending_credit_org',
+            'org_id',
+            unique=True,
+            postgresql_where=text(
+                "status = 'in_progress' AND credit_target IS NOT NULL"
+            ),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, nullable=False)
@@ -35,6 +59,8 @@ class BillingSession(Base):
     )
     price: Mapped[Decimal] = mapped_column(DECIMAL(19, 4), nullable=False)
     price_code: Mapped[str] = mapped_column(String, nullable=False)
+    credit_target: Mapped[float | None] = mapped_column(Float, nullable=True)
+    credit_budget_before: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
