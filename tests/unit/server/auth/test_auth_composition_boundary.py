@@ -188,6 +188,8 @@ def test_keycloak_header_parsing_retains_legacy_precedence(
         }
     )
     assert KeycloakRequestAuth().api_key(request) == expected
+    if expected != 'explicit':
+        assert OpenHandsRequestAuth().api_key(request) is None
 
 
 def test_protocol_import_alias_cannot_escape_protocol_guard() -> None:

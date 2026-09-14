@@ -14,7 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.auth_config import get_native_auth_settings
 from server.auth.native_password import (
+    HASHER,
     NativeAuthError,
+    hash_password,
+    normalize_email,
+    verify_password,
 )
 from server.auth.native_session import csrf_for_token, digest_token, new_token
 from server.auth.native_types import (
@@ -22,6 +26,7 @@ from server.auth.native_types import (
     SessionFactory,
 )
 from server.constants import DEPLOYMENT_MODE
+from server.services.native_account_service import create_profile, lock_native_lifecycle
 from storage.database import a_session_maker
 from storage.native_auth import (
     AuthAccount,
@@ -294,6 +299,70 @@ class NativeAuthService:
             token,
             await _redirect(session, user, return_path),
         )
+
+    async def login(
+        self,
+        email: str,
+        password: str,
+        *,
+        client_ip: str,
+        return_path: str | None = None,
+    ) -> NativeLogin:
+        try:
+            normalized = normalize_email(email)
+        except NativeAuthError:
+            normalized = 'invalid-email'
+        await self.throttle('login', client_ip, normalized)
+        async with self.sessions() as session:
+            credential = await session.scalar(
+                select(PasswordCredential).where(
+                    PasswordCredential.normalized_login_email == normalized
+                )
+            )
+            known_hash = credential.password_hash if credential else None
+        verified = await verify_password(known_hash, password)
+        if not verified or known_hash is None:
+            raise NativeAuthError('Invalid email or password', 401)
+        replacement = (
+            await hash_password(password)
+            if HASHER.check_needs_rehash(known_hash)
+            else None
+        )
+        async with self.sessions() as session, session.begin():
+            await lock_native_lifecycle(session)
+            credential = await session.scalar(
+                select(PasswordCredential)
+                .where(PasswordCredential.normalized_login_email == normalized)
+                .with_for_update()
+            )
+            if credential is None or credential.password_hash != known_hash:
+                raise NativeAuthError('Invalid email or password', 401)
+            from server.services.native_account_service import email_admitted
+
+            account = await session.get(
+                AuthAccount, credential.account_id, with_for_update=True
+            )
+            user = await session.get(User, credential.account_id)
+            if account is None or account.state not in (
+                'profile_present',
+                'reonboardable',
+            ):
+                raise NativeAuthError('Invalid email or password', 401)
+            if (
+                account.normalized_email is None
+                or account.display_email is None
+                or not await email_admitted(session, account.normalized_email)
+            ):
+                raise NativeAuthError('Invalid email or password', 401)
+            if account.state == 'reonboardable' and user is None:
+                user = await create_profile(session, account, account.display_email)
+            elif account.state != 'profile_present' or user is None or user.is_disabled:
+                raise NativeAuthError('Invalid email or password', 401)
+            if replacement:
+                credential.password_hash = replacement
+            return await self._new_session(
+                session, account, credential, user, return_path
+            )
 
     async def issue_csrf(self, session_token: str | None) -> tuple[str, str | None]:
         if session_token and await self.authenticate_session(session_token) is not None:

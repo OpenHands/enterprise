@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import HTTPException, Request
@@ -56,6 +57,8 @@ class SaasUserAuth(UserAuth):
     # AuthType describes the credential, while transport governs CSRF policy.
     # In particular, an API key supplied in a cookie is not bearer transport.
     credential_transport: str = 'keycloak_cookie'
+    native_session_id: UUID | None = None
+    auth_time: datetime | None = None
     # API key context fields - populated when authenticated via API key
     api_key_org_id: UUID | None = None  # Org bound to the API key used for auth
     api_key_id: int | None = None
@@ -597,6 +600,10 @@ class SaasUserAuth(UserAuth):
         # lazily by `get_effective_org_id()` the first time the request
         # needs an org context. See `server.auth.org_context`.
         instance._x_org_id_header = request.headers.get('X-Org-Id')
+        request.state.credential_transport = instance.credential_transport
+        request.state.authenticated_non_cookie = (
+            instance.credential_transport == 'bearer'
+        )
         if not getattr(request.state, 'user_rate_limit_processed', False):
             user_id = await instance.get_user_id()
             if user_id:

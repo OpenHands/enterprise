@@ -20,6 +20,7 @@ from openhands.app_server.middleware import (  # noqa: E402
     CacheControlMiddleware,
 )
 from openhands.app_server.static import SPAStaticFiles  # noqa: E402
+from server.auth.auth_config import ENABLE_KEYCLOAK  # noqa: E402
 from server.auth.auth_error import ExpiredError, NoCredentialsError  # noqa: E402
 from server.auth.constants import (  # noqa: E402
     AZURE_DEVOPS_CLIENT_ID,
@@ -98,7 +99,12 @@ def is_saas():
 
 base_app.include_router(readiness_router)  # Add routes for readiness checks
 base_app.include_router(api_router)  # Add additional route for github auth
-base_app.include_router(oauth_router)  # Add additional route for oauth callback
+if ENABLE_KEYCLOAK:
+    base_app.include_router(oauth_router)
+else:
+    from server.routes.native_auth import native_auth_router  # noqa: E402
+
+    base_app.include_router(native_auth_router)
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings
 base_app.include_router(
@@ -234,12 +240,20 @@ base_app.include_router(
 )  # Add admin routes for quota (org-level + increase requests)
 
 
-base_app.add_middleware(
-    ApiKeyAwareCORSMiddleware,
-    allow_origins=PERMITTED_CORS_ORIGINS,
-)
+if ENABLE_KEYCLOAK:
+    base_app.add_middleware(
+        ApiKeyAwareCORSMiddleware,
+        allow_origins=PERMITTED_CORS_ORIGINS,
+    )
 base_app.add_middleware(CacheControlMiddleware)
 base_app.middleware('http')(SetAuthCookieMiddleware())
+if not ENABLE_KEYCLOAK:
+    from server.config import get_native_cors_origins  # noqa: E402
+
+    # Native auth errors must also carry the authoritative CORS policy.
+    base_app.add_middleware(
+        ApiKeyAwareCORSMiddleware, allow_origins=get_native_cors_origins()
+    )
 
 base_app.mount('/', SPAStaticFiles(directory=directory, html=True), name='dist')
 
