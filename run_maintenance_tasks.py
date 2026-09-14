@@ -96,7 +96,9 @@ async def next_task(session) -> MaintenanceTask | None:
         task = (
             session.query(MaintenanceTask)
             .filter(MaintenanceTask.status == MaintenanceTaskStatus.PENDING)
-            .order_by(MaintenanceTask.created_at)
+            .order_by(MaintenanceTask.created_at, MaintenanceTask.id)
+            # Hold the claim until run_tasks commits WORKING. Other runners skip it.
+            .with_for_update(skip_locked=True)
             .first()
         )
         if task:
