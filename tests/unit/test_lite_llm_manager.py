@@ -424,11 +424,22 @@ class TestLiteLlmManager:
     @pytest.fixture(autouse=True)
     def transport_only_key_authority(self):
         # Real policy reads and PostgreSQL locking are covered in test_litellm_key_policy.
+        async def issue(client, api_url, payload, check_creation, **kwargs):
+            await check_creation()
+            response = await client.post(f'{api_url}/key/generate', json=payload)
+            response.raise_for_status()
+            return response.json()['key']
+
         with (
             patch(
                 'storage.lite_llm_manager.key_mutation_scope', return_value=AsyncMock()
             ),
             patch.object(LiteLlmManager, '_check_key_creation', AsyncMock()),
+            patch('storage.lite_llm_manager.issue_credential', side_effect=issue),
+            patch(
+                'storage.lite_llm_manager.credential_revocation_scope',
+                return_value=AsyncMock(),
+            ),
         ):
             yield
 

@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from scripts import check_enterprise_migration_roundtrip as roundtrip
+from storage.llm_credential_operation import LlmCredentialOperation
 from storage.org_budget_operation import OrgBudgetOperation
 from storage.org_budget_settings import OrgBudgetSettings
 
@@ -28,6 +29,8 @@ def test_upgrade_preserves_legacy_policy_and_requires_explicit_adoption(
     enabled = create_org().id
     disabled = create_org().id
     with engine.begin() as connection:
+        connection.execute(text('DROP TABLE llm_credential_operation'))
+        connection.execute(text('DROP FUNCTION protect_llm_credential_intent()'))
         connection.execute(text('DROP TABLE org_budget_operation'))
         connection.execute(text('DROP FUNCTION protect_budget_operation_intent()'))
         for column in (
@@ -80,6 +83,10 @@ def test_upgrade_preserves_legacy_policy_and_requires_explicit_adoption(
             assert row['control_generation'] == 0
             assert row['control_changed_by'] is None
         assert connection.scalar(text('SELECT count(*) FROM org_budget_operation')) == 0
+        assert (
+            connection.scalar(text('SELECT count(*) FROM llm_credential_operation'))
+            == 0
+        )
 
 
 def test_online_downgrade_cannot_remove_write_ownership():
@@ -105,6 +112,16 @@ def test_actual_alembic_downgrade_preserves_ownership_and_evidence(
     monkeypatch.delenv('GCP_DB_INSTANCE', raising=False)
     org = create_org()
     with session_maker() as session:
+        session.add(
+            LlmCredentialOperation(
+                org_id=org.id,
+                user_id='test-user',
+                request_hash='b' * 64,
+                key_hash='c' * 64,
+                payload={'key': 'sk-pending-candidate'},
+                status='pending',
+            )
+        )
         session.add(
             OrgBudgetSettings(
                 org_id=org.id,
@@ -140,7 +157,11 @@ def test_actual_alembic_downgrade_preserves_ownership_and_evidence(
                 )
                 .scalars()
                 .all()
-                for table in ('org_budget_settings', 'org_budget_operation')
+                for table in (
+                    'org_budget_settings',
+                    'org_budget_operation',
+                    'llm_credential_operation',
+                )
             }
 
     before = snapshot()

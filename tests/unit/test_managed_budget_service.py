@@ -16,6 +16,7 @@ from server.services.org_budget_service import OrgBudgetService
 from storage.budget_control import BudgetControlConflict, BudgetWriteDenied
 from storage.org_budget_operation import OrgBudgetOperation
 from storage.org_budget_settings import OrgBudgetSettings
+from storage.org_user_budget_override import OrgUserBudgetOverride
 from tests.unit.test_budget_adoption_service import adoption as adoption_fixture
 
 adoption = adoption_fixture
@@ -78,6 +79,77 @@ async def test_policy_edit_does_not_reanchor_current_cycle(
         # Changing future reset policy does not restart today's allowance.
         assert settings.cycle_end_at.day == 1
         assert settings.reset_day == 15
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('action', ['renew', 'edit'])
+@pytest.mark.parametrize(
+    'corruption',
+    [
+        'enabled',
+        'monthly_limit',
+        'default_user_monthly_limit',
+        'reset_day',
+        'override_amount',
+        'override_disabled',
+        'override_removed',
+        'override_added',
+    ],
+)
+async def test_unjournaled_future_policy_cannot_change_the_next_allowance(
+    managed, async_session_maker, create_user, action, corruption
+):
+    org_id, user_id, service, proxy = managed
+    result = await service.update(
+        org_id, 'admin', policy(future_member_limits={user_id: 100})
+    )
+    assert result['status'] == 'applied'
+    unexpected_user = create_user(current_org_id=org_id)
+    async with async_session_maker() as session:
+        settings = await session.scalar(select(OrgBudgetSettings))
+        now = settings.cycle_end_at + timedelta(seconds=1)
+        override = await session.scalar(select(OrgUserBudgetOverride))
+        if corruption == 'enabled':
+            settings.enabled = False
+        elif corruption == 'monthly_limit':
+            settings.monthly_limit = 999
+        elif corruption == 'default_user_monthly_limit':
+            settings.default_user_monthly_limit = 999
+        elif corruption == 'reset_day':
+            settings.reset_day = 1
+        elif corruption == 'override_amount':
+            override.monthly_limit = 999
+        elif corruption == 'override_disabled':
+            override.is_disabled = True
+        elif corruption == 'override_removed':
+            await session.delete(override)
+        else:
+            session.add(
+                OrgUserBudgetOverride(
+                    org_id=org_id,
+                    user_id=unexpected_user.id,
+                    monthly_limit=100,
+                    is_disabled=False,
+                )
+            )
+        await session.commit()
+    proxy.writes.clear()
+    observations = proxy.observations
+    with pytest.raises(BudgetWriteDenied, match='Future policy or enabled state'):
+        if action == 'renew':
+            await service.maintain(org_id, now=now)
+        else:
+            await service.update(
+                org_id, 'admin', policy(idempotency_key='edit-2', expected_generation=2)
+            )
+    assert proxy.writes == []
+    assert proxy.observations == observations
+    async with async_session_maker() as session:
+        settings = await session.scalar(select(OrgBudgetSettings))
+        assert settings.control_generation == 2
+        operations = (await session.scalars(select(OrgBudgetOperation))).all()
+        assert len(operations) == 2
+        assert all(operation.status == 'applied' for operation in operations)
 
 
 @pytest.mark.asyncio

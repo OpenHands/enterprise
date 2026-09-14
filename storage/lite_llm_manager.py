@@ -28,6 +28,7 @@ from server.constants import (
     should_use_direct_llm_defaults,
 )
 from server.logger import logger
+from storage.litellm_credentials import credential_revocation_scope, issue_credential
 from storage.litellm_key_policy import key_mutation_scope, key_restrictions
 from storage.user_settings import UserSettings
 
@@ -1659,13 +1660,15 @@ class LiteLlmManager:
         team_id: str | None,
         key_alias: str | None,
         metadata: dict | None,
+        *,
+        replacing_key: str | None = None,
     ) -> str:
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             raise ValueError('LiteLLM API configuration not found')
         async with key_mutation_scope(team_id):
-            await LiteLlmManager._check_key_creation(
-                client, keycloak_user_id, team_id, key_alias
-            )
+            if replacing_key:
+                old_hash = hashlib.sha256(replacing_key.encode()).hexdigest()
+                key_alias = f'openhands-rotation-{old_hash}'
             payload: dict[str, Any] = {
                 'user_id': keycloak_user_id,
                 'team_id': team_id,
@@ -1675,14 +1678,19 @@ class LiteLlmManager:
                 payload['key_alias'] = key_alias
             if metadata is not None:
                 payload['metadata'] = metadata
-            response = await client.post(
-                f'{LITE_LLM_API_URL}/key/generate', json=payload
+            return await issue_credential(
+                client,
+                LITE_LLM_API_URL,
+                payload,
+                lambda: LiteLlmManager._check_key_creation(
+                    client,
+                    keycloak_user_id,
+                    team_id,
+                    key_alias,
+                    replacing_key=replacing_key,
+                ),
+                replacing_key=replacing_key,
             )
-            response.raise_for_status()
-            key = response.json().get('key')
-            if not isinstance(key, str) or not key:
-                raise RuntimeError('LiteLLM did not return a credential')
-            return key
 
     @staticmethod
     async def _check_key_creation(
@@ -1690,6 +1698,8 @@ class LiteLlmManager:
         user_id: str,
         team_id: str | None,
         key_alias: str | None,
+        *,
+        replacing_key: str | None = None,
     ) -> None:
         from storage.budget_control import BudgetWriteDenied
 
@@ -1698,6 +1708,19 @@ class LiteLlmManager:
             raise BudgetWriteDenied(
                 'Cannot create a credential while key policy is unavailable'
             )
+        if replacing_key:
+            owned = [
+                key
+                for key in keys
+                if LiteLlmManager._key_belongs_to_user_org(
+                    [key], replacing_key, user_id, team_id or '', False
+                )
+            ]
+            if len(owned) != 1 or key_restrictions(owned[0]):
+                raise BudgetWriteDenied(
+                    'Rotation requires an owned key without independent restrictions; the existing key was preserved'
+                )
+            keys = [key for key in keys if key is not owned[0]]
         for key in keys:
             if key.get('team_id') is None and key_restrictions(key):
                 raise BudgetWriteDenied(
@@ -2038,25 +2061,17 @@ class LiteLlmManager:
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
-        response = await client.post(
-            f'{LITE_LLM_API_URL}/key/delete',
-            json={
-                'keys': [key_id],
-            },
-        )
-        # Failed to delete key...
-        if not response.is_success:
-            if response.status_code == 404:
-                # The alias may now belong to a different credential.
+        async with credential_revocation_scope(
+            client, LITE_LLM_API_URL, key_id
+        ) as present:
+            if not present:
                 return
-            logger.error(
-                'error_deleting_key',
-                extra={
-                    'status_code': response.status_code,
-                    'text': response.text,
-                },
+            response = await client.post(
+                f'{LITE_LLM_API_URL}/key/delete',
+                json={'keys': [key_id]},
             )
-        response.raise_for_status()
+            if response.status_code != 404:
+                response.raise_for_status()
         logger.info(
             'LiteLlmManager:_delete_key:key_deleted',
         )

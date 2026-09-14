@@ -59,7 +59,9 @@ def key_restrictions(key: dict[str, Any]) -> list[str]:
 
 
 @asynccontextmanager
-async def key_mutation_scope(team_id: str | None) -> AsyncIterator[None]:
+async def key_mutation_scope(
+    team_id: str | None, *, allow_pending_budget: bool = False
+) -> AsyncIterator[None]:
     from storage.database import a_session_maker
 
     if team_id is None:
@@ -72,7 +74,7 @@ async def key_mutation_scope(team_id: str | None) -> AsyncIterator[None]:
         if not isinstance(engine, AsyncEngine):
             raise BudgetWriteDenied('Unable to establish credential write authority')
     async with budget_control_session(engine, org_id) as control:
-        if await control.pending_operation() is not None:
+        if not allow_pending_budget and await control.pending_operation() is not None:
             raise BudgetControlConflict(
                 'Finish the pending budget operation before changing keys'
             )

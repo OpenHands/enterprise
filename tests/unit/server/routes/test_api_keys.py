@@ -534,6 +534,11 @@ class TestRefreshManagedLlmApiKey:
     def _session_patches(async_session_maker):
         """Point every store's session maker at the test DB."""
         return (
+            patch(
+                'storage.saas_settings_store.activate_credential',
+                new_callable=AsyncMock,
+            ),
+            patch('storage.database.a_session_maker', async_session_maker),
             patch('storage.user_store.a_session_maker', async_session_maker),
             patch('storage.org_store.a_session_maker', async_session_maker),
             patch('storage.saas_settings_store.a_session_maker', async_session_maker),
@@ -693,7 +698,11 @@ class TestRefreshManagedLlmApiKey:
 
         expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
         mock_generate.assert_awaited_once_with(
-            user_id, str(org_id), expected_alias, {'type': 'openhands'}
+            user_id,
+            str(org_id),
+            expected_alias,
+            {'type': 'openhands'},
+            replacing_key='sk-old-managed-key',
         )
         # The previous token is NOT deleted by the store; the route does that.
         mock_delete_token.assert_not_called()
@@ -726,7 +735,11 @@ class TestRefreshManagedLlmApiKey:
         assert rotation.openhands_type is False
         expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
         mock_generate.assert_awaited_once_with(
-            user_id, str(org_id), expected_alias, None
+            user_id,
+            str(org_id),
+            expected_alias,
+            None,
+            replacing_key='sk-old-managed-key',
         )
 
     @pytest.mark.asyncio

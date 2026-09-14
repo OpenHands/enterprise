@@ -505,6 +505,11 @@ class TestRunMaintenanceTasks:
                 'enqueue_managed_llm_key_ownership_tasks',
                 return_value=0,
             ),
+            patch(
+                'server.maintenance_task_processor.credential_retirement_processor.'
+                'enqueue_credential_retirement_tasks',
+                return_value=0,
+            ),
         ):
             with patch(
                 'run_maintenance_tasks.session_maker', return_value=session_maker()

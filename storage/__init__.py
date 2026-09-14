@@ -16,6 +16,7 @@ from storage.jira_workspace import JiraWorkspace
 from storage.linear_conversation import LinearConversation
 from storage.linear_user import LinearUser
 from storage.linear_workspace import LinearWorkspace
+from storage.llm_credential_operation import LlmCredentialOperation
 from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
 from storage.openhands_pr import OpenhandsPR
 from storage.org import Org
@@ -69,6 +70,7 @@ __all__ = [
     'LinearConversation',
     'LinearUser',
     'LinearWorkspace',
+    'LlmCredentialOperation',
     'MaintenanceTask',
     'MaintenanceTaskStatus',
     'OpenhandsPR',

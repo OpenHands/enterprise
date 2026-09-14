@@ -38,6 +38,8 @@ from storage.agent_profile_resolution import (
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
+from storage.litellm_credentials import activate_credential
+from storage.litellm_key_policy import key_mutation_scope
 from storage.mcp_config import (
     coerce_persisted_mcp_config,
     serialize_mcp_config,
@@ -992,27 +994,7 @@ class SaasSettingsStore(SettingsStore):
             return org_member.llm_api_key.get_secret_value()
 
     async def rotate_managed_llm_key(self) -> ManagedLlmKeyRotation:
-        """Force-rotate the managed LiteLLM/OpenHands key for this user/org.
-
-        Centralizes the managed-key lifecycle so callers (e.g. the API-key
-        refresh endpoint) don't re-implement it. The effective LLM config is
-        resolved through ``load()`` (org defaults merged with the member
-        diff, with org-default precedence), so non-managed configs — member
-        BYOK or org-level BYOK pointing at a third-party base_url — are
-        rejected before any key is generated.
-
-        The new key is generated under the same deterministic alias as
-        ``_ensure_api_key`` / ``OrgStore._ensure_managed_llm_key_for_user``
-        (deleting any prior alias first to avoid orphaned keys) and carries
-        ``{'type': 'openhands'}`` metadata when the effective model is an
-        ``openhands/*`` model, matching ``verify_existing_key``'s contract.
-
-        The replacement key is persisted on the acting member's row in the
-        same session used to load it, so a member that disappears mid-rotation
-        is reported explicitly (``MISSING_MEMBER``) rather than silently
-        swallowed. The previous key token is returned for best-effort cleanup
-        and is only exposed after a successful persist.
-        """
+        """Rotate an unrestricted owned key without resetting team/member policy."""
         settings = await self.load()
         if settings is None:
             return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
@@ -1048,32 +1030,42 @@ class SaasSettingsStore(SettingsStore):
             if org_member.has_custom_llm_api_key:
                 return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.BYOK)
 
-            existing_key = org_member.llm_api_key if org_member._llm_api_key else None
-            old_key = existing_key.get_secret_value() if existing_key else None
+            async with key_mutation_scope(str(org_id)):
+                await session.refresh(org, with_for_update=True)
+                await session.refresh(org_member, with_for_update=True)
+                if org._llm_api_key or org_member.has_custom_llm_api_key:
+                    return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.BYOK)
 
-            org_id_str = str(org_id)
-            # Generation must not discard an existing key's independent policy.
-            key_alias = get_openhands_cloud_key_alias(self.user_id, org_id_str)
-            new_key = await LiteLlmManager.generate_key(
-                self.user_id,
-                org_id_str,
-                key_alias,
-                {'type': 'openhands'} if config.openhands_type else None,
-            )
+                existing_key = (
+                    org_member.llm_api_key if org_member._llm_api_key else None
+                )
+                old_key = existing_key.get_secret_value() if existing_key else None
 
-            # Persist on the same member row we loaded, in the same session,
-            # before exposing the old token for cleanup.
-            org_member.llm_api_key = SecretStr(new_key)
-            org_member.has_custom_llm_api_key = False
-            await session.commit()
+                org_id_str = str(org_id)
+                # Generation must not discard an existing key's independent policy.
+                key_alias = get_openhands_cloud_key_alias(self.user_id, org_id_str)
+                new_key = await LiteLlmManager.generate_key(
+                    self.user_id,
+                    org_id_str,
+                    key_alias,
+                    {'type': 'openhands'} if config.openhands_type else None,
+                    replacing_key=old_key,
+                )
 
-            logger.info(
-                'saas_settings_store:rotate_managed_llm_key:rotated',
-                extra={'user_id': self.user_id, 'org_id': org_id_str},
-            )
-            return ManagedLlmKeyRotation(
-                status=ManagedLlmKeyStatus.ROTATED,
-                old_key=old_key,
-                new_key=new_key,
-                openhands_type=config.openhands_type,
-            )
+                # Persist on the same member row we loaded, in the same session,
+                # before exposing the old token for cleanup.
+                org_member.llm_api_key = SecretStr(new_key)
+                org_member.has_custom_llm_api_key = False
+                await activate_credential(session, org_id, self.user_id, new_key)
+                await session.commit()
+
+                logger.info(
+                    'saas_settings_store:rotate_managed_llm_key:rotated',
+                    extra={'user_id': self.user_id, 'org_id': org_id_str},
+                )
+                return ManagedLlmKeyRotation(
+                    status=ManagedLlmKeyStatus.ROTATED,
+                    old_key=old_key,
+                    new_key=new_key,
+                    openhands_type=config.openhands_type,
+                )

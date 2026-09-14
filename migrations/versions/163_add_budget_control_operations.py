@@ -20,6 +20,62 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.create_table(
+        'llm_credential_operation',
+        sa.Column('id', sa.UUID(), primary_key=True),
+        sa.Column('org_id', sa.UUID(), nullable=False),
+        sa.Column('user_id', sa.String(), nullable=False),
+        sa.Column('request_hash', sa.String(64), nullable=False),
+        sa.Column('key_hash', sa.String(64), nullable=False),
+        sa.Column('payload', sa.String(), nullable=False),
+        sa.Column('replaces_key_hash', sa.String(64), nullable=True),
+        sa.Column('activated_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('retired_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('status', sa.String(16), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint('org_id', 'request_hash', name='uq_llm_credential_request'),
+        sa.UniqueConstraint('key_hash', name='uq_llm_credential_key'),
+        sa.CheckConstraint(
+            "status IN ('pending', 'issued', 'revoked')",
+            name='ck_llm_credential_status',
+        ),
+    )
+    op.execute("""
+        CREATE FUNCTION protect_llm_credential_intent() RETURNS trigger AS $$
+        BEGIN
+            IF (NEW.id, NEW.org_id, NEW.user_id, NEW.request_hash, NEW.key_hash,
+                NEW.payload, NEW.replaces_key_hash, NEW.created_at) IS DISTINCT FROM
+               (OLD.id, OLD.org_id, OLD.user_id, OLD.request_hash, OLD.key_hash,
+                OLD.payload, OLD.replaces_key_hash, OLD.created_at) THEN
+                RAISE EXCEPTION 'Credential intent is immutable';
+            END IF;
+            IF (OLD.status = 'revoked' AND NEW.status <> 'revoked')
+               OR (OLD.status = 'issued' AND NEW.status = 'pending') THEN
+                RAISE EXCEPTION 'Credential issuance cannot be reopened';
+            END IF;
+            IF (OLD.activated_at IS NOT NULL AND NEW.activated_at IS DISTINCT FROM OLD.activated_at)
+               OR (OLD.retired_at IS NOT NULL AND NEW.retired_at IS DISTINCT FROM OLD.retired_at) THEN
+                RAISE EXCEPTION 'Credential activation and retirement receipts are immutable';
+            END IF;
+            IF (NEW.activated_at IS NOT NULL AND NEW.status = 'pending')
+               OR (NEW.retired_at IS NOT NULL AND NEW.activated_at IS NULL) THEN
+                RAISE EXCEPTION 'Credential retirement requires committed activation';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER protect_llm_credential_intent
+        BEFORE UPDATE ON llm_credential_operation
+        FOR EACH ROW EXECUTE FUNCTION protect_llm_credential_intent();
+    """)
+    op.create_index(
+        'ix_llm_credential_retirement',
+        'llm_credential_operation',
+        ['org_id'],
+        postgresql_where=sa.text(
+            'replaces_key_hash IS NOT NULL AND activated_at IS NOT NULL AND retired_at IS NULL'
+        ),
+    )
     for name, column_type in (
         ('cycle_end_at', sa.DateTime(timezone=True)),
         ('cycle_allowance', sa.Float()),

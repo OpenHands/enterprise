@@ -142,17 +142,7 @@ class ManagedBudgetService(BudgetAdoptionService):
                 }
 
             plan = self._plan(settings, observation, members, previous, now=now)
-            store = OrgBudgetStore(control.session)
-            overrides = await store.get_overrides(org_id)
-            future = {
-                'monthly_limit': settings.monthly_limit,
-                'default_user_monthly_limit': settings.default_user_monthly_limit,
-                'member_limits': {
-                    str(o.user_id): None if o.is_disabled else o.monthly_limit
-                    for o in overrides
-                },
-                'reset_day': settings.reset_day,
-            }
+            future = deepcopy(previous.plan['future_policy'])
             # Renew once at the observation; never invent historical counter boundaries.
             plan['previous_cycle_end_at'] = cycle_end.isoformat()
             plan['cycle_start_at'] = now.isoformat()
@@ -249,6 +239,27 @@ class ManagedBudgetService(BudgetAdoptionService):
         ):
             raise BudgetWriteDenied(
                 'Current-cycle policy differs from its verified operation'
+            )
+        future = plan['future_policy']
+        overrides = await OrgBudgetStore(control.session).get_overrides(control.org_id)
+        actual_overrides = sorted(
+            [(str(o.user_id), o.monthly_limit, o.is_disabled) for o in overrides],
+            key=lambda row: row[0],
+        )
+        expected_overrides = sorted(
+            (user_id, limit, limit is None)
+            for user_id, limit in future['member_limits'].items()
+        )
+        if (
+            settings.enabled != plan.get('enabled', True)
+            or settings.monthly_limit != future['monthly_limit']
+            or settings.default_user_monthly_limit
+            != future['default_user_monthly_limit']
+            or settings.reset_day != future['reset_day']
+            or actual_overrides != expected_overrides
+        ):
+            raise BudgetWriteDenied(
+                'Future policy or enabled state differs from its verified operation'
             )
         return previous
 

@@ -28,9 +28,17 @@ async def main():
     set_stale_task_error()
     # Imported lazily so the generic task runner remains usable in tooling
     # that stubs database initialization while importing this module.
+    from server.maintenance_task_processor.credential_retirement_processor import (
+        enqueue_credential_retirement_tasks,
+    )
     from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
         enqueue_managed_llm_key_ownership_tasks,
     )
+
+    try:
+        enqueue_credential_retirement_tasks()
+    except Exception:
+        logger.exception('Failed to enqueue credential retirement')
 
     try:
         enqueued = enqueue_managed_llm_key_ownership_tasks()
