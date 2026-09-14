@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select
 
+from server.services.budget_adoption_plan import BudgetAdoptionUnsupported
 from server.services.managed_budget_service import (
     ManagedBudgetService,
     ManagedBudgetUpdate,
@@ -23,6 +24,54 @@ from storage.role import Role
 from tests.unit.test_budget_adoption_service import adoption as adoption_fixture
 
 adoption = adoption_fixture
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('action', ['adopt', 'edit', 'renew'])
+async def test_incompatible_soft_budget_is_rejected_before_intent_or_remote_writes(
+    adoption, async_engine, async_session_maker, action
+):
+    org_id, _, service, request, proxy = adoption
+    proxy.state['control_policy']['team']['soft_budget'] = 100
+    preview = await service.preview(org_id)
+    request = request.model_copy(
+        update={
+            'preview_fingerprint': preview['fingerprint'],
+            'current_team_allowance': 0 if action == 'adopt' else 100,
+            'future_monthly_limit': 1,
+        }
+    )
+    if action != 'adopt':
+        assert (await service.confirm(org_id, 'admin', request))['status'] == 'applied'
+    proxy.writes.clear()
+    async with async_session_maker() as session:
+        settings = await session.scalar(select(OrgBudgetSettings))
+        generation = settings.control_generation
+        now = (
+            settings.cycle_end_at + timedelta(seconds=1)
+            if settings.cycle_end_at
+            else None
+        )
+    with pytest.raises(BudgetAdoptionUnsupported, match='soft-budget alert threshold'):
+        if action == 'adopt':
+            await service.confirm(org_id, 'admin', request)
+        elif action == 'edit':
+            await ManagedBudgetService(async_engine).update(
+                org_id, 'admin', policy(current_cycle_team_allowance=0)
+            )
+        else:
+            await ManagedBudgetService(async_engine).maintain(org_id, now=now)
+    assert proxy.writes == []
+    async with async_session_maker() as session:
+        assert (
+            await session.scalar(select(OrgBudgetSettings))
+        ).control_generation == generation
+        assert (
+            await session.scalar(
+                select(OrgBudgetOperation).where(OrgBudgetOperation.status == 'pending')
+            )
+            is None
+        )
 
 
 async def adopt_zero(adoption, *, operator_blocked=False):

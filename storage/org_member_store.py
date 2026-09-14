@@ -156,13 +156,6 @@ class OrgMemberStore:
             return list(result.scalars().all())
 
     @staticmethod
-    async def update_org_member(org_member: OrgMember) -> None:
-        """Update an organization-member relationship."""
-        async with a_session_maker() as session:
-            await session.merge(org_member)
-            await session.commit()
-
-    @staticmethod
     async def update_user_role_in_org(
         org_id: UUID, user_id: UUID, role_id: int, status: Optional[str] = None
     ) -> Optional[OrgMember]:

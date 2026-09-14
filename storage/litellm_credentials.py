@@ -241,3 +241,42 @@ async def retire_replaced_credentials(org_id: UUID) -> dict[str, int]:
                 )
                 errors += 1
     return {'retired': retired, 'error_count': errors}
+
+
+async def ensure_byor_credential(
+    org_id: UUID, user_id: UUID, *, rotate: bool = False
+) -> str:
+    from server.constants import BYOR_KEY_ALIAS_PATTERN
+    from storage.lite_llm_manager import LiteLlmManager
+    from storage.org_member import OrgMember
+
+    async with key_mutation_scope(str(org_id), allow_pending_budget=True) as control:
+        member = await control.session.get(
+            OrgMember, {'org_id': org_id, 'user_id': user_id}, with_for_update=True
+        )
+        if member is None:
+            raise BudgetWriteDenied('Organization membership no longer exists')
+        stored = member.llm_api_key_for_byor
+        old_key = stored.get_secret_value() if stored else None
+        if old_key and not rotate:
+            if not await LiteLlmManager.verify_existing_key(
+                old_key, str(user_id), str(org_id)
+            ):
+                raise BudgetWriteDenied(
+                    'Stored BYOR credential ownership could not be verified; it was not replaced'
+                )
+            return old_key
+
+        key = await LiteLlmManager.generate_key(
+            str(user_id),
+            str(org_id),
+            BYOR_KEY_ALIAS_PATTERN.format(user_id=user_id, org_id=org_id),
+            {'type': 'byor'},
+            replacing_key=old_key,
+        )
+        member.llm_api_key_for_byor = key
+        await activate_credential(control.session, org_id, str(user_id), key)
+        await control.session.commit()
+        if old_key:
+            await retire_replaced_credentials(org_id)
+        return key

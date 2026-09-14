@@ -3,7 +3,7 @@ from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from openhands.app_server.user_auth import get_user_auth, get_user_id
 from openhands.app_server.user_auth.user_auth import AuthType
@@ -11,112 +11,17 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import get_user_super_role
 from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.auth.saas_user_auth import SaasUserAuth
-from server.constants import BYOR_KEY_ALIAS_PATTERN
 from storage.api_key import ApiKey
 from storage.api_key_store import ApiKeyStore
 from storage.budget_control import BudgetControlConflict, BudgetWriteDenied
 from storage.lite_llm_manager import LiteLlmManager
-from storage.org_member import OrgMember
+from storage.litellm_credentials import ensure_byor_credential
 from storage.org_member_store import OrgMemberStore
 from storage.org_service import OrgService
 from storage.saas_settings_store import (
     ManagedLlmKeyStatus,
     SaasSettingsStore,
 )
-from storage.user_store import UserStore
-
-
-# Helper functions for BYOR API key management
-async def get_byor_key_from_db(user_id: str, org_id: UUID) -> str | None:
-    """Get the BYOR key from the database for a user in a specific org."""
-    user = await UserStore.get_user_by_id(user_id)
-    if not user:
-        return None
-
-    org_member: OrgMember | None = None
-    for member in user.org_members:
-        if member.org_id == org_id:
-            org_member = member
-            break
-    if not org_member:
-        return None
-    if org_member.llm_api_key_for_byor:
-        return org_member.llm_api_key_for_byor.get_secret_value()
-    return None
-
-
-async def store_byor_key_in_db(user_id: str, org_id: UUID, key: str) -> None:
-    """Store the BYOR key in the database for a user in a specific org."""
-    user = await UserStore.get_user_by_id(user_id)
-    if not user:
-        return None
-
-    org_member: OrgMember | None = None
-    for member in user.org_members:
-        if member.org_id == org_id:
-            org_member = member
-            break
-    if not org_member:
-        return None
-    org_member.llm_api_key_for_byor = SecretStr(key)
-    await OrgMemberStore.update_org_member(org_member)
-
-
-def _create_byor_key_alias(user_id: str, org_id: str) -> str:
-    alias = BYOR_KEY_ALIAS_PATTERN.format(user_id=user_id, org_id=org_id)
-    return alias
-
-
-async def generate_byor_key(user_id: str, org_id: UUID) -> str | None:
-    """Generate a new BYOR key for a user in a specific org."""
-    try:
-        org_id_str = str(org_id)
-        key = await LiteLlmManager.generate_key(
-            user_id,
-            org_id_str,
-            _create_byor_key_alias(user_id, org_id_str),
-            {'type': 'byor'},
-        )
-
-        logger.info(
-            'Successfully generated new BYOR key',
-            extra={
-                'user_id': user_id,
-            },
-        )
-        return key
-    except Exception:
-        logger.exception(
-            'Error generating BYOR key',
-            extra={
-                'user_id': user_id,
-            },
-            stack_info=True,
-        )
-        return None
-
-
-async def delete_byor_key_from_litellm(
-    user_id: str, org_id: UUID, byor_key: str
-) -> bool:
-    """Delete only the exact BYOR credential, never a potentially reassigned alias."""
-    try:
-        await LiteLlmManager.delete_key(byor_key)
-        logger.info(
-            'Successfully deleted BYOR key from LiteLLM',
-            extra={'user_id': user_id},
-        )
-        return True
-    except Exception:
-        logger.exception(
-            'Error deleting BYOR key from LiteLLM',
-            extra={
-                'user_id': user_id,
-            },
-            stack_info=True,
-        )
-        return False
-
 
 # Initialize API router and key store
 api_router = APIRouter(prefix='/api/keys')
@@ -516,80 +421,45 @@ async def refresh_managed_llm_api_key(
         )
 
 
+async def _byor_credential(
+    user_id: str, org_id: UUID, *, rotate: bool
+) -> LlmApiKeyResponse:
+    try:
+        if not await OrgService.check_byor_export_enabled(user_id, org_id=org_id):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail='BYOR key export is not enabled. Purchase credits to enable this feature.',
+            )
+        key = await ensure_byor_credential(org_id, UUID(user_id), rotate=rotate)
+        return LlmApiKeyResponse(key=key)
+    except (BudgetControlConflict, BudgetWriteDenied) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(
+            'byor_credential_unavailable',
+            extra={
+                'user_id': user_id,
+                'org_id': str(org_id),
+                'error_type': type(exc).__name__,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='BYOR credential is unavailable; retry without changing the existing key.',
+        ) from exc
+
+
 @api_router.get('/llm/byor', tags=['Keys'])
 async def get_llm_api_key_for_byor(
     user_id: str = Depends(get_user_id),
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
 ) -> LlmApiKeyResponse:
-    """Get the LLM API key for BYOR (Bring Your Own Runtime).
-
-    This endpoint validates that the key exists in LiteLLM before returning it.
-    If validation fails, it automatically generates a new key to ensure users
-    always receive a working key.
-
-    Returns 402 Payment Required if BYOR export is not enabled for the
-    request's effective org.
-    """
-    try:
-        if not await OrgService.check_byor_export_enabled(
-            user_id, org_id=effective_org_id
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail='BYOR key export is not enabled. Purchase credits to enable this feature.',
-            )
-
-        # Check if the BYOR key exists in the database
-        byor_key = await get_byor_key_from_db(user_id, effective_org_id)
-        if byor_key:
-            # Validate that the key is actually registered in LiteLLM
-            is_valid = await LiteLlmManager.verify_key(byor_key, user_id)
-            if is_valid:
-                return LlmApiKeyResponse(key=byor_key)
-            else:
-                # Key exists in DB but is invalid in LiteLLM - regenerate it
-                logger.warning(
-                    'BYOR key found in database but invalid in LiteLLM - regenerating',
-                    extra={
-                        'user_id': user_id,
-                        'key_prefix': byor_key[:10] + '...'
-                        if len(byor_key) > 10
-                        else byor_key,
-                    },
-                )
-                # Delete the invalid key from LiteLLM (best effort, don't fail if it doesn't exist)
-                await delete_byor_key_from_litellm(user_id, effective_org_id, byor_key)
-                # Fall through to generate a new key
-
-        # Generate a new key for BYOR (either no key exists or validation failed)
-        key = await generate_byor_key(user_id, effective_org_id)
-        if key:
-            # Store the key in the database
-            await store_byor_key_in_db(user_id, effective_org_id, key)
-            logger.info(
-                'Successfully generated and stored new BYOR key',
-                extra={'user_id': user_id},
-            )
-            return LlmApiKeyResponse(key=key)
-        else:
-            logger.error(
-                'Failed to generate new BYOR LLM API key',
-                extra={'user_id': user_id},
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail='Failed to generate new BYOR LLM API key',
-            )
-
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        logger.exception('Error retrieving BYOR LLM API key', stack_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail='Failed to retrieve BYOR LLM API key',
-        ) from e
+    """Export an owned key without treating a budget denial as credential loss."""
+    return await _byor_credential(user_id, effective_org_id, rotate=False)
 
 
 @api_router.post('/llm/byor/refresh', tags=['Keys'])
@@ -597,83 +467,5 @@ async def refresh_llm_api_key_for_byor(
     user_id: str = Depends(get_user_id),
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
 ) -> LlmApiKeyResponse:
-    """Refresh the LLM API key for BYOR (Bring Your Own Runtime).
-
-    Returns 402 Payment Required if BYOR export is not enabled for the
-    request's effective org.
-    """
-    logger.info('Starting BYOR LLM API key refresh', extra={'user_id': user_id})
-
-    try:
-        if not await OrgService.check_byor_export_enabled(
-            user_id, org_id=effective_org_id
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail='BYOR key export is not enabled. Purchase credits to enable this feature.',
-            )
-
-        # Get the existing BYOR key from the database
-        existing_byor_key = await get_byor_key_from_db(user_id, effective_org_id)
-
-        # If we have an existing key, delete it from LiteLLM
-        if existing_byor_key:
-            delete_success = await delete_byor_key_from_litellm(
-                user_id, effective_org_id, existing_byor_key
-            )
-            if not delete_success:
-                logger.warning(
-                    'Failed to delete existing BYOR key from LiteLLM, continuing with key generation',
-                    extra={'user_id': user_id},
-                )
-        else:
-            logger.info(
-                'No existing BYOR key found in database, proceeding with key generation',
-                extra={'user_id': user_id},
-            )
-
-        # Generate a new key
-        key = await generate_byor_key(user_id, effective_org_id)
-        if not key:
-            logger.error(
-                'Failed to generate new BYOR LLM API key',
-                extra={'user_id': user_id},
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail='Failed to generate new BYOR LLM API key',
-            )
-
-        # Store the key in the database
-        await store_byor_key_in_db(user_id, effective_org_id, key)
-
-        logger.info(
-            'BYOR LLM API key refresh completed successfully',
-            extra={'user_id': user_id},
-        )
-        return LlmApiKeyResponse(key=key)
-    except HTTPException as he:
-        logger.exception(
-            'HTTP exception during BYOR LLM API key refresh',
-            extra={
-                'user_id': user_id,
-                'status_code': he.status_code,
-                'detail': he.detail,
-                'exception_type': type(he).__name__,
-            },
-            stack_info=True,
-        )
-        raise
-    except Exception as e:
-        logger.exception(
-            'Unexpected error refreshing BYOR LLM API key',
-            extra={
-                'user_id': user_id,
-                'exception_type': type(e).__name__,
-            },
-            stack_info=True,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail='Failed to refresh BYOR LLM API key',
-        ) from e
+    """Persist an unrestricted replacement before retiring the previous key."""
+    return await _byor_credential(user_id, effective_org_id, rotate=True)

@@ -12,6 +12,7 @@ from server.services.budget_adoption_plan import (
     BudgetAdoptionUnsupported,
     adoption_fingerprint,
     build_adoption_plan,
+    validate_team_target,
 )
 from storage.budget_control import BudgetControlConflict
 
@@ -94,6 +95,30 @@ def test_adoption_uses_counter_being_enforced_and_separates_future_policy():
     assert result['future_policy']['default_user_monthly_limit'] == 80
     assert result['cycle_start_at'] == NOW.isoformat()
     assert result['cycle_end_at'] == datetime(2026, 9, 15, tzinfo=UTC).isoformat()
+
+
+@pytest.mark.parametrize('threshold', [402.55, 500, 1000])
+def test_adoption_rejects_cap_incompatible_with_preserved_soft_budget(threshold):
+    observed = observation()
+    observed['control_policy']['team']['soft_budget'] = threshold
+    with pytest.raises(BudgetAdoptionUnsupported, match='soft-budget alert threshold'):
+        plan(observed, request(observed))
+
+
+@pytest.mark.parametrize('threshold', [False, '100', -1, float('inf')])
+def test_adoption_rejects_malformed_soft_budget(threshold):
+    observed = observation()
+    observed['control_policy']['team']['soft_budget'] = threshold
+    with pytest.raises(BudgetAdoptionUnsupported, match='Team soft budget'):
+        validate_team_target(observed, 402.55)
+
+
+def test_adoption_preserves_compatible_soft_budget():
+    observed = observation()
+    observed['control_policy']['team']['soft_budget'] = 100
+    result = plan(observed, request(observed))
+    assert result['preserved_policy']['team']['soft_budget'] == 100
+    assert all('soft_budget' not in write['body'] for write in result['writes'])
 
 
 def test_ordinary_spend_growth_does_not_expire_preview_but_confirmation_samples_once():

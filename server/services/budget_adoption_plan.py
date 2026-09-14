@@ -177,6 +177,7 @@ def build_adoption_plan(
     team_target = _counter(
         team_baseline + request.current_team_allowance, 'Team target'
     )
+    validate_team_target(observation, team_target)
     member_targets = {}
     for user_id in sorted(member_ids):
         remaining = request.current_member_allowances.get(
@@ -228,6 +229,17 @@ def build_adoption_plan(
         'preserved_policy': observation['control_policy'],
         'writes': writes,
     }
+
+
+def validate_team_target(observation: dict[str, Any], target: float | None) -> None:
+    soft_budget = observation['control_policy']['team'].get('soft_budget')
+    if target is not None and soft_budget is not None:
+        threshold = _counter(soft_budget, 'Team soft budget')
+        if target <= threshold:
+            raise BudgetAdoptionUnsupported(
+                'The team cap must exceed the existing LiteLLM soft-budget alert threshold; '
+                'review the threshold before changing budget policy'
+            )
 
 
 def plan_team_block(

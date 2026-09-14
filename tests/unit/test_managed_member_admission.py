@@ -100,9 +100,13 @@ async def admission(adoption, create_user, async_session_maker):
                 if cls.failure == 'before_revoke':
                     cls.failure = None
                     raise httpx.ReadTimeout('before key revocation')
-                cls.keys[:] = [
-                    key for key in cls.keys if key['token'] not in body['keys']
-                ]
+                hashes = {
+                    hashlib.sha256(key.encode()).hexdigest()
+                    if key.startswith('sk-')
+                    else key
+                    for key in body['keys']
+                }
+                cls.keys[:] = [key for key in cls.keys if key['token'] not in hashes]
                 if cls.failure == 'after_revoke':
                     cls.failure = None
                     raise httpx.ReadTimeout('after key revocation')

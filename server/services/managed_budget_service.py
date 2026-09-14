@@ -16,6 +16,7 @@ from server.services.budget_adoption_plan import (
     next_budget_reset,
     plan_team_block,
     validate_adoption_observation,
+    validate_team_target,
 )
 from server.services.budget_adoption_service import BudgetAdoptionService
 from storage.budget_control import (
@@ -461,6 +462,7 @@ class ManagedBudgetService(BudgetAdoptionService):
         target = (
             None if not plan['enabled'] else plan['team_baseline'] + current['team']
         )
+        validate_team_target(observation, target)
         targets = {}
         for user_id, baseline in plan['member_baselines'].items():
             allowance = current['members'].get(user_id, current['default_member'])
