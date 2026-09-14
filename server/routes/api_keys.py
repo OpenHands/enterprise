@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, SecretStr, field_validator, model_validator
 
+from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.user_auth import get_user_auth, get_user_id
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -309,6 +310,18 @@ async def create_api_key(
         keys = await api_key_store.list_api_keys(user_id, org_id=target_org_id)
         for key in keys:
             if key.name == key_data.name and key.org_id == target_org_id:
+                # Analytics: api key created (best-effort, never blocks the response)
+                try:
+                    analytics = get_analytics_service()
+                    if analytics:
+                        ctx = await resolve_analytics_context(user_id)
+                        analytics.track_api_key_created(
+                            ctx=ctx,
+                            has_expiration=key_data.expires_at is not None,
+                        )
+                except Exception:
+                    logger.exception('analytics:api_key_created:failed')
+
                 return ApiKeyCreateResponse(
                     id=key.id,
                     name=key.name,
