@@ -283,16 +283,28 @@ async def success_callback(session_id: str, request: Request):
             )
             raise HTTPException(status.HTTP_400_BAD_REQUEST)
 
+        # Switching workspaces during checkout must not redirect purchased credit.
+        org_id = billing_session.org_id
+        if org_id is None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail='Checkout organization is missing; payment requires reconciliation',
+            )
+        org = await session.get(Org, org_id)
+        if org is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, detail='Checkout organization not found'
+            )
         user = await UserStore.get_user_by_id(billing_session.user_id)
         if user is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail='User not found')
         user_team_info = await LiteLlmManager.get_user_team_info(
-            billing_session.user_id, str(user.current_org_id)
+            billing_session.user_id, str(org_id)
         )
         amount_subtotal = stripe_session.amount_subtotal or 0
         add_credits = amount_subtotal / 100
         budget_info = LiteLlmManager.get_budget_from_team_info(
-            user_team_info, billing_session.user_id, str(user.current_org_id)
+            user_team_info, billing_session.user_id, str(org_id)
         )
         if budget_info is None:
             raise HTTPException(
@@ -301,17 +313,12 @@ async def success_callback(session_id: str, request: Request):
             )
         max_budget, spend = budget_info
 
-        result = await session.execute(select(Org).where(Org.id == user.current_org_id))
-        org = result.scalar_one_or_none()
         budget_baseline = max(spend, max_budget if max_budget is not None else spend)
         new_max_budget = budget_baseline + add_credits
 
-        await LiteLlmManager.update_team_and_users_budget(
-            str(user.current_org_id), new_max_budget
-        )
+        await LiteLlmManager.update_team_and_users_budget(str(org_id), new_max_budget)
 
-        if org:
-            org.byor_export_enabled = True
+        org.byor_export_enabled = True
 
         billing_session.status = 'completed'
         billing_session.price = add_credits
@@ -322,7 +329,7 @@ async def success_callback(session_id: str, request: Request):
             extra={
                 'amount_subtotal': stripe_session.amount_subtotal,
                 'user_id': billing_session.user_id,
-                'org_id': str(user.current_org_id),
+                'org_id': str(org_id),
                 'checkout_session_id': billing_session.id,
                 'stripe_customer_id': stripe_session.customer,
             },
@@ -338,7 +345,7 @@ async def success_callback(session_id: str, request: Request):
                 ctx = AnalyticsContext(
                     user_id=billing_session.user_id,
                     consented=user.user_consents_to_analytics is True,
-                    org_id=str(user.current_org_id) if user.current_org_id else None,
+                    org_id=str(org_id),
                     user=user,
                 )
                 analytics.track_credit_purchased(

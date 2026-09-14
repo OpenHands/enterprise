@@ -1,6 +1,9 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
 from server.logger import logger
 from storage.database import session_maker
 from storage.maintenance_task import (
@@ -22,6 +25,7 @@ def maintenance_task_status(info: dict) -> MaintenanceTaskStatus:
 
 
 async def main():
+    set_stale_task_error()
     # Imported lazily so the generic task runner remains usable in tooling
     # that stubs database initialization while importing this module.
     from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
@@ -40,21 +44,29 @@ async def main():
         # tasks from running.
         logger.exception('Failed to enqueue managed LLM key ownership repairs')
 
-    set_stale_task_error()
     failed_task_count = await run_tasks()
     if failed_task_count:
         logger.error(f'{failed_task_count} maintenance task(s) failed')
         raise SystemExit(1)
 
 
-def set_stale_task_error():
+def expire_stale_tasks(session: Session) -> None:
     # started_at is naive UTC; strip tzinfo before comparing.
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
+    session.query(MaintenanceTask).filter(
+        MaintenanceTask.status == MaintenanceTaskStatus.WORKING,
+        func.coalesce(
+            MaintenanceTask.started_at,
+            MaintenanceTask.updated_at,
+            MaintenanceTask.created_at,
+        )
+        < cutoff,
+    ).update({MaintenanceTask.status: MaintenanceTaskStatus.ERROR})
+
+
+def set_stale_task_error():
     with session_maker() as session:
-        session.query(MaintenanceTask).filter(
-            MaintenanceTask.status == MaintenanceTaskStatus.WORKING,
-            MaintenanceTask.started_at < cutoff,
-        ).update({MaintenanceTask.status: MaintenanceTaskStatus.ERROR})
+        expire_stale_tasks(session)
         session.commit()
 
 
