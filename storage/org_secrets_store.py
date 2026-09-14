@@ -58,7 +58,9 @@ class OrgSecretsStore:
             return [
                 CustomSecretWithoutValue.model_construct(
                     name=row.secret_name,
-                    description=row.description,
+                    description=self._jwt_svc.decrypt_value(row.description)
+                    if row.description
+                    else None,
                     scope=CustomSecretScope.ORGANIZATION,
                 )
                 for row in rows
@@ -95,13 +97,16 @@ class OrgSecretsStore:
             )
 
         encrypted_value = self._jwt_svc.encrypt_value(value)
+        encrypted_description = (
+            self._jwt_svc.encrypt_value(description) if description else None
+        )
         async with a_session_maker() as session:
             secret = StoredCustomSecrets(
                 keycloak_user_id=created_by_user_id,
                 org_id=self.org_id,
                 secret_name=name,
                 secret_value=encrypted_value,
-                description=description,
+                description=encrypted_description,
                 is_org_shared=True,
             )
             session.add(secret)
@@ -141,7 +146,9 @@ class OrgSecretsStore:
             row.secret_name = new_name
 
         if description is not None:
-            row.description = description
+            row.description = (
+                self._jwt_svc.encrypt_value(description) if description else None
+            )
 
         async with a_session_maker() as session:
             await session.merge(row)
@@ -180,7 +187,9 @@ class OrgSecretsStore:
                 decrypted = self._jwt_svc.decrypt_value(row.secret_value)
                 secrets[row.secret_name] = CustomSecret(
                     secret=SecretStr(decrypted),
-                    description=row.description,
+                    description=self._jwt_svc.decrypt_value(row.description)
+                    if row.description
+                    else None,
                 )
             return secrets
 

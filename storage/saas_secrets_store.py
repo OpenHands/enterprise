@@ -127,7 +127,15 @@ class SaasSecretsStore(SecretsStore):
                 query = query.filter(StoredCustomSecrets.org_id == org_id)
             result = await session.execute(query)
             rows = result.scalars().all()
-            return [(row.secret_name, row.description) for row in rows]
+            return [
+                (
+                    row.secret_name,
+                    self._jwt_svc.decrypt_value(row.description)
+                    if row.description
+                    else None,
+                )
+                for row in rows
+            ]
 
     async def store(self, item: Secrets):
         user = await UserStore.get_user_by_id(self.user_id)
