@@ -1,12 +1,27 @@
 import uuid
 from datetime import datetime
+from typing import Unpack
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+import httpx
 import pytest
 from pydantic import SecretStr
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
+from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_models import Settings as DataSettings
+from tests.unit.gateway_saas_types import HttpxSendOptions, OrgMembersFixture
+
+
+@pytest.fixture(autouse=True)
+def mock_gateway_membership(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    ensure = AsyncMock()
+    monkeypatch.setattr(
+        'storage.lite_llm_manager.LiteLlmManager.ensure_user_in_org', ensure
+    )
+    return ensure
 
 
 def _agent_value(settings: Settings, key: str):
@@ -2084,9 +2099,12 @@ async def test_partial_store_migrates_legacy_member_mcp_config(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('member_model', ['openhands/stale-default', 'openai/gpt-4o'])
 async def test_load_resolves_active_default_profile_from_verified_model_default(
-    async_session_maker, org_with_multiple_members_fixture
-):
+    async_session_maker: async_sessionmaker[AsyncSession],
+    org_with_multiple_members_fixture: OrgMembersFixture,
+    member_model: str,
+) -> None:
     from sqlalchemy import select, update
 
     from server.verified_models.verified_model_service import StoredVerifiedModel
@@ -2114,7 +2132,7 @@ async def test_load_resolves_active_default_profile_from_verified_model_default(
         await session.execute(
             update(OrgMember)
             .where(OrgMember.org_id == org_id, OrgMember.user_id == admin_user_id)
-            .values(agent_settings_diff={'llm': {'model': 'openhands/stale-default'}})
+            .values(agent_settings_diff={'llm': {'model': member_model}})
         )
         session.add(
             StoredVerifiedModel(
@@ -2175,7 +2193,10 @@ async def test_load_resolves_active_default_profile_from_verified_model_default(
 
     async with async_session_maker() as session:
         org = (await session.execute(select(Org).where(Org.id == org_id))).scalar_one()
-    assert org.llm_profiles['profiles']['Default']['model'] == 'openhands/stale-default'
+    assert (
+        LLMProfiles.model_validate(org.llm_profiles).require('Default').model
+        == 'openhands/stale-default'
+    )
 
 
 @pytest.mark.asyncio
@@ -2366,7 +2387,7 @@ class TestGetEffectiveLlmApiKey:
         # Must return org key when has_custom_llm_api_key is False
         assert result == SecretStr('org-api-key')
 
-    def test_falls_back_to_managed_member_key_when_org_key_unset(self):
+    def test_falls_back_to_managed_member_key_when_org_key_unset(self) -> None:
         """has_custom False + no org key: fall back to the managed key on the member row.
 
         Managed/proxy keys are persisted on org_member.llm_api_key with
@@ -2375,7 +2396,10 @@ class TestGetEffectiveLlmApiKey:
         """
         from pydantic import SecretStr
 
-        from storage.saas_settings_store import SaasSettingsStore
+        from storage.saas_settings_store import (
+            SaasSettingsStore,
+            _EffectiveLLMTransport,
+        )
 
         org = MagicMock()
         org.llm_api_key = None
@@ -2385,7 +2409,9 @@ class TestGetEffectiveLlmApiKey:
         member._llm_api_key = 'encrypted-managed-key'  # truthy => set
         type(member).llm_api_key = PropertyMock(return_value=SecretStr('managed-key'))
 
-        result = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        result = SaasSettingsStore._get_effective_llm_api_key(
+            org, member, _EffectiveLLMTransport(model='openhands/gpt-4o')
+        )
 
         assert result == SecretStr('managed-key')
 
@@ -2406,6 +2432,27 @@ class TestGetEffectiveLlmApiKey:
         result = SaasSettingsStore._get_effective_llm_api_key(org, member)
 
         assert result is None
+
+    def test_native_member_key_cannot_fall_back_as_managed_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from storage.org import Org
+        from storage.org_member import OrgMember
+        from storage.saas_settings_store import _EffectiveLLMTransport
+
+        monkeypatch.setenv('ENABLE_LITELLM', 'true')
+        org = Org(agent_settings={'llm': {'model': 'openai/gpt-4o'}})
+        member = OrgMember(
+            agent_settings_diff={'llm': {'model': 'openai/gpt-4o'}},
+            has_custom_llm_api_key=True,
+        )
+        member.llm_api_key = SecretStr('native-provider-key')
+        assert (
+            SaasSettingsStore._get_effective_llm_api_key(
+                org, member, _EffectiveLLMTransport(model='openhands/live-default')
+            )
+            is None
+        )
 
 
 @pytest.mark.asyncio
@@ -2477,3 +2524,162 @@ def test_profile_sync_skips_non_openhands_agent_kind():
     active = settings.llm_profiles.require('Default')
     assert active.model == 'litellm_proxy/claude-sonnet-4-5-20250929'
     assert active.base_url == 'http://x:4000'
+
+
+@pytest.mark.asyncio
+async def test_disabled_settings_repair_never_reuses_managed_key(
+    monkeypatch: pytest.MonkeyPatch,
+    session_maker: sessionmaker[Session],
+    async_session_maker: async_sessionmaker[AsyncSession],
+    org_with_multiple_members_fixture: OrgMembersFixture,
+    mock_gateway_membership: AsyncMock,
+) -> None:
+    from openhands.app_server.settings.settings_router import store_settings
+    from openhands.app_server.utils.litellm_integration import (
+        LiteLLMIntegrationDisabled,
+    )
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    monkeypatch.setenv('ENABLE_LITELLM', 'false')
+    fixture = org_with_multiple_members_fixture
+    org_id, actor_id = fixture['org_id'], fixture['admin_user_id']
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        org.agent_settings = {'llm': {'model': 'openhands/old', 'base_url': None}}
+        org.llm_api_key = SecretStr('org-managed-key')
+        org.llm_profiles = None
+        member = session.get(OrgMember, (org_id, actor_id))
+        assert member is not None
+        member.agent_settings_diff = {}
+        member.llm_api_key = SecretStr('member-managed-key')
+        member.has_custom_llm_api_key = False
+        session.commit()
+
+    dispatches: list[httpx.Request] = []
+
+    async def record(
+        client: httpx.AsyncClient,
+        request: httpx.Request,
+        **kwargs: Unpack[HttpxSendOptions],
+    ) -> httpx.Response:
+        dispatches.append(request)
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(httpx.AsyncClient, 'send', record)
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        store = SaasSettingsStore(str(actor_id))
+        response = await store_settings(
+            {'language': 'es'}, settings_store=store, user_id=None
+        )
+        assert response.status_code == 200, response.body
+        historical = await store.load()
+        assert historical is not None
+        assert historical.agent_settings.llm.model == 'openhands/old'
+        assert historical.agent_settings.llm.api_key is None
+        historical.agent_settings.llm.api_key = SecretStr('new-managed-key')
+        with pytest.raises(LiteLLMIntegrationDisabled):
+            await store.store(historical)
+        response = await store_settings(
+            {
+                'agent_settings_diff': {
+                    'llm': {'model': 'openai/gpt-4o', 'base_url': None}
+                }
+            },
+            settings_store=store,
+            user_id=None,
+        )
+        assert response.status_code == 200, response.body
+        repaired = await store.load()
+        assert repaired is not None
+        assert repaired.agent_settings.llm.model == 'openai/gpt-4o'
+        assert repaired.agent_settings.llm.api_key is None
+    assert dispatches == []
+    mock_gateway_membership.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reenabling_gateway_preserves_native_organization_default(
+    monkeypatch: pytest.MonkeyPatch,
+    session_maker: sessionmaker[Session],
+    async_session_maker: async_sessionmaker[AsyncSession],
+    org_with_multiple_members_fixture: OrgMembersFixture,
+    mock_gateway_membership: AsyncMock,
+) -> None:
+    from server.verified_models.verified_model_service import StoredVerifiedModel
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    org_id, actor_id = fixture['org_id'], fixture['admin_user_id']
+    monkeypatch.setenv('ENABLE_LITELLM', 'false')
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        org.agent_settings = {'llm': {'model': 'openai/gpt-4o', 'base_url': None}}
+        org.llm_api_key = SecretStr('org-native-key')
+        org.llm_profiles = None
+        member = session.get(OrgMember, (org_id, actor_id))
+        assert member is not None
+        member.agent_settings_diff = {}
+        member.has_custom_llm_api_key = False
+        session.add(
+            StoredVerifiedModel(
+                model_name='live-managed-default',
+                provider='openhands',
+                is_enabled=True,
+                is_verified=True,
+                is_free=False,
+                is_default=True,
+            )
+        )
+        session.commit()
+
+    dispatches: list[httpx.Request] = []
+
+    async def record(
+        client: httpx.AsyncClient,
+        request: httpx.Request,
+        **kwargs: Unpack[HttpxSendOptions],
+    ) -> httpx.Response:
+        dispatches.append(request)
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(httpx.AsyncClient, 'send', record)
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        store = SaasSettingsStore(str(actor_id))
+        disabled_settings = await store.load()
+        assert disabled_settings is not None
+        assert (
+            disabled_settings.llm_profiles.require('Default').model == 'openai/gpt-4o'
+        )
+        with session_maker() as session:
+            persisted_org = session.get(Org, org_id)
+            assert persisted_org is not None
+            assert (
+                LLMProfiles.model_validate(persisted_org.llm_profiles)
+                .require('Default')
+                .model
+                == 'openai/gpt-4o'
+            )
+
+        monkeypatch.setenv('ENABLE_LITELLM', 'true')
+        loaded = await store.load()
+        assert loaded is not None
+        assert loaded.agent_settings.llm.model == 'openai/gpt-4o'
+        key = loaded.agent_settings.llm.api_key
+        assert isinstance(key, SecretStr)
+        assert key.get_secret_value() == 'org-native-key'
+        assert loaded.llm_profiles.active == 'Default'
+        assert loaded.llm_profiles.require('Default').model == 'openai/gpt-4o'
+    assert dispatches == []
+    mock_gateway_membership.assert_not_awaited()

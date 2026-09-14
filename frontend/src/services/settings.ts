@@ -71,4 +71,11 @@ export const DEFAULT_SETTINGS: Settings = {
 /**
  * Get the default settings
  */
-export const getDefaultSettings = (): Settings => DEFAULT_SETTINGS;
+const DIRECT_PROVIDER_DEFAULT_SETTINGS: Settings = {
+  ...DEFAULT_SETTINGS,
+  llm_model: "",
+  agent_settings: { ...DEFAULT_SETTINGS.agent_settings, llm: { model: "" } },
+};
+
+export const getDefaultSettings = (enableLiteLlm: boolean = true): Settings =>
+  enableLiteLlm ? DEFAULT_SETTINGS : DIRECT_PROVIDER_DEFAULT_SETTINGS;

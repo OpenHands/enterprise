@@ -2,6 +2,7 @@
 
 import contextlib
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,6 +10,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 from pydantic import SecretStr
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.app_server.user_auth.user_auth import AuthType
 from server.auth.saas_user_auth import SaasUserAuth
@@ -559,7 +561,12 @@ class TestRefreshManagedLlmApiKey:
 
     @classmethod
     @contextlib.contextmanager
-    def _patched(cls, async_session_maker, *, generated_key='sk-new-managed-key'):
+    def _patched(
+        cls,
+        async_session_maker: async_sessionmaker[AsyncSession],
+        *,
+        generated_key: str = 'sk-new-managed-key',
+    ) -> Iterator[tuple[AsyncMock, AsyncMock, AsyncMock]]:
         """Enter session + LiteLLM patches together, yielding the LiteLLM mocks.
 
         (mock_delete_alias, mock_generate, mock_delete_token)
@@ -567,6 +574,11 @@ class TestRefreshManagedLlmApiKey:
         with contextlib.ExitStack() as stack:
             for p in cls._session_patches(async_session_maker):
                 stack.enter_context(p)
+            stack.enter_context(
+                patch.object(
+                    LiteLlmManager, 'ensure_user_in_org', new_callable=AsyncMock
+                )
+            )
             mock_delete_alias, mock_generate, mock_delete_token = (
                 stack.enter_context(p)
                 for p in cls._litellm_patches(generated_key=generated_key)
@@ -576,8 +588,13 @@ class TestRefreshManagedLlmApiKey:
     @classmethod
     @contextlib.contextmanager
     def _patched_route(
-        cls, async_session_maker, user_id, org_id, *, generated_key='sk-new-managed-key'
-    ):
+        cls,
+        async_session_maker: async_sessionmaker[AsyncSession],
+        user_id: str,
+        org_id: uuid.UUID,
+        *,
+        generated_key: str = 'sk-new-managed-key',
+    ) -> Iterator[tuple[AsyncMock, AsyncMock, AsyncMock]]:
         """Like ``_patched`` but also patches ``get_instance`` to return a real
         ``SaasSettingsStore`` bound to the test DB, so the route exercises the
         real rotation end-to-end.
@@ -585,6 +602,11 @@ class TestRefreshManagedLlmApiKey:
         with contextlib.ExitStack() as stack:
             for p in cls._session_patches(async_session_maker):
                 stack.enter_context(p)
+            stack.enter_context(
+                patch.object(
+                    LiteLlmManager, 'ensure_user_in_org', new_callable=AsyncMock
+                )
+            )
             mock_delete_alias, mock_generate, mock_delete_token = (
                 stack.enter_context(p)
                 for p in cls._litellm_patches(generated_key=generated_key)
@@ -1082,9 +1104,18 @@ class TestCreateByorKeyAlias:
 class TestGenerateByorKey:
     """Test the generate_byor_key function."""
 
+    @pytest.fixture(autouse=True)
+    def ensure_membership(self) -> Iterator[AsyncMock]:
+        with patch.object(
+            LiteLlmManager, 'ensure_user_in_org', new_callable=AsyncMock
+        ) as ensure:
+            yield ensure
+
     @pytest.mark.asyncio
     @patch('storage.lite_llm_manager.LiteLlmManager.generate_key')
-    async def test_passes_default_alias_and_team_id_to_litellm(self, mock_generate_key):
+    async def test_passes_default_alias_and_team_id_to_litellm(
+        self, mock_generate_key: AsyncMock, ensure_membership: AsyncMock
+    ) -> None:
         """generate_byor_key builds the alias from the helper and passes org_id as str."""
         # Arrange
         user_id = 'user-123'
@@ -1101,6 +1132,7 @@ class TestGenerateByorKey:
 
         # Assert
         assert result == new_key
+        ensure_membership.assert_awaited_once_with(user_id, org_id_str)
         mock_generate_key.assert_called_once_with(
             user_id,
             org_id_str,

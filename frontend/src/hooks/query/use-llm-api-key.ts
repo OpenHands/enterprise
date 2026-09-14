@@ -1,5 +1,7 @@
+import type { DefaultError } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { AxiosError } from "axios";
+import { useLiteLlmIntegration } from "#/hooks/use-litellm-integration";
 import { openHands } from "#/api/open-hands-axios";
 import { useConfig } from "./use-config";
 
@@ -14,21 +16,28 @@ export interface LlmApiKeyError {
   message?: string;
 }
 
-export function useLlmApiKey() {
+export function useLlmApiKey(): {
+  data: LlmApiKeyResponse | undefined;
+  error: DefaultError | null;
+  isLoading: boolean;
+  isPaymentRequired: boolean;
+} {
   const { data: config } = useConfig();
+  const { enabled, guardQuery } = useLiteLlmIntegration();
 
   const query = useQuery({
     queryKey: [LLM_API_KEY_QUERY_KEY],
     // Fetch the BYOR key on SaaS, or whenever the deployment has explicitly
     // enabled BYOR export (e.g. self-hosted installs without billing).
     enabled:
-      config?.app_mode === "saas" ||
-      !!config?.feature_flags?.enable_byor_export,
-    queryFn: async () => {
+      enabled &&
+      (config?.app_mode === "saas" ||
+        !!config?.feature_flags?.enable_byor_export),
+    queryFn: guardQuery(async () => {
       const { data } =
         await openHands.get<LlmApiKeyResponse>("/api/keys/llm/byor");
       return data;
-    },
+    }),
     staleTime: 1000 * 60 * 5, // 5 minutes
     gcTime: 1000 * 60 * 15, // 15 minutes
     retry: (failureCount, error) => {
@@ -47,9 +56,9 @@ export function useLlmApiKey() {
     query.error instanceof AxiosError && query.error.response?.status === 402;
 
   return {
-    data: query.data,
-    error: query.error,
-    isLoading: query.isLoading,
-    isPaymentRequired,
+    data: enabled ? query.data : undefined,
+    error: enabled ? query.error : null,
+    isLoading: enabled && query.isLoading,
+    isPaymentRequired: enabled && isPaymentRequired,
   };
 }

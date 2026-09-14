@@ -1,7 +1,8 @@
+import type { UseQueryResult } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { useIsOnIntermediatePage } from "#/hooks/use-is-on-intermediate-page";
-import { DEFAULT_SETTINGS } from "#/services/settings";
+import { DEFAULT_SETTINGS, getDefaultSettings } from "#/services/settings";
 import { Settings, SettingsScope, SettingsValue } from "#/types/settings";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import SettingsService from "#/api/settings-service/settings-service.api";
@@ -39,7 +40,11 @@ const resolveSdkString = (
   return defaultValue;
 };
 
-const normalizeSettingsResponse = (settings: Partial<Settings>): Settings => {
+const normalizeSettingsResponse = (
+  settings: Partial<Settings>,
+  enableLiteLlm: boolean = true,
+): Settings => {
+  const defaults = getDefaultSettings(enableLiteLlm);
   const agentSettings = (settings.agent_settings ?? {}) as Record<
     string,
     unknown
@@ -58,7 +63,8 @@ const normalizeSettingsResponse = (settings: Partial<Settings>): Settings => {
     llm_model: resolveSdkString(
       agentSettings,
       "llm.model",
-      DEFAULT_SETTINGS.llm_model,
+      defaults.llm_model,
+      !enableLiteLlm,
     ),
     llm_base_url: resolveSdkString(
       agentSettings,
@@ -98,7 +104,7 @@ const normalizeSettingsResponse = (settings: Partial<Settings>): Settings => {
       settings.disabled_skills ?? DEFAULT_SETTINGS.disabled_skills,
     v1_enabled: settings.v1_enabled ?? DEFAULT_SETTINGS.v1_enabled,
     agent_settings_schema: settings.agent_settings_schema ?? null,
-    agent_settings: settings.agent_settings ?? DEFAULT_SETTINGS.agent_settings,
+    agent_settings: settings.agent_settings ?? defaults.agent_settings,
     conversation_settings_schema:
       settings.conversation_settings_schema ??
       DEFAULT_SETTINGS.conversation_settings_schema,
@@ -110,36 +116,63 @@ const normalizeSettingsResponse = (settings: Partial<Settings>): Settings => {
   };
 };
 
+export const getSettingsResource = async (
+  scope: SettingsScope = "personal",
+  organizationId?: string | null,
+): Promise<Partial<Settings>> => {
+  if (scope === "org") {
+    if (!organizationId) throw new Error("An organization ID is required.");
+    return organizationService.getOrganizationSettings({
+      orgId: organizationId,
+    });
+  }
+  return SettingsService.getSettings();
+};
+
 export const getSettingsQueryFn = async (
   scope: SettingsScope = "personal",
   organizationId?: string | null,
-): Promise<Settings> => {
-  const settings =
-    scope === "org"
-      ? await organizationService.getOrganizationSettings({
-          orgId: organizationId!,
-        })
-      : await SettingsService.getSettings();
+  enableLiteLlm: boolean = true,
+): Promise<Settings> =>
+  normalizeSettingsResponse(
+    await getSettingsResource(scope, organizationId),
+    enableLiteLlm,
+  );
 
-  return normalizeSettingsResponse(settings);
-};
-
-export const useSettings = (scope: SettingsScope = "personal") => {
+export const useSettings = (
+  scope: SettingsScope = "personal",
+): Pick<
+  UseQueryResult<Settings>,
+  | "data"
+  | "error"
+  | "isError"
+  | "isLoading"
+  | "isFetching"
+  | "isFetched"
+  | "isSuccess"
+  | "status"
+  | "fetchStatus"
+  | "refetch"
+> => {
   const isOnIntermediatePage = useIsOnIntermediatePage();
   const { data: userIsAuthenticated, acceptedTos } = useIsAuthed();
   const { organizationId } = useSelectedOrganizationId();
   const { data: config } = useConfig();
 
   const isOss = config?.app_mode === "oss";
+  const enableLiteLlm =
+    !!config && config.feature_flags?.enable_litellm !== false;
 
   const query = useQuery({
     queryKey: SETTINGS_QUERY_KEYS.byScope(scope, organizationId),
-    queryFn: () => getSettingsQueryFn(scope, organizationId),
+    queryFn: () => getSettingsResource(scope, organizationId),
+    select: (settings) => normalizeSettingsResponse(settings, enableLiteLlm),
     retry: (_, error) => error.status !== 404,
     refetchOnWindowFocus: false,
     staleTime: 1000 * 60 * 5,
     gcTime: 1000 * 60 * 15,
     enabled:
+      !!config &&
       !isOnIntermediatePage &&
       !!userIsAuthenticated &&
       acceptedTos !== false &&
@@ -156,7 +189,7 @@ export const useSettings = (scope: SettingsScope = "personal") => {
   if (query.error?.status === 404) {
     // Create a new object with only the properties we need, avoiding rest destructuring
     return {
-      data: DEFAULT_SETTINGS,
+      data: getDefaultSettings(enableLiteLlm),
       error: query.error,
       isError: query.isError,
       isLoading: query.isLoading,

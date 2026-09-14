@@ -34,7 +34,7 @@ export function ExpandableMessage({
   success,
   observation,
   action,
-}: ExpandableMessageProps) {
+}: ExpandableMessageProps): React.JSX.Element {
   const { data: config } = useConfig();
   const { t, i18n } = useTranslation();
   const [showDetails, setShowDetails] = useState(true);
@@ -94,6 +94,7 @@ export function ExpandableMessage({
   const statusIconClasses = "h-4 w-4 ml-2 inline";
 
   if (
+    config?.feature_flags?.enable_litellm !== false &&
     config?.feature_flags?.enable_billing &&
     config?.app_mode === "saas" &&
     id === I18nKey.STATUS$ERROR_LLM_OUT_OF_CREDITS

@@ -30,9 +30,16 @@ from openhands.app_server.settings.provider_connections import (
     ProviderConnectionNotFoundError,
     ProviderConnections,
 )
+from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.dependencies import get_dependencies
+from openhands.app_server.utils.litellm_integration import (
+    LiteLLMIntegrationDisabled,
+    is_litellm_enabled,
+    is_managed_llm,
+    validate_agent_llms,
+)
 from server.auth import authorization
 from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.saas_user_auth import SaasUserAuth
@@ -127,10 +134,16 @@ def _resolve_exposed_llm_profiles(user_info: SaasUserInfo) -> None:
     fallback_api_key = settings_llm.api_key
     profiles = user_info.llm_profiles.profiles
     for name, profile_llm in list(profiles.items()):
+        if not is_litellm_enabled() and is_managed_llm(
+            profile_llm.model, profile_llm.base_url
+        ):
+            del profiles[name]
+            continue
         profiles[name] = resolve_profile_llm(
             profile_llm,
             managed_proxy_url=LITE_LLM_API_URL,
             fallback_api_key=fallback_api_key,
+            fallback_llm=settings_llm,
         )
 
 
@@ -239,10 +252,39 @@ async def get_current_user_saas(
         )
 
     user_info = SaasUserInfo.model_validate(user_info_data)
+    if not is_litellm_enabled():
+        llm = user_info.agent_settings.llm
+        if is_managed_llm(llm.model, llm.base_url):
+            # /settings retains the historical choice for editing. The SDK
+            # projection must never export that choice or its managed key.
+            setup_llm = Settings().agent_settings.llm.model_copy(
+                update={'api_key': None}
+            )
+            user_info.agent_settings = user_info.agent_settings.model_copy(
+                update={'llm': setup_llm}
+            )
+        profiles = user_info.llm_profiles
+        profiles.profiles = {
+            name: llm
+            for name, llm in profiles.profiles.items()
+            if not is_managed_llm(llm.model, llm.base_url)
+        }
+        if profiles.active not in profiles.profiles:
+            profiles.active = None
 
     if expose_secrets:
         await validate_session_key_ownership(user_context, x_session_api_key)
-        _resolve_exposed_llm_profiles(user_info)
+        try:
+            validate_agent_llms(user_info.agent_settings)
+            if user_info.title_llm_profile and not user_info.llm_profiles.has(
+                user_info.title_llm_profile
+            ):
+                raise LiteLLMIntegrationDisabled(
+                    'The selected title LLM profile is unavailable. Select a direct provider profile.'
+                )
+            _resolve_exposed_llm_profiles(user_info)
+        except LiteLLMIntegrationDisabled as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         content = _USER_WIRE.validate_python(
             user_info.model_dump(mode='json', context={'expose_secrets': True})
         )

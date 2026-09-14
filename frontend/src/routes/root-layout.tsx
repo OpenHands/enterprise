@@ -135,10 +135,18 @@ export default function MainApp(): React.JSX.Element {
   }, [isOnIntermediatePage, migrateUserConsent]);
 
   React.useEffect(() => {
-    if (settings?.is_new_user && config.data?.app_mode === "saas") {
+    if (
+      settings?.is_new_user &&
+      config.data?.app_mode === "saas" &&
+      config.data.feature_flags?.enable_litellm !== false
+    ) {
       displaySuccessToast(t(I18nKey.BILLING$YOURE_IN));
     }
-  }, [settings?.is_new_user, config.data?.app_mode]);
+  }, [
+    settings?.is_new_user,
+    config.data?.app_mode,
+    config.data?.feature_flags?.enable_litellm,
+  ]);
 
   // Function to check if login method exists in local storage
   const checkLoginMethodExists = React.useCallback(() => {

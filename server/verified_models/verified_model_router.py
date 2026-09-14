@@ -15,6 +15,7 @@ from openhands.app_server.config_api.llm_model_service import (
 )
 from openhands.app_server.services.db_session import get_db_session
 from openhands.app_server.services.injector import InjectorState
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.app_server.utils.llm import ModelsResponse, get_supported_llm_models
 from server.email_validation import get_admin_user_id
 from server.verified_models.verified_model_models import (
@@ -172,7 +173,7 @@ class SaaSLLMModelService(DefaultLLMModelService):
     def _is_model_verified(
         self, model_name: str, name: str, models_response: ModelsResponse
     ) -> bool:
-        if self._verified_model_ids is None:
+        if not is_litellm_enabled() or self._verified_model_ids is None:
             return super()._is_model_verified(model_name, name, models_response)
         return model_name in self._verified_model_ids
 
@@ -180,6 +181,8 @@ class SaaSLLMModelService(DefaultLLMModelService):
         self,
         verified_models: list[str] | None = None,
     ) -> ModelsResponse:
+        if not is_litellm_enabled():
+            return get_supported_llm_models()
         if self._cached_response is not None:
             return self._cached_response
 

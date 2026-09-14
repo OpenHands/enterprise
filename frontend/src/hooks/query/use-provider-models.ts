@@ -1,4 +1,6 @@
+import type { UseQueryResult, DefaultError } from "@tanstack/react-query";
 import { queryOptions, useQuery } from "@tanstack/react-query";
+import { useConfig } from "./use-config";
 import ConfigService from "#/api/config-service/config-service.api";
 import type { LLMModel } from "#/api/config-service/config-service.types";
 
@@ -36,8 +38,16 @@ export const providerModelsQueryOptions = (provider: string | null) =>
     gcTime: 1000 * 60 * 15,
   });
 
-export const useProviderModels = (provider: string | null) =>
-  useQuery({
+export const useProviderModels = (
+  provider: string | null,
+): UseQueryResult<LLMModel[], DefaultError> => {
+  const { data: config } = useConfig();
+  const disabledProvider =
+    config?.feature_flags?.enable_litellm === false &&
+    ["openhands", "litellm_proxy"].includes(provider ?? "");
+  return useQuery({
     ...providerModelsQueryOptions(provider),
-    enabled: !!provider,
+    enabled: !!provider && !disabledProvider,
+    select: (models) => (disabledProvider ? [] : models),
   });
+};

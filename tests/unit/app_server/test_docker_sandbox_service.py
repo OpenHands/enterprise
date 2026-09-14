@@ -30,6 +30,14 @@ from openhands.app_server.sandbox.sandbox_models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def mock_resume_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        'openhands.app_server.sandbox.sandbox_service.SandboxService.validate_resume_configuration',
+        AsyncMock(),
+    )
+
+
 @pytest.fixture
 def mock_docker_client():
     """Mock Docker client for testing."""

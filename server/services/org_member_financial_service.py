@@ -9,6 +9,7 @@ from server.routes.org_models import (
     OrgMemberFinancialPage,
     OrgMemberFinancialResponse,
 )
+from server.services.litellm_service import require_litellm_available
 from storage.lite_llm_manager import LiteLlmManager
 
 # The Quint oracle client is vendored under quint-specs/, which the application
@@ -53,6 +54,7 @@ class OrgMemberFinancialService:
         Raises:
             ValueError: If page_id is invalid
         """
+        require_litellm_available()
         # Parse page_id to get offset
         offset = 0
         if page_id is not None:
@@ -136,10 +138,16 @@ class OrgMemberFinancialService:
             user = member.user
             user_id_str = str(member.user_id)
 
-            user_financial = members_financial.get(user_id_str, {})
-            individual_spend = user_financial.get('spend', 0) or 0
-            max_budget = user_financial.get('max_budget')
-            uses_shared_budget = user_financial.get('uses_shared_budget', False)
+            user_financial = members_financial.get(user_id_str)
+            individual_spend = (
+                user_financial.get('spend', 0.0) if user_financial else 0.0
+            )
+            max_budget = user_financial.get('max_budget') if user_financial else None
+            uses_shared_budget = (
+                user_financial.get('uses_shared_budget', False)
+                if user_financial
+                else False
+            )
 
             # For shared team budgets, all members see the same remaining budget,
             # so calculate using the team's total spend rather than per-user spend.

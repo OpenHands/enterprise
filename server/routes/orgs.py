@@ -12,6 +12,7 @@ from openhands.analytics import get_analytics_service
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth import get_user_id, get_user_settings_store
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import (
     Permission,
@@ -62,11 +63,13 @@ from server.routes.org_models import (
     OrphanedUserError,
     RoleNotFoundError,
 )
+from server.services.litellm_service import require_litellm_available
 from server.services.org_app_settings_service import (
     OrgAppSettingsService,
     OrgAppSettingsServiceInjector,
 )
 from server.services.org_budget_service import (
+    BudgetState,
     OrgBudgetService,
     OrgBudgetServiceInjector,
 )
@@ -113,6 +116,8 @@ async def _maybe_rotate_managed_key_for_org_update(
     the personal settings endpoints) so org settings updates get the same
     transparent key rotation when the managed key is stale.
     """
+    if not is_litellm_enabled():
+        return
     try:
         from openhands.app_server.settings.settings_router import (
             _maybe_rotate_stale_managed_key,
@@ -1136,6 +1141,7 @@ async def get_org_members_financial(
         HTTPException: 400 if page_id is invalid
         HTTPException: 500 if retrieval fails
     """
+    require_litellm_available()
     logger.info(
         'Getting financial data for organization members',
         extra={
@@ -1175,7 +1181,7 @@ async def get_org_members_financial(
         )
 
 
-def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
+def _build_budget_response(state: BudgetState) -> OrgBudgetSettingsResponse:
     settings = state['settings']
     thresholds = state['thresholds']
     cycle = state['cycle']
@@ -1223,7 +1229,7 @@ def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
             )
             for threshold in thresholds
         ],
-        users=[OrgBudgetUserResponse(**user) for user in state['users']],
+        users=[OrgBudgetUserResponse.model_validate(user) for user in state['users']],
         users_total=state['users_total'],
         users_page=state['users_page'],
         users_per_page=state['users_per_page'],
@@ -1243,6 +1249,7 @@ async def get_org_budget_settings(
     users_status: str | None = Query(None),
     budget_service: OrgBudgetService = org_budget_service_dependency,
 ) -> OrgBudgetSettingsResponse:
+    require_litellm_available()
     logger.info(
         'Getting org budget settings',
         extra={'org_id': str(org_id), 'user_id': user_id},
@@ -1272,6 +1279,7 @@ async def update_org_budget_settings(
     users_status: str | None = Query(None),
     budget_service: OrgBudgetService = org_budget_service_dependency,
 ) -> OrgBudgetSettingsResponse:
+    require_litellm_available()
     logger.info(
         'Updating org budget settings',
         extra={'org_id': str(org_id), 'user_id': user_id},
@@ -1301,6 +1309,7 @@ async def upsert_org_budget_override(
     current_user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     budget_service: OrgBudgetService = org_budget_service_dependency,
 ) -> OrgBudgetUserMutationResponse:
+    require_litellm_available()
     logger.info(
         'Updating org budget override',
         extra={
@@ -1337,6 +1346,7 @@ async def delete_org_budget_override(
     current_user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     budget_service: OrgBudgetService = org_budget_service_dependency,
 ) -> None:
+    require_litellm_available()
     logger.info(
         'Deleting org budget override',
         extra={

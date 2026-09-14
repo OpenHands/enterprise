@@ -1,9 +1,10 @@
 import { useTranslation } from "react-i18next";
+import { useLiteLlmIntegration } from "#/hooks/use-litellm-integration";
 import { I18nKey } from "#/i18n/declaration";
 import { ModalBackdrop } from "../modal-backdrop";
 import { SettingsForm } from "./settings-form";
 import { Settings } from "#/types/settings";
-import { DEFAULT_SETTINGS } from "#/services/settings";
+import { getDefaultSettings } from "#/services/settings";
 import { HelpLink } from "#/ui/help-link";
 
 interface SettingsModalProps {
@@ -11,8 +12,12 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-export function SettingsModal({ onClose, settings }: SettingsModalProps) {
+export function SettingsModal({
+  onClose,
+  settings,
+}: SettingsModalProps): React.JSX.Element {
   const { t } = useTranslation();
+  const { enabled } = useLiteLlmIntegration();
 
   return (
     <ModalBackdrop>
@@ -35,7 +40,7 @@ export function SettingsModal({ onClose, settings }: SettingsModalProps) {
         />
 
         <SettingsForm
-          settings={settings || DEFAULT_SETTINGS}
+          settings={settings || getDefaultSettings(enabled)}
           onClose={onClose}
         />
       </div>

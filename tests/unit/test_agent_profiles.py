@@ -13,7 +13,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
+from pydantic import JsonValue
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from openhands.app_server.settings.agent_profiles import (
     MAX_AGENT_PROFILES,
@@ -29,6 +32,7 @@ from openhands.sdk.profiles import (
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.role import Role
+from storage.saas_settings_store import SaasSettingsStore
 from storage.user import User
 
 # Mock the database module before importing the routers so module-level imports
@@ -188,7 +192,7 @@ def test_member_mcp_config_migrates_legacy_wrapper_and_scalar_auth():
 
 
 @pytest.fixture
-def seeded_org(session_maker):
+def seeded_org(session_maker: sessionmaker[Session]) -> uuid.UUID:
     with session_maker() as session:
         session.add(Role(id=20, name='member', rank=3))
         session.add(
@@ -199,7 +203,13 @@ def seeded_org(session_maker):
                 enable_proactive_conversation_starters=True,
                 # An LLM profile the seed/resolve can reference.
                 llm_profiles={
-                    'profiles': {'Default': {'model': 'gpt-4o', 'api_key': 'k'}},
+                    'profiles': {
+                        'Default': {
+                            'model': 'gpt-4o',
+                            'base_url': 'https://api.openai.com/v1',
+                            'api_key': 'k',
+                        }
+                    },
                     'active': 'Default',
                 },
             )
@@ -636,13 +646,16 @@ class TestLLMProfileFKGuard:
 
 
 class TestResolveActiveAgentProfile:
-    def _store(self):
+    def _store(self) -> SaasSettingsStore:
         with patch('storage.database.a_session_maker'):
             from storage.saas_settings_store import SaasSettingsStore
         return SaasSettingsStore(str(USER_ID))
 
-    def _org_with(self, agent_profile):
-        org = MagicMock(spec=Org)
+    def _org_with(
+        self, agent_profile: OpenHandsAgentProfile | ACPAgentProfile
+    ) -> tuple[Org, str]:
+        org = Org(id=ORG_ID, name='Profile resolution')
+        org.provider_connections = None
         org.id = ORG_ID
         ap = AgentProfiles()
         save_profile_preserving_identity(ap, agent_profile)
@@ -655,9 +668,10 @@ class TestResolveActiveAgentProfile:
         }
         return org, next(iter(ap.profiles))
 
-    def test_no_pointer_returns_none(self):
+    def test_no_pointer_returns_none(self) -> None:
         store = self._store()
         org = MagicMock(spec=Org)
+        org.provider_connections = None
         org.id = ORG_ID
         member = MagicMock(spec=OrgMember)
         member.active_agent_profile_id = None
@@ -685,9 +699,10 @@ class TestResolveActiveAgentProfile:
         _dump, resolved_id, _revision = result
         assert resolved_id == pid
 
-    def test_stale_pointer_falls_back_to_none(self):
+    def test_stale_pointer_falls_back_to_none(self) -> None:
         store = self._store()
         org = MagicMock(spec=Org)
+        org.provider_connections = None
         org.id = ORG_ID
         org.agent_profiles = None
         member = MagicMock(spec=OrgMember)
@@ -695,7 +710,7 @@ class TestResolveActiveAgentProfile:
         # Profile deleted out from under the pointer -> graceful None, no raise.
         assert store._resolve_active_agent_profile(org, member, {}, None) is None
 
-    def test_resolves_openhands_profile_and_returns_provenance(self):
+    def test_resolves_openhands_profile_and_returns_provenance(self) -> None:
         store = self._store()
         org, pid = self._org_with(
             OpenHandsAgentProfile(name='reviewer', llm_profile_ref='Default')
@@ -708,11 +723,11 @@ class TestResolveActiveAgentProfile:
         dump, resolved_id, revision = result
         assert resolved_id == pid
         assert revision == 0
-        assert dump['agent_kind'] == 'openhands'
+        assert dump.agent_kind == 'openhands'
         # The resolved LLM came from the referenced org LLM profile.
-        assert dump['llm']['model'] == 'gpt-4o'
+        assert dump.llm.model == 'gpt-4o'
 
-    def test_resolves_profile_with_legacy_mcp_config(self):
+    def test_resolves_profile_with_legacy_mcp_config(self) -> None:
         store = self._store()
         org, pid = self._org_with(
             OpenHandsAgentProfile(
@@ -723,7 +738,7 @@ class TestResolveActiveAgentProfile:
         )
         member = MagicMock(spec=OrgMember)
         member.active_agent_profile_id = pid
-        merged_agent_settings = {
+        merged_agent_settings: dict[str, JsonValue] = {
             'mcp_config': {
                 'mcpServers': {
                     'shttp': {
@@ -740,13 +755,14 @@ class TestResolveActiveAgentProfile:
 
         assert result is not None
         dump, _resolved_id, _revision = result
-        assert set(dump['mcp_config']) == {'shttp'}
-        assert dump['mcp_config']['shttp']['auth'] == {
-            'strategy': 'bearer',
-            'value': 'legacy-token',
-        }
+        assert set(dump.mcp_config) == {'shttp'}
+        auth = dump.mcp_config['shttp'].auth
+        assert auth is not None
+        assert auth.strategy == 'bearer'
+        assert auth.value is not None
+        assert auth.value.get_secret_value() == 'legacy-token'
 
-    def test_resolve_canonicalizes_legacy_litellm_proxy_llm(self):
+    def test_resolve_canonicalizes_legacy_litellm_proxy_llm(self) -> None:
         """A profile referencing an org LLM profile with a legacy
         ``litellm_proxy/`` managed name must resolve to the canonical
         ``openhands/`` name (proxy base_url dropped), matching the non-profile
@@ -756,6 +772,7 @@ class TestResolveActiveAgentProfile:
 
         store = self._store()
         org = MagicMock(spec=Org)
+        org.provider_connections = None
         org.id = ORG_ID
         ap = AgentProfiles()
         save_profile_preserving_identity(
@@ -781,8 +798,8 @@ class TestResolveActiveAgentProfile:
         result = store._resolve_active_agent_profile(org, member, {}, None)
         assert result is not None
         dump, _resolved_id, _revision = result
-        assert dump['llm']['model'] == 'openhands/claude-opus-4-8'
-        assert dump['llm'].get('base_url') is None
+        assert dump.llm.model == 'openhands/claude-opus-4-8'
+        assert dump.llm.base_url is None
 
     def test_override_id_wins_over_member_pointer(self):
         store = self._store()
@@ -885,7 +902,12 @@ class TestPersistedVsResolvedSettingsView:
     mcp_config, the referenced LLM profile's key) can never round-trip into
     the member/org rows."""
 
-    async def _setup_active_profile(self, async_session_maker, org_id, mcp_server_refs):
+    async def _setup_active_profile(
+        self,
+        async_session_maker: async_sessionmaker[AsyncSession],
+        org_id: uuid.UUID,
+        mcp_server_refs: list[str],
+    ) -> OpenHandsAgentProfile | ACPAgentProfile:
         """Profile with the given refs, member pointed at it, member
         mcp_config with three servers, full load() viable."""
         ap = AgentProfiles()
@@ -900,6 +922,7 @@ class TestPersistedVsResolvedSettingsView:
         await _set_agent_profiles(async_session_maker, org_id, ap)
         async with async_session_maker() as session:
             user = await session.get(User, USER_ID)
+            assert user is not None
             user.enable_sound_notifications = True
             member = (
                 (
@@ -913,7 +936,9 @@ class TestPersistedVsResolvedSettingsView:
                 .scalars()
                 .first()
             )
+            assert member is not None
             member.active_agent_profile_id = str(profile.id)
+            member.has_custom_llm_api_key = True
             member.agent_settings_diff = {
                 'llm': {
                     'model': 'gpt-4o',

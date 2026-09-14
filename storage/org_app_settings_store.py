@@ -7,11 +7,16 @@ from dataclasses import dataclass
 from datetime import timezone
 from uuid import UUID
 
+from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
-from openhands.sdk.settings import OpenHandsAgentSettings
+from openhands.app_server.utils.litellm_integration import (
+    is_litellm_enabled,
+    llm_credentials_compatible,
+)
+from openhands.sdk.settings import OpenHandsAgentSettings, apply_agent_settings_diff
 from server.constants import (
     ORG_SETTINGS_VERSION,
     get_default_llm_base_url,
@@ -22,6 +27,7 @@ from server.routes.org_models import (
     OrgConcurrentModificationError,
 )
 from storage.org import Org
+from storage.org_member import OrgMember
 from storage.org_store import OrgStore
 from storage.user import User
 
@@ -84,7 +90,7 @@ class OrgAppSettingsStore:
             org.org_version = ORG_SETTINGS_VERSION
             # Only rewrite the default LLM config for orgs still on the managed
             # default; BYOK orgs keep their custom model/base_url on upgrade.
-            if OrgStore._uses_managed_default_llm(org):
+            if is_litellm_enabled() and OrgStore._uses_managed_default_llm(org):
                 org.agent_settings = deep_merge(
                     org.agent_settings,
                     {
@@ -217,11 +223,41 @@ class OrgAppSettingsStore:
         # and this is a diff to merge into the JSON column, not a value to set.
         agent_settings_diff = update_dict.pop('agent_settings_diff', None)
         if agent_settings_diff is not None:
+            previous_settings = dict(org.agent_settings)
             org.agent_settings = OrgStore._merge_and_validate_settings(
                 org.agent_settings,
                 agent_settings_diff,
                 OpenHandsAgentSettings,
             ).model_dump(mode='json', exclude_unset=True)
+            if {'llm', 'agent_kind'} & agent_settings_diff.keys():
+                previous_llm = apply_agent_settings_diff(previous_settings, {}).llm
+                updated_llm = OrgStore.get_agent_settings_from_org(org).llm
+                if not llm_credentials_compatible(
+                    previous_llm.model,
+                    previous_llm.base_url,
+                    updated_llm.model,
+                    updated_llm.base_url,
+                ):
+                    org.llm_api_key = None
+                    members = await self.db_session.scalars(
+                        select(OrgMember).where(OrgMember.org_id == org_id)
+                    )
+                    for member in members:
+                        member_diff = dict(member.agent_settings_diff or {})
+                        previous_member_llm = apply_agent_settings_diff(
+                            previous_settings, member_diff
+                        ).llm
+                        updated_member_llm = apply_agent_settings_diff(
+                            org.agent_settings, member_diff
+                        ).llm
+                        if not llm_credentials_compatible(
+                            previous_member_llm.model,
+                            previous_member_llm.base_url,
+                            updated_member_llm.model,
+                            updated_member_llm.base_url,
+                        ):
+                            member.llm_api_key = SecretStr('')
+                            member.has_custom_llm_api_key = False
 
         # Update regular org fields
         for field, value in update_dict.items():

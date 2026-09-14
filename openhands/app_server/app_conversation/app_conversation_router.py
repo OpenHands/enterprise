@@ -69,6 +69,7 @@ from openhands.app_server.config import (
     depends_sandbox_spec_service,
     depends_user_context,
     get_app_conversation_service,
+    resolve_provider_llm_base_url,
 )
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
@@ -98,8 +99,12 @@ from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
+from openhands.app_server.utils.litellm_integration import (
+    LiteLLMIntegrationDisabled,
+    validate_agent_llms,
+)
 from openhands.sdk.agent.acp_file_credentials import is_valid_codex_auth
-from openhands.sdk.settings import ACPAgentSettings
+from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import KeywordTrigger, TaskTrigger
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
@@ -152,18 +157,15 @@ def _request_or_stored_secret_value(
     return _custom_secret_value(secrets, name)
 
 
-async def _resolve_acp_agent_settings(
+async def _resolve_start_agent_settings(
     request: AppConversationStartRequest,
     user_context: UserContext,
-) -> ACPAgentSettings | None:
+) -> ACPAgentSettings | OpenHandsAgentSettings | None:
     user = await user_context.get_user_info(
         resolve_agent_profile=True,
         override_agent_profile_id=request.agent_profile_id,
     )
-    agent_settings = user.agent_settings
-    if isinstance(agent_settings, ACPAgentSettings):
-        return agent_settings
-    return None
+    return user.agent_settings
 
 
 async def _validate_codex_credentials(
@@ -195,15 +197,33 @@ async def _validate_codex_credentials(
     )
 
 
-async def _validate_acp_start(
+async def _validate_conversation_start(
     request: AppConversationStartRequest,
     user_context: UserContext,
     secrets_store: SecretsStore,
 ) -> None:
-    """Pre-flight the ACP agent settings a conversation is about to start with."""
-    agent_settings = await _resolve_acp_agent_settings(request, user_context)
-    validate_acp_provider_surfaced(agent_settings)
-    await _validate_codex_credentials(agent_settings, request, secrets_store)
+    """Reject unusable settings before reserving quota or allocating a sandbox."""
+    try:
+        agent_settings = await _resolve_start_agent_settings(request, user_context)
+        validate_acp_provider_surfaced(agent_settings)
+        if agent_settings is None:
+            return
+        if agent_settings.agent_kind == 'acp':
+            await _validate_codex_credentials(agent_settings, request, secrets_store)
+        else:
+            llm = agent_settings.llm
+            model = request.llm_model or llm.model
+            effective_llm = llm.model_copy(
+                update={
+                    'model': model,
+                    'base_url': resolve_provider_llm_base_url(model, llm.base_url),
+                }
+            )
+            validate_agent_llms(
+                agent_settings.model_copy(update={'llm': effective_llm})
+            )
+    except LiteLLMIntegrationDisabled as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @dataclass
@@ -507,25 +527,10 @@ async def start_app_conversation(
         app_conversation_service_dependency
     ),
 ) -> AppConversationStartTask:
-    await _validate_acp_start(start_request, user_context, secrets_store)
+    await _validate_conversation_start(start_request, user_context, secrets_store)
 
-    quota_user_id_result = user_context.get_user_id()
-    quota_user_id = (
-        await quota_user_id_result
-        if inspect.isawaitable(quota_user_id_result)
-        else quota_user_id_result
-    )
-    get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
-    quota_org_id_result = (
-        get_effective_org_id()
-        if quota_user_id and get_effective_org_id is not None
-        else None
-    )
-    quota_org_id = (
-        await quota_org_id_result
-        if inspect.isawaitable(quota_org_id_result)
-        else quota_org_id_result
-    )
+    quota_user_id = await user_context.get_user_id()
+    quota_org_id = await user_context.get_effective_org_id() if quota_user_id else None
     quota_reserved = await _reserve_daily_conversation_quota(
         quota_user_id, quota_org_id
     )
@@ -533,6 +538,12 @@ async def start_app_conversation(
     # Because we are processing after the request finishes, keep the db connection open
     set_db_session_keep_open(request.state, True)
     set_httpx_client_keep_open(request.state, True)
+
+    async def cleanup_failed_start() -> None:
+        if quota_reserved and quota_user_id:
+            await _release_daily_conversation_quota(quota_user_id)
+        await db_session.close()
+        await httpx_client.aclose()
 
     try:
         """Start an app conversation start task and return it."""
@@ -560,11 +571,11 @@ async def start_app_conversation(
 
         asyncio.create_task(_consume_remaining(async_iter, db_session, httpx_client))
         return result
+    except LiteLLMIntegrationDisabled as exc:
+        await cleanup_failed_start()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception:
-        if quota_reserved and quota_user_id:
-            await _release_daily_conversation_quota(quota_user_id)
-        await db_session.close()
-        await httpx_client.aclose()
+        await cleanup_failed_start()
         raise
 
 
@@ -821,12 +832,16 @@ async def switch_conversation_profile(
     # plus the effective settings key when the profile carries none (managed
     # profiles persist a masked key, so without this the agent server would hit
     # the litellm proxy unauthenticated). Locally, profiles carry their own key.
-    settings_llm = getattr(user_settings.agent_settings, 'llm', None)
-    profile_llm = resolve_profile_llm(
-        profile_llm,
-        managed_proxy_url=LITE_LLM_API_URL,
-        fallback_api_key=getattr(settings_llm, 'api_key', None),
-    )
+    settings_llm = user_settings.agent_settings.llm
+    try:
+        profile_llm = resolve_profile_llm(
+            profile_llm,
+            managed_proxy_url=LITE_LLM_API_URL,
+            fallback_api_key=settings_llm.api_key,
+            fallback_llm=settings_llm,
+        )
+    except LiteLLMIntegrationDisabled as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # The agent-server's LLM registry is first-write-wins by ``usage_id``:
     # ``switch_llm`` returns the cached entry under that key and silently
@@ -876,6 +891,10 @@ async def switch_conversation_profile(
             detail='Sandbox is paused; resume it before switching profiles.',
         )
 
+    try:
+        await sandbox_service.validate_resume_configuration(ctx.sandbox.id)
+    except LiteLLMIntegrationDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     llm_payload = profile_llm.model_dump(
         mode='json',
         exclude_none=True,
@@ -1195,19 +1214,9 @@ async def stream_app_conversation_start(
     """Start an app conversation start task and stream updates from it.
     Leaves the connection open until either the conversation starts or there was an error
     """
-    await _validate_acp_start(request, user_context, secrets_store)
+    await _validate_conversation_start(request, user_context, secrets_store)
     quota_user_id = await user_context.get_user_id()
-    get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
-    quota_org_id_result = (
-        get_effective_org_id()
-        if quota_user_id and get_effective_org_id is not None
-        else None
-    )
-    quota_org_id = (
-        await quota_org_id_result
-        if inspect.isawaitable(quota_org_id_result)
-        else quota_org_id_result
-    )
+    quota_org_id = await user_context.get_effective_org_id() if quota_user_id else None
     quota_reserved = await _reserve_daily_conversation_quota(
         quota_user_id, quota_org_id
     )

@@ -16,6 +16,7 @@ from openhands.app_server.config_api.client_config_types import (
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.server_config.server_config import ServerConfig
 from openhands.app_server.types import AppMode
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from server.auth.auth_config import AUTH_MODE, ENABLE_KEYCLOAK, get_native_auth_settings
 from server.auth.constants import (
     AZURE_DEVOPS_CLIENT_ID,
@@ -335,7 +336,8 @@ class SaaSServerConfig(ServerConfig):
             'GITHUB_CLIENT_ID': self.github_client_id,
             'POSTHOG_CLIENT_KEY': self.posthog_client_key,
             'FEATURE_FLAGS': {
-                'ENABLE_BILLING': self.enable_billing,
+                'ENABLE_LITELLM': is_litellm_enabled(),
+                'ENABLE_BILLING': is_litellm_enabled() and self.enable_billing,
                 'HIDE_LLM_SETTINGS': self.hide_llm_settings,
                 'ENABLE_JIRA': self.enable_jira,
                 'ENABLE_JIRA_DC': self.enable_jira_dc,

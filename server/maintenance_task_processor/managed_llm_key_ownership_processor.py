@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from typing import Literal, TypedDict
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.sdk.settings import apply_agent_settings_diff
 from server.logger import logger
 from storage.database import a_session_maker, session_maker
@@ -19,9 +21,23 @@ from storage.org_member import (
     OrgMember,
 )
 from storage.org_store import OrgStore
-from storage.saas_settings_store import managed_llm_key_config_from_model
+from storage.saas_settings_store import (
+    ManagedLlmKeyConfig,
+    managed_llm_key_config_from_model,
+)
 
 MANAGED_KEY_REPAIR_BATCH_SIZE = 25
+
+
+class ManagedKeyRepairError(TypedDict):
+    org_id: str
+    user_id: str
+    error: str
+
+
+type ManagedKeyRepairResult = dict[
+    str, int | Literal['litellm_disabled'] | list[ManagedKeyRepairError]
+]
 
 
 class ManagedLlmKeyOwnershipTarget(BaseModel):
@@ -35,20 +51,27 @@ class ManagedLlmKeyOwnershipProcessor(MaintenanceTaskProcessor):
     targets: list[ManagedLlmKeyOwnershipTarget]
 
     @staticmethod
-    def _effective_managed_key_config(org: Org, member: OrgMember):
+    def _effective_managed_key_config(
+        org: Org, member: OrgMember
+    ) -> ManagedLlmKeyConfig | None:
         org_settings = OrgStore.get_agent_settings_from_org(org)
         member_diff = dict(member.agent_settings_diff or {})
         member_diff.pop('mcp_config', None)
         effective_settings = apply_agent_settings_diff(org_settings, member_diff)
-        llm = getattr(effective_settings, 'llm', None)
-        if llm is None:
-            return None
+        llm = effective_settings.llm
         return managed_llm_key_config_from_model(
             llm.model,
             llm.base_url,
         )
 
-    async def __call__(self, task: MaintenanceTask) -> dict:
+    async def __call__(self, task: MaintenanceTask) -> ManagedKeyRepairResult:
+        if not is_litellm_enabled():
+            return {
+                'verified': 0,
+                'repaired': 0,
+                'error_count': 0,
+                'skipped': 'litellm_disabled',
+            }
         del task
         from server.auth.auth_config import ENABLE_KEYCLOAK
 
@@ -65,7 +88,7 @@ class ManagedLlmKeyOwnershipProcessor(MaintenanceTaskProcessor):
         verified = 0
         repaired = 0
         skipped = 0
-        errors: list[dict[str, str]] = []
+        errors: list[ManagedKeyRepairError] = []
 
         async with a_session_maker() as session:
             for target in self.targets:
@@ -159,7 +182,7 @@ class ManagedLlmKeyOwnershipProcessor(MaintenanceTaskProcessor):
                             'Generated LiteLLM key failed ownership verification'
                         )
 
-                    member.llm_api_key = new_key
+                    member.llm_api_key = SecretStr(new_key)
                     member.has_custom_llm_api_key = False
                     member.managed_llm_key_ownership_version = (
                         MANAGED_LLM_KEY_OWNERSHIP_VERSION
@@ -196,6 +219,8 @@ def enqueue_managed_llm_key_ownership_tasks(
     batch_size: int = MANAGED_KEY_REPAIR_BATCH_SIZE,
 ) -> int:
     """Queue stale member rows, retrying only rows not yet reconciled."""
+    if not is_litellm_enabled():
+        return 0
     with session_maker() as session:
         processor_type = (
             f'{ManagedLlmKeyOwnershipProcessor.__module__}.'

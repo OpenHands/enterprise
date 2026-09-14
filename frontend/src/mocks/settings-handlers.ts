@@ -44,6 +44,7 @@ export const createMockWebClientConfig = (
   app_mode: "oss",
   posthog_client_key: "test-posthog-key",
   feature_flags: {
+    enable_litellm: true,
     enable_billing: false,
     hide_llm_settings: false,
     enable_jira: false,
@@ -540,6 +541,7 @@ export const SETTINGS_HANDLERS = [
       app_mode: mockSaas ? "saas" : "oss",
       posthog_client_key: "fake-posthog-client-key",
       feature_flags: {
+        enable_litellm: true,
         enable_billing: mockSaas,
         hide_llm_settings: false,
         enable_jira: false,

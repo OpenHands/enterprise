@@ -1,6 +1,8 @@
+import type { RenderResult } from "@testing-library/react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
 import { OrgLlmProfilesManager } from "#/components/features/settings/org-llm-profiles-manager";
 
@@ -18,6 +20,10 @@ const profilesState: {
 const activateMock = vi.fn();
 const deleteMock = vi.fn();
 const renameMock = vi.fn();
+
+vi.mock("#/hooks/query/use-config", () => ({
+  useConfig: () => ({ data: { feature_flags: { enable_litellm: true } } }),
+}));
 
 vi.mock("#/hooks/query/use-org-llm-profiles", () => ({
   useOrgLlmProfiles: () => profilesState,
@@ -64,14 +70,16 @@ function renderManager({
   canManage?: boolean;
   onAddProfile?: () => void;
   onEditProfile?: (profile: LlmProfileSummary) => void;
-} = {}) {
+} = {}): RenderResult {
   return render(
-    <OrgLlmProfilesManager
-      orgId="org-1"
-      canManage={canManage}
-      onAddProfile={onAddProfile}
-      onEditProfile={onEditProfile}
-    />,
+    <QueryClientProvider client={new QueryClient()}>
+      <OrgLlmProfilesManager
+        orgId="org-1"
+        canManage={canManage}
+        onAddProfile={onAddProfile}
+        onEditProfile={onEditProfile}
+      />
+    </QueryClientProvider>,
   );
 }
 

@@ -1,6 +1,8 @@
 import React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { isManagedLlmModel } from "#/utils/litellm-capability";
+import { useConfig } from "#/hooks/query/use-config";
 import { useModelStore } from "#/stores/model-store";
 import { Typography } from "#/ui/typography";
 import { I18nKey } from "#/i18n/declaration";
@@ -12,7 +14,12 @@ interface ProfileRowProps {
   profile: LlmProfileSummary;
 }
 
-function ProfileRow({ profile }: ProfileRowProps) {
+function ProfileRow({ profile }: ProfileRowProps): React.JSX.Element {
+  const { data: config } = useConfig();
+  const { t } = useTranslation();
+  const unavailable =
+    config?.feature_flags?.enable_litellm === false &&
+    (profile.requires_litellm || isManagedLlmModel(profile.model ?? ""));
   const [expanded, setExpanded] = React.useState(false);
 
   return (
@@ -28,6 +35,11 @@ function ProfileRow({ profile }: ProfileRowProps) {
         <Typography.Text className="font-semibold text-neutral-200 text-sm">
           {profile.name}
         </Typography.Text>
+        {unavailable && (
+          <span className="text-xs text-amber-400">
+            {t(I18nKey.SETTINGS$MANAGED_MODEL_UNAVAILABLE)}
+          </span>
+        )}
       </button>
       {expanded && (
         <>

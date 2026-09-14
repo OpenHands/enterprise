@@ -362,6 +362,7 @@ class ProcessSandboxService(SandboxService):
         process_info = _processes.get(sandbox_id)
         if process_info is None:
             return False
+        await self.validate_resume_configuration(sandbox_id)
 
         try:
             process = psutil.Process(process_info.pid)

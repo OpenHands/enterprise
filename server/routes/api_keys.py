@@ -13,6 +13,7 @@ from server.auth.native_password import NativeAuthError
 from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.auth.saas_user_auth import SaasUserAuth
 from server.constants import BYOR_KEY_ALIAS_PATTERN
+from server.services.litellm_service import require_litellm_available
 from storage.api_key import ApiKey
 from storage.api_key_store import ApiKeyStore
 from storage.lite_llm_manager import LiteLlmManager
@@ -69,8 +70,10 @@ def _create_byor_key_alias(user_id: str, org_id: str) -> str:
 
 async def generate_byor_key(user_id: str, org_id: UUID) -> str | None:
     """Generate a new BYOR key for a user in a specific org."""
+    require_litellm_available()
     try:
         org_id_str = str(org_id)
+        await LiteLlmManager.ensure_user_in_org(user_id, org_id_str)
         key = await LiteLlmManager.generate_key(
             user_id,
             org_id_str,
@@ -106,6 +109,7 @@ async def delete_byor_key_from_litellm(
     Also attempts to delete by key alias if the key is not found,
     to clean up orphaned aliases that could block key regeneration.
     """
+    require_litellm_available()
     try:
         key_alias = _create_byor_key_alias(user_id, str(org_id))
         await LiteLlmManager.delete_key(byor_key, key_alias=key_alias)
@@ -455,6 +459,7 @@ async def refresh_managed_llm_api_key(
     are rejected before any key is generated. The previous key token is deleted
     best-effort only after the replacement is persisted.
     """
+    require_litellm_available()
     logger.info(
         'Starting managed LLM API key refresh',
         extra={'user_id': user_id, 'org_id': str(effective_org_id)},
@@ -537,6 +542,7 @@ async def get_llm_api_key_for_byor(
     Returns 402 Payment Required if BYOR export is not enabled for the
     request's effective org.
     """
+    require_litellm_available()
     try:
         if not await OrgService.check_byor_export_enabled(
             user_id, org_id=effective_org_id
@@ -609,6 +615,7 @@ async def refresh_llm_api_key_for_byor(
     Returns 402 Payment Required if BYOR export is not enabled for the
     request's effective org.
     """
+    require_litellm_available()
     logger.info('Starting BYOR LLM API key refresh', extra={'user_id': user_id})
 
     try:

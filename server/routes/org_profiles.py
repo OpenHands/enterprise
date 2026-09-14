@@ -26,8 +26,16 @@ from openhands.app_server.settings.llm_profiles import (
     ProfileNotFoundError,
     StrictLLM,
 )
+from openhands.app_server.settings.provider_connections import (
+    resolve_provider_connection,
+)
 from openhands.app_server.settings.settings_models import (
     _load_persisted_agent_settings,
+)
+from openhands.app_server.utils.litellm_integration import (
+    is_litellm_enabled,
+    llm_credentials_compatible,
+    validate_llm_configuration,
 )
 from openhands.app_server.utils.llm import MASKED_API_KEY, is_openhands_model
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -71,6 +79,7 @@ class ProfileInfo(BaseModel):
     base_url: str | None
     api_key_set: bool
     provider_connection_id: str | None = None
+    requires_litellm: bool = False
 
 
 class ProfileListResponse(BaseModel):
@@ -251,6 +260,19 @@ async def list_profiles(
     """List all LLM profiles for this organization."""
     org = await _get_org(org_id, user_id)
     profiles = await _load_profiles_with_live_default(org)
+    connections = _load_connections(org)
+    # Preserve read access to profiles with a deleted connection. Valid links
+    # use the same effective endpoint as activation and sandbox seeding.
+    profiles = profiles.model_copy(
+        update={
+            'profiles': {
+                name: resolve_provider_connection(llm, connections)
+                if connections.get(getattr(llm, 'provider_connection_id', None) or '')
+                else llm
+                for name, llm in profiles.profiles.items()
+            }
+        }
+    )
     return ProfileListResponse(
         profiles=[
             ProfileInfo(**p)
@@ -299,7 +321,13 @@ async def save_profile(
             llm = request.llm
             # Preserve the stored api_key when an update omits it (e.g. a
             # round-tripped GET response) — mirrors the personal profiles route.
-            if llm.api_key is None and existing is not None:
+            if (
+                llm.api_key is None
+                and existing is not None
+                and llm_credentials_compatible(
+                    llm.model, llm.base_url, existing.model, existing.base_url
+                )
+            ):
                 if existing.api_key is not None:
                     llm = llm.model_copy(update={'api_key': existing.api_key})
         else:
@@ -308,9 +336,22 @@ async def save_profile(
             # ('llm' vs 'openhands') both validate.
             llm = _load_persisted_agent_settings(org.agent_settings).llm
         if request.preserve_existing_api_key and existing is not None:
-            # Caller has no new key: keep the profile's stored key (even "no
-            # key") instead of the snapshotted one.
-            llm = llm.model_copy(update={'api_key': existing.api_key})
+            key = (
+                existing.api_key
+                if llm_credentials_compatible(
+                    llm.model, llm.base_url, existing.model, existing.base_url
+                )
+                else None
+            )
+            llm = llm.model_copy(update={'api_key': key})
+
+        try:
+            validate_llm_configuration(llm.model, llm.base_url)
+            if not is_litellm_enabled():
+                resolved_llm = _resolve_provider_connection(org, llm)
+                validate_llm_configuration(resolved_llm.model, resolved_llm.base_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         include_secrets = request.include_secrets and (
             managed_llm_key_config_from_model(llm.model, llm.base_url) is None
         )
@@ -404,6 +445,10 @@ async def activate_profile(
         # Resolve a linked provider connection into concrete credentials before
         # the key is masked/snapshotted below. No-op for unlinked profiles.
         llm = _resolve_provider_connection(_org, llm)
+        try:
+            validate_llm_configuration(llm.model, llm.base_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         profiles.active = name
 
         # Same session as the org write so both side-effects commit atomically.

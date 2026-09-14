@@ -7,6 +7,10 @@ from openhands.app_server.file_store.files import FileStore
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.async_utils import call_sync_from_async
+from openhands.app_server.utils.litellm_integration import (
+    is_litellm_enabled,
+    is_managed_llm,
+)
 
 
 @dataclass
@@ -30,7 +34,16 @@ class FileSettingsStore(SettingsStore):
             # would otherwise present an empty profiles UI on upgrade.
             if 'llm_profiles' not in kwargs:
                 legacy_llm = (kwargs.get('agent_settings') or {}).get('llm')
-                if isinstance(legacy_llm, dict) and legacy_llm.get('model'):
+                if (
+                    isinstance(legacy_llm, dict)
+                    and legacy_llm.get('model')
+                    and (
+                        is_litellm_enabled()
+                        or not is_managed_llm(
+                            legacy_llm.get('model'), legacy_llm.get('base_url')
+                        )
+                    )
+                ):
                     kwargs['llm_profiles'] = {
                         'profiles': {'Default': legacy_llm},
                         'active': 'Default',

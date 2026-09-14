@@ -70,7 +70,8 @@ def convert_yaml_to_env(yaml_file, target_parameters, output_env_file, prefix):
 
 
 lite_llm_api_key = os.getenv('LITE_LLM_API_KEY')
-if not lite_llm_api_key:
+enable_litellm = os.getenv('ENABLE_LITELLM', 'true').lower() in ('true', '1')
+if enable_litellm and not lite_llm_api_key:
     print('Set the LITE_LLM_API_KEY environment variable to your API key')
     sys.exit(1)
 
@@ -115,9 +116,11 @@ lines.append(
 lines.append('POSTHOG_CLIENT_KEY=test')
 lines.append('ENABLE_PROACTIVE_CONVERSATION_STARTERS=true')
 lines.append('MAX_CONCURRENT_CONVERSATIONS=10')
-lines.append('LITE_LLM_API_URL=https://llm-proxy.eval.all-hands.dev')
-lines.append('LITELLM_DEFAULT_MODEL=litellm_proxy/claude-opus-4-5-20251101')
-lines.append(f'LITE_LLM_API_KEY={lite_llm_api_key}')
+lines.append(f'ENABLE_LITELLM={str(enable_litellm).lower()}')
+if enable_litellm:
+    lines.append('LITE_LLM_API_URL=https://llm-proxy.eval.all-hands.dev')
+    lines.append('LITELLM_DEFAULT_MODEL=litellm_proxy/claude-opus-4-5-20251101')
+    lines.append(f'LITE_LLM_API_KEY={lite_llm_api_key}')
 lines.append('LOCAL_DEPLOYMENT=true')
 lines.append('DB_HOST=localhost')
 

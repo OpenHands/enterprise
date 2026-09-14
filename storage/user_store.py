@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.native_password import NativeAuthError, normalize_email
@@ -34,6 +35,7 @@ from storage.encrypt_utils import (
 from storage.org import Org
 from storage.org_default_settings import (
     apply_configured_org_condenser_default,
+    apply_default_llm_settings,
 )
 from storage.org_member import OrgMember
 from storage.role import Role
@@ -319,17 +321,20 @@ class UserStore:
             )
             session.add(org)
 
-            from storage.lite_llm_manager import LiteLlmManager
+            from storage.lite_llm_manager import (
+                LiteLlmManager,
+            )
 
             logger.debug(
                 'user_store:migrate_user:calling_litellm_migrate_entries',
                 extra={'user_id': user_id},
             )
-            await LiteLlmManager.migrate_entries(
-                str(org.id),
-                user_id,
-                decrypted_user_settings,
-            )
+            if is_litellm_enabled():
+                await LiteLlmManager.migrate_entries(
+                    str(org.id),
+                    user_id,
+                    decrypted_user_settings,
+                )
 
             logger.debug(
                 'user_store:migrate_user:done_litellm_migrate_entries',
@@ -607,7 +612,9 @@ class UserStore:
             await session.flush()
 
             # Call LiteLLM downgrade
-            from storage.lite_llm_manager import LiteLlmManager
+            from storage.lite_llm_manager import (
+                LiteLlmManager,
+            )
 
             logger.debug(
                 'user_store:downgrade_user:calling_litellm_downgrade_entries',
@@ -629,11 +636,12 @@ class UserStore:
                     except Exception:
                         pass
 
-            await LiteLlmManager.downgrade_entries(
-                str(org.id),
-                user_id,
-                user_settings,
-            )
+            if is_litellm_enabled():
+                await LiteLlmManager.downgrade_entries(
+                    str(org.id),
+                    user_id,
+                    user_settings,
+                )
             logger.debug(
                 'user_store:downgrade_user:done_litellm_downgrade_entries',
                 extra={'user_id': user_id},
@@ -1270,6 +1278,9 @@ class UserStore:
         )
 
         default_settings.v1_enabled = DEFAULT_V1_ENABLED
+
+        if not is_litellm_enabled():
+            return apply_default_llm_settings(default_settings)
 
         from storage.lite_llm_manager import LiteLlmManager
 

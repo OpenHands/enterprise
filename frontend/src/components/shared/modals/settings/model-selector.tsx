@@ -13,6 +13,7 @@ import { HelpLink } from "#/ui/help-link";
 import { PRODUCT_URL } from "#/utils/constants";
 import { useSearchProviders } from "#/hooks/query/use-search-providers";
 import { useProviderModels } from "#/hooks/query/use-provider-models";
+import { useConfig } from "#/hooks/query/use-config";
 import { useAppMode } from "#/hooks/use-app-mode";
 
 interface ModelSelectorProps {
@@ -34,14 +35,15 @@ export function ModelSelector({
   onDefaultValuesChanged,
   wrapperClassName,
   labelClassName,
-}: ModelSelectorProps) {
+}: ModelSelectorProps): React.JSX.Element {
   const [, setLitellmId] = React.useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = React.useState<string | null>(
     null,
   );
   const [selectedModel, setSelectedModel] = React.useState<string | null>(null);
 
-  const { data: providers = [] } = useSearchProviders();
+  const { data: providers = [], isSuccess: providersLoaded } =
+    useSearchProviders();
   const {
     data: providerModels = [],
     isLoading: isLoadingModels,
@@ -49,6 +51,7 @@ export function ModelSelector({
   } = useProviderModels(selectedProvider);
   // The OpenHands-account CTA points at the cloud product; only show it there.
   const { isEnterpriseCloud } = useAppMode();
+  const { data: config } = useConfig();
 
   const verifiedProviders = React.useMemo(
     () => providers.filter((p) => p.verified),
@@ -75,19 +78,26 @@ export function ModelSelector({
     [dropdownModels],
   );
 
-  // Truthful-but-gentle signal that the displayed model no longer exists in
-  // the provider's model list (e.g. an admin removed it from a managed
-  // proxy). Only shown when the list actually loaded non-empty — a fetch
-  // error or an unknown provider must not cast doubt on a working config.
-  // Hidden models count as available: the proxy still serves them.
+  // A removed provider is unavailable even when its model list is empty.
+  // Hidden models still count as available; failed requests do not.
   const isSelectedModelUnavailable = React.useMemo(
     () =>
       !!selectedModel &&
       !isLoadingModels &&
       !modelsError &&
-      providerModels.length > 0 &&
+      (providerModels.length > 0 ||
+        (providersLoaded &&
+          !providers.some((p) => p.name === selectedProvider))) &&
       !providerModels.some((m) => m.name === selectedModel),
-    [selectedModel, isLoadingModels, modelsError, providerModels],
+    [
+      selectedModel,
+      selectedProvider,
+      isLoadingModels,
+      modelsError,
+      providerModels,
+      providersLoaded,
+      providers,
+    ],
   );
 
   React.useEffect(() => {
@@ -144,7 +154,8 @@ export function ModelSelector({
         wrapperClassName,
       )}
     >
-      {providers.length !== 1 ? (
+      {providers.length !== 1 ||
+      (!!selectedProvider && providers[0]?.name !== selectedProvider) ? (
         <fieldset className="flex flex-col gap-2.5 w-full">
           <label className={cn("text-sm", labelClassName)}>
             {t(I18nKey.LLM$PROVIDER)}
@@ -209,16 +220,18 @@ export function ModelSelector({
         </fieldset>
       ) : null}
 
-      {selectedProvider === "openhands" && isEnterpriseCloud && (
-        <HelpLink
-          testId="openhands-account-help"
-          text={t(I18nKey.SETTINGS$NEED_OPENHANDS_ACCOUNT)}
-          linkText={t(I18nKey.SETTINGS$CLICK_HERE)}
-          href={PRODUCT_URL.PRODUCTION}
-          size="settings"
-          linkColor="white"
-        />
-      )}
+      {selectedProvider === "openhands" &&
+        isEnterpriseCloud &&
+        config?.feature_flags?.enable_litellm !== false && (
+          <HelpLink
+            testId="openhands-account-help"
+            text={t(I18nKey.SETTINGS$NEED_OPENHANDS_ACCOUNT)}
+            linkText={t(I18nKey.SETTINGS$CLICK_HERE)}
+            href={PRODUCT_URL.PRODUCTION}
+            size="settings"
+            linkColor="white"
+          />
+        )}
 
       <fieldset className="flex flex-col gap-2.5 w-full">
         <label className={cn("text-sm", labelClassName)}>

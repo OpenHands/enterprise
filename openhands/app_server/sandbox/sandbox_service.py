@@ -5,6 +5,9 @@ from abc import ABC, abstractmethod
 
 import httpx
 
+from openhands.app_server.app_conversation.app_conversation_models import (
+    DIRECT_LLM_VALIDATED_TAG as DIRECT_LLM_VALIDATED_TAG,
+)
 from openhands.app_server.errors import SandboxError
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
@@ -16,6 +19,10 @@ from openhands.app_server.sandbox.sandbox_models import (
 from openhands.app_server.services.injector import Injector
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
+)
+from openhands.app_server.utils.litellm_integration import (
+    LiteLLMIntegrationDisabled,
+    is_litellm_enabled,
 )
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.paging import page_iterator
@@ -159,6 +166,50 @@ def _start_failure_error(sandbox_id: str, detail: str | None) -> SandboxError:
 
 class SandboxService(ABC):
     """Service for accessing sandboxes in which conversations may be run."""
+
+    async def validate_resume_configuration(self, sandbox_id: str) -> None:
+        """Fail closed for retained LLM state that predates direct-only validation.
+
+        The paused agent server cannot expose its full LLM configuration before
+        it wakes. Only conversations created by the guarded direct-only launch
+        path carry trusted provenance; old sandbox state needs a fresh launch.
+        """
+        from openhands.app_server.config import get_app_conversation_info_service
+        from openhands.app_server.services.injector import InjectorState
+        from openhands.app_server.user.specifiy_user_context import (
+            ADMIN,
+            USER_CONTEXT_ATTR,
+        )
+
+        state = InjectorState()
+        setattr(state, USER_CONTEXT_ATTR, ADMIN)
+        async with get_app_conversation_info_service(state) as service:
+            page_id = None
+            found = False
+            while True:
+                page = await service.search_app_conversation_info(
+                    sandbox_id__eq=sandbox_id,
+                    page_id=page_id,
+                    include_sub_conversations=True,
+                )
+                for conversation in page.items:
+                    found = True
+                    if is_litellm_enabled():
+                        if conversation.tags.pop(DIRECT_LLM_VALIDATED_TAG, None):
+                            await service.save_app_conversation_info(conversation)
+                    elif conversation.tags.get(DIRECT_LLM_VALIDATED_TAG) != '1':
+                        raise LiteLLMIntegrationDisabled(
+                            'This older sandbox cannot resume after LiteLLM was disabled. '
+                            'Start a new conversation with a direct provider; its history remains available.'
+                        )
+                page_id = page.next_page_id
+                if not page_id:
+                    break
+            if not found and not is_litellm_enabled():
+                raise LiteLLMIntegrationDisabled(
+                    'This sandbox has no verified direct-provider configuration. '
+                    'Start a new conversation after LiteLLM was disabled.'
+                )
 
     @abstractmethod
     async def search_sandboxes(

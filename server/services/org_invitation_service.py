@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.authorization import (
@@ -461,7 +462,7 @@ class OrgInvitationService:
 
             llm_api_key_secret = settings.agent_settings.llm.api_key
             llm_api_key = ''
-            if llm_api_key_secret:
+            if is_litellm_enabled() and llm_api_key_secret:
                 llm_api_key = (
                     llm_api_key_secret
                     if isinstance(llm_api_key_secret, str)
@@ -646,7 +647,7 @@ class OrgInvitationService:
         # continue to flow through automatically.
         llm_api_key_secret = settings.agent_settings.llm.api_key
         llm_api_key = ''
-        if llm_api_key_secret:
+        if is_litellm_enabled() and llm_api_key_secret:
             llm_api_key = (
                 llm_api_key_secret
                 if isinstance(llm_api_key_secret, str)

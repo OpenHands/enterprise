@@ -1,4 +1,5 @@
 import { Trans, useTranslation } from "react-i18next";
+import { useLiteLlmIntegration } from "#/hooks/use-litellm-integration";
 import { I18nKey } from "#/i18n/declaration";
 import OpenHandsLogo from "#/assets/branding/openhands-logo.svg?react";
 import { ModalBackdrop } from "#/components/shared/modals/modal-backdrop";
@@ -6,9 +7,12 @@ import { ModalBody } from "#/components/shared/modals/modal-body";
 import { BrandButton } from "../settings/brand-button";
 import { useCreateBillingSession } from "#/hooks/mutation/use-create-billing-session";
 
-export function SetupPaymentModal() {
+export function SetupPaymentModal(): React.JSX.Element | null {
   const { t } = useTranslation();
+  const { enabled } = useLiteLlmIntegration();
   const { mutate, isPending } = useCreateBillingSession();
+
+  if (!enabled) return null;
 
   return (
     <ModalBackdrop>

@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
 import { useTranslation } from "react-i18next";
 import { FaChevronLeft } from "react-icons/fa6";
+import { isManagedLlmModel } from "#/utils/litellm-capability";
 import { ModelSelector } from "#/components/shared/modals/settings/model-selector";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { requireOrgDefaultsRedirect } from "#/utils/org/saas-redirect-to-org-defaults-guard";
@@ -28,7 +29,7 @@ import {
   inferInitialView,
   type SettingsView,
 } from "#/utils/sdk-settings-schema";
-import { DEFAULT_SETTINGS } from "#/services/settings";
+import { getDefaultSettings } from "#/services/settings";
 import { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
 import { useSaveLlmProfile } from "#/hooks/mutation/use-save-llm-profile";
 import { useActivateLlmProfile } from "#/hooks/mutation/use-activate-llm-profile";
@@ -118,7 +119,7 @@ export function LlmSettingsScreen({
   scope = "personal",
 }: {
   scope?: SettingsScope;
-}) {
+}): React.JSX.Element | null {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -190,10 +191,9 @@ export function LlmSettingsScreen({
   const isProfilesView = shouldShowProfilesForScope && showProfiles;
   const isOrgProfileMode = scope === "org";
 
-  const defaultModel = String(
-    (DEFAULT_SETTINGS.agent_settings?.llm as Record<string, unknown>)?.model ??
-      "",
-  );
+  const defaultModel = getDefaultSettings(
+    config?.feature_flags?.enable_litellm !== false,
+  ).llm_model;
 
   const isSaasMode = config?.app_mode === "saas";
   const { isEnterpriseCloud } = useAppMode();
@@ -203,6 +203,9 @@ export function LlmSettingsScreen({
   // custom model / base URL / API key only — saved BYOK settings keep working
   // at runtime, and the managed model dropdown stays fully functional.
   const allowUserLlmConfiguration =
+    (scope === "org" &&
+      config?.feature_flags?.enable_litellm === false &&
+      hasPermission("edit_llm_settings")) ||
     config?.feature_flags?.allow_user_llm_configuration !== false;
 
   React.useEffect(() => {
@@ -315,6 +318,13 @@ export function LlmSettingsScreen({
         typeof values["llm.base_url"] === "string"
           ? values["llm.base_url"]
           : "";
+      const requiresLiteLlm =
+        config?.feature_flags?.enable_litellm === false &&
+        (isManagedLlmModel(modelValue) ||
+          (profileFormMode === "edit" &&
+            editingProfile?.requires_litellm &&
+            modelValue === editingProfile.model &&
+            baseUrlValue === (editingProfile.base_url ?? "")));
       const derivedProvider = modelValue
         ? extractModelAndProvider(modelValue).provider || null
         : null;
@@ -323,11 +333,14 @@ export function LlmSettingsScreen({
           ? (selectedProvider ?? derivedProvider)
           : derivedProvider;
       const shouldUseOpenHandsKey =
-        isSaasMode && activeProvider === "openhands";
+        isSaasMode &&
+        config?.feature_flags?.enable_litellm !== false &&
+        activeProvider === "openhands";
       // The OpenHands key help links to OpenHands Cloud keys/pricing — only
       // meaningful on enterprise cloud, not self-hosted managed installs.
       const showOpenHandsApiKeyHelp =
         isEnterpriseCloud &&
+        config?.feature_flags?.enable_litellm !== false &&
         modelValue.startsWith("openhands/") &&
         allowUserLlmConfiguration;
       // While editing, the set-but-unfetchable key indicator must reflect
@@ -383,6 +396,9 @@ export function LlmSettingsScreen({
 
       return (
         <div className="flex flex-col gap-6">
+          {requiresLiteLlm && (
+            <p role="alert">{t(I18nKey.SETTINGS$MANAGED_MODEL_UNAVAILABLE)}</p>
+          )}
           {infoMessageKey ? (
             <Typography.Paragraph
               testId="llm-settings-info-message"
@@ -519,7 +535,9 @@ export function LlmSettingsScreen({
           ? (selectedProvider ?? derivedProvider)
           : derivedProvider;
       const shouldUseOpenHandsKey =
-        isSaasMode && activeProvider === "openhands";
+        isSaasMode &&
+        config?.feature_flags?.enable_litellm !== false &&
+        activeProvider === "openhands";
 
       const llm = (agentSettings.llm ?? {}) as Record<string, unknown>;
       if (shouldUseOpenHandsKey) {
@@ -807,11 +825,18 @@ export function LlmSettingsScreen({
         // chosen — saving a model-less create form would only churn the
         // active settings without producing a profile.
         isSaveDisabled={({ values }) =>
-          profileFormMode === "create" &&
-          !(
-            typeof values["llm.model"] === "string" &&
-            values["llm.model"].trim().length > 0
-          )
+          (config?.feature_flags?.enable_litellm === false &&
+            (isManagedLlmModel(String(values["llm.model"] ?? "")) ||
+              (profileFormMode === "edit" &&
+                editingProfile?.requires_litellm === true &&
+                values["llm.model"] === editingProfile.model &&
+                (values["llm.base_url"] || "") ===
+                  (editingProfile.base_url || "")))) ||
+          (profileFormMode === "create" &&
+            !(
+              typeof values["llm.model"] === "string" &&
+              values["llm.model"].trim().length > 0
+            ))
         }
         // Advanced (custom model + base URL) only exists under BYOK; gate the
         // toggle on it so Basic/Advanced aren't identical when BYOK is off.

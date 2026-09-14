@@ -44,6 +44,7 @@ from openhands.app_server.user_auth.user_auth import (
 )
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.git import configure_git_user_settings
+from openhands.app_server.utils.litellm_integration import LiteLLMIntegrationDisabled
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 _logger = logging.getLogger(__name__)
@@ -121,7 +122,10 @@ async def resume_sandbox(
     sandbox_service: SandboxService = sandbox_service_dependency,
     db_session: AsyncSession = db_session_dependency,
 ) -> Success:
-    exists = await sandbox_service.resume_sandbox(sandbox_id)
+    try:
+        exists = await sandbox_service.resume_sandbox(sandbox_id)
+    except LiteLLMIntegrationDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not exists:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 

@@ -1,13 +1,17 @@
 import uuid
+from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.app_server.settings.settings_models import Settings
+from openhands.sdk.llm import LLM
 from openhands.sdk.settings import (
     ACPAgentSettings,
     ConversationSettings,
@@ -27,7 +31,7 @@ from storage.user import User
 
 
 @pytest.fixture
-def mock_litellm_api():
+def mock_litellm_api() -> Iterator[MagicMock]:
     api_key_patch = patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test_key')
     api_url_patch = patch(
         'storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.url'
@@ -36,18 +40,32 @@ def mock_litellm_api():
     client_patch = patch('httpx.AsyncClient')
 
     with api_key_patch, api_url_patch, team_id_patch, client_patch as mock_client:
-        mock_response = AsyncMock()
-        mock_response.is_success = True
-        mock_response.json = MagicMock(return_value={'key': 'test_api_key'})
-        mock_client.return_value.__aenter__.return_value.post.return_value = (
-            mock_response
+        mock_response = httpx.Response(
+            200,
+            json={'key': 'test_api_key'},
+            request=httpx.Request('POST', 'http://test.url/key/generate'),
         )
-        mock_client.return_value.__aenter__.return_value.get.return_value = (
-            mock_response
-        )
-        mock_client.return_value.__aenter__.return_value.patch.return_value = (
-            mock_response
-        )
+        client = mock_client.return_value.__aenter__.return_value
+        client.post.return_value = mock_response
+        client.patch.return_value = mock_response
+
+        async def gateway_get(url: str) -> httpx.Response:
+            request = httpx.Request('GET', url)
+            if request.url.path == '/team/info':
+                body = {
+                    'team_info': {'max_budget': None, 'spend': 0.0},
+                    'team_memberships': [],
+                }
+                return httpx.Response(200, json=body, request=request)
+            if request.url.path == '/user/info':
+                return httpx.Response(
+                    200,
+                    json={'user_info': {'user_id': request.url.params['user_id']}},
+                    request=request,
+                )
+            raise AssertionError(f'Unexpected gateway request: {request.url.path}')
+
+        client.get.side_effect = gateway_get
         yield mock_client
 
 
@@ -1670,8 +1688,8 @@ async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags()
 
 @pytest.mark.asyncio
 async def test_managed_org_default_rotation_only_updates_acting_member(
-    async_session_maker,
-):
+    async_session_maker: async_sessionmaker[AsyncSession],
+) -> None:
     org_id = uuid.uuid4()
     admin_user_id = uuid.uuid4()
     member_user_id = uuid.uuid4()
@@ -1683,7 +1701,7 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
             id=org_id,
             name='managed-key-scope-test',
             agent_settings=OpenHandsAgentSettings(
-                llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+                llm=LLM(model='openhands/claude-3', base_url=managed_url)
             ),
         )
         users = [
@@ -1732,6 +1750,10 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
         patch(
             'storage.lite_llm_manager.LiteLlmManager.generate_key',
             new=AsyncMock(return_value='sk-fresh-admin'),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.ensure_user_in_org',
+            new=AsyncMock(),
         ),
     ):
         await OrgStore.update_org_defaults_async(
@@ -1896,8 +1918,8 @@ async def test_count_team_orgs_excludes_personal_workspaces(async_session_maker)
 
 @pytest.mark.asyncio
 async def test_ensure_managed_key_returns_existing_when_owner_and_auth_valid(
-    mock_litellm_api,
-):
+    mock_litellm_api: MagicMock,
+) -> None:
     """When the key is registered AND passes auth verification, return it."""
     user_id = uuid.uuid4()
     org_id = uuid.uuid4()
@@ -1905,11 +1927,12 @@ async def test_ensure_managed_key_returns_existing_when_owner_and_auth_valid(
 
     member = MagicMock(spec=OrgMember)
     member.llm_api_key = SecretStr('existing-managed-key')
+    member.has_custom_llm_api_key = False
 
     updated_org = MagicMock(spec=Org)
     updated_org.id = org_id
     updated_org.agent_settings = OpenHandsAgentSettings(
-        llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+        llm=LLM(model='openhands/claude-3', base_url=managed_url)
     ).model_dump(mode='json')
 
     mock_session = MagicMock()
@@ -1950,7 +1973,9 @@ async def test_ensure_managed_key_returns_existing_when_owner_and_auth_valid(
 
 
 @pytest.mark.asyncio
-async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
+async def test_ensure_managed_key_rotates_when_auth_fails(
+    mock_litellm_api: MagicMock,
+) -> None:
     """When the key is registered but fails auth verification, rotate it."""
     user_id = uuid.uuid4()
     org_id = uuid.uuid4()
@@ -1958,11 +1983,12 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
 
     member = MagicMock(spec=OrgMember)
     member.llm_api_key = SecretStr('stale-managed-key')
+    member.has_custom_llm_api_key = False
 
     updated_org = MagicMock(spec=Org)
     updated_org.id = org_id
     updated_org.agent_settings = OpenHandsAgentSettings(
-        llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+        llm=LLM(model='openhands/claude-3', base_url=managed_url)
     ).model_dump(mode='json')
 
     mock_session = MagicMock()

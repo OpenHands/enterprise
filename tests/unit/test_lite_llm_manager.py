@@ -5,6 +5,7 @@ Unit tests for LiteLlmManager class.
 import importlib
 import os
 import sys
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -272,10 +273,14 @@ class TestDefaultInitialBudget:
     """Test cases for DEFAULT_INITIAL_BUDGET configuration."""
 
     @pytest.fixture(autouse=True)
-    def restore_module_state(self):
+    def restore_module_state(self) -> Iterator[None]:
         """Ensure module is properly restored after each test."""
+        import storage
+
         # Save original module if it exists
         original_module = sys.modules.get('storage.lite_llm_manager')
+        original_budget = os.environ.get('DEFAULT_INITIAL_BUDGET')
+        original_billing = os.environ.get('ENABLE_BILLING')
 
         yield
 
@@ -283,13 +288,21 @@ class TestDefaultInitialBudget:
         if 'storage.lite_llm_manager' in sys.modules:
             del sys.modules['storage.lite_llm_manager']
 
-        # Clear the env vars
-        os.environ.pop('DEFAULT_INITIAL_BUDGET', None)
-        os.environ.pop('ENABLE_BILLING', None)
+        for name, value in (
+            ('DEFAULT_INITIAL_BUDGET', original_budget),
+            ('ENABLE_BILLING', original_billing),
+        ):
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
         # Restore original module or reimport fresh
         if original_module is not None:
             sys.modules['storage.lite_llm_manager'] = original_module
+            # import_module also changes the parent package attribute. Restore
+            # both paths so later mocks patch the module used by existing imports.
+            storage.lite_llm_manager = original_module
         else:
             importlib.import_module('storage.lite_llm_manager')
 
@@ -1826,8 +1839,8 @@ class TestLiteLlmManager:
     @patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com')
     @patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key')
     async def test_create_user_already_exists_but_not_found_returns_false(
-        self, mock_logger, mock_http_client
-    ):
+        self, mock_logger: MagicMock, mock_http_client: AsyncMock
+    ) -> None:
         """Test _create_user returns False when LiteLLM claims user exists but verification fails."""
         # Arrange
         first_response = MagicMock()
@@ -1858,7 +1871,6 @@ class TestLiteLlmManager:
             extra={
                 'user_id': 'test-user-id',
                 'status_code': 409,
-                'text': 'User with id test-user-id already exists',
             },
         )
 
@@ -1867,8 +1879,8 @@ class TestLiteLlmManager:
     @patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com')
     @patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key')
     async def test_create_user_failure_returns_false(
-        self, mock_logger, mock_http_client
-    ):
+        self, mock_logger: MagicMock, mock_http_client: AsyncMock
+    ) -> None:
         """Test _create_user returns False when creation fails with non-'already exists' error."""
         # Arrange
         first_response = MagicMock()
@@ -1894,7 +1906,6 @@ class TestLiteLlmManager:
             'error_creating_litellm_user',
             extra={
                 'status_code': 500,
-                'text': 'Internal server error',
                 'user_id': 'test-user-id',
                 'email': None,
             },
@@ -2084,8 +2095,8 @@ class TestLiteLlmManager:
     @patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com')
     @patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key')
     async def test_update_key_invalid_key_returns_gracefully(
-        self, mock_logger, mock_http_client
-    ):
+        self, mock_logger: MagicMock, mock_http_client: AsyncMock
+    ) -> None:
         """Test _update_key handles 401 Unauthorized for invalid keys gracefully."""
         # Arrange
         error_response = MagicMock()
@@ -2102,7 +2113,7 @@ class TestLiteLlmManager:
         # Assert
         mock_logger.warning.assert_called_once_with(
             'invalid_litellm_key_during_update',
-            extra={'user_id': 'test-user-id', 'text': 'Unauthorized'},
+            extra={'user_id': 'test-user-id'},
         )
 
     @pytest.mark.asyncio
@@ -2278,7 +2289,9 @@ class TestLiteLlmManager:
                 assert call_args[1]['json']['metadata'] == {'test': 'metadata'}
 
     @pytest.mark.asyncio
-    async def test_get_key_info_success(self, mock_http_client, mock_key_info_response):
+    async def test_get_key_info_success(
+        self, mock_http_client: AsyncMock, mock_key_info_response: MagicMock
+    ) -> None:
         """Test successful _get_key_info operation."""
         mock_http_client.get.return_value = mock_key_info_response
 
@@ -2289,7 +2302,7 @@ class TestLiteLlmManager:
                     mock_user = MagicMock()
                     mock_org_member = MagicMock()
                     mock_org_member.org_id = 'test-ord-id'
-                    mock_org_member.llm_api_key = 'test-api-key'
+                    mock_org_member.llm_api_key = SecretStr('test-api-key')
                     mock_user.org_members = [mock_org_member]
                     mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
 

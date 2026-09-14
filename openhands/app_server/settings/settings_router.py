@@ -10,7 +10,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, JsonValue, SecretStr, TypeAdapter
 
 from openhands.analytics import get_analytics_service
 from openhands.app_server.config_api.config_models import AppMode
@@ -36,6 +36,7 @@ from openhands.app_server.settings.settings_models import (
     GETSettingsModel,
     Settings,
 )
+from openhands.app_server.settings.settings_patch import secret_text, settings_json
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.shared import server_config
 from openhands.app_server.user_auth import (
@@ -46,6 +47,13 @@ from openhands.app_server.user_auth import (
     get_user_settings_store,
 )
 from openhands.app_server.utils.dependencies import get_dependencies
+from openhands.app_server.utils.litellm_integration import (
+    LiteLLMIntegrationDisabled,
+    is_litellm_enabled,
+    llm_credentials_compatible,
+    validate_agent_llm_payload,
+    validate_llm_configuration,
+)
 from openhands.app_server.utils.llm import (
     MASKED_API_KEY,
     get_provider_api_base,
@@ -56,7 +64,6 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM
 from openhands.sdk.settings import (
     ConversationSettings,
-    OpenHandsAgentSettings,
     export_agent_settings_schema,
 )
 
@@ -65,8 +72,15 @@ LITE_LLM_API_URL = os.environ.get(
 )
 
 
+class _MarketplaceName(BaseModel):
+    name: str | None = None
+
+
+_MARKETPLACE_NAMES = TypeAdapter(list[_MarketplaceName])
+
+
 def _sanitize_cloud_analytics_consent_override(
-    payload: dict[str, Any],
+    payload: dict[str, JsonValue],
 ) -> JSONResponse | None:
     """Reject attempts to override TOS-derived analytics consent in SaaS."""
     if (
@@ -129,7 +143,7 @@ def _post_merge_llm_fixups(settings: Settings) -> None:
     rules to :func:`openhands.app_server.utils.llm.resolve_llm_base_url` so the
     personal-save and enterprise org-defaults paths stay in lockstep.
     """
-    if not isinstance(settings.agent_settings, OpenHandsAgentSettings):
+    if settings.agent_settings.agent_kind != 'openhands':
         return
     llm = settings.agent_settings.llm
     llm.base_url = resolve_llm_base_url(
@@ -161,14 +175,14 @@ async def _maybe_rotate_stale_managed_key(
     managed key and returns a copy of ``llm`` with the new key. Any error is
     swallowed — this must never block a settings save.
     """
-    if user_id is None or not isinstance(llm, LLM) or not has_real_api_key(llm.api_key):
+    if not is_litellm_enabled():
+        return llm
+    if user_id is None or not has_real_api_key(llm.api_key):
         return llm
 
     try:
-        from storage.lite_llm_manager import (
-            LiteLlmManager,  # type: ignore[import-not-found]
-        )
-        from storage.saas_settings_store import (  # type: ignore[import-not-found]
+        from storage.lite_llm_manager import LiteLlmManager
+        from storage.saas_settings_store import (
             ManagedLlmKeyStatus,
             SaasSettingsStore,
             managed_llm_key_config_from_model,
@@ -176,17 +190,14 @@ async def _maybe_rotate_stale_managed_key(
     except ImportError:
         return llm
 
+    # The optional enterprise store is the only backend with key rotation.
     if not isinstance(settings_store, SaasSettingsStore):
         return llm
 
     if managed_llm_key_config_from_model(llm.model, llm.base_url) is None:
         return llm
 
-    raw_key = (
-        llm.api_key.get_secret_value()
-        if isinstance(llm.api_key, SecretStr)
-        else str(llm.api_key)
-    )
+    raw_key = secret_text(llm.api_key)
     if not raw_key or raw_key == MASKED_API_KEY:
         return llm
 
@@ -341,7 +352,7 @@ async def load_settings(
     },
 )
 async def store_settings(
-    payload: dict[str, Any],
+    payload: dict[str, JsonValue],
     settings_store: SettingsStore = Depends(get_user_settings_store),
     user_id: str | None = Depends(get_user_id),
 ) -> JSONResponse:
@@ -375,7 +386,32 @@ async def store_settings(
     try:
         existing_settings = await settings_store.load()
         settings = existing_settings.model_copy() if existing_settings else Settings()
+        # SDK configs contain immutable mappingproxy values which cannot be
+        # deepcopied. Copy the mutable LLM/profile containers explicitly.
+        settings.agent_settings = settings.agent_settings.model_copy(
+            update={'llm': settings.agent_settings.llm.model_copy()}
+        )
+        settings.llm_profiles = settings.llm_profiles.model_copy(
+            update={'profiles': dict(settings.llm_profiles.profiles)}
+        )
         settings.update(payload)
+        agent_update = payload.get('agent_settings_diff')
+        # The API boundary carries a sparse JSON object rather than an SDK model.
+        if isinstance(agent_update, dict):
+            # Historical managed settings remain readable and unrelated edits
+            # remain possible, but new LLM payloads cannot select the gateway.
+            old_agent = (
+                settings_json(existing_settings.agent_settings, expose_secrets=True)
+                if existing_settings
+                else {}
+            )
+            new_agent = settings_json(settings.agent_settings, expose_secrets=True)
+            for key in ('llm', 'condenser', 'planning_llm'):
+                if key in agent_update:
+                    old_value = old_agent.get(key)
+                    new_value = new_agent.get(key)
+                    if old_value != new_value:
+                        validate_agent_llm_payload(new_value)
 
         # When the user edits their marketplaces, reject names that duplicate each
         # other or collide with inherited (instance/org) names. Enforcing this on
@@ -383,12 +419,14 @@ async def store_settings(
         # bad row that would later break settings loading (self-lockout).
         if 'registered_marketplaces' in payload:
             inherited_names = [
-                name
-                for mp in (
-                    *get_instance_default_marketplaces(),
-                    *(await settings_store.get_org_marketplaces(user_id)),
+                marketplace.name
+                for marketplace in _MARKETPLACE_NAMES.validate_python(
+                    [
+                        *get_instance_default_marketplaces(),
+                        *(await settings_store.get_org_marketplaces(user_id)),
+                    ]
                 )
-                if (name := mp.get('name'))
+                if marketplace.name
             ]
             conflicts = duplicate_marketplace_names(
                 settings.registered_marketplaces, inherited_names
@@ -403,7 +441,9 @@ async def store_settings(
         rotated = await _maybe_rotate_stale_managed_key(
             settings.agent_settings.llm, settings_store, user_id
         )
-        object.__setattr__(settings.agent_settings, 'llm', rotated)
+        settings.agent_settings = settings.agent_settings.model_copy(
+            update={'llm': rotated}
+        )
         settings.sync_active_profile_from_settings()
 
         if existing_settings:
@@ -443,6 +483,8 @@ async def store_settings(
             status_code=status.HTTP_200_OK,
             content={'message': 'Settings stored'},
         )
+    except LiteLLMIntegrationDisabled as exc:
+        return JSONResponse(status_code=422, content={'error': str(exc)})
     except ValueError as e:
         # Validation errors (e.g., invalid marketplace data) return 400
         logger.warning(f'Settings validation error: {e}')
@@ -531,6 +573,7 @@ class ProfileInfo(BaseModel):
     base_url: str | None = None
     api_key_set: bool = False
     provider_connection_id: str | None = None
+    requires_litellm: bool = False
 
 
 class ProfileListResponse(BaseModel):
@@ -691,15 +734,26 @@ async def save_profile(
             # update (e.g. a frontend round-tripping a GET response where
             # the key was nulled out). Mirrors the deep-merge behaviour
             # the main ``POST /api/v1/settings`` relies on.
-            if llm.api_key is None and existing is not None:
+            if (
+                llm.api_key is None
+                and existing is not None
+                and llm_credentials_compatible(
+                    llm.model, llm.base_url, existing.model, existing.base_url
+                )
+            ):
                 if existing.api_key is not None:
                     llm = llm.model_copy(update={'api_key': existing.api_key})
         else:
             llm = settings.agent_settings.llm
         if request.preserve_existing_api_key and existing is not None:
-            # Caller has no new key: keep the profile's stored key (even "no
-            # key") instead of the snapshotted active-settings key.
-            llm = llm.model_copy(update={'api_key': existing.api_key})
+            key = (
+                existing.api_key
+                if llm_credentials_compatible(
+                    llm.model, llm.base_url, existing.model, existing.base_url
+                )
+                else None
+            )
+            llm = llm.model_copy(update={'api_key': key})
 
         # Resolve the profile's base_url (provider default / managed proxy)
         # before the managed-key check so the config is classified correctly.
@@ -712,6 +766,10 @@ async def save_profile(
                 )
             }
         )
+        try:
+            validate_llm_configuration(llm.model, llm.base_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         llm = await _maybe_rotate_stale_managed_key(llm, settings_store, user_id)
 
         was_active = settings.llm_profiles.active == name
@@ -770,6 +828,8 @@ async def activate_profile(
 
         try:
             settings.switch_to_profile(name)
+        except LiteLLMIntegrationDisabled as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ProfileNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -813,6 +873,8 @@ async def rename_profile(
             )
         try:
             settings.llm_profiles.rename(name, request.new_name)
+        except LiteLLMIntegrationDisabled as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ProfileNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)

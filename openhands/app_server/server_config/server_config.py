@@ -4,6 +4,7 @@ import os
 from openhands.app_server.config_api.client_config_types import ClientConfig
 from openhands.app_server.types import AppMode, ServerConfigInterface
 from openhands.app_server.utils.import_utils import get_impl
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.app_server.utils.logger import openhands_logger as logger
 
 
@@ -38,7 +39,8 @@ class ServerConfig(ServerConfigInterface):
             'GITHUB_CLIENT_ID': self.github_client_id,
             'POSTHOG_CLIENT_KEY': self.posthog_client_key,
             'FEATURE_FLAGS': {
-                'ENABLE_BILLING': self.enable_billing,
+                'ENABLE_LITELLM': is_litellm_enabled(),
+                'ENABLE_BILLING': is_litellm_enabled() and self.enable_billing,
                 'HIDE_LLM_SETTINGS': self.hide_llm_settings,
             },
         }

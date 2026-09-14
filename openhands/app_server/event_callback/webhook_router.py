@@ -30,6 +30,7 @@ from openhands.app_server.app_conversation.app_conversation_info_service import 
 )
 from openhands.app_server.app_conversation.app_conversation_models import (
     ACP_SERVER_TAG_KEY,
+    APP_OWNED_CONVERSATION_TAGS,
     AppConversationInfo,
     ConversationTrigger,
 )
@@ -128,7 +129,11 @@ def merge_conversation_tags(
         Merged tags dict (empty dict if both inputs are None/empty)
     """
     existing = existing_tags or {}
-    incoming = incoming_tags or {}
+    incoming = {
+        key: value
+        for key, value in (incoming_tags or {}).items()
+        if key not in APP_OWNED_CONVERSATION_TAGS
+    }
     return {**existing, **incoming}
 
 
@@ -447,7 +452,7 @@ async def on_conversation_update(
         tags=merged_tags,
     )
     await app_conversation_info_service.save_app_conversation_info(
-        app_conversation_info
+        app_conversation_info, from_sandbox=True
     )
 
     # Register SetTitleCallbackProcessor for new conversations created via webhook.
@@ -568,7 +573,9 @@ async def on_event(
             )
             if info is not None and info.llm_model != switched_model:
                 info.llm_model = switched_model
-                await app_conversation_info_service.save_app_conversation_info(info)
+                await app_conversation_info_service.save_app_conversation_info(
+                    info, from_sandbox=True
+                )
 
         # Analytics: conversation terminal state detection
         # Also persist execution status to database for dashboard queries

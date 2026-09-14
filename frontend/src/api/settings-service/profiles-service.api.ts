@@ -5,6 +5,7 @@ export interface LlmProfileSummary {
   model: string | null;
   base_url: string | null;
   api_key_set: boolean;
+  requires_litellm?: boolean;
 }
 
 // Not exported — only `listProfiles` reads it as its response shape.

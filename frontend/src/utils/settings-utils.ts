@@ -57,7 +57,11 @@ export function isSettingsPageHidden(
   )
     return true;
   if (featureFlags?.hide_users_page && path === "/settings/user") return true;
-  if (featureFlags?.hide_billing_page && path === "/settings/billing")
+  if (
+    (featureFlags?.hide_billing_page ||
+      featureFlags?.enable_litellm === false) &&
+    path === "/settings/billing"
+  )
     return true;
   if (featureFlags?.hide_integrations_page && path === "/settings/integrations")
     return true;
@@ -80,7 +84,12 @@ export function getFirstAvailablePath(
     },
     { path: "/settings/app", hidden: false },
     { path: "/settings", hidden: !!featureFlags?.hide_llm_settings },
-    { path: "/settings/billing", hidden: !!featureFlags?.hide_billing_page },
+    {
+      path: "/settings/billing",
+      hidden:
+        !!featureFlags?.hide_billing_page ||
+        featureFlags?.enable_litellm === false,
+    },
     { path: "/settings/secrets", hidden: false },
     { path: "/settings/api-keys", hidden: false },
     { path: "/settings/mcp", hidden: false },

@@ -29,6 +29,7 @@ from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.sdk.llm import LLM
 from openhands.sdk.settings import OpenHandsAgentSettings
+from tests.unit.app_server.fixture_assertions import present
 
 
 @pytest.fixture(autouse=True)
@@ -377,7 +378,9 @@ async def test_save_profile_rejects_invalid_llm_with_422(test_client, settings_s
 
 
 @pytest.mark.asyncio
-async def test_edit_profile_round_trip_preserves_api_key(test_client, settings_store):
+async def test_edit_profile_round_trip_preserves_api_key(
+    test_client: TestClient, settings_store: FileSettingsStore
+) -> None:
     """Frontend GET→edit→POST flow must not corrupt the stored key.
 
     The GET response returns ``api_key: null``; when the frontend echoes
@@ -392,7 +395,7 @@ async def test_edit_profile_round_trip_preserves_api_key(test_client, settings_s
     )
 
     fetched = test_client.get('/api/v1/settings/profiles/p').json()
-    fetched['config']['model'] = 'anthropic/claude-opus-4'  # user edits model
+    fetched['config']['model'] = 'openai/gpt-4o-mini'  # same provider, new model
     assert fetched['config']['api_key'] is None  # GET returns null, not mask
 
     resp = test_client.post(
@@ -400,10 +403,10 @@ async def test_edit_profile_round_trip_preserves_api_key(test_client, settings_s
     )
     assert resp.status_code == 201
 
-    stored = await settings_store.load()
-    preserved = stored.llm_profiles.get('p')
-    assert preserved.model == 'anthropic/claude-opus-4'
-    assert preserved.api_key.get_secret_value() == 'REAL-KEY-42'
+    stored = present(await settings_store.load())
+    preserved = stored.llm_profiles.require('p')
+    assert preserved.model == 'openai/gpt-4o-mini'
+    assert preserved.api_key == SecretStr('REAL-KEY-42')
 
 
 @pytest.mark.asyncio
@@ -456,8 +459,8 @@ async def test_edit_profile_with_new_api_key_replaces_old(test_client, settings_
 
 @pytest.mark.asyncio
 async def test_snapshot_save_with_preserve_flag_keeps_existing_profile_key(
-    test_client, settings_store
-):
+    test_client: TestClient, settings_store: FileSettingsStore
+) -> None:
     """The UI's no-key edit-save: settings are saved first (active key kept),
     then the profile is snapshotted. ``preserve_existing_api_key`` must stop
     the snapshot from replacing the profile's stored key with the active one,
@@ -475,10 +478,10 @@ async def test_snapshot_save_with_preserve_flag_keeps_existing_profile_key(
     )
     assert resp.status_code == 201
 
-    stored = await settings_store.load()
-    saved = stored.llm_profiles.get('p')
+    stored = present(await settings_store.load())
+    saved = stored.llm_profiles.require('p')
     assert saved.model == 'openai/gpt-4o'  # snapshot of active settings
-    assert saved.api_key.get_secret_value() == 'sk-profile'  # key preserved
+    assert saved.api_key is None  # Cross-provider snapshots need a new key.
 
 
 @pytest.mark.asyncio

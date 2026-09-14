@@ -524,6 +524,7 @@ class DockerSandboxService(SandboxService):
             if not sandbox_id.startswith(self.container_name_prefix):
                 return False
             container = self.docker_client.containers.get(sandbox_id)
+            await self.validate_resume_configuration(sandbox_id)
 
             if container.status == 'paused':
                 container.unpause()

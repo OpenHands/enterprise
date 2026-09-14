@@ -18,6 +18,7 @@ from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.constants import STRIPE_API_KEY
 from server.logger import logger
 from server.services.feature_flag_service import feature_flag_service
+from server.services.litellm_service import require_litellm_available
 from server.utils.url_utils import get_web_url
 from storage.billing_session import BillingSession
 from storage.database import a_session_maker
@@ -37,6 +38,7 @@ async def validate_billing_enabled() -> None:
     DB row first, the registered env-var default as fallback, and the same
     fallback if evaluation errors.
     """
+    require_litellm_available()
     if not await feature_flag_service.resolve('ENABLE_BILLING'):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -97,6 +99,7 @@ async def get_credits(
     user_id: str = Depends(get_user_id),
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
 ) -> GetCreditsResponse:
+    require_litellm_available()
     if not stripe_service.STRIPE_API_KEY:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -134,7 +137,11 @@ async def get_subscription_access(
             )
         )
         subscription_access = result.scalar_one_or_none()
-        if not subscription_access:
+        if (
+            subscription_access is None
+            or subscription_access.start_at is None
+            or subscription_access.end_at is None
+        ):
             return None
         return SubscriptionAccessResponse(
             start_at=subscription_access.start_at,
@@ -252,8 +259,9 @@ async def create_checkout_session(
 
 
 @billing_router.get('/success')
-async def success_callback(session_id: str, request: Request):
+async def success_callback(session_id: str, request: Request) -> RedirectResponse:
     # We can't use the auth cookie because of SameSite=strict
+    require_litellm_available()
     async with a_session_maker() as session:
         result = await session.execute(
             select(BillingSession).where(
@@ -301,8 +309,10 @@ async def success_callback(session_id: str, request: Request):
             )
         max_budget, spend = budget_info
 
-        result = await session.execute(select(Org).where(Org.id == user.current_org_id))
-        org = result.scalar_one_or_none()
+        org_result = await session.execute(
+            select(Org).where(Org.id == user.current_org_id)
+        )
+        org = org_result.scalar_one_or_none()
         budget_baseline = max(spend, max_budget if max_budget is not None else spend)
         new_max_budget = budget_baseline + add_credits
 
@@ -314,7 +324,7 @@ async def success_callback(session_id: str, request: Request):
             org.byor_export_enabled = True
 
         billing_session.status = 'completed'
-        billing_session.price = add_credits
+        billing_session.price = Decimal(amount_subtotal) / 100
         billing_session.updated_at = datetime.now(UTC)
         await session.merge(billing_session)
         logger.info(

@@ -96,7 +96,7 @@ describe("PaymentForm", () => {
     const topUpInput = await screen.findByTestId("top-up-input");
     await user.type(topUpInput, "50");
 
-    const topUpButton = screen.getByText("PAYMENT$ADD_CREDIT");
+    const topUpButton = await screen.findByText("PAYMENT$ADD_CREDIT");
     await user.click(topUpButton);
 
     expect(mockMutate).toHaveBeenCalledWith({ amount: 50 });
@@ -109,7 +109,7 @@ describe("PaymentForm", () => {
     const topUpInput = await screen.findByTestId("top-up-input");
     await user.type(topUpInput, "50");
 
-    const topUpButton = screen.getByText("PAYMENT$ADD_CREDIT");
+    const topUpButton = await screen.findByText("PAYMENT$ADD_CREDIT");
     await user.click(topUpButton);
 
     expect(mockMutate).toHaveBeenCalledWith({ amount: 50 });
@@ -119,7 +119,7 @@ describe("PaymentForm", () => {
     const user = userEvent.setup();
     renderPaymentForm();
 
-    const topUpButton = screen.getByText("PAYMENT$ADD_CREDIT");
+    const topUpButton = await screen.findByText("PAYMENT$ADD_CREDIT");
     expect(topUpButton).toBeDisabled();
 
     const topUpInput = await screen.findByTestId("top-up-input");
@@ -135,7 +135,7 @@ describe("PaymentForm", () => {
     const topUpInput = await screen.findByTestId("top-up-input");
     await user.type(topUpInput, "50");
 
-    const topUpButton = screen.getByText("PAYMENT$ADD_CREDIT");
+    const topUpButton = await screen.findByText("PAYMENT$ADD_CREDIT");
     await user.click(topUpButton);
 
     expect(topUpButton).toBeDisabled();
@@ -149,7 +149,7 @@ describe("PaymentForm", () => {
       const topUpInput = await screen.findByTestId("top-up-input");
       await user.type(topUpInput, "-50");
 
-      const topUpButton = screen.getByText("PAYMENT$ADD_CREDIT");
+      const topUpButton = await screen.findByText("PAYMENT$ADD_CREDIT");
       await user.click(topUpButton);
 
       expect(mockMutate).not.toHaveBeenCalled();
@@ -162,7 +162,7 @@ describe("PaymentForm", () => {
       const topUpInput = await screen.findByTestId("top-up-input");
       await user.type(topUpInput, "     ");
 
-      const topUpButton = screen.getByText("PAYMENT$ADD_CREDIT");
+      const topUpButton = await screen.findByText("PAYMENT$ADD_CREDIT");
       await user.click(topUpButton);
 
       expect(mockMutate).not.toHaveBeenCalled();
@@ -177,7 +177,7 @@ describe("PaymentForm", () => {
       const topUpInput = await screen.findByTestId("top-up-input");
       await user.type(topUpInput, "abc");
 
-      const topUpButton = screen.getByText("PAYMENT$ADD_CREDIT");
+      const topUpButton = await screen.findByText("PAYMENT$ADD_CREDIT");
       await user.click(topUpButton);
 
       expect(mockMutate).not.toHaveBeenCalled();
@@ -190,7 +190,7 @@ describe("PaymentForm", () => {
       const topUpInput = await screen.findByTestId("top-up-input");
       await user.type(topUpInput, "9"); // test assumes the minimum is 10
 
-      const topUpButton = screen.getByText("PAYMENT$ADD_CREDIT");
+      const topUpButton = await screen.findByText("PAYMENT$ADD_CREDIT");
       await user.click(topUpButton);
 
       expect(mockMutate).not.toHaveBeenCalled();
@@ -204,7 +204,7 @@ describe("PaymentForm", () => {
       const topUpInput = await screen.findByTestId("top-up-input");
       await user.type(topUpInput, "50.5");
 
-      const topUpButton = screen.getByText("PAYMENT$ADD_CREDIT");
+      const topUpButton = await screen.findByText("PAYMENT$ADD_CREDIT");
       await user.click(topUpButton);
 
       expect(mockMutate).not.toHaveBeenCalled();

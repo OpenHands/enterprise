@@ -168,3 +168,7 @@ describe("<ModelMessages />", () => {
     expect(screen.queryByText("claude-sonnet")).toBeNull();
   });
 });
+
+vi.mock("#/hooks/query/use-config", () => ({
+  useConfig: () => ({ data: { feature_flags: { enable_litellm: true } } }),
+}));

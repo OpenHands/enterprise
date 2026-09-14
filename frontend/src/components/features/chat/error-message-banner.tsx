@@ -2,6 +2,8 @@ import React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { X } from "lucide-react";
+import { isLiteLlmEnabled } from "#/utils/litellm-capability";
+import { useConfig } from "#/hooks/query/use-config";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 
@@ -15,7 +17,10 @@ const DEFAULT_MAX_COLLAPSED_CHARS = 220;
 export function ErrorMessageBanner({
   message,
   onDismiss,
-}: ErrorMessageBannerProps) {
+}: ErrorMessageBannerProps): React.JSX.Element {
+  const { data: config } = useConfig();
+  const showBillingLink =
+    isLiteLlmEnabled(config) && config?.feature_flags?.enable_billing;
   const { t, i18n } = useTranslation();
   const [isExpanded, setIsExpanded] = React.useState(false);
 
@@ -43,13 +48,15 @@ export function ErrorMessageBanner({
             <Trans
               i18nKey={message}
               components={{
-                a: (
+                a: showBillingLink ? (
                   <Link
                     className="underline font-bold cursor-pointer"
                     to="/settings/billing"
                   >
                     link
                   </Link>
+                ) : (
+                  <span />
                 ),
               }}
             />

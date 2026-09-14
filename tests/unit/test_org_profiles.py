@@ -5,7 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from pydantic import SecretStr
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.app_server.settings.llm_profiles import (
     MAX_PROFILES_PER_USER,
@@ -681,8 +683,10 @@ class TestSaveApiKeyPreservation:
 
     @pytest.mark.asyncio
     async def test_snapshot_save_with_preserve_flag_keeps_existing_key(
-        self, async_session_maker, patch_route_db
-    ):
+        self,
+        async_session_maker: async_sessionmaker[AsyncSession],
+        patch_route_db: uuid.UUID,
+    ) -> None:
         """The UI edit-save snapshots org defaults (active key included);
         the flag keeps the profile's own key while the snapshot's model lands.
         """
@@ -711,9 +715,9 @@ class TestSaveApiKeyPreservation:
         )
 
         org = await _read_org(async_session_maker, org_id)
-        saved = _load_profiles(org).get('work')
+        saved = _load_profiles(org).require('work')
         assert saved.model == 'openai/gpt-4o'
-        assert saved.api_key.get_secret_value() == 'profile-key'
+        assert saved.api_key is None  # Different provider cannot inherit the old key.
 
     @pytest.mark.asyncio
     async def test_snapshot_save_without_flag_keeps_snapshot_key(
@@ -778,8 +782,10 @@ class TestSaveApiKeyPreservation:
 
     @pytest.mark.asyncio
     async def test_explicit_llm_without_key_preserves_stored_key(
-        self, async_session_maker, patch_route_db
-    ):
+        self,
+        async_session_maker: async_sessionmaker[AsyncSession],
+        patch_route_db: uuid.UUID,
+    ) -> None:
         """GET→edit→POST round-trips null the key; the update must keep the
         stored one (parity with the personal profiles route)."""
         org_id = patch_route_db
@@ -795,16 +801,16 @@ class TestSaveApiKeyPreservation:
         await save_profile(
             org_id=org_id,
             name='work',
-            request=SaveProfileRequest(
-                llm=StrictLLM(model='anthropic/claude-3-5-sonnet')
-            ),
+            request=SaveProfileRequest(llm=StrictLLM(model='openai/gpt-4o-mini')),
             user_id=str(ADMIN_USER_ID),
         )
 
         org = await _read_org(async_session_maker, org_id)
-        saved = _load_profiles(org).get('work')
-        assert saved.model == 'anthropic/claude-3-5-sonnet'
-        assert saved.api_key.get_secret_value() == 'stored-key'
+        saved = _load_profiles(org).require('work')
+        assert saved.model == 'openai/gpt-4o-mini'
+        key = saved.api_key
+        assert isinstance(key, SecretStr)
+        assert key.get_secret_value() == 'stored-key'
 
     @pytest.mark.asyncio
     async def test_explicit_llm_with_new_key_replaces_stored_key(

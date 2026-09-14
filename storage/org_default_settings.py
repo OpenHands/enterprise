@@ -3,15 +3,40 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
+
+from pydantic import SecretStr
 
 from openhands.sdk.settings import OpenHandsAgentSettings, default_agent_settings
-from server.constants import get_default_llm_base_url, get_default_llm_model
+from server.constants import (
+    get_default_llm_api_key,
+    get_default_llm_base_url,
+    get_default_llm_model,
+)
 from server.org_defaults_config import get_org_defaults_condenser_config
 
 _APPLICABLE_AGENT_KINDS = {None, 'openhands', 'llm'}
 _APPLICABLE_CONDENSER_KINDS = {None, 'llm_summarizing'}
 _SettingsT = TypeVar('_SettingsT', dict[str, Any], OpenHandsAgentSettings)
+
+if TYPE_CHECKING:
+    from openhands.app_server.settings.settings_models import Settings
+
+
+def apply_default_llm_settings(settings: Settings) -> Settings:
+    """Apply deployment defaults without provisioning an external identity."""
+    settings.update(
+        {
+            'agent_settings_diff': {
+                'llm': {
+                    'model': get_default_llm_model(),
+                    'base_url': get_default_llm_base_url(),
+                    'api_key': get_default_llm_api_key(),
+                },
+            },
+        }
+    )
+    return settings
 
 
 def _configured_max_tokens() -> int | None:
@@ -24,6 +49,8 @@ def create_base_org_agent_settings() -> OpenHandsAgentSettings:
     agent_settings = default_agent_settings()
     agent_settings.llm.model = get_default_llm_model()
     agent_settings.llm.base_url = get_default_llm_base_url()
+    api_key = get_default_llm_api_key()
+    agent_settings.llm.api_key = SecretStr(api_key) if api_key else None
     return apply_org_condenser_max_tokens_default(
         agent_settings,
         max_tokens=_configured_max_tokens(),

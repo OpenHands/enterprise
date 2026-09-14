@@ -15,7 +15,7 @@ Activate via the environment variable::
 import asyncio
 import logging
 import time
-from typing import Any, AsyncGenerator, ClassVar
+from typing import AsyncGenerator, ClassVar
 
 import httpx
 from fastapi import Request
@@ -29,12 +29,17 @@ from openhands.app_server.config_api.llm_model_service import (
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.utils.http_session import httpx_verify_option
+from openhands.app_server.utils.litellm_integration import (
+    is_litellm_enabled,
+    require_litellm_enabled,
+)
 from openhands.app_server.utils.llm import ModelsResponse, get_supported_llm_models
 from server.constants import (
     LITE_LLM_API_KEY,
     LITE_LLM_API_URL,
     get_default_litellm_model,
 )
+from storage.litellm_models import MODEL_RESPONSE, parse_model_entry, parse_response
 
 _logger = logging.getLogger(__name__)
 
@@ -111,6 +116,7 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
         name is hidden. Proxy order is preserved. ``litellm_params`` are
         never propagated.
         """
+        require_litellm_enabled()
         url = LITE_LLM_API_URL.rstrip('/') + '/model/info'
         headers: dict[str, str] = {}
         if LITE_LLM_API_KEY:
@@ -120,25 +126,19 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
         ) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
-            payload = response.json()
+            payload = parse_response(response, MODEL_RESPONSE)
 
         order: list[str] = []
         hidden_by_name: dict[str, bool] = {}
         canonical_by_name: dict[str, str] = {}
-        for entry in payload.get('data') or []:
-            if not isinstance(entry, dict):
+        for wire_entry in payload.get('data') or []:
+            entry = parse_model_entry(wire_entry)
+            if entry is None:
                 continue
-            name = entry.get('model_name')
-            if not name or not isinstance(name, str):
-                continue
-            model_info: Any = entry.get('model_info') or {}
-            hidden = isinstance(model_info, dict) and bool(
-                model_info.get('openhands_hidden')
-            )
-            if hidden and name not in canonical_by_name:
-                canonical = model_info.get('openhands_canonical')
-                if canonical and isinstance(canonical, str):
-                    canonical_by_name[name] = canonical
+            name = entry.name
+            hidden = entry.hidden
+            if hidden and name not in canonical_by_name and entry.canonical:
+                canonical_by_name[name] = entry.canonical
             if name not in hidden_by_name:
                 order.append(name)
                 hidden_by_name[name] = hidden
@@ -211,6 +211,8 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
     def _is_model_verified(
         self, model_name: str, name: str, models_response: ModelsResponse
     ) -> bool:
+        if not is_litellm_enabled():
+            return super()._is_model_verified(model_name, name, models_response)
         # Managed proxy models are verified; the unioned SDK catalogue (BYOK)
         # is not. Require the openhands/ prefix so a catalogue model whose bare
         # name collides with a proxy one (openai/gpt-5 vs proxy gpt-5) isn't
@@ -223,6 +225,8 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
         self,
         verified_models: list[str] | None = None,
     ) -> ModelsResponse:
+        if not is_litellm_enabled():
+            return get_supported_llm_models()
         cls = LiteLLMProxyModelService
         response = cls._shared_response
         if (

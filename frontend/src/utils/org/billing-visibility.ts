@@ -15,5 +15,9 @@ export function isBillingHidden(
   hasViewBillingPermission: boolean,
 ): boolean {
   if (!config) return true;
-  return !config.feature_flags?.enable_billing || !hasViewBillingPermission;
+  return (
+    config.feature_flags?.enable_litellm === false ||
+    !config.feature_flags?.enable_billing ||
+    !hasViewBillingPermission
+  );
 }

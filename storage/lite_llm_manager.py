@@ -3,15 +3,28 @@ Store class for managing organizational settings.
 """
 
 import functools
+import hashlib
 import math
 import os
-from typing import Any, Awaitable, Callable
+from collections.abc import Mapping
+from typing import (
+    Awaitable,
+    Callable,
+    Concatenate,
+    Literal,
+    ParamSpec,
+    TypedDict,
+    TypeVar,
+    Unpack,
+)
 
 import httpx
-from pydantic import SecretStr
+from pydantic import JsonValue, SecretStr
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.http_session import httpx_verify_option
+from openhands.app_server.utils.litellm_integration import require_litellm_enabled
 from server.auth.token_manager import TokenManager
 from server.constants import (
     LITE_LLM_API_KEY,
@@ -25,6 +38,23 @@ from server.constants import (
     should_use_direct_llm_defaults,
 )
 from server.logger import logger
+from storage.litellm_models import (
+    GENERATED_KEY,
+    KEY_LIST_RESPONSE,
+    KEY_RESPONSE,
+    TEAM_RESPONSE,
+    USER_RESPONSE,
+    KeyFinancialData,
+    LiteLlmKey,
+    LiteLlmMember,
+    LiteLlmMetadata,
+    LiteLlmTeamInfo,
+    LiteLlmTeamResponse,
+    LiteLlmUserResponse,
+    MemberFinancialData,
+    TeamFinancialData,
+    parse_response,
+)
 from storage.user_settings import UserSettings
 
 # Timeout in seconds for LiteLLM management API requests.
@@ -35,6 +65,38 @@ KEY_VERIFICATION_TIMEOUT = 5.0
 
 # A very large number to represent "unlimited" until LiteLLM fixes their unlimited update bug.
 UNLIMITED_BUDGET_SETTING = 1000000000.0
+
+P = ParamSpec('P')
+R = TypeVar('R')
+
+
+class _ManagementGetOptions(TypedDict, total=False):
+    params: dict[str, str]
+    headers: dict[str, str]
+
+
+class _ManagementRequestOptions(_ManagementGetOptions, total=False):
+    json: Mapping[str, JsonValue | LiteLlmMetadata]
+
+
+async def _request_litellm(
+    client: httpx.AsyncClient,
+    method: Literal['GET', 'POST'],
+    url: str,
+    **kwargs: Unpack[_ManagementRequestOptions],
+) -> httpx.Response:
+    """Guard every gateway request, including calls with an injected client."""
+    require_litellm_enabled()
+    if method == 'GET':
+        if 'json' in kwargs:
+            raise TypeError('LiteLLM GET requests do not accept a JSON body')
+        get_options: _ManagementGetOptions = {}
+        if 'params' in kwargs:
+            get_options['params'] = kwargs['params']
+        if 'headers' in kwargs:
+            get_options['headers'] = kwargs['headers']
+        return await client.get(url, **get_options)
+    return await client.post(url, **kwargs)
 
 
 # Import-time snapshot of the ENABLE_BILLING env var. Runtime checks prefer
@@ -163,7 +225,7 @@ class LiteLlmManager:
 
     @staticmethod
     def get_budget_from_team_info(
-        user_team_info: dict | None, user_id: str, org_id: str
+        user_team_info: LiteLlmMember | None, user_id: str, org_id: str
     ) -> tuple[float | None, float] | None:
         """Extract known budget data, preserving an explicit unlimited cap."""
         if not user_team_info or 'spend' not in user_team_info:
@@ -185,7 +247,7 @@ class LiteLlmManager:
         return max_budget, spend
 
     @staticmethod
-    async def _get_db_free_llm_models(db_session) -> list[str]:
+    async def _get_db_free_llm_models(db_session: AsyncSession) -> list[str]:
         from sqlalchemy import and_, select
 
         from server.verified_models.verified_model_service import StoredVerifiedModel
@@ -207,7 +269,9 @@ class LiteLlmManager:
         ]
 
     @staticmethod
-    async def _resolve_free_llm_models(db_session=None) -> list[str]:
+    async def _resolve_free_llm_models(
+        db_session: AsyncSession | None = None,
+    ) -> list[str]:
         if db_session is not None:
             return await LiteLlmManager._get_db_free_llm_models(db_session)
 
@@ -244,7 +308,7 @@ class LiteLlmManager:
 
     @staticmethod
     def _is_free_tier_team_info(
-        team_info: dict,
+        team_info: LiteLlmTeamInfo,
         free_models: list[str],
         previous_free_models: list[str] | None = None,
     ) -> bool:
@@ -260,7 +324,7 @@ class LiteLlmManager:
         )
 
     @staticmethod
-    async def _get_org_ids(db_session) -> list[str]:
+    async def _get_org_ids(db_session: AsyncSession) -> list[str]:
         from sqlalchemy import select
 
         from storage.org import Org
@@ -270,8 +334,9 @@ class LiteLlmManager:
 
     @staticmethod
     async def sync_free_model_allowlists(
-        db_session, previous_free_models: list[str] | None = None
+        db_session: AsyncSession, previous_free_models: list[str] | None = None
     ) -> None:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
@@ -319,12 +384,13 @@ class LiteLlmManager:
         create_user: bool,
         add_user_to_team: bool = True,
     ) -> Settings | None:
+        require_litellm_enabled()
         logger.info(
             'SettingsStore:update_settings_with_litellm_default:start',
             extra={'org_id': org_id, 'user_id': keycloak_user_id},
         )
         if should_use_direct_llm_defaults():
-            llm_settings: dict[str, Any] = {
+            llm_settings: dict[str, JsonValue] = {
                 'model': get_default_llm_model(),
                 'base_url': get_default_llm_base_url(),
             }
@@ -534,6 +600,7 @@ class LiteLlmManager:
         keycloak_user_id: str,
         user_settings: UserSettings,
     ) -> UserSettings | None:
+        require_litellm_enabled()
         logger.info(
             'LiteLlmManager:migrate_lite_llm_entries:start',
             extra={'org_id': org_id, 'user_id': keycloak_user_id},
@@ -734,6 +801,7 @@ class LiteLlmManager:
         Returns:
             The user_settings if downgrade was successful, None otherwise
         """
+        require_litellm_enabled()
         logger.info(
             'LiteLlmManager:downgrade_entries:start',
             extra={'org_id': org_id, 'user_id': keycloak_user_id},
@@ -848,10 +916,56 @@ class LiteLlmManager:
         return user_settings
 
     @staticmethod
+    async def ensure_user_in_org(user_id: str, org_id: str) -> None:
+        """Provision missing gateway resources without changing application settings.
+
+        This also handles organizations created with the integration disabled.
+        Existing team policies and membership budgets are left intact.
+        """
+        require_litellm_enabled()
+        if not LITE_LLM_API_KEY or not LITE_LLM_API_URL:
+            raise ValueError('LiteLLM API configuration not found')
+        async with httpx.AsyncClient(
+            headers={'x-goog-api-key': LITE_LLM_API_KEY},
+            timeout=httpx.Timeout(LITELLM_MANAGEMENT_TIMEOUT),
+        ) as client:
+            try:
+                team = await LiteLlmManager._get_team(client, org_id)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    raise
+                team = None
+            if team is None:
+                await LiteLlmManager._create_team(
+                    client,
+                    await LiteLlmManager._team_alias_for_org(org_id, user_id),
+                    org_id,
+                    _get_default_initial_budget(await _is_billing_enabled()),
+                    update_existing=False,
+                )
+                team = await LiteLlmManager._get_team(client, org_id)
+            if not team:
+                raise ValueError('LiteLLM organization was not provisioned')
+            if not await LiteLlmManager._user_exists(client, user_id):
+                if not await LiteLlmManager._create_user(client, None, user_id):
+                    raise ValueError('LiteLLM user was not provisioned')
+            if not any(
+                member.get('user_id') == user_id
+                for member in LiteLlmManager._team_member_rows(team)
+            ):
+                await LiteLlmManager._add_user_to_team(
+                    client,
+                    user_id,
+                    org_id,
+                    team.get('team_info', {}).get('max_budget'),
+                )
+
+    @staticmethod
     async def update_team_and_users_budget(
         team_id: str,
         max_budget: float,
-    ):
+    ) -> None:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
@@ -865,7 +979,7 @@ class LiteLlmManager:
             if not team_info:
                 return None
             # TODO: change to use bulk update endpoint
-            for membership in team_info.get('team_memberships', []):
+            for membership in team_info.get('team_memberships') or []:
                 user_id = membership.get('user_id')
                 if not user_id:
                     continue
@@ -883,6 +997,7 @@ class LiteLlmManager:
         being unreachable (or unconfigured in self-hosted installs) must not
         fail an org-version upgrade.
         """
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             return False
         try:
@@ -957,7 +1072,9 @@ class LiteLlmManager:
         team_id: str,
         max_budget: float | None,
         free_models: list[str] | None = None,
-    ):
+        *,
+        update_existing: bool = True,
+    ) -> None:
         """Create a new team in LiteLLM.
 
         Args:
@@ -967,11 +1084,12 @@ class LiteLlmManager:
             max_budget: The maximum budget for the team. When None, budget
                 enforcement is disabled (unlimited usage).
         """
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
 
-        json_data: dict[str, Any] = {
+        json_data: dict[str, JsonValue | LiteLlmMetadata] = {
             'team_id': team_id,
             'team_alias': team_alias,
             'models': [],
@@ -985,11 +1103,15 @@ class LiteLlmManager:
         if _is_free_budget(max_budget):
             if free_models is None:
                 free_models = await LiteLlmManager._resolve_free_llm_models()
-            json_data['models'] = _litellm_free_model_allowlist(free_models)
+            json_data['models'] = [
+                model for model in _litellm_free_model_allowlist(free_models)
+            ]
         elif max_budget is not None:
             json_data['max_budget'] = max_budget
 
-        response = await client.post(
+        response = await _request_litellm(
+            client,
+            'POST',
             f'{LITE_LLM_API_URL}/team/new',
             json=json_data,
         )
@@ -1000,19 +1122,22 @@ class LiteLlmManager:
                 response.status_code == 400
                 and 'already exists. Please use a different team id' in response.text
             ):
+                if not update_existing:
+                    return
                 # team already exists, so update, then return
-                kwargs: dict[str, Any] = {}
-                if free_models is not None:
-                    kwargs['free_models'] = free_models
-                await LiteLlmManager._update_team(
-                    client, team_id, team_alias, max_budget, **kwargs
-                )
+                if free_models is None:
+                    await LiteLlmManager._update_team(
+                        client, team_id, team_alias, max_budget
+                    )
+                else:
+                    await LiteLlmManager._update_team(
+                        client, team_id, team_alias, max_budget, free_models=free_models
+                    )
                 return
             logger.error(
                 'error_creating_litellm_team',
                 extra={
                     'status_code': response.status_code,
-                    'text': response.text,
                     'team_id': team_id,
                     'max_budget': max_budget,
                 },
@@ -1020,16 +1145,21 @@ class LiteLlmManager:
         response.raise_for_status()
 
     @staticmethod
-    async def _get_team(client: httpx.AsyncClient, team_id: str) -> dict | None:
+    async def _get_team(
+        client: httpx.AsyncClient, team_id: str
+    ) -> LiteLlmTeamResponse | None:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return None
         """Get a team from litellm with the id matching that given."""
-        response = await client.get(
+        response = await _request_litellm(
+            client,
+            'GET',
             f'{LITE_LLM_API_URL}/team/info?team_id={team_id}',
         )
         response.raise_for_status()
-        return response.json()
+        return parse_response(response, TEAM_RESPONSE)
 
     @staticmethod
     async def _update_team(
@@ -1039,11 +1169,12 @@ class LiteLlmManager:
         max_budget: float | None,
         clear_budget: bool = False,
         free_models: list[str] | None = None,
-    ):
+    ) -> None:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
-        json_data: dict[str, Any] = {
+        json_data: dict[str, JsonValue | LiteLlmMetadata] = {
             'team_id': team_id,
             'metadata': {
                 'version': ORG_SETTINGS_VERSION,
@@ -1055,7 +1186,9 @@ class LiteLlmManager:
             if free_models is None:
                 free_models = await LiteLlmManager._resolve_free_llm_models()
             json_data['max_budget'] = None
-            json_data['models'] = _litellm_free_model_allowlist(free_models)
+            json_data['models'] = [
+                model for model in _litellm_free_model_allowlist(free_models)
+            ]
         elif max_budget is not None or clear_budget:
             # Paid tier (or explicit clear): (re)open the full model list and
             # set the budget. ``models: []`` is LiteLLM's "all models" sentinel.
@@ -1065,7 +1198,9 @@ class LiteLlmManager:
         if team_alias is not None:
             json_data['team_alias'] = team_alias
 
-        response = await client.post(
+        response = await _request_litellm(
+            client,
+            'POST',
             f'{LITE_LLM_API_URL}/team/update',
             json=json_data,
         )
@@ -1076,7 +1211,6 @@ class LiteLlmManager:
                 'error_updating_litellm_team',
                 extra={
                     'status_code': response.status_code,
-                    'text': response.text,
                     'team_id': [team_id],
                     'max_budget': max_budget,
                 },
@@ -1092,21 +1226,24 @@ class LiteLlmManager:
 
         Returns True if the user exists, False otherwise.
         """
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             return False
         try:
-            response = await client.get(
+            response = await _request_litellm(
+                client,
+                'GET',
                 f'{LITE_LLM_API_URL}/user/info?user_id={user_id}',
             )
             if response.is_success:
-                user_data = response.json()
+                user_data = parse_response(response, USER_RESPONSE)
                 user_info = user_data.get('user_info', {})
                 return user_info.get('user_id') == user_id
             return False
         except Exception as e:
             logger.warning(
                 'litellm_user_exists_check_failed',
-                extra={'user_id': user_id, 'error': str(e)},
+                extra={'user_id': user_id, 'error_type': type(e).__name__},
             )
             return False
 
@@ -1121,23 +1258,27 @@ class LiteLlmManager:
         Returns True if the user was created or already exists and is verified,
         False if creation failed and user does not exist.
         """
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return False
-        response = await client.post(
-            f'{LITE_LLM_API_URL}/user/new',
-            json={
-                'user_email': email,
-                'models': [],
-                'user_id': keycloak_user_id,
-                'teams': [LITE_LLM_TEAM_ID],
-                'auto_create_key': False,
-                'send_invite_email': False,
-                'metadata': {
-                    'version': ORG_SETTINGS_VERSION,
-                    'model': get_default_litellm_model(),
-                },
+        payload: dict[str, JsonValue] = {
+            'user_email': email,
+            'models': [],
+            'user_id': keycloak_user_id,
+            'teams': [LITE_LLM_TEAM_ID],
+            'auto_create_key': False,
+            'send_invite_email': False,
+            'metadata': {
+                'version': ORG_SETTINGS_VERSION,
+                'model': get_default_litellm_model(),
             },
+        }
+        response = await _request_litellm(
+            client,
+            'POST',
+            f'{LITE_LLM_API_URL}/user/new',
+            json=payload,
         )
         if not response.is_success:
             logger.warning(
@@ -1148,20 +1289,23 @@ class LiteLlmManager:
                 },
             )
             # Litellm insists on unique email addresses - it is possible the email address was registered with a different user.
-            response = await client.post(
-                f'{LITE_LLM_API_URL}/user/new',
-                json={
-                    'user_email': None,
-                    'models': [],
-                    'user_id': keycloak_user_id,
-                    'teams': [LITE_LLM_TEAM_ID],
-                    'auto_create_key': False,
-                    'send_invite_email': False,
-                    'metadata': {
-                        'version': ORG_SETTINGS_VERSION,
-                        'model': get_default_litellm_model(),
-                    },
+            retry_payload: dict[str, JsonValue] = {
+                'user_email': None,
+                'models': [],
+                'user_id': keycloak_user_id,
+                'teams': [LITE_LLM_TEAM_ID],
+                'auto_create_key': False,
+                'send_invite_email': False,
+                'metadata': {
+                    'version': ORG_SETTINGS_VERSION,
+                    'model': get_default_litellm_model(),
                 },
+            }
+            response = await _request_litellm(
+                client,
+                'POST',
+                f'{LITE_LLM_API_URL}/user/new',
+                json=retry_payload,
             )
 
             # User failed to create in litellm - this is an unforeseen error state...
@@ -1186,7 +1330,6 @@ class LiteLlmManager:
                             extra={
                                 'user_id': keycloak_user_id,
                                 'status_code': response.status_code,
-                                'text': response.text,
                             },
                         )
                         return False
@@ -1195,7 +1338,6 @@ class LiteLlmManager:
                     'error_creating_litellm_user',
                     extra={
                         'status_code': response.status_code,
-                        'text': response.text,
                         'user_id': keycloak_user_id,
                         'email': None,
                     },
@@ -1205,33 +1347,41 @@ class LiteLlmManager:
         return True
 
     @staticmethod
-    async def _get_user(client: httpx.AsyncClient, user_id: str) -> dict | None:
+    async def _get_user(
+        client: httpx.AsyncClient, user_id: str
+    ) -> LiteLlmUserResponse | None:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return None
         """Get a user from litellm with the id matching that given."""
-        response = await client.get(
+        response = await _request_litellm(
+            client,
+            'GET',
             f'{LITE_LLM_API_URL}/user/info?user_id={user_id}',
         )
         response.raise_for_status()
-        return response.json()
+        return parse_response(response, USER_RESPONSE)
 
     @staticmethod
     async def _update_user(
         client: httpx.AsyncClient,
         keycloak_user_id: str,
-        **kwargs,
-    ):
+        **kwargs: JsonValue,
+    ) -> None:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
 
-        payload = {
+        payload: dict[str, JsonValue] = {
             'user_id': keycloak_user_id,
         }
         payload.update(kwargs)
 
-        response = await client.post(
+        response = await _request_litellm(
+            client,
+            'POST',
             f'{LITE_LLM_API_URL}/user/update',
             json=payload,
         )
@@ -1241,7 +1391,6 @@ class LiteLlmManager:
                 'error_updating_litellm_user',
                 extra={
                     'status_code': response.status_code,
-                    'text': response.text,
                     'user_id': keycloak_user_id,
                 },
             )
@@ -1252,18 +1401,21 @@ class LiteLlmManager:
         client: httpx.AsyncClient,
         keycloak_user_id: str,
         key: str,
-        **kwargs,
-    ):
+        **kwargs: JsonValue,
+    ) -> None:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
 
-        payload = {
+        payload: dict[str, JsonValue] = {
             'key': key,
         }
         payload.update(kwargs)
 
-        response = await client.post(
+        response = await _request_litellm(
+            client,
+            'POST',
             f'{LITE_LLM_API_URL}/key/update',
             json=payload,
         )
@@ -1274,7 +1426,6 @@ class LiteLlmManager:
                     'invalid_litellm_key_during_update',
                     extra={
                         'user_id': keycloak_user_id,
-                        'text': response.text,
                     },
                 )
                 return
@@ -1282,7 +1433,6 @@ class LiteLlmManager:
                 'error_updating_litellm_key',
                 extra={
                     'status_code': response.status_code,
-                    'text': response.text,
                     'user_id': keycloak_user_id,
                 },
             )
@@ -1302,11 +1452,14 @@ class LiteLlmManager:
         Returns:
             A list of key strings belonging to the user
         """
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return []
 
-        response = await client.get(
+        response = await _request_litellm(
+            client,
+            'GET',
             f'{LITE_LLM_API_URL}/key/list',
             params={'user_id': keycloak_user_id},
         )
@@ -1316,13 +1469,12 @@ class LiteLlmManager:
                 'error_getting_user_keys',
                 extra={
                     'status_code': response.status_code,
-                    'text': response.text,
                     'user_id': keycloak_user_id,
                 },
             )
             return []
 
-        response_json = response.json()
+        response_json = parse_response(response, KEY_LIST_RESPONSE)
         keys = response_json.get('keys', [])
         logger.debug(
             'LiteLlmManager:_get_user_keys:keys_retrieved',
@@ -1337,8 +1489,8 @@ class LiteLlmManager:
     async def _update_user_keys(
         client: httpx.AsyncClient,
         keycloak_user_id: str,
-        **kwargs,
-    ):
+        **kwargs: JsonValue,
+    ) -> None:
         """Update all keys belonging to a user with the given parameters.
 
         Args:
@@ -1363,12 +1515,17 @@ class LiteLlmManager:
     async def _delete_user(
         client: httpx.AsyncClient,
         keycloak_user_id: str,
-    ):
+    ) -> None:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
-        response = await client.post(
-            f'{LITE_LLM_API_URL}/user/delete', json={'user_ids': [keycloak_user_id]}
+        payload: dict[str, JsonValue] = {'user_ids': [keycloak_user_id]}
+        response = await _request_litellm(
+            client,
+            'POST',
+            f'{LITE_LLM_API_URL}/user/delete',
+            json=payload,
         )
 
         if not response.is_success:
@@ -1383,7 +1540,6 @@ class LiteLlmManager:
                 'error_deleting_litellm_user',
                 extra={
                     'status_code': response.status_code,
-                    'text': response.text,
                     'user_id': [keycloak_user_id],
                 },
             )
@@ -1393,13 +1549,17 @@ class LiteLlmManager:
     async def _delete_team(
         client: httpx.AsyncClient,
         team_id: str,
-    ):
+    ) -> None:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
-        response = await client.post(
+        payload: dict[str, JsonValue] = {'team_ids': [team_id]}
+        response = await _request_litellm(
+            client,
+            'POST',
             f'{LITE_LLM_API_URL}/team/delete',
-            json={'team_ids': [team_id]},
+            json=payload,
         )
 
         if not response.is_success:
@@ -1414,7 +1574,6 @@ class LiteLlmManager:
                 'error_deleting_litellm_team',
                 extra={
                     'status_code': response.status_code,
-                    'text': response.text,
                     'team_id': team_id,
                 },
             )
@@ -1430,7 +1589,7 @@ class LiteLlmManager:
         keycloak_user_id: str,
         team_id: str,
         max_budget: float | None,
-    ):
+    ) -> None:
         """Add a user to a team in LiteLLM.
 
         Args:
@@ -1440,11 +1599,12 @@ class LiteLlmManager:
             max_budget: The maximum budget for the user in the team. When None,
                 budget enforcement is disabled (unlimited usage).
         """
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
 
-        json_data: dict[str, Any] = {
+        json_data: dict[str, JsonValue | LiteLlmMetadata] = {
             'team_id': team_id,
             'member': {'user_id': keycloak_user_id, 'role': 'user'},
         }
@@ -1457,7 +1617,9 @@ class LiteLlmManager:
         elif max_budget is not None:
             json_data['max_budget_in_team'] = max_budget
 
-        response = await client.post(
+        response = await _request_litellm(
+            client,
+            'POST',
             f'{LITE_LLM_API_URL}/team/member_add',
             json=json_data,
         )
@@ -1480,7 +1642,6 @@ class LiteLlmManager:
                 'error_adding_litellm_user_to_team',
                 extra={
                     'status_code': response.status_code,
-                    'text': response.text,
                     'user_id': [keycloak_user_id],
                     'team_id': [team_id],
                     'max_budget': max_budget,
@@ -1489,53 +1650,20 @@ class LiteLlmManager:
         response.raise_for_status()
 
     @staticmethod
-    def _member_dict(member: Any) -> dict[str, Any]:
-        if isinstance(member, dict):
-            return dict(member)
-
-        model_dump = getattr(member, 'model_dump', None)
-        if callable(model_dump):
-            return model_dump()
-
-        if isinstance(member, str):
-            return {'user_id': member}
-
-        values: dict[str, Any] = {}
-        for field in (
-            'user_id',
-            'user_email',
-            'role',
-            'team_id',
-            'budget_id',
-            'spend',
-            'max_budget_in_team',
-            'litellm_budget_table',
-        ):
-            if hasattr(member, field):
-                values[field] = getattr(member, field)
-        return values
-
-    @staticmethod
-    def _team_member_rows(team_response: dict[str, Any]) -> list[dict[str, Any]]:
+    def _team_member_rows(team_response: LiteLlmTeamResponse) -> list[LiteLlmMember]:
         team_memberships = team_response.get('team_memberships') or []
         if team_memberships:
-            return [
-                LiteLlmManager._member_dict(membership)
-                for membership in team_memberships
-            ]
-
+            return [membership.copy() for membership in team_memberships]
         team_info = team_response.get('team_info') or {}
-        members_with_roles = team_info.get('members_with_roles') or []
-        return [
-            LiteLlmManager._member_dict(membership) for membership in members_with_roles
-        ]
+        return [member.copy() for member in team_info.get('members_with_roles') or []]
 
     @staticmethod
     async def _get_user_team_info(
         client: httpx.AsyncClient,
         keycloak_user_id: str,
         team_id: str,
-    ) -> dict | None:
+    ) -> LiteLlmMember | None:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return None
@@ -1581,7 +1709,7 @@ class LiteLlmManager:
         team_id: str,
         max_budget: float | None,
         clear_budget: bool = False,
-    ):
+    ) -> None:
         """Update a user's budget in a team.
 
         Args:
@@ -1591,11 +1719,12 @@ class LiteLlmManager:
             max_budget: The maximum budget for the user in the team. When None,
                 budget enforcement is disabled (unlimited usage).
         """
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
 
-        json_data: dict[str, Any] = {
+        json_data: dict[str, JsonValue | LiteLlmMetadata] = {
             'team_id': team_id,
             'user_id': keycloak_user_id,
         }
@@ -1607,7 +1736,9 @@ class LiteLlmManager:
         elif max_budget is not None or clear_budget:
             json_data['max_budget_in_team'] = max_budget
 
-        response = await client.post(
+        response = await _request_litellm(
+            client,
+            'POST',
             f'{LITE_LLM_API_URL}/team/member_update',
             json=json_data,
         )
@@ -1618,7 +1749,6 @@ class LiteLlmManager:
                 'error_updating_litellm_user_in_team',
                 extra={
                     'status_code': response.status_code,
-                    'text': response.text,
                     'user_id': [keycloak_user_id],
                     'team_id': [team_id],
                     'max_budget': max_budget,
@@ -1631,11 +1761,14 @@ class LiteLlmManager:
         client: httpx.AsyncClient,
         keycloak_user_id: str,
         team_id: str,
-    ):
+    ) -> None:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
-        response = await client.post(
+        response = await _request_litellm(
+            client,
+            'POST',
             f'{LITE_LLM_API_URL}/team/member_delete',
             json={
                 'team_id': team_id,
@@ -1654,7 +1787,6 @@ class LiteLlmManager:
                 'error_removing_litellm_user_from_team',
                 extra={
                     'status_code': response.status_code,
-                    'text': response.text,
                     'user_id': keycloak_user_id,
                     'team_id': team_id,
                 },
@@ -1671,11 +1803,12 @@ class LiteLlmManager:
         keycloak_user_id: str,
         team_id: str | None,
         key_alias: str | None,
-        metadata: dict | None,
+        metadata: LiteLlmMetadata | None,
     ) -> str:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             raise ValueError('LiteLLM API configuration not found')
-        json_data: dict[str, Any] = {
+        json_data: dict[str, JsonValue | LiteLlmMetadata] = {
             'user_id': keycloak_user_id,
             'models': [],
         }
@@ -1689,7 +1822,9 @@ class LiteLlmManager:
         if metadata is not None:
             json_data['metadata'] = metadata
 
-        response = await client.post(
+        response = await _request_litellm(
+            client,
+            'POST',
             f'{LITE_LLM_API_URL}/key/generate',
             json=json_data,
         )
@@ -1699,14 +1834,13 @@ class LiteLlmManager:
                 'error_generate_user_team_key',
                 extra={
                     'status_code': response.status_code,
-                    'text': response.text,
                     'user_id': keycloak_user_id,
                     'team_id': team_id,
                     'key_alias': key_alias,
                 },
             )
         response.raise_for_status()
-        response_json = response.json()
+        response_json = parse_response(response, GENERATED_KEY)
         key = response_json['key']
         logger.info(
             'LiteLlmManager:_lite_llm_generate_user_team_key:key_created',
@@ -1730,6 +1864,7 @@ class LiteLlmManager:
             True if the key is verified as valid or verification is inconclusive.
             False only when LiteLLM explicitly reports an auth failure.
         """
+        require_litellm_enabled()
         if not (LITE_LLM_API_URL and key):
             return False
 
@@ -1740,15 +1875,6 @@ class LiteLlmManager:
                 message = ''
             if message:
                 return message
-            try:
-                payload = response.json()
-            except Exception:
-                return ''
-            if isinstance(payload, dict):
-                for field in ('detail', 'error', 'message'):
-                    value = payload.get(field)
-                    if isinstance(value, str):
-                        return value
             return ''
 
         def _is_budget_exceeded(message: str) -> bool:
@@ -1761,7 +1887,9 @@ class LiteLlmManager:
                 timeout=KEY_VERIFICATION_TIMEOUT,
             ) as client:
                 # Using /v1/models endpoint as it's lightweight and requires authentication
-                response = await client.get(
+                response = await _request_litellm(
+                    client,
+                    'GET',
                     f'{LITE_LLM_API_URL}/v1/models',
                     headers={
                         'Authorization': f'Bearer {key}',
@@ -1781,7 +1909,6 @@ class LiteLlmManager:
                         extra={
                             'user_id': user_id,
                             'status_code': response.status_code,
-                            'key_prefix': key[:10] + '...' if len(key) > 10 else key,
                         },
                     )
                     return False
@@ -1793,7 +1920,6 @@ class LiteLlmManager:
                         extra={
                             'user_id': user_id,
                             'status_code': response.status_code,
-                            'key_prefix': key[:10] + '...' if len(key) > 10 else key,
                         },
                     )
                     return True
@@ -1803,7 +1929,6 @@ class LiteLlmManager:
                     extra={
                         'user_id': user_id,
                         'status_code': response.status_code,
-                        'key_prefix': key[:10] + '...' if len(key) > 10 else key,
                     },
                 )
                 return True
@@ -1813,7 +1938,6 @@ class LiteLlmManager:
                 'Key verification error - preserving key',
                 extra={
                     'user_id': user_id,
-                    'error': str(e),
                     'error_type': type(e).__name__,
                 },
             )
@@ -1824,7 +1948,8 @@ class LiteLlmManager:
         client: httpx.AsyncClient,
         org_id: str,
         keycloak_user_id: str,
-    ) -> dict | None:
+    ) -> KeyFinancialData | None:
+        require_litellm_enabled()
         from storage.user_store import UserStore
 
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
@@ -1836,16 +1961,23 @@ class LiteLlmManager:
 
         org_member = None
         for om in user.org_members:
-            if om.org_id == org_id:
+            if str(om.org_id) == org_id:
                 org_member = om
                 break
         if not org_member or not org_member.llm_api_key:
             return {}
-        response = await client.get(
-            f'{LITE_LLM_API_URL}/key/info?key={org_member.llm_api_key}'
+        response = await _request_litellm(
+            client,
+            'GET',
+            f'{LITE_LLM_API_URL}/key/info',
+            params={
+                'key': hashlib.sha256(
+                    org_member.llm_api_key.get_secret_value().encode()
+                ).hexdigest()
+            },
         )
         response.raise_for_status()
-        response_json = response.json()
+        response_json = parse_response(response, KEY_RESPONSE)
         key_info = response_json.get('info')
         if not key_info:
             return {}
@@ -1858,7 +1990,7 @@ class LiteLlmManager:
     async def _get_all_keys_for_user(
         client: httpx.AsyncClient,
         keycloak_user_id: str,
-    ) -> list[dict] | None:
+    ) -> list[LiteLlmKey] | None:
         """Get all keys for a user from LiteLLM.
 
         Returns a list of key info dictionaries containing:
@@ -1873,12 +2005,15 @@ class LiteLlmManager:
         Returns None when the LiteLLM request fails so callers can skip
         invalidation on transient errors.
         """
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return None
 
         try:
-            response = await client.get(
+            response = await _request_litellm(
+                client,
+                'GET',
                 f'{LITE_LLM_API_URL}/user/info?user_id={keycloak_user_id}',
                 headers={'x-goog-api-key': LITE_LLM_API_KEY},
             )
@@ -1887,7 +2022,7 @@ class LiteLlmManager:
                 'LiteLlmManager:_get_all_keys_for_user:request_error',
                 extra={
                     'user_id': keycloak_user_id,
-                    'error': str(e),
+                    'error_type': type(e).__name__,
                 },
             )
             return None
@@ -1905,19 +2040,18 @@ class LiteLlmManager:
                 extra={
                     'user_id': keycloak_user_id,
                     'status_code': response.status_code,
-                    'text': response.text,
                 },
             )
             return None
 
         try:
-            user_json = response.json()
+            user_json = parse_response(response, USER_RESPONSE)
         except Exception as e:
             logger.warning(
                 'LiteLlmManager:_get_all_keys_for_user:parse_failed',
                 extra={
                     'user_id': keycloak_user_id,
-                    'error': str(e),
+                    'error_type': type(e).__name__,
                 },
             )
             return None
@@ -1962,7 +2096,7 @@ class LiteLlmManager:
 
     @staticmethod
     def _key_belongs_to_user_org(
-        keys: list[dict],
+        keys: list[LiteLlmKey],
         key_value: str,
         keycloak_user_id: str,
         org_id: str,
@@ -2029,19 +2163,23 @@ class LiteLlmManager:
     async def _delete_key_by_alias(
         client: httpx.AsyncClient,
         key_alias: str,
-    ):
+    ) -> None:
         """Delete a key from LiteLLM by its alias.
 
         This is a best-effort operation that logs but does not raise on failure.
         """
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
-        response = await client.post(
+        payload: dict[str, JsonValue] = {
+            'key_aliases': [key_alias],
+        }
+        response = await _request_litellm(
+            client,
+            'POST',
             f'{LITE_LLM_API_URL}/key/delete',
-            json={
-                'key_aliases': [key_alias],
-            },
+            json=payload,
         )
         if response.is_success:
             logger.info(
@@ -2055,7 +2193,6 @@ class LiteLlmManager:
                 extra={
                     'key_alias': key_alias,
                     'status_code': response.status_code,
-                    'text': response.text,
                 },
             )
 
@@ -2065,11 +2202,15 @@ class LiteLlmManager:
         key_alias: str,
     ) -> None:
         """Delete a deterministic alias or fail without rotating the DB row."""
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             raise ValueError('LiteLLM API configuration not found')
-        response = await client.post(
+        payload: dict[str, JsonValue] = {'key_aliases': [key_alias]}
+        response = await _request_litellm(
+            client,
+            'POST',
             f'{LITE_LLM_API_URL}/key/delete',
-            json={'key_aliases': [key_alias]},
+            json=payload,
         )
         if response.status_code == 404:
             return
@@ -2080,15 +2221,19 @@ class LiteLlmManager:
         client: httpx.AsyncClient,
         key_id: str,
         key_alias: str | None = None,
-    ):
+    ) -> None:
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
-        response = await client.post(
+        payload: dict[str, JsonValue] = {
+            'keys': [key_id],
+        }
+        response = await _request_litellm(
+            client,
+            'POST',
             f'{LITE_LLM_API_URL}/key/delete',
-            json={
-                'keys': [key_id],
-            },
+            json=payload,
         )
         # Failed to delete key...
         if not response.is_success:
@@ -2102,7 +2247,6 @@ class LiteLlmManager:
                 'error_deleting_key',
                 extra={
                     'status_code': response.status_code,
-                    'text': response.text,
                 },
             )
         response.raise_for_status()
@@ -2114,7 +2258,7 @@ class LiteLlmManager:
     async def _get_team_members_financial_data(
         client: httpx.AsyncClient,
         team_id: str,
-    ) -> dict:
+    ) -> TeamFinancialData:
         """
         Get financial data for all members in a team.
 
@@ -2140,6 +2284,7 @@ class LiteLlmManager:
             }
             Returns empty dict if team not found or LiteLLM is not configured.
         """
+        require_litellm_enabled()
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return {}
@@ -2152,15 +2297,12 @@ class LiteLlmManager:
             )
             return {}
 
-        members: dict[str, dict] = {}
-        team_memberships = [
-            LiteLlmManager._member_dict(membership)
-            for membership in team_info.get('team_memberships') or []
-        ]
+        members: dict[str, MemberFinancialData] = {}
+        team_memberships = team_info.get('team_memberships') or []
 
         # Get team-level budget info (shared across all members in team orgs)
         team_data = team_info.get('team_info')
-        if not isinstance(team_data, dict):
+        if team_data is None:
             raise ValueError('LiteLLM team response is missing team_info')
         if 'max_budget' not in team_data or 'spend' not in team_data:
             raise ValueError(
@@ -2169,36 +2311,22 @@ class LiteLlmManager:
             )
         team_max_budget = team_data['max_budget']
         team_spend = team_data['spend']
+        if team_spend is None:
+            raise ValueError('LiteLLM team_info is missing required spend data')
 
         metadata = team_data.get('metadata') or {}
-        if not isinstance(metadata, dict):
-            raise ValueError('LiteLLM team_info.metadata must be an object')
         default_member_budget_id = metadata.get('team_member_budget_id')
-        if default_member_budget_id is not None and not isinstance(
-            default_member_budget_id, str
-        ):
-            raise ValueError(
-                'LiteLLM team_info.metadata.team_member_budget_id must be a string'
-            )
 
-        membership_by_user_id: dict[str, dict[str, Any]] = {}
+        membership_by_user_id: dict[str, LiteLlmMember] = {}
         for membership in team_memberships:
             membership_user_id = membership.get('user_id')
-            if (
-                isinstance(membership_user_id, str)
-                and membership_user_id
-                and membership_user_id != 'default_user_id'
-            ):
+            if membership_user_id and membership_user_id != 'default_user_id':
                 membership_by_user_id[membership_user_id] = membership
 
         role_member_ids: set[str] = set()
         for role_member in team_data.get('members_with_roles') or []:
-            member_user_id = LiteLlmManager._member_dict(role_member).get('user_id')
-            if (
-                isinstance(member_user_id, str)
-                and member_user_id
-                and member_user_id != 'default_user_id'
-            ):
+            member_user_id = role_member.get('user_id')
+            if member_user_id and member_user_id != 'default_user_id':
                 role_member_ids.add(member_user_id)
 
         # A normal LiteLLM team can contain roster members without a
@@ -2209,21 +2337,16 @@ class LiteLlmManager:
         role_only_spend: dict[str, float] = {}
         if role_only_member_ids:
             keys = team_info.get('keys')
-            if not isinstance(keys, list):
+            if keys is None:
                 raise ValueError('LiteLLM team response is missing keys')
             key_count_by_user: dict[str, int] = {}
             for key in keys:
-                key_data = LiteLlmManager._member_dict(key)
+                key_data = key
                 user_id = key_data.get('user_id')
-                if not isinstance(user_id, str) or user_id not in role_only_member_ids:
+                if not user_id or user_id not in role_only_member_ids:
                     continue
                 spend = key_data.get('spend')
-                if (
-                    isinstance(spend, bool)
-                    or not isinstance(spend, int | float)
-                    or not math.isfinite(float(spend))
-                    or spend < 0
-                ):
+                if spend is None or not math.isfinite(float(spend)) or spend < 0:
                     raise ValueError(
                         f'LiteLLM key for role-only member {user_id} has invalid spend'
                     )
@@ -2254,7 +2377,7 @@ class LiteLlmManager:
                 member_max_budget = team_max_budget
             else:
                 budget_table = membership.get('litellm_budget_table')
-                if not isinstance(budget_table, dict):
+                if budget_table is None:
                     raise ValueError(
                         f'LiteLLM membership {user_id} is missing its budget table'
                     )
@@ -2289,10 +2412,11 @@ class LiteLlmManager:
 
     @staticmethod
     def with_http_client(
-        internal_fn: Callable[..., Awaitable[Any]],
-    ) -> Callable[..., Awaitable[Any]]:
+        internal_fn: Callable[Concatenate[httpx.AsyncClient, P], Awaitable[R]],
+    ) -> Callable[P, Awaitable[R]]:
         @functools.wraps(internal_fn)
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            require_litellm_enabled()
             headers = {'x-goog-api-key': LITE_LLM_API_KEY} if LITE_LLM_API_KEY else {}
             async with httpx.AsyncClient(
                 headers=headers,

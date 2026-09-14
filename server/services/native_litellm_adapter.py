@@ -6,6 +6,10 @@ from uuid import UUID
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from openhands.app_server.utils.litellm_integration import (
+    is_litellm_enabled,
+    require_litellm_enabled,
+)
 from server.constants import (
     LITE_LLM_API_KEY,
     LITE_LLM_API_URL,
@@ -26,6 +30,7 @@ from storage.native_external_work import NativeExternalPayload
 
 
 def _client() -> httpx.AsyncClient:
+    require_litellm_enabled()
     if not LITE_LLM_API_KEY or not LITE_LLM_API_URL:
         raise RuntimeError('LiteLLM management is not configured')
     return httpx.AsyncClient(
@@ -140,6 +145,8 @@ async def cleanup_native_resource(
     org_id: UUID | None,
     payload: NativeExternalPayload,
 ) -> None:
+    if not is_litellm_enabled():
+        return
     if should_use_direct_llm_defaults() and not LITE_LLM_API_URL:
         return
     async with _client() as client:

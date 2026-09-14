@@ -51,6 +51,18 @@ ARCHIVE_WORKSPACE_PATH_TAG_KEY = 'archiveworkspacepath'
 AGENT_PROFILE_ID_TAG_KEY = 'agentprofileid'
 AGENT_PROFILE_REVISION_TAG_KEY = 'agentprofilerevision'
 
+# Written only by the app's validated conversation launch path. Sandbox webhook
+# snapshots cannot set, replace, or resurrect these values after revocation.
+DIRECT_LLM_VALIDATED_TAG = 'direct_llm_validated'
+APP_OWNED_CONVERSATION_TAGS = frozenset(
+    (
+        DIRECT_LLM_VALIDATED_TAG,
+        ARCHIVE_WORKSPACE_PATH_TAG_KEY,
+        AGENT_PROFILE_ID_TAG_KEY,
+        AGENT_PROFILE_REVISION_TAG_KEY,
+    )
+)
+
 
 class ConversationTrigger(Enum):
     RESOLVER = 'resolver'

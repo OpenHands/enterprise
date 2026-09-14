@@ -143,6 +143,7 @@ from keycloak.exceptions import KeycloakError
 from pydantic import BaseModel, EmailStr, Field, SecretStr
 from sqlalchemy import select
 
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from server.auth.org_context import EFFECTIVE_ORG_ID
@@ -744,7 +745,7 @@ async def provision_user(
                 # the same way. Defaulting to empty string lets
                 # LiteLLM-disabled deployments still create
                 # memberships.
-                if not True or llm_api_key_secret is None:
+                if not is_litellm_enabled() or llm_api_key_secret is None:
                     llm_api_key = ''
                 elif isinstance(llm_api_key_secret, SecretStr):
                     llm_api_key = llm_api_key_secret.get_secret_value()

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from openhands.app_server.services.db_session import depends_db_session
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.verified_models.verified_model_models import (
     VerifiedModel,
@@ -203,6 +204,8 @@ class VerifiedModelService:
         the recovery path is to retry (re-save the model) or reconcile LiteLLM
         out-of-band.
         """
+        if not is_litellm_enabled():
+            return
         try:
             from storage.lite_llm_manager import LiteLlmManager
 

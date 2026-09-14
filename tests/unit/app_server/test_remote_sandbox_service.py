@@ -47,6 +47,14 @@ from openhands.app_server.settings.settings_models import SandboxGroupingStrateg
 from openhands.app_server.user.user_context import UserContext
 
 
+@pytest.fixture(autouse=True)
+def mock_resume_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        'openhands.app_server.sandbox.sandbox_service.SandboxService.validate_resume_configuration',
+        AsyncMock(),
+    )
+
+
 @pytest.fixture
 def mock_sandbox_spec_service():
     """Mock SandboxSpecService for testing."""

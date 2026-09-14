@@ -18,6 +18,11 @@ from pydantic import ValidationError
 
 from openhands.app_server.settings.agent_profiles import AgentProfiles
 from openhands.app_server.settings.llm_profiles import LLMProfiles
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnections,
+    resolve_provider_connection,
+)
+from openhands.app_server.utils.litellm_integration import validate_llm_configuration
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.mcp.config import MCPServer
 from storage.mcp_config import coerce_persisted_mcp_config
@@ -63,15 +68,20 @@ class OrgLLMProfileLoader:
     ``cipher`` arg is accepted for Protocol parity and ignored.
     """
 
-    def __init__(self, profiles: LLMProfiles) -> None:
+    def __init__(
+        self, profiles: LLMProfiles, connections: ProviderConnections | None = None
+    ) -> None:
         self._profiles = profiles
+        self._connections = connections or ProviderConnections()
 
     def load(self, name: str, *, cipher: Cipher | None = None) -> LLM:
         llm = self._profiles.get(name)
         if llm is None:
             # The resolver maps this to ProfileNotFound (HTTP 4xx).
             raise FileNotFoundError(f'LLM profile {name!r} not found')
-        return llm
+        resolved_llm: LLM = resolve_provider_connection(llm, self._connections)
+        validate_llm_configuration(resolved_llm.model, resolved_llm.base_url)
+        return resolved_llm
 
 
 class OrgLLMProfileMutator:

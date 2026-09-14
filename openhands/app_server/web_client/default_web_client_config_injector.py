@@ -11,6 +11,7 @@ from openhands.app_server.integrations.jira_dc.config import (
 )
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.app_server.web_client.email_change_config import (
     is_email_change_enabled,
 )
@@ -211,6 +212,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     (see ``_resolve_flag``).
     """
     return WebClientFeatureFlags(
+        enable_litellm=is_litellm_enabled(),
         enable_billing=os.getenv('ENABLE_BILLING', 'false') == 'true',
         hide_llm_settings=os.getenv('HIDE_LLM_SETTINGS', 'false') == 'true',
         enable_jira=os.getenv('ENABLE_JIRA', 'false') == 'true',
@@ -351,12 +353,23 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         # init is the fallback.
         feature_flags = self.feature_flags.model_copy(
             update={
-                'enable_billing': await _resolve_flag(
+                'enable_litellm': is_litellm_enabled(),
+                'enable_byor_export': is_litellm_enabled()
+                and self.feature_flags.enable_byor_export,
+                'enable_billing': is_litellm_enabled()
+                and await _resolve_flag(
                     'ENABLE_BILLING', self.feature_flags.enable_billing
                 ),
             }
         )
         db_feature_flags = await _get_db_feature_flags()
+        if not is_litellm_enabled():
+            db_feature_flags = {
+                **db_feature_flags,
+                'ENABLE_LITELLM': False,
+                'ENABLE_BILLING': False,
+                'ENABLE_BYOR_EXPORT': False,
+            }
         result = WebClientConfig(
             **auth_capabilities,
             app_mode=config.app_mode,

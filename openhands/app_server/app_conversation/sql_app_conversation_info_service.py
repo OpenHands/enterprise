@@ -17,6 +17,7 @@ Key components:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from collections.abc import Mapping
@@ -48,6 +49,7 @@ from openhands.app_server.app_conversation.app_conversation_info_service import 
     AppConversationInfoServiceInjector,
 )
 from openhands.app_server.app_conversation.app_conversation_models import (
+    APP_OWNED_CONVERSATION_TAGS,
     AppConversationInfo,
     AppConversationInfoPage,
     AppConversationSortOrder,
@@ -438,8 +440,18 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         return results
 
     async def save_app_conversation_info(
-        self, info: AppConversationInfo
+        self, info: AppConversationInfo, *, from_sandbox: bool = False
     ) -> AppConversationInfo:
+        # Serialize writes even before the first row exists. The initial sandbox
+        # webhook can race the app's launch save; neither may overwrite metadata
+        # using a snapshot read before the other write committed.
+        if self.db_session.get_bind().dialect.name == 'postgresql':
+            lock_key = int.from_bytes(
+                hashlib.sha256(f'conversation-save:{info.id}'.encode()).digest()[:8],
+                'big',
+                signed=True,
+            )
+            await self.db_session.execute(select(func.pg_advisory_xact_lock(lock_key)))
         metrics = info.metrics or MetricsSnapshot()
         usage = metrics.accumulated_token_usage or TokenUsage()
 
@@ -457,13 +469,27 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         # stored value directly by primary key (not via ``_secure_select``) so
         # this works under the ADMIN webhook context as well.
         created_at = info.created_at
-        existing_created_at = await self.db_session.scalar(
-            select(StoredConversationMetadata.created_at).where(
-                StoredConversationMetadata.conversation_id == str(info.id)
+        existing = (
+            await self.db_session.execute(
+                select(
+                    StoredConversationMetadata.created_at,
+                    StoredConversationMetadata.tags,
+                )
+                .where(StoredConversationMetadata.conversation_id == str(info.id))
+                .with_for_update()
             )
-        )
-        if existing_created_at is not None:
-            created_at = existing_created_at
+        ).first()
+        if existing is not None:
+            created_at = existing.created_at or created_at
+        if from_sandbox:
+            info.tags = {
+                **((existing.tags or {}) if existing else {}),
+                **{
+                    key: value
+                    for key, value in info.tags.items()
+                    if key not in APP_OWNED_CONVERSATION_TAGS
+                },
+            }
 
         stored = StoredConversationMetadata(
             conversation_id=str(info.id),

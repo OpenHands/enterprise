@@ -1,5 +1,7 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
+import { useConfig } from "#/hooks/query/use-config";
+import { isManagedLlmModel } from "#/utils/litellm-capability";
 import { Typography } from "#/ui/typography";
 import { I18nKey } from "#/i18n/declaration";
 import ChevronDownSmallIcon from "#/icons/chevron-down-small.svg?react";
@@ -11,8 +13,9 @@ import { useConversationId } from "#/hooks/use-conversation-id";
 import { useModelStore } from "#/stores/model-store";
 import { SwitchProfileContextMenu } from "./switch-profile-context-menu";
 
-export function SwitchProfileButton() {
+export function SwitchProfileButton(): React.JSX.Element | null {
   const { t } = useTranslation();
+  const { data: config } = useConfig();
   const [contextMenuOpen, setContextMenuOpen] = React.useState(false);
   const { conversationId } = useConversationId();
   const { data } = useLlmProfiles();
@@ -47,6 +50,12 @@ export function SwitchProfileButton() {
       ? (profiles.find((p) => p.model === conversationModel)?.name ?? null)
       : (data?.active_profile ?? null));
 
+  const activeProfile = profiles.find((p) => p.name === activeProfileName);
+  const activeUnavailable =
+    config?.feature_flags?.enable_litellm === false &&
+    (activeProfile?.requires_litellm ||
+      isManagedLlmModel(activeProfile?.model ?? conversationModel ?? ""));
+
   // The active profile's provider/model, surfaced as a tooltip on the button
   // (the dropdown shows it under each name). Matches agent-canvas.
   const activeProfileModel =
@@ -71,7 +80,13 @@ export function SwitchProfileButton() {
     setContextMenuOpen((open) => !open);
   };
 
-  const handleSelect = (profileName: string) => {
+  const handleSelect = (profileName: string): void => {
+    const profile = profiles.find((p) => p.name === profileName);
+    if (
+      config?.feature_flags?.enable_litellm === false &&
+      (profile?.requires_litellm || isManagedLlmModel(profile?.model ?? ""))
+    )
+      return;
     if (profileName === activeProfileName) return;
     switchAndLog(conversationId, profileName);
   };
@@ -95,7 +110,9 @@ export function SwitchProfileButton() {
           className="shrink-0"
         />
         <Typography.Text className="text-white text-2.75 not-italic font-normal leading-5 truncate">
-          {activeProfileName ?? t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER)}
+          {activeUnavailable
+            ? t(I18nKey.SETTINGS$PROFILE_UNAVAILABLE_BADGE)
+            : (activeProfileName ?? t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER))}
         </Typography.Text>
         <ChevronDownSmallIcon
           width={24}

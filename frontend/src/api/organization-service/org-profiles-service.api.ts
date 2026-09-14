@@ -5,6 +5,7 @@ export interface OrgLlmProfileSummary {
   model: string | null;
   base_url: string | null;
   api_key_set: boolean;
+  requires_litellm?: boolean;
 }
 
 interface OrgLlmProfileListResponse {

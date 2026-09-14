@@ -558,6 +558,7 @@ class RemoteSandboxService(SandboxService):
             stored_sandbox = await self._get_stored_sandbox(sandbox_id)
             if not stored_sandbox:
                 return False
+            await self.validate_resume_configuration(sandbox_id)
             runtime_data = await self._get_runtime(sandbox_id)
             response = await self._send_runtime_api_request(
                 'POST',

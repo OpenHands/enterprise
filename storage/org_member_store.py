@@ -2,9 +2,10 @@
 Store class for managing organization-member relationships.
 """
 
-from typing import Any, Optional
+from typing import Any, Optional, TypedDict
 from uuid import UUID
 
+from pydantic import JsonValue, SecretStr, TypeAdapter
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -21,6 +22,17 @@ from storage.org_default_settings import strip_unset_condenser_max_tokens
 from storage.org_member import OrgMember
 from storage.user import User
 from storage.user_settings import UserSettings
+
+
+class OrgMemberConstruction(TypedDict):
+    llm_api_key: str | SecretStr
+    agent_settings_diff: dict[str, JsonValue]
+    mcp_config: dict[str, JsonValue] | None
+    conversation_settings_diff: dict[str, JsonValue]
+
+
+_STORED_JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
+
 
 _MISSING = object()
 
@@ -165,17 +177,21 @@ class OrgMemberStore:
             return True
 
     @staticmethod
-    def get_kwargs_from_settings(settings: Settings) -> dict[str, Any]:
+    def get_kwargs_from_settings(settings: Settings) -> OrgMemberConstruction:
         """Return kwargs for OrgMember construction (keys match column names)."""
         return {
-            'llm_api_key': settings.agent_settings.llm.api_key,
+            'llm_api_key': settings.agent_settings.llm.api_key or '',
             'agent_settings_diff': {},
-            'mcp_config': serialize_mcp_config(settings.agent_settings.mcp_config),
+            'mcp_config': _STORED_JSON_OBJECT.validate_python(
+                serialize_mcp_config(settings.agent_settings.mcp_config)
+            ),
             'conversation_settings_diff': {},
         }
 
     @staticmethod
-    def get_kwargs_from_user_settings(user_settings: UserSettings) -> dict[str, Any]:
+    def get_kwargs_from_user_settings(
+        user_settings: UserSettings,
+    ) -> OrgMemberConstruction:
         """Return kwargs for OrgMember construction (keys match column names)."""
         agent_settings_diff = dict(user_settings.agent_settings or {})
         nested_mcp_config = _pop_mcp_config(agent_settings_diff)
@@ -186,10 +202,18 @@ class OrgMemberStore:
             else user_settings.mcp_config
         )
         return {
-            'llm_api_key': user_settings.llm_api_key,
-            'agent_settings_diff': agent_settings_diff,
-            'mcp_config': serialize_mcp_config(mcp_config),
-            'conversation_settings_diff': dict(user_settings.conversation_settings),
+            'llm_api_key': user_settings.llm_api_key or '',
+            'agent_settings_diff': _STORED_JSON_OBJECT.validate_python(
+                agent_settings_diff
+            ),
+            'mcp_config': _STORED_JSON_OBJECT.validate_python(
+                serialize_mcp_config(mcp_config)
+            )
+            if mcp_config is not None
+            else None,
+            'conversation_settings_diff': _STORED_JSON_OBJECT.validate_python(
+                user_settings.conversation_settings
+            ),
         }
 
     @staticmethod

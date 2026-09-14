@@ -33,7 +33,9 @@ from pydantic import (
 )
 
 from openhands.app_server.settings.llm_profiles import has_real_api_key
+from openhands.app_server.utils.litellm_integration import validate_llm_configuration
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk import LLM
 
 # Connection ids: 1-128 chars, alphanumeric start, then alphanumeric/._-.
 # Same shape as the SDK's CONNECTION_ID_PATTERN / profile names — blocks path
@@ -212,6 +214,7 @@ class ProviderConnections(BaseModel):
 
     def create(self, conn: ProviderConnection) -> ProviderConnection:
         """Add a new connection. Raises on id collision, invalid id, or limit."""
+        validate_llm_configuration(f'{conn.provider}/connection', conn.base_url)
         if not _CONNECTION_ID_REGEX.match(conn.id):
             raise ValueError(f'Invalid provider connection id: {conn.id!r}')
         if conn.id in self.connections:
@@ -227,6 +230,7 @@ class ProviderConnections(BaseModel):
 
     def update(self, conn: ProviderConnection) -> ProviderConnection:
         """Replace an existing connection. Raises if the id is unknown."""
+        validate_llm_configuration(f'{conn.provider}/connection', conn.base_url)
         if conn.id not in self.connections:
             raise ProviderConnectionNotFoundError(conn.id)
         updated = {**self.connections, conn.id: conn}
@@ -260,3 +264,17 @@ class ProviderConnections(BaseModel):
             cid: conn.model_dump(mode='json', context=info.context)
             for cid, conn in connections.items()
         }
+
+
+def resolve_provider_connection(llm: LLM, connections: ProviderConnections) -> LLM:
+    """Overlay a linked connection at use time, including deliberate key removal."""
+    connection_id = llm.provider_connection_id
+    if not connection_id:
+        return llm
+    connection = connections.require(connection_id)
+    return llm.model_copy(
+        update={
+            'base_url': connection.base_url,
+            'api_key': connection.api_key,
+        }
+    )

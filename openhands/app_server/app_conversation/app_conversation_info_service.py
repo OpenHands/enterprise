@@ -97,11 +97,12 @@ class AppConversationInfoService(ABC):
 
     @abstractmethod
     async def save_app_conversation_info(
-        self, info: AppConversationInfo
+        self, info: AppConversationInfo, *, from_sandbox: bool = False
     ) -> AppConversationInfo:
         """Store the sandboxed conversation info object given.
 
-        Return the stored info
+        Sandbox snapshots merge tags while preserving current app-owned metadata.
+        Return the stored info.
         """
 
     @abstractmethod

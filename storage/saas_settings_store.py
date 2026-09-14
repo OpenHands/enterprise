@@ -2,23 +2,42 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Any
 from uuid import UUID
 
-from pydantic import SecretStr
+from pydantic import BaseModel, ConfigDict, JsonValue, SecretStr, TypeAdapter
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from openhands.app_server.settings.llm_profiles import LLMProfiles, resolve_profile_llm
-from openhands.app_server.settings.settings_models import Settings
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnections,
+    resolve_provider_connection,
+)
+from openhands.app_server.settings.settings_models import (
+    MarketplaceRegistration,
+    MarketplaceScope,
+    Settings,
+)
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.app_server.utils.litellm_integration import (
+    LiteLLMIntegrationDisabled,
+    is_litellm_enabled,
+    is_managed_llm,
+    llm_credentials_compatible,
+    require_litellm_enabled,
+    uses_managed_gateway,
+    validate_llm_configuration,
+)
 from openhands.app_server.utils.llm import is_openhands_model
+from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import resolve_agent_profile
+from openhands.sdk.settings import AgentSettingsConfig
 from server.auth.token_manager import TokenManager
 from server.constants import LITE_LLM_API_URL
 from server.logger import logger
@@ -49,6 +68,12 @@ from storage.org_store import OrgStore
 from storage.user import User
 from storage.user_settings import UserSettings
 from storage.user_store import UserStore
+
+
+class _EffectiveLLMTransport(BaseModel):
+    model_config = ConfigDict(strict=True, hide_input_in_errors=True)
+    model: str | None = None
+    base_url: str | None = None
 
 
 class ManagedLlmKeyStatus:
@@ -92,22 +117,11 @@ def managed_llm_key_config_from_model(
     Returns ``None`` when the config is not a managed LiteLLM/OpenHands-provider
     configuration (e.g. member/org BYOK pointing at a third-party base_url).
     """
-    openhands_type = is_openhands_model(llm_model)
-    normalized_llm_base_url = llm_base_url.rstrip('/') if llm_base_url else None
-    normalized_managed_base_url = (
-        LITE_LLM_API_URL.rstrip('/') if LITE_LLM_API_URL else None
-    )
-    uses_openhands_provider_proxy = openhands_type and (
-        normalized_llm_base_url is None
-        or 'all-hands.dev' in normalized_llm_base_url.lower()
-    )
-    uses_managed_llm_key = (
-        normalized_managed_base_url is not None
-        and normalized_llm_base_url == normalized_managed_base_url
-    ) or uses_openhands_provider_proxy
-    if not uses_managed_llm_key:
+    if not uses_managed_gateway(llm_model, llm_base_url) and not (
+        llm_base_url and llm_base_url.rstrip('/') == LITE_LLM_API_URL.rstrip('/')
+    ):
         return None
-    return ManagedLlmKeyConfig(openhands_type=openhands_type)
+    return ManagedLlmKeyConfig(openhands_type=is_openhands_model(llm_model))
 
 
 # ``Settings`` fields that are also ``Org`` columns. The save loop below copies
@@ -153,7 +167,7 @@ class SaasSettingsStore(SettingsStore):
         return self.effective_org_id or user.current_org_id
 
     async def _get_user_settings_by_keycloak_id_async(
-        self, keycloak_user_id: str, session=None
+        self, keycloak_user_id: str, session: AsyncSession | None = None
     ) -> UserSettings | None:
         """Get UserSettings by keycloak_user_id (async version).
 
@@ -189,14 +203,47 @@ class SaasSettingsStore(SettingsStore):
     def _get_effective_llm_api_key(
         org: Org,
         org_member: OrgMember,
+        effective_llm: _EffectiveLLMTransport | None = None,
     ) -> SecretStr | None:
+        if effective_llm is None:
+            effective_llm = _EffectiveLLMTransport.model_validate(
+                deep_merge(
+                    OrgStore.get_agent_settings_from_org(org).model_dump(mode='json'),
+                    dict(org_member.agent_settings_diff or {}),
+                ).get('llm', {})
+            )
+        model, base_url = effective_llm.model, effective_llm.base_url
+        managed = uses_managed_gateway(model, base_url)
+        if is_managed_llm(model, base_url) and not is_litellm_enabled():
+            return None
         if org_member.has_custom_llm_api_key:
-            return org_member.llm_api_key
-        if org.llm_api_key:
+            member_llm = _EffectiveLLMTransport.model_validate(
+                deep_merge(
+                    OrgStore.get_agent_settings_from_org(org).model_dump(mode='json'),
+                    dict(org_member.agent_settings_diff or {}),
+                ).get('llm', {})
+            )
+            if org_member._llm_api_key and llm_credentials_compatible(
+                model, base_url, member_llm.model, member_llm.base_url
+            ):
+                return org_member.llm_api_key
+        org_settings = OrgStore.get_agent_settings_from_org(org)
+        org_llm = org_settings.llm if org_settings.agent_kind == 'openhands' else None
+        if (
+            org_llm is not None
+            and org.llm_api_key
+            and llm_credentials_compatible(
+                model, base_url, org_llm.model, org_llm.base_url
+            )
+        ):
             return org.llm_api_key
-        # Managed keys are stored on the member row (has_custom=False); fall back to
-        # it, but only decrypt when actually set to avoid the empty-value error (#14898).
-        if org_member._llm_api_key:
+        # The member's non-custom key is always a managed virtual key.
+        if (
+            managed
+            and is_litellm_enabled()
+            and not org_member.has_custom_llm_api_key
+            and org_member._llm_api_key
+        ):
             return org_member.llm_api_key
         return None
 
@@ -207,7 +254,7 @@ class SaasSettingsStore(SettingsStore):
                 item.llm_profiles.save(name, llm, include_secrets=False)
 
     @staticmethod
-    def _get_persisted_agent_settings(item: Settings) -> dict[str, Any]:
+    def _get_persisted_agent_settings(item: Settings) -> dict[str, JsonValue]:
         """Dump the agent settings to persist as this member's override."""
         persisted = item.agent_settings.model_dump(
             mode='json',
@@ -215,21 +262,26 @@ class SaasSettingsStore(SettingsStore):
         )
         # Lives in its own column.
         persisted.pop('mcp_config', None)
-        return persisted
+        return TypeAdapter(dict[str, JsonValue]).validate_python(persisted)
 
     @staticmethod
-    def _get_persisted_mcp_config(item: Settings) -> dict[str, Any] | None:
-        return serialize_mcp_config(item.agent_settings.mcp_config)
+    def _get_persisted_mcp_config(item: Settings) -> dict[str, JsonValue] | None:
+        payload = serialize_mcp_config(item.agent_settings.mcp_config)
+        return (
+            TypeAdapter(dict[str, JsonValue]).validate_python(payload)
+            if payload is not None
+            else None
+        )
 
     def _resolve_active_agent_profile(
         self,
         org: Org,
         org_member: OrgMember,
-        merged_agent_settings: dict[str, Any],
+        merged_agent_settings: dict[str, JsonValue],
         effective_llm_api_key: SecretStr | None,
         override_agent_profile_id: str | None = None,
         llm_profiles: LLMProfiles | None = None,
-    ) -> tuple[dict[str, Any], str, int] | None:
+    ) -> tuple[AgentSettingsConfig, str, int] | None:
         """Resolve an agent profile into an ``agent_settings`` dump.
 
         Resolves ``override_agent_profile_id`` when given (a one-off,
@@ -285,7 +337,10 @@ class SaasSettingsStore(SettingsStore):
                 )
                 mcp_config = {}
 
-        llm_store = OrgLLMProfileLoader(llm_profiles or load_llm_profiles(org))
+        llm_store = OrgLLMProfileLoader(
+            llm_profiles or load_llm_profiles(org),
+            ProviderConnections.model_validate(org.provider_connections or {}),
+        )
         try:
             resolved = resolve_agent_profile(
                 profile,
@@ -306,23 +361,29 @@ class SaasSettingsStore(SettingsStore):
                             resolved.llm,
                             managed_proxy_url=LITE_LLM_API_URL,
                             fallback_api_key=effective_llm_api_key,
+                            fallback_llm=(
+                                LLM.model_validate(merged_agent_settings['llm'])
+                                if merged_agent_settings.get('llm')
+                                else None
+                            ),
                         )
                     }
                 )
 
-            # expose_secrets so the resolved LLM key lands in agent_settings the
-            # same way the composed path sets
-            # merged_agent_settings['llm']['api_key'].
-            resolved_dump = resolved.model_dump(
-                mode='json', context={'expose_secrets': True}
-            )
-            # Canonicalize legacy managed OpenHands model names/base_urls on the
-            # resolved LLM, mirroring the composed path (merged_agent_settings
-            # ['llm'], line ~348) so a profile launch and a non-profile launch
-            # normalize an org's pre-canonical llm_profiles identically.
-            resolved_llm = resolved_dump.get('llm')
-            if isinstance(resolved_llm, dict):
-                resolved_dump['llm'] = canonicalize_openhands_llm_payload(resolved_llm)
+            if resolved.agent_kind == 'openhands':
+                resolved = resolved.model_copy(
+                    update={
+                        'llm': LLM.model_validate(
+                            canonicalize_openhands_llm_payload(
+                                resolved.llm.model_dump(
+                                    mode='json', context={'expose_secrets': True}
+                                )
+                            )
+                        )
+                    }
+                )
+        except LiteLLMIntegrationDisabled:
+            raise
         except Exception as exc:
             # Never-brick contract: catch broadly, not just the known resolver
             # errors — SDK contract drift (e.g. a new required kwarg raising
@@ -336,7 +397,7 @@ class SaasSettingsStore(SettingsStore):
                 exc,
             )
             return None
-        return resolved_dump, str(profile.id), profile.revision
+        return resolved, str(profile.id), profile.revision
 
     async def load(
         self,
@@ -419,7 +480,7 @@ class SaasSettingsStore(SettingsStore):
         )
         if member_mcp_config is not None:
             try:
-                merged_agent_settings['mcp_config'] = coerce_persisted_mcp_config(
+                merged_agent_settings['mcp_config'] = serialize_mcp_config(
                     member_mcp_config
                 )
             except Exception:
@@ -430,17 +491,17 @@ class SaasSettingsStore(SettingsStore):
                     exc_info=True,
                 )
                 merged_agent_settings['mcp_config'] = {}
-        effective_llm_api_key = self._get_effective_llm_api_key(org, org_member)
-        if effective_llm_api_key is not None:
-            merged_agent_settings.setdefault('llm', {})['api_key'] = (
-                effective_llm_api_key.get_secret_value()
-                if isinstance(effective_llm_api_key, SecretStr)
-                else effective_llm_api_key
-            )
-        else:
-            logger.warning(
-                f'No effective LLM API key found for user {self.user_id} '
-                f'in org {org_id} (org key and member key are both unset)'
+        # Select credentials against the legacy identity before seeding profiles.
+        # Persisted JSON may contain a key for a different transport.
+        merged_agent_settings.setdefault('llm', {}).pop('api_key', None)
+        legacy_llm_api_key = self._get_effective_llm_api_key(
+            org,
+            org_member,
+            _EffectiveLLMTransport.model_validate(merged_agent_settings['llm']),
+        )
+        if legacy_llm_api_key is not None:
+            merged_agent_settings['llm']['api_key'] = (
+                legacy_llm_api_key.get_secret_value()
             )
         # Canonicalize legacy managed OpenHands LLM payloads before Settings
         # validation so current settings and seeded profiles use the public
@@ -476,15 +537,12 @@ class SaasSettingsStore(SettingsStore):
         if user_settings and user_settings.registered_marketplaces:
             # Normalize marketplaces: use 'personal' scope for legacy data without scope
             # The merge function will override with the correct scope value
-            normalized_mps: list[dict[str, Any]] = []
+            normalized_mps: list[MarketplaceRegistration] = []
             for mp in user_settings.registered_marketplaces:
-                if isinstance(mp, dict):
-                    if mp.get('scope') is None:
-                        mp = {**mp, 'scope': 'personal'}
-                    normalized_mps.append(mp)
-                else:
-                    # Convert MarketplaceRegistration to dict
-                    normalized_mps.append(mp.model_dump())
+                registration = MarketplaceRegistration.model_validate(mp)
+                if registration.scope is None:
+                    registration.scope = MarketplaceScope.PERSONAL
+                normalized_mps.append(registration)
             kwargs['registered_marketplaces'] = normalized_mps
         # Profiles in SaaS live on the org (managed via
         # /api/organizations/{org_id}/profiles). Surface them through
@@ -511,15 +569,26 @@ class SaasSettingsStore(SettingsStore):
         # Covers both pre-migration rows (llm_profiles is None) and
         # already-migrated orgs whose profiles map is empty.
         seeded_default = False
-        seeded_payload: dict[str, Any] | None = None
+        seeded_payload: LLMProfiles | None = None
         if not (kwargs.get('llm_profiles') or {}).get('profiles'):
             legacy_llm = merged_agent_settings.get('llm')
-            if isinstance(legacy_llm, dict) and legacy_llm.get('model'):
-                seeded_payload = {
-                    'profiles': {'Default': dict(legacy_llm)},
-                    'active': 'Default',
-                }
-                kwargs['llm_profiles'] = seeded_payload
+            if (
+                isinstance(legacy_llm, dict)
+                and legacy_llm.get('model')
+                and (
+                    is_litellm_enabled()
+                    or not is_managed_llm(
+                        legacy_llm.get('model'), legacy_llm.get('base_url')
+                    )
+                )
+            ):
+                seeded_payload = LLMProfiles(
+                    profiles={'Default': LLM.model_validate(legacy_llm)},
+                    active='Default',
+                )
+                kwargs['llm_profiles'] = seeded_payload.model_dump(
+                    mode='json', context={'expose_secrets': True}
+                )
                 seeded_default = True
             else:
                 # No legacy LLM to seed; drop a None value so the non-nullable
@@ -559,6 +628,25 @@ class SaasSettingsStore(SettingsStore):
                 merged_agent_settings['llm'] = merged_llm
                 kwargs['agent_settings'] = merged_agent_settings
 
+        # Materialization may change the managed model or endpoint. Select keys
+        # again after the final identity is known, using the original org/member
+        # configuration as the credential scope.
+        merged_agent_settings.setdefault('llm', {}).pop('api_key', None)
+        effective_llm_api_key = self._get_effective_llm_api_key(
+            org,
+            org_member,
+            _EffectiveLLMTransport.model_validate(merged_agent_settings.get('llm', {})),
+        )
+        if effective_llm_api_key is not None:
+            merged_agent_settings.setdefault('llm', {})['api_key'] = (
+                effective_llm_api_key.get_secret_value()
+            )
+        else:
+            logger.warning(
+                f'No effective LLM API key found for user {self.user_id} '
+                f'in org {org_id} (org key and member key are both unset)'
+            )
+
         # Agent Profiles: only on a resolve-requested load (conversation
         # start), resolve the active agent profile and let the result REPLACE
         # the composed agent_settings — the active Agent Profile is the sole
@@ -572,7 +660,9 @@ class SaasSettingsStore(SettingsStore):
             resolved = self._resolve_active_agent_profile(
                 org,
                 org_member,
-                merged_agent_settings,
+                TypeAdapter(dict[str, JsonValue]).validate_python(
+                    merged_agent_settings
+                ),
                 effective_llm_api_key,
                 override_agent_profile_id,
                 live_llm_profiles,
@@ -584,6 +674,16 @@ class SaasSettingsStore(SettingsStore):
                 kwargs['active_agent_profile_revision'] = resolved_revision
 
         settings = Settings(**kwargs)
+        connections = ProviderConnections.model_validate(org.provider_connections or {})
+        for name, llm in settings.llm_profiles.profiles.items():
+            # A missing connection remains editable; runtime use reports it.
+            if (
+                llm.provider_connection_id is not None
+                and llm.provider_connection_id in connections.connections
+            ):
+                settings.llm_profiles.profiles[name] = resolve_provider_connection(
+                    llm, connections
+                )
         settings._mcp_config_updated = False
         if resolution_requested:
             # Launch view (even when resolution fell back): never persistable.
@@ -601,8 +701,7 @@ class SaasSettingsStore(SettingsStore):
         # the materialized view has no profile to persist.
         if persist_seeded_default and seeded_payload is not None:
             try:
-                seeded_profiles = LLMProfiles.model_validate(seeded_payload)
-                await self._persist_seeded_default_profile(org_id, seeded_profiles)
+                await self._persist_seeded_default_profile(org_id, seeded_payload)
             except Exception:
                 logger.warning(
                     'Failed to persist seeded Default profile for org %s',
@@ -641,7 +740,7 @@ class SaasSettingsStore(SettingsStore):
             org.llm_profiles = serialized
             await session.commit()
 
-    async def store(self, item: Settings):
+    async def store(self, item: Settings) -> None:
         from server.auth.auth_config import ENABLE_KEYCLOAK
 
         if item is not None and (
@@ -710,8 +809,8 @@ class SaasSettingsStore(SettingsStore):
             if not org_member:
                 return None
 
-            result = await session.execute(select(Org).filter(Org.id == org_id))
-            org = result.scalars().first()
+            org_result = await session.execute(select(Org).filter(Org.id == org_id))
+            org = org_result.scalars().first()
             if not org:
                 logger.error(
                     f'Org not found for ID {org_id} as the current org for user {self.user_id}'
@@ -720,12 +819,21 @@ class SaasSettingsStore(SettingsStore):
 
             llm_model = item.agent_settings.llm.model
             llm_base_url = item.agent_settings.llm.base_url
-            normalized_llm_base_url = llm_base_url.rstrip('/') if llm_base_url else None
-            normalized_managed_base_url = LITE_LLM_API_URL.rstrip('/')
-            uses_managed_llm_key = (
-                normalized_llm_base_url == normalized_managed_base_url
-                or (normalized_llm_base_url is None and is_openhands_model(llm_model))
-            )
+            uses_managed_llm_key = uses_managed_gateway(llm_model, llm_base_url)
+            if is_managed_llm(llm_model, llm_base_url) and not is_litellm_enabled():
+                previous = deep_merge(
+                    OrgStore.get_agent_settings_from_org(org).model_dump(mode='json'),
+                    dict(org_member.agent_settings_diff or {}),
+                ).get('llm', {})
+                previous = canonicalize_openhands_llm_payload(previous)
+                current = canonicalize_openhands_llm_payload(
+                    {'model': llm_model, 'base_url': llm_base_url}
+                )
+                if (previous.get('model'), previous.get('base_url')) != (
+                    current.get('model'),
+                    current.get('base_url'),
+                ) or item.agent_settings.llm.api_key is not None:
+                    validate_llm_configuration(llm_model, llm_base_url)
             logger.info(
                 'saas_settings_store:store:managed_llm_config_decision',
                 extra={
@@ -737,7 +845,7 @@ class SaasSettingsStore(SettingsStore):
                 },
             )
 
-            if uses_managed_llm_key:
+            if uses_managed_llm_key and is_litellm_enabled():
                 fallback_api_key = (
                     org_member.llm_api_key
                     if not org._llm_api_key
@@ -811,25 +919,29 @@ class SaasSettingsStore(SettingsStore):
                 else None
             )
             current_member_llm_api_key_raw = (
-                current_member_llm_api_key.get_secret_value()  # type: ignore[union-attr]
+                (
+                    current_member_llm_api_key
+                    if isinstance(current_member_llm_api_key, str)
+                    else current_member_llm_api_key.get_secret_value()
+                )
                 if current_member_llm_api_key
                 else None
             )
 
             # A non-managed (BYOR) key is the org's key for the shared
             # provider, so it does reach every member row.
-            if ENABLE_KEYCLOAK:
-                await OrgMemberStore.update_all_members_settings_async(
-                    session,
-                    org_id,
-                    OrgMemberSettingsUpdate(
-                        llm_api_key=(
-                            current_member_llm_api_key_raw  # type: ignore[arg-type]
-                            if not uses_managed_llm_key
-                            else None
-                        ),
+            await OrgMemberStore.update_all_members_settings_async(
+                session,
+                org_id,
+                OrgMemberSettingsUpdate(
+                    llm_api_key=(
+                        SecretStr(current_member_llm_api_key_raw)
+                        if not uses_managed_llm_key
+                        and current_member_llm_api_key_raw is not None
+                        else None
                     ),
-                )
+                ),
+            )
 
             member_mcp_config = org_member.effective_mcp_config
             member_agent_settings_diff = dict(org_member.agent_settings_diff)
@@ -859,16 +971,15 @@ class SaasSettingsStore(SettingsStore):
                     )
                     org_member.mcp_config = member_mcp_config
 
-            if uses_managed_llm_key and current_member_llm_api_key is not None:
-                # Managed/proxy key — store on this member but mark as org-managed
-                org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
-                org_member.has_custom_llm_api_key = False
+            if uses_managed_llm_key:
+                if is_litellm_enabled() and current_member_llm_api_key_raw is not None:
+                    org_member.llm_api_key = SecretStr(current_member_llm_api_key_raw)
+                    org_member.has_custom_llm_api_key = False
             elif current_member_llm_api_key_raw is not None:
-                # BYOR: member supplied their own (non-managed) API key
-                org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
+                # BYOR: preserve the existing shared provider-key behavior.
+                org_member.llm_api_key = SecretStr(current_member_llm_api_key_raw)
                 org_member.has_custom_llm_api_key = True
             elif org_default_llm_api_key_raw is not None:
-                # No member key, falling back to org default
                 org_member.has_custom_llm_api_key = False
 
             if not ENABLE_KEYCLOAK and (not uses_managed_llm_key or org._llm_api_key):
@@ -900,7 +1011,9 @@ class SaasSettingsStore(SettingsStore):
         logger.debug(f'saas_settings_store.get_instance::{user_id}')
         return SaasSettingsStore(user_id, effective_org_id=effective_org_id)
 
-    async def get_org_marketplaces(self, user_id: str | None) -> list[dict]:
+    async def get_org_marketplaces(
+        self, user_id: str | None
+    ) -> list[dict[str, str | bool | None]]:
         """Get organization-level marketplaces from the org's registered_marketplaces.
 
         Uses the effective_org_id if set, otherwise resolves via user.current_org_id.
@@ -938,19 +1051,19 @@ class SaasSettingsStore(SettingsStore):
 
             if org.registered_marketplaces:
                 # Normalize: use 'org' scope for legacy data without scope
-                normalized: list[dict[str, Any]] = []
+                normalized: list[dict[str, str | bool | None]] = []
                 for mp in org.registered_marketplaces:
-                    if isinstance(mp, dict):
-                        # Set scope='org' if missing (backward compatibility)
-                        if mp.get('scope') is None:
-                            mp = {**mp, 'scope': 'org'}
-                        # Ensure auto_load defaults to False if missing
-                        if 'auto_load' not in mp:
-                            mp = {**mp, 'auto_load': False}
-                        normalized.append(mp)
-                    else:
-                        # Convert MarketplaceRegistration to dict
-                        normalized.append(mp.model_dump())
+                    registration = MarketplaceRegistration.model_validate(mp)
+                    normalized.append(
+                        {
+                            'name': registration.name,
+                            'source': registration.source,
+                            'ref': registration.ref,
+                            'repo_path': registration.repo_path,
+                            'auto_load': registration.auto_load,
+                            'scope': (registration.scope or MarketplaceScope.ORG).value,
+                        }
+                    )
                 return normalized
             return []
         except Exception:
@@ -969,6 +1082,8 @@ class SaasSettingsStore(SettingsStore):
         First checks if an existing key exists for the user and verifies it
         is valid in LiteLLM. If valid, reuses it. Otherwise, generates a new key.
         """
+        if not is_litellm_enabled():
+            return
         llm_api_key = item.agent_settings.llm.api_key or fallback_api_key
         logger.info(
             'saas_settings_store:ensure_api_key:evaluate',
@@ -989,6 +1104,7 @@ class SaasSettingsStore(SettingsStore):
                 extra={'user_id': self.user_id, 'org_id': org_id},
             )
             key_alias = get_openhands_cloud_key_alias(self.user_id, org_id)
+            await LiteLlmManager.ensure_user_in_org(self.user_id, org_id)
             await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
             generated_key = await LiteLlmManager.generate_key(
                 self.user_id,
@@ -1009,7 +1125,9 @@ class SaasSettingsStore(SettingsStore):
 
         item.agent_settings.llm.api_key = llm_api_key
         existing_key_valid = await LiteLlmManager.verify_existing_key(
-            llm_api_key.get_secret_value(),  # type: ignore[union-attr]
+            llm_api_key
+            if isinstance(llm_api_key, str)
+            else llm_api_key.get_secret_value(),
             self.user_id,
             org_id,
             openhands_type=openhands_type,
@@ -1030,6 +1148,7 @@ class SaasSettingsStore(SettingsStore):
             # deterministic alias, deleting any prior key first — so switching
             # the default to/from an openhands/* model never orphans a key.
             key_alias = get_openhands_cloud_key_alias(self.user_id, org_id)
+            await LiteLlmManager.ensure_user_in_org(self.user_id, org_id)
             await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
             generated_key = await LiteLlmManager.generate_key(
                 self.user_id,
@@ -1056,6 +1175,8 @@ class SaasSettingsStore(SettingsStore):
         this helper because rotating the member managed key would not affect the
         effective key used at runtime.
         """
+        if not is_litellm_enabled():
+            return None
         settings = await self.load()
         if settings is None:
             return None
@@ -1112,6 +1233,7 @@ class SaasSettingsStore(SettingsStore):
         swallowed. The previous key token is returned for best-effort cleanup
         and is only exposed after a successful persist.
         """
+        require_litellm_enabled()
         from server.auth.auth_config import ENABLE_KEYCLOAK
 
         if not ENABLE_KEYCLOAK:
@@ -1158,6 +1280,7 @@ class SaasSettingsStore(SettingsStore):
             # One managed key per (user, org) under the deterministic alias;
             # delete the alias first so rotation never orphans a prior key.
             key_alias = get_openhands_cloud_key_alias(self.user_id, org_id_str)
+            await LiteLlmManager.ensure_user_in_org(self.user_id, org_id_str)
             await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
             new_key = await LiteLlmManager.generate_key(
                 self.user_id,

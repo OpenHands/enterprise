@@ -15,7 +15,7 @@ import { Organization } from "#/types/org";
 import { Typography } from "#/ui/typography";
 import { SAAS_NAV_ITEMS, OSS_NAV_ITEMS } from "#/constants/settings-nav";
 import { useSettingsNavItems } from "#/hooks/use-settings-nav-items";
-import { getSettingsQueryFn } from "#/hooks/query/use-settings";
+import { getSettingsResource } from "#/hooks/query/use-settings";
 import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
 import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organization-store";
 import { rolePermissions } from "#/utils/org/permissions";
@@ -50,7 +50,9 @@ const ORG_WIDE_BADGE_PATHS = new Set<string>([
   "/settings/org-defaults/verification",
 ]);
 
-export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
+export const clientLoader = async ({
+  request,
+}: Route.ClientLoaderArgs): Promise<Response | null> => {
   const url = new URL(request.url);
   const { pathname } = url;
 
@@ -107,7 +109,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
         const orgId = getSelectedOrganizationIdFromStore();
         const personalSettings = await queryClient.fetchQuery({
           queryKey: SETTINGS_QUERY_KEYS.byScope("personal", orgId),
-          queryFn: () => getSettingsQueryFn("personal", orgId),
+          queryFn: () => getSettingsResource("personal", orgId),
           staleTime: 1000 * 60 * 5,
         });
         if (personalSettings?.agent_settings?.agent_kind === "acp") {

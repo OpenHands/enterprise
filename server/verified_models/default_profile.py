@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from typing import Any
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.settings.llm_profiles import LLMProfiles
+from openhands.app_server.utils.litellm_integration import (
+    is_litellm_enabled,
+    is_managed_llm,
+)
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.llm import LLM
 
@@ -16,6 +18,8 @@ _OPENHANDS_PROVIDER = 'openhands'
 
 
 async def get_openhands_default_model_name(db_session: AsyncSession) -> str | None:
+    if not is_litellm_enabled():
+        return None
     result = await db_session.execute(
         select(StoredVerifiedModel.model_name)
         .where(
@@ -31,6 +35,15 @@ async def get_openhands_default_model_name(db_session: AsyncSession) -> str | No
 def materialize_default_llm_profile(
     profiles: LLMProfiles, model_name: str | None
 ) -> LLMProfiles:
+    if not is_litellm_enabled():
+        existing = profiles.get(DEFAULT_LLM_PROFILE_NAME)
+        if existing is not None and is_managed_llm(existing.model, existing.base_url):
+            profiles.profiles.pop(DEFAULT_LLM_PROFILE_NAME, None)
+        if profiles.active is not None:
+            active = profiles.get(profiles.active)
+            if active is None or is_managed_llm(active.model, active.base_url):
+                profiles.active = None
+        return profiles
     if not model_name:
         # No enabled OpenHands DB default. The logical ``Default`` profile is a
         # live pointer to the managed OpenHands default, so when it currently
@@ -51,11 +64,15 @@ def materialize_default_llm_profile(
                 profiles.active = None
         return profiles
 
-    model = f'{_OPENHANDS_PROVIDER}/{model_name}'
     existing = profiles.get(DEFAULT_LLM_PROFILE_NAME)
-    live_llm: dict[str, Any] = {'model': model, 'base_url': None, 'api_key': None}
+    if existing is not None and not is_managed_llm(existing.model, existing.base_url):
+        # A concrete native Default may have been seeded while the gateway was
+        # disabled. Reenabling a DB default does not
+        # turn that profile into a live managed pointer.
+        return profiles
+    model = f'{_OPENHANDS_PROVIDER}/{model_name}'
     profiles.profiles[DEFAULT_LLM_PROFILE_NAME] = (
-        existing.model_copy(update=live_llm)
+        existing.model_copy(update={'model': model, 'base_url': None, 'api_key': None})
         if existing is not None
         else LLM(model=model, base_url=None, api_key=None)
     )

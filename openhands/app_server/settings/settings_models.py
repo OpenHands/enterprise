@@ -15,17 +15,20 @@ import re
 from collections.abc import Mapping
 from copy import deepcopy
 from enum import Enum
-from typing import Annotated, Any, Sequence
+from typing import Annotated, Any, Sequence, TypeAlias
 
 from fastmcp.mcp_config import MCPConfig
 from fastmcp.mcp_config import MCPConfig as SDKMCPConfig
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
+    JsonValue,
     PrivateAttr,
     SecretStr,
     SerializationInfo,
+    TypeAdapter,
     ValidationError,
     field_serializer,
     field_validator,
@@ -35,7 +38,18 @@ from pydantic import (
 from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.settings.llm_profiles import LLMProfiles
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.app_server.settings.settings_patch import (
+    merge_settings_json,
+    normalize_settings_input,
+    settings_json,
+)
+from openhands.app_server.utils.litellm_integration import (
+    direct_llm_defaults,
+    is_litellm_enabled,
+    llm_credentials_compatible,
+    uses_managed_gateway,
+    validate_llm_configuration,
+)
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.settings import (
     ACPAgentSettings,
@@ -49,6 +63,18 @@ from openhands.sdk.settings import (
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 logger = logging.getLogger(__name__)
+
+
+def _default_agent_settings() -> AgentSettingsConfig:
+    settings = default_agent_settings()
+    if not is_litellm_enabled():
+        from openhands.sdk.llm import LLM
+
+        settings = settings.model_copy(
+            update={'llm': LLM.model_validate(direct_llm_defaults())}
+        )
+    return settings
+
 
 # Valid source patterns for MarketplaceRegistration
 # - github:owner/repo format
@@ -698,6 +724,141 @@ _SETTINGS_UPDATE_IGNORED_FIELDS = frozenset(
 )
 
 
+SettingsUpdateValue: TypeAlias = (
+    str
+    | int
+    | float
+    | bool
+    | None
+    | SecretStr
+    | BaseModel
+    | Mapping[str, 'SettingsUpdateValue']
+    | Sequence['SettingsUpdateValue']
+)
+
+_MARKETPLACE_INPUTS = TypeAdapter(list[object])
+_MARKETPLACE_INPUT = TypeAdapter(dict[str, object])
+
+
+class _SettingsUpdate(BaseModel):
+    """Validated sparse input; field presence distinguishes omission from null."""
+
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+    agent_settings_diff: Annotated[
+        dict[str, JsonValue] | None, BeforeValidator(normalize_settings_input)
+    ] = None
+    conversation_settings_diff: Annotated[
+        dict[str, JsonValue] | None, BeforeValidator(normalize_settings_input)
+    ] = None
+    language: str | None = None
+    user_version: int | None = None
+    remote_runtime_resource_factor: int | None = None
+    enable_sound_notifications: bool = False
+    enable_proactive_conversation_starters: bool = True
+    user_consents_to_analytics: bool | None = None
+    sandbox_base_container_image: str | None = None
+    sandbox_runtime_container_image: str | None = None
+    disabled_skills: list[str] | None = None
+    search_api_key: SecretStr | None = None
+    sandbox_api_key: SecretStr | None = None
+    max_budget_per_task: float | None = None
+    email: str | None = None
+    email_verified: bool | None = None
+    git_user_name: str | None = None
+    git_user_email: str | None = None
+    title_llm_profile: str | None = None
+    git_full_clone: bool = False
+    v1_enabled: bool = True
+    sandbox_grouping_strategy: SandboxGroupingStrategy = (
+        SandboxGroupingStrategy.NO_GROUPING
+    )
+    default_sandbox_spec_id: str | None = None
+    registered_marketplaces: list[MarketplaceRegistration] = Field(default_factory=list)
+    inherited_marketplaces: list[MarketplaceRegistration] = Field(default_factory=list)
+
+    @field_validator('search_api_key', 'sandbox_api_key')
+    @classmethod
+    def _empty_secret(cls, value: SecretStr | None) -> SecretStr | None:
+        return value if value is not None and value.get_secret_value() else None
+
+    @field_validator('registered_marketplaces', mode='before')
+    @classmethod
+    def _personal_marketplaces(cls, value: object) -> list[MarketplaceRegistration]:
+        registrations: list[MarketplaceRegistration] = []
+        for index, item in enumerate(_MARKETPLACE_INPUTS.validate_python(value)):
+            try:
+                # Persisted SDK/model inputs and raw API objects meet here.
+                if isinstance(item, MarketplaceRegistration):
+                    registration = item.model_copy()
+                else:
+                    data = _MARKETPLACE_INPUT.validate_python(item)
+                    data.pop('scope', None)
+                    registration = MarketplaceRegistration.model_validate(data)
+                registration.scope = MarketplaceScope.PERSONAL
+                registrations.append(registration)
+            except ValidationError as exc:
+                raise ValueError(
+                    f'Invalid marketplace at index {index}: {exc.errors()[0]["msg"]}'
+                ) from exc
+        return registrations
+
+    def apply_product_settings(self, settings: Settings) -> None:
+        """Apply only submitted product fields, preserving nullable clears."""
+        if 'language' in self.model_fields_set:
+            settings.language = self.language
+        if 'user_version' in self.model_fields_set:
+            settings.user_version = self.user_version
+        if 'remote_runtime_resource_factor' in self.model_fields_set:
+            settings.remote_runtime_resource_factor = (
+                self.remote_runtime_resource_factor
+            )
+        if 'enable_sound_notifications' in self.model_fields_set:
+            settings.enable_sound_notifications = self.enable_sound_notifications
+        if 'enable_proactive_conversation_starters' in self.model_fields_set:
+            settings.enable_proactive_conversation_starters = (
+                self.enable_proactive_conversation_starters
+            )
+        if 'user_consents_to_analytics' in self.model_fields_set:
+            settings.user_consents_to_analytics = self.user_consents_to_analytics
+        if 'sandbox_base_container_image' in self.model_fields_set:
+            settings.sandbox_base_container_image = self.sandbox_base_container_image
+        if 'sandbox_runtime_container_image' in self.model_fields_set:
+            settings.sandbox_runtime_container_image = (
+                self.sandbox_runtime_container_image
+            )
+        if 'disabled_skills' in self.model_fields_set:
+            settings.disabled_skills = self.disabled_skills
+        if 'search_api_key' in self.model_fields_set:
+            settings.search_api_key = self.search_api_key
+        if 'sandbox_api_key' in self.model_fields_set:
+            settings.sandbox_api_key = self.sandbox_api_key
+        if 'max_budget_per_task' in self.model_fields_set:
+            settings.max_budget_per_task = self.max_budget_per_task
+        if 'email' in self.model_fields_set:
+            settings.email = self.email
+        if 'email_verified' in self.model_fields_set:
+            settings.email_verified = self.email_verified
+        if 'git_user_name' in self.model_fields_set:
+            settings.git_user_name = self.git_user_name
+        if 'git_user_email' in self.model_fields_set:
+            settings.git_user_email = self.git_user_email
+        if 'title_llm_profile' in self.model_fields_set:
+            settings.title_llm_profile = self.title_llm_profile
+        if 'git_full_clone' in self.model_fields_set:
+            settings.git_full_clone = self.git_full_clone
+        if 'v1_enabled' in self.model_fields_set:
+            settings.v1_enabled = self.v1_enabled
+        if 'sandbox_grouping_strategy' in self.model_fields_set:
+            settings.sandbox_grouping_strategy = self.sandbox_grouping_strategy
+        if 'default_sandbox_spec_id' in self.model_fields_set:
+            settings.default_sandbox_spec_id = self.default_sandbox_spec_id
+        if 'registered_marketplaces' in self.model_fields_set:
+            settings.registered_marketplaces = self.registered_marketplaces
+        if 'inherited_marketplaces' in self.model_fields_set:
+            settings.inherited_marketplaces = self.inherited_marketplaces
+
+
 class Settings(BaseModel):
     """Persisted settings for OpenHands sessions.
 
@@ -728,7 +889,7 @@ class Settings(BaseModel):
     title_llm_profile: str | None = None
     git_full_clone: bool = False
     v1_enabled: bool = True
-    agent_settings: AgentSettingsConfig = Field(default_factory=default_agent_settings)
+    agent_settings: AgentSettingsConfig = Field(default_factory=_default_agent_settings)
     conversation_settings: ConversationSettings = Field(
         default_factory=ConversationSettings
     )
@@ -835,13 +996,8 @@ class Settings(BaseModel):
         if self.llm_profiles.require(active) != self.agent_settings.llm:
             self.llm_profiles.save(active, self.agent_settings.llm)
 
-    def update(self, payload: dict[str, Any]) -> None:
-        """Apply a batch of changes from a nested dict.
-
-        ``agent_settings_diff`` and ``conversation_settings_diff`` use nested
-        dict shape (matching model_dump). Top-level keys are set directly on the
-        model.
-        """
+    def update(self, payload: Mapping[str, SettingsUpdateValue]) -> None:
+        """Apply a sparse patch containing wire JSON or supported SDK values."""
         legacy_nested_keys = [
             key for key in ('agent_settings', 'conversation_settings') if key in payload
         ]
@@ -851,104 +1007,52 @@ class Settings(BaseModel):
                 + ', '.join(sorted(legacy_nested_keys))
             )
 
-        agent_update = payload.get('agent_settings_diff')
-        if isinstance(agent_update, dict):
-            coerced: dict[str, Any] = {}
-            for key, value in agent_update.items():
-                coerced[key] = (
-                    _coerce_value(value) if not isinstance(value, dict) else value
-                )
-
-            # ``mcp_config`` is held back from the variant-aware merge: a
-            # ``null`` entry deletes that server, otherwise the map replaces
-            # the stored catalog wholesale (see ``_apply_mcp_config_update``).
+        patch = _SettingsUpdate.model_validate(payload)
+        agent_update = patch.agent_settings_diff
+        if agent_update is not None:
+            coerced = agent_update.copy()
             replace_mcp_config = 'mcp_config' in agent_update
-            mcp_config = (
-                _apply_mcp_config_update(
-                    coerced.pop('mcp_config', None),
-                    self.agent_settings.mcp_config,
-                )
-                if replace_mcp_config
-                else None
-            )
+            mcp_update = coerced.pop('mcp_config', None)
 
             # The SDK owns the discriminated-union merge: replace on
-            # ``agent_kind`` change, deep-merge within a variant. Cross-kind
-            # config preservation tracked in OpenHands/OpenHands#14370.
+            # agent_kind changes and merge within a variant. Keep extension
+            # fields in the sparse JSON patch for the SDK to validate.
             new_settings = apply_agent_settings_diff(self.agent_settings, coerced)
+            llm_update = agent_update.get('llm')
+            # Sparse wire patches distinguish an omitted key from an explicit
+            # null/empty key. Only object-shaped LLM patches carry field presence.
+            if isinstance(llm_update, dict) and 'api_key' not in llm_update:
+                old_llm = self.agent_settings.llm
+                new_llm = new_settings.llm
+                if (
+                    uses_managed_gateway(old_llm.model, old_llm.base_url)
+                    or uses_managed_gateway(new_llm.model, new_llm.base_url)
+                ) and not llm_credentials_compatible(
+                    old_llm.model, old_llm.base_url, new_llm.model, new_llm.base_url
+                ):
+                    new_llm.api_key = None
+
             if replace_mcp_config:
-                dumped = new_settings.model_dump(
-                    mode='json', context={'expose_secrets': True}
+                # This legacy MCP boundary returns validated SDK server models.
+                # Preserve its deletion, replacement and redacted-secret rules.
+                mcp_config = _apply_mcp_config_update(
+                    mcp_update, self.agent_settings.mcp_config
                 )
-                dumped['mcp_config'] = mcp_config
-                new_settings = validate_agent_settings(dumped)
-
-            # Use object.__setattr__ to avoid validate_assignment
-            # side-effects on other fields.
-            object.__setattr__(self, 'agent_settings', new_settings)
-            if replace_mcp_config:
+                new_settings = new_settings.model_copy(
+                    update={'mcp_config': mcp_config}
+                )
                 self._mcp_config_updated = True
+            self.agent_settings = new_settings
 
-        conv_update = payload.get('conversation_settings_diff')
-        if isinstance(conv_update, dict):
-            merged = deep_merge(
-                self.conversation_settings.model_dump(mode='json'),
-                conv_update,
+        if patch.conversation_settings_diff is not None:
+            merged = merge_settings_json(
+                settings_json(self.conversation_settings),
+                patch.conversation_settings_diff,
             )
-            object.__setattr__(
-                self,
-                'conversation_settings',
-                ConversationSettings.model_validate(merged),
-            )
+            self.conversation_settings = ConversationSettings.model_validate(merged)
 
-        for key, value in payload.items():
-            if key in ('agent_settings_diff', 'conversation_settings_diff'):
-                continue
-            if (
-                key in Settings.model_fields
-                and key not in _SETTINGS_UPDATE_IGNORED_FIELDS
-            ):
-                field_info = Settings.model_fields[key]
-                # Coerce plain strings to SecretStr when the field type expects it
-                if value is not None and isinstance(value, str):
-                    annotation = field_info.annotation
-                    if annotation is SecretStr or (
-                        hasattr(annotation, '__args__')
-                        and SecretStr in getattr(annotation, '__args__', ())
-                    ):
-                        value = SecretStr(value) if value else None
-                # Validate registered_marketplaces before setting
-                if key == 'registered_marketplaces' and value is not None:
-                    validated = []
-                    for i, mp in enumerate(value):
-                        try:
-                            if isinstance(mp, dict):
-                                # Strip scope from incoming request - backend will set it
-                                mp_dict = {k: v for k, v in mp.items() if k != 'scope'}
-                                # Ensure auto_load defaults to False if not provided
-                                if 'auto_load' not in mp_dict:
-                                    mp_dict['auto_load'] = False
-                                mp_obj = MarketplaceRegistration.model_validate(mp_dict)
-                                # Set scope='personal' for user-level settings
-                                mp_obj.scope = MarketplaceScope.PERSONAL
-                                validated.append(mp_obj)
-                            elif isinstance(mp, MarketplaceRegistration):
-                                # Set scope='personal' for user-level settings
-                                mp.scope = MarketplaceScope.PERSONAL
-                                validated.append(mp)
-                            else:
-                                raise ValueError(
-                                    f'Expected dict or MarketplaceRegistration, '
-                                    f'got {type(mp).__name__}'
-                                )
-                        except ValidationError as e:
-                            raise ValueError(
-                                f'Invalid marketplace at index {i}: {e.errors()[0]["msg"]}'
-                            ) from e
-                    value = validated
-                setattr(self, key, value)
-
-        if isinstance(agent_update, dict) and 'llm' in agent_update:
+        patch.apply_product_settings(self)
+        if agent_update is not None and 'llm' in agent_update:
             self.sync_active_profile_from_settings()
 
     # ── Serialization ───────────────────────────────────────────────
@@ -994,6 +1098,7 @@ class Settings(BaseModel):
         # profile. ``model_copy(update={'llm': llm})`` is shallow, so the
         # update value is shared with ``llm_profiles.profiles[name]``.
         llm = self.llm_profiles.require(name)
+        validate_llm_configuration(llm.model, llm.base_url)
         self.agent_settings = self.agent_settings.model_copy(
             update={'llm': llm.model_copy()}
         )

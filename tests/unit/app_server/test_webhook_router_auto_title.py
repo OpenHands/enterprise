@@ -5,15 +5,20 @@ for new conversations created via the /webhooks/conversations endpoint,
 enabling auto-titling for automation runs and SDK-created conversations.
 """
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.agent_server.models import ConversationInfo, Success
+from openhands.app_server.app_conversation.app_conversation_info_service import (
+    AppConversationInfoService,
+)
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
 )
@@ -26,6 +31,7 @@ from openhands.app_server.event_callback.set_title_callback_processor import (
 )
 from openhands.app_server.event_callback.webhook_router import on_conversation_update
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
+from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
 from openhands.sdk.conversation import ConversationExecutionStatus
 
@@ -88,11 +94,11 @@ class TestOnConversationUpdateAutoTitle:
     @pytest.mark.asyncio
     async def test_registers_set_title_callback_for_new_conversation(
         self,
-        async_session,
-        app_conversation_info_service,
-        sandbox_record,
-        mock_conversation_info,
-    ):
+        async_session: AsyncSession,
+        app_conversation_info_service: SQLAppConversationInfoService,
+        sandbox_record: SandboxRecord,
+        mock_conversation_info: ConversationInfo,
+    ) -> None:
         """Test that SetTitleCallbackProcessor is registered for new conversations.
 
         Arrange:
@@ -123,7 +129,9 @@ class TestOnConversationUpdateAutoTitle:
         mock_event_callback_service.save_event_callback = mock_save_event_callback
 
         @asynccontextmanager
-        async def mock_get_event_callback_service(state, request=None):
+        async def mock_get_event_callback_service(
+            state: InjectorState, request: Request | None = None
+        ) -> AsyncIterator[AsyncMock]:
             yield mock_event_callback_service
 
         # Act
@@ -156,11 +164,11 @@ class TestOnConversationUpdateAutoTitle:
     @pytest.mark.asyncio
     async def test_does_not_register_callback_for_existing_conversation(
         self,
-        async_session,
-        app_conversation_info_service,
-        sandbox_record,
-        mock_conversation_info,
-    ):
+        async_session: AsyncSession,
+        app_conversation_info_service: SQLAppConversationInfoService,
+        sandbox_record: SandboxRecord,
+        mock_conversation_info: ConversationInfo,
+    ) -> None:
         """Test that SetTitleCallbackProcessor is NOT registered for existing conversations.
 
         Arrange:
@@ -191,7 +199,9 @@ class TestOnConversationUpdateAutoTitle:
         mock_event_callback_service.save_event_callback = mock_save_event_callback
 
         @asynccontextmanager
-        async def mock_get_event_callback_service(state, request=None):
+        async def mock_get_event_callback_service(
+            state: InjectorState, request: Request | None = None
+        ) -> AsyncIterator[AsyncMock]:
             yield mock_event_callback_service
 
         # Act
@@ -220,11 +230,11 @@ class TestOnConversationUpdateAutoTitle:
     @pytest.mark.asyncio
     async def test_does_not_register_callback_for_deleting_conversation(
         self,
-        async_session,
-        app_conversation_info_service,
-        sandbox_record,
-        mock_conversation_info,
-    ):
+        async_session: AsyncSession,
+        app_conversation_info_service: SQLAppConversationInfoService,
+        sandbox_record: SandboxRecord,
+        mock_conversation_info: ConversationInfo,
+    ) -> None:
         """Test that SetTitleCallbackProcessor is NOT registered for deleting conversations.
 
         Arrange:
@@ -259,7 +269,9 @@ class TestOnConversationUpdateAutoTitle:
         mock_event_callback_service.save_event_callback = mock_save_event_callback
 
         @asynccontextmanager
-        async def mock_get_event_callback_service(state, request=None):
+        async def mock_get_event_callback_service(
+            state: InjectorState, request: Request | None = None
+        ) -> AsyncIterator[AsyncMock]:
             yield mock_event_callback_service
 
         # Act
@@ -288,11 +300,11 @@ class TestOnConversationUpdateAutoTitle:
     @pytest.mark.asyncio
     async def test_callback_uses_correct_user_id_from_sandbox(
         self,
-        async_session,
-        app_conversation_info_service,
-        sandbox_record,
-        mock_conversation_info,
-    ):
+        async_session: AsyncSession,
+        app_conversation_info_service: SQLAppConversationInfoService,
+        sandbox_record: SandboxRecord,
+        mock_conversation_info: ConversationInfo,
+    ) -> None:
         """Test that the callback registration uses the user_id from sandbox_record.
 
         Arrange:
@@ -318,7 +330,9 @@ class TestOnConversationUpdateAutoTitle:
         captured_state = None
 
         @asynccontextmanager
-        async def mock_get_event_callback_service(state, request=None):
+        async def mock_get_event_callback_service(
+            state: InjectorState, request: Request | None = None
+        ) -> AsyncIterator[AsyncMock]:
             nonlocal captured_state
             captured_state = state
             mock_service = AsyncMock()
@@ -357,11 +371,11 @@ class TestOnConversationUpdateAutoTitle:
     @pytest.mark.asyncio
     async def test_conversation_saved_before_callback_registration(
         self,
-        async_session,
-        app_conversation_info_service,
-        sandbox_record,
-        mock_conversation_info,
-    ):
+        async_session: AsyncSession,
+        app_conversation_info_service: AppConversationInfoService,
+        sandbox_record: SandboxRecord,
+        mock_conversation_info: ConversationInfo,
+    ) -> None:
         """Test that conversation is saved before SetTitleCallbackProcessor is registered.
 
         This ensures the conversation exists in the database when the callback
@@ -391,18 +405,23 @@ class TestOnConversationUpdateAutoTitle:
 
         original_save = app_conversation_info_service.save_app_conversation_info
 
-        async def tracking_save(info):
+        async def tracking_save(
+            info: AppConversationInfo, *, from_sandbox: bool = False
+        ) -> AppConversationInfo:
             operation_order.append('save_conversation')
-            return await original_save(info)
+            assert from_sandbox is True
+            return await original_save(info, from_sandbox=from_sandbox)
 
-        async def mock_save_event_callback(callback):
+        async def mock_save_event_callback(callback: EventCallback) -> None:
             operation_order.append('save_callback')
 
         mock_event_callback_service = AsyncMock()
         mock_event_callback_service.save_event_callback = mock_save_event_callback
 
         @asynccontextmanager
-        async def mock_get_event_callback_service(state, request=None):
+        async def mock_get_event_callback_service(
+            state: InjectorState, request: Request | None = None
+        ) -> AsyncIterator[AsyncMock]:
             yield mock_event_callback_service
 
         # Act

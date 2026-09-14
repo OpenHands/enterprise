@@ -51,9 +51,7 @@ const renderMenu = (
 describe("SwitchProfileContextMenu", () => {
   it("renders the i18n header and one row per profile", () => {
     renderMenu();
-    expect(
-      screen.getByText("SETTINGS$AVAILABLE_PROFILES"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("SETTINGS$AVAILABLE_PROFILES")).toBeInTheDocument();
     expect(
       screen.getByTestId("switch-profile-option-default"),
     ).toBeInTheDocument();
@@ -109,3 +107,7 @@ describe("SwitchProfileContextMenu", () => {
     expect(props.onClose).toHaveBeenCalled();
   });
 });
+
+vi.mock("#/hooks/query/use-config", () => ({
+  useConfig: () => ({ data: { feature_flags: { enable_litellm: true } } }),
+}));

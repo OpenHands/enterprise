@@ -60,15 +60,12 @@ vi.mock("#/hooks/query/use-balance", () => ({
 }));
 
 // Mock useCreateStripeCheckoutSession hook
-vi.mock(
-  "#/hooks/mutation/stripe/use-create-stripe-checkout-session",
-  () => ({
-    useCreateStripeCheckoutSession: () => ({
-      mutate: vi.fn(),
-      isPending: false,
-    }),
+vi.mock("#/hooks/mutation/stripe/use-create-stripe-checkout-session", () => ({
+  useCreateStripeCheckoutSession: () => ({
+    mutate: vi.fn(),
+    isPending: false,
   }),
-);
+}));
 
 describe("Billing Route", () => {
   const { mockQueryClient } = vi.hoisted(() => ({
@@ -109,7 +106,7 @@ describe("Billing Route", () => {
     );
   };
 
-  const setupSaasMode = (featureFlags = {}) => {
+  const setupSaasMode = (featureFlags: {} = {}): void => {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig({
         app_mode: "saas",
@@ -122,7 +119,7 @@ describe("Billing Route", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
+          enable_onboarding: false,
           ...featureFlags,
         },
       }),
@@ -434,12 +431,12 @@ describe("Billing Route", () => {
       });
 
       // Assert - balance is visible
-      const balance = screen.getByTestId("user-balance");
+      const balance = await screen.findByTestId("user-balance");
       expect(balance).toBeInTheDocument();
       expect(balance).toHaveTextContent("$150.00");
 
       // Assert - input is disabled
-      const topUpInput = screen.getByTestId("top-up-input");
+      const topUpInput = await screen.findByTestId("top-up-input");
       expect(topUpInput).toBeDisabled();
 
       // Assert - button is disabled
@@ -458,7 +455,7 @@ describe("Billing Route", () => {
       });
 
       // Assert - input is enabled
-      const topUpInput = screen.getByTestId("top-up-input");
+      const topUpInput = await screen.findByTestId("top-up-input");
       expect(topUpInput).not.toBeDisabled();
 
       // Assert - button starts disabled (no amount entered) but is NOT

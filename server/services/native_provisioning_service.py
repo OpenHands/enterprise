@@ -7,9 +7,10 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
-from sqlalchemy import func, or_, select, true
+from sqlalchemy import func, or_, select, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from server.auth.native_types import SessionFactory
 from server.services.native_account_service import lock_native_lifecycle
 from storage.database import a_session_maker
@@ -57,6 +58,8 @@ async def queue_external_cleanup(
     for work in works:
         if work.payload:
             work.status = 'cleanup'
+    if not is_litellm_enabled() and not any(work.payload for work in works):
+        return
     kind = 'delete_team' if org_id else 'delete_user'
     exists = await session.scalar(
         select(NativeExternalWork.id).where(
@@ -76,6 +79,54 @@ async def queue_external_cleanup(
 class NativeProvisioningService:
     def __init__(self, session_factory: SessionFactory | None = None) -> None:
         self.sessions = session_factory or a_session_maker
+
+    async def _suspend_disabled_work(self) -> None:
+        """Revoke local managed keys while preserving deferred remote cleanup.
+
+        Detach memberships under the same lock used to publish remote results,
+        so an in-flight worker cannot restore their managed keys. Keep encrypted
+        key payloads and leases until the integration is re-enabled: disabling a
+        gateway does not mean its remote resources were deleted. Terminal local
+        account deletion has its own cleanup_pending state and still runs.
+        """
+        async with self.sessions() as session, session.begin():
+            await lock_native_lifecycle(session)
+            works = list(
+                await session.scalars(
+                    select(NativeExternalWork).where(
+                        or_(
+                            NativeExternalWork.status != 'complete',
+                            NativeExternalWork.id.in_(
+                                select(OrgMember.native_provisioning_id).where(
+                                    OrgMember.native_provisioning_id.is_not(None)
+                                )
+                            ),
+                        )
+                    )
+                )
+            )
+            for work in works:
+                if work.kind == 'provision' and work.payload:
+                    work.status = 'cleanup'
+            members = await session.scalars(
+                select(OrgMember).where(
+                    or_(
+                        OrgMember.native_provisioning_id.is_not(None),
+                        OrgMember.status == 'pending_llm_provisioning',
+                    )
+                )
+            )
+            for member in members:
+                if not member.has_custom_llm_api_key:
+                    member.llm_api_key = SecretStr('')
+                    member.managed_llm_key_ownership_version = 0
+                member.native_provisioning_id = None
+                member.status = 'active'
+            await session.execute(
+                update(AuthAccount)
+                .where(AuthAccount.provisioning_status == 'pending')
+                .values(provisioning_status='complete')
+            )
 
     async def _eligible(
         self, session: AsyncSession, work: NativeExternalWork
@@ -108,6 +159,9 @@ class NativeProvisioningService:
         limit: int = 100,
         only_work_id: UUID | None = None,
     ) -> tuple[int, int]:
+        if not is_litellm_enabled():
+            await self._suspend_disabled_work()
+            return 0, 0
         if provision is None:
             from server.services.native_litellm_adapter import provision_native_member
 
@@ -228,6 +282,9 @@ class NativeProvisioningService:
         return completed, failed
 
     async def cleanup(self, *, limit: int = 100) -> tuple[int, int]:
+        if not is_litellm_enabled():
+            await self._suspend_disabled_work()
+            return 0, 0
         from server.services.native_litellm_adapter import cleanup_native_resource
 
         async with self.sessions() as session:
@@ -323,6 +380,12 @@ async def prepare_managed_member(
     session: AsyncSession, member: OrgMember, *, force: bool = False
 ) -> SecretStr:
     """Select or queue a member key; caller holds the native lifecycle lock."""
+    if not is_litellm_enabled():
+        await release_managed_member(session, member)
+        if not member.has_custom_llm_api_key:
+            member.llm_api_key = SecretStr('')
+            member.managed_llm_key_ownership_version = 0
+        return member.llm_api_key or SecretStr('')
     import secrets
 
     work = (

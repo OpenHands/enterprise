@@ -12,6 +12,7 @@ from pydantic import SecretStr
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from server.auth.native_password import NativeAuthError
 from server.constants import (
     ORG_SETTINGS_VERSION,
@@ -296,7 +297,7 @@ async def add_membership(
 ) -> None:
     if await session.get(OrgMember, (org.id, user.id)) is not None:
         return  # A setup link never overwrites an established membership role.
-    managed = not should_use_direct_llm_defaults()
+    managed = is_litellm_enabled() and not should_use_direct_llm_defaults()
     member = OrgMember(
         org_id=org.id,
         user_id=user.id,
@@ -350,7 +351,7 @@ async def create_profile(
         )
         .limit(1)
     )
-    if cleanup is not None:
+    if cleanup is not None and is_litellm_enabled():
         raise NativeAuthError(
             'Account cleanup is pending; try signing in again shortly', 503
         )
@@ -396,7 +397,9 @@ async def create_profile(
     await add_membership(session, user, org, owner.id)
     account.state = 'profile_present'
     account.provisioning_status = (
-        'pending' if not should_use_direct_llm_defaults() else 'complete'
+        'pending'
+        if is_litellm_enabled() and not should_use_direct_llm_defaults()
+        else 'complete'
     )
     config = get_default_org_config()
     if config.enabled:

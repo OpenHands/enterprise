@@ -24,6 +24,10 @@ from openhands.app_server.config_api.llm_model_service import (
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.utils.async_utils import call_sync_from_async
+from openhands.app_server.utils.litellm_integration import (
+    is_litellm_enabled,
+    validate_llm_configuration,
+)
 from openhands.app_server.utils.llm import (
     DEFAULT_OPENHANDS_MODEL,
     ModelsResponse,
@@ -163,7 +167,7 @@ class DefaultLLMModelService(LLMModelService):
         calls (e.g. ``search_llm_models`` + ``search_providers``) within
         the same request do not repeat expensive discovery work.
         """
-        if self._cached_response is not None:
+        if self._cached_response is not None and is_litellm_enabled():
             return self._cached_response
 
         extra_models: list[str] = []
@@ -175,6 +179,7 @@ class DefaultLLMModelService(LLMModelService):
             extra_models.extend(bedrock_models)
 
         if self._ollama_base_url:
+            validate_llm_configuration('ollama/discovery', self._ollama_base_url)
             ollama_url = self._ollama_base_url.strip('/') + '/api/tags'
             try:
                 async with httpx.AsyncClient() as client:

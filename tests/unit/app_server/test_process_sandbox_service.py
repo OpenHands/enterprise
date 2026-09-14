@@ -17,6 +17,14 @@ from openhands.app_server.sandbox.process_sandbox_service import (
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 
 
+@pytest.fixture(autouse=True)
+def mock_resume_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        'openhands.app_server.sandbox.sandbox_service.SandboxService.validate_resume_configuration',
+        AsyncMock(),
+    )
+
+
 class MockSandboxSpec:
     """Mock sandbox specification."""
 
@@ -354,11 +362,13 @@ class TestProcessSandboxService:
 class TestProcessSandboxServiceInjector:
     """Test cases for ProcessSandboxServiceInjector."""
 
-    def test_default_values(self):
+    def test_default_values(self) -> None:
         """Test default configuration values."""
         injector = ProcessSandboxServiceInjector()
 
-        assert injector.base_working_dir == '/tmp/openhands-sandboxes'
+        assert injector.base_working_dir == os.path.join(
+            tempfile.gettempdir(), 'openhands-sandboxes'
+        )
         assert injector.base_port == 8000
         assert injector.health_check_path == '/alive'
         assert injector.agent_server_module == 'openhands.agent_server'

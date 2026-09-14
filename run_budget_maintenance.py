@@ -4,6 +4,7 @@ import asyncio
 # root (/app in the Docker image); `maintenance-tasks-cronjob.yaml` runs it as
 # `python -m run_maintenance_tasks`.
 import run_maintenance_tasks
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from server.logger import logger
 from server.maintenance_task_processor.org_budget_maintenance_processor import (
     OrgBudgetMaintenanceProcessor,
@@ -30,6 +31,8 @@ def _eligible_budget_org_ids(session) -> list[str]:
 
 
 def enqueue_budget_tasks(batch_size: int = BATCH_SIZE) -> int:
+    if not is_litellm_enabled():
+        return 0
     with session_maker() as session:
         processor_type = (
             f'{OrgBudgetMaintenanceProcessor.__module__}.'

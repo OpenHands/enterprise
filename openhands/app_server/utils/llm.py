@@ -7,6 +7,10 @@ with warnings.catch_warnings():
     import litellm
     from litellm import LlmProviders, ProviderConfigManager, get_llm_provider
 
+from openhands.app_server.utils.litellm_integration import (
+    is_litellm_enabled,
+    is_managed_llm,
+)
 from openhands.app_server.utils.logger import openhands_logger as logger
 
 # ---------------------------------------------------------------------------
@@ -157,7 +161,7 @@ def resolve_llm_base_url(
         return base_url
     if not model:
         return None
-    if is_openhands_model(model):
+    if model.startswith(('openhands/', 'litellm_proxy/')):
         return managed_proxy_url
     try:
         return get_provider_api_base(model)
@@ -229,6 +233,8 @@ def get_openhands_models(
     Returns:
         A list such as ``["openhands/claude-opus-4-6", ...]``.
     """
+    if not is_litellm_enabled():
+        return []
     return verified_models if verified_models is not None else OPENHANDS_MODELS
 
 
@@ -323,11 +329,21 @@ def get_supported_llm_models(
         openhands_models + CLARIFAI_MODELS + [_assign_provider(m) for m in model_list]
     )
     unique_models = sorted(set(all_models))
+    if not is_litellm_enabled():
+        unique_models = [model for model in unique_models if not is_managed_llm(model)]
+        legacy_verified_openhands_models = []
+        free_models = []
+        if is_managed_llm(default_model):
+            default_model = None
 
     return ModelsResponse(
         models=unique_models,
         verified_models=_derive_verified_models(legacy_verified_openhands_models),
-        verified_providers=VERIFIED_PROVIDERS,
+        verified_providers=[
+            provider
+            for provider in VERIFIED_PROVIDERS
+            if is_litellm_enabled() or provider not in ('openhands', 'litellm_proxy')
+        ],
         default_model=default_model,
         free_models=free_models or [],
     )

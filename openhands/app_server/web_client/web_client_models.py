@@ -13,6 +13,7 @@ from openhands.app_server.web_client.web_client_deployment_mode import (
 
 
 class WebClientFeatureFlags(BaseModel):
+    enable_litellm: bool = True
     enable_billing: bool = False
     hide_llm_settings: bool = False
     enable_jira: bool = False

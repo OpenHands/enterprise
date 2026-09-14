@@ -357,7 +357,7 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
         return results
 
     async def save_app_conversation_info(
-        self, info: AppConversationInfo
+        self, info: AppConversationInfo, *, from_sandbox: bool = False
     ) -> AppConversationInfo:
         """Save conversation info and create/update SAAS metadata with user_id and org_id."""
         if isinstance(self.user_context, SandboxUserContext):
@@ -392,7 +392,7 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
                 raise AuthError()
 
         # Save the base conversation metadata
-        await super().save_app_conversation_info(info)
+        await super().save_app_conversation_info(info, from_sandbox=from_sandbox)
 
         # Get current user_id for SAAS metadata
         # Fall back to info.created_by_user_id for webhook callbacks (which use ADMIN context)

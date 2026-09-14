@@ -273,6 +273,10 @@ class DefaultOrgBootstrapService:
     @staticmethod
     async def _create_member_litellm_api_key(org_id: UUID, user_id: UUID) -> str:
         """Provision org-scoped LiteLLM access and return the member API key."""
+        from openhands.app_server.utils.litellm_integration import is_litellm_enabled
+
+        if not is_litellm_enabled():
+            return ''
         settings = await OrgService.create_litellm_integration(org_id, str(user_id))
         llm_api_key = settings.agent_settings.llm.api_key
         if isinstance(llm_api_key, SecretStr):

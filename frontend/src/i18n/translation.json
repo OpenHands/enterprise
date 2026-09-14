@@ -29878,5 +29878,14 @@
   },
   "NATIVE_GIT$DISCONNECT_HELP": {
     "en": "Disconnect before switching provider accounts. Disconnecting keeps you signed in to OpenHands."
+  },
+  "BUDGETS$LITELLM_REQUIRED": {
+    "en": "You must enable the LiteLLM integration to use Budgets"
+  },
+  "SETTINGS$MANAGED_MODEL_UNAVAILABLE": {
+    "en": "This LLM configuration requires the LiteLLM integration. Choose a direct provider or update the base URL."
+  },
+  "SETTINGS$PROFILE_UNAVAILABLE_BADGE": {
+    "en": "Unavailable"
   }
 }

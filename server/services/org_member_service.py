@@ -2,6 +2,7 @@
 
 from uuid import UUID
 
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.constants import ROLE_ADMIN, ROLE_OWNER
 from server.routes.org_models import (
@@ -251,25 +252,28 @@ class OrgMemberService:
             # Fall back to the user's personal workspace (org.id == user.id)
             await UserStore.update_current_org(str(target_user_id), target_user_id)
 
-        # DB removal already succeeded; keep LiteLLM eventually consistent even if this fails.
-        try:
-            await LiteLlmManager.remove_user_from_team(str(target_user_id), str(org_id))
-            logger.info(
-                'Successfully removed user from LiteLLM team',
-                extra={
-                    'user_id': str(target_user_id),
-                    'org_id': str(org_id),
-                },
-            )
-        except Exception as e:
-            logger.warning(
-                'Failed to remove user from LiteLLM team',
-                extra={
-                    'user_id': str(target_user_id),
-                    'org_id': str(org_id),
-                    'error': str(e),
-                },
-            )
+        if is_litellm_enabled():
+            # DB removal already succeeded; keep LiteLLM eventually consistent even if this fails.
+            try:
+                await LiteLlmManager.remove_user_from_team(
+                    str(target_user_id), str(org_id)
+                )
+                logger.info(
+                    'Successfully removed user from LiteLLM team',
+                    extra={
+                        'user_id': str(target_user_id),
+                        'org_id': str(org_id),
+                    },
+                )
+            except Exception as e:
+                logger.warning(
+                    'Failed to remove user from LiteLLM team',
+                    extra={
+                        'user_id': str(target_user_id),
+                        'org_id': str(org_id),
+                        'error': str(e),
+                    },
+                )
 
         return True, None
 

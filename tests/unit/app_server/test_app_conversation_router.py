@@ -7,6 +7,7 @@ focusing on UUID string parsing, validation, and error handling.
 import json
 import sys
 import types
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -37,8 +38,8 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     _finalize_sandbox_delete,
     _release_daily_conversation_quota,
     _reserve_daily_conversation_quota,
-    _resolve_acp_agent_settings,
     _resolve_file_path,
+    _resolve_start_agent_settings,
     _stream_app_conversation_start,
     _validate_codex_credentials,
     batch_get_app_conversations,
@@ -65,6 +66,7 @@ from openhands.app_server.secrets.file_secrets_store import FileSecretsStore
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.settings.settings_models import Settings
+from openhands.app_server.user.user_context import UserContext
 from openhands.sdk.llm import LLM
 from openhands.sdk.settings import (
     ACP_PROVIDERS,
@@ -178,19 +180,19 @@ async def test_codex_preflight_skips_non_codex_agents(
     [OpenHandsAgentSettings(), None],
 )
 @pytest.mark.asyncio
-async def test_resolve_acp_agent_settings_returns_none_for_non_acp_agents(
-    agent_settings,
-):
+async def test_resolve_start_agent_settings_preserves_non_acp_agents(
+    agent_settings: OpenHandsAgentSettings | None,
+) -> None:
     user_context = MagicMock()
     user_context.get_user_info = AsyncMock(
         return_value=SimpleNamespace(agent_settings=agent_settings)
     )
 
-    resolved = await _resolve_acp_agent_settings(
+    resolved = await _resolve_start_agent_settings(
         AppConversationStartRequest(), user_context
     )
 
-    assert resolved is None
+    assert resolved is agent_settings
 
 
 @pytest.mark.parametrize('acp_server', SURFACED_ACP_PROVIDERS + ('custom',))
@@ -335,15 +337,15 @@ async def test_release_quota_uses_enterprise_service_and_swallows_errors():
     ],
 )
 async def test_consume_remaining_handles_terminal_quota_status(
-    status, expected_releases
-):
+    status: AppConversationStartTaskStatus, expected_releases: int
+) -> None:
     task = AppConversationStartTask(
         created_by_user_id='user-id',
         request=AppConversationStartRequest(),
         status=status,
     )
 
-    async def tasks():
+    async def tasks() -> AsyncIterator[AppConversationStartTask]:
         yield task
 
     db_session = AsyncMock()
@@ -487,14 +489,14 @@ async def test_stream_start_releases_quota_on_failure():
 
 
 @pytest.mark.asyncio
-async def test_stream_start_endpoint_hands_reservation_to_service():
+async def test_stream_start_endpoint_hands_reservation_to_service() -> None:
     user_context = MagicMock()
     user_context.get_user_id = AsyncMock(return_value='user-id')
     user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
     secrets_store = MagicMock()
     with (
         patch(
-            'openhands.app_server.app_conversation.app_conversation_router._validate_acp_start',
+            'openhands.app_server.app_conversation.app_conversation_router._validate_conversation_start',
             new_callable=AsyncMock,
         ),
         patch(
@@ -628,11 +630,13 @@ async def test_export_conversation_maps_service_errors(error, status_code):
 
 
 @pytest.mark.asyncio
-async def test_start_app_conversation_returns_first_task_and_schedules_remainder():
+async def test_start_app_conversation_returns_first_task_and_schedules_remainder() -> (
+    None
+):
     start_request = AppConversationStartRequest()
     task = AppConversationStartTask(created_by_user_id='user-id', request=start_request)
 
-    async def tasks():
+    async def tasks() -> AsyncIterator[AppConversationStartTask]:
         yield task
 
     service = MagicMock()
@@ -645,7 +649,7 @@ async def test_start_app_conversation_returns_first_task_and_schedules_remainder
 
     with (
         patch(
-            'openhands.app_server.app_conversation.app_conversation_router._validate_acp_start',
+            'openhands.app_server.app_conversation.app_conversation_router._validate_conversation_start',
             new_callable=AsyncMock,
         ),
         patch(
@@ -676,10 +680,13 @@ async def test_start_app_conversation_returns_first_task_and_schedules_remainder
 
 
 @pytest.mark.asyncio
-async def test_start_app_conversation_closes_resources_on_failure():
-    async def tasks():
-        raise RuntimeError('start failed')
-        yield
+async def test_start_app_conversation_closes_resources_on_failure() -> None:
+    async def tasks(fail: bool = True) -> AsyncIterator[AppConversationStartTask]:
+        if fail:
+            raise RuntimeError('start failed')
+        yield AppConversationStartTask(
+            created_by_user_id='user', request=AppConversationStartRequest()
+        )
 
     service = MagicMock()
     service.start_app_conversation = MagicMock(return_value=tasks())
@@ -687,14 +694,14 @@ async def test_start_app_conversation_closes_resources_on_failure():
     httpx_client = AsyncMock()
 
     with patch(
-        'openhands.app_server.app_conversation.app_conversation_router._validate_acp_start',
+        'openhands.app_server.app_conversation.app_conversation_router._validate_conversation_start',
         new_callable=AsyncMock,
     ):
         with pytest.raises(RuntimeError, match='start failed'):
             await start_app_conversation(
                 SimpleNamespace(state=SimpleNamespace()),
                 AppConversationStartRequest(),
-                MagicMock(),
+                AsyncMock(spec=UserContext, get_user_id=AsyncMock(return_value=None)),
                 MagicMock(),
                 db_session,
                 httpx_client,
@@ -1100,7 +1107,7 @@ def _make_httpx_client(post_return=None, post_side_effect=None) -> AsyncMock:
 class TestSwitchConversationProfile:
     """Test suite for the /switch_profile endpoint."""
 
-    async def test_returns_404_when_user_settings_missing(self):
+    async def test_returns_404_when_user_settings_missing(self) -> None:
         """No user_settings → 404 (precondition for profile lookup)."""
         with pytest.raises(HTTPException) as exc_info:
             await switch_conversation_profile(
@@ -1109,7 +1116,7 @@ class TestSwitchConversationProfile:
                 user_settings=None,
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=MagicMock(),
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=_make_httpx_client(),
             )
@@ -1117,7 +1124,7 @@ class TestSwitchConversationProfile:
         assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
         assert 'Settings not found' in exc_info.value.detail
 
-    async def test_returns_404_when_profile_not_found(self):
+    async def test_returns_404_when_profile_not_found(self) -> None:
         """Unknown profile name → 404 with the offending name in detail."""
         settings = _make_settings_with_profile(profile_name='default')
 
@@ -1128,7 +1135,7 @@ class TestSwitchConversationProfile:
                 user_settings=settings,
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=MagicMock(),
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=_make_httpx_client(),
             )
@@ -1136,7 +1143,7 @@ class TestSwitchConversationProfile:
         assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
         assert "'ghost'" in exc_info.value.detail
 
-    async def test_returns_409_when_sandbox_paused(self):
+    async def test_returns_409_when_sandbox_paused(self) -> None:
         """_get_agent_server_context returns None for paused sandboxes → 409."""
         settings = _make_settings_with_profile()
 
@@ -1152,7 +1159,9 @@ class TestSwitchConversationProfile:
                     user_settings=settings,
                     app_conversation_service=MagicMock(),
                     app_conversation_info_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=_make_httpx_client(),
                 )
@@ -1160,7 +1169,7 @@ class TestSwitchConversationProfile:
         assert exc_info.value.status_code == status.HTTP_409_CONFLICT
         assert 'paused' in exc_info.value.detail.lower()
 
-    async def test_propagates_status_when_conversation_not_reachable(self):
+    async def test_propagates_status_when_conversation_not_reachable(self) -> None:
         """A JSONResponse from the helper is mirrored as an HTTPException."""
         settings = _make_settings_with_profile()
         helper_response = JSONResponse(
@@ -1180,14 +1189,16 @@ class TestSwitchConversationProfile:
                     user_settings=settings,
                     app_conversation_service=MagicMock(),
                     app_conversation_info_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=_make_httpx_client(),
                 )
 
         assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
-    async def test_returns_502_when_agent_server_returns_http_error(self):
+    async def test_returns_502_when_agent_server_returns_http_error(self) -> None:
         """A 4xx/5xx from switch_llm is folded into a 502."""
         conv_id = uuid4()
         settings = _make_settings_with_profile()
@@ -1214,7 +1225,9 @@ class TestSwitchConversationProfile:
                     user_settings=settings,
                     app_conversation_service=MagicMock(),
                     app_conversation_info_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=client,
                 )
@@ -1222,7 +1235,7 @@ class TestSwitchConversationProfile:
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
         assert '500' in exc_info.value.detail
 
-    async def test_returns_502_when_agent_server_unreachable(self):
+    async def test_returns_502_when_agent_server_unreachable(self) -> None:
         """A network-level RequestError is folded into a 502."""
         conv_id = uuid4()
         settings = _make_settings_with_profile()
@@ -1243,7 +1256,9 @@ class TestSwitchConversationProfile:
                     user_settings=settings,
                     app_conversation_service=MagicMock(),
                     app_conversation_info_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=client,
                 )
@@ -1251,7 +1266,7 @@ class TestSwitchConversationProfile:
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
         assert 'reach agent server' in exc_info.value.detail.lower()
 
-    async def test_success_persists_new_llm_model_on_conversation(self):
+    async def test_success_persists_new_llm_model_on_conversation(self) -> None:
         """Happy path: agent-server returns 200, llm_model is saved."""
         conv_id = uuid4()
         new_model = 'openai/gpt-5'
@@ -1286,13 +1301,15 @@ class TestSwitchConversationProfile:
                 user_settings=settings,
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
 
         info_service.save_app_conversation_info.assert_awaited_once()
-        saved_info = info_service.save_app_conversation_info.await_args[0][0]
+        save_args = info_service.save_app_conversation_info.await_args
+        assert save_args is not None
+        saved_info = save_args[0][0]
         assert saved_info.llm_model == new_model
 
         # The agent-server payload carries the new profile's LLM under the
@@ -1303,7 +1320,7 @@ class TestSwitchConversationProfile:
         assert post_kwargs['json']['llm']['usage_id'].startswith('profile:gpt-5:')
         assert post_kwargs['json']['llm']['stream'] is True
 
-    async def test_falls_back_to_settings_api_key_when_profile_has_none(self):
+    async def test_falls_back_to_settings_api_key_when_profile_has_none(self) -> None:
         """SaaS: managed profiles persist no key, so the switch must source the
         effective ``agent_settings.llm.api_key`` — otherwise the agent server
         calls the litellm proxy unauthenticated and the request 401s.
@@ -1334,7 +1351,7 @@ class TestSwitchConversationProfile:
                 user_settings=settings,
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
@@ -1342,13 +1359,14 @@ class TestSwitchConversationProfile:
         post_kwargs = client.post.await_args.kwargs
         assert post_kwargs['json']['llm']['api_key'] == 'managed-proxy-key'
 
-    async def test_keeps_profile_api_key_when_profile_has_one(self):
+    async def test_keeps_profile_api_key_when_profile_has_one(self) -> None:
         """A profile that carries its own key (BYOR / local GUI) is used as-is
         and never overridden by the settings fallback.
         """
         conv_id = uuid4()
         settings = _make_settings_for_switch(
             profile_name='managed',
+            model='anthropic/claude-sonnet-4-5',
             profile_api_key='byor-key',
             settings_api_key='should-not-be-used',
         )
@@ -1372,7 +1390,7 @@ class TestSwitchConversationProfile:
                 user_settings=settings,
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
@@ -1380,7 +1398,7 @@ class TestSwitchConversationProfile:
         post_kwargs = client.post.await_args.kwargs
         assert post_kwargs['json']['llm']['api_key'] == 'byor-key'
 
-    async def test_success_skips_persist_when_model_unchanged(self):
+    async def test_success_skips_persist_when_model_unchanged(self) -> None:
         """If the conversation already records the new model, save is skipped."""
         conv_id = uuid4()
         same_model = 'openai/gpt-5'
@@ -1415,14 +1433,14 @@ class TestSwitchConversationProfile:
                 user_settings=settings,
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
 
         info_service.save_app_conversation_info.assert_not_awaited()
 
-    async def test_success_swallows_persistence_failures(self):
+    async def test_success_swallows_persistence_failures(self) -> None:
         """A save failure is logged but does not fail the request."""
         conv_id = uuid4()
         settings = _make_settings_with_profile(model='openai/gpt-5')
@@ -1451,7 +1469,7 @@ class TestSwitchConversationProfile:
                 user_settings=settings,
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
@@ -1477,7 +1495,7 @@ class TestGitProxyEndpoints:
     and forward the GET server-side using the sandbox's session API key.
     """
 
-    async def test_changes_forwards_path_ref_and_session_key_to_runtime(self):
+    async def test_changes_forwards_path_ref_and_session_key_to_runtime(self) -> None:
         """Happy path: GET /git/changes calls runtime /api/git/changes with
         the right URL, params, X-Session-API-Key header, and returns the
         upstream JSON unchanged."""
@@ -1504,7 +1522,7 @@ class TestGitProxyEndpoints:
                 path='/workspace/project',
                 ref='HEAD',
                 app_conversation_service=MagicMock(),
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
@@ -1518,7 +1536,7 @@ class TestGitProxyEndpoints:
             timeout=30.0,
         )
 
-    async def test_diff_routes_to_diff_runtime_path(self):
+    async def test_diff_routes_to_diff_runtime_path(self) -> None:
         """``/git/diff`` proxies to ``/api/git/diff`` (not /changes)."""
         # Arrange
         conv_id = uuid4()
@@ -1541,7 +1559,7 @@ class TestGitProxyEndpoints:
                 path='/workspace/project/file.py',
                 ref=None,
                 app_conversation_service=MagicMock(),
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
@@ -1554,7 +1572,7 @@ class TestGitProxyEndpoints:
             timeout=30.0,
         )
 
-    async def test_returns_404_when_conversation_not_reachable(self):
+    async def test_returns_404_when_conversation_not_reachable(self) -> None:
         """``_get_agent_server_context`` JSONResponse → mirrored as
         ``HTTPException`` so the cloud surface returns the same status."""
         # Arrange
@@ -1575,14 +1593,16 @@ class TestGitProxyEndpoints:
                     path='/workspace/project',
                     ref=None,
                     app_conversation_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=_make_get_httpx_client(),
                 )
 
         assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
-    async def test_returns_409_when_sandbox_paused(self):
+    async def test_returns_409_when_sandbox_paused(self) -> None:
         """``_get_agent_server_context`` None (paused) → 409 Conflict."""
         # Act + Assert
         with patch(
@@ -1596,7 +1616,9 @@ class TestGitProxyEndpoints:
                     path='/workspace/project',
                     ref=None,
                     app_conversation_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=_make_get_httpx_client(),
                 )
@@ -1604,7 +1626,7 @@ class TestGitProxyEndpoints:
         assert exc_info.value.status_code == status.HTTP_409_CONFLICT
         assert 'paused' in exc_info.value.detail.lower()
 
-    async def test_returns_502_when_runtime_returns_http_error(self):
+    async def test_returns_502_when_runtime_returns_http_error(self) -> None:
         """A 4xx/5xx from the runtime is folded into a 502 with the upstream
         status code preserved in the detail."""
         # Arrange
@@ -1634,7 +1656,9 @@ class TestGitProxyEndpoints:
                     path='/workspace/project',
                     ref=None,
                     app_conversation_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=client,
                 )
@@ -1642,7 +1666,7 @@ class TestGitProxyEndpoints:
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
         assert '500' in exc_info.value.detail
 
-    async def test_returns_502_when_runtime_unreachable(self):
+    async def test_returns_502_when_runtime_unreachable(self) -> None:
         """A network-level RequestError is folded into a 502."""
         # Arrange
         conv_id = uuid4()
@@ -1663,7 +1687,9 @@ class TestGitProxyEndpoints:
                     path='/workspace/project',
                     ref=None,
                     app_conversation_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=client,
                 )
@@ -1671,7 +1697,7 @@ class TestGitProxyEndpoints:
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
         assert 'reach agent server' in exc_info.value.detail.lower()
 
-    async def test_returns_502_when_runtime_returns_non_json(self):
+    async def test_returns_502_when_runtime_returns_non_json(self) -> None:
         """A 200 OK whose body fails to decode (``json.JSONDecodeError``) is
         folded into a 502 rather than escaping as an unhandled 500."""
         # Arrange
@@ -1696,7 +1722,9 @@ class TestGitProxyEndpoints:
                     path='/workspace/project',
                     ref=None,
                     app_conversation_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=client,
                 )
@@ -1704,7 +1732,7 @@ class TestGitProxyEndpoints:
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
         assert 'unexpected response' in exc_info.value.detail.lower()
 
-    async def test_diff_returns_409_when_sandbox_paused(self):
+    async def test_diff_returns_409_when_sandbox_paused(self) -> None:
         """Confirms ``/git/diff`` shares the same error wiring as ``/changes``:
         a paused sandbox (helper ``None``) surfaces as 409 Conflict."""
         # Act + Assert
@@ -1719,7 +1747,9 @@ class TestGitProxyEndpoints:
                     path='/workspace/project/file.py',
                     ref=None,
                     app_conversation_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=_make_get_httpx_client(),
                 )
@@ -1749,7 +1779,7 @@ class TestListConversationFiles:
         )
         return response
 
-    async def test_forwards_find_command_and_normalizes_paths(self):
+    async def test_forwards_find_command_and_normalizes_paths(self) -> None:
         """Happy path: POSTs the bash `find` to the runtime with the working
         dir as cwd and the session key, then returns relative, de-duped,
         `./`-stripped paths."""
@@ -1770,7 +1800,7 @@ class TestListConversationFiles:
                 conversation_id=conv_id,
                 path='/workspace/project',
                 app_conversation_service=MagicMock(),
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
@@ -1782,7 +1812,7 @@ class TestListConversationFiles:
         assert 'find .' in call.kwargs['json']['command']
         assert call.kwargs['headers'] == {'X-Session-API-Key': 'sess-key'}
 
-    async def test_returns_empty_list_on_nonzero_exit(self):
+    async def test_returns_empty_list_on_nonzero_exit(self) -> None:
         """A non-zero exit (e.g. missing directory) yields [] rather than an
         error the UI would surface."""
         conv_id = uuid4()
@@ -1800,14 +1830,14 @@ class TestListConversationFiles:
                 conversation_id=conv_id,
                 path='/workspace/project',
                 app_conversation_service=MagicMock(),
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
 
         assert result == []
 
-    async def test_returns_404_when_conversation_not_reachable(self):
+    async def test_returns_404_when_conversation_not_reachable(self) -> None:
         """A JSONResponse from the context helper is mirrored as an
         HTTPException with the same status."""
         helper_response = JSONResponse(
@@ -1824,14 +1854,16 @@ class TestListConversationFiles:
                     conversation_id=uuid4(),
                     path='/workspace/project',
                     app_conversation_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=_make_httpx_client(),
                 )
 
         assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
-    async def test_returns_409_when_sandbox_paused(self):
+    async def test_returns_409_when_sandbox_paused(self) -> None:
         """A paused sandbox (context helper None) surfaces as 409 Conflict."""
         with patch(
             'openhands.app_server.app_conversation.app_conversation_router.'
@@ -1843,7 +1875,9 @@ class TestListConversationFiles:
                     conversation_id=uuid4(),
                     path='/workspace/project',
                     app_conversation_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=_make_httpx_client(),
                 )
@@ -1851,7 +1885,7 @@ class TestListConversationFiles:
         assert exc_info.value.status_code == status.HTTP_409_CONFLICT
         assert 'paused' in exc_info.value.detail.lower()
 
-    async def test_returns_502_when_runtime_unreachable(self):
+    async def test_returns_502_when_runtime_unreachable(self) -> None:
         """A network-level RequestError is folded into a 502."""
         conv_id = uuid4()
         ctx = _make_agent_server_context(conv_id)
@@ -1869,14 +1903,16 @@ class TestListConversationFiles:
                     conversation_id=conv_id,
                     path='/workspace/project',
                     app_conversation_service=MagicMock(),
-                    sandbox_service=MagicMock(),
+                    sandbox_service=MagicMock(
+                        validate_resume_configuration=AsyncMock()
+                    ),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=client,
                 )
 
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
 
-    async def test_resolves_workspace_dir_when_path_omitted(self):
+    async def test_resolves_workspace_dir_when_path_omitted(self) -> None:
         """With no ``path``, the cwd is derived from the sandbox spec's
         ``working_dir`` and the conversation's selected repository."""
         conv_id = uuid4()
@@ -1896,7 +1932,7 @@ class TestListConversationFiles:
                 conversation_id=conv_id,
                 path=None,
                 app_conversation_service=MagicMock(),
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
@@ -1904,7 +1940,7 @@ class TestListConversationFiles:
         call = client.post.await_args
         assert call.kwargs['json']['cwd'] == '/workspace/enterprise'
 
-    async def test_falls_back_to_resolved_dir_when_path_does_not_exist(self):
+    async def test_falls_back_to_resolved_dir_when_path_does_not_exist(self) -> None:
         """The regression case: the frontend passes a ``path`` rooted in its
         ``/workspace/project`` convention, but the runtime cloned the repo
         under a different working dir (``/workspace/enterprise`` here). The
@@ -1929,7 +1965,7 @@ class TestListConversationFiles:
                 conversation_id=conv_id,
                 path='/workspace/project',
                 app_conversation_service=MagicMock(),
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
@@ -1940,7 +1976,7 @@ class TestListConversationFiles:
         assert call.kwargs['json']['cwd'] == '/workspace/enterprise'
         assert result == ['README.md']
 
-    async def test_honors_subdir_of_resolved_workspace(self):
+    async def test_honors_subdir_of_resolved_workspace(self) -> None:
         """A ``path`` that descends into the resolved project dir is used
         as-is, so listing a subdirectory of the workspace still works."""
         conv_id = uuid4()
@@ -1960,7 +1996,7 @@ class TestListConversationFiles:
                 conversation_id=conv_id,
                 path='/workspace/enterprise/frontend/src',
                 app_conversation_service=MagicMock(),
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
@@ -1968,7 +2004,7 @@ class TestListConversationFiles:
         call = client.post.await_args
         assert call.kwargs['json']['cwd'] == '/workspace/enterprise/frontend/src'
 
-    async def test_resolves_dir_without_selected_repository(self):
+    async def test_resolves_dir_without_selected_repository(self) -> None:
         """With no selected repository the project dir is the bare working
         dir, and a stale caller path is replaced with it."""
         conv_id = uuid4()
@@ -1986,7 +2022,7 @@ class TestListConversationFiles:
                 conversation_id=conv_id,
                 path='/some/other/place',
                 app_conversation_service=MagicMock(),
-                sandbox_service=MagicMock(),
+                sandbox_service=MagicMock(validate_resume_configuration=AsyncMock()),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )

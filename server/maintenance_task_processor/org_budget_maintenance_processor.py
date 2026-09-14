@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from server.logger import logger
 from server.services.org_budget_service import OrgBudgetService
 from storage.database import a_session_maker
@@ -11,7 +12,11 @@ from storage.maintenance_task import MaintenanceTask, MaintenanceTaskProcessor
 class OrgBudgetMaintenanceProcessor(MaintenanceTaskProcessor):
     org_ids: list[str]
 
-    async def __call__(self, task: MaintenanceTask) -> dict:
+    async def __call__(
+        self, task: MaintenanceTask
+    ) -> dict[str, int | str | list[dict[str, str]]]:
+        if not is_litellm_enabled():
+            return {'processed': 0, 'error_count': 0, 'skipped': 'litellm_disabled'}
         processed = 0
         errors: list[dict[str, str]] = []
 

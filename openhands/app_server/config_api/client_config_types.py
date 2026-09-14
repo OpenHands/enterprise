@@ -19,6 +19,7 @@ class AuthCapabilities(TypedDict):
 
 
 class ClientFeatureFlags(TypedDict):
+    ENABLE_LITELLM: bool
     ENABLE_BILLING: bool
     HIDE_LLM_SETTINGS: bool
     ENABLE_JIRA: NotRequired[bool]

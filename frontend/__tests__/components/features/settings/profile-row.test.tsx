@@ -68,3 +68,7 @@ describe("ProfileRow", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+vi.mock("#/hooks/query/use-config", () => ({
+  useConfig: () => ({ data: { feature_flags: { enable_litellm: true } } }),
+}));

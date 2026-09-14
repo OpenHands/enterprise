@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useConfig } from "#/hooks/query/use-config";
+import { isManagedLlmModel } from "#/utils/litellm-capability";
 import { ProfileActionsMenu } from "#/components/features/settings/profile-actions-menu";
 import { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
 import { I18nKey } from "#/i18n/declaration";
@@ -26,8 +28,12 @@ export function ProfileRow({
   onDelete,
   isActivating,
   canManage = true,
-}: ProfileRowProps) {
+}: ProfileRowProps): React.JSX.Element {
   const { t } = useTranslation();
+  const { data: config } = useConfig();
+  const unavailable =
+    config?.feature_flags?.enable_litellm === false &&
+    (profile.requires_litellm || isManagedLlmModel(profile.model ?? ""));
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -50,7 +56,12 @@ export function ProfileRow({
             {profile.model}
           </Typography.Text>
         ) : null}
-        {isActive && (
+        {unavailable && (
+          <span className="text-xs text-amber-400">
+            {t(I18nKey.SETTINGS$MANAGED_MODEL_UNAVAILABLE)}
+          </span>
+        )}
+        {isActive && !unavailable && (
           <Typography.Text
             className="text-xs bg-primary text-[#0D0F11] font-semibold rounded-full px-2 py-0.5 whitespace-nowrap self-start sm:self-auto"
             testId="profile-active-badge"
@@ -77,7 +88,7 @@ export function ProfileRow({
               onSetActive={() => onActivate(profile.name)}
               onDelete={() => onDelete(profile)}
               isActive={isActive}
-              isActivating={isActivating}
+              isActivating={isActivating || unavailable}
               onClose={() => setMenuOpen(false)}
             />
           )}

@@ -1,7 +1,7 @@
 /* eslint-disable i18next/no-literal-string */
 import React, { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { organizationService } from "#/api/organization-service/organization-service.api";
+import { useBudgetSettings } from "#/hooks/query/use-budget-settings";
+import { useBudgetMutations } from "#/hooks/mutation/use-budget-mutations";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { useConfig } from "#/hooks/query/use-config";
 import { useDebounce } from "#/hooks/use-debounce";
@@ -13,9 +13,8 @@ import {
 } from "./budgets-tabs";
 import type { BudgetThreshold, BudgetUserRow } from "./budgets-tabs";
 
-export function Budgets() {
+export function Budgets(): React.JSX.Element {
   const { organizationId } = useSelectedOrganizationId();
-  const queryClient = useQueryClient();
 
   const { data: config } = useConfig();
   const slackIntegrationEnabled = Boolean(config?.slack_enabled);
@@ -31,25 +30,14 @@ export function Budgets() {
   const usersSearch = debouncedSearchQuery.trim();
   const usersStatus = statusFilter === "all" ? undefined : statusFilter;
 
-  const { data: budgetData, isLoading } = useQuery({
-    queryKey: [
-      "organizations",
-      "budgets",
-      organizationId,
-      usersPage,
-      usersSearch,
-      usersStatus,
-    ],
-    queryFn: () =>
-      organizationService.getBudgetSettings({
-        orgId: organizationId!,
-        usersPage,
-        usersPerPage: USERS_PER_PAGE,
-        usersSearch: usersSearch || undefined,
-        usersStatus,
-      }),
-    enabled: !!organizationId,
+  const { data: budgetData, isLoading } = useBudgetSettings({
+    usersPage,
+    usersPerPage: USERS_PER_PAGE,
+    usersSearch: usersSearch || undefined,
+    usersStatus,
   });
+  const { updateBudgets, upsertOverride, deleteOverride } =
+    useBudgetMutations();
 
   useEffect(() => {
     setUsersPage(1);
@@ -58,60 +46,6 @@ export function Budgets() {
   useEffect(() => {
     setUsersPage(1);
   }, [debouncedSearchQuery, statusFilter]);
-
-  const updateBudgets = useMutation({
-    mutationFn: (payload: {
-      enabled?: boolean | null;
-      monthly_limit?: number | null;
-      reset_day?: number | null;
-      default_user_monthly_limit?: number | null;
-      slack_channel?: string | null;
-      slack_team_id?: string | null;
-      thresholds?:
-        | {
-            percentage: number;
-            email_enabled: boolean;
-            slack_enabled: boolean;
-          }[]
-        | null;
-    }) =>
-      organizationService.updateBudgetSettings({
-        orgId: organizationId!,
-        payload,
-      }),
-    onSettled: () =>
-      queryClient.invalidateQueries({
-        queryKey: ["organizations", "budgets", organizationId],
-      }),
-  });
-
-  const upsertOverride = useMutation({
-    mutationFn: (params: {
-      userId: string;
-      payload: { monthly_limit?: number | null; is_disabled: boolean };
-    }) =>
-      organizationService.upsertBudgetOverride({
-        orgId: organizationId!,
-        userId: params.userId,
-        payload: params.payload,
-      }),
-    onSettled: () =>
-      queryClient.invalidateQueries({
-        queryKey: ["organizations", "budgets", organizationId],
-      }),
-  });
-
-  const deleteOverride = useMutation({
-    mutationFn: (userId: string) =>
-      organizationService.deleteBudgetOverride({
-        orgId: organizationId!,
-        userId,
-      }),
-    onSettled: () =>
-      queryClient.invalidateQueries({
-        queryKey: ["organizations", "budgets", organizationId],
-      }),
-  });
 
   const [orgBudgetEnabled, setOrgBudgetEnabled] = useState(false);
   const [monthlyLimit, setMonthlyLimit] = useState("");

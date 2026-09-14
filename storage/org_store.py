@@ -1,10 +1,10 @@
 """Store class for managing organizations."""
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 from uuid import UUID
 
-from pydantic import SecretStr
+from pydantic import JsonValue, SecretStr, TypeAdapter
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,12 @@ from openhands.app_server.settings.settings_models import (
     _load_persisted_conversation_settings,
 )
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.app_server.utils.litellm_integration import (
+    is_litellm_enabled,
+    llm_credentials_compatible,
+    uses_managed_gateway,
+    validate_agent_llms,
+)
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.settings import (
@@ -81,6 +87,8 @@ class OrgStore:
     @staticmethod
     async def _delete_litellm_user_best_effort(user_id: str, org_id: UUID) -> None:
         """Delete the LiteLLM user record without blocking org deletion."""
+        if not is_litellm_enabled():
+            return
         try:
             await LiteLlmManager.delete_user(user_id)
         except Exception as exc:
@@ -255,8 +263,8 @@ class OrgStore:
     async def get_org_by_id(org_id: UUID) -> Org | None:
         """Get organization by ID."""
         async with a_session_maker() as session:
-            result = await session.execute(select(Org).filter(Org.id == org_id))
-            org = result.scalars().first()
+            org_result = await session.execute(select(Org).filter(Org.id == org_id))
+            org = org_result.scalars().first()
         return await OrgStore._validate_org_version(org)
 
     @staticmethod
@@ -305,8 +313,8 @@ class OrgStore:
                 logger.warning(f'User not found for ID {keycloak_user_id}')
                 return None
             org_id = user.current_org_id
-            result = await session.execute(select(Org).filter(Org.id == org_id))
-            org = result.scalars().first()
+            org_result = await session.execute(select(Org).filter(Org.id == org_id))
+            org = org_result.scalars().first()
             if not org:
                 logger.warning(
                     f'Org not found for ID {org_id} as the current org for user {keycloak_user_id}'
@@ -339,8 +347,8 @@ class OrgStore:
         unique index allows at most one default org).
         """
         async with a_session_maker() as session:
-            result = await session.execute(select(Org).filter(Org.id == org_id))
-            org = result.scalars().first()
+            org_result = await session.execute(select(Org).filter(Org.id == org_id))
+            org = org_result.scalars().first()
             if not org:
                 return None
             if not org.is_default:
@@ -398,24 +406,18 @@ class OrgStore:
             base_url.rstrip('/') if isinstance(base_url, str) else None
         )
 
-        if normalized_base_url == managed_base_url:
+        if managed_base_url and normalized_base_url == managed_base_url:
             return True
-        # Public OpenHands provider model with no explicit (or a managed-host)
-        # base_url is managed.
-        if is_openhands_model(model):
-            return normalized_base_url is None or (
-                'all-hands.dev' in normalized_base_url.lower()
-            )
-        return False
+        return uses_managed_gateway(model, normalized_base_url)
 
     @staticmethod
     async def _validate_org_version(org: Org | None) -> Org | None:
         """Check if we need to update org version."""
         if org and org.org_version < ORG_SETTINGS_VERSION:
-            org_kwargs: dict[str, Any] = {'org_version': ORG_SETTINGS_VERSION}
+            org_kwargs: dict[str, JsonValue] = {'org_version': ORG_SETTINGS_VERSION}
             # Only rewrite the default LLM config for orgs still on the managed
             # default; BYOK orgs keep their custom model/base_url on upgrade.
-            if OrgStore._uses_managed_default_llm(org):
+            if is_litellm_enabled() and OrgStore._uses_managed_default_llm(org):
                 org_kwargs['agent_settings_diff'] = {
                     'llm': {
                         'model': get_default_llm_model(),
@@ -427,7 +429,7 @@ class OrgStore:
             # allowlist (the version bump is the once-per-org trigger). A
             # failed repair leaves the org upgraded but still 403ing exactly as
             # before, and is never retried on later loads.
-            if org is not None:
+            if org is not None and is_litellm_enabled():
                 try:
                     await LiteLlmManager.ensure_free_team_models(str(org.id))
                 except Exception:
@@ -507,8 +509,8 @@ class OrgStore:
 
     @staticmethod
     def _merge_and_validate_settings(
-        current_settings: dict[str, Any],
-        settings_diff: dict[str, Any],
+        current_settings: dict[str, JsonValue],
+        settings_diff: dict[str, JsonValue],
         settings_type: type[OpenHandsAgentSettings] | type[ConversationSettings],
     ) -> AgentSettingsConfig | ConversationSettings:
         """Apply a sparse settings diff to the persisted base and validate it.
@@ -519,9 +521,12 @@ class OrgStore:
         (OpenHands or ACP) rather than a coerced OpenHands shape.
         """
         if settings_type is OpenHandsAgentSettings:
-            return apply_agent_settings_diff(current_settings or {}, settings_diff)
+            settings = apply_agent_settings_diff(current_settings or {}, settings_diff)
+            if {'llm', 'condenser', 'agent_kind'} & settings_diff.keys():
+                validate_agent_llms(settings)
+            return settings
 
-        base_settings = _load_persisted_conversation_settings(current_settings)  # type: ignore[assignment]
+        base_settings = _load_persisted_conversation_settings(current_settings)
         merged_settings = deep_merge(
             base_settings.model_dump(mode='json'), settings_diff
         )
@@ -544,7 +549,7 @@ class OrgStore:
     @staticmethod
     async def _update_org_kwargs(
         org_id: UUID,
-        org_kwargs: dict[str, Any],
+        org_kwargs: dict[str, JsonValue],
         user_id: str | None = None,
         update_data: OrgUpdate | None = None,
     ) -> Optional[Org]:
@@ -566,6 +571,7 @@ class OrgStore:
                 return None
 
             old_name = org.name
+            previous_llm = OrgStore.get_agent_settings_from_org(org).llm
 
             if 'id' in org_kwargs:
                 org_kwargs.pop('id')
@@ -578,11 +584,19 @@ class OrgStore:
                 if update_data is not None
                 else org_kwargs.pop('agent_settings_diff', None)
             )
+            if agent_settings_diff is not None:
+                agent_settings_diff = TypeAdapter(dict[str, JsonValue]).validate_python(
+                    agent_settings_diff
+                )
             conversation_settings_diff = (
                 update_data.conversation_settings_diff
                 if update_data is not None
                 else org_kwargs.pop('conversation_settings_diff', None)
             )
+            if conversation_settings_diff is not None:
+                conversation_settings_diff = TypeAdapter(
+                    dict[str, JsonValue]
+                ).validate_python(conversation_settings_diff)
             for key, value in org_kwargs.items():
                 if hasattr(org, key):
                     setattr(org, key, value)
@@ -593,6 +607,22 @@ class OrgStore:
                     agent_settings_diff,
                     OpenHandsAgentSettings,
                 ).model_dump(mode='json', exclude_unset=True)
+
+            new_llm = OrgStore.get_agent_settings_from_org(org).llm
+            llm_changed_scope = bool(
+                agent_settings_diff
+                and 'llm' in agent_settings_diff
+                and not llm_credentials_compatible(
+                    previous_llm.model,
+                    previous_llm.base_url,
+                    new_llm.model,
+                    new_llm.base_url,
+                )
+            )
+            if llm_changed_scope and (
+                update_data is None or update_data.llm_api_key is None
+            ):
+                org.llm_api_key = None
 
             if conversation_settings_diff is not None:
                 org.conversation_settings = OrgStore._merge_and_validate_settings(
@@ -608,11 +638,20 @@ class OrgStore:
                     )
 
                 member_updates = update_data.get_member_updates()
+                clear_native_keys = not uses_managed_gateway(
+                    new_llm.model, new_llm.base_url
+                ) and (
+                    (llm_changed_scope and update_data.llm_api_key is None)
+                    or update_data.llm_api_key == ''
+                )
+                if clear_native_keys and member_updates is not None:
+                    member_updates.llm_api_key = SecretStr('')
                 effective_managed_key = (
                     await OrgStore._ensure_managed_llm_key_for_user(
                         session,
                         org,
                         user_id,
+                        reuse_existing=not llm_changed_scope,
                     )
                     if update_data.touches_llm_defaults()
                     else None
@@ -620,6 +659,7 @@ class OrgStore:
                 should_reset_custom_key_flag = (
                     update_data.llm_api_key is not None
                     or effective_managed_key is not None
+                    or clear_native_keys
                 )
                 if member_updates is not None:
                     if should_reset_custom_key_flag:
@@ -654,7 +694,7 @@ class OrgStore:
             # Keep the LiteLLM team_alias in sync with the org's display name so
             # the proxy dashboard stays readable after a rename. Best-effort —
             # never fail an org update because the proxy is briefly unreachable.
-            if org.name != old_name:
+            if org.name != old_name and is_litellm_enabled():
                 try:
                     await LiteLlmManager.update_team(
                         str(org.id),
@@ -1017,10 +1057,10 @@ class OrgStore:
                     await queue_external_cleanup(session, org_id=org_id)
                     for uid in requester_orphan_ids:
                         await queue_external_cleanup(session, account_id=UUID(uid))
-                else:
+                elif is_litellm_enabled():
                     await LiteLlmManager.delete_team(str(org_id))
 
-                if ENABLE_KEYCLOAK and requester_orphan_ids:
+                if ENABLE_KEYCLOAK and requester_orphan_ids and is_litellm_enabled():
                     for user_id in requester_orphan_ids:
                         await OrgStore._delete_litellm_user_best_effort(user_id, org_id)
 
@@ -1056,22 +1096,27 @@ class OrgStore:
 
     @staticmethod
     async def _ensure_managed_llm_key_for_user(
-        session,
+        session: AsyncSession,
         updated_org: Org,
         user_id: str,
+        *,
+        reuse_existing: bool = True,
     ) -> str | None:
         """Ensure the acting member has their own managed LLM key."""
+        if not is_litellm_enabled():
+            return None
         llm_settings = OrgStore.get_agent_settings_from_org(updated_org).llm
         llm_model = llm_settings.model
         llm_base_url = llm_settings.base_url
-        normalized_llm_base_url = llm_base_url.rstrip('/') if llm_base_url else None
-        normalized_managed_base_url = LITE_LLM_API_URL.rstrip('/')
         openhands_type = is_openhands_model(llm_model)
-        uses_managed_llm_key = (
-            normalized_llm_base_url == normalized_managed_base_url
-            or (normalized_llm_base_url is None and openhands_type)
-        )
-        if not uses_managed_llm_key:
+        if not (
+            uses_managed_gateway(llm_model, llm_base_url)
+            or (
+                llm_base_url
+                and LITE_LLM_API_URL
+                and llm_base_url.rstrip('/') == LITE_LLM_API_URL.rstrip('/')
+            )
+        ):
             return None
 
         result = await session.execute(
@@ -1089,7 +1134,6 @@ class OrgStore:
             )
             return None
 
-        existing_key = acting_member.llm_api_key
         from server.auth.auth_config import ENABLE_KEYCLOAK
 
         if not ENABLE_KEYCLOAK:
@@ -1103,6 +1147,11 @@ class OrgStore:
                 return None
             key = await prepare_managed_member(session, acting_member)
             return key.get_secret_value() or None
+        existing_key = (
+            acting_member.llm_api_key
+            if reuse_existing and not acting_member.has_custom_llm_api_key
+            else None
+        )
         existing_key_raw = existing_key.get_secret_value() if existing_key else None
         if existing_key_raw and await LiteLlmManager.verify_existing_key(
             existing_key_raw,
@@ -1124,6 +1173,7 @@ class OrgStore:
         # deleting any prior key first — symmetric across openhands/* and BYOR
         # defaults so switching between them never orphans a key.
         key_alias = get_openhands_cloud_key_alias(user_id, str(updated_org.id))
+        await LiteLlmManager.ensure_user_in_org(user_id, str(updated_org.id))
         await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
         logger.info(
             'Generated managed LLM key for acting user on org-defaults save',

@@ -19,6 +19,7 @@ from openhands.app_server.settings.settings_models import (
     _load_persisted_conversation_settings,
     validate_and_convert_marketplaces,
 )
+from openhands.app_server.utils.litellm_integration import validate_agent_llm_payload
 from openhands.app_server.utils.llm import MASKED_API_KEY, resolve_llm_base_url
 from openhands.sdk.settings import (
     AgentSettingsConfig,
@@ -313,6 +314,7 @@ class OrgUpdate(BaseModel):
     def _normalize_settings_diffs(self) -> 'OrgUpdate':
         """Normalize sparse settings diffs before merge/persistence."""
         self._normalize_agent_settings_diff()
+        validate_agent_llm_payload(self.agent_settings_diff)
         self._cleanup_empty_diff('agent_settings_diff', nested_key='llm')
         self._cleanup_empty_diff('conversation_settings_diff')
         return self

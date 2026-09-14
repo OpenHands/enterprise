@@ -118,6 +118,10 @@ def get_openhands_provider_base_url() -> str | None:
 
     Falls back to LLM_BASE_URL for backward compatibility.
     """
+    from openhands.app_server.utils.litellm_integration import is_litellm_enabled
+
+    if not is_litellm_enabled():
+        return None
     return os.getenv('OPENHANDS_PROVIDER_BASE_URL') or os.getenv('LLM_BASE_URL') or None
 
 
@@ -289,20 +293,20 @@ def config_from_env() -> AppServerConfig:
             DefaultLLMModelServiceInjector,
         )
 
-        llm_model_kwargs: dict = {}
+        llm_model = DefaultLLMModelServiceInjector()
         aws_region = os.getenv('AWS_REGION_NAME')
         aws_key = os.getenv('AWS_ACCESS_KEY_ID')
         aws_secret = os.getenv('AWS_SECRET_ACCESS_KEY')
         if aws_region and aws_key and aws_secret:
-            llm_model_kwargs['aws_region_name'] = aws_region
-            llm_model_kwargs['aws_access_key_id'] = SecretStr(aws_key)
-            llm_model_kwargs['aws_secret_access_key'] = SecretStr(aws_secret)
+            llm_model.aws_region_name = aws_region
+            llm_model.aws_access_key_id = SecretStr(aws_key)
+            llm_model.aws_secret_access_key = SecretStr(aws_secret)
 
         ollama_url = os.getenv('OLLAMA_BASE_URL')
         if ollama_url:
-            llm_model_kwargs['ollama_base_url'] = ollama_url
+            llm_model.ollama_base_url = ollama_url
 
-        config.llm_model = DefaultLLMModelServiceInjector(**llm_model_kwargs)
+        config.llm_model = llm_model
 
     if config.event is None:
         provider = get_storage_provider()

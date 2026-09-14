@@ -387,7 +387,7 @@ function ApiKeysTable({ apiKeys, isLoading, onDeleteKey }: ApiKeysTableProps) {
   );
 }
 
-export function ApiKeysManager() {
+export function ApiKeysManager(): React.JSX.Element {
   const { t } = useTranslation();
   const { data: config } = useConfig();
   const { data: apiKeys = [], isLoading, error } = useApiKeys();
@@ -413,7 +413,10 @@ export function ApiKeysManager() {
   // export on a non-billing deployment.
   const billingEnabled = !!config?.feature_flags?.enable_billing;
   const byorExportEnabled = !!config?.feature_flags?.enable_byor_export;
-  const llmKeyExportAvailable = billingEnabled || byorExportEnabled;
+  const llmKeyExportAvailable =
+    !!config &&
+    config.feature_flags?.enable_litellm !== false &&
+    (billingEnabled || byorExportEnabled);
 
   // Display error toast if the query fails (but not for payment required)
   if (error && !isPaymentRequired) {
@@ -448,16 +451,18 @@ export function ApiKeysManager() {
   return (
     <>
       <div className="flex flex-col gap-6">
-        {llmKeyExportAvailable ? (
-          <LlmApiKeyManager
-            llmApiKey={llmApiKey}
-            isLoadingLlmKey={isLoadingLlmKey}
-            isPaymentRequired={isPaymentRequired}
-            refreshLlmApiKey={refreshLlmApiKey}
-          />
-        ) : (
-          <LlmApiKeyDisabled />
-        )}
+        {config &&
+          config.feature_flags?.enable_litellm !== false &&
+          (llmKeyExportAvailable ? (
+            <LlmApiKeyManager
+              llmApiKey={llmApiKey}
+              isLoadingLlmKey={isLoadingLlmKey}
+              isPaymentRequired={isPaymentRequired}
+              refreshLlmApiKey={refreshLlmApiKey}
+            />
+          ) : (
+            <LlmApiKeyDisabled />
+          ))}
 
         <h3 className="text-xl font-medium text-white">
           {t(I18nKey.SETTINGS$OPENHANDS_API_KEYS)}

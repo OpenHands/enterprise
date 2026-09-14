@@ -3,6 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ErrorMessageBanner } from "#/components/features/chat/error-message-banner";
 
+vi.mock("#/hooks/query/use-config", () => ({
+  useConfig: () => ({ data: undefined }),
+}));
+
 describe("ErrorMessageBanner", () => {
   it("calls onDismiss when the close button is clicked", async () => {
     const user = userEvent.setup();

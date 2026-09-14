@@ -8,7 +8,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
+from typing import Any, AsyncGenerator, BinaryIO, NotRequired, Sequence, TypedDict, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -90,14 +90,20 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxStatus,
 )
-from openhands.app_server.sandbox.sandbox_service import SandboxService
+from openhands.app_server.sandbox.sandbox_service import (
+    DIRECT_LLM_VALIDATED_TAG,
+    SandboxService,
+)
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     is_custom_sandbox_spec,
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtService
-from openhands.app_server.settings.llm_profiles import resolve_profile_llm
+from openhands.app_server.settings.llm_profiles import (
+    has_real_api_key,
+    resolve_profile_llm,
+)
 from openhands.app_server.settings.marketplace_composition import (
     resolve_registered_marketplaces,
 )
@@ -112,6 +118,14 @@ from openhands.app_server.utils.docker_utils import (
 )
 from openhands.app_server.utils.git import ensure_valid_git_branch_name
 from openhands.app_server.utils.import_utils import get_impl
+from openhands.app_server.utils.litellm_integration import (
+    is_litellm_enabled,
+    is_managed_llm,
+    llm_credentials_compatible,
+    validate_agent_llm_payload,
+    validate_agent_llms,
+    validate_llm_configuration,
+)
 from openhands.app_server.utils.llm_metadata import (
     get_llm_metadata,
     should_set_litellm_extra_body,
@@ -123,7 +137,12 @@ from openhands.app_server.utils.redis_lock import (
     try_acquire_redis_lock,
 )
 from openhands.sdk import Agent, AgentContext, LocalWorkspace
+from openhands.sdk.agent import AgentBase
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation.types import (
+    ConversationObservabilityMetadata,
+    TraceMetadataValue,
+)
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
@@ -132,9 +151,8 @@ from openhands.sdk.marketplace.registration import (
 )
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
-from openhands.sdk.secret import LookupSecret, StaticSecret
-from openhands.sdk.settings import ACPAgentSettings
-from openhands.sdk.subagent import get_registered_agent_definitions
+from openhands.sdk.secret import LookupSecret, SecretSource, StaticSecret
+from openhands.sdk.subagent import AgentDefinition, get_registered_agent_definitions
 from openhands.sdk.tool.builtins import SwitchLLMTool
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
@@ -157,17 +175,57 @@ _logger = logging.getLogger(__name__)
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
 
 
-def _resolve_title_llm_profile(user: UserInfo) -> str | None:
-    preference = getattr(user, 'title_llm_profile', None)
+class _RequestOverrides(TypedDict):
+    agent: AgentBase
+    user_id: str | None
+    secrets: NotRequired[dict[str, SecretSource]]
+    title_llm_profile: NotRequired[str]
+    observability_metadata: NotRequired[ConversationObservabilityMetadata]
+    observability_tags: NotRequired[list[str]]
+    observability_span_name: NotRequired[str]
+
+
+class _ACPSettingsUpdate(TypedDict):
+    acp_isolate_data_dir: bool
+    llm: LLM
+    mcp_config: NotRequired[dict[str, MCPServer]]
+    agent_context: NotRequired[AgentContext]
+
+
+class _ContextUpdate(TypedDict, total=False):
+    system_message_suffix: str
+    registered_marketplaces: list[SDKMarketplaceRegistration] | None
+
+
+def _resolve_title_llm_profile(
+    user: UserInfo, effective_llm: LLM | None = None
+) -> str | None:
+    preference = user.title_llm_profile
     if (
         preference
         and PROFILE_NAME_REGEX.match(preference)
         and user.llm_profiles.has(preference)
     ):
+        llm = user.llm_profiles.require(preference)
+        validate_llm_configuration(llm.model, llm.base_url)
         return preference
 
     active = user.llm_profiles.active
     if active and PROFILE_NAME_REGEX.match(active) and user.llm_profiles.has(active):
+        llm = user.llm_profiles.require(active)
+        effective_llm = effective_llm or user.agent_settings.llm
+        if (
+            not has_real_api_key(llm.api_key)
+            and effective_llm is not None
+            and not llm_credentials_compatible(
+                llm.model, llm.base_url, effective_llm.model, effective_llm.base_url
+            )
+        ):
+            # Personal settings or a request override may select a different
+            # provider from the org's implicit active profile. Let the agent
+            # server use the conversation's resolved LLM in that case.
+            return None
+        validate_llm_configuration(llm.model, llm.base_url)
         return active
     return None
 
@@ -482,6 +540,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             override_agent_profile_id=request.agent_profile_id,
         )
         validate_acp_provider_surfaced(user.agent_settings)
+        if user.agent_settings.agent_kind != 'acp':
+            effective = user.agent_settings.model_copy(
+                update={'llm': self._configure_llm(user, request.llm_model)}
+            )
+            validate_agent_llms(effective)
+            _resolve_title_llm_profile(user, effective.llm)
 
         task = AppConversationStartTask(
             created_by_user_id=user_id,
@@ -504,6 +568,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # built-in switch_llm tool can resolve them (in SaaS profiles live
             # on the app-server, not the sandbox filesystem). Before conversation
             # creation, so the tool is enabled; re-runs on every start/resume.
+            if is_litellm_enabled():
+                await self.sandbox_service.validate_resume_configuration(sandbox.id)
             await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
 
             # Get the working dir
@@ -589,6 +655,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # the local SDK model knows about it. Remove this once OpenHands
             # pins to an SDK release that exposes ``user_id`` on
             # ``StartConversationRequest``.
+            validate_agent_llm_payload(body_json)
             if laminar_user_id:
                 body_json['user_id'] = laminar_user_id
             headers = (
@@ -625,6 +692,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # the same agent back through the AgentBase discriminator.
             request_agent = start_conversation_request.agent
             tags: dict[str, str] = {}
+            if not is_litellm_enabled():
+                tags[DIRECT_LLM_VALIDATED_TAG] = '1'
             # Pin where the workspace was actually created so the delete-time
             # archive captures the right directory without re-deriving the path
             # from settings (e.g. grouping) that may change before delete.
@@ -634,11 +703,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # its id + revision onto UserInfo); ride the tags dict so it
             # round-trips and surfaces as the ``launched_agent_profile``
             # computed field.
-            launched_profile_id = getattr(user, 'active_agent_profile_id', None)
-            if isinstance(launched_profile_id, str) and launched_profile_id:
+            launched_profile_id = user.active_agent_profile_id
+            if launched_profile_id:
                 tags[AGENT_PROFILE_ID_TAG_KEY] = launched_profile_id
-                launched_revision = getattr(user, 'active_agent_profile_revision', None)
-                if isinstance(launched_revision, int):
+                launched_revision = user.active_agent_profile_revision
+                if launched_revision is not None:
                     tags[AGENT_PROFILE_REVISION_TAG_KEY] = str(launched_revision)
             if isinstance(request_agent, ACPAgent):
                 llm_model = request_agent.acp_model
@@ -647,7 +716,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 # can resolve a brand label ("Claude Code", "Codex", …) via
                 # the SDK registry without keeping a per-conversation column.
                 # Surfaced to the UI as the projected ``acp_server`` field.
-                if isinstance(user.agent_settings, ACPAgentSettings):
+                if user.agent_settings.agent_kind == 'acp':
                     tags[ACP_SERVER_TAG_KEY] = user.agent_settings.acp_server
             else:
                 llm_model = request_agent.llm.model
@@ -1080,13 +1149,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         base_url = f'{agent_server_url}/api/profiles'
         try:
             user = await self.user_context.get_user_info()
-            profiles = user.llm_profiles.profiles
-            settings_llm = getattr(user.agent_settings, 'llm', None)
+            profiles = {
+                name: llm
+                for name, llm in user.llm_profiles.profiles.items()
+                if is_litellm_enabled() or not is_managed_llm(llm.model, llm.base_url)
+            }
+            settings_llm = user.agent_settings.llm
             if settings_llm is not None:
                 settings_llm = await self._maybe_refresh_managed_llm_key(
                     user, settings_llm
                 )
-            fallback_api_key = getattr(settings_llm, 'api_key', None)
+            fallback_api_key = settings_llm.api_key
         except Exception:
             _logger.exception(
                 'Failed to load profiles for sandbox %s',
@@ -1108,6 +1181,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     profile_llm,
                     managed_proxy_url=LITE_LLM_API_URL,
                     fallback_api_key=fallback_api_key,
+                    fallback_llm=settings_llm,
                 )
                 response = await self.httpx_client.post(
                     f'{base_url}/{name}',
@@ -1234,7 +1308,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         return f'{working_dir}/{config_dir}/PLAN.md'
 
-    async def _setup_secrets_for_git_providers(self, user: UserInfo) -> dict:
+    async def _setup_secrets_for_git_providers(
+        self, user: UserInfo
+    ) -> dict[str, SecretSource]:
         """Set up secrets for all git provider authentication.
 
         Args:
@@ -1289,7 +1365,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         user: UserInfo,
         trigger: ConversationTrigger | None,
         system_message_suffix: str | None,
-    ) -> tuple[dict, str | None]:
+    ) -> tuple[dict[str, SecretSource], str | None]:
         """Set up custom, git provider, and integration-scoped secrets.
 
         Args:
@@ -1348,11 +1424,20 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             provider_base_url=self.openhands_provider_base_url,
         )
 
+        validate_llm_configuration(model, base_url)
+        api_key = user.agent_settings.llm.api_key
+        if not llm_credentials_compatible(
+            model,
+            base_url,
+            user.agent_settings.llm.model,
+            user.agent_settings.llm.base_url,
+        ):
+            api_key = None
         return user.agent_settings.llm.model_copy(
             update={
                 'model': model,
                 'base_url': base_url,
-                'api_key': user.agent_settings.llm.api_key,
+                'api_key': api_key,
                 'usage_id': 'agent',
                 # Force streaming on (the SDK LLM defaults stream=False).
                 'stream': True,
@@ -1377,6 +1462,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             },
         )
 
+        if not is_litellm_enabled():
+            return llm
         if self.app_mode != 'saas':
             _logger.debug(
                 'managed_llm_key_refresh:skip_non_saas',
@@ -1396,10 +1483,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             return llm
 
         try:
-            from storage.lite_llm_manager import (  # type: ignore[import-not-found]
+            from storage.lite_llm_manager import (
                 LiteLlmManager,
             )
-            from storage.saas_settings_store import (  # type: ignore[import-not-found]
+            from storage.saas_settings_store import (
                 ManagedLlmKeyStatus,
                 SaasSettingsStore,
                 managed_llm_key_config_from_model,
@@ -1441,16 +1528,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             return llm
 
-        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
-        if get_effective_org_id is None:
-            _logger.debug(
-                'managed_llm_key_refresh:skip_missing_effective_org_getter',
-                extra={'user_id': user.id, 'model': llm.model},
-            )
-            return llm
-
         try:
-            org_id = await get_effective_org_id()
+            org_id = await self.user_context.get_effective_org_id()
             if org_id is None:
                 _logger.debug(
                     'managed_llm_key_refresh:skip_missing_effective_org',
@@ -1524,7 +1603,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                         'user_id': user.id,
                         'org_id': str(org_id),
                         'model': llm.model,
-                        'openhands_type': getattr(rotation, 'openhands_type', None),
+                        'openhands_type': rotation.openhands_type,
                     },
                 )
                 self.user_context.invalidate_user_info_cache()
@@ -1661,14 +1740,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         selected_repository: str | None = None,
         selected_branch: str | None = None,
         git_provider: ProviderType | None = None,
-    ) -> tuple[dict[str, Any], list[str]]:
+    ) -> tuple[ConversationObservabilityMetadata, list[str]]:
         """Build trace metadata and tag filters for a conversation.
 
         Metadata uses explicit field names such as ``repo_name`` and
         ``selected_branch``. Tags intentionally keep the concise
         ``repo:`` / ``branch:`` prefixes used by LiteLLM metadata filters.
         """
-        metadata: dict[str, Any] = {
+        metadata: ConversationObservabilityMetadata = {
             'app': 'openhands',
             'conversation_id': str(conversation_id),
             'agent_kind': agent_kind,
@@ -1690,12 +1769,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
     @staticmethod
     def _extend_observability_metadata(
-        target: dict[str, Any], metadata: Mapping[str, Any]
+        target: ConversationObservabilityMetadata,
+        metadata: Mapping[str, TraceMetadataValue | None],
     ) -> None:
         for key, value in metadata.items():
             if value is None:
                 continue
-            if isinstance(value, str) and value == '':
+            if value == '':
                 continue
             if key in target:
                 if target[key] != value:
@@ -1962,7 +2042,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         selected_branch: str | None = None,
         plugins: list[PluginSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
-        request_observability_metadata: Mapping[str, Any] | None = None,
+        request_observability_metadata: ConversationObservabilityMetadata | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
     ) -> StartConversationRequest:
@@ -2002,16 +2082,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             request_observability_span_name: Optional named child span to emit
                 under the conversation root.
         """
-        llm_settings = getattr(user.agent_settings, 'llm', None)
+        llm_settings = user.agent_settings.llm
         _logger.debug(
             'managed_llm_key_refresh:build_request_context',
             extra={
                 'user_id': user.id,
                 'conversation_id': str(conversation_id),
                 'agent_settings_type': type(user.agent_settings).__name__,
-                'model': getattr(llm_settings, 'model', None),
-                'base_url': str(getattr(llm_settings, 'base_url', None) or ''),
-                'has_api_key': bool(getattr(llm_settings, 'api_key', None)),
+                'model': llm_settings.model,
+                'base_url': str(llm_settings.base_url or ''),
+                'has_api_key': bool(llm_settings.api_key),
             },
         )
 
@@ -2021,15 +2101,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         registered_marketplaces = await self._resolve_registered_marketplaces(user)
 
         # Route ACP agent settings to the ACP-specific builder
-        if isinstance(user.agent_settings, ACPAgentSettings):
+        if user.agent_settings.agent_kind == 'acp':
             _logger.debug(
                 'managed_llm_key_refresh:skip_acp_agent_settings',
                 extra={
                     'user_id': user.id,
                     'conversation_id': str(conversation_id),
-                    'model': getattr(llm_settings, 'model', None),
-                    'base_url': str(getattr(llm_settings, 'base_url', None) or ''),
-                    'has_api_key': bool(getattr(llm_settings, 'api_key', None)),
+                    'model': llm_settings.model,
+                    'base_url': str(llm_settings.base_url or ''),
+                    'has_api_key': bool(llm_settings.api_key),
                 },
             )
             acp_request = await self._build_acp_start_conversation_request(
@@ -2082,8 +2162,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
 
             # Validate overall dict size limits first
-            # Cast to Mapping for mypy compatibility (Mapping is covariant in value type)
-            validate_secrets_dict(cast('Mapping[str, object]', api_secrets))
+            validate_secrets_dict(api_secrets)
 
             for name, value in api_secrets.items():
                 validate_secret_name(name)
@@ -2122,7 +2201,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 effective_suffix = web_host_context
 
         # --- tools ----------------------------------------------------------
-        agent_definitions: list[Any] = []
+        agent_definitions: list[AgentDefinition] = []
         if agent_type == AgentType.PLAN:
             plan_path = None
             if project_dir:
@@ -2152,6 +2231,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 ),
             }
         )
+        validate_agent_llms(configured_agent_settings)
         agent = configured_agent_settings.create_agent()
 
         # SaaS profiles live on the user/org record, not the sandbox
@@ -2272,8 +2352,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             self._extend_observability_tags(
                 observability_tags, request_observability_tags
             )
-        create_kwargs: dict[str, Any] = {'agent': agent, 'user_id': laminar_user_id}
-        title_llm_profile = _resolve_title_llm_profile(user)
+        create_kwargs: _RequestOverrides = {'agent': agent, 'user_id': laminar_user_id}
+        title_llm_profile = _resolve_title_llm_profile(user, llm)
         if title_llm_profile:
             create_kwargs['title_llm_profile'] = title_llm_profile
         if observability_metadata:
@@ -2298,6 +2378,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 registered_marketplaces,
             )
 
+        validate_agent_llms(request)
         return request
 
     async def _resolve_registered_marketplaces(
@@ -2357,7 +2438,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         plugins: list[PluginSpec] | None = None,
         registered_marketplaces: list[MarketplaceRegistration] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
-        request_observability_metadata: Mapping[str, Any] | None = None,
+        request_observability_metadata: ConversationObservabilityMetadata | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
     ) -> StartConversationRequest:
@@ -2365,10 +2446,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         User secrets (Secrets panel + git provider tokens) flow through
         ``request.secrets`` — the canonical cipher-protected wire channel.
-        In SaaS mode each secret is a ``LookupSecret`` pointing at
-        ``/api/v1/webhooks/custom-secret`` with a per-secret scoped JWT, so
-        values are never materialised in this process.  In OSS mode (no
-        ``web_url``) they remain ``StaticSecret``.  Secrets are passed
+        Custom secrets retain the ``SecretSource`` returned by the user context;
+        the authenticated SaaS context currently returns ``StaticSecret``.
+        Secrets are passed
         directly as ``secrets=`` to ``create_request()``; no ``AgentContext``
         relay is needed (software-agent-sdk #3464;
         OpenHands/agent-canvas#1039).
@@ -2407,7 +2487,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # causing provider auth to silently fail at subprocess launch.
         # Use raw custom secrets, static git provider tokens, and static
         # integration-scoped secrets for ACP conversations.
-        secrets: dict = await self.user_context.get_secrets()
+        secrets = await self.user_context.get_secrets()
         provider_tokens = await self.user_context.get_provider_tokens()
         if provider_tokens:
             for provider_type, provider_token in provider_tokens.items():
@@ -2444,7 +2524,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 validate_secrets_dict,
             )
 
-            validate_secrets_dict(cast('Mapping[str, object]', api_secrets))
+            validate_secrets_dict(api_secrets)
             for name, value in api_secrets.items():
                 validate_secret_name(name)
                 if name in secrets:
@@ -2459,14 +2539,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         # --- build the ACP agent ------------------------------------------
         acp_settings = user.agent_settings  # already verified to be ACPAgentSettings
-        assert isinstance(acp_settings, ACPAgentSettings)
+        assert acp_settings.agent_kind == 'acp'
 
         # Isolate the CLI data dir onto the durable /workspace tree so the SDK
         # self-resumes the provider session (session/load from base_state.json)
         # across pause/resume — matching the regular-agent lifecycle (#1274).
         # Strip llm.api_key/base_url to prevent proxy settings from leaking
         # into the subprocess env (ACP CLIs handle their own LLM calls).
-        settings_update: dict[str, Any] = {
+        settings_update: _ACPSettingsUpdate = {
             'acp_isolate_data_dir': True,
             'llm': acp_settings.llm.model_copy(
                 update={'api_key': None, 'base_url': None}
@@ -2480,7 +2560,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         self._merge_custom_mcp_config(acp_mcp_servers, user)
         if acp_mcp_servers:
             settings_update['mcp_config'] = acp_mcp_servers
-        context_updates: dict[str, Any] = {}
+        context_updates: _ContextUpdate = {}
         if system_message_suffix:
             context_updates['system_message_suffix'] = system_message_suffix
         if registered_marketplaces is not None:
@@ -2546,7 +2626,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             self._extend_observability_tags(
                 observability_tags, request_observability_tags
             )
-        create_kwargs: dict[str, Any] = {
+        create_kwargs: _RequestOverrides = {
             'agent': acp_agent,
             'user_id': laminar_user_id,
             'secrets': secrets,

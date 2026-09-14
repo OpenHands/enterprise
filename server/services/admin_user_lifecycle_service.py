@@ -6,6 +6,7 @@ from uuid import UUID
 import httpx
 from sqlalchemy import delete, select, text, update
 
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.native_password import NativeAuthError
@@ -126,7 +127,8 @@ class AdminUserLifecycleService:
 
         warnings: list[str] = []
         try:
-            await LiteLlmManager.delete_user(user_id)
+            if is_litellm_enabled():
+                await LiteLlmManager.delete_user(user_id)
         except httpx.HTTPError as exc:
             warnings.append(f'LiteLLM cleanup failed: {exc}')
             logger.warning(

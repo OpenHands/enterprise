@@ -3395,6 +3395,43 @@ describe("LlmSettingsScreen", () => {
       expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
     });
 
+    it("keeps org admin direct-provider controls when LiteLLM and user LLM configuration are disabled", async () => {
+      vi.spyOn(
+        organizationService,
+        "getOrganizationSettings",
+      ).mockResolvedValue(
+        buildSettings({ agent_settings: { llm: { model: "openai/gpt-4o" } } }),
+      );
+      const saveOrgSettings = vi
+        .spyOn(organizationService, "saveOrganizationSettings")
+        .mockResolvedValue(buildSettings());
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        featureFlags: { ...MANAGED_FLAGS, enable_litellm: false },
+      });
+      await screen.findByTestId("llm-api-key-input");
+      await userEvent.click(screen.getByTestId("sdk-section-advanced-toggle"));
+      expect(screen.getByTestId("llm-custom-model-input")).toBeInTheDocument();
+      expect(screen.getByTestId("base-url-input")).toBeInTheDocument();
+      await userEvent.type(
+        screen.getByTestId("llm-api-key-input"),
+        "org-direct-key",
+      );
+      await userEvent.click(screen.getByTestId("save-button"));
+      await waitFor(() =>
+        expect(saveOrgSettings).toHaveBeenCalledWith(
+          expect.objectContaining({
+            settings: expect.objectContaining({
+              agent_settings_diff: expect.objectContaining({
+                llm: expect.objectContaining({ api_key: "org-direct-key" }),
+              }),
+            }),
+          }),
+        ),
+      );
+    });
+
     it("keeps BYOK inputs when the flag is explicitly true", async () => {
       vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
         buildSettings(),

@@ -99,8 +99,8 @@ class TestByorProfiles:
         )
         assert _key_of(resolved) == byor_key.get_secret_value()
 
-    def test_keyless_byor_profile_falls_back(self):
-        """Unchanged: a keyless profile takes the fallback regardless of routing."""
+    def test_keyless_byor_profile_does_not_take_unscoped_managed_key(self) -> None:
+        """A fallback key without a compatible source cannot cross providers."""
         resolved = resolve_profile_llm(
             LLM(
                 model='anthropic/claude-sonnet-4-5-20250929',
@@ -110,7 +110,7 @@ class TestByorProfiles:
             managed_proxy_url=MANAGED_URL,
             fallback_api_key=CURRENT_KEY,
         )
-        assert _key_of(resolved) == CURRENT_KEY.get_secret_value()
+        assert _key_of(resolved) is None
 
 
 class TestStreamingIsForced:

@@ -1,5 +1,6 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
+import { useLiteLlmIntegration } from "#/hooks/use-litellm-integration";
 import { useCreateStripeCheckoutSession } from "#/hooks/mutation/stripe/use-create-stripe-checkout-session";
 import { useBalance } from "#/hooks/query/use-balance";
 import { cn } from "#/utils/utils";
@@ -11,8 +12,13 @@ import { amountIsValid } from "#/utils/amount-is-valid";
 import { I18nKey } from "#/i18n/declaration";
 import { PoweredByStripeTag } from "./powered-by-stripe-tag";
 
-export function PaymentForm({ isDisabled }: { isDisabled?: boolean }) {
+export function PaymentForm({
+  isDisabled,
+}: {
+  isDisabled?: boolean;
+}): React.JSX.Element | null {
   const { t } = useTranslation();
+  const { enabled } = useLiteLlmIntegration();
   const { data: balance, isLoading } = useBalance();
   const { mutate: addBalance, isPending } = useCreateStripeCheckoutSession();
 
@@ -34,6 +40,8 @@ export function PaymentForm({ isDisabled }: { isDisabled?: boolean }) {
   const handleTopUpInputChange = (value: string) => {
     setButtonIsDisabled(!amountIsValid(value));
   };
+
+  if (!enabled) return null;
 
   return (
     <form

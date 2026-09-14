@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.sandbox.sandbox_models import AGENT_SERVER, SandboxInfo
 from openhands.app_server.services.injector import Injector, InjectorState
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import MetricsSnapshot, TokenUsage
 from server.routes.org_models import (
@@ -1311,7 +1312,7 @@ class OrgConversationService:
         for row in user_rows:
             budget_monthly_limit = None
             budget_is_disabled = False
-            if budget_settings and budget_settings.enabled:
+            if is_litellm_enabled() and budget_settings and budget_settings.enabled:
                 override = override_map.get(row.user_id)
                 if override:
                     budget_is_disabled = override.is_disabled

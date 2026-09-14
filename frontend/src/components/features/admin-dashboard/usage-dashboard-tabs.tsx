@@ -1,5 +1,6 @@
 /* eslint-disable i18next/no-literal-string */
 import React from "react";
+import { useLiteLlmIntegration } from "#/hooks/use-litellm-integration";
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
 import {
   ExportIcon,
@@ -531,7 +532,8 @@ export function UsersTab({
 }: {
   userUsage?: UserUsageResponse;
   userUsageLoading: boolean;
-}) {
+}): React.JSX.Element {
+  const { enabled: showBudgets } = useLiteLlmIntegration();
   return (
     <div className="space-y-4">
       <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
@@ -565,9 +567,11 @@ export function UsersTab({
               <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
                 Lifetime
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Budget
-              </th>
+              {showBudgets && (
+                <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
+                  Budget
+                </th>
+              )}
               <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
                 PRs merged
               </th>
@@ -577,7 +581,7 @@ export function UsersTab({
             {userUsageLoading && (
               <tr>
                 <td
-                  colSpan={11}
+                  colSpan={showBudgets ? 11 : 10}
                   className="px-4 py-8 text-center text-zinc-500"
                 >
                   Loading user usage...
@@ -587,7 +591,7 @@ export function UsersTab({
             {!userUsageLoading && (userUsage?.items.length ?? 0) === 0 && (
               <tr>
                 <td
-                  colSpan={11}
+                  colSpan={showBudgets ? 11 : 10}
                   className="px-4 py-8 text-center text-zinc-500"
                 >
                   No user usage data available yet.
@@ -633,9 +637,11 @@ export function UsersTab({
                 <td className="px-4 py-4 text-right text-sm text-white">
                   {formatCost(user.spend_lifetime)}
                 </td>
-                <td className="px-4 py-4 text-sm text-zinc-400">
-                  {formatBudget(user)}
-                </td>
+                {showBudgets && (
+                  <td className="px-4 py-4 text-sm text-zinc-400">
+                    {formatBudget(user)}
+                  </td>
+                )}
                 <td className="px-4 py-4 text-right text-sm text-zinc-400">
                   {user.prs_merged ?? "-"}
                 </td>

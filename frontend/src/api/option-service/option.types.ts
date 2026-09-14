@@ -29,6 +29,8 @@ export interface ModelsResponse {
 }
 
 export interface WebClientFeatureFlags {
+  /** Absent on older backends; defaults to enabled after config loads. */
+  enable_litellm?: boolean;
   enable_billing: boolean;
   hide_llm_settings: boolean;
   enable_jira: boolean;

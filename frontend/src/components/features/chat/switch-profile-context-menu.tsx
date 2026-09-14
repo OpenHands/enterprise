@@ -1,6 +1,8 @@
 import React from "react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
+import { isManagedLlmModel } from "#/utils/litellm-capability";
+import { useConfig } from "#/hooks/query/use-config";
 import { I18nKey } from "#/i18n/declaration";
 import { ContextMenu } from "#/ui/context-menu";
 import { ContextMenuListItem } from "../context-menu/context-menu-list-item";
@@ -36,8 +38,9 @@ export function SwitchProfileContextMenu({
   activeProfileName,
   onSelect,
   onClose,
-}: SwitchProfileContextMenuProps) {
+}: SwitchProfileContextMenuProps): React.JSX.Element {
   const { t } = useTranslation();
+  const { data: config } = useConfig();
   const ref = useClickOutsideElement<HTMLUListElement>(onClose);
 
   React.useEffect(() => {
@@ -69,12 +72,18 @@ export function SwitchProfileContextMenu({
         className="px-2 pt-1 pb-1"
       />
       {profiles.map((profile) => {
-        const isActive = profile.name === activeProfileName;
+        const unavailable =
+          config?.feature_flags?.enable_litellm === false &&
+          (profile.requires_litellm || isManagedLlmModel(profile.model ?? ""));
+        const isActive = !unavailable && profile.name === activeProfileName;
         return (
           <ContextMenuListItem
             key={profile.name}
             testId={`switch-profile-option-${profile.name}`}
-            onClick={(event) => handleSelect(event, profile.name)}
+            onClick={(event) => {
+              if (!unavailable) handleSelect(event, profile.name);
+            }}
+            isDisabled={unavailable}
             className={profileItemClassName}
             ariaCurrent={isActive ? "true" : undefined}
           >
@@ -96,6 +105,11 @@ export function SwitchProfileContextMenu({
                   <CheckIcon width={14} height={14} className="shrink-0" />
                 )}
               </div>
+              {unavailable && (
+                <span className="text-xs text-amber-400">
+                  {t(I18nKey.SETTINGS$MANAGED_MODEL_UNAVAILABLE)}
+                </span>
+              )}
               {profile.model && (
                 <span className="block truncate text-xs leading-4 text-gray-400 pl-6">
                   {profile.model}

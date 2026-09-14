@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, TypedDict
 
 from pydantic import (
     BaseModel,
@@ -15,23 +15,26 @@ from pydantic import (
     model_validator,
 )
 
+from openhands.app_server.settings.settings_patch import secret_text
+from openhands.app_server.utils.litellm_integration import (
+    is_managed_llm,
+    llm_credentials_compatible,
+    uses_managed_gateway,
+    validate_llm_configuration,
+)
 from openhands.app_server.utils.llm import resolve_llm_base_url
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM
 
 
-def has_real_api_key(api_key: Any) -> bool:
+def has_real_api_key(api_key: str | SecretStr | None) -> bool:
     """Return True iff ``api_key`` carries a non-empty value.
 
     A ``SecretStr('')`` should report as *not set* — otherwise the UI tells
     the user a key is stored when it isn't. Mirrors the check used in
     ``Settings.llm_api_key_is_set``.
     """
-    if api_key is None:
-        return False
-    secret_value = (
-        api_key.get_secret_value() if isinstance(api_key, SecretStr) else str(api_key)
-    )
+    secret_value = secret_text(api_key)
     return bool(secret_value and secret_value.strip())
 
 
@@ -39,7 +42,8 @@ def resolve_profile_llm(
     profile_llm: LLM,
     *,
     managed_proxy_url: str,
-    fallback_api_key: Any = None,
+    fallback_api_key: str | SecretStr | None = None,
+    fallback_llm: LLM | None = None,
 ) -> LLM:
     """Resolve a saved profile's LLM for activation on the agent server.
 
@@ -58,6 +62,7 @@ def resolve_profile_llm(
     dies at the next rotation with no path back. The org's current key is the
     only authoritative one for anything pointed at the managed proxy.
     """
+    validate_llm_configuration(profile_llm.model, profile_llm.base_url)
     resolved = profile_llm.model_copy(
         update={
             'base_url': resolve_llm_base_url(
@@ -71,11 +76,16 @@ def resolve_profile_llm(
     )
     # Compare the *resolved* base_url so this covers both an inferred managed
     # url (``openhands/`` models) and one the profile stored explicitly.
-    routes_to_managed_proxy = bool(
-        managed_proxy_url and resolved.base_url == managed_proxy_url
+    routes_to_managed_proxy = (
+        uses_managed_gateway(resolved.model, resolved.base_url)
+        or resolved.base_url == managed_proxy_url
+    )
+    compatible_fallback = fallback_llm is not None and llm_credentials_compatible(
+        resolved.model, resolved.base_url, fallback_llm.model, fallback_llm.base_url
     )
     if has_real_api_key(fallback_api_key) and (
-        routes_to_managed_proxy or not has_real_api_key(resolved.api_key)
+        (routes_to_managed_proxy and (fallback_llm is None or compatible_fallback))
+        or (compatible_fallback and not has_real_api_key(resolved.api_key))
     ):
         resolved = resolved.model_copy(update={'api_key': fallback_api_key})
     return resolved
@@ -135,6 +145,15 @@ class ProfileAlreadyExistsError(ValueError):
     def __init__(self, name: str) -> None:
         self.name = name
         super().__init__(f"Profile '{name}' already exists")
+
+
+class ProfileSummary(TypedDict):
+    name: str
+    model: str
+    base_url: str | None
+    api_key_set: bool
+    requires_litellm: bool
+    provider_connection_id: str | None
 
 
 class StrictLLM(LLM):
@@ -243,7 +262,7 @@ class LLMProfiles(BaseModel):
 
     def summaries(
         self, *, managed_proxy_url: str | None = None
-    ) -> list[dict[str, Any]]:
+    ) -> list[ProfileSummary]:
         """Return a secret-safe summary dict per profile.
 
         ``api_key_set`` mirrors the ``llm_api_key_set`` convention the main
@@ -266,7 +285,8 @@ class LLMProfiles(BaseModel):
                     else llm.base_url
                 ),
                 'api_key_set': has_real_api_key(llm.api_key),
-                'provider_connection_id': getattr(llm, 'provider_connection_id', None),
+                'requires_litellm': is_managed_llm(llm.model, llm.base_url),
+                'provider_connection_id': llm.provider_connection_id,
             }
             for name, llm in self.profiles.items()
         ]

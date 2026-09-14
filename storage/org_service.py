@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from uuid import UUID as parse_uuid
 
 from openhands.app_server.settings.settings_models import Settings
+from openhands.app_server.utils.litellm_integration import is_litellm_enabled
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.settings import ConversationSettings
 from server.constants import ENABLE_BYOR_EXPORT, ORG_SETTINGS_VERSION
@@ -403,6 +404,9 @@ class OrgService:
         Returns:
             Exception | None: Exception if cleanup failed, None if successful
         """
+        if not is_litellm_enabled():
+            return None
+
         try:
             await LiteLlmManager.delete_team(str(org_id))
 
@@ -605,6 +609,8 @@ class OrgService:
     @staticmethod
     async def get_org_credits(user_id: str, org_id: UUID) -> OrgCreditsResult:
         """Get organization credits and their availability from LiteLLM."""
+        if not is_litellm_enabled():
+            return OrgCreditsResult()
         try:
             user_team_info = await LiteLlmManager.get_user_team_info(
                 user_id, str(org_id)
@@ -845,6 +851,8 @@ class OrgService:
         Returns:
             bool: True if BYOR export is enabled, False otherwise.
         """
+        if not is_litellm_enabled():
+            return False
         if ENABLE_BYOR_EXPORT:
             return True
 

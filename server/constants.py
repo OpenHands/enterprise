@@ -1,6 +1,11 @@
 import os
 import re
 
+from openhands.app_server.utils.litellm_integration import (
+    is_litellm_enabled,
+    is_managed_llm,
+)
+
 HOST = os.getenv('WEB_HOST', 'app.all-hands.dev').strip()
 
 # Feature environments have a host format like {some-text}.staging.all-hands.dev
@@ -179,7 +184,7 @@ def build_litellm_proxy_model_path(model_name: str) -> str:
     return 'litellm_proxy/' + model_name
 
 
-def get_default_litellm_model():
+def get_default_litellm_model() -> str:
     """Construct proxy for litellm model based on user settings if not set explicitly."""
     if LITELLM_DEFAULT_MODEL:
         return LITELLM_DEFAULT_MODEL
@@ -189,6 +194,10 @@ def get_default_litellm_model():
 
 def should_use_direct_llm_defaults() -> bool:
     """Whether defaults should point directly at an OpenAI-compatible endpoint."""
+    if not is_litellm_enabled():
+        return bool(OPENHANDS_DEFAULT_LLM_MODEL) and not is_managed_llm(
+            OPENHANDS_DEFAULT_LLM_MODEL, OPENHANDS_DEFAULT_LLM_BASE_URL
+        )
     return (
         OPENHANDS_LLM_PROVIDER_ROUTE == 'direct'
         and bool(OPENHANDS_DEFAULT_LLM_MODEL)
@@ -200,13 +209,18 @@ def get_default_llm_model() -> str:
     """Return the deployment default LLM model."""
     if should_use_direct_llm_defaults() and OPENHANDS_DEFAULT_LLM_MODEL:
         return OPENHANDS_DEFAULT_LLM_MODEL
+    if not is_litellm_enabled():
+        # The SDK requires a model even before a user configures credentials.
+        return 'openai/gpt-4o'
     return get_default_litellm_model()
 
 
-def get_default_llm_base_url() -> str:
+def get_default_llm_base_url() -> str | None:
     """Return the deployment default LLM base URL."""
     if should_use_direct_llm_defaults() and OPENHANDS_DEFAULT_LLM_BASE_URL:
         return OPENHANDS_DEFAULT_LLM_BASE_URL
+    if not is_litellm_enabled():
+        return None
     return LITE_LLM_API_URL
 
 

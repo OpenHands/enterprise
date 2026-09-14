@@ -1,5 +1,6 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
+import { useLiteLlmIntegration } from "#/hooks/use-litellm-integration";
 import { useCreateStripeCheckoutSession } from "#/hooks/mutation/stripe/use-create-stripe-checkout-session";
 import { ModalBackdrop } from "#/components/shared/modals/modal-backdrop";
 import { ModalButtonGroup } from "#/components/shared/modals/modal-button-group";
@@ -11,8 +12,11 @@ interface AddCreditsModalProps {
   onClose: () => void;
 }
 
-export function AddCreditsModal({ onClose }: AddCreditsModalProps) {
+export function AddCreditsModal({
+  onClose,
+}: AddCreditsModalProps): React.JSX.Element | null {
   const { t } = useTranslation();
+  const { enabled } = useLiteLlmIntegration();
   const { mutate: addBalance } = useCreateStripeCheckoutSession();
 
   const [inputValue, setInputValue] = React.useState("");
@@ -62,6 +66,8 @@ export function AddCreditsModal({ onClose }: AddCreditsModalProps) {
     setInputValue(value);
     setErrorMessage(null);
   };
+
+  if (!enabled) return null;
 
   return (
     <ModalBackdrop onClose={onClose}>
