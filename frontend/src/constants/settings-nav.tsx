@@ -17,11 +17,7 @@ import PuzzlePieceIcon from "#/icons/u-puzzle-piece.svg?react";
 import UserIcon from "#/icons/user.svg?react";
 
 export type SettingsNavSection =
-  | "org"
-  | "personal"
-  | "user"
-  | "billing"
-  | "other";
+  "org" | "personal" | "user" | "billing" | "other";
 
 export interface SettingsNavItem {
   icon: React.ReactElement;

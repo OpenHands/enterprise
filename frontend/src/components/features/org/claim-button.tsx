@@ -5,11 +5,7 @@ import { cn } from "#/utils/utils";
 import type { GitOrg } from "#/types/org";
 
 type ButtonState =
-  | "claiming"
-  | "disconnecting"
-  | "disconnect"
-  | "claimed"
-  | "unclaimed";
+  "claiming" | "disconnecting" | "disconnect" | "claimed" | "unclaimed";
 
 const BUTTON_STYLES: Record<ButtonState, string> = {
   claiming:
