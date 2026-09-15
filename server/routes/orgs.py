@@ -19,6 +19,7 @@ from server.auth.authorization import (
     require_permission,
 )
 from server.auth.org_context import EFFECTIVE_ORG_ID, REJECT_X_ORG_ID_PATH_MISMATCH
+from server.routes.budget_control import budget_control_router
 from server.routes.org_models import (
     CannotModifySelfError,
     GitOrgAlreadyClaimedError,
@@ -88,6 +89,7 @@ org_router = APIRouter(
     tags=['Orgs'],
     dependencies=[REJECT_X_ORG_ID_PATH_MISMATCH],
 )
+org_router.include_router(budget_control_router)
 
 
 _org_budget_service_injector = OrgBudgetServiceInjector()
