@@ -49,6 +49,15 @@ const MOCK_ME: Omit<OrganizationMember, "role" | "org_id"> = {
   status: "active",
 };
 
+const currentUserMembership = (
+  orgId: string,
+  role: OrganizationUserRole,
+): OrganizationMember => ({
+  ...MOCK_ME,
+  org_id: orgId,
+  role,
+});
+
 export const createMockOrganization = (
   id: string,
   name: string,
@@ -131,6 +140,7 @@ export const MOCK_TEAM_ORG_ACME = createMockOrganization(
   "Acme Corp",
   1000,
 );
+/** Team org where the current mock user is a regular member, not admin/owner. */
 export const MOCK_TEAM_ORG_BETA = createMockOrganization("3", "Beta LLC", 500);
 export const MOCK_TEAM_ORG_ALLHANDS = createMockOrganization(
   "4",
@@ -146,20 +156,7 @@ export const INITIAL_MOCK_ORGS: Organization[] = [
 ];
 
 const INITIAL_MOCK_MEMBERS: Record<string, OrganizationMember[]> = {
-  "1": [
-    {
-      org_id: "1",
-      user_id: "99",
-      email: "me@acme.org",
-      role: "owner",
-      llm_api_key: "**********",
-      max_iterations: 20,
-      llm_model: "gpt-4",
-      llm_base_url: "https://api.openai.com",
-      agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
-      status: "active",
-    },
-  ],
+  "1": [currentUserMembership("1", "owner")],
   "2": [
     {
       org_id: "2",
@@ -197,6 +194,7 @@ const INITIAL_MOCK_MEMBERS: Record<string, OrganizationMember[]> = {
       agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
       status: "active",
     },
+    currentUserMembership("2", "owner"),
   ],
   "3": [
     {
@@ -223,6 +221,7 @@ const INITIAL_MOCK_MEMBERS: Record<string, OrganizationMember[]> = {
       agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
       status: "active",
     },
+    currentUserMembership("3", "member"),
   ],
   "4": [
     {
@@ -285,6 +284,7 @@ const INITIAL_MOCK_MEMBERS: Record<string, OrganizationMember[]> = {
       agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
       status: "invited",
     },
+    currentUserMembership("4", "admin"),
   ],
 };
 
@@ -296,6 +296,8 @@ export const ORGS_AND_MEMBERS: Record<string, OrganizationMember[]> = {
 };
 
 const orgs = new Map(INITIAL_MOCK_ORGS.map((org) => [org.id, org]));
+const DEFAULT_CURRENT_ORG_ID = MOCK_TEAM_ORG_ACME.id;
+let mockCurrentOrgId = DEFAULT_CURRENT_ORG_ID;
 
 type MockOrgLlmProfile = {
   name: string;
@@ -351,6 +353,7 @@ export const resetOrgMockData = () => {
     orgs.set(org.id, { ...org });
   });
   orgProfilesByOrgId.clear();
+  mockCurrentOrgId = DEFAULT_CURRENT_ORG_ID;
 };
 
 export const resetOrgsAndMembersMockData = () => {
@@ -459,28 +462,17 @@ export const ORG_HANDLERS = [
       );
     }
 
-    let role: OrganizationUserRole = "member";
-    switch (orgId) {
-      case "1": // Personal Workspace
-        role = "owner";
-        break;
-      case "2": // Acme Corp
-        role = "owner";
-        break;
-      case "3": // Beta LLC
-        role = "member";
-        break;
-      case "4": // All Hands AI
-        role = "admin";
-        break;
-      default:
-        role = "member";
+    const membership = ORGS_AND_MEMBERS[orgId].find(
+      (member) => member.user_id === MOCK_ME.user_id,
+    );
+    if (!membership) {
+      return HttpResponse.json({ error: "Not a member" }, { status: 404 });
     }
 
     const me: OrganizationMember = {
       ...MOCK_ME,
       org_id: orgId,
-      role,
+      role: membership.role,
     };
     return HttpResponse.json(me);
   }),
@@ -549,14 +541,12 @@ export const ORG_HANDLERS = [
 
   http.get("/api/organizations", () => {
     const organizations = Array.from(orgs.values());
-    // Prefer a team org so admin settings (budgets, usage, org defaults) are
-    // visible in SaaS mock mode. Personal Workspace (id "1") hides those pages.
-    const teamOrg =
-      organizations.find((org) => !org.is_personal) ?? organizations[0];
-    const currentOrgId = teamOrg?.id ?? null;
+    // Default to Acme (owner) so admin settings stay visible. Switch to Beta
+    // LLC to exercise the non-admin member experience; that choice persists
+    // until resetOrgMockData().
     return HttpResponse.json({
       items: organizations,
-      current_org_id: currentOrgId,
+      current_org_id: mockCurrentOrgId,
     });
   }),
 
@@ -762,7 +752,10 @@ export const ORG_HANDLERS = [
 
     if (orgId) {
       const org = orgs.get(orgId);
-      if (org) return HttpResponse.json(org);
+      if (org) {
+        mockCurrentOrgId = orgId;
+        return HttpResponse.json(org);
+      }
     }
 
     return HttpResponse.json(

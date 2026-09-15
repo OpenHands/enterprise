@@ -3,13 +3,10 @@ import { Text } from "#/ui/typography";
 import { cn } from "#/utils/utils";
 import { settingsListRowHoverClassName } from "#/utils/settings-list-classes";
 import { formControlTransitionClassName } from "#/utils/form-control-classes";
-import {
-  IntegrationProviderIcon,
-  type IntegrationProviderId,
-} from "./integration-provider-icon";
+import { IntegrationProviderIcon } from "./integration-provider-icon";
 
 interface IntegrationProviderCardProps {
-  provider: IntegrationProviderId;
+  provider: string;
   title: string;
   /** Optional short supporting line under the title. */
   description?: string;

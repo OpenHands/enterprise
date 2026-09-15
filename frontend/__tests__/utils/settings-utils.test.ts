@@ -1,5 +1,25 @@
 import { describe, it, expect } from "vitest";
-import { parseMaxBudgetPerTask, extractSettings } from "#/utils/settings-utils";
+import {
+  parseMaxBudgetPerTask,
+  extractSettings,
+  isSettingsPageHidden,
+} from "#/utils/settings-utils";
+import { WebClientFeatureFlags } from "#/api/option-service/option.types";
+
+const baseFlags = (
+  overrides: Partial<WebClientFeatureFlags> = {},
+): WebClientFeatureFlags => ({
+  enable_billing: false,
+  hide_llm_settings: false,
+  enable_jira: false,
+  enable_jira_dc: false,
+  enable_linear: false,
+  hide_users_page: false,
+  hide_billing_page: false,
+  hide_integrations_page: false,
+  enable_onboarding: false,
+  ...overrides,
+});
 
 describe("parseMaxBudgetPerTask", () => {
   it("should return null for empty string", () => {
@@ -87,5 +107,65 @@ describe("extractSettings", () => {
     const llm = as?.llm as Record<string, unknown>;
     expect(llm?.model).toBe("sambanova/Meta-Llama-3.1-8B-Instruct");
     expect(llm?.model).not.toBe("custom-model-name");
+  });
+});
+
+describe("isSettingsPageHidden", () => {
+  it("hides Integrations Hub when enable_integrations_hub is unset", () => {
+    expect(
+      isSettingsPageHidden("/settings/integrations-hub", baseFlags()),
+    ).toBe(true);
+    expect(
+      isSettingsPageHidden(
+        "/settings/integrations-hub/admin-catalog",
+        baseFlags(),
+      ),
+    ).toBe(true);
+  });
+
+  it("hides Integrations Hub when enable_integrations_hub is false", () => {
+    expect(
+      isSettingsPageHidden(
+        "/settings/integrations-hub",
+        baseFlags({ enable_integrations_hub: false }),
+      ),
+    ).toBe(true);
+  });
+
+  it("shows Integrations Hub when enable_integrations_hub is true", () => {
+    const flags = baseFlags({ enable_integrations_hub: true });
+    expect(isSettingsPageHidden("/settings/integrations-hub", flags)).toBe(
+      false,
+    );
+    expect(
+      isSettingsPageHidden("/settings/integrations-hub/admin-catalog", flags),
+    ).toBe(false);
+  });
+
+  it("does not hide the existing Integrations settings page via the Hub flag", () => {
+    expect(isSettingsPageHidden("/settings/integrations", baseFlags())).toBe(
+      false,
+    );
+  });
+
+  it("hides personal Integrations nested pages when hide_integrations_page is true", () => {
+    const flags = baseFlags({ hide_integrations_page: true });
+    expect(isSettingsPageHidden("/settings/integrations", flags)).toBe(true);
+    expect(
+      isSettingsPageHidden("/settings/integrations/agent-requests", flags),
+    ).toBe(true);
+  });
+
+  it("does not treat Integrations Hub as the personal Integrations page", () => {
+    const flags = baseFlags({
+      hide_integrations_page: true,
+      enable_integrations_hub: true,
+    });
+    expect(isSettingsPageHidden("/settings/integrations-hub", flags)).toBe(
+      false,
+    );
+    expect(
+      isSettingsPageHidden("/settings/integrations-hub/admin-catalog", flags),
+    ).toBe(false);
   });
 });

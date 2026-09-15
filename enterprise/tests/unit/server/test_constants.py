@@ -228,6 +228,75 @@ class TestEnableAutomationsInConfig:
             assert constants_module.ENABLE_AUTOMATIONS is True
 
 
+class TestEnableIntegrationsHubInConfig:
+    """Tests for enable_integrations_hub flag in SaaSServerConfig and get_config().
+
+    The switch is driven by ``ENABLE_INTEGRATIONS_HUB`` and must accept both
+    ``'true'`` and ``'1'`` (see AGENTS.md "Environment Variable Enable Toggles").
+    """
+
+    def test_enable_integrations_hub_true_in_feature_flags(self):
+        """Test that ENABLE_INTEGRATIONS_HUB: True is included in FEATURE_FLAGS."""
+        from server.config import SaaSServerConfig
+
+        saas_config = SaaSServerConfig()
+        saas_config.enable_integrations_hub = True
+        config = saas_config.get_config()
+
+        assert 'FEATURE_FLAGS' in config
+        assert 'ENABLE_INTEGRATIONS_HUB' in config['FEATURE_FLAGS']
+        assert config['FEATURE_FLAGS']['ENABLE_INTEGRATIONS_HUB'] is True
+
+    def test_enable_integrations_hub_false_in_feature_flags(self):
+        """Test that ENABLE_INTEGRATIONS_HUB: False is included in FEATURE_FLAGS."""
+        from server.config import SaaSServerConfig
+
+        saas_config = SaaSServerConfig()
+        saas_config.enable_integrations_hub = False
+        config = saas_config.get_config()
+
+        assert 'FEATURE_FLAGS' in config
+        assert 'ENABLE_INTEGRATIONS_HUB' in config['FEATURE_FLAGS']
+        assert config['FEATURE_FLAGS']['ENABLE_INTEGRATIONS_HUB'] is False
+
+    @pytest.mark.parametrize(
+        'env_value,expected',
+        [
+            ('true', True),
+            ('True', True),
+            ('TRUE', True),
+            ('1', True),
+            ('false', False),
+            ('False', False),
+            ('0', False),
+            ('', False),
+        ],
+    )
+    def test_enable_integrations_hub_truthy_parsing(
+        self, env_value: str, expected: bool
+    ) -> None:
+        with patch.dict('os.environ', {'ENABLE_INTEGRATIONS_HUB': env_value}):
+            import importlib
+
+            import server.auth.constants as constants_module
+
+            importlib.reload(constants_module)
+            assert constants_module.ENABLE_INTEGRATIONS_HUB is expected
+
+    def test_enable_integrations_hub_defaults_to_false(self):
+        """Test that ENABLE_INTEGRATIONS_HUB defaults to False when unset."""
+        import importlib
+
+        import server.auth.constants as constants_module
+
+        with patch.dict('os.environ', {}, clear=True):
+            import os
+
+            os.environ.pop('ENABLE_INTEGRATIONS_HUB', None)
+            importlib.reload(constants_module)
+            assert constants_module.ENABLE_INTEGRATIONS_HUB is False
+
+
 class TestUserProvisioningEnabled:
     """Tests for the USER_PROVISIONING_ENABLED feature switch.
 

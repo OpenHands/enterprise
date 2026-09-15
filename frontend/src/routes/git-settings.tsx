@@ -38,6 +38,12 @@ import {
 
 export const clientLoader = createPermissionGuard("manage_integrations");
 
+// CUTOVER: When enable_integrations_hub is on, this page is replaced by
+// the Hub-backed personal Integrations tab. That will invalidate existing
+// provider connections (git tokens, Slack, Jira/Linear, etc.). Before
+// that cutover, ship a first-visit modal that lists what broke and how
+// to reconnect each integration. See PersonalIntegrationsLayout.
+
 function GitSettingsScreen() {
   const { t } = useTranslation();
 

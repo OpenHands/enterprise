@@ -37,7 +37,34 @@ export default [
       route("mcp", "routes/mcp-settings.tsx"),
       route("skills", "routes/skills-settings.tsx"),
       route("user", "routes/user-settings.tsx"),
-      route("integrations", "routes/git-settings.tsx"),
+      route("integrations", "routes/personal-integrations-layout.tsx", [
+        index("routes/personal-integrations-index.tsx"),
+        route("agent-requests", "routes/integrations-hub-agent-requests.tsx", {
+          id: "routes/personal-integrations-agent-requests",
+        }),
+        route(
+          "agent-connection",
+          "routes/integrations-hub-agent-connection.tsx",
+          { id: "routes/personal-integrations-agent-connection" },
+        ),
+      ]),
+      route("integrations-hub", "routes/integrations-hub-layout.tsx", [
+        index("routes/integrations-hub.tsx"),
+        route("agent-requests", "routes/integrations-hub-agent-requests.tsx", {
+          id: "routes/integrations-hub-legacy-agent-requests",
+        }),
+        route(
+          "agent-connection",
+          "routes/integrations-hub-agent-connection.tsx",
+          { id: "routes/integrations-hub-legacy-agent-connection" },
+        ),
+        route("admin-overview", "routes/integrations-hub-admin-overview.tsx"),
+        route("admin-catalog", "routes/integrations-hub-admin-catalog.tsx"),
+        route(
+          "admin-user-requests",
+          "routes/integrations-hub-admin-user-requests.tsx",
+        ),
+      ]),
       route("app", "routes/app-settings.tsx"),
       route("billing", "routes/billing.tsx"),
       route("credits", "routes/credits.tsx"),

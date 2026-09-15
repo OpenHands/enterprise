@@ -14,6 +14,11 @@ const contextMenuVariants = cva("text-white overflow-hidden z-50", {
         dropdownMenuPanelPaddingClassName,
       ),
       naked: "relative",
+      /** In document-body portal; coordinates come from the wrapper style. */
+      popover: cn(
+        "relative bg-tertiary rounded-[6px] context-menu-box-shadow",
+        dropdownMenuPanelPaddingClassName,
+      ),
     },
     size: {
       compact: dropdownMenuPanelPaddingClassName,

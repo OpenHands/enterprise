@@ -39,6 +39,7 @@ vi.mock("react-i18next", async () => {
       t: (key: string) => {
         const translations: Record<string, string> = {
           SETTINGS$NAV_INTEGRATIONS: "Integrations",
+          SETTINGS$NAV_INTEGRATIONS_HUB: "Integrations Hub",
           SETTINGS$NAV_APPLICATION: "Application",
           SETTINGS$NAV_CREDITS: "Billing & Credits",
           SETTINGS$NAV_API_KEYS: "API Keys",
@@ -711,7 +712,7 @@ describe("Settings Screen", () => {
       ).not.toBeInTheDocument();
       // Other pages should still be visible
       expect(
-        within(navbar).getByText("Integrations", { exact: false }),
+        within(navbar).getByRole("link", { name: "Integrations" }),
       ).toBeInTheDocument();
       expect(
         within(navbar).getByText("Billing", { exact: false }),
@@ -753,7 +754,7 @@ describe("Settings Screen", () => {
         within(navbar).getByText("User", { exact: false }),
       ).toBeInTheDocument();
       expect(
-        within(navbar).getByText("Integrations", { exact: false }),
+        within(navbar).getByRole("link", { name: "Integrations" }),
       ).toBeInTheDocument();
     });
 
@@ -769,34 +770,34 @@ describe("Settings Screen", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: true,
+          enable_integrations_hub: true,
         },
       };
 
       mockQueryClient.clear();
       mockQueryClient.setQueryData(["web-client-config"], saasConfig);
       mockQueryClient.setQueryData(["organizations"], {
-        items: [MOCK_PERSONAL_ORG],
-        currentOrgId: MOCK_PERSONAL_ORG.id,
+        items: [MOCK_TEAM_ORG_ACME],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
       });
-      useSelectedOrganizationStore.setState({ organizationId: "1" });
-      // Pre-populate user data in cache so useMe() returns admin role immediately
+      useSelectedOrganizationStore.setState({ organizationId: "2" });
       mockQueryClient.setQueryData(
-        ["organizations", "1", "me"],
-        createMockUser({ role: "admin", org_id: "1" }),
+        ["organizations", "2", "me"],
+        createMockUser({ role: "admin", org_id: "2" }),
       );
 
       renderSettingsScreen();
 
       const navbar = await screen.findByTestId("settings-navbar");
       expect(
-        within(navbar).queryByText("Integrations", { exact: false }),
+        within(navbar).queryByRole("link", { name: "Integrations" }),
       ).not.toBeInTheDocument();
+      expect(
+        within(navbar).getByRole("link", { name: "Integrations Hub" }),
+      ).toBeInTheDocument();
       // Other pages should still be visible
       expect(
         within(navbar).getByText("User", { exact: false }),
-      ).toBeInTheDocument();
-      expect(
-        within(navbar).getByText("Billing", { exact: false }),
       ).toBeInTheDocument();
     });
 
@@ -812,11 +813,21 @@ describe("Settings Screen", () => {
           hide_users_page: true,
           hide_billing_page: true,
           hide_integrations_page: true,
+          enable_integrations_hub: true,
         },
       };
 
       mockQueryClient.clear();
       mockQueryClient.setQueryData(["web-client-config"], saasConfig);
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_TEAM_ORG_ACME],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
+      });
+      useSelectedOrganizationStore.setState({ organizationId: "2" });
+      mockQueryClient.setQueryData(
+        ["organizations", "2", "me"],
+        createMockUser({ role: "admin", org_id: "2" }),
+      );
 
       renderSettingsScreen();
 
@@ -828,8 +839,11 @@ describe("Settings Screen", () => {
         within(navbar).queryByText("Billing", { exact: false }),
       ).not.toBeInTheDocument();
       expect(
-        within(navbar).queryByText("Integrations", { exact: false }),
+        within(navbar).queryByRole("link", { name: "Integrations" }),
       ).not.toBeInTheDocument();
+      expect(
+        within(navbar).getByRole("link", { name: "Integrations Hub" }),
+      ).toBeInTheDocument();
       // Other pages should still be visible
       expect(
         within(navbar).getByText("Application", { exact: false }),
@@ -861,7 +875,10 @@ describe("Settings Screen", () => {
 
       const navbar = await screen.findByTestId("settings-navbar");
       expect(
-        within(navbar).queryByText("Integrations", { exact: false }),
+        within(navbar).queryByRole("link", { name: "Integrations" }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(navbar).queryByRole("link", { name: "Integrations Hub" }),
       ).not.toBeInTheDocument();
       // Other OSS pages should still be visible
       expect(
@@ -870,6 +887,84 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).getByText("Application", { exact: false }),
       ).toBeInTheDocument();
+    });
+
+    it("should hide Integrations Hub when enable_integrations_hub is false", async () => {
+      const saasConfig = {
+        app_mode: "saas",
+        feature_flags: {
+          enable_billing: true,
+          hide_llm_settings: false,
+          enable_jira: false,
+          enable_jira_dc: false,
+          enable_linear: false,
+          hide_users_page: false,
+          hide_billing_page: false,
+          hide_integrations_page: false,
+          enable_integrations_hub: false,
+        },
+      };
+
+      mockQueryClient.clear();
+      mockQueryClient.setQueryData(["web-client-config"], saasConfig);
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_PERSONAL_ORG],
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+      useSelectedOrganizationStore.setState({ organizationId: "1" });
+      mockQueryClient.setQueryData(
+        ["organizations", "1", "me"],
+        createMockUser({ role: "admin", org_id: "1" }),
+      );
+
+      renderSettingsScreen();
+
+      const navbar = await screen.findByTestId("settings-navbar");
+      expect(
+        within(navbar).queryByRole("link", { name: "Integrations Hub" }),
+      ).not.toBeInTheDocument();
+      expect(
+        within(navbar).getByRole("link", { name: "Integrations" }),
+      ).toBeInTheDocument();
+    });
+
+    it("should replace Integrations Hub with the personal Integrations tab for personal orgs", async () => {
+      const saasConfig = {
+        app_mode: "saas",
+        feature_flags: {
+          enable_billing: true,
+          hide_llm_settings: false,
+          enable_jira: false,
+          enable_jira_dc: false,
+          enable_linear: false,
+          hide_users_page: false,
+          hide_billing_page: false,
+          hide_integrations_page: false,
+          enable_integrations_hub: true,
+        },
+      };
+
+      mockQueryClient.clear();
+      mockQueryClient.setQueryData(["web-client-config"], saasConfig);
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_PERSONAL_ORG],
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+      useSelectedOrganizationStore.setState({ organizationId: "1" });
+      mockQueryClient.setQueryData(
+        ["organizations", "1", "me"],
+        createMockUser({ role: "admin", org_id: "1" }),
+      );
+
+      renderSettingsScreen();
+
+      const navbar = await screen.findByTestId("settings-navbar");
+      expect(
+        within(navbar).getByRole("link", { name: "Integrations" }),
+      ).toBeInTheDocument();
+      expect(
+        within(navbar).queryByRole("link", { name: "Integrations Hub" }),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -1301,5 +1396,56 @@ describe("clientLoader redirect behavior", () => {
     expect(result.status).toBe(302);
     // In OSS mode, first available is /settings (LLM)
     expect(result.headers.get("Location")).toBe("/settings");
+  });
+
+  it("should redirect from Integrations Hub when enable_integrations_hub is false", async () => {
+    const config = {
+      app_mode: "saas",
+      feature_flags: {
+        enable_billing: false,
+        hide_llm_settings: false,
+        enable_jira: false,
+        enable_jira_dc: false,
+        enable_linear: false,
+        hide_users_page: false,
+        hide_billing_page: false,
+        hide_integrations_page: false,
+        enable_integrations_hub: false,
+      },
+    };
+    mockQueryClient.setQueryData(["web-client-config"], config);
+
+    const result = (await clientLoader(
+      createMockRequest("/settings/integrations-hub") as any,
+    )) as Response;
+
+    expect(result).toBeDefined();
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings/user");
+  });
+
+  it("should redirect from nested Integrations Hub routes when the flag is off", async () => {
+    const config = {
+      app_mode: "saas",
+      feature_flags: {
+        enable_billing: false,
+        hide_llm_settings: false,
+        enable_jira: false,
+        enable_jira_dc: false,
+        enable_linear: false,
+        hide_users_page: false,
+        hide_billing_page: false,
+        hide_integrations_page: false,
+      },
+    };
+    mockQueryClient.setQueryData(["web-client-config"], config);
+
+    const result = (await clientLoader(
+      createMockRequest("/settings/integrations-hub/admin-catalog") as any,
+    )) as Response;
+
+    expect(result).toBeDefined();
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings/user");
   });
 });

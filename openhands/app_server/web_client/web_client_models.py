@@ -41,6 +41,17 @@ class WebClientFeatureFlags(BaseModel):
     enable_onboarding: bool = False
     enable_automations: bool = True
     enable_agent_canvas_banner: bool = False
+    # When false, the web client hides the Integrations Hub settings
+    # surface (nav item and /settings/integrations-hub/*). Defaults to
+    # False so the unfinished Hub UI stays off in production. Set
+    # ENABLE_INTEGRATIONS_HUB=true (or 1) to show it.
+    #
+    # CUTOVER: Making Hub the live integrations surface will break
+    # existing Settings > Integrations connections (git tokens, Slack,
+    # Jira/Linear, etc.). Before that cutover, ship a first-visit
+    # modal that lists what broke and how to reconnect each one in
+    # Integrations Hub. See frontend IntegrationsHubLayout.
+    enable_integrations_hub: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')

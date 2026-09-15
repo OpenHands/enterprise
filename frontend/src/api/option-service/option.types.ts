@@ -46,6 +46,15 @@ export interface WebClientFeatureFlags {
   enable_onboarding: boolean;
   enable_automations?: boolean;
   enable_agent_canvas_banner?: boolean;
+  /** When true, show the Integrations Hub settings surface. Defaults
+   *  to false (absent ⇒ hidden) so the unfinished Hub UI stays off
+   *  until ENABLE_INTEGRATIONS_HUB is set.
+   *
+   *  CUTOVER: Switching users onto Hub will break existing Settings >
+   *  Integrations connections. Before that, ship a first-visit modal
+   *  that lists what broke and how to reconnect in Hub. See
+   *  IntegrationsHubLayout. */
+  enable_integrations_hub?: boolean;
 }
 
 export interface ACPModelOption {

@@ -24,3 +24,7 @@ export function sidebarNavRowClassName(): string {
 export function sidebarNavLabelClassName(): string {
   return "min-w-0 truncate";
 }
+
+/** Trailing count pill used on settings / Hub nav rows. */
+export const SIDEBAR_NAV_COUNT_CLASS =
+  "inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-surface-raised px-1.5 text-[11px] font-medium leading-none tabular-nums text-foreground ml-auto";

@@ -21,7 +21,7 @@ import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organizati
 import { rolePermissions } from "#/utils/org/permissions";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
 import {
-  ADMIN_ONLY_SETTINGS_PATHS,
+  isAdminOnlySettingsPath,
   isSettingsPageHidden,
   getFirstAvailablePath,
 } from "#/utils/settings-utils";
@@ -42,6 +42,9 @@ const SAAS_ONLY_PATHS = [
   "/settings/org-defaults/verification",
   "/settings/usage-monitoring",
   "/settings/budgets",
+  "/settings/integrations-hub",
+  "/settings/integrations/agent-requests",
+  "/settings/integrations/agent-connection",
 ];
 
 const ORG_WIDE_BADGE_PATHS = new Set<string>([
@@ -63,7 +66,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   const url = new URL(request.url);
   const { pathname } = url;
 
-  const isAdminOnlyPath = ADMIN_ONLY_SETTINGS_PATHS.has(pathname);
+  const isAdminOnlyPath = isAdminOnlySettingsPath(pathname);
 
   // Step 1: Get config first (needed for all checks, no user data required).
   // Network/proxy failures must not crash the settings shell into ErrorBoundary.
@@ -86,12 +89,18 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   }
 
   // Step 2: Check SAAS_ONLY_PATHS for OSS mode (no user data required)
-  if (!isSaas && SAAS_ONLY_PATHS.includes(pathname)) {
+  if (
+    !isSaas &&
+    SAAS_ONLY_PATHS.some(
+      (path) => pathname === path || pathname.startsWith(`${path}/`),
+    )
+  ) {
     return redirect("/settings");
   }
 
   // Step 3: Check feature flag-based hiding and redirect IMMEDIATELY (no user data required)
-  // This handles hide_llm_settings, hide_users_page, hide_billing_page, hide_integrations_page
+  // This handles hide_llm_settings, hide_users_page, hide_billing_page,
+  // hide_integrations_page, and enable_integrations_hub.
   if (isSettingsPageHidden(pathname, featureFlags)) {
     const fallbackPath = getFirstAvailablePath(isSaas, featureFlags);
     if (fallbackPath && fallbackPath !== pathname) {
@@ -259,14 +268,17 @@ function SettingsScreen() {
     };
   }, [navItems, location.pathname]);
 
-  const routeHandle = matches.find((m) => m.pathname === location.pathname)
-    ?.handle as { hideTitle?: boolean } | undefined;
-  const shouldHideTitle = routeHandle?.hideTitle === true;
+  const routeHandles = matches.map(
+    (match) => match.handle as { hideTitle?: boolean; wideContent?: boolean },
+  );
+  const shouldHideTitle = routeHandles.some((handle) => handle?.hideTitle);
+  const wideContent = routeHandles.some((handle) => handle?.wideContent);
 
   return (
     <main data-testid="settings-screen" className="min-h-0 h-full">
       <SettingsLayout
         navigationItems={navItems}
+        wideContent={wideContent}
         topBanner={
           shouldShowOrgWideBadge ? (
             <OrgWideSettingsBadge variant={orgWideBadgeVariant} />

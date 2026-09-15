@@ -1,6 +1,7 @@
 import {
   AppWindow,
   BarChart2,
+  Blocks,
   Briefcase,
   DollarSign,
   Shield,
@@ -13,7 +14,6 @@ import RobotIcon from "#/icons/u-robot.svg?react";
 import ServerProcessIcon from "#/icons/server-process.svg?react";
 import SkillsIcon from "#/icons/skills.svg?react";
 import CircuitIcon from "#/icons/u-circuit.svg?react";
-import PuzzlePieceIcon from "#/icons/u-puzzle-piece.svg?react";
 import UserIcon from "#/icons/user.svg?react";
 
 export type SettingsNavSection = "org" | "personal" | "user" | "billing";
@@ -25,6 +25,8 @@ export interface SettingsNavItem {
   /** Short grey subline under the page title (`settings.tsx`). */
   subtitle: string;
   section?: SettingsNavSection;
+  /** When false, the link stays active for nested paths. Default is exact match. */
+  end?: boolean;
   // When true, this item is greyed out (and its route redirects to
   // ``/settings/agent``) while the personal-scope active agent is ACP.
   // The ACP sub-agent manages its own LLM and condenser, so those
@@ -96,6 +98,14 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "org",
   },
   {
+    icon: <Blocks className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/integrations-hub",
+    text: "SETTINGS$NAV_INTEGRATIONS_HUB",
+    subtitle: "SETTINGS$PAGE_INTEGRATIONS_HUB_SUBLINE",
+    section: "org",
+    end: false,
+  },
+  {
     icon: <RobotIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings/agent",
     text: "SETTINGS$AGENT",
@@ -147,11 +157,12 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "personal",
   },
   {
-    icon: <PuzzlePieceIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    icon: <Blocks className="size-4" strokeWidth={2} aria-hidden />,
     to: "/settings/integrations",
     text: "SETTINGS$NAV_INTEGRATIONS",
     subtitle: "SETTINGS$PAGE_INTEGRATIONS_SUBLINE",
     section: "personal",
+    end: false,
   },
   {
     icon: (
@@ -227,7 +238,7 @@ export const OSS_NAV_ITEMS: SettingsNavItem[] = [
     subtitle: "SETTINGS$PAGE_SKILLS_SUBLINE",
   },
   {
-    icon: <PuzzlePieceIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    icon: <Blocks className="size-4" strokeWidth={2} aria-hidden />,
     to: "/settings/integrations",
     text: "SETTINGS$NAV_INTEGRATIONS",
     subtitle: "SETTINGS$PAGE_INTEGRATIONS_SUBLINE",

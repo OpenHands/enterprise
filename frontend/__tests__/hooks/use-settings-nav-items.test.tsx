@@ -156,7 +156,7 @@ describe("useSettingsNavItems", () => {
 
   describe("org-type and role-based filtering", () => {
     it("should include org routes by default for team org admin", async () => {
-      mockConfig("saas");
+      mockConfigWithFeatureFlags("saas", { enable_integrations_hub: true });
       mockOrgTypeAndAccess.isTeamOrg = true;
       mockOrgTypeAndAccess.organizationId = "org-123";
       mockMe.data = { role: "admin" };
@@ -185,10 +185,16 @@ describe("useSettingsNavItems", () => {
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeDefined();
       expect(findItemByPath(result.current, "/settings/budgets")).toBeDefined();
+      expect(
+        findItemByPath(result.current, "/settings/integrations-hub"),
+      ).toBeDefined();
+      expect(
+        findItemByPath(result.current, "/settings/integrations"),
+      ).toBeDefined();
     });
 
     it("should hide org routes when isPersonalOrg is true", async () => {
-      mockConfig("saas");
+      mockConfigWithFeatureFlags("saas", { enable_integrations_hub: true });
       mockOrgTypeAndAccess.isPersonalOrg = true;
       mockOrgTypeAndAccess.organizationId = "org-123";
       mockMe.data = { role: "admin" };
@@ -214,10 +220,35 @@ describe("useSettingsNavItems", () => {
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/integrations-hub"),
+      ).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/integrations"),
+      ).toBeDefined();
+    });
+
+    it("should hide Integrations Hub when enable_integrations_hub is false", async () => {
+      mockConfigWithFeatureFlags("saas", { enable_integrations_hub: false });
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-123";
+      mockMe.data = { role: "admin" };
+
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      await waitFor(() => {
+        expect(
+          findItemByPath(result.current, "/settings/user"),
+        ).toBeDefined();
+      });
+
+      expect(
+        findItemByPath(result.current, "/settings/integrations-hub"),
+      ).toBeUndefined();
     });
 
     it("should hide org routes when user role is member", async () => {
-      mockConfig("saas");
+      mockConfigWithFeatureFlags("saas", { enable_integrations_hub: true });
       mockOrgTypeAndAccess.isTeamOrg = true;
       mockOrgTypeAndAccess.organizationId = "org-123";
       mockMe.data = { role: "member" };
@@ -243,6 +274,12 @@ describe("useSettingsNavItems", () => {
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/integrations-hub"),
+      ).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/integrations"),
+      ).toBeDefined();
     });
 
     it("should hide org routes when no organization is selected", async () => {
@@ -454,6 +491,10 @@ describe("useSettingsNavItems", () => {
         expect(
           findItemByPath(result.current, "/settings/app"),
         ).toBeDefined();
+        // Opt-in Hub stays hidden unless enable_integrations_hub is true.
+        expect(
+          findItemByPath(result.current, "/settings/integrations-hub"),
+        ).toBeUndefined();
       });
     });
 

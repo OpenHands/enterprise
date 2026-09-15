@@ -14,6 +14,8 @@ interface SettingsLayoutProps {
   navigationItems: SettingsNavRenderedItem[];
   /** Full-width strip rendered at the top of the main content pane. */
   topBanner?: React.ReactNode;
+  /** Drop the 800px column so nested rails (Hub) can sit beside page content. */
+  wideContent?: boolean;
 }
 
 /**
@@ -25,6 +27,7 @@ export function SettingsLayout({
   children,
   navigationItems,
   topBanner,
+  wideContent = false,
 }: SettingsLayoutProps) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -54,7 +57,12 @@ export function SettingsLayout({
                 topBanner && "pt-6 md:pt-6",
               )}
             >
-              <div className="mx-auto w-full min-w-0 max-w-[800px]">
+              <div
+                className={cn(
+                  "mx-auto w-full min-w-0",
+                  wideContent ? "max-w-none" : "max-w-[800px]",
+                )}
+              >
                 {children}
               </div>
             </div>

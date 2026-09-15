@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink } from "react-router";
 import { Tooltip } from "@heroui/react";
@@ -16,6 +17,7 @@ interface SettingsNavLinkProps {
   onClick?: () => void;
   disabled?: boolean;
   disabledAgentName?: string;
+  trailing?: ReactNode;
 }
 
 export function SettingsNavLink({
@@ -23,9 +25,10 @@ export function SettingsNavLink({
   onClick,
   disabled,
   disabledAgentName,
+  trailing,
 }: SettingsNavLinkProps) {
   const { t } = useTranslation();
-  const { to, icon, text } = item;
+  const { to, icon, text, end = true } = item;
   const label = t(text as I18nKey);
 
   if (disabled) {
@@ -46,7 +49,10 @@ export function SettingsNavLink({
           )}
         >
           <span className={SIDEBAR_ICON_SLOT_CLASS}>{icon}</span>
-          <span className={sidebarNavLabelClassName()}>{label}</span>
+          <span className={cn(sidebarNavLabelClassName(), "flex-1")}>
+            {label}
+          </span>
+          {trailing}
         </div>
       </Tooltip>
     );
@@ -54,7 +60,7 @@ export function SettingsNavLink({
 
   return (
     <NavLink
-      end
+      end={end}
       to={to}
       onClick={onClick}
       data-testid={`sidebar-settings-${to}`}
@@ -68,7 +74,8 @@ export function SettingsNavLink({
       }
     >
       <span className={SIDEBAR_ICON_SLOT_CLASS}>{icon}</span>
-      <span className={sidebarNavLabelClassName()}>{label}</span>
+      <span className={cn(sidebarNavLabelClassName(), "flex-1")}>{label}</span>
+      {trailing}
     </NavLink>
   );
 }

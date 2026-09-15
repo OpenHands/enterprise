@@ -58,7 +58,15 @@ export const extractSettings = (
 export const ADMIN_ONLY_SETTINGS_PATHS = new Set<string>([
   "/settings/usage-monitoring",
   "/settings/budgets",
+  "/settings/integrations-hub",
 ]);
+
+export function isAdminOnlySettingsPath(pathname: string): boolean {
+  return (
+    ADMIN_ONLY_SETTINGS_PATHS.has(pathname) ||
+    pathname.startsWith("/settings/integrations-hub/")
+  );
+}
 
 /**
  * Checks if a settings page should be hidden based on feature flags.
@@ -79,7 +87,17 @@ export function isSettingsPageHidden(
     (path === "/settings/billing" || path === "/settings/credits")
   )
     return true;
-  if (featureFlags?.hide_integrations_page && path === "/settings/integrations")
+  if (
+    featureFlags?.hide_integrations_page &&
+    (path === "/settings/integrations" ||
+      path.startsWith("/settings/integrations/"))
+  )
+    return true;
+  if (
+    !featureFlags?.enable_integrations_hub &&
+    (path === "/settings/integrations-hub" ||
+      path.startsWith("/settings/integrations-hub/"))
+  )
     return true;
   return false;
 }

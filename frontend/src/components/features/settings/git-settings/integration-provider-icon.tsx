@@ -5,22 +5,39 @@ import GitLabLogo from "#/assets/branding/gitlab-logo.svg?react";
 import BitbucketLogo from "#/assets/branding/bitbucket-logo.svg?react";
 import AzureDevOpsLogo from "#/assets/branding/azure-devops-logo.svg?react";
 import SlackLogo from "#/icons/slack.svg?react";
+import { getHubCatalogLogoBranding } from "#/components/features/integrations-hub/hub-catalog-logo-branding";
+import { HubCatalogGlyph } from "#/components/features/integrations-hub/hub-catalog-logos";
 import { cn } from "#/utils/utils";
 
-export type IntegrationProviderId =
-  | "github"
-  | "gitlab"
-  | "bitbucket"
-  | "bitbucket_data_center"
-  | "azure_devops"
-  | "forgejo"
-  | "slack"
-  | "jira"
-  | "jira-dc"
-  | "linear";
+export const INTEGRATION_PROVIDER_IDS = [
+  "github",
+  "gitlab",
+  "bitbucket",
+  "bitbucket_data_center",
+  "azure_devops",
+  "forgejo",
+  "slack",
+  "jira",
+  "jira-dc",
+  "linear",
+] as const;
+
+export type IntegrationProviderId = (typeof INTEGRATION_PROVIDER_IDS)[number];
+
+export function isIntegrationProviderId(
+  provider: string,
+): provider is IntegrationProviderId {
+  return (INTEGRATION_PROVIDER_IDS as readonly string[]).includes(provider);
+}
 
 interface IntegrationProviderIconProps {
-  provider: IntegrationProviderId;
+  /** Known git/PM providers, or any Hub slug (falls back to an initial). */
+  provider: string;
+  /** Optional remote catalog mark when no bundled icon exists. */
+  logoUrl?: string;
+  /** Optional Hub catalog tile colors. Falls back to brand map by slug. */
+  iconBg?: string;
+  iconColor?: string;
   className?: string;
   /** Visual size of the badge shell. */
   size?: "sm" | "md";
@@ -32,23 +49,6 @@ const SIZE_CLASS: Record<
 > = {
   sm: "size-7 rounded-md [&>svg]:size-3.5",
   md: "size-9 rounded-lg [&>svg]:size-4",
-};
-
-/** Shared shell matches GitHub: neutral `bg-white/10` badge. Brand color stays on the glyph. */
-const PROVIDER_SHELL = "bg-white/10";
-
-const PROVIDER_SURFACE: Record<IntegrationProviderId, string> = {
-  github: `${PROVIDER_SHELL} text-white`,
-  gitlab: `${PROVIDER_SHELL} text-[#FC6B0E]`,
-  bitbucket: `${PROVIDER_SHELL} text-[#2684FF]`,
-  bitbucket_data_center: `${PROVIDER_SHELL} text-[#2684FF]`,
-  azure_devops: `${PROVIDER_SHELL} text-[#0078D4]`,
-  forgejo: `${PROVIDER_SHELL} text-orange-400`,
-  // Multicolor Slack SVG — no currentColor tint needed.
-  slack: PROVIDER_SHELL,
-  jira: `${PROVIDER_SHELL} text-[#2684FF]`,
-  "jira-dc": `${PROVIDER_SHELL} text-[#2684FF]`,
-  linear: `${PROVIDER_SHELL} text-white`,
 };
 
 function SimpleIcon({
@@ -85,25 +85,46 @@ function ProviderGlyph({ provider }: { provider: IntegrationProviderId }) {
 }
 
 /**
- * Brand mark for an integration provider, rendered inside a neutral badge.
+ * Brand mark for an integration provider, rendered inside a Hub brand tile.
  */
 export function IntegrationProviderIcon({
   provider,
+  logoUrl,
+  iconBg,
+  iconColor,
   className,
   size = "md",
 }: IntegrationProviderIconProps) {
+  const knownProvider = isIntegrationProviderId(provider)
+    ? provider
+    : undefined;
+  const initial = provider.trim().charAt(0).toUpperCase() || "?";
+  const fallback = <span className="text-xs font-semibold">{initial}</span>;
+  const branding = getHubCatalogLogoBranding(provider, { iconBg, iconColor });
+
   return (
     <span
       aria-hidden="true"
       data-testid={`integration-provider-icon-${provider}`}
       className={cn(
-        "inline-flex shrink-0 items-center justify-center border border-white/10",
+        "inline-flex shrink-0 items-center justify-center overflow-hidden border border-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]",
         SIZE_CLASS[size],
-        PROVIDER_SURFACE[provider],
         className,
       )}
+      style={{
+        backgroundColor: branding.iconBg,
+        color: branding.iconColor,
+      }}
     >
-      <ProviderGlyph provider={provider} />
+      {knownProvider ? (
+        <ProviderGlyph provider={knownProvider} />
+      ) : (
+        <HubCatalogGlyph
+          slug={provider}
+          logoUrl={logoUrl}
+          fallback={fallback}
+        />
+      )}
     </span>
   );
 }

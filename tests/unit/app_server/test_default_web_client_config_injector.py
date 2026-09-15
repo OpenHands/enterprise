@@ -384,6 +384,52 @@ class TestGetFeatureFlags:
 
         assert config.feature_flags.enable_agent_canvas_banner is True
 
+    def test_enable_integrations_hub_false_by_default(self):
+        """When ENABLE_INTEGRATIONS_HUB is unset, the Hub flag is False."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_feature_flags()
+            assert result.enable_integrations_hub is False
+
+    def test_enable_integrations_hub_true_when_env_var_true(self):
+        """When ENABLE_INTEGRATIONS_HUB is 'true', the Hub flag is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_INTEGRATIONS_HUB': 'true'}):
+            result = _get_feature_flags()
+            assert result.enable_integrations_hub is True
+
+    def test_enable_integrations_hub_true_when_env_var_one(self):
+        """When ENABLE_INTEGRATIONS_HUB is '1', the Hub flag is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_INTEGRATIONS_HUB': '1'}):
+            result = _get_feature_flags()
+            assert result.enable_integrations_hub is True
+
+    def test_enable_integrations_hub_true_from_structured_env(self):
+        """Structured web-client env can enable the Integrations Hub flag."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        with patch.dict(
+            os.environ,
+            {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_INTEGRATIONS_HUB': 'true'},
+            clear=True,
+        ):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        assert config.feature_flags.enable_integrations_hub is True
+
 
 class TestGetJiraDcServiceAccountConfig:
     """Test cases for Jira DC service-account web-client config helpers."""

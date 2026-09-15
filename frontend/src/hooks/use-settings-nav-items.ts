@@ -116,6 +116,12 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     items = items.filter((item) => !PERSONAL_LLM_PATHS.has(item.to));
   }
 
+  // Integrations Hub is org-admin only. Personal Integrations (the
+  // replacement tab when the Hub flag is on) stays in personal settings.
+  if (!isSaasMode) {
+    items = items.filter((item) => item.to !== "/settings/integrations-hub");
+  }
+
   const buildRenderedItem = (
     item: SettingsNavItem,
   ): SettingsNavRenderedItem => {

@@ -26,6 +26,8 @@
   /* Semantic surface aliases */
   --color-surface: var(--oh-surface);
   --color-surface-raised: var(--oh-surface-raised);
+  --color-surface-subtle: var(--oh-surface-subtle);
+  --color-surface-muted: var(--oh-surface-muted);
   --color-surface-deep: var(--oh-surface-deep);
 
   /* Semantic text aliases */
@@ -80,6 +82,8 @@
   --oh-surface: var(--cool-grey-925);
   --oh-surface-foreground: var(--cool-grey-100);
   --oh-surface-raised: var(--cool-grey-900);
+  --oh-surface-subtle: var(--cool-grey-900);
+  --oh-surface-muted: var(--cool-grey-900);
   --oh-surface-deep: var(--cool-grey-975);
   --oh-overlay: var(--cool-grey-925);
   --oh-overlay-foreground: var(--cool-grey-100);
@@ -94,7 +98,11 @@
   --oh-interactive-active: var(--cool-grey-800);
   --oh-interactive-selected: var(--cool-grey-600);
   --oh-scrollbar: color-mix(in srgb, var(--cool-grey-400) 30%, transparent);
-  --oh-scrollbar-hover: color-mix(in srgb, var(--cool-grey-400) 50%, transparent);
+  --oh-scrollbar-hover: color-mix(
+    in srgb,
+    var(--cool-grey-400) 50%,
+    transparent
+  );
   --oh-default: var(--cool-grey-800);
   --oh-default-foreground: var(--cool-grey-100);
   --oh-accent: #ffffff;
@@ -126,6 +134,8 @@
   --foreground: var(--oh-foreground);
   --surface: var(--oh-surface);
   --surface-raised: var(--oh-surface-raised);
+  --surface-subtle: var(--oh-surface-subtle);
+  --surface-muted: var(--oh-surface-muted);
   --surface-deep: var(--oh-surface-deep);
   --surface-foreground: var(--oh-surface-foreground);
   --overlay: var(--oh-overlay);
@@ -509,11 +519,21 @@
 }
 
 .modal-box-shadow {
-  box-shadow: 0 183px 51px 0 rgba(0, 0, 0, 0.00), 0 117px 47px 0 rgba(0, 0, 0, 0.01), 0 66px 40px 0 rgba(0, 0, 0, 0.03), 0 29px 29px 0 rgba(0, 0, 0, 0.04), 0 7px 16px 0 rgba(0, 0, 0, 0.05);
+  box-shadow:
+    0 183px 51px 0 rgba(0, 0, 0, 0),
+    0 117px 47px 0 rgba(0, 0, 0, 0.01),
+    0 66px 40px 0 rgba(0, 0, 0, 0.03),
+    0 29px 29px 0 rgba(0, 0, 0, 0.04),
+    0 7px 16px 0 rgba(0, 0, 0, 0.05);
 }
 
 .table-box-shadow {
-  box-shadow: 0 26px 7px 0 rgba(0, 0, 0, 0.00), 0 17px 7px 0 rgba(0, 0, 0, 0.01), 0 9px 6px 0 rgba(0, 0, 0, 0.03), 0 4px 4px 0 rgba(0, 0, 0, 0.04), 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  box-shadow:
+    0 26px 7px 0 rgba(0, 0, 0, 0),
+    0 17px 7px 0 rgba(0, 0, 0, 0.01),
+    0 9px 6px 0 rgba(0, 0, 0, 0.03),
+    0 4px 4px 0 rgba(0, 0, 0, 0.04),
+    0 1px 2px 0 rgba(0, 0, 0, 0.05);
 }
 
 .git-external-link-icon {
@@ -521,7 +541,12 @@
 }
 
 .api-configuration-modal {
-  box-shadow: 0 183px 51px 0 rgba(0, 0, 0, 0.00), 0 117px 47px 0 rgba(0, 0, 0, 0.01), 0 66px 40px 0 rgba(0, 0, 0, 0.03), 0 29px 29px 0 rgba(0, 0, 0, 0.04), 0 7px 16px 0 rgba(0, 0, 0, 0.05);
+  box-shadow:
+    0 183px 51px 0 rgba(0, 0, 0, 0),
+    0 117px 47px 0 rgba(0, 0, 0, 0.01),
+    0 66px 40px 0 rgba(0, 0, 0, 0.03),
+    0 29px 29px 0 rgba(0, 0, 0, 0.04),
+    0 7px 16px 0 rgba(0, 0, 0, 0.05);
 }
 
 /* Shine text effect for streaming content */
@@ -539,11 +564,22 @@
   -webkit-background-clip: text !important;
   background-clip: text !important;
   animation: shine 2s linear infinite;
-  background: radial-gradient(circle at center, rgb(24 24 27 / 85%), transparent) -200% 50% / 200% 100% no-repeat, #f4f4f5;
+  background:
+    radial-gradient(circle at center, rgb(24 24 27 / 85%), transparent) -200%
+      50% / 200% 100% no-repeat,
+    #f4f4f5;
 }
 
 /* CTA card gradient and shadow */
 .cta-card-gradient {
-  background: radial-gradient(85.36% 123.38% at 50% 0%, rgba(255, 255, 255, 0.14) 0%, rgba(0, 0, 0, 0) 100%), #000000;
-  box-shadow: 0px 4px 6px -4px rgba(0, 0, 0, 0.1), 0px 10px 15px -3px rgba(0, 0, 0, 0.1);
+  background:
+    radial-gradient(
+      85.36% 123.38% at 50% 0%,
+      rgba(255, 255, 255, 0.14) 0%,
+      rgba(0, 0, 0, 0) 100%
+    ),
+    #000000;
+  box-shadow:
+    0px 4px 6px -4px rgba(0, 0, 0, 0.1),
+    0px 10px 15px -3px rgba(0, 0, 0, 0.1);
 }
