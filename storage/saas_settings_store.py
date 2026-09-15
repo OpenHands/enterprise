@@ -1046,7 +1046,9 @@ class SaasSettingsStore(SettingsStore):
                 return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.BYOK)
 
             async with key_mutation_scope(str(org_id)):
-                await session.refresh(org, with_for_update=True)
+                # Exclude concurrent org edits, but allow budget maintenance on
+                # the control connection to take its foreign-key KEY SHARE lock.
+                await session.refresh(org, with_for_update={'key_share': True})
                 await session.refresh(org_member, with_for_update=True)
                 if org._llm_api_key or org_member.has_custom_llm_api_key:
                     return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.BYOK)

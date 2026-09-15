@@ -4,6 +4,7 @@ import asyncio
 from copy import deepcopy
 from datetime import timedelta
 from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 import pytest
 from sqlalchemy import select
@@ -109,6 +110,87 @@ async def managed(adoption, async_engine):
     org_id, user_id, service, request, proxy = adoption
     assert (await service.confirm(org_id, 'admin', request))['status'] == 'applied'
     yield org_id, user_id, ManagedBudgetService(async_engine), proxy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('restricted', [False, True])
+async def test_managed_key_refresh_does_not_block_its_own_budget_maintenance(
+    adoption, async_session_maker, restricted
+):
+    from unittest.mock import MagicMock
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    from storage.lite_llm_manager import LiteLlmManager
+    from storage.llm_credential_operation import LlmCredentialOperation
+    from storage.saas_settings_store import SaasSettingsStore
+    from tests.unit.test_litellm_key_policy import client_for, existing_key
+
+    org_id, user_id, service, request, proxy = adoption
+    request.current_default_member_allowance = 0
+    assert (await service.confirm(org_id, 'admin', request))['status'] == 'applied'
+    async with async_session_maker() as session:
+        member = await session.get(OrgMember, (org_id, UUID(user_id)))
+        member.llm_api_key = 'sk-existing'
+        member.has_custom_llm_api_key = False
+        await session.commit()
+    policy_before = deepcopy(proxy.state)
+    keys = [
+        existing_key(
+            org_id, user_id=user_id, **({'models': ['model']} if restricted else {})
+        )
+    ]
+    client, calls = client_for(keys)
+    store = SaasSettingsStore(user_id, effective_org_id=org_id)
+    settings = MagicMock()
+    settings.agent_settings.llm.model = 'openhands/claude-sonnet-4'
+    settings.agent_settings.llm.base_url = None
+
+    async def generate(*args, **kwargs):
+        async with async_session_maker() as contender:
+            await contender.execute(text("SET LOCAL lock_timeout = '100ms'"))
+            with pytest.raises(DBAPIError) as blocked:
+                await contender.execute(
+                    text('UPDATE org SET _llm_api_key = :key WHERE id = :org'),
+                    {'key': 'concurrent-byok-test', 'org': org_id},
+                )
+            assert blocked.value.orig.sqlstate == '55P03'
+        return await LiteLlmManager._generate_key(client, *args, **kwargs)
+
+    async with client:
+        with (
+            patch('storage.database.a_session_maker', async_session_maker),
+            patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-master'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://litellm.test'),
+            patch.object(store, 'load', return_value=settings),
+            patch.object(LiteLlmManager, 'generate_key', new=generate),
+        ):
+            # Real PostgreSQL row/FK locks must permit the nested maintenance
+            # transaction; an HTTP mock alone cannot detect this self-deadlock.
+            async with asyncio.timeout(5):
+                if restricted:
+                    with pytest.raises(BudgetWriteDenied, match='Rotation requires'):
+                        await store.rotate_managed_llm_key()
+                else:
+                    rotation = await store.rotate_managed_llm_key()
+                    assert rotation.old_key == 'sk-existing'
+    assert proxy.state == policy_before
+    async with async_session_maker() as session:
+        budget = await session.scalar(select(OrgBudgetSettings))
+        member = await session.get(OrgMember, (org_id, UUID(user_id)))
+        credential = await session.scalar(select(LlmCredentialOperation))
+        assert budget.control_generation == 1
+        assert budget.cycle_default_user_allowance == 0
+        assert budget.user_cycle_start_spend == {user_id: 12}
+        if restricted:
+            assert member.llm_api_key.get_secret_value() == 'sk-existing'
+            assert credential is None
+            assert all(call.method == 'GET' for call in calls)
+        else:
+            assert member.llm_api_key.get_secret_value() == rotation.new_key
+            assert credential.activated_at is not None
 
 
 @pytest.fixture
