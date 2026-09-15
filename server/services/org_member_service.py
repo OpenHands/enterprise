@@ -212,7 +212,7 @@ class OrgMemberService:
         """Remove a member from an organization.
 
         Returns:
-            Tuple of (success, error_message). If success is True, error_message is None.
+            App removal success and an error or pending-revocation code, if any.
         """
         requester_membership = await OrgMemberStore.get_org_member(
             org_id, current_user_id
@@ -242,7 +242,9 @@ class OrgMemberService:
             if await OrgMemberService._is_last_owner(org_id, target_user_id):
                 return False, 'cannot_remove_last_owner'
 
-        success = await OrgMemberStore.remove_user_from_org(org_id, target_user_id)
+        success = await OrgMemberStore.remove_user_from_org(
+            org_id, target_user_id, actor=str(current_user_id)
+        )
         if not success:
             return False, 'removal_failed'
 
@@ -251,7 +253,7 @@ class OrgMemberService:
             # Fall back to the user's personal workspace (org.id == user.id)
             await UserStore.update_current_org(str(target_user_id), target_user_id)
 
-        # DB removal already succeeded; keep LiteLLM eventually consistent even if this fails.
+        revocation_pending = False
         try:
             await LiteLlmManager.remove_user_from_team(str(target_user_id), str(org_id))
             logger.info(
@@ -262,16 +264,27 @@ class OrgMemberService:
                 },
             )
         except Exception as e:
+            revocation_pending = True
             logger.warning(
                 'Failed to remove user from LiteLLM team',
                 extra={
                     'user_id': str(target_user_id),
                     'org_id': str(org_id),
-                    'error': str(e),
+                    'error_type': type(e).__name__,
                 },
             )
 
-        return True, None
+        try:
+            revocation_pending |= await OrgMemberStore.is_member_revocation_pending(
+                org_id, target_user_id
+            )
+        except Exception as exc:
+            revocation_pending = True
+            logger.warning(
+                'member_revocation_status_unavailable',
+                extra={'org_id': str(org_id), 'error_type': type(exc).__name__},
+            )
+        return True, 'revocation_pending' if revocation_pending else None
 
     @staticmethod
     async def update_org_member(

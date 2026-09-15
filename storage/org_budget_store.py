@@ -75,17 +75,19 @@ class OrgBudgetStore:
         existing: list[OrgBudgetThreshold],
         new_thresholds,
     ) -> None:
-        for threshold in existing:
-            await self.db_session.delete(threshold)
+        by_percentage = {threshold.percentage: threshold for threshold in existing}
         for threshold in new_thresholds:
-            self.db_session.add(
-                OrgBudgetThreshold(
+            current = by_percentage.pop(threshold.percentage, None)
+            if current is None:
+                current = OrgBudgetThreshold(
                     org_id=org_id,
                     percentage=threshold.percentage,
-                    email_enabled=threshold.email_enabled,
-                    slack_enabled=threshold.slack_enabled,
                 )
-            )
+                self.db_session.add(current)
+            current.email_enabled = threshold.email_enabled
+            current.slack_enabled = threshold.slack_enabled
+        for threshold in by_percentage.values():
+            await self.db_session.delete(threshold)
         await self.db_session.flush()
 
     async def get_overrides(self, org_id: UUID) -> list[OrgUserBudgetOverride]:

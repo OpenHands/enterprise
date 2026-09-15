@@ -20,6 +20,9 @@ from server.routes.orgs import (
 def _budget_state(reconciliation_state: str) -> dict:
     now = datetime.now(UTC)
     settings = SimpleNamespace(
+        control_mode='managed',
+        control_generation=1,
+        cycle_end_at=None,
         enabled=True,
         monthly_limit=1000.0,
         litellm_last_sync_at=now,

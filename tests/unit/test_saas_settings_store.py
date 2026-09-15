@@ -427,10 +427,6 @@ async def test_ensure_api_key_rotates_invalid_fallback_key():
             return_value=False,
         ) as mock_verify,
         patch(
-            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
-            new_callable=AsyncMock,
-        ) as mock_delete,
-        patch(
             'storage.saas_settings_store.LiteLlmManager.generate_key',
             new_callable=AsyncMock,
             return_value='sk-new-key',
@@ -449,7 +445,6 @@ async def test_ensure_api_key_rotates_invalid_fallback_key():
         'org-123',
         openhands_type=True,
     )
-    mock_delete.assert_awaited_once_with(key_alias=expected_alias)
     mock_generate.assert_awaited_once_with(
         'test-user-id-123', 'org-123', expected_alias, {'type': 'openhands'}
     )
@@ -458,11 +453,7 @@ async def test_ensure_api_key_rotates_invalid_fallback_key():
 
 @pytest.mark.asyncio
 async def test_ensure_api_key_generates_new_key_when_verification_fails():
-    """When verification fails, a new managed key is minted under the shared.
-
-    alias after deleting any prior key — symmetric across model types so
-    switching to/from an openhands/* model never orphans a key.
-    """
+    """Missing credentials use guarded creation without deleting existing aliases."""
     from storage.lite_llm_manager import get_openhands_cloud_key_alias
 
     store = SaasSettingsStore('test-user-id-123')
@@ -477,10 +468,6 @@ async def test_ensure_api_key_generates_new_key_when_verification_fails():
             return_value=False,
         ),
         patch(
-            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
-            new_callable=AsyncMock,
-        ) as mock_delete,
-        patch(
             'storage.saas_settings_store.LiteLlmManager.generate_key',
             new_callable=AsyncMock,
             return_value=new_key,
@@ -489,9 +476,6 @@ async def test_ensure_api_key_generates_new_key_when_verification_fails():
         await store._ensure_api_key(item, 'org-123', openhands_type=True)
 
         assert _secret_value(item, 'llm.api_key') == new_key
-        # The openhands branch now deletes the prior key under the shared alias
-        # before minting (previously it skipped the delete and orphaned keys).
-        mock_delete.assert_awaited_once_with(key_alias=expected_alias)
         mock_generate.assert_awaited_once_with(
             'test-user-id-123', 'org-123', expected_alias, {'type': 'openhands'}
         )
@@ -1092,10 +1076,6 @@ async def test_store_clears_member_custom_key_when_switching_to_managed_profile(
     with (
         patch('storage.saas_settings_store.a_session_maker', async_session_maker),
         patch(
-            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
-            new_callable=AsyncMock,
-        ) as mock_delete,
-        patch(
             'storage.saas_settings_store.LiteLlmManager.generate_key',
             new_callable=AsyncMock,
             return_value='sk-managed-key',
@@ -1120,7 +1100,6 @@ async def test_store_clears_member_custom_key_when_switching_to_managed_profile(
         assert member.has_custom_llm_api_key is False
         assert decrypt_value(member._llm_api_key) == 'sk-managed-key'
 
-    mock_delete.assert_awaited_once()
     mock_generate.assert_awaited_once()
 
 
@@ -1154,10 +1133,6 @@ async def test_store_reuses_existing_managed_key_for_blank_openhands_profile(
             return_value=True,
         ) as mock_verify,
         patch(
-            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
-            new_callable=AsyncMock,
-        ) as mock_delete,
-        patch(
             'storage.saas_settings_store.LiteLlmManager.generate_key',
             new_callable=AsyncMock,
             return_value='sk-unexpected-rotation',
@@ -1171,7 +1146,6 @@ async def test_store_reuses_existing_managed_key_for_blank_openhands_profile(
         str(org_id),
         openhands_type=True,
     )
-    mock_delete.assert_not_awaited()
     mock_generate.assert_not_awaited()
     assert _secret_value(settings, 'llm.api_key') == existing_key
     assert settings.llm_profiles.require('managed').api_key is None

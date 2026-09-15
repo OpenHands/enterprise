@@ -1,0 +1,47 @@
+x-proxy: &proxy
+  image: ${BUDGET_TEST_LITELLM_IMAGE:?Set a verified candidate image}
+  platform: linux/amd64
+  environment:
+    DATABASE_URL: postgresql://budget:budget-local-only@db:5432/budget
+    LITELLM_MASTER_KEY: sk-budget-control-local-only
+    LITELLM_SALT_KEY: budget-control-cache-test-salt-only
+    LITELLM_LOG: ERROR
+  volumes:
+    - ./litellm-config.yaml:/app/budget-test-config.yaml:ro
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  command: [--config, /app/budget-test-config.yaml, --port, '4000', --num_workers, '1', --use_v2_migration_resolver]
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: budget
+      POSTGRES_PASSWORD: budget-local-only
+      POSTGRES_DB: budget
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U budget -d budget]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+  redis:
+    image: redis:7
+    command: [redis-server, --save, '', --appendonly, 'no']
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  proxy:
+    <<: *proxy
+    ports:
+      - '127.0.0.1:41500:4000'
+  peer:
+    <<: *proxy
+    ports:
+      - '127.0.0.1:41501:4000'

@@ -692,9 +692,21 @@ def target_membership_owner(org_id, target_user_id, owner_role):
 class TestOrgMemberServiceRemoveOrgMember:
     """Test cases for OrgMemberService.remove_org_member."""
 
+    @pytest.fixture(autouse=True)
+    def revocation_status(self):
+        with patch(
+            'server.services.org_member_service.OrgMemberStore.is_member_revocation_pending',
+            new_callable=AsyncMock,
+            return_value=False,
+        ) as status:
+            yield status
+
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('pending', [False, True, 'unavailable'])
     async def test_owner_removes_user_succeeds(
         self,
+        pending,
+        revocation_status,
         org_id,
         current_user_id,
         target_user_id,
@@ -703,7 +715,11 @@ class TestOrgMemberServiceRemoveOrgMember:
         owner_role,
         member_role,
     ):
-        """Test that an owner can successfully remove a regular user."""
+        """App removal succeeds but unresolved revocation must not be hidden."""
+        if pending == 'unavailable':
+            revocation_status.side_effect = RuntimeError('status read unavailable')
+        else:
+            revocation_status.return_value = pending
         # Arrange
         with (
             patch(
@@ -738,8 +754,10 @@ class TestOrgMemberServiceRemoveOrgMember:
 
             # Assert
             assert success is True
-            assert error is None
-            mock_remove.assert_called_once_with(org_id, target_user_id)
+            assert error == ('revocation_pending' if pending else None)
+        mock_remove.assert_called_once_with(
+            org_id, target_user_id, actor=str(current_user_id)
+        )
 
     @pytest.mark.asyncio
     async def test_owner_removes_admin_succeeds(
@@ -1495,7 +1513,7 @@ class TestOrgMemberServiceRemoveOrgMember:
 
             # Assert
             assert success is True
-            assert error is None
+            assert error == 'revocation_pending'
 
     @pytest.mark.asyncio
     async def test_database_failure_skips_litellm_call(

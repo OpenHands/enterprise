@@ -2619,6 +2619,51 @@ class TestRemoveOrgMemberEndpoint:
     """Test cases for DELETE /api/organizations/{org_id}/members/{user_id} endpoint."""
 
     @pytest.mark.asyncio
+    async def test_pending_revocation_returns_202(
+        self, org_id, current_user_id, target_user_id
+    ):
+        import json
+
+        with patch(
+            'server.routes.orgs.OrgMemberService.remove_org_member',
+            AsyncMock(return_value=(True, 'revocation_pending')),
+        ):
+            result = await remove_org_member(
+                org_id=uuid.UUID(org_id),
+                user_id=target_user_id,
+                current_user_id=current_user_id,
+            )
+        assert result.status_code == 202
+        assert json.loads(result.body) == {
+            'message': 'Member removed from OpenHands; LLM access revocation is not yet confirmed.',
+            'revocation_pending': True,
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'error_name', ['BudgetControlConflict', 'BudgetWriteDenied']
+    )
+    async def test_budget_conflict_returns_409(
+        self, org_id, current_user_id, target_user_id, error_name
+    ):
+        from storage import budget_control
+
+        with patch(
+            'server.routes.orgs.OrgMemberService.remove_org_member',
+            AsyncMock(
+                side_effect=getattr(budget_control, error_name)('Retry reconciliation')
+            ),
+        ):
+            with pytest.raises(HTTPException) as error:
+                await remove_org_member(
+                    org_id=uuid.UUID(org_id),
+                    user_id=target_user_id,
+                    current_user_id=current_user_id,
+                )
+        assert error.value.status_code == 409
+        assert error.value.detail == 'Retry reconciliation'
+
+    @pytest.mark.asyncio
     async def test_remove_member_succeeds_returns_200(
         self, mock_request, org_id, current_user_id, target_user_id
     ):
