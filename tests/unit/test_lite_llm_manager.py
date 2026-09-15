@@ -24,7 +24,6 @@ from storage.lite_llm_manager import (
     get_openhands_cloud_key_alias,
     get_org_team_alias,
 )
-from storage.org import Org
 from storage.user_settings import UserSettings
 
 
@@ -3600,88 +3599,25 @@ class TestFreeTierModelRestriction:
     ):
         async with async_session_maker() as session:
             service = VerifiedModelService(session)
-            with patch.object(
-                service,
-                '_sync_litellm_free_model_allowlists',
-                new=AsyncMock(),
-            ):
-                await service.create_verified_model(
-                    'free-model', 'openhands', is_free=True
-                )
-                await service.create_verified_model(
-                    'paid-model', 'openhands', is_free=False
-                )
-                await service.create_verified_model(
-                    'disabled-free-model',
-                    'openhands',
-                    is_enabled=False,
-                    is_free=True,
-                )
-                await service.create_verified_model(
-                    'openai-free-model', 'openai', is_free=True
-                )
+            await service.create_verified_model(
+                'free-model', 'openhands', is_free=True
+            )
+            await service.create_verified_model(
+                'paid-model', 'openhands', is_free=False
+            )
+            await service.create_verified_model(
+                'disabled-free-model',
+                'openhands',
+                is_enabled=False,
+                is_free=True,
+            )
+            await service.create_verified_model(
+                'openai-free-model', 'openai', is_free=True
+            )
 
             free_models = await LiteLlmManager._resolve_free_llm_models(session)
 
         assert free_models == ['free-model']
-
-    @pytest.mark.asyncio
-    async def test_sync_free_model_allowlists_updates_existing_free_tier_teams(
-        self, async_session_maker
-    ):
-        async with async_session_maker() as session:
-            service = VerifiedModelService(session)
-            with patch.object(
-                service,
-                '_sync_litellm_free_model_allowlists',
-                new=AsyncMock(),
-            ):
-                await service.create_verified_model(
-                    'current-free-model', 'openhands', is_free=True
-                )
-            org = Org(name='Test Org')
-            session.add(org)
-            await session.commit()
-            org_id = str(org.id)
-
-            team_response = MagicMock()
-            team_response.is_success = True
-            team_response.status_code = 200
-            team_response.json.return_value = {
-                'team_info': {
-                    'max_budget': None,
-                    'models': ['previous-free-model'],
-                }
-            }
-            team_response.raise_for_status = MagicMock()
-
-            update_response = MagicMock()
-            update_response.is_success = True
-            update_response.status_code = 200
-            update_response.raise_for_status = MagicMock()
-
-            mock_client = AsyncMock(spec=httpx.AsyncClient)
-            mock_client.get.return_value = team_response
-            mock_client.post.return_value = update_response
-            mock_client_class = MagicMock()
-            mock_client_class.return_value.__aenter__.return_value = mock_client
-
-            with (
-                patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-api-key'),
-                patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
-                patch('httpx.AsyncClient', mock_client_class),
-            ):
-                await LiteLlmManager.sync_free_model_allowlists(
-                    session, previous_free_models=['previous-free-model']
-                )
-
-        mock_client.get.assert_called_once_with(
-            f'http://test.com/team/info?team_id={org_id}'
-        )
-        json_payload = mock_client.post.call_args[1]['json']
-        assert json_payload['team_id'] == org_id
-        assert json_payload['max_budget'] is None
-        assert json_payload['models'] == ['current-free-model']
 
     @pytest.mark.asyncio
     async def test_empty_db_free_models_use_blocking_sentinel(self):
