@@ -24,8 +24,12 @@ export const useRemoveMember = () => {
         userId,
       });
     },
-    onSuccess: () => {
-      displaySuccessToast(t(I18nKey.ORG$REMOVE_MEMBER_SUCCESS));
+    onSuccess: (result) => {
+      if (result?.revocation_pending) {
+        displayErrorToast(t(I18nKey.ORG$REMOVE_MEMBER_REVOCATION_PENDING));
+      } else {
+        displaySuccessToast(t(I18nKey.ORG$REMOVE_MEMBER_SUCCESS));
+      }
       queryClient.invalidateQueries({
         queryKey: ["organizations", "members", organizationId],
       });
