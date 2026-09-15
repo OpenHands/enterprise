@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -2691,3 +2692,130 @@ async def test_settings_loader_prefers_baseline_rows_and_imports_json_only_keys(
     assert first_rows['a'][:2] == (5.0, 'live_rollover')
     assert first_rows['b'][:2] == (2.0, 'imported')
     assert second_rows == first_rows
+
+
+@pytest.mark.asyncio
+# real_asyncio so the event loop's own timers still advance under the frozen clock;
+# this test waits on one to prove the second run is blocked.
+@freeze_time('2026-06-15', real_asyncio=True)
+async def test_roll_cycle_blocks_a_second_run_until_the_first_commits(
+    async_session_maker, budget_org
+):
+    reset_day = 1
+    stale_cycle_start = _current_cycle_start(
+        datetime.now(UTC) - timedelta(days=40), reset_day
+    )
+    async with async_session_maker() as setup:
+        setup.add(
+            OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=True,
+                reset_day=reset_day,
+                monthly_limit=250.0,
+                cycle_start_at=stale_cycle_start,
+                cycle_start_spend=10.0,
+            )
+        )
+        await setup.commit()
+
+    async with async_session_maker() as first, async_session_maker() as second:
+        first_service = OrgBudgetService(first)
+        second_service = OrgBudgetService(second)
+        first_settings = await first_service.store.get_settings(budget_org.id)
+        second_settings = await second_service.store.get_settings(budget_org.id)
+
+        with patch.object(first_service, '_sync_litellm_budgets', AsyncMock()):
+            assert await first_service._roll_cycle_if_needed(
+                first_settings, [], [], _snapshot(team_spend=42.5)
+            )
+
+        with patch.object(second_service, '_sync_litellm_budgets', AsyncMock()):
+            second_roll = asyncio.create_task(
+                second_service._roll_cycle_if_needed(
+                    second_settings, [], [], _snapshot(team_spend=90.0)
+                )
+            )
+            try:
+                done, _ = await asyncio.wait({second_roll}, timeout=1.0)
+                assert not done, (
+                    'second run read the anchor while the first held the lock'
+                )
+
+                await first.commit()
+                assert await asyncio.wait_for(second_roll, timeout=10) is False
+            finally:
+                # A failed assertion must not leave a task using a closing session.
+                second_roll.cancel()
+                await asyncio.gather(second_roll, return_exceptions=True)
+
+        # Losing the race must also refresh the loser's stale copy: alerts, the
+        # LiteLLM sync and the returned cycle all read this object afterwards.
+        assert second_settings.cycle_start_at.replace(tzinfo=UTC) == _next_cycle_start(
+            stale_cycle_start, reset_day
+        )
+        assert second_settings.cycle_start_spend == 42.5
+        await second.commit()
+
+    async with async_session_maker() as check:
+        settings = (
+            await check.execute(
+                select(OrgBudgetSettings).where(
+                    OrgBudgetSettings.org_id == budget_org.id
+                )
+            )
+        ).scalar_one()
+    assert settings.cycle_start_spend == 42.5
+
+
+@pytest.mark.asyncio
+@freeze_time('2026-06-15')
+async def test_roll_cycle_reads_only_this_orgs_anchor(async_session_maker, budget_org):
+    reset_day = 1
+    due_cycle_start = _current_cycle_start(
+        datetime.now(UTC) - timedelta(days=40), reset_day
+    )
+    other_org_id = uuid4()
+    async with async_session_maker() as setup:
+        setup.add(
+            Org(
+                id=other_org_id,
+                name=f'test-org-{other_org_id}',
+                org_version=ORG_SETTINGS_VERSION,
+            )
+        )
+        await setup.flush()
+        setup.add_all(
+            [
+                OrgBudgetSettings(
+                    org_id=other_org_id,
+                    enabled=True,
+                    reset_day=reset_day,
+                    monthly_limit=250.0,
+                    cycle_start_at=_current_cycle_start(datetime.now(UTC), reset_day),
+                    cycle_start_spend=7.0,
+                ),
+                OrgBudgetSettings(
+                    org_id=budget_org.id,
+                    enabled=True,
+                    reset_day=reset_day,
+                    monthly_limit=250.0,
+                    cycle_start_at=due_cycle_start,
+                    cycle_start_spend=10.0,
+                ),
+            ]
+        )
+        await setup.commit()
+
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        settings = await service.store.get_settings(budget_org.id)
+        with patch.object(service, '_sync_litellm_budgets', AsyncMock()):
+            rolled = await service._roll_cycle_if_needed(
+                settings, [], [], _snapshot(team_spend=42.5)
+            )
+        await session.commit()
+
+    assert rolled is True
+    assert settings.cycle_start_at.replace(tzinfo=UTC) == _next_cycle_start(
+        due_cycle_start, reset_day
+    )

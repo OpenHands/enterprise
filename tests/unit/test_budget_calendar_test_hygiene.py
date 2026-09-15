@@ -17,6 +17,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 CYCLE_HELPERS = ('_current_cycle_start', '_next_cycle_start')
 
 # Test modules whose cycle-boundary assertions must run under a frozen clock.
@@ -63,3 +65,58 @@ def test_cycle_boundary_assertions_pin_the_clock():
         'assertion is deterministic instead of passing only on certain days of '
         f'the month: {offenders}'
     )
+
+
+_OFFENDER_SRC = """
+def test_unpinned():
+    assert settings.cycle_start_at == _next_cycle_start(anchor, reset_day)
+"""
+
+_PINNED_DECORATOR_SRC = """
+@freeze_time('2026-06-15')
+def test_pinned():
+    assert settings.cycle_start_at == _next_cycle_start(anchor, reset_day)
+"""
+
+_PINNED_WITH_SRC = """
+def test_pinned():
+    with freeze_time('2026-06-15'):
+        assert settings.cycle_start_at == _next_cycle_start(anchor, reset_day)
+"""
+
+_FIXTURE_ONLY_SRC = """
+def test_no_boundary_assertion():
+    started = datetime.now(UTC)
+    assert started is not None
+"""
+
+
+def _only_func(src: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    return next(
+        node
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    )
+
+
+def test_guard_detects_an_unpinned_cycle_boundary_assertion():
+    offender = _only_func(_OFFENDER_SRC)
+    assert _asserts_on_cycle_boundary(offender)
+    assert not _freezes_clock(offender)
+
+
+@pytest.mark.parametrize('src', [_PINNED_DECORATOR_SRC, _PINNED_WITH_SRC])
+def test_guard_accepts_a_pinned_clock(src):
+    pinned = _only_func(src)
+    assert _asserts_on_cycle_boundary(pinned)
+    assert _freezes_clock(pinned)
+
+
+def test_guard_ignores_datetime_now_outside_boundary_assertions():
+    assert not _asserts_on_cycle_boundary(_only_func(_FIXTURE_ONLY_SRC))
+
+
+def test_guard_watches_the_budget_service_tests():
+    assert [path.name for path in GUARDED_TEST_FILES] == ['test_org_budget_service.py']
+    assert all(path.exists() for path in GUARDED_TEST_FILES)
+    assert CYCLE_HELPERS == ('_current_cycle_start', '_next_cycle_start')
