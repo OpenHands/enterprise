@@ -891,12 +891,27 @@ class OrgBudgetService:
         snapshot: LiteLlmFinancialSnapshot,
     ) -> bool:
         now = datetime.now(UTC)
+        org_id = settings.org_id
+        # Lock the row and re-read the anchor. If another run rolled while we were
+        # reading LiteLLM, its snapshot anchors the new cycle -- not our stale one.
+        locked_start = (
+            await self.db_session.execute(
+                select(OrgBudgetSettings.cycle_start_at)
+                .where(OrgBudgetSettings.org_id == org_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_start is not None and locked_start != settings.cycle_start_at:
+            await self.store.refresh(settings)
+            return False
+
         next_cycle = _next_cycle_start(settings.cycle_start_at, settings.reset_day)
         if now < next_cycle:
             return False
 
-        settings.cycle_start_at = _current_cycle_start(now, settings.reset_day)
-        org_id = settings.org_id
+        # A roll advances the stored anchor by exactly one reset period, so a long
+        # gap is caught up one period per run instead of skipped in a single jump.
+        settings.cycle_start_at = next_cycle
         settings.cycle_start_spend = snapshot.team_spend
         settings.user_cycle_start_spend = {
             user_id: member.spend for user_id, member in snapshot.members.items()
