@@ -1,7 +1,9 @@
+import json
 import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import select
@@ -79,6 +81,48 @@ async def test_get_org_by_id_not_found(async_session_maker):
         non_existent_id = uuid.uuid4()
         retrieved_org = await OrgStore.get_org_by_id(non_existent_id)
         assert retrieved_org is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['external', 'needs_adoption', 'managed'])
+@pytest.mark.parametrize('proxy_status', [200, 500])
+async def test_org_rename_is_display_only_and_proxy_failure_keeps_local_name(
+    create_org, async_session_maker, mode, proxy_status
+):
+    org = create_org(name='Before rename')
+    async with async_session_maker() as session:
+        session.add(OrgBudgetSettings(org_id=org.id, control_mode=mode))
+        await session.commit()
+    requests = []
+
+    def handle(request):
+        assert request.url.path == '/team/update'
+        body = json.loads(request.content)
+        assert body == {'team_id': str(org.id), 'team_alias': 'After rename'}
+        requests.append(body)
+        return httpx.Response(proxy_status, json={})
+
+    client_class = httpx.AsyncClient
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://litellm.test'),
+        patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-only'),
+        patch(
+            'storage.lite_llm_manager.httpx.AsyncClient',
+            side_effect=lambda **kwargs: client_class(
+                transport=httpx.MockTransport(handle), **kwargs
+            ),
+        ),
+    ):
+        result = await OrgStore.update_org(org.id, OrgUpdate(name='After rename'))
+    assert len(requests) == 1
+    assert result.name == 'After rename'
+    async with async_session_maker() as session:
+        saved = await session.get(Org, org.id)
+        assert saved.name == 'After rename'
+        settings = await session.scalar(select(OrgBudgetSettings))
+        assert settings.control_mode == mode
+        assert settings.control_generation == 0
 
 
 @pytest.mark.asyncio
@@ -1199,9 +1243,6 @@ def test_orphaned_user_error_contains_user_ids():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_sole_org_requester_is_deleted(
     async_session_maker, mock_litellm_api
 ):
@@ -1274,9 +1315,6 @@ async def test_delete_org_cascade_sole_org_requester_is_deleted(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_keeps_user_with_alternative_org(
     async_session_maker, mock_litellm_api
 ):
@@ -1339,9 +1377,6 @@ async def test_delete_org_cascade_keeps_user_with_alternative_org(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_raises_for_non_requester_orphans(
     async_session_maker, mock_litellm_api
 ):
@@ -1726,10 +1761,6 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
             new=AsyncMock(return_value=False),
         ),
         patch(
-            'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
-            new=AsyncMock(),
-        ),
-        patch(
             'storage.lite_llm_manager.LiteLlmManager.generate_key',
             new=AsyncMock(return_value='sk-fresh-admin'),
         ),
@@ -1935,10 +1966,6 @@ async def test_ensure_managed_key_returns_existing_when_owner_and_auth_valid(
             'storage.lite_llm_manager.LiteLlmManager.generate_key',
             new=AsyncMock(return_value='new-key'),
         ),
-        patch(
-            'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
-            new=AsyncMock(),
-        ),
     ):
         result = await OrgStore._ensure_managed_llm_key_for_user(
             session=mock_session,
@@ -1950,8 +1977,10 @@ async def test_ensure_managed_key_returns_existing_when_owner_and_auth_valid(
 
 
 @pytest.mark.asyncio
-async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
-    """When the key is registered but fails auth verification, rotate it."""
+async def test_ensure_managed_key_preserves_owned_key_despite_auth_denial(
+    mock_litellm_api,
+):
+    """An operator block must not be bypassed on org-defaults save."""
     user_id = uuid.uuid4()
     org_id = uuid.uuid4()
     managed_url = 'http://test.url'
@@ -1985,10 +2014,6 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
             new=AsyncMock(return_value=False),
         ),
         patch(
-            'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
-            new=AsyncMock(),
-        ),
-        patch(
             'storage.lite_llm_manager.LiteLlmManager.generate_key',
             new=AsyncMock(return_value='fresh-rotated-key'),
         ),
@@ -1999,8 +2024,8 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
             user_id=str(user_id),
         )
 
-    assert result == 'fresh-rotated-key'
-    assert member.llm_api_key.get_secret_value() == 'fresh-rotated-key'
+    assert result == 'stale-managed-key'
+    assert member.llm_api_key.get_secret_value() == 'stale-managed-key'
 
 
 class TestUsesManagedDefaultLlm:

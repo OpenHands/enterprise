@@ -32,6 +32,7 @@ async def test_processor_persists_budget_maintenance_updates(async_session_maker
         )
         session.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=org_id,
                 enabled=True,
                 reset_day=1,
@@ -102,6 +103,7 @@ async def test_processor_reports_reconciliation_failure(async_session_maker):
         )
         session.add(
             OrgBudgetSettings(
+                control_mode='managed',
                 org_id=org_id,
                 enabled=True,
                 reset_day=1,

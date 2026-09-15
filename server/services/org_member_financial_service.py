@@ -3,6 +3,7 @@
 from uuid import UUID
 
 import httpx
+from fastapi import HTTPException, status
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.routes.org_models import (
@@ -53,6 +54,9 @@ class OrgMemberFinancialService:
         Raises:
             ValueError: If page_id is invalid
         """
+        if limit <= 0:
+            raise ValueError('limit must be positive')
+
         # Parse page_id to get offset
         offset = 0
         if page_id is not None:
@@ -69,7 +73,7 @@ class OrgMemberFinancialService:
                 )
                 raise ValueError(f'Invalid page_id: {page_id}') from e
 
-        members, total_count = await OrgMemberStore.get_org_members_paginated(
+        members, has_more = await OrgMemberStore.get_org_members_paginated(
             org_id=org_id,
             offset=offset,
             limit=limit,
@@ -81,7 +85,7 @@ class OrgMemberFinancialService:
                 'OrgMemberFinancialService_get_org_members_financial_data',
                 'org-budgets',
                 org_id=quint_oracle.In('org', 'ORG_IDS'),
-                total_count=total_count,
+                has_more=has_more,
                 has_next=False,
             )
             return OrgMemberFinancialPage(
@@ -116,7 +120,10 @@ class OrgMemberFinancialService:
                     'error': str(e),
                 },
             )
-            financial_data = {}
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='Member financial data is unavailable. Please retry.',
+            ) from e
         except Exception as e:
             logger.warning(
                 'Failed to fetch financial data from LiteLLM',
@@ -126,7 +133,10 @@ class OrgMemberFinancialService:
                     'error': str(e),
                 },
             )
-            financial_data = {}
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='Member financial data is unavailable. Please retry.',
+            ) from e
 
         team_spend = financial_data.get('team_spend', 0) or 0
         members_financial = financial_data.get('members', {})
@@ -147,8 +157,11 @@ class OrgMemberFinancialService:
                 if uses_shared_budget:
                     current_budget = max(max_budget - team_spend, 0)
                 else:
-                    # Individual budget - use individual spend
-                    current_budget = max(max_budget - individual_spend, 0)
+                    counter = financial_data.get('member_counters', {}).get(
+                        user_id_str, {}
+                    )
+                    budget_spend = counter.get('spend', individual_spend)
+                    current_budget = max(max_budget - budget_spend, 0)
             else:
                 # If no max_budget, current_budget is unlimited (represented as 0)
                 current_budget = 0
@@ -168,7 +181,7 @@ class OrgMemberFinancialService:
 
         # Calculate next_page_id
         next_offset = offset + limit
-        next_page_id = str(next_offset) if next_offset < total_count else None
+        next_page_id = str(next_offset) if has_more else None
 
         logger.debug(
             'OrgMemberFinancialService:get_org_members_financial_data:success',
@@ -176,7 +189,7 @@ class OrgMemberFinancialService:
                 'org_id': str(org_id),
                 'items_count': len(items),
                 'current_page': current_page,
-                'total_count': total_count,
+                'has_more': has_more,
             },
         )
 
@@ -184,7 +197,7 @@ class OrgMemberFinancialService:
             'OrgMemberFinancialService_get_org_members_financial_data',
             'org-budgets',
             org_id=quint_oracle.In('org', 'ORG_IDS'),
-            total_count=total_count,
+            has_more=has_more,
             has_next=next_page_id is not None,
         )
         return OrgMemberFinancialPage(

@@ -1,6 +1,9 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
 from server.logger import logger
 from storage.database import session_maker
 from storage.maintenance_task import (
@@ -22,11 +25,20 @@ def maintenance_task_status(info: dict) -> MaintenanceTaskStatus:
 
 
 async def main():
+    set_stale_task_error()
     # Imported lazily so the generic task runner remains usable in tooling
     # that stubs database initialization while importing this module.
+    from server.maintenance_task_processor.credential_retirement_processor import (
+        enqueue_credential_retirement_tasks,
+    )
     from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
         enqueue_managed_llm_key_ownership_tasks,
     )
+
+    try:
+        enqueue_credential_retirement_tasks()
+    except Exception:
+        logger.exception('Failed to enqueue credential retirement')
 
     try:
         enqueued = enqueue_managed_llm_key_ownership_tasks()
@@ -40,21 +52,29 @@ async def main():
         # tasks from running.
         logger.exception('Failed to enqueue managed LLM key ownership repairs')
 
-    set_stale_task_error()
     failed_task_count = await run_tasks()
     if failed_task_count:
         logger.error(f'{failed_task_count} maintenance task(s) failed')
         raise SystemExit(1)
 
 
-def set_stale_task_error():
+def expire_stale_tasks(session: Session) -> None:
     # started_at is naive UTC; strip tzinfo before comparing.
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
+    session.query(MaintenanceTask).filter(
+        MaintenanceTask.status == MaintenanceTaskStatus.WORKING,
+        func.coalesce(
+            MaintenanceTask.started_at,
+            MaintenanceTask.updated_at,
+            MaintenanceTask.created_at,
+        )
+        < cutoff,
+    ).update({MaintenanceTask.status: MaintenanceTaskStatus.ERROR})
+
+
+def set_stale_task_error():
     with session_maker() as session:
-        session.query(MaintenanceTask).filter(
-            MaintenanceTask.status == MaintenanceTaskStatus.WORKING,
-            MaintenanceTask.started_at < cutoff,
-        ).update({MaintenanceTask.status: MaintenanceTaskStatus.ERROR})
+        expire_stale_tasks(session)
         session.commit()
 
 
@@ -96,7 +116,9 @@ async def next_task(session) -> MaintenanceTask | None:
         task = (
             session.query(MaintenanceTask)
             .filter(MaintenanceTask.status == MaintenanceTaskStatus.PENDING)
-            .order_by(MaintenanceTask.created_at)
+            .order_by(MaintenanceTask.created_at, MaintenanceTask.id)
+            # Hold the claim until run_tasks commits WORKING. Other runners skip it.
+            .with_for_update(skip_locked=True)
             .first()
         )
         if task:
