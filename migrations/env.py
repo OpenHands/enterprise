@@ -130,19 +130,21 @@ def run_migrations_online() -> None:
     """
     connectable = engine
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            version_table_schema=target_metadata.schema,
-        )
+    try:
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                version_table_schema=target_metadata.schema,
+            )
 
-        # Lock number must be unique — md5 hash of 'openhands_enterprise_migrations'
-        # Lock is released when the connection context manager exits
-        connection.execute(text('SELECT pg_advisory_lock(3617572382373537863)'))
+            # This session lock must not survive in a returned pooled connection.
+            connection.execute(text('SELECT pg_advisory_lock(3617572382373537863)'))
 
-        with context.begin_transaction():
-            context.run_migrations()
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        connectable.dispose()
 
 
 if context.is_offline_mode():

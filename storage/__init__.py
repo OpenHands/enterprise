@@ -16,10 +16,12 @@ from storage.jira_workspace import JiraWorkspace
 from storage.linear_conversation import LinearConversation
 from storage.linear_user import LinearUser
 from storage.linear_workspace import LinearWorkspace
+from storage.llm_credential_operation import LlmCredentialOperation
 from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
 from storage.openhands_pr import OpenhandsPR
 from storage.org import Org
 from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
+from storage.org_budget_operation import OrgBudgetOperation
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_threshold import OrgBudgetThreshold
 from storage.org_git_claim import OrgGitClaim
@@ -68,11 +70,13 @@ __all__ = [
     'LinearConversation',
     'LinearUser',
     'LinearWorkspace',
+    'LlmCredentialOperation',
     'MaintenanceTask',
     'MaintenanceTaskStatus',
     'OpenhandsPR',
     'Org',
     'OrgBudgetCycleBaseline',
+    'OrgBudgetOperation',
     'OrgBudgetSettings',
     'OrgBudgetThreshold',
     'OrgGitClaim',
