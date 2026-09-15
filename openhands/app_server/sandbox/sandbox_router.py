@@ -1,13 +1,29 @@
 """Runtime Containers router for OpenHands App Server."""
 
+import asyncio
 import logging
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.security import APIKeyHeader
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.models import Success
-from openhands.app_server.config import depends_sandbox_service, depends_user_context
+from openhands.app_server.config import (
+    depends_sandbox_service,
+    depends_user_context,
+    get_httpx_client,
+    get_sandbox_service,
+    get_sandbox_spec_service,
+)
 from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxPage,
@@ -18,12 +34,17 @@ from openhands.app_server.sandbox.sandbox_service import (
     SandboxService,
 )
 from openhands.app_server.sandbox.session_auth import validate_session_key
+from openhands.app_server.services.db_session import depends_db_session
+from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.auth_user_context import AuthUserContext
+from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth.user_auth import (
     get_for_user as get_user_auth_for_user,
 )
 from openhands.app_server.utils.dependencies import get_dependencies
+from openhands.app_server.utils.git import configure_git_user_settings
+from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 _logger = logging.getLogger(__name__)
 
@@ -34,6 +55,7 @@ router = APIRouter(
 )
 sandbox_service_dependency = depends_sandbox_service()
 user_context_dependency = depends_user_context()
+db_session_dependency = depends_db_session()
 
 # Read methods
 
@@ -97,12 +119,76 @@ async def resume_sandbox(
     sandbox_id: str,
     user_context: UserContext = user_context_dependency,
     sandbox_service: SandboxService = sandbox_service_dependency,
+    db_session: AsyncSession = db_session_dependency,
 ) -> Success:
     exists = await sandbox_service.resume_sandbox(sandbox_id)
     if not exists:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
+    await db_session.commit()
+
+    try:
+        user_info = await user_context.get_user_info()
+        if user_info.git_user_name or user_info.git_user_email:
+            asyncio.create_task(
+                _restore_git_user_settings_after_resume(
+                    sandbox_id,
+                    user_info.git_user_name,
+                    user_info.git_user_email,
+                )
+            )
+    except Exception:
+        _logger.warning(
+            'Failed to load Git identity after resuming sandbox %s',
+            sandbox_id,
+            exc_info=True,
+        )
+
     return Success()
+
+
+async def _restore_git_user_settings_after_resume(
+    sandbox_id: str,
+    git_user_name: str | None,
+    git_user_email: str | None,
+) -> None:
+    """Restore Git identity after the sandbox's ephemeral home is recreated."""
+    state = InjectorState()
+    setattr(state, USER_CONTEXT_ATTR, ADMIN)
+
+    try:
+        async with (
+            get_sandbox_service(state) as sandbox_service,
+            get_sandbox_spec_service(state) as sandbox_spec_service,
+            get_httpx_client(state) as httpx_client,
+        ):
+            sandbox = await sandbox_service.wait_for_sandbox_running(
+                sandbox_id, httpx_client=httpx_client
+            )
+            sandbox_spec = await sandbox_spec_service.get_sandbox_spec(
+                sandbox.sandbox_spec_id
+            )
+            if sandbox_spec is None:
+                raise ValueError(f'Sandbox spec not found: {sandbox.sandbox_spec_id}')
+            if sandbox.session_api_key is None:
+                raise ValueError(f'Sandbox session key unavailable: {sandbox_id}')
+
+            workspace = AsyncRemoteWorkspace(
+                host=sandbox_service._get_agent_server_url(sandbox),
+                api_key=sandbox.session_api_key,
+                working_dir=sandbox_spec.working_dir,
+            )
+            await configure_git_user_settings(
+                workspace,
+                git_user_name,
+                git_user_email,
+            )
+    except Exception:
+        _logger.warning(
+            'Failed to restore Git identity after resuming sandbox %s',
+            sandbox_id,
+            exc_info=True,
+        )
 
 
 @router.delete('/{id}', responses={404: {'description': 'Item not found'}})

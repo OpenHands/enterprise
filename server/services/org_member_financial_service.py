@@ -10,6 +10,20 @@ from server.routes.org_models import (
     OrgMemberFinancialResponse,
 )
 from storage.lite_llm_manager import LiteLlmManager
+
+# The Quint oracle client is vendored under quint-specs/, which the application
+# image does not ship. Without it the instrumentation below is a no-op, so the
+# app must not depend on it being importable.
+try:
+    import quint_oracle
+except ModuleNotFoundError:  # pragma: no cover
+    from types import SimpleNamespace
+
+    quint_oracle = SimpleNamespace(
+        log=lambda *args, **kwargs: None,
+        In=lambda value, domain: value,
+    )
+
 from storage.org_member_store import OrgMemberStore
 
 
@@ -47,6 +61,12 @@ class OrgMemberFinancialService:
                 if offset < 0:
                     raise ValueError('page_id must be non-negative')
             except ValueError as e:
+                quint_oracle.log(
+                    'OrgMemberFinancialService_get_org_members_financial_data',
+                    'org-budgets',
+                    org_id=quint_oracle.In('org', 'ORG_IDS'),
+                    outcome='rejected',
+                )
                 raise ValueError(f'Invalid page_id: {page_id}') from e
 
         members, total_count = await OrgMemberStore.get_org_members_paginated(
@@ -57,6 +77,13 @@ class OrgMemberFinancialService:
         )
 
         if not members:
+            quint_oracle.log(
+                'OrgMemberFinancialService_get_org_members_financial_data',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+                total_count=total_count,
+                has_next=False,
+            )
             return OrgMemberFinancialPage(
                 items=[],
                 current_page=(offset // limit) + 1,
@@ -153,6 +180,13 @@ class OrgMemberFinancialService:
             },
         )
 
+        quint_oracle.log(
+            'OrgMemberFinancialService_get_org_members_financial_data',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            total_count=total_count,
+            has_next=next_page_id is not None,
+        )
         return OrgMemberFinancialPage(
             items=items,
             current_page=current_page,
