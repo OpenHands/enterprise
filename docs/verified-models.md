@@ -1,6 +1,8 @@
 # Verified Models Runbook
 
-Use the verified-models admin API to manage the model metadata that Enterprise-backed Canvas deployments show in model search, LLM settings, onboarding, and profile pickers. This applies to OpenHands SaaS and to third-party Enterprise deployments that run the Enterprise backend with the verified-model database tables.
+> **Endpoint renamed.** The admin API is now mounted at `/api/admin/model-catalog` (new canonical path). The old `/api/admin/verified-models` path is kept as a deprecated alias for one release so existing operator scripts keep working. New examples in this runbook use the new path; see [OpenHands/enterprise#350](https://github.com/OpenHands/enterprise/issues/350) for the broader rename rollout.
+
+Use the admin API to manage the model metadata that Enterprise-backed Canvas deployments show in model search, LLM settings, onboarding, and profile pickers. This applies to OpenHands SaaS and to third-party Enterprise deployments that run the Enterprise backend with the verified-model database tables.
 
 The API stores one row per `(provider, model_name)`. For OpenHands-hosted models, use `provider: "openhands"` and store the concrete model name without an `openhands/` prefix, for example `deepseek-v4-flash`.
 
@@ -50,7 +52,7 @@ export OPENHANDS_ADMIN_TOKEN="$SAAS_STAGING_MODEL_LIST_API_KEY"
 Admin list calls include disabled rows so operators can repair stale or hidden state.
 
 ```bash
-curl -sS "$OPENHANDS_BASE_URL/api/admin/verified-models?provider=openhands&limit=100" \
+curl -sS "$OPENHANDS_BASE_URL/api/admin/model-catalog?provider=openhands&limit=100" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN" \
   | jq '.items[] | {name: .model_name, enabled: .is_enabled, verified: .is_verified, free: .is_free, default: .is_default}'
 ```
@@ -70,7 +72,7 @@ curl -sS "$OPENHANDS_BASE_URL/api/v1/config/models/search?provider__eq=openhands
 `is_enabled` and `is_verified` default to `true`. `is_free` and `is_default` default to `false`. Pass all flags explicitly when the model should be free, default, or intentionally unverified.
 
 ```bash
-curl -X POST "$OPENHANDS_BASE_URL/api/admin/verified-models" \
+curl -X POST "$OPENHANDS_BASE_URL/api/admin/model-catalog" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -88,7 +90,7 @@ curl -X POST "$OPENHANDS_BASE_URL/api/admin/verified-models" \
 Disabling a row removes it from user-facing model search. If the disabled row was the OpenHands default, `Default` no longer resolves to that model.
 
 ```bash
-curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
+curl -X PUT "$OPENHANDS_BASE_URL/api/admin/model-catalog/openhands/glm-5.2" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"is_enabled": false}'
@@ -97,7 +99,7 @@ curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
 Re-enable it with:
 
 ```bash
-curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
+curl -X PUT "$OPENHANDS_BASE_URL/api/admin/model-catalog/openhands/glm-5.2" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"is_enabled": true}'
@@ -108,7 +110,7 @@ curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
 Use `is_verified` to control whether Canvas marks the model as verified. This is separate from `is_enabled`; an enabled model can remain visible but intentionally unverified.
 
 ```bash
-curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
+curl -X PUT "$OPENHANDS_BASE_URL/api/admin/model-catalog/openhands/glm-5.2" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"is_verified": true}'
@@ -117,7 +119,7 @@ curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
 Remove the verified mark while keeping the model enabled:
 
 ```bash
-curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
+curl -X PUT "$OPENHANDS_BASE_URL/api/admin/model-catalog/openhands/glm-5.2" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"is_verified": false}'
@@ -137,7 +139,7 @@ The verified-model DB mutation commits **before** LiteLLM allowlist propagation 
 A transient LiteLLM outage therefore cannot leave the system silently divergent: the caller is always informed. Treat a `502` from a create/update/delete as "retry or reconcile LiteLLM."
 
 ```bash
-curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
+curl -X PUT "$OPENHANDS_BASE_URL/api/admin/model-catalog/openhands/glm-5.2" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"is_free": true}'
@@ -146,7 +148,7 @@ curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
 Remove the free label:
 
 ```bash
-curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
+curl -X PUT "$OPENHANDS_BASE_URL/api/admin/model-catalog/openhands/glm-5.2" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"is_free": false}'
@@ -157,7 +159,7 @@ curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
 Set `is_default: true` on the concrete enabled OpenHands row that should back `Available Profiles -> Default`. The service clears any previous default for the same provider before saving the new default, and the database also enforces a single default row per provider.
 
 ```bash
-curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
+curl -X PUT "$OPENHANDS_BASE_URL/api/admin/model-catalog/openhands/glm-5.2" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"is_enabled": true, "is_default": true}'
@@ -166,7 +168,7 @@ curl -X PUT "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
 Verify the result in the admin list:
 
 ```bash
-curl -sS "$OPENHANDS_BASE_URL/api/admin/verified-models?provider=openhands&limit=100" \
+curl -sS "$OPENHANDS_BASE_URL/api/admin/model-catalog?provider=openhands&limit=100" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN" \
   | jq '.items[] | select(.is_default) | {name: .model_name, enabled: .is_enabled, default: .is_default}'
 ```
@@ -178,7 +180,7 @@ Then reload Canvas LLM settings and confirm `Available Profiles -> Default` reso
 Deleting a row removes the DB override entirely. Do this only when you no longer need the row for admin repair or audit visibility.
 
 ```bash
-curl -X DELETE "$OPENHANDS_BASE_URL/api/admin/verified-models/openhands/glm-5.2" \
+curl -X DELETE "$OPENHANDS_BASE_URL/api/admin/model-catalog/openhands/glm-5.2" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN"
 ```
 
@@ -210,7 +212,7 @@ Manual UI smoke test:
 If `Default` disappears or does not resolve, list OpenHands rows and check that exactly one enabled row has `is_default: true`:
 
 ```bash
-curl -sS "$OPENHANDS_BASE_URL/api/admin/verified-models?provider=openhands&limit=100" \
+curl -sS "$OPENHANDS_BASE_URL/api/admin/model-catalog?provider=openhands&limit=100" \
   -H "Authorization: Bearer $OPENHANDS_ADMIN_TOKEN" \
   | jq '.items[] | select(.is_default or .is_enabled == false) | {name: .model_name, enabled: .is_enabled, default: .is_default}'
 ```
