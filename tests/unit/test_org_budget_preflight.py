@@ -45,7 +45,7 @@ mock_db = MagicMock()
 with patch.dict(sys.modules, {'storage.database': mock_db}):
     import run_budget_preflight
 
-NOW = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
+NOW = datetime.now(UTC)
 
 
 def _settings(**overrides) -> OrgBudgetSettings:
