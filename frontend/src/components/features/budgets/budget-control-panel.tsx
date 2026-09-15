@@ -57,8 +57,8 @@ export function BudgetControlPanel({
   };
   const mode = budget.control_mode;
   const operationId =
-    recovery.saved?.operationId ??
     budget.pending_operation_id ??
+    recovery.saved?.operationId ??
     (reviewing ? preview.data?.pending_operation_id : null);
   const unresolved = !!operationId || !!recovery.saved || recovery.unavailable;
   const locked =

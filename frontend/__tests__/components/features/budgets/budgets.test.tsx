@@ -163,6 +163,36 @@ it("confirms adoption, reports pending and retries the same operation before sho
   await screen.findByRole("button", { name: "SETTINGS$SAVE_CHANGES" });
 });
 
+it("shows the current pending operation ahead of a saved earlier completion", async () => {
+  const user = userEvent.setup();
+  saveBudgetSubmission("org-a", {
+    submission: { kind: "adopt", request: adoptionRequest },
+    operationId: "earlier-operation",
+  });
+  vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+    ...managedBudget,
+    pending_operation_id: pendingOperation.operation_id,
+  });
+  vi.spyOn(budgetService, "getOperation").mockImplementation(
+    async ({ operationId }) =>
+      operationId === "earlier-operation"
+        ? { ...pendingOperation, operation_id: operationId, status: "applied" }
+        : pendingOperation,
+  );
+  const retry = vi
+    .spyOn(budgetService, "retry")
+    .mockResolvedValue(pendingOperation);
+  setup();
+  await screen.findByText("BUDGET_CONTROL$PENDING");
+  expect(screen.queryByText("BUDGET_CONTROL$APPLIED")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "CONVERSATION$RETRY" }));
+  await waitFor(() => expect(retry).toHaveBeenCalledOnce());
+  expect(retry.mock.calls[0][0]).toEqual({
+    orgId: "org-a",
+    operationId: pendingOperation.operation_id,
+  });
+});
+
 it("uses the versioned policy endpoint and preserves off-page overrides", async () => {
   const user = userEvent.setup();
   const update = vi.spyOn(budgetService, "update").mockResolvedValue({
