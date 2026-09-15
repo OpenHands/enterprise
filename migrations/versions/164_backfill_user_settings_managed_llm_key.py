@@ -1,4 +1,4 @@
-"""Backfill user_settings.llm_api_key from the personal-org managed key.
+"""Reconcile the user_settings.llm_api_key cache with the personal-org key.
 
 Revision ID: 164
 Revises: 163
@@ -6,22 +6,30 @@ Create Date: 2026-09-15 00:00:00.000000
 
 The managed-key ownership repair (revision 161 / PR #353) rotated members'
 managed LiteLLM keys, writing the new value onto ``org_member._llm_api_key``
-but leaving the legacy ``user_settings.llm_api_key`` cache pointing at the
-old (now deleted) key. The Canvas settings surface still reads that cache,
-so affected users saw a dead key.
-
-This migration re-syncs the personal-org managed key into the
-``user_settings`` cache, matching what
-``UserStore._sync_user_settings_from_org_member`` does at runtime:
+but leaving the legacy ``user_settings.llm_api_key`` mirror pointing at the
+old (now deleted) key. This migration restores the invariant that
+``user_settings`` maintains at runtime via
+``UserStore._sync_user_settings_from_org_member``:
 
 * ``org_member._llm_api_key`` is encrypted with ``encrypt_value``.
 * ``user_settings.llm_api_key`` is encrypted with ``encrypt_legacy_value``.
 
 The two columns therefore hold different ciphertext for the same plaintext,
-so the backfill must decrypt and re-encrypt through Python rather than copy
-raw bytes. It is scoped to the personal org (``org_id == user_id``) because
-that is the single-member org whose key the ``user_settings`` cache mirrors,
-and it is idempotent: rows already in sync are skipped.
+so the reconciliation must decrypt and re-encrypt through Python rather than
+copy raw bytes. It is scoped to the personal org (``org_id == user_id``)
+because that is the single-member org whose key the ``user_settings`` mirror
+tracks, and it is idempotent: rows already in sync are skipped.
+
+Scope note — this is a data-consistency cleanup, NOT the fix for the reported
+"custom LLM -> free model -> 401". As @ak684 verified on PR #406, the Canvas
+settings surface (``SaasSettingsStore.load`` ->
+``_get_effective_llm_api_key``) reads the effective key from ``org_member``,
+never from ``user_settings.llm_api_key``. The only live consumer of the
+``user_settings`` mirror is ``UserStore.migrate_user`` (un-migrated legacy
+users, who #353 did not touch), and ``downgrade_user`` refreshes the mirror
+from ``org_member`` before reading it. This migration therefore removes stale
+drift left by #353 but does not change what any already-migrated user's
+settings load returns; the 401, if reproducible, lives on a separate path.
 """
 
 from typing import Sequence
