@@ -7,6 +7,7 @@ Architecture diagrams specific to the OpenHands SaaS/Enterprise deployment.
 - [The SaaS Server](./saas-server.md) - How `saas_server.py` and the SaaS modules layer on the OpenHands app server
 - [Authentication Flow](./authentication.md) - Keycloak-based authentication for SaaS deployment
 - [External Integrations](./external-integrations.md) - GitHub, Slack, Jira, and other service integrations
+- [Budget Control](./budget-control.md) - Ownership, adoption, counter safety, and release requirements
 
 ## Related Documentation
 

@@ -6,6 +6,8 @@ on:
       - 'migrations/**'
       - 'alembic.ini'
       - 'scripts/check_enterprise_migration_integrity.py'
+      - 'scripts/check_enterprise_migration_roundtrip.py'
+      - 'tests/unit/test_budget_control_migration.py'
       - '.github/workflows/enterprise-check-migrations.yml'
 
 # Group is per-PR-branch, so this only cancels a superseded run of the SAME PR
@@ -127,15 +129,9 @@ jobs:
           echo "upgrade head took $(( $(date +%s) - START ))s"
           echo "::endgroup::"
           uv run alembic current
-      - name: Round-trip the newest migration (downgrade -1, upgrade head)
-        # Fail fast if downgrade fails. The database is throwaway, and the
-        # final reporting step still prints the current revision for debugging.
-        run: |
-          echo "::group::downgrade -1 then re-upgrade"
-          uv run alembic downgrade -1
-          uv run alembic upgrade head
-          echo "::endgroup::"
-          uv run alembic current
+      - name: Verify newest downgrade and re-upgrade contract
+        # Revision 164 must refuse ownership removal; later heads round-trip normally.
+        run: uv run python -m scripts.check_enterprise_migration_roundtrip
       - name: Report migration state
         if: always()
         run: uv run alembic current || true
