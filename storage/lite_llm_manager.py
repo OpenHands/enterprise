@@ -3,12 +3,16 @@ Store class for managing organizational settings.
 """
 
 import functools
+import hashlib
+import hmac
 import math
 import os
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
+from uuid import UUID
 
 import httpx
 from pydantic import SecretStr
+from sqlalchemy import select
 
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.http_session import httpx_verify_option
@@ -25,6 +29,8 @@ from server.constants import (
     should_use_direct_llm_defaults,
 )
 from server.logger import logger
+from storage.litellm_credentials import credential_revocation_scope, issue_credential
+from storage.litellm_key_policy import key_mutation_scope, key_restrictions
 from storage.user_settings import UserSettings
 
 # Timeout in seconds for LiteLLM management API requests.
@@ -136,6 +142,19 @@ def _is_free_budget(max_budget: float | None) -> bool:
     return max_budget is not None and max_budget <= 0.0
 
 
+def _validated_budget_number(value: Any, field: str) -> float | None:
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(float(value))
+        or value < 0
+    ):
+        raise ValueError(f'LiteLLM {field} must be a finite non-negative number')
+    return float(value)
+
+
 def get_openhands_cloud_key_alias(keycloak_user_id: str, org_id: str) -> str:
     """Generate the key alias for OpenHands Cloud managed keys."""
     return f'OpenHands Cloud - user {keycloak_user_id} - org {org_id}'
@@ -160,6 +179,22 @@ def get_org_team_alias(org_id: str, org_name: str | None, user_id: str | None) -
 
 class LiteLlmManager:
     """Manage LiteLLM interactions."""
+
+    @staticmethod
+    async def _apply_budget_write(
+        client: httpx.AsyncClient,
+        org_id: UUID,
+        operation_id: UUID,
+        path: str,
+        body: dict[str, Any],
+    ) -> None:
+        from storage.budget_control import current_budget_control
+
+        if not LITE_LLM_API_KEY or not LITE_LLM_API_URL:
+            raise RuntimeError('LiteLLM management API is not configured')
+        await current_budget_control(org_id).authorize_write(operation_id, path, body)
+        response = await client.post(f'{LITE_LLM_API_URL}{path}', json=body)
+        response.raise_for_status()
 
     @staticmethod
     def get_budget_from_team_info(
@@ -346,6 +381,30 @@ class LiteLlmManager:
             return None
         local_deploy = os.environ.get('LOCAL_DEPLOYMENT', None)
         key = LITE_LLM_API_KEY
+        if not local_deploy and add_user_to_team:
+            from storage.org_budget_settings import OrgBudgetSettings
+
+            async with key_mutation_scope(org_id) as control:
+                ownership = await control.session.scalar(
+                    select(OrgBudgetSettings).where(
+                        OrgBudgetSettings.org_id == control.org_id
+                    )
+                )
+                if ownership is not None and ownership.control_mode == 'managed':
+                    # Commit membership before reconciling its allowance or issuing a key.
+                    oss_settings.update(
+                        {
+                            'agent_settings_diff': {
+                                'agent': 'CodeActAgent',
+                                'llm': {
+                                    'model': get_default_litellm_model(),
+                                    'api_key': '',
+                                    'base_url': LITE_LLM_API_URL,
+                                },
+                            }
+                        }
+                    )
+                    return oss_settings
         if not local_deploy:
             token_manager = TokenManager()
             keycloak_user_info = (
@@ -418,31 +477,7 @@ class LiteLlmManager:
 
                 if add_user_to_team:
                     if create_user:
-                        # create_user is True only when no OpenHands User row exists,
-                        # so a pre-existing LiteLLM record under this id is a stale
-                        # orphan (e.g. from an account reset). Reset it so _create_user
-                        # rebuilds a clean record rather than re-attaching it. Best-
-                        # effort: a failed reset must not block onboarding — _create_user
-                        # below still tolerates a surviving record (409).
-                        if await LiteLlmManager._user_exists(client, keycloak_user_id):
-                            logger.info(
-                                'LiteLlmManager:create_entries:reset_stale_litellm_user',
-                                extra={'org_id': org_id, 'user_id': keycloak_user_id},
-                            )
-                            try:
-                                await LiteLlmManager._delete_user(
-                                    client, keycloak_user_id
-                                )
-                            except Exception as exc:
-                                logger.warning(
-                                    'LiteLlmManager:create_entries:reset_stale_litellm_user_failed',
-                                    extra={
-                                        'org_id': org_id,
-                                        'user_id': keycloak_user_id,
-                                        'error': str(exc),
-                                    },
-                                )
-
+                        # A missing OpenHands row does not prove LiteLLM state is disposable.
                         user_created = await LiteLlmManager._create_user(
                             client, keycloak_user_info.get('email'), keycloak_user_id
                         )
@@ -475,20 +510,7 @@ class LiteLlmManager:
                         client, keycloak_user_id, org_id, team_budget
                     )
 
-                    # We delete the key if it already exists. In environments where multiple
-                    # installations are using the same keycloak and litellm instance, this
-                    # will mean other installations will have their key invalidated.
                     key_alias = get_openhands_cloud_key_alias(keycloak_user_id, org_id)
-                    try:
-                        await LiteLlmManager._delete_key_by_alias(client, key_alias)
-                    except httpx.HTTPStatusError as ex:
-                        if ex.response and ex.response.status_code == 404:
-                            logger.debug(
-                                f'Key "{key_alias}" did not exist - continuing'
-                            )
-                        else:
-                            raise
-
                     key = await LiteLlmManager._generate_key(
                         client,
                         keycloak_user_id,
@@ -936,6 +958,24 @@ class LiteLlmManager:
         return get_org_team_alias(org_id, org_name, keycloak_user_id)
 
     @staticmethod
+    async def _identity_exists(
+        client: httpx.AsyncClient, kind: Literal['team', 'user'], identity: str
+    ) -> bool:
+        from storage.budget_control import BudgetWriteDenied
+
+        response = await client.get(
+            f'{LITE_LLM_API_URL}/{kind}/info', params={f'{kind}_id': identity}
+        )
+        if response.status_code == 404:
+            return False
+        response.raise_for_status()
+        body = response.json()
+        info = body.get(f'{kind}_info') if isinstance(body, dict) else None
+        if not isinstance(info, dict) or info.get(f'{kind}_id') != identity:
+            raise BudgetWriteDenied(f'LiteLLM {kind} identity could not be verified')
+        return True
+
+    @staticmethod
     async def _create_team(
         client: httpx.AsyncClient,
         team_alias: str,
@@ -954,6 +994,9 @@ class LiteLlmManager:
         """
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
+            return
+
+        if await LiteLlmManager._identity_exists(client, 'team', team_id):
             return
 
         json_data: dict[str, Any] = {
@@ -985,14 +1028,8 @@ class LiteLlmManager:
                 response.status_code == 400
                 and 'already exists. Please use a different team id' in response.text
             ):
-                # team already exists, so update, then return
-                kwargs: dict[str, Any] = {}
-                if free_models is not None:
-                    kwargs['free_models'] = free_models
-                await LiteLlmManager._update_team(
-                    client, team_id, team_alias, max_budget, **kwargs
-                )
-                return
+                if await LiteLlmManager._identity_exists(client, 'team', team_id):
+                    return
             logger.error(
                 'error_creating_litellm_team',
                 extra={
@@ -1003,6 +1040,11 @@ class LiteLlmManager:
                 },
             )
         response.raise_for_status()
+
+        if not await LiteLlmManager._identity_exists(client, 'team', team_id):
+            from storage.budget_control import BudgetWriteDenied
+
+            raise BudgetWriteDenied('LiteLLM team creation is pending verification')
 
     @staticmethod
     async def _get_team(client: httpx.AsyncClient, team_id: str) -> dict | None:
@@ -1015,6 +1057,18 @@ class LiteLlmManager:
         )
         response.raise_for_status()
         return response.json()
+
+    @staticmethod
+    async def _rename_team(
+        client: httpx.AsyncClient, team_id: str, team_alias: str
+    ) -> None:
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            return
+        response = await client.post(
+            f'{LITE_LLM_API_URL}/team/update',
+            json={'team_id': team_id, 'team_alias': team_alias},
+        )
+        response.raise_for_status()
 
     @staticmethod
     async def _update_team(
@@ -1101,17 +1155,14 @@ class LiteLlmManager:
         email: str | None,
         keycloak_user_id: str,
     ) -> bool:
-        """Create a user in LiteLLM.
-
-        Returns True if the user was created or already exists and is verified,
-        False if creation failed and user does not exist.
-        """
+        """Create only a verified-absent user; reuse existing policy unchanged."""
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return False
-        response = await client.post(
-            f'{LITE_LLM_API_URL}/user/new',
-            json={
+        try:
+            if await LiteLlmManager._identity_exists(client, 'user', keycloak_user_id):
+                return True
+            payload = {
                 'user_email': email,
                 'models': [],
                 'user_id': keycloak_user_id,
@@ -1122,72 +1173,38 @@ class LiteLlmManager:
                     'version': ORG_SETTINGS_VERSION,
                     'model': get_default_litellm_model(),
                 },
-            },
-        )
-        if not response.is_success:
-            logger.warning(
-                'duplicate_user_email',
-                extra={
-                    'user_id': keycloak_user_id,
-                    'email': email,
-                },
-            )
-            # Litellm insists on unique email addresses - it is possible the email address was registered with a different user.
-            response = await client.post(
-                f'{LITE_LLM_API_URL}/user/new',
-                json={
-                    'user_email': None,
-                    'models': [],
-                    'user_id': keycloak_user_id,
-                    'teams': [LITE_LLM_TEAM_ID],
-                    'auto_create_key': False,
-                    'send_invite_email': False,
-                    'metadata': {
-                        'version': ORG_SETTINGS_VERSION,
-                        'model': get_default_litellm_model(),
-                    },
-                },
-            )
-
-            # User failed to create in litellm - this is an unforeseen error state...
+            }
+            response = await client.post(f'{LITE_LLM_API_URL}/user/new', json=payload)
             if not response.is_success:
-                if (
-                    response.status_code in (400, 409)
-                    and 'already exists' in response.text
+                if await LiteLlmManager._identity_exists(
+                    client, 'user', keycloak_user_id
                 ):
-                    logger.warning(
-                        'litellm_user_already_exists',
-                        extra={
-                            'user_id': keycloak_user_id,
-                        },
-                    )
-                    # Verify the user actually exists before returning success
-                    user_exists = await LiteLlmManager._user_exists(
-                        client, keycloak_user_id
-                    )
-                    if not user_exists:
-                        logger.error(
-                            'litellm_user_claimed_exists_but_not_found',
-                            extra={
-                                'user_id': keycloak_user_id,
-                                'status_code': response.status_code,
-                                'text': response.text,
-                            },
-                        )
-                        return False
                     return True
-                logger.error(
-                    'error_creating_litellm_user',
-                    extra={
-                        'status_code': response.status_code,
-                        'text': response.text,
-                        'user_id': keycloak_user_id,
-                        'email': None,
-                    },
+                error = response.text.lower()
+                if not (
+                    email
+                    and response.status_code in {400, 409}
+                    and 'email' in error
+                    and ('already exists' in error or 'duplicate' in error)
+                ):
+                    return False
+                payload['user_email'] = None
+                response = await client.post(
+                    f'{LITE_LLM_API_URL}/user/new', json=payload
                 )
-                return False
-            response.raise_for_status()
-        return True
+                if not response.is_success:
+                    return await LiteLlmManager._identity_exists(
+                        client, 'user', keycloak_user_id
+                    )
+            return await LiteLlmManager._identity_exists(
+                client, 'user', keycloak_user_id
+            )
+        except Exception as exc:
+            logger.warning(
+                'litellm_user_creation_unverified',
+                extra={'user_id': keycloak_user_id, 'error_type': type(exc).__name__},
+            )
+            return False
 
     @staticmethod
     async def _get_user(client: httpx.AsyncClient, user_id: str) -> dict | None:
@@ -1410,6 +1427,35 @@ class LiteLlmManager:
         )
 
     @staticmethod
+    async def _membership_exists(
+        client: httpx.AsyncClient, user_id: str, team_id: str
+    ) -> bool:
+        from storage.budget_control import BudgetWriteDenied
+
+        response = await LiteLlmManager._get_team(client, team_id)
+        if not isinstance(response, dict):
+            raise BudgetWriteDenied('Native team identity could not be verified')
+        team = response.get('team_info')
+        if not isinstance(team, dict) or team.get('team_id') != team_id:
+            raise BudgetWriteDenied('Native team identity could not be verified')
+        roster = team.get('members_with_roles')
+        memberships = response.get('team_memberships')
+        if not isinstance(roster, list) or not isinstance(memberships, list):
+            raise BudgetWriteDenied('Native team membership could not be verified')
+        for row in memberships:
+            if not isinstance(row, dict) or row.get('team_id', team_id) != team_id:
+                raise BudgetWriteDenied(
+                    'Native membership identity could not be verified'
+                )
+        rows = [LiteLlmManager._member_dict(row) for row in roster + memberships]
+        if any(
+            not isinstance(row.get('user_id'), str) or not row['user_id']
+            for row in rows
+        ):
+            raise BudgetWriteDenied('Native member identity could not be verified')
+        return any(row['user_id'] == user_id for row in rows)
+
+    @staticmethod
     async def _add_user_to_team(
         client: httpx.AsyncClient,
         keycloak_user_id: str,
@@ -1425,10 +1471,15 @@ class LiteLlmManager:
             max_budget: The maximum budget for the user in the team. When None,
                 budget enforcement is disabled (unlimited usage).
         """
+        from storage.budget_control import BudgetWriteDenied
+
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
 
+        # Native member_add can upsert a budget; retries must only reuse membership.
+        if await LiteLlmManager._membership_exists(client, keycloak_user_id, team_id):
+            return
         json_data: dict[str, Any] = {
             'team_id': team_id,
             'member': {'user_id': keycloak_user_id, 'role': 'user'},
@@ -1452,6 +1503,9 @@ class LiteLlmManager:
             if (
                 response.status_code == 400
                 and 'already in team' in response.text.lower()
+                and await LiteLlmManager._membership_exists(
+                    client, keycloak_user_id, team_id
+                )
             ):
                 logger.warning(
                     'user_already_in_team',
@@ -1471,6 +1525,62 @@ class LiteLlmManager:
                     'max_budget': max_budget,
                 },
             )
+        response.raise_for_status()
+        if not await LiteLlmManager._membership_exists(
+            client, keycloak_user_id, team_id
+        ):
+            raise BudgetWriteDenied('Native membership was not created')
+
+    @staticmethod
+    async def _prepare_new_managed_member(
+        client: httpx.AsyncClient, user_id: str, team_id: str
+    ) -> None:
+        """Create only a deny-all counter for a committed, unbudgeted member."""
+        from storage.budget_control import BudgetWriteDenied, current_budget_control
+        from storage.org_member import OrgMember
+
+        control = current_budget_control(UUID(team_id))
+        settings = await control.settings()
+        if (
+            settings.control_mode != 'managed'
+            or user_id in (settings.user_cycle_start_spend or {})
+            or await control.pending_operation() is not None
+            or await control.session.get(
+                OrgMember, {'org_id': control.org_id, 'user_id': UUID(user_id)}
+            )
+            is None
+        ):
+            raise BudgetWriteDenied('No committed new-member admission authority')
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            raise BudgetWriteDenied('LiteLLM API configuration not found')
+        team = await LiteLlmManager._get_team(client, team_id)
+        info = (team or {}).get('team_info')
+        memberships = (team or {}).get('team_memberships')
+        if (
+            not isinstance(info, dict)
+            or info.get('team_id') != team_id
+            or not isinstance(memberships, list)
+            or not isinstance(info.get('members_with_roles'), list)
+        ):
+            raise BudgetWriteDenied('Cannot verify the native membership roster')
+        if any(
+            LiteLlmManager._member_dict(row).get('user_id') == user_id
+            for row in memberships
+        ):
+            return
+        if not await LiteLlmManager._user_exists(client, user_id):
+            raise BudgetWriteDenied('The existing LiteLLM user must be available')
+        in_roster = any(
+            LiteLlmManager._member_dict(row).get('user_id') == user_id
+            for row in info['members_with_roles']
+        )
+        endpoint = '/team/member_update' if in_roster else '/team/member_add'
+        payload: dict[str, Any] = {'team_id': team_id, 'max_budget_in_team': 0.0}
+        if in_roster:
+            payload['user_id'] = user_id
+        else:
+            payload['member'] = {'user_id': user_id, 'role': 'user'}
+        response = await client.post(f'{LITE_LLM_API_URL}{endpoint}', json=payload)
         response.raise_for_status()
 
     @staticmethod
@@ -1612,6 +1722,47 @@ class LiteLlmManager:
         response.raise_for_status()
 
     @staticmethod
+    async def _revoke_member_credentials(
+        client: httpx.AsyncClient, user_id: str, team_id: str
+    ) -> None:
+        from storage.budget_control import BudgetWriteDenied
+        from storage.org_member import OrgMember
+
+        async with key_mutation_scope(team_id, allow_pending_budget=True) as control:
+            if (
+                await control.session.get(
+                    OrgMember, {'org_id': control.org_id, 'user_id': UUID(user_id)}
+                )
+                is not None
+            ):
+                raise BudgetWriteDenied(
+                    'Remove application membership before revoking its credentials'
+                )
+            keys = await LiteLlmManager._get_all_keys_for_user(client, user_id)
+            if keys is None:
+                raise BudgetWriteDenied('Member credential policy is unavailable')
+            for key in keys:
+                if key.get('team_id') != team_id:
+                    continue
+                token = key.get('token')
+                if (
+                    key.get('user_id') != user_id
+                    or not isinstance(token, str)
+                    or not token
+                ):
+                    raise BudgetWriteDenied(
+                        'Member credential ownership could not be verified'
+                    )
+                await LiteLlmManager._delete_key(client, token)
+            remaining = await LiteLlmManager._get_all_keys_for_user(client, user_id)
+            if remaining is None or any(
+                key.get('team_id') == team_id for key in remaining
+            ):
+                raise BudgetWriteDenied(
+                    'Member credential revocation is pending verification'
+                )
+
+    @staticmethod
     async def _remove_user_from_team(
         client: httpx.AsyncClient,
         keycloak_user_id: str,
@@ -1620,6 +1771,31 @@ class LiteLlmManager:
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
+        from storage.budget_control import BudgetWriteDenied
+        from storage.org_budget_operation import OrgBudgetOperation
+        from storage.org_budget_settings import OrgBudgetSettings
+
+        async with key_mutation_scope(team_id, allow_pending_budget=True) as control:
+            settings = await control.session.scalar(
+                select(OrgBudgetSettings).where(
+                    OrgBudgetSettings.org_id == control.org_id
+                )
+            )
+            if settings is not None and settings.control_mode == 'managed':
+                operation = await control.session.scalar(
+                    select(OrgBudgetOperation).where(
+                        OrgBudgetOperation.org_id == control.org_id,
+                        OrgBudgetOperation.generation == settings.control_generation,
+                    )
+                )
+                if operation is None or keycloak_user_id not in operation.plan.get(
+                    'inactive_member_ids', []
+                ):
+                    raise BudgetWriteDenied('A journaled member removal is required')
+                await LiteLlmManager._revoke_member_credentials(
+                    client, keycloak_user_id, team_id
+                )
+                return
         response = await client.post(
             f'{LITE_LLM_API_URL}/team/member_delete',
             json={
@@ -1657,51 +1833,171 @@ class LiteLlmManager:
         team_id: str | None,
         key_alias: str | None,
         metadata: dict | None,
+        *,
+        replacing_key: str | None = None,
     ) -> str:
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             raise ValueError('LiteLLM API configuration not found')
-        json_data: dict[str, Any] = {
-            'user_id': keycloak_user_id,
-            'models': [],
-        }
+        async with key_mutation_scope(team_id) as control:
+            from server.services.managed_budget_service import ManagedBudgetService
+            from storage.budget_control import BudgetWriteDenied
+            from storage.org_budget_settings import OrgBudgetSettings
+            from storage.org_member import OrgMember
 
-        if team_id is not None:
-            json_data['team_id'] = team_id
-
-        if key_alias is not None:
-            json_data['key_alias'] = key_alias
-
-        if metadata is not None:
-            json_data['metadata'] = metadata
-
-        response = await client.post(
-            f'{LITE_LLM_API_URL}/key/generate',
-            json=json_data,
-        )
-        # Failed to generate user key for team - this is an unforeseen error state...
-        if not response.is_success:
-            logger.error(
-                'error_generate_user_team_key',
-                extra={
-                    'status_code': response.status_code,
-                    'text': response.text,
-                    'user_id': keycloak_user_id,
-                    'team_id': team_id,
-                    'key_alias': key_alias,
-                },
+            ownership = await control.session.scalar(
+                select(OrgBudgetSettings).where(
+                    OrgBudgetSettings.org_id == control.org_id
+                )
             )
-        response.raise_for_status()
-        response_json = response.json()
-        key = response_json['key']
-        logger.info(
-            'LiteLlmManager:_lite_llm_generate_user_team_key:key_created',
-            extra={
+            if ownership is not None and ownership.control_mode == 'managed':
+                if ownership.control_generation < 1:
+                    raise BudgetWriteDenied('A verified budget adoption is required')
+                member = await control.session.get(
+                    OrgMember,
+                    {'org_id': control.org_id, 'user_id': UUID(keycloak_user_id)},
+                )
+                if member is None:
+                    raise BudgetWriteDenied(
+                        'Commit organization membership before issuing its credential'
+                    )
+                result = await ManagedBudgetService(control.engine).maintain(
+                    control.org_id
+                )
+                if result['status'] not in {'healthy', 'applied'}:
+                    raise BudgetWriteDenied(
+                        'Finish member budget reconciliation before issuing its credential'
+                    )
+                from storage.org_budget_operation import OrgBudgetOperation
+
+                operation = await control.session.scalar(
+                    select(OrgBudgetOperation).where(
+                        OrgBudgetOperation.org_id == control.org_id,
+                        OrgBudgetOperation.generation == ownership.control_generation,
+                    )
+                )
+                if operation is None or operation.status != 'applied':
+                    raise BudgetWriteDenied(
+                        'Member credential generation has no verified policy'
+                    )
+                epoch = operation.plan.get('member_credential_epochs', {}).get(
+                    keycloak_user_id
+                )
+                if epoch:
+                    key_alias = f'{key_alias}-{epoch}'
+            if replacing_key:
+                old_hash = hashlib.sha256(replacing_key.encode()).hexdigest()
+                key_alias = f'openhands-rotation-{old_hash}'
+            payload: dict[str, Any] = {
                 'user_id': keycloak_user_id,
                 'team_id': team_id,
-                'key_alias': key_alias,
-            },
+                'models': [],
+            }
+            if key_alias is not None:
+                payload['key_alias'] = key_alias
+            if metadata is not None:
+                payload['metadata'] = metadata
+            return await issue_credential(
+                client,
+                LITE_LLM_API_URL,
+                payload,
+                lambda: LiteLlmManager._check_key_creation(
+                    client,
+                    keycloak_user_id,
+                    team_id,
+                    key_alias,
+                    replacing_key=replacing_key,
+                ),
+                replacing_key=replacing_key,
+            )
+
+    @staticmethod
+    async def _check_key_creation(
+        client: httpx.AsyncClient,
+        user_id: str,
+        team_id: str | None,
+        key_alias: str | None,
+        *,
+        replacing_key: str | None = None,
+    ) -> None:
+        from storage.budget_control import BudgetWriteDenied
+
+        keys = await LiteLlmManager._get_all_keys_for_user(
+            client, user_id, require_user=True
         )
-        return key
+        if keys is None:
+            raise BudgetWriteDenied(
+                'Cannot create a credential while key policy is unavailable'
+            )
+        if replacing_key:
+            owned = [
+                key
+                for key in keys
+                if LiteLlmManager._key_belongs_to_user_org(
+                    [key], replacing_key, user_id, team_id or '', False
+                )
+            ]
+            if len(owned) != 1 or key_restrictions(owned[0]):
+                raise BudgetWriteDenied(
+                    'Rotation requires an owned key without independent restrictions; the existing key was preserved'
+                )
+            keys = [key for key in keys if key is not owned[0]]
+        for key in keys:
+            if key.get('team_id') is None and key_restrictions(key):
+                raise BudgetWriteDenied(
+                    'Unscoped key policy requires explicit credential recovery'
+                )
+            if key.get('team_id') != team_id:
+                continue
+            if (
+                key.get('user_id') != user_id
+                or not isinstance(key.get('token'), str)
+                or not key['token']
+            ):
+                raise BudgetWriteDenied('Key ownership could not be established')
+            if key.get('key_alias') == key_alias or key_restrictions(key):
+                raise BudgetWriteDenied(
+                    'Existing key policy requires explicit credential recovery; it was not replaced'
+                )
+        if key_alias:
+            response = await client.get(
+                f'{LITE_LLM_API_URL}/key/list',
+                params={'key_alias': key_alias, 'return_full_object': True, 'size': 1},
+            )
+            response.raise_for_status()
+            result = response.json()
+            if not isinstance(result, dict) or not isinstance(result.get('keys'), list):
+                raise BudgetWriteDenied(
+                    'Unable to inspect the existing credential alias'
+                )
+            count = result.get('total_count')
+            if type(count) is not int or count < 0:
+                raise BudgetWriteDenied(
+                    'Unable to inspect the existing credential alias'
+                )
+            if result['keys'] or count != 0:
+                raise BudgetWriteDenied(
+                    'Credential alias already exists; no key was deleted'
+                )
+
+    @staticmethod
+    async def ensure_managed_key(
+        keycloak_user_id: str,
+        org_id: str,
+        existing_key: str | None,
+        *,
+        openhands_type: bool = False,
+    ) -> str:
+        """Reuse owned credentials, including operator-blocked or renamed keys."""
+        if existing_key and await LiteLlmManager.verify_existing_key(
+            existing_key, keycloak_user_id, org_id, openhands_type=openhands_type
+        ):
+            return existing_key
+        return await LiteLlmManager.generate_key(
+            keycloak_user_id,
+            org_id,
+            get_openhands_cloud_key_alias(keycloak_user_id, org_id),
+            {'type': 'openhands'} if openhands_type else None,
+        )
 
     @staticmethod
     async def verify_key(key: str, user_id: str) -> bool:
@@ -1843,6 +2139,8 @@ class LiteLlmManager:
     async def _get_all_keys_for_user(
         client: httpx.AsyncClient,
         keycloak_user_id: str,
+        *,
+        require_user: bool = False,
     ) -> list[dict] | None:
         """Get all keys for a user from LiteLLM.
 
@@ -1882,7 +2180,7 @@ class LiteLlmManager:
                 'LiteLlmManager:_get_all_keys_for_user:not_found',
                 extra={'user_id': keycloak_user_id},
             )
-            return []
+            return None if require_user else []
 
         if not response.is_success:
             logger.warning(
@@ -1907,8 +2205,19 @@ class LiteLlmManager:
             )
             return None
 
-        # The user/info endpoint returns keys in the 'keys' field
-        return user_json.get('keys', [])
+        keys = user_json.get('keys') if isinstance(user_json, dict) else None
+        if require_user:
+            user_info = (
+                user_json.get('user_info') if isinstance(user_json, dict) else None
+            )
+            if (
+                not isinstance(user_info, dict)
+                or user_info.get('user_id') != keycloak_user_id
+            ):
+                return None
+        if not isinstance(keys, list) or any(not isinstance(key, dict) for key in keys):
+            return None
+        return keys
 
     @staticmethod
     async def _verify_existing_key(
@@ -1918,25 +2227,12 @@ class LiteLlmManager:
         org_id: str,
         openhands_type: bool = False,
     ) -> bool:
-        """Check if an existing key exists for the user/org in LiteLLM.
-
-        Verifies the provided key_value matches a key registered in LiteLLM for
-        the given user and organization. For openhands_type=True, looks for keys
-        with metadata type='openhands' and matching team_id. For openhands_type=False,
-        looks for keys with matching alias and team_id.
-
-        Returns True if the key is found and valid, False otherwise.
-        """
+        """Verify full key identity; aliases and model metadata are not ownership."""
         keys = await LiteLlmManager._get_all_keys_for_user(client, keycloak_user_id)
         if keys is None:
-            logger.warning(
-                'LiteLlmManager:_verify_existing_key:skip_invalidation',
-                extra={
-                    'user_id': keycloak_user_id,
-                    'org_id': org_id,
-                },
+            raise RuntimeError(
+                'Unable to inspect LiteLLM keys without replacing policy'
             )
-            return True
         return LiteLlmManager._key_belongs_to_user_org(
             keys,
             key_value,
@@ -1953,39 +2249,22 @@ class LiteLlmManager:
         org_id: str,
         openhands_type: bool,
     ) -> bool:
+        del openhands_type
+        if not key_value:
+            return False
+        key_hash = hashlib.sha256(key_value.encode()).hexdigest()
         for key_info in keys:
-            metadata = key_info.get('metadata') or {}
-            team_id = key_info.get('team_id')
-            key_alias = key_info.get('key_alias')
-            token = None
+            token = key_info.get('token')
             if (
-                openhands_type
-                and metadata.get('type') == 'openhands'
-                and team_id == org_id
-            ):
-                # Found an existing OpenHands key for this org
-                key_name = key_info.get('key_name')
-                token = key_name[-4:] if key_name else None  # last 4 digits of key
-                if token and key_value.endswith(
-                    token
-                ):  # check if this is our current key
-                    return True
-            if (
-                not openhands_type
-                and team_id == org_id
+                key_info.get('user_id') == keycloak_user_id
+                and key_info.get('team_id') == org_id
+                and isinstance(token, str)
                 and (
-                    key_alias == get_openhands_cloud_key_alias(keycloak_user_id, org_id)
-                    or key_alias == get_byor_key_alias(keycloak_user_id, org_id)
+                    hmac.compare_digest(token.encode(), key_hash.encode())
+                    or hmac.compare_digest(token.encode(), key_value.encode())
                 )
             ):
-                # Found an existing key for this org (regardless of type)
-                key_name = key_info.get('key_name')
-                token = key_name[-4:] if key_name else None  # last 4 digits of key
-                if token and key_value.endswith(
-                    token
-                ):  # check if this is our current key
-                    return True
-
+                return True
         return False
 
     @staticmethod
@@ -1997,13 +2276,8 @@ class LiteLlmManager:
         openhands_type: bool = False,
     ) -> bool:
         """Verify ownership without treating an unavailable lookup as healthy."""
-        keys = await LiteLlmManager._get_all_keys_for_user(client, keycloak_user_id)
-        if keys is None:
-            raise RuntimeError(
-                'Unable to inspect LiteLLM keys for managed-key ownership repair'
-            )
-        return LiteLlmManager._key_belongs_to_user_org(
-            keys,
+        return await LiteLlmManager._verify_existing_key(
+            client,
             key_value,
             keycloak_user_id,
             org_id,
@@ -2011,86 +2285,24 @@ class LiteLlmManager:
         )
 
     @staticmethod
-    async def _delete_key_by_alias(
-        client: httpx.AsyncClient,
-        key_alias: str,
-    ):
-        """Delete a key from LiteLLM by its alias.
-
-        This is a best-effort operation that logs but does not raise on failure.
-        """
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
-            logger.warning('LiteLLM API configuration not found')
-            return
-        response = await client.post(
-            f'{LITE_LLM_API_URL}/key/delete',
-            json={
-                'key_aliases': [key_alias],
-            },
-        )
-        if response.is_success:
-            logger.info(
-                'LiteLlmManager:_delete_key_by_alias:key_deleted',
-                extra={'key_alias': key_alias},
-            )
-        elif response.status_code != 404:
-            # Log non-404 errors but don't fail
-            logger.warning(
-                'error_deleting_key_by_alias',
-                extra={
-                    'key_alias': key_alias,
-                    'status_code': response.status_code,
-                    'text': response.text,
-                },
-            )
-
-    @staticmethod
-    async def _delete_key_by_alias_strict(
-        client: httpx.AsyncClient,
-        key_alias: str,
-    ) -> None:
-        """Delete a deterministic alias or fail without rotating the DB row."""
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
-            raise ValueError('LiteLLM API configuration not found')
-        response = await client.post(
-            f'{LITE_LLM_API_URL}/key/delete',
-            json={'key_aliases': [key_alias]},
-        )
-        if response.status_code == 404:
-            return
-        response.raise_for_status()
-
-    @staticmethod
     async def _delete_key(
         client: httpx.AsyncClient,
         key_id: str,
-        key_alias: str | None = None,
     ):
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return
-        response = await client.post(
-            f'{LITE_LLM_API_URL}/key/delete',
-            json={
-                'keys': [key_id],
-            },
-        )
-        # Failed to delete key...
-        if not response.is_success:
-            if response.status_code == 404:
-                # Key doesn't exist by key_id. If we have a key_alias,
-                # try deleting by alias to clean up any orphaned alias.
-                if key_alias:
-                    await LiteLlmManager._delete_key_by_alias(client, key_alias)
+        async with credential_revocation_scope(
+            client, LITE_LLM_API_URL, key_id
+        ) as present:
+            if not present:
                 return
-            logger.error(
-                'error_deleting_key',
-                extra={
-                    'status_code': response.status_code,
-                    'text': response.text,
-                },
+            response = await client.post(
+                f'{LITE_LLM_API_URL}/key/delete',
+                json={'keys': [key_id]},
             )
-        response.raise_for_status()
+            if response.status_code != 404:
+                response.raise_for_status()
         logger.info(
             'LiteLlmManager:_delete_key:key_deleted',
         )
@@ -2099,6 +2311,8 @@ class LiteLlmManager:
     async def _get_team_members_financial_data(
         client: httpx.AsyncClient,
         team_id: str,
+        *,
+        include_control_policy: bool = False,
     ) -> dict:
         """
         Get financial data for all members in a team.
@@ -2152,7 +2366,9 @@ class LiteLlmManager:
                 'LiteLLM team_info is missing required budget fields '
                 '(max_budget, spend)'
             )
-        team_max_budget = team_data['max_budget']
+        team_max_budget = _validated_budget_number(
+            team_data['max_budget'], 'team max_budget'
+        )
         team_spend = team_data['spend']
 
         metadata = team_data.get('metadata') or {}
@@ -2165,6 +2381,17 @@ class LiteLlmManager:
             raise ValueError(
                 'LiteLLM team_info.metadata.team_member_budget_id must be a string'
             )
+
+        default_budget = next(
+            (
+                membership.get('litellm_budget_table')
+                for membership in team_memberships
+                if default_member_budget_id is not None
+                and membership.get('budget_id') == default_member_budget_id
+            ),
+            None,
+        )
+        member_counters: dict[str, dict[str, Any]] = {}
 
         membership_by_user_id: dict[str, dict[str, Any]] = {}
         for membership in team_memberships:
@@ -2191,6 +2418,39 @@ class LiteLlmManager:
         # Their key counters are the only authoritative per-user source at that
         # point. Membership counters take precedence as soon as a row exists.
         role_only_member_ids = role_member_ids - membership_by_user_id.keys()
+        needs_default_budget = default_member_budget_id is not None and (
+            include_control_policy
+            or bool(role_only_member_ids)
+            or any(
+                not membership.get('litellm_budget_table')
+                or membership['litellm_budget_table'].get('max_budget') is None
+                for membership in membership_by_user_id.values()
+            )
+        )
+        if needs_default_budget and default_budget is None:
+            response = await client.post(
+                f'{LITE_LLM_API_URL}/budget/info',
+                json={'budgets': [default_member_budget_id]},
+            )
+            response.raise_for_status()
+            budgets = response.json()
+            if not isinstance(budgets, list) or len(budgets) != 1:
+                raise ValueError('LiteLLM default member budget could not be read')
+            default_budget = budgets[0]
+            if (
+                not isinstance(default_budget, dict)
+                or default_budget.get('budget_id') != default_member_budget_id
+            ):
+                raise ValueError('LiteLLM default member budget identity mismatch')
+        if default_budget is not None and (
+            not isinstance(default_budget, dict) or 'max_budget' not in default_budget
+        ):
+            raise ValueError('LiteLLM default member budget is missing max_budget')
+        default_cap = (
+            _validated_budget_number(default_budget['max_budget'], 'default max_budget')
+            if default_budget is not None
+            else None
+        )
         role_only_spend: dict[str, float] = {}
         if role_only_member_ids:
             keys = team_info.get('keys')
@@ -2231,14 +2491,8 @@ class LiteLlmManager:
                 )
 
             budget_id = membership.get('budget_id')
-            uses_shared_budget = budget_id is None or (
-                default_member_budget_id is not None
-                and budget_id == default_member_budget_id
-            )
-            if uses_shared_budget:
-                member_max_budget = team_max_budget
-            else:
-                budget_table = membership.get('litellm_budget_table')
+            budget_table = membership.get('litellm_budget_table')
+            if budget_id is not None:
                 if not isinstance(budget_table, dict):
                     raise ValueError(
                         f'LiteLLM membership {user_id} is missing its budget table'
@@ -2247,30 +2501,129 @@ class LiteLlmManager:
                     raise ValueError(
                         f'LiteLLM membership {user_id} budget table is missing max_budget'
                     )
-                member_max_budget = budget_table['max_budget']
+            member_max_budget = _validated_budget_number(
+                budget_table['max_budget'] if budget_table is not None else None,
+                f'member {user_id} max_budget',
+            )
+            budget_source = 'private_member'
+            effective_budget_id = budget_id
+            if budget_id == default_member_budget_id:
+                budget_source = 'default_member'
+            if (
+                member_max_budget is None
+                and default_cap is not None
+                and default_cap > 0
+            ):
+                member_max_budget = default_cap
+                budget_source = 'default_member'
+                effective_budget_id = default_member_budget_id
+            uses_shared_budget = member_max_budget is None
+            if uses_shared_budget:
+                member_max_budget = team_max_budget
+                budget_source = 'team'
 
             members[user_id] = {
                 'spend': membership['spend'],
                 'max_budget': member_max_budget,
                 'uses_shared_budget': uses_shared_budget,
             }
+            member_counters[user_id] = {
+                'source': 'membership',
+                'spend': membership['spend'],
+                'budget_id': budget_id,
+                'effective_budget_id': effective_budget_id,
+                'budget_source': budget_source,
+                'budget_duration': (budget_table or {}).get('budget_duration'),
+                'budget_reset_at': (budget_table or {}).get('budget_reset_at'),
+                'reset_known': budget_id is None
+                or {'budget_duration', 'budget_reset_at'}
+                <= (budget_table or {}).keys(),
+            }
 
         for user_id, spend in role_only_spend.items():
+            uses_default_budget = default_cap is not None and default_cap > 0
             members[user_id] = {
                 'spend': spend,
-                'max_budget': team_max_budget,
-                'uses_shared_budget': True,
+                'max_budget': default_cap if uses_default_budget else team_max_budget,
+                'uses_shared_budget': not uses_default_budget,
+            }
+            # Creating a private budget creates a zero-spend membership, not a key counter.
+            member_counters[user_id] = {
+                'source': 'new_membership',
+                'spend': 0.0,
+                'budget_id': None,
+                'effective_budget_id': (
+                    default_member_budget_id if uses_default_budget else None
+                ),
+                'budget_source': 'default_member' if uses_default_budget else 'team',
+                'budget_duration': None,
+                'budget_reset_at': None,
+                'reset_known': True,
             }
 
         logger.debug(
             'LiteLlmManager:_get_team_members_financial_data:success',
             extra={'team_id': team_id, 'member_count': len(members)},
         )
-        return {
+        financial_data = {
             'team_max_budget': team_max_budget,
+            'team_blocked': team_data.get('blocked'),
             'team_spend': team_spend,
             'members': members,
+            'member_counters': member_counters,
+            'team_budget_duration': team_data.get('budget_duration'),
+            'team_budget_reset_at': team_data.get('budget_reset_at'),
+            'team_reset_known': {'budget_duration', 'budget_reset_at'}
+            <= team_data.keys(),
+            'default_member_budget_id': default_member_budget_id,
+            'default_member_budget': default_budget,
         }
+        if include_control_policy:
+            policy_fields = (
+                'max_budget',
+                'soft_budget',
+                'budget_duration',
+                'budget_reset_at',
+                'budget_limits',
+                'models',
+                'allowed_models',
+                'model_max_budget',
+                'blocked',
+                'rpm_limit',
+                'tpm_limit',
+                'max_parallel_requests',
+            )
+            keys = team_info.get('keys')
+            if not isinstance(keys, list):
+                raise ValueError('LiteLLM team response is missing key policies')
+            key_policies = []
+            for key in keys:
+                key_data = LiteLlmManager._member_dict(key)
+                token = key_data.get('token')
+                if not isinstance(token, str) or not token:
+                    raise ValueError('LiteLLM key policy is missing its identity')
+                key_policies.append(
+                    {
+                        'identity': hashlib.sha256(token.encode()).hexdigest(),
+                        'user_id': key_data.get('user_id'),
+                        **{field: key_data.get(field) for field in policy_fields},
+                    }
+                )
+            financial_data['control_policy'] = {
+                'team': {field: team_data.get(field) for field in policy_fields},
+                'members': {
+                    user_id: {
+                        field: (membership.get('litellm_budget_table') or {}).get(field)
+                        for field in policy_fields
+                    }
+                    for user_id, membership in membership_by_user_id.items()
+                },
+                'keys': sorted(key_policies, key=lambda item: item['identity']),
+                'default_member': {
+                    field: (default_budget or {}).get(field) for field in policy_fields
+                },
+            }
+        return financial_data
 
     @staticmethod
     def with_http_client(
@@ -2290,6 +2643,7 @@ class LiteLlmManager:
     # Public methods with injected client
     create_team = staticmethod(with_http_client(_create_team))
     get_team = staticmethod(with_http_client(_get_team))
+    rename_team = staticmethod(with_http_client(_rename_team))
     update_team = staticmethod(with_http_client(_update_team))
     user_exists = staticmethod(with_http_client(_user_exists))
     create_user = staticmethod(with_http_client(_create_user))
@@ -2298,8 +2652,15 @@ class LiteLlmManager:
     delete_user = staticmethod(with_http_client(_delete_user))
     delete_team = staticmethod(with_http_client(_delete_team))
     add_user_to_team = staticmethod(with_http_client(_add_user_to_team))
+    prepare_new_managed_member = staticmethod(
+        with_http_client(_prepare_new_managed_member)
+    )
     remove_user_from_team = staticmethod(with_http_client(_remove_user_from_team))
+    revoke_member_credentials = staticmethod(
+        with_http_client(_revoke_member_credentials)
+    )
     get_user_team_info = staticmethod(with_http_client(_get_user_team_info))
+    apply_budget_write = staticmethod(with_http_client(_apply_budget_write))
     update_user_in_team = staticmethod(with_http_client(_update_user_in_team))
     generate_key = staticmethod(with_http_client(_generate_key))
     get_key_info = staticmethod(with_http_client(_get_key_info))
@@ -2309,10 +2670,6 @@ class LiteLlmManager:
     )
     delete_key = staticmethod(with_http_client(_delete_key))
     get_user_keys = staticmethod(with_http_client(_get_user_keys))
-    delete_key_by_alias = staticmethod(with_http_client(_delete_key_by_alias))
-    delete_key_by_alias_strict = staticmethod(
-        with_http_client(_delete_key_by_alias_strict)
-    )
     update_user_keys = staticmethod(with_http_client(_update_user_keys))
     get_team_members_financial_data = staticmethod(
         with_http_client(_get_team_members_financial_data)

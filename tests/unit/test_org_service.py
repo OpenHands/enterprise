@@ -1,8 +1,7 @@
 """
 Unit tests for OrgService.
 
-Tests the organization creation workflow with compensation pattern,
-including LiteLLM integration and cleanup on failures.
+Tests organization creation, including native-state preservation on failures.
 """
 
 import uuid
@@ -21,8 +20,54 @@ from server.routes.org_models import (
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.org_service import OrgService
+from storage.org_store import OrgStore
 from storage.role import Role
 from storage.user import User
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('with_owner', [True, False])
+async def test_creation_recovers_lost_commit_response_without_deleting_native_team(
+    async_session_maker, owner_role, create_org, with_owner
+):
+    org_id, user_id = uuid.uuid4(), uuid.uuid4()
+    async with async_session_maker() as session:
+        session.add(User(id=user_id, current_org_id=create_org().id))
+        await session.commit()
+    org = OrgService.create_org_entity(org_id, 'commit-response-loss', '', '')
+    member = (
+        OrgMember(
+            org_id=org_id,
+            user_id=user_id,
+            role_id=1,
+            status='active',
+            llm_api_key='test-only',
+        )
+        if with_owner
+        else None
+    )
+    persist = OrgStore.persist_org_with_owner
+
+    async def commit_then_lose_response(*args):
+        await persist(*args)
+        raise RuntimeError('Database commit response lost')
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch.object(OrgStore, 'persist_org_with_owner', commit_then_lose_response),
+        patch('storage.org_service.LiteLlmManager.delete_team', AsyncMock()) as delete,
+    ):
+        result = await OrgService._persist_with_recovery(
+            org, member, org_id, str(user_id)
+        )
+    assert result.id == org_id
+    delete.assert_not_awaited()
+    async with async_session_maker() as session:
+        assert await session.get(Org, org_id) is not None
+        stored_member = await session.get(
+            OrgMember, {'org_id': org_id, 'user_id': user_id}
+        )
+        assert (stored_member is not None) == with_owner
 
 
 @pytest.fixture
@@ -335,24 +380,17 @@ async def test_create_org_with_owner_litellm_failure(
 
 
 @pytest.mark.asyncio
-async def test_create_org_with_owner_database_failure_triggers_cleanup(
+async def test_create_org_database_failure_preserves_native_resources(
     session_maker, async_session_maker, owner_role, mock_litellm_api
 ):
     """
     GIVEN: Database persistence fails after LiteLLM integration succeeds
     WHEN: create_org_with_owner is called
-    THEN: OrgDatabaseError is raised and LiteLLM cleanup is triggered
+    THEN: OrgDatabaseError is raised without deleting LiteLLM resources
     """
     # Arrange
     org_name = 'test-org'
     user_id = str(uuid.uuid4())
-    cleanup_called = False
-
-    def mock_cleanup(*args, **kwargs):
-        nonlocal cleanup_called
-        cleanup_called = True
-        return None
-
     mock_settings = {'team_id': 'test-team', 'user_id': user_id}
 
     with (
@@ -374,10 +412,7 @@ async def test_create_org_with_owner_database_failure_triggers_cleanup(
             'storage.org_service.OrgStore.persist_org_with_owner',
             side_effect=Exception('Database connection failed'),
         ),
-        patch(
-            'storage.org_service.OrgService._cleanup_litellm_resources',
-            AsyncMock(side_effect=mock_cleanup),
-        ),
+        patch('storage.org_service.LiteLlmManager.delete_team', AsyncMock()) as delete,
     ):
         # Act & Assert
         with pytest.raises(OrgDatabaseError) as exc_info:
@@ -388,19 +423,18 @@ async def test_create_org_with_owner_database_failure_triggers_cleanup(
                 user_id=user_id,
             )
 
-        # Verify cleanup was called
-        assert cleanup_called
+        delete.assert_not_awaited()
         assert 'Database connection failed' in str(exc_info.value.__cause__)
 
 
 @pytest.mark.asyncio
-async def test_create_org_with_owner_entity_creation_failure_triggers_cleanup(
+async def test_create_org_entity_failure_preserves_native_resources(
     session_maker, async_session_maker, owner_role, mock_litellm_api
 ):
     """
     GIVEN: Entity creation fails after LiteLLM integration succeeds
     WHEN: create_org_with_owner is called
-    THEN: OrgDatabaseError is raised and LiteLLM cleanup is triggered
+    THEN: OrgDatabaseError is raised without deleting LiteLLM resources
     """
     # Arrange
     org_name = 'test-org'
@@ -440,111 +474,79 @@ async def test_create_org_with_owner_entity_creation_failure_triggers_cleanup(
                 user_id=user_id,
             )
 
-        # Verify cleanup was called
-        mock_delete.assert_called_once()
-        assert 'Owner role not found' in str(exc_info.value)
+        mock_delete.assert_not_awaited()
+        assert 'Owner role not found' in str(exc_info.value.__cause__)
 
 
 @pytest.mark.asyncio
-async def test_cleanup_litellm_resources_success(mock_litellm_api):
-    """
-    GIVEN: Valid org_id and user_id
-    WHEN: _cleanup_litellm_resources is called
-    THEN: LiteLLM team is deleted successfully and None is returned
-    """
-    # Arrange
-    org_id = uuid.uuid4()
-    user_id = 'test-user-123'
-
-    with patch(
-        'storage.org_service.LiteLlmManager.delete_team',
-        AsyncMock(),
-    ) as mock_delete:
-        # Act
-        result = await OrgService._cleanup_litellm_resources(org_id, user_id)
-
-        # Assert
-        assert result is None
-        mock_delete.assert_called_once_with(str(org_id))
-
-
-@pytest.mark.asyncio
-async def test_cleanup_litellm_resources_failure_returns_exception(mock_litellm_api):
-    """
-    GIVEN: LiteLLM delete_team fails
-    WHEN: _cleanup_litellm_resources is called
-    THEN: Exception is returned (not raised) for logging
-    """
-    # Arrange
-    org_id = uuid.uuid4()
-    user_id = 'test-user-123'
-    expected_error = Exception('LiteLLM API unavailable')
-
-    with patch(
-        'storage.org_service.LiteLlmManager.delete_team',
-        AsyncMock(side_effect=expected_error),
-    ):
-        # Act
-        result = await OrgService._cleanup_litellm_resources(org_id, user_id)
-
-        # Assert
-        assert result is expected_error
-        assert 'LiteLLM API unavailable' in str(result)
-
-
-@pytest.mark.asyncio
-async def test_handle_failure_with_cleanup_success():
-    """
-    GIVEN: Original error and successful cleanup
-    WHEN: _handle_failure_with_cleanup is called
-    THEN: OrgDatabaseError is raised with original error message
-    """
-    # Arrange
-    org_id = uuid.uuid4()
-    user_id = 'test-user-123'
-    original_error = Exception('Database write failed')
-
-    with patch(
-        'storage.org_service.OrgService._cleanup_litellm_resources',
-        AsyncMock(return_value=None),
-    ):
-        # Act & Assert
-        with pytest.raises(OrgDatabaseError) as exc_info:
-            await OrgService._handle_failure_with_cleanup(
-                org_id, user_id, original_error, 'Failed to create organization'
+@pytest.mark.parametrize(
+    'state',
+    [
+        'missing_org',
+        'missing_owner',
+        'wrong_name',
+        'wrong_role',
+        'inactive',
+        'unavailable',
+    ],
+)
+async def test_unverified_creation_never_reports_success_or_deletes_native_state(
+    async_session_maker, owner_role, create_org, state
+):
+    org_id, user_id = uuid.uuid4(), uuid.uuid4()
+    org = OrgService.create_org_entity(org_id, 'creation-intent', '', '')
+    member = OrgMember(
+        org_id=org_id,
+        user_id=user_id,
+        role_id=1,
+        status='active',
+        llm_api_key='test-only',
+    )
+    existing_org_id = create_org().id
+    async with async_session_maker() as session:
+        session.add(User(id=user_id, current_org_id=existing_org_id))
+        session.add(Role(id=2, name='member', rank=3))
+        if state not in {'missing_org', 'unavailable'}:
+            session.add(
+                OrgService.create_org_entity(
+                    org_id,
+                    'different-name' if state == 'wrong_name' else org.name,
+                    '',
+                    '',
+                )
             )
-
-        assert 'Database write failed' in str(exc_info.value)
-        assert 'Cleanup also failed' not in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_handle_failure_with_cleanup_both_fail():
-    """
-    GIVEN: Original error and cleanup also fails
-    WHEN: _handle_failure_with_cleanup is called
-    THEN: OrgDatabaseError is raised with both error messages
-    """
-    # Arrange
-    org_id = uuid.uuid4()
-    user_id = 'test-user-123'
-    original_error = Exception('Database write failed')
-    cleanup_error = Exception('LiteLLM API unavailable')
-
-    with patch(
-        'storage.org_service.OrgService._cleanup_litellm_resources',
-        AsyncMock(return_value=cleanup_error),
+            await session.flush()
+            if state != 'missing_owner':
+                session.add(
+                    OrgMember(
+                        org_id=org_id,
+                        user_id=user_id,
+                        role_id=2 if state == 'wrong_role' else 1,
+                        llm_api_key='test-only',
+                        status='inactive' if state == 'inactive' else 'active',
+                    )
+                )
+        await session.commit()
+    read_session = (
+        MagicMock(side_effect=RuntimeError('Database read unavailable'))
+        if state == 'unavailable'
+        else async_session_maker
+    )
+    failure = RuntimeError('Commit outcome unknown: private connection details')
+    with (
+        patch('storage.org_store.a_session_maker', read_session),
+        patch.object(
+            OrgStore, 'persist_org_with_owner', AsyncMock(side_effect=failure)
+        ),
+        patch('storage.org_service.LiteLlmManager.delete_team', AsyncMock()) as delete,
     ):
-        # Act & Assert
-        with pytest.raises(OrgDatabaseError) as exc_info:
-            await OrgService._handle_failure_with_cleanup(
-                org_id, user_id, original_error, 'Failed to create organization'
-            )
-
-        error_message = str(exc_info.value)
-        assert 'Database write failed' in error_message
-        assert 'Cleanup also failed' in error_message
-        assert 'LiteLLM API unavailable' in error_message
+        with pytest.raises(OrgDatabaseError) as exc:
+            await OrgService._persist_with_recovery(org, member, org_id, str(user_id))
+    delete.assert_not_awaited()
+    assert exc.value.__cause__ is failure
+    assert str(org_id) in str(exc.value)
+    assert 'preserved' in str(exc.value)
+    assert 'private connection details' not in str(exc.value)
 
 
 @pytest.mark.asyncio

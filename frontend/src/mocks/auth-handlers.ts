@@ -2,6 +2,9 @@ import { http, HttpResponse } from "msw";
 import { GitUser } from "#/types/git";
 
 export const AUTH_HANDLERS = [
+  http.get("/api/onboarding_status", () =>
+    HttpResponse.json({ should_complete_onboarding: false }),
+  ),
   http.get("/api/user/info", () => {
     const user: GitUser = {
       id: "1",

@@ -536,6 +536,118 @@ async def test_success_callback_success(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('selected_workspace', ['team', 'personal'])
+async def test_checkout_credit_stays_with_recorded_org_after_workspace_switch(
+    async_session_maker,
+    test_org,
+    test_user,
+    patched_billing_session_maker,
+    mock_callback_request,
+    mock_stripe_session_retrieve,
+    selected_workspace,
+):
+    other_org_id = uuid.uuid4() if selected_workspace == 'team' else test_user.id
+    session_id = 'checkout-before-workspace-switch'
+    async with async_session_maker() as session:
+        session.add(
+            Org(id=other_org_id, name='Different workspace', byor_export_enabled=False)
+        )
+        session.add(
+            BillingSession(
+                id=session_id,
+                user_id=str(test_user.id),
+                org_id=test_org.id,
+                status='in_progress',
+                price=25,
+                price_code='NA',
+            )
+        )
+        await session.commit()
+        user = await session.get(User, test_user.id)
+        user.current_org_id = other_org_id
+        await session.commit()
+
+    mock_stripe_session_retrieve.return_value = MagicMock(
+        status='complete', amount_subtotal=2500, customer='checkout-customer'
+    )
+    analytics = MagicMock()
+    with (
+        patch(
+            'storage.user_store.UserStore.get_user_by_id', AsyncMock(return_value=user)
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.get_user_team_info',
+            AsyncMock(return_value={'spend': 5, 'max_budget_in_team': 100}),
+        ) as read,
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget',
+            AsyncMock(),
+        ) as write,
+        patch('server.routes.billing.get_analytics_service', return_value=analytics),
+    ):
+        response = await success_callback(session_id, mock_callback_request)
+    assert response.status_code == 302
+    read.assert_awaited_once_with(str(test_user.id), str(test_org.id))
+    write.assert_awaited_once_with(str(test_org.id), 125)
+    assert analytics.track_credit_purchased.call_args.kwargs['ctx'].org_id == str(
+        test_org.id
+    )
+    async with async_session_maker() as session:
+        assert (await session.get(Org, test_org.id)).byor_export_enabled is True
+        assert (await session.get(Org, other_org_id)).byor_export_enabled is False
+        assert (await session.get(BillingSession, session_id)).status == 'completed'
+
+
+@pytest.mark.asyncio
+async def test_checkout_without_recorded_org_never_guesses_from_current_workspace(
+    async_session_maker,
+    test_org,
+    test_user,
+    patched_billing_session_maker,
+    mock_callback_request,
+    mock_stripe_session_retrieve,
+):
+    session_id = 'legacy-checkout-without-org'
+    async with async_session_maker() as session:
+        session.add(
+            BillingSession(
+                id=session_id,
+                user_id=str(test_user.id),
+                org_id=None,
+                status='in_progress',
+                price=25,
+                price_code='NA',
+            )
+        )
+        await session.commit()
+    mock_stripe_session_retrieve.return_value = MagicMock(
+        status='complete', amount_subtotal=2500, customer='checkout-customer'
+    )
+    with (
+        patch(
+            'storage.user_store.UserStore.get_user_by_id',
+            AsyncMock(return_value=test_user),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.get_user_team_info', AsyncMock()
+        ) as read,
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget',
+            AsyncMock(),
+        ) as write,
+    ):
+        with pytest.raises(HTTPException) as error:
+            await success_callback(session_id, mock_callback_request)
+    assert error.value.status_code == 409
+    read.assert_not_awaited()
+    write.assert_not_awaited()
+    async with async_session_maker() as session:
+        checkout = await session.get(BillingSession, session_id)
+        assert checkout.status == 'in_progress' and checkout.org_id is None
+        assert (await session.get(Org, test_org.id)).byor_export_enabled is False
+
+
+@pytest.mark.asyncio
 async def test_success_callback_lite_llm_error(
     async_session_maker,
     test_org,

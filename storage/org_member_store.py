@@ -15,8 +15,15 @@ from server.routes.org_models import (
     MEMBER_PRIVATE_AGENT_KEYS,
     OrgMemberSettingsUpdate,
 )
+from storage.budget_control import (
+    BudgetControlConflict,
+    budget_control_session,
+    budget_engine,
+)
 from storage.database import a_session_maker
 from storage.mcp_config import serialize_mcp_config
+from storage.org_budget_operation import OrgBudgetOperation
+from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_default_settings import strip_unset_condenser_max_tokens
 from storage.org_member import OrgMember
 from storage.user import User
@@ -46,24 +53,58 @@ class OrgMemberStore:
         agent_settings_diff = dict(agent_settings_diff or {})
         mcp_config = _pop_mcp_config(agent_settings_diff)
         async with a_session_maker() as session:
-            org_member = OrgMember(
-                org_id=org_id,
-                user_id=user_id,
-                role_id=role_id,
-                llm_api_key=llm_api_key,
-                status=status,
-                agent_settings_diff=agent_settings_diff,
-                mcp_config=(
-                    serialize_mcp_config(mcp_config)
-                    if mcp_config is not _MISSING
-                    else None
-                ),
-                conversation_settings_diff=dict(conversation_settings_diff or {}),
-            )
-            session.add(org_member)
-            await session.commit()
-            await session.refresh(org_member)
-            return org_member
+            async with budget_control_session(
+                budget_engine(session), org_id
+            ) as control:
+                if await control.pending_operation() is not None:
+                    raise BudgetControlConflict(
+                        'Finish the pending budget change before adding members'
+                    )
+                ownership = await control.session.scalar(
+                    select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+                )
+                managed = ownership is not None and ownership.control_mode == 'managed'
+                org_member = OrgMember(
+                    org_id=org_id,
+                    user_id=user_id,
+                    role_id=role_id,
+                    llm_api_key='' if managed else llm_api_key,
+                    status=status,
+                    agent_settings_diff=agent_settings_diff,
+                    mcp_config=(
+                        serialize_mcp_config(mcp_config)
+                        if mcp_config is not _MISSING
+                        else None
+                    ),
+                    conversation_settings_diff=dict(conversation_settings_diff or {}),
+                )
+                if managed:
+                    org_member.managed_llm_key_ownership_version = 0
+                control.session.add(org_member)
+                await control.session.commit()
+                if managed:
+                    from server.logger import logger
+                    from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
+                        ManagedLlmKeyOwnershipProcessor,
+                    )
+
+                    try:
+                        await ManagedLlmKeyOwnershipProcessor.repair_member(
+                            org_id, user_id
+                        )
+                    except Exception as exc:
+                        await control.session.rollback()
+                        # The stale membership is durable work for login and maintenance.
+                        logger.warning(
+                            'managed_member_admission_pending',
+                            extra={
+                                'org_id': str(org_id),
+                                'user_id': str(user_id),
+                                'error_type': type(exc).__name__,
+                            },
+                        )
+                await control.session.refresh(org_member)
+                return org_member
 
     @staticmethod
     async def get_org_member(org_id: UUID, user_id: UUID) -> Optional[OrgMember]:
@@ -116,13 +157,6 @@ class OrgMemberStore:
             return list(result.scalars().all())
 
     @staticmethod
-    async def update_org_member(org_member: OrgMember) -> None:
-        """Update an organization-member relationship."""
-        async with a_session_maker() as session:
-            await session.merge(org_member)
-            await session.commit()
-
-    @staticmethod
     async def update_user_role_in_org(
         org_id: UUID, user_id: UUID, role_id: int, status: Optional[str] = None
     ) -> Optional[OrgMember]:
@@ -147,22 +181,47 @@ class OrgMemberStore:
             return org_member
 
     @staticmethod
-    async def remove_user_from_org(org_id: UUID, user_id: UUID) -> bool:
+    async def remove_user_from_org(
+        org_id: UUID, user_id: UUID, *, actor: str = 'membership-store'
+    ) -> bool:
         """Remove a user from an organization."""
         async with a_session_maker() as session:
-            result = await session.execute(
-                select(OrgMember).filter(
-                    OrgMember.org_id == org_id, OrgMember.user_id == user_id
+            async with budget_control_session(
+                budget_engine(session), org_id
+            ) as control:
+                org_member = await control.session.get(
+                    OrgMember, {'org_id': org_id, 'user_id': user_id}
+                )
+                if not org_member:
+                    return False
+                ownership = await control.session.scalar(
+                    select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+                )
+                if ownership is not None and ownership.control_mode == 'managed':
+                    from server.services.managed_budget_service import (
+                        ManagedBudgetService,
+                    )
+
+                    await ManagedBudgetService(control.engine).remove_member(
+                        org_id, user_id, actor
+                    )
+                    return True
+                await control.session.delete(org_member)
+                await control.session.commit()
+                return True
+
+    @staticmethod
+    async def is_member_revocation_pending(org_id: UUID, user_id: UUID) -> bool:
+        async with a_session_maker() as session:
+            operation = await session.scalar(
+                select(OrgBudgetOperation).where(
+                    OrgBudgetOperation.org_id == org_id,
+                    OrgBudgetOperation.status == 'pending',
                 )
             )
-            org_member = result.scalars().first()
-
-            if not org_member:
-                return False
-
-            await session.delete(org_member)
-            await session.commit()
-            return True
+            return operation is not None and str(user_id) in operation.plan.get(
+                'revoked_member_ids', []
+            )
 
     @staticmethod
     def get_kwargs_from_settings(settings: Settings) -> dict[str, Any]:
@@ -249,7 +308,9 @@ class OrgMemberStore:
 
             # Apply email filter if provided
             if email_filter:
-                query = query.filter(User.email.ilike(f'%{email_filter}%'))
+                query = query.filter(
+                    User.email.icontains(email_filter, autoescape=True)
+                )
 
             query = query.order_by(OrgMember.user_id).offset(offset).limit(limit + 1)
 

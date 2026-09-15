@@ -1,7 +1,7 @@
-"""Unit tests for AuthTokenStore using SQLite in-memory database."""
+"""Unit tests for AuthTokenStore using PostgreSQL."""
 
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -170,23 +170,49 @@ class TestLoadTokensFastPath:
 
 
 class TestLoadTokensSlowPath:
-    """Tests for load_tokens slow path (lock required for refresh).
+    """Tests for load_tokens slow path using real PostgreSQL locks."""
 
-    Note: These tests require PostgreSQL's lock_timeout feature which is not
-    available in SQLite. The slow path tests are skipped when using SQLite.
-    """
-
-    @pytest.mark.skip(reason='SQLite does not support PostgreSQL lock_timeout syntax')
     @pytest.mark.asyncio
     async def test_slow_path_successful_refresh(self, async_session_maker):
         """Test slow path successfully refreshes expired tokens."""
-        pass
+        now = int(time.time())
+        refreshed = {
+            'access_token': 'new-access',
+            'refresh_token': 'new-refresh',
+            'access_token_expires_at': now + 3600,
+            'refresh_token_expires_at': now + 7200,
+        }
+        refresh = AsyncMock(return_value=refreshed)
+        with patch('storage.auth_token_store.a_session_maker', async_session_maker):
+            store = AuthTokenStore('refresh-user', ProviderType.GITHUB)
+            await store.store_tokens('old-access', 'old-refresh', now - 1, now + 7200)
 
-    @pytest.mark.skip(reason='SQLite does not support PostgreSQL lock_timeout syntax')
+            assert await store.load_tokens(refresh) == refreshed
+            refresh.assert_awaited_once_with(
+                ProviderType.GITHUB, 'old-refresh', now - 1, now + 7200
+            )
+            assert await store.load_tokens() == refreshed
+
     @pytest.mark.asyncio
     async def test_refresh_callback_returns_none(self, async_session_maker):
         """Test behavior when refresh callback returns None (no refresh performed)."""
-        pass
+        now = int(time.time())
+        original = {
+            'access_token': 'old-access',
+            'refresh_token': 'old-refresh',
+            'access_token_expires_at': now - 1,
+            'refresh_token_expires_at': now + 7200,
+        }
+        refresh = AsyncMock(return_value=None)
+        with patch('storage.auth_token_store.a_session_maker', async_session_maker):
+            store = AuthTokenStore('refresh-user', ProviderType.GITHUB)
+            await store.store_tokens(**original)
+
+            assert await store.load_tokens(refresh) == original
+            refresh.assert_awaited_once_with(
+                ProviderType.GITHUB, 'old-refresh', now - 1, now + 7200
+            )
+            assert await store.load_tokens() == original
 
     @pytest.mark.asyncio
     async def test_slow_path_double_check_avoids_refresh(self, async_session_maker):

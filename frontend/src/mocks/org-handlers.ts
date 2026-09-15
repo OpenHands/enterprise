@@ -1,4 +1,8 @@
 import { http, HttpResponse } from "msw";
+import type {
+  BudgetNotificationState,
+  BudgetNotificationUpdate,
+} from "#/api/budget-service/budget-service.types";
 import {
   Organization,
   OrganizationMember,
@@ -246,8 +250,19 @@ export const ORGS_AND_MEMBERS: Record<string, OrganizationMember[]> = {
 };
 
 const orgs = new Map(INITIAL_MOCK_ORGS.map((org) => [org.id, org]));
+const notificationPreferences = new Map<string, BudgetNotificationState>();
+const getNotifications = (orgId: string): BudgetNotificationState =>
+  notificationPreferences.get(orgId) ?? {
+    fingerprint: "0".repeat(64),
+    thresholds: [],
+    slack_channel: null,
+    slack_team_id: null,
+    email_configured: false,
+    slack_account_linked: false,
+  };
 
 export const resetOrgMockData = () => {
+  notificationPreferences.clear();
   // Reset organizations to initial state
   orgs.clear();
   INITIAL_MOCK_ORGS.forEach((org) => {
@@ -266,6 +281,61 @@ export const resetOrgsAndMembersMockData = () => {
 };
 
 export const ORG_HANDLERS = [
+  http.get("/api/organizations/:orgId/profiles", ({ params }) =>
+    orgs.has(String(params.orgId))
+      ? HttpResponse.json({ profiles: [], active_profile: null })
+      : HttpResponse.json({ error: "Organization not found" }, { status: 404 }),
+  ),
+  http.get("/api/organizations/:orgId/settings", ({ params }) => {
+    const org = orgs.get(String(params.orgId));
+    if (!org)
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    return HttpResponse.json({
+      agent_settings: org.agent_settings,
+      conversation_settings: {},
+      search_api_key: null,
+      llm_api_key_set: true,
+    });
+  }),
+  http.get("/api/organizations/:orgId/budgets/notifications", ({ params }) => {
+    const orgId = String(params.orgId);
+    if (!orgs.has(orgId))
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    return HttpResponse.json(getNotifications(orgId));
+  }),
+  http.put(
+    "/api/organizations/:orgId/budgets/notifications",
+    async ({ params, request }) => {
+      const orgId = String(params.orgId);
+      if (!orgs.has(orgId))
+        return HttpResponse.json(
+          { error: "Organization not found" },
+          { status: 404 },
+        );
+      const current = getNotifications(orgId);
+      const update = (await request.json()) as BudgetNotificationUpdate;
+      if (update.expected_fingerprint !== current.fingerprint)
+        return HttpResponse.json(
+          { error: "Alert preferences changed" },
+          { status: 409 },
+        );
+      const next: BudgetNotificationState = {
+        ...current,
+        thresholds: update.thresholds,
+        slack_channel: update.slack_channel,
+        slack_team_id: update.slack_team_id,
+        fingerprint: crypto.randomUUID().replaceAll("-", "").repeat(2),
+      };
+      notificationPreferences.set(orgId, next);
+      return HttpResponse.json(next);
+    },
+  ),
   http.get("/api/organizations/:orgId/me", ({ params }) => {
     const orgId = params.orgId?.toString();
     if (!orgId || !ORGS_AND_MEMBERS[orgId]) {
