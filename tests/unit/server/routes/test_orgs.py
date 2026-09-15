@@ -78,7 +78,7 @@ def grant_create_organization():
     ``require_permission(Permission.CREATE_ORGANIZATION)``, which is only
     granted via a super role. ``require_permission`` always looks up the
     org-scoped role first via ``get_user_org_role`` -- without a patch
-    that call hits ``OrgMemberStore`` against a bare in-memory SQLite DB
+    that call hits ``OrgMemberStore`` against the test database
     that has no ``org_member`` table. This fixture short-circuits the
     org-role lookup to ``None`` and stacks a ``superadmin`` patch over
     the conftest-level ``get_user_super_role -> None`` default so the
@@ -1249,7 +1249,7 @@ async def test_list_user_orgs_all_fields_present(mock_app_list):
 
 
 @pytest.fixture
-def mock_app_with_get_user_id():
+def mock_app_with_get_user_id(app_db_session):
     """Create a test FastAPI app with organization routes and mocked get_user_id auth."""
     app = FastAPI()
     app.include_router(org_router)
