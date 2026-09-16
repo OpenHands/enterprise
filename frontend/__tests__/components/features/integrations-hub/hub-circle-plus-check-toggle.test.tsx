@@ -62,6 +62,10 @@ describe("HubCirclePlusCheckToggle", () => {
     const toggle = screen.getByTestId("integrations-hub-toggle-slack");
     expect(toggle).toHaveAttribute("aria-checked", "true");
     expect(toggle).toHaveAttribute("aria-label", "Disable");
+    expect(toggle.querySelector("svg")).toHaveClass("lucide-check");
+
+    await user.unhover(toggle);
+    await user.hover(toggle);
     expect(toggle.querySelector("svg")).toHaveClass("lucide-x");
 
     await user.unhover(toggle);

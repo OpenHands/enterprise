@@ -1,5 +1,6 @@
 import { useState, type MouseEvent } from "react";
 import { Check, Plus, X } from "lucide-react";
+import { formControlTransitionClassName } from "#/utils/form-control-classes";
 import { cn } from "#/utils/utils";
 
 interface HubCirclePlusCheckToggleProps {
@@ -28,6 +29,7 @@ export function HubCirclePlusCheckToggle({
   removeTooltip,
 }: HubCirclePlusCheckToggleProps) {
   const [isPointerOver, setIsPointerOver] = useState(false);
+  const clearPointerOver = () => setIsPointerOver(false);
 
   const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
@@ -35,6 +37,7 @@ export function HubCirclePlusCheckToggle({
       return;
     }
     onToggle(!isSelected);
+    clearPointerOver();
     event.currentTarget.blur();
   };
 
@@ -61,9 +64,12 @@ export function HubCirclePlusCheckToggle({
       title={tooltipLabel}
       onClick={handleClick}
       onPointerEnter={() => setIsPointerOver(true)}
-      onPointerLeave={() => setIsPointerOver(false)}
+      onPointerLeave={clearPointerOver}
+      onPointerCancel={clearPointerOver}
+      onBlur={clearPointerOver}
       className={cn(
-        "inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full p-0 transition-colors",
+        "inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full p-0",
+        formControlTransitionClassName,
         isSelected &&
           (showRemoveIcon
             ? "border-0 bg-[rgba(248,113,113,0.14)] text-[#ef4444] hover:bg-[rgba(248,113,113,0.24)]"
