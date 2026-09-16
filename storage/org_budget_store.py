@@ -75,15 +75,32 @@ class OrgBudgetStore:
         existing: list[OrgBudgetThreshold],
         new_thresholds,
     ) -> None:
+        # _maybe_send_alerts dedupes on last_triggered_cycle_start, which lives on the
+        # threshold row. Replacing the rows wholesale would drop it and re-arm every
+        # alert inside the live cycle, so carry the latch across for any percentage
+        # that survives the edit. A percentage being added has never fired, so it
+        # correctly starts unlatched.
+        latches = {
+            threshold.percentage: (
+                threshold.last_triggered_at,
+                threshold.last_triggered_cycle_start,
+            )
+            for threshold in existing
+        }
         for threshold in existing:
             await self.db_session.delete(threshold)
         for threshold in new_thresholds:
+            last_triggered_at, last_triggered_cycle_start = latches.get(
+                threshold.percentage, (None, None)
+            )
             self.db_session.add(
                 OrgBudgetThreshold(
                     org_id=org_id,
                     percentage=threshold.percentage,
                     email_enabled=threshold.email_enabled,
                     slack_enabled=threshold.slack_enabled,
+                    last_triggered_at=last_triggered_at,
+                    last_triggered_cycle_start=last_triggered_cycle_start,
                 )
             )
         await self.db_session.flush()

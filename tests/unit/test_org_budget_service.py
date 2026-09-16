@@ -2313,9 +2313,6 @@ async def test_override_cap_is_never_written_below_the_cycle_baseline(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='pins alert_fires_at_most_once_per_cycle — fails on current code'
-)
 async def test_threshold_alerts_once_per_cycle_across_a_settings_edit(
     async_session_maker, budget_org
 ):
