@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ChevronRight, MessageSquare } from "lucide-react";
+import { ChevronRight, Clock, MessageSquare } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AddCustomMcpModal } from "#/components/features/integrations-hub/add-custom-mcp-modal";
 import { ConnectorSetupProgress } from "#/components/features/integrations-hub/connector-setup-progress";
@@ -16,7 +16,6 @@ import {
 } from "#/components/features/integrations-hub/hub-catalog-view-toggle";
 import {
   hubCardGridClassName,
-  hubCardPillClassName,
   hubSearchEmptyStateClassName,
 } from "#/components/features/integrations-hub/hub-card-classes";
 import { HubIntegrationCard } from "#/components/features/integrations-hub/hub-integration-card";
@@ -103,21 +102,6 @@ function CatalogConnectorModal({
                 {integration.description}
               </p>
             ) : null}
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              {(integration.categories?.length
-                ? integration.categories
-                : [integration.kind]
-              )
-                .filter(Boolean)
-                .map((category) => (
-                  <span
-                    key={`${integration.slug}-${category}`}
-                    className={hubCardPillClassName}
-                  >
-                    {category}
-                  </span>
-                ))}
-            </div>
           </div>
         </div>
         {integration.connected ? (
@@ -136,7 +120,15 @@ function CatalogConnectorModal({
           onToolAccessModeChange={onToolAccessModeChange}
         />
       </div>
-      <div className={hubModalFooterClassName}>
+      <div className={cn(hubModalFooterClassName, "justify-between")}>
+        <p className="inline-flex items-center gap-1.5 text-[11px] leading-5 text-[var(--oh-text-secondary)]">
+          <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          {t(I18nKey.INTEGRATIONS_HUB$SETUP_UPDATED, {
+            when: integration.updatedAt
+              ? new Date(integration.updatedAt).toLocaleString()
+              : new Date().toLocaleString(),
+          })}
+        </p>
         <BrandButton type="button" variant="secondary" onClick={onClose}>
           {t(I18nKey.INTEGRATIONS_HUB$CLOSE)}
         </BrandButton>

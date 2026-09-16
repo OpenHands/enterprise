@@ -246,9 +246,6 @@ export function ConnectorSetupProgress({
     isRegistered &&
     (oauthMcp ? clientConfigured || accountConnected || toolsIndexed : true);
   const callbackUrl = `${window.location.origin}/api/oauth/${integration.slug}/callback`;
-  const updatedAt = integration.updatedAt
-    ? new Date(integration.updatedAt).toLocaleString()
-    : new Date().toLocaleString();
 
   const updateForm = (updates: Partial<ConnectorConfigForm>) =>
     setForm((current) => ({ ...current, ...updates }));
@@ -306,7 +303,7 @@ export function ConnectorSetupProgress({
         completed={step1Completed}
         stepKey="configure-integration"
       >
-        <form className="grid gap-3 md:grid-cols-2" onSubmit={handleSave}>
+        <form className="grid gap-3" onSubmit={handleSave}>
           <Field label={t(I18nKey.INTEGRATIONS_HUB$SETUP_PROVIDER_TYPE)}>
             <select
               value={form.provider}
@@ -325,9 +322,6 @@ export function ConnectorSetupProgress({
               </option>
             </select>
           </Field>
-          <div className="flex items-end text-[11px] leading-5 text-[var(--oh-text-secondary)]">
-            {t(I18nKey.INTEGRATIONS_HUB$SETUP_UPDATED, { when: updatedAt })}
-          </div>
 
           <div className="md:col-span-2">
             <button

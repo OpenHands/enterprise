@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { HubSearchField } from "#/components/features/integrations-hub/hub-search-field";
@@ -19,6 +19,8 @@ interface HubToolAccessListProps {
   tools: HubTool[];
   searchTestId: string;
   showUsage?: boolean;
+  toolbarStart?: ReactNode;
+  toolbarEnd?: ReactNode;
   onUpdateToolAccess?: (toolName: string, mode: HubToolAccessMode) => void;
 }
 
@@ -327,6 +329,8 @@ export function HubToolAccessList({
   tools,
   searchTestId,
   showUsage = false,
+  toolbarStart,
+  toolbarEnd,
   onUpdateToolAccess,
 }: HubToolAccessListProps) {
   const { t } = useTranslation();
@@ -376,6 +380,7 @@ export function HubToolAccessList({
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="flex items-center gap-2">
+        {toolbarStart}
         <HubSearchField
           value={search}
           onChange={setSearch}
@@ -393,6 +398,7 @@ export function HubToolAccessList({
           onCaseByCaseSelected={() => applyBulkMode("approval")}
           onDisableSelected={() => applyBulkMode("disabled")}
         />
+        {toolbarEnd}
       </div>
       <div className="min-h-0 max-h-[min(22rem,50vh)] flex-1 overflow-y-auto overflow-x-hidden rounded-xl border border-[var(--oh-border)] bg-[var(--oh-surface-subtle)]">
         {tools.length === 0 || visibleTools.length === 0 ? (

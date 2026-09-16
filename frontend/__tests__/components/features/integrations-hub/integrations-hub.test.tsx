@@ -1,5 +1,5 @@
 import type { ReactElement } from "react";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ import {
 } from "#/components/features/integrations-hub/admin-pages";
 import { AgentConnectionPage } from "#/components/features/integrations-hub/agent-connection-page";
 import { AgentRequestsPage } from "#/components/features/integrations-hub/agent-requests-page";
+import { ConnectorModalVariantsPage } from "#/components/features/integrations-hub/connector-modal-variants-page";
 import { IntegrationsHub } from "#/components/features/integrations-hub/integrations-hub";
 import { IntegrationsHubStubProvider } from "#/hooks/query/use-integrations-hub-stub";
 
@@ -722,5 +723,191 @@ describe("Admin catalog and user requests", () => {
     expect(
       screen.getByTestId("integration-detail-modal-enable-row-notion"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("ConnectorModalVariantsPage", () => {
+  it("defaults to the tools-first manage surface after setup", () => {
+    renderHubPage(<ConnectorModalVariantsPage />);
+
+    expect(
+      screen.getByTestId("connector-modal-variants-page"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("connector-variant-tools-first"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("3 tools indexed")).not.toBeInTheDocument();
+    expect(screen.getByText("Connector settings")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("integration-detail-modal-enable-row-github"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("connector-setup-github"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("connector-modal-custom-mixer"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Configured")).not.toBeInTheDocument();
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+    expect(screen.queryByText("Indexed")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Updated 9/16/2026, 7:31:53 AM"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the current stacked stepper when that variant is selected", async () => {
+    const user = userEvent.setup();
+    renderHubPage(<ConnectorModalVariantsPage />);
+
+    await user.click(screen.getByTestId("connector-modal-variant-current"));
+
+    expect(screen.getByTestId("connector-variant-current")).toBeInTheDocument();
+    expect(screen.getByTestId("connector-setup-github")).toBeInTheDocument();
+  });
+
+  it("uses the tools-first configure card for custom first configuration", async () => {
+    const user = userEvent.setup();
+    renderHubPage(<ConnectorModalVariantsPage />);
+
+    await user.click(screen.getByTestId("connector-modal-phase-first-run"));
+
+    expect(
+      screen.getByTestId("connector-variant-tools-first"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Configure integration")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Step 1 of 3 · Set up GitHub"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("tools-first-register-connector"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("tools-first-advanced")).toBeInTheDocument();
+    expect(screen.getByTestId("tools-first-cancel")).toBeInTheDocument();
+    expect(screen.getByTestId("tools-first-next")).toBeEnabled();
+    expect(screen.queryByText("Configured")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Updated 9/16/2026, 7:31:53 AM"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("tools-first-next"));
+    expect(screen.getByTestId("tools-first-register-error")).toBeInTheDocument();
+    expect(screen.getByTestId("tools-first-client-id")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    expect(screen.getByTestId("tools-first-client-secret")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    expect(screen.getByText("Configure integration")).toBeInTheDocument();
+
+    await user.type(screen.getByTestId("tools-first-client-id"), "github-client");
+    await user.type(
+      screen.getByTestId("tools-first-client-secret"),
+      "github-secret",
+    );
+    await user.click(screen.getByTestId("tools-first-next"));
+    expect(screen.getByText("Connect your account")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Sign in with the provider to authorize this deployment and verify the connector works.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Configured")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back" })).toBeInTheDocument();
+    expect(screen.queryByTestId("tools-first-cancel")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("tools-first-connect-method"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("connector-modal-connect-method"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("tools-first-connect")).toHaveTextContent(
+      "Connect",
+    );
+    expect(screen.getByTestId("tools-first-next")).toBeDisabled();
+
+    await user.click(screen.getByTestId("connector-modal-connect-method-pat"));
+    expect(
+      screen.getByText(
+        "Paste a personal access token. The connector sends it as a bearer token.",
+      ),
+    ).toBeInTheDocument();
+    await user.click(screen.getByTestId("tools-first-connect"));
+    expect(screen.getByTestId("tools-first-connect-error")).toBeInTheDocument();
+    expect(screen.getByTestId("tools-first-connect-token")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    expect(screen.getByText("Connect your account")).toBeInTheDocument();
+    expect(screen.getByTestId("tools-first-next")).toBeDisabled();
+
+    await user.type(
+      screen.getByTestId("tools-first-connect-token"),
+      "github-pat",
+    );
+    await user.click(screen.getByTestId("tools-first-connect"));
+    expect(screen.getByTestId("tools-first-connect")).toHaveTextContent(
+      "Connected",
+    );
+    expect(
+      screen.queryByTestId("tools-first-connect-error"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Connect your account")).toBeInTheDocument();
+    expect(screen.getByTestId("tools-first-next")).toBeEnabled();
+
+    await user.click(screen.getByTestId("tools-first-next"));
+    expect(screen.queryByText("Index tools")).not.toBeInTheDocument();
+    expect(screen.queryByText("Connect your account")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tools-first-index-loading")).toBeInTheDocument();
+    expect(screen.queryByText("create_issue")).not.toBeInTheDocument();
+    expect(await screen.findByText("create_issue", {}, { timeout: 2000 })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("tools-first-index-loading"),
+      ).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId("tools-first-index-tools")).toBeInTheDocument();
+    expect(screen.queryByTestId("tools-first-next")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back" })).toBeInTheDocument();
+    expect(screen.getByTestId("tools-first-done")).toBeEnabled();
+  });
+
+  it("advances tools-first first-run from configure to connect", async () => {
+    const user = userEvent.setup();
+    renderHubPage(<ConnectorModalVariantsPage />);
+
+    await user.click(screen.getByTestId("connector-modal-variant-tools-first"));
+    await user.click(screen.getByTestId("connector-modal-phase-first-run"));
+    expect(screen.getByText("Configure integration")).toBeInTheDocument();
+
+    expect(screen.queryByLabelText("MCP server URL")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("tools-first-advanced"));
+    expect(screen.getByLabelText("MCP server URL")).toBeInTheDocument();
+
+    await user.type(screen.getByTestId("tools-first-client-id"), "github-client");
+    await user.type(
+      screen.getByTestId("tools-first-client-secret"),
+      "github-secret",
+    );
+    await user.click(screen.getByTestId("tools-first-next"));
+
+    expect(screen.getByText("Connect your account")).toBeInTheDocument();
+    expect(screen.getByTestId("tools-first-connect")).toBeInTheDocument();
+    expect(screen.getByTestId("tools-first-next")).toBeDisabled();
+    expect(
+      screen.queryByTestId("tools-first-connect-method"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("connector-modal-connect-method-oauth"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("connector-modal-connect-method-pat"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("connector-modal-connect-method-api_key"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Configure integration")).not.toBeInTheDocument();
   });
 });

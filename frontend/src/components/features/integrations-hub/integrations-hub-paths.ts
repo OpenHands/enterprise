@@ -9,6 +9,7 @@ export const INTEGRATIONS_HUB_PATHS = {
   adminOverview: "/settings/integrations-hub/admin-overview",
   adminCatalog: "/settings/integrations-hub/admin-catalog",
   adminUserRequests: "/settings/integrations-hub/admin-user-requests",
+  connectorModalVariants: "/settings/integrations-hub/connector-modal-variants",
 } as const;
 
 export const LEGACY_HUB_PERSONAL_REDIRECTS: Record<string, string> = {
