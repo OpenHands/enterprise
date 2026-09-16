@@ -2036,9 +2036,6 @@ async def test_concurrent_maintenance_runs_roll_the_cycle_only_once(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='reproduces obs:invalid_reset_day_crashed_cycle_math — fails on current code'
-)
 async def test_maintenance_survives_a_stored_reset_day_the_month_lacks(
     async_session_maker, budget_org
 ):
