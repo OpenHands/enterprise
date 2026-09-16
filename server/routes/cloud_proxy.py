@@ -245,8 +245,14 @@ def _validate_host_form(host: str) -> str:
     if not host_allowed:
         raise HTTPException(status_code=400, detail='runtime host is not allowed')
 
-    if port and allow_local:
-        return f'{"http" if parsed.scheme == "http" else "https"}://{hostname}:{port}'
+    # Preserve an advertised port in any mode. The localhost allowlist gates
+    # which hosts are permitted, not which port they serve on; dropping a
+    # non-standard port in production would silently connect a self-hosted
+    # runtime (e.g. on :8443) to :443. A URL without an explicit port falls
+    # through and is defaulted by _resolve_target.
+    if port:
+        scheme = 'http' if parsed.scheme == 'http' else 'https'
+        return f'{scheme}://{hostname}:{port}'
     return f'{parsed.scheme}://{hostname}'
 
 
@@ -357,12 +363,19 @@ async def proxy_cloud_request(
         caller_id,
     )
 
+    forwarded = _forward_headers(envelope.headers)
+    # The pinned-IP URL would make httpx derive Host: <ip>; the runtime (and any
+    # virtual-host routing in front of it) must see the original hostname. httpx
+    # honors an explicit Host over the URL-derived one, and TLS SNI stays on the
+    # hostname via sni_hostname, so the IP is used only for the TCP/TLS connect.
+    forwarded['Host'] = hostname if port in (443, 80) else f'{hostname}:{port}'
+
     client = get_cloud_proxy_client()
     try:
         req = client.build_request(
             envelope.method,
             pinned_url,
-            headers=_forward_headers(envelope.headers),
+            headers=forwarded,
             content=envelope.body if envelope.body is not None else None,
             extensions=extensions,
             timeout=timeout,
@@ -373,11 +386,16 @@ async def proxy_cloud_request(
         logger.warning('cloud_proxy upstream request failed: %s', exc)
         raise HTTPException(status_code=502, detail='upstream request failed') from exc
 
-    response_headers = {
-        key: value
-        for key, value in upstream.headers.items()
+    # Preserve multi-value response headers (e.g. multiple Set-Cookie). Building
+    # a dict would join duplicates with ", ", which is invalid for Set-Cookie
+    # (RFC 6265) and mangles any legitimately-repeating header. Starlette's
+    # Response collapses via headers.items(), so we assign raw_headers directly
+    # to keep each header as its own entry on the wire.
+    response_header_pairs = [
+        (key, value)
+        for key, value in upstream.headers.multi_items()
         if key.lower() not in _RESPONSE_HOP_BY_HOP_HEADERS
-    }
+    ]
 
     async def relay() -> AsyncIterator[bytes]:
         try:
@@ -386,9 +404,9 @@ async def proxy_cloud_request(
         finally:
             await upstream.aclose()
 
-    return StreamingResponse(
-        relay(),
-        status_code=upstream.status_code,
-        headers=response_headers,
-        media_type=upstream.headers.get('content-type'),
-    )
+    response = StreamingResponse(relay(), status_code=upstream.status_code)
+    response.raw_headers = [
+        (key.lower().encode('latin-1'), value.encode('latin-1'))
+        for key, value in response_header_pairs
+    ]
+    return response

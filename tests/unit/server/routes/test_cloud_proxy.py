@@ -10,6 +10,7 @@ session-key ownership lookup are mocked so no real network/runtime call is made.
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -130,10 +131,18 @@ def _patch_resolve(hostname, ip='203.0.113.10', port=443, scheme='https'):
 
 
 def _mock_upstream(status_code=200, body=b'{"status":"ok"}', headers=None):
-    """Build a streamed httpx.Response-like object."""
+    """Build a streamed httpx.Response-like object.
+
+    ``headers`` is a real ``httpx.Headers`` so multi-value semantics (e.g.
+    duplicate Set-Cookie) match production; a plain dict would hide them.
+    """
     resp = MagicMock()
     resp.status_code = status_code
-    resp.headers = headers or {'content-type': 'application/json'}
+    resp.headers = (
+        headers
+        if isinstance(headers, httpx.Headers)
+        else httpx.Headers(headers or {'content-type': 'application/json'})
+    )
     resp.aclose = AsyncMock()
 
     async def _aiter_raw():
@@ -311,7 +320,9 @@ def test_forwards_and_streams_response(app):
     sent_headers = sent_kwargs['headers']
     assert 'X-Session-API-Key' in sent_headers
     assert 'Connection' not in sent_headers
-    assert 'Host' not in sent_headers
+    # The caller's Host is stripped (hop-by-hop), and the proxy re-injects the
+    # runtime hostname so virtual-host routing sees it, not the pinned IP.
+    assert sent_headers['Host'] == 'abc.prod-runtime.all-hands.dev'
     # The raw body is forwarded verbatim (content=, not json=) so non-JSON
     # bodies are carried faithfully; Content-Type comes from the caller.
     assert sent_kwargs['content'] == '{"foo":"bar"}'
@@ -383,6 +394,70 @@ def test_response_hop_by_hop_headers_stripped(app):
     assert 'x-runtime' in {k.lower() for k in response.headers}
     assert 'connection' not in {k.lower() for k in response.headers}
     assert 'transfer-encoding' not in {k.lower() for k in response.headers}
+
+
+def test_multi_value_response_headers_preserved(app):
+    """Duplicate Set-Cookie headers must reach the client as separate headers,
+    not joined with ", " (invalid per RFC 6265). Regression for the dict-based
+    header relay that collapsed multi-value headers."""
+    client = TestClient(app)
+    upstream = _mock_upstream(
+        200,
+        b'ok',
+        headers=httpx.Headers(
+            [
+                ('content-type', 'application/json'),
+                ('set-cookie', 'a=1; Path=/'),
+                ('set-cookie', 'b=2; Path=/'),
+                ('set-cookie', 'c=3; Path=/'),
+            ]
+        ),
+    )
+
+    with (
+        _patch_ownership(_owned_sandbox()),
+        _patch_resolve('abc.prod-runtime.all-hands.dev'),
+        patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
+    ):
+        mock_client, _ctx = _mock_client(upstream)
+        mock_cls.return_value = mock_client
+
+        response = client.post(
+            '/api/cloud-proxy',
+            json={'method': 'GET', 'path': '/alive'},
+        )
+
+    assert response.status_code == 200
+    # The client must see three distinct Set-Cookie headers, not one joined.
+    cookies = response.headers.get_list('set-cookie')
+    assert cookies == ['a=1; Path=/', 'b=2; Path=/', 'c=3; Path=/']
+
+
+def test_host_header_preserved_on_non_standard_port(app):
+    """When the runtime is on a non-standard port, the Host header must carry
+    hostname:port so virtual-host routing (and HTTP semantics) hold, while the
+    TCP/TLS connection still goes to the pinned IP."""
+    client = TestClient(app)
+    upstream = _mock_upstream(200, b'ok')
+
+    with (
+        _patch_ownership(
+            _owned_sandbox(host='https://abc.prod-runtime.all-hands.dev:8443')
+        ),
+        _patch_resolve('abc.prod-runtime.all-hands.dev', port=8443, scheme='https'),
+        patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
+    ):
+        mock_client, _ctx = _mock_client(upstream)
+        mock_cls.return_value = mock_client
+
+        response = client.post(
+            '/api/cloud-proxy',
+            json={'method': 'GET', 'path': '/alive'},
+        )
+
+    assert response.status_code == 200
+    sent_headers = mock_client.build_request.call_args.kwargs['headers']
+    assert sent_headers['Host'] == 'abc.prod-runtime.all-hands.dev:8443'
 
 
 # ---------------------------------------------------------------------------
