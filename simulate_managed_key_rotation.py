@@ -25,6 +25,8 @@ from __future__ import annotations
 import asyncio
 
 from openhands.sdk.settings import apply_agent_settings_diff
+from sqlalchemy import select
+
 from server.logger import logger
 from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
@@ -32,7 +34,6 @@ from storage.org import Org
 from storage.org_member import MANAGED_LLM_KEY_OWNERSHIP_VERSION, OrgMember
 from storage.org_store import OrgStore
 from storage.saas_settings_store import managed_llm_key_config_from_model
-from sqlalchemy import select
 
 
 def _effective_managed_key_config(org: Org, member: OrgMember):
@@ -100,11 +101,15 @@ async def main() -> None:
                 # user_settings.llm_api_key cache. We intentionally do the same.
                 await session.commit()
                 rotated += 1
-                logger.info('simulate_353: rotated org_member key', extra={'user_id': user_id})
+                logger.info(
+                    'simulate_353: rotated org_member key', extra={'user_id': user_id}
+                )
             except Exception:
                 await session.rollback()
                 errors += 1
-                logger.exception('simulate_353: rotation failed', extra={'user_id': user_id})
+                logger.exception(
+                    'simulate_353: rotation failed', extra={'user_id': user_id}
+                )
 
     logger.info(
         'simulate_353: done',
