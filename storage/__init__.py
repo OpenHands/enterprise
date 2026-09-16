@@ -47,6 +47,11 @@ from storage.user_repo_map import UserRepositoryMap
 from storage.user_settings import UserSettings
 
 __all__ = [
+    'AuthAccount',
+    'AuthInstallation',
+    'AuthThrottle',
+    'BrowserSession',
+    'PasswordCredential',
     'ApiKey',
     'AuthTokens',
     'BillingSession',
@@ -98,3 +103,11 @@ __all__ = [
     'UserSettings',
     'WebhookStatus',
 ]
+
+from storage.native_auth import (
+    AuthAccount,
+    AuthInstallation,
+    AuthThrottle,
+    BrowserSession,
+    PasswordCredential,
+)

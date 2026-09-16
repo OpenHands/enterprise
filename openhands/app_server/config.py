@@ -63,6 +63,7 @@ from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtService, JwtServiceInjector
 from openhands.app_server.user.user_context import UserContext, UserContextInjector
 from openhands.app_server.utils.environment import StorageProvider, get_storage_provider
+from openhands.app_server.utils.web_url import get_web_url_from_env
 from openhands.app_server.web_client.default_web_client_config_injector import (
     DefaultWebClientConfigInjector,
 )
@@ -87,17 +88,6 @@ def get_default_persistence_dir() -> Path:
 
     result.mkdir(parents=True, exist_ok=True)
     return result
-
-
-def get_default_web_url() -> str | None:
-    """Get legacy web host parameter.
-
-    If present, we assume we are running under https.
-    """
-    web_host = os.getenv('WEB_HOST')
-    if not web_host:
-        return None
-    return f'https://{web_host}'
 
 
 def get_default_permitted_cors_origins() -> list[str]:
@@ -192,7 +182,7 @@ class AppServerConfig(OpenHandsModel):
     persistence_dir: Path = Field(default_factory=get_default_persistence_dir)
     file_store: FileStore = Field(default_factory=_get_default_file_store)
     web_url: str | None = Field(
-        default_factory=get_default_web_url,
+        default_factory=get_web_url_from_env,
         description='The URL where OpenHands is running (e.g., http://localhost:3000)',
     )
     permitted_cors_origins: list[str] = Field(

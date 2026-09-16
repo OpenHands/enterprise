@@ -65,7 +65,14 @@ class SaasAppLifespanService(AppLifespanService):
     On exit: calls ``analytics_service.shutdown()`` to flush any buffered events.
     """
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> SaasAppLifespanService:
+        from server.auth.auth_config import ENABLE_KEYCLOAK
+
+        if not ENABLE_KEYCLOAK:
+            raise RuntimeError(
+                'Password authentication is not available in this release; keep ENABLE_KEYCLOAK=true'
+            )
+
         # OHE must not initialize telemetry when a legacy key is configured.
         api_key = (
             ''

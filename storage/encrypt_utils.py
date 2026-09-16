@@ -9,7 +9,9 @@ from pydantic import BaseModel, SecretStr
 from sqlalchemy import String, TypeDecorator
 from sqlalchemy.engine.interfaces import Dialect
 
-_jwt_service = None
+from openhands.app_server.services.jwt_service import JwtService
+
+_jwt_service: JwtService | None = None
 _fernet = None
 
 
@@ -23,7 +25,7 @@ def decrypt_value(value: str | SecretStr) -> str:
     return get_jwt_service().decrypt_value(raw)
 
 
-def get_jwt_service():
+def get_jwt_service() -> JwtService:
     from openhands.app_server.config import get_global_config
 
     global _jwt_service
