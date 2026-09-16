@@ -53,6 +53,7 @@ from storage.database import a_session_maker
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.org_service import OrgService
+from storage.org_store import OrgStore
 from storage.saas_settings_store import managed_llm_key_config_from_model
 
 from ..auth.authorization import Permission, require_permission
@@ -448,9 +449,34 @@ async def activate_profile(
             member.llm_api_key = profile_api_key
             member.has_custom_llm_api_key = not uses_managed_llm_key
         else:
-            # No per-profile key: fall back to the org/managed default rather
-            # than leaving a stale custom key from a previous activation in play.
+            # No per-profile key: this is a keyless (typically managed)
+            # profile such as the live ``Default``. Flip the custom-key flag
+            # off so the effective key resolves to the managed/org default.
             member.has_custom_llm_api_key = False
+            # A prior activation of a custom-key (BYOR) profile wrote that
+            # key into the encrypted ``_llm_api_key`` slot (the same slot the
+            # managed key lives in). With ``has_custom_llm_api_key`` now
+            # False, ``_get_effective_llm_api_key`` would otherwise keep
+            # returning that stale custom key (it falls back to
+            # ``_llm_api_key`` when no org-level key is set), so new
+            # conversations would launch against the old, possibly-broken
+            # profile. When the activated profile uses a managed OpenHands
+            # key, re-ensure the member's managed key here — mirroring the
+            # ``store()`` path — so the stale custom key is replaced.
+            base_url = llm_dump.get('base_url')
+            normalized_base_url = base_url.rstrip('/') if base_url else None
+            normalized_managed_base_url = LITE_LLM_API_URL.rstrip('/')
+            uses_managed_llm_key = (
+                normalized_base_url == normalized_managed_base_url
+                or (
+                    normalized_base_url is None
+                    and is_openhands_model(llm_dump.get('model'))
+                )
+            )
+            if uses_managed_llm_key:
+                await OrgStore._ensure_managed_llm_key_for_user(
+                    session, _org, str(user_id)
+                )
 
         member_diff = dict(member.agent_settings_diff or {})
         member_diff['llm'] = llm_dump

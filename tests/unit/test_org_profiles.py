@@ -1,7 +1,7 @@
 """Unit and integration tests for organization LLM profiles router."""
 
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -17,6 +17,7 @@ from server.verified_models.verified_model_service import StoredVerifiedModel
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.role import Role
+from storage.saas_settings_store import SaasSettingsStore
 from storage.user import User
 
 # Mock the database module before importing the router — matches the
@@ -939,3 +940,100 @@ class TestActivateTransactionAtomicity:
         # A non-managed (BYOR) key takes effect via the encrypted member store.
         assert member.has_custom_llm_api_key is True
         assert member.llm_api_key.get_secret_value() == 'byor-secret'
+
+
+class TestActivateReplacesStaleCustomKey:
+    """Activating a keyless managed profile after a custom-key profile must not
+    leave the previous profile's (possibly broken) key as the effective key.
+
+    Regression for the SaaS "stale default model" bug: activate a BYOR profile
+    with a dummy key, then activate the managed ``Default`` profile. The member's
+    encrypted ``_llm_api_key`` slot (shared by custom and managed keys) must be
+    repopulated with a fresh managed key, not keep the dummy one — otherwise
+    ``_get_effective_llm_api_key`` keeps resolving the stale custom key and new
+    conversations launch against the old profile.
+    """
+
+    @pytest.mark.asyncio
+    async def test_switching_to_managed_default_replaces_stale_custom_key(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        # Org default is a managed OpenHands model, so the managed-key ensure
+        # path actually mints a key for the acting member.
+        await _set_org_agent_settings(
+            async_session_maker,
+            org_id,
+            {'llm': {'model': 'openhands/deepseek-v4-flash', 'base_url': None}},
+        )
+        # A live verified default so ``Default`` materializes to an openhands/* model.
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        # 1. Activate a BYOR profile with a dummy key.
+        await save_profile(
+            org_id=org_id,
+            name='TestModel',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='anthropic/claude-3-5-sonnet',
+                    base_url='https://api.anthropic.com/v1',
+                    api_key='dummy-broken-key',
+                )
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+        await activate_profile(
+            org_id=org_id, name='TestModel', user_id=str(ADMIN_USER_ID)
+        )
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is True
+        assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
+
+        # 2. Switch back to the managed ``Default`` profile. The stale dummy
+        #    key is unknown to LiteLLM, so verification fails and a fresh
+        #    managed key is minted into the shared slot.
+        with (
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager.verify_key',
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
+                new=AsyncMock(),
+            ),
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager.generate_key',
+                new=AsyncMock(return_value='fresh-managed-key'),
+            ),
+        ):
+            await activate_profile(
+                org_id=org_id, name='Default', user_id=str(ADMIN_USER_ID)
+            )
+
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        # The effective key is now the managed one, not the stale custom key.
+        assert member.has_custom_llm_api_key is False
+        assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
+        assert member.llm_api_key.get_secret_value() != 'dummy-broken-key'
+        # ``_get_effective_llm_api_key`` resolves the managed key (the real
+        # consumer of this bug at conversation-launch time).
+        org = await _read_org(async_session_maker, org_id)
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'fresh-managed-key'
