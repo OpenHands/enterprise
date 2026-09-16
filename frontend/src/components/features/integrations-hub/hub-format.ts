@@ -1,5 +1,42 @@
 import { I18nKey } from "#/i18n/declaration";
-import type { HubAuthStrategy, HubIntegration } from "#/types/integrations-hub";
+import type {
+  HubAuthStrategy,
+  HubIntegration,
+  HubToolAccessMode,
+  HubUserRequest,
+} from "#/types/integrations-hub";
+
+const ACCESS_MODE_RANK: Record<HubToolAccessMode, number> = {
+  disabled: 0,
+  approval: 1,
+  enabled: 2,
+};
+
+export const HUB_ACCESS_MODES: HubToolAccessMode[] = [
+  "enabled",
+  "approval",
+  "disabled",
+];
+
+export function clampHubAccessMode(
+  requested: HubToolAccessMode,
+  maximum?: HubToolAccessMode,
+): HubToolAccessMode {
+  if (!maximum) {
+    return requested;
+  }
+  return ACCESS_MODE_RANK[requested] <= ACCESS_MODE_RANK[maximum]
+    ? requested
+    : maximum;
+}
+
+export function allowedHubAccessModes(
+  maximum?: HubToolAccessMode,
+): HubToolAccessMode[] {
+  return HUB_ACCESS_MODES.filter(
+    (mode) => clampHubAccessMode(mode, maximum) === mode,
+  );
+}
 
 export function hubAuthLabel(
   strategy: HubAuthStrategy,
@@ -12,6 +49,26 @@ export function hubAuthLabel(
     return t(I18nKey.INTEGRATIONS_HUB$AUTH_API_KEY);
   }
   return "";
+}
+
+export function hubIntegrationFromUserRequest(
+  request: HubUserRequest,
+): HubIntegration {
+  const isCustom = request.source === "custom";
+  return {
+    slug: request.slug,
+    name: request.name,
+    description: request.description ?? "",
+    connected: false,
+    enabled: false,
+    authStrategy: isCustom ? "api_key" : "oauth2",
+    toolCount: 0,
+    provider: isCustom ? "Custom" : "MCP",
+    kind: isCustom ? "Custom" : "",
+    tools: [],
+    docsUrl: request.docsUrl,
+    notes: request.notes,
+  };
 }
 
 export function hubIntegrationMetaPills(integration: HubIntegration): string[] {

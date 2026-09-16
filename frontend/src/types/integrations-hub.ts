@@ -21,6 +21,7 @@ export interface HubTool {
   accessMode: HubToolAccessMode;
   defaultScopes: string[];
   lastUsedAt?: string;
+  maxAccessMode?: HubToolAccessMode;
 }
 
 export interface HubIntegration {
@@ -165,7 +166,7 @@ export interface IntegrationsHubViewModel {
   permissionProfiles: HubPermissionProfile[];
   overviewUsers: HubOverviewUser[];
   duplicateGroups: HubDuplicateGroup[];
-  connect: (slug: string) => void;
+  connect: (slug: string, seed?: HubIntegration) => void;
   disconnect: (slug: string) => void;
   toggleEnabled: (slug: string) => void;
   updateToolAccess: (

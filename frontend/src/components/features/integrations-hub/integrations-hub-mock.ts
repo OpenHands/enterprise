@@ -15,16 +15,39 @@ function daysAgo(days: number): string {
 }
 
 function tools(
-  entries: Array<[string, string, HubTool["accessMode"], string[], number?]>,
+  entries: Array<
+    [
+      string,
+      string,
+      HubTool["accessMode"],
+      string[],
+      (number | null)?,
+      HubTool["accessMode"]?,
+    ]
+  >,
 ): HubTool[] {
   return entries.map(
-    ([name, description, accessMode, defaultScopes, unusedDays]) => ({
+    ([
       name,
       description,
       accessMode,
       defaultScopes,
-      lastUsedAt: unusedDays !== undefined ? daysAgo(unusedDays) : daysAgo(2),
-    }),
+      unusedDays,
+      maxAccessMode,
+    ]) => {
+      let lastUsedAt: string | undefined;
+      if (unusedDays !== null) {
+        lastUsedAt = daysAgo(unusedDays ?? 2);
+      }
+      return {
+        name,
+        description,
+        accessMode,
+        defaultScopes,
+        lastUsedAt,
+        maxAccessMode,
+      };
+    },
   );
 }
 
@@ -56,6 +79,7 @@ const ALL_INTEGRATIONS: Omit<HubIntegration, "connected" | "enabled">[] = [
         "Read messages in a Slack thread.",
         "enabled",
         ["channels:history"],
+        null,
       ],
     ]),
   },
@@ -94,12 +118,97 @@ const ALL_INTEGRATIONS: Omit<HubIntegration, "connected" | "enabled">[] = [
     name: "Linear",
     description: "Create and update issues in Linear workspaces.",
     authStrategy: "oauth2",
-    toolCount: 2,
+    toolCount: 22,
     provider: "Linear",
     kind: "Issue tracking",
     tools: tools([
-      ["create_issue", "Create a Linear issue.", "approval", ["issues:write"]],
+      [
+        "create_issue",
+        "Create a Linear issue.",
+        "approval",
+        ["issues:write"],
+        80,
+        "approval",
+      ],
       ["list_issues", "List Linear issues.", "enabled", ["issues:read"]],
+      ["get_issue", "Get a Linear issue by ID.", "enabled", ["issues:read"]],
+      [
+        "update_issue",
+        "Update title, description, or status on an issue.",
+        "approval",
+        ["issues:write"],
+      ],
+      [
+        "search_issues",
+        "Search issues across teams and projects.",
+        "enabled",
+        ["issues:read"],
+      ],
+      [
+        "assign_issue",
+        "Assign an issue to a workspace member.",
+        "approval",
+        ["issues:write"],
+      ],
+      [
+        "add_comment",
+        "Comment on a Linear issue.",
+        "approval",
+        ["comments:write"],
+      ],
+      [
+        "list_comments",
+        "List comments on an issue.",
+        "enabled",
+        ["comments:read"],
+      ],
+      [
+        "archive_issue",
+        "Archive a Linear issue.",
+        "disabled",
+        ["issues:write"],
+        90,
+        "approval",
+      ],
+      ["list_projects", "List Linear projects.", "enabled", ["projects:read"]],
+      [
+        "create_project",
+        "Create a Linear project.",
+        "approval",
+        ["projects:write"],
+      ],
+      [
+        "update_project",
+        "Update a Linear project.",
+        "approval",
+        ["projects:write"],
+      ],
+      ["list_teams", "List teams in the workspace.", "enabled", ["teams:read"]],
+      ["get_team", "Get a Linear team by ID.", "enabled", ["teams:read"]],
+      ["list_cycles", "List cycles for a team.", "enabled", ["cycles:read"]],
+      ["create_cycle", "Create a team cycle.", "approval", ["cycles:write"]],
+      ["list_labels", "List issue labels.", "enabled", ["labels:read"]],
+      ["create_label", "Create an issue label.", "approval", ["labels:write"]],
+      ["list_users", "List workspace members.", "enabled", ["users:read"]],
+      [
+        "list_workflow_states",
+        "List workflow states for a team.",
+        "enabled",
+        ["issues:read"],
+      ],
+      [
+        "create_document",
+        "Create a Linear document.",
+        "approval",
+        ["documents:write"],
+      ],
+      [
+        "list_documents",
+        "List Linear documents.",
+        "enabled",
+        ["documents:read"],
+        null,
+      ],
     ]),
   },
   {

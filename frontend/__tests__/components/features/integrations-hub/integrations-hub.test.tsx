@@ -29,7 +29,7 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (
       key: string,
-      options?: { name?: string; count?: number; filter?: string },
+      options?: { name?: string; count?: number; filter?: string; date?: string },
     ) => {
       if (options?.name) {
         return `${key}:${options.name}`;
@@ -39,6 +39,9 @@ vi.mock("react-i18next", () => ({
       }
       if (options?.filter) {
         return `${key}:${options.filter}`;
+      }
+      if (options?.date) {
+        return `${key}:${options.date}`;
       }
       return key;
     },
@@ -129,8 +132,44 @@ describe("IntegrationsHub", () => {
     expect(reviewHeader).toBeInTheDocument();
     expect(within(reviewHeader).getByText("GitHub")).toBeInTheDocument();
     expect(
-      within(reviewHeader).getByText("Source control"),
+      within(reviewHeader).queryByText("INTEGRATIONS_HUB$AUTH_OAUTH"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(reviewHeader).queryByText("Source control"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("wizard-tools-search")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("wizard-tools-search-bulk-actions"),
     ).toBeInTheDocument();
+    await user.click(
+      screen.getByTestId("wizard-tools-search-bulk-actions-trigger"),
+    );
+    const bulkPanel = screen.getByTestId(
+      "wizard-tools-search-bulk-actions-panel",
+    );
+    expect(bulkPanel).toBeInTheDocument();
+    await user.click(
+      screen.getByTestId("wizard-tools-search-bulk-actions-select-all"),
+    );
+    await user.click(
+      screen.getByTestId("wizard-tools-search-bulk-actions-trigger"),
+    );
+    await user.click(
+      screen.getByTestId("wizard-tools-search-bulk-actions-disable"),
+    );
+    expect(screen.getByTestId("access-mode-create_issue")).toHaveTextContent(
+      "INTEGRATIONS_HUB$ACCESS_DISABLED",
+    );
+    await user.click(screen.getByTestId("tool-details-create_issue-trigger"));
+    expect(screen.getByTestId("tool-details-create_issue")).toHaveTextContent(
+      "issues:write",
+    );
+    await user.clear(screen.getByTestId("wizard-tools-search"));
+    await user.type(screen.getByTestId("wizard-tools-search"), "repo:read");
+    expect(screen.getByTestId("select-tool-search_repos")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("select-tool-create_issue"),
+    ).not.toBeInTheDocument();
     await user.click(screen.getByTestId("wizard-create-integration"));
     expect(
       screen.getByTestId("integrations-hub-status-github"),
@@ -607,7 +646,7 @@ describe("Admin catalog and user requests", () => {
     expect(notes).toHaveTextContent("Need read access to open deals");
   });
 
-  it("dismisses a user request from the admin table", async () => {
+  it("dismisses a user request from the admin table after confirm", async () => {
     const user = userEvent.setup();
     renderHubPage(<AdminUserRequestsPage />);
 
@@ -616,7 +655,51 @@ describe("Admin catalog and user requests", () => {
     ).toBeInTheDocument();
     await user.click(screen.getByTestId("user-request-dismiss-req-1"));
     expect(
+      screen.getByTestId("integrations-hub-user-request-req-1"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("confirmation-modal")).toHaveTextContent(
+      "INTEGRATIONS_HUB$DISMISS_REQUEST_CONFIRM:Notion",
+    );
+    await user.click(screen.getByTestId("cancel-button"));
+    expect(
+      screen.getByTestId("integrations-hub-user-request-req-1"),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("user-request-dismiss-req-1"));
+    await user.click(screen.getByTestId("confirm-button"));
+    expect(
       screen.queryByTestId("integrations-hub-user-request-req-1"),
     ).not.toBeInTheDocument();
+  });
+
+  it("opens the catalog connector modal when adding a user request", async () => {
+    const user = userEvent.setup();
+    renderHubPage(<AdminUserRequestsPage />);
+
+    await user.click(screen.getByTestId("user-request-add-req-3"));
+
+    const modal = screen.getByTestId("connector-details-modal-acme-crm");
+    expect(modal).toBeInTheDocument();
+    expect(modal).toHaveTextContent("INTEGRATIONS_HUB$SETUP_CONFIGURE_TITLE");
+    expect(screen.getByTestId("connector-setup-acme-crm")).toBeInTheDocument();
+    expect(
+      screen.queryByText("INTEGRATIONS_HUB$ADD_REQUEST_CONFIRM:Acme CRM"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("registers a catalog user request from the connector modal", async () => {
+    const user = userEvent.setup();
+    renderHubPage(<AdminUserRequestsPage />);
+
+    await user.click(screen.getByTestId("user-request-add-req-1"));
+    expect(screen.getByTestId("connector-details-modal-notion")).toBeInTheDocument();
+    await user.click(screen.getByTestId("admin-catalog-register-notion"));
+
+    expect(
+      screen.queryByTestId("integrations-hub-user-request-req-1"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("integration-detail-modal-enable-row-notion"),
+    ).toBeInTheDocument();
   });
 });

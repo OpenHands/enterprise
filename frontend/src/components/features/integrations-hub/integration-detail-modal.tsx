@@ -1,4 +1,11 @@
-import { useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
+import { createPortal } from "react-dom";
 import { Ban, Check, ChevronDown, ListTodo } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { BrandButton } from "#/components/features/settings/brand-button";
@@ -10,6 +17,7 @@ import {
   hubModalBodyClassName,
   hubModalFooterClassName,
 } from "#/components/features/integrations-hub/hub-modal";
+import { allowedHubAccessModes } from "#/components/features/integrations-hub/hub-format";
 import { I18nKey } from "#/i18n/declaration";
 import type {
   HubIntegration,
@@ -27,13 +35,11 @@ const ACCESS_MODE_KEYS: Record<HubToolAccessMode, I18nKey> = {
   approval: I18nKey.INTEGRATIONS_HUB$ACCESS_APPROVAL,
   disabled: I18nKey.INTEGRATIONS_HUB$ACCESS_DISABLED,
 };
-const ACCESS_MODES = Object.keys(ACCESS_MODE_KEYS) as HubToolAccessMode[];
-
 const ACCESS_TRIGGER_CLASS: Record<HubToolAccessMode, string> = {
   enabled:
     "border-[color:rgba(165,231,94,0.3)] bg-[color:rgba(165,231,94,0.12)] text-[var(--oh-color-success)] hover:bg-[color:rgba(165,231,94,0.18)]",
   approval:
-    "border-[color:rgba(217,181,90,0.28)] bg-[color:rgba(217,181,90,0.12)] text-[var(--oh-warning)] hover:bg-[color:rgba(217,181,90,0.18)]",
+    "border-[color:rgba(217,181,90,0.28)] bg-[color:rgba(217,181,90,0.12)] text-[color:rgb(217,181,90)] hover:bg-[color:rgba(217,181,90,0.18)]",
   disabled:
     "border-[color:rgba(231,106,94,0.3)] bg-[color:rgba(231,106,94,0.12)] text-[var(--oh-color-danger)] hover:bg-[color:rgba(231,106,94,0.18)]",
 };
@@ -47,19 +53,102 @@ const ACCESS_ICONS = {
 export function AccessModeDropdown({
   toolName,
   mode,
+  maxMode,
   onChange,
 }: {
   toolName: string;
   mode: HubToolAccessMode;
+  maxMode?: HubToolAccessMode;
   onChange: (mode: HubToolAccessMode) => void;
 }) {
   const { t } = useTranslation();
+  const allowedModes = allowedHubAccessModes(maxMode);
   const [open, setOpen] = useState(false);
+  const [portalStyle, setPortalStyle] = useState<CSSProperties>();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const Icon = ACCESS_ICONS[mode];
 
+  useLayoutEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    const updatePosition = () => {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) {
+        return;
+      }
+      setPortalStyle({
+        position: "fixed",
+        zIndex: 9999,
+        top: rect.bottom + 4,
+        right: window.innerWidth - rect.right,
+        minWidth: Math.max(rect.width, 160),
+      });
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    const isInside = (target: EventTarget | null) => {
+      if (!(target instanceof Node)) {
+        return false;
+      }
+      return Boolean(
+        menuRef.current?.contains(target) ||
+        triggerRef.current?.contains(target),
+      );
+    };
+
+    const handlePointerDownOutside = (event: Event) => {
+      if (isInside(event.target)) {
+        return;
+      }
+      setOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDownOutside, true);
+    document.addEventListener("touchstart", handlePointerDownOutside, true);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDownOutside, true);
+      document.removeEventListener(
+        "touchstart",
+        handlePointerDownOutside,
+        true,
+      );
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [open]);
+
   return (
-    <div className="relative w-fit shrink-0" data-access-mode={mode}>
+    <div
+      className="relative w-fit shrink-0"
+      data-access-mode={mode}
+      data-max-access-mode={maxMode}
+    >
       <button
+        ref={triggerRef}
         type="button"
         data-testid={`access-mode-${toolName}`}
         aria-label={`Default access for ${toolName}`}
@@ -75,37 +164,46 @@ export function AccessModeDropdown({
         {t(ACCESS_MODE_KEYS[mode])}
         <ChevronDown className="size-3" aria-hidden />
       </button>
-      {open ? (
-        <div
-          role="listbox"
-          className={cn(
-            "absolute right-0 top-full z-50 mt-1 min-w-40",
-            "rounded-[6px] bg-tertiary context-menu-box-shadow",
-            dropdownMenuPanelPaddingClassName,
-            dropdownMenuListClassName,
-          )}
-        >
-          {ACCESS_MODES.map((nextMode) => {
-            const ModeIcon = ACCESS_ICONS[nextMode];
-            return (
-              <button
-                key={nextMode}
-                type="button"
-                role="option"
-                aria-selected={mode === nextMode}
-                className={dropdownMenuRowClassName}
-                onClick={() => {
-                  onChange(nextMode);
-                  setOpen(false);
-                }}
-              >
-                <ModeIcon className="size-3.5" aria-hidden strokeWidth={2} />
-                {t(ACCESS_MODE_KEYS[nextMode])}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
+      {open && portalStyle && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={menuRef}
+              role="listbox"
+              data-testid={`access-mode-${toolName}-panel`}
+              style={portalStyle}
+              className={cn(
+                "rounded-[6px] bg-tertiary context-menu-box-shadow",
+                dropdownMenuPanelPaddingClassName,
+                dropdownMenuListClassName,
+              )}
+            >
+              {allowedModes.map((nextMode) => {
+                const ModeIcon = ACCESS_ICONS[nextMode];
+                return (
+                  <button
+                    key={nextMode}
+                    type="button"
+                    role="option"
+                    aria-selected={mode === nextMode}
+                    className={dropdownMenuRowClassName}
+                    onClick={() => {
+                      onChange(nextMode);
+                      setOpen(false);
+                    }}
+                  >
+                    <ModeIcon
+                      className="size-3.5"
+                      aria-hidden
+                      strokeWidth={2}
+                    />
+                    {t(ACCESS_MODE_KEYS[nextMode])}
+                  </button>
+                );
+              })}
+            </div>,
+            document.getElementById("portal-root") || document.body,
+          )
+        : null}
     </div>
   );
 }
@@ -167,12 +265,13 @@ export function IntegrationDetailModal({
         ariaLabel={integration.name}
         testId={`integration-detail-modal-${integration.slug}`}
         width="xl"
+        className="gap-0"
         onClose={onClose}
       >
         <div className={hubModalBodyClassName}>
           <HubIntegrationModalHeader
             integration={integration}
-            hideDisabledTools={hideDisabledTools}
+            showDescription
           />
 
           <HubIntegrationEnableRow
@@ -184,6 +283,7 @@ export function IntegrationDetailModal({
             <HubToolAccessList
               tools={visibleTools}
               searchTestId={`integration-detail-tools-search-${integration.slug}`}
+              showUsage
               onUpdateToolAccess={onUpdateToolAccess}
             />
           </div>

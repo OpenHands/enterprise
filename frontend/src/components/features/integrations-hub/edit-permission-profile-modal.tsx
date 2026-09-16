@@ -215,11 +215,13 @@ export function EditPermissionProfileModal({
           {visibleTools.map((tool) => (
             <div
               key={tool.name}
-              className="flex items-start justify-between gap-3 px-4 py-3"
+              className="flex items-center justify-between gap-3 px-3 py-2"
               data-testid={`edit-permission-profile-tool-${selectedRow.key}-${tool.name}`}
             >
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-white">{tool.name}</p>
+                <p className="text-sm font-medium leading-5 text-white">
+                  {tool.name}
+                </p>
                 <HubTruncatedText
                   text={
                     tool.missing
@@ -227,7 +229,7 @@ export function EditPermissionProfileModal({
                       : tool.description ||
                         t(I18nKey.INTEGRATIONS_HUB$TOOL_NO_DESCRIPTION)
                   }
-                  className="mt-1 text-xs leading-5 text-[var(--oh-text-secondary)]"
+                  className="mt-0.5 text-xs leading-4 text-[var(--oh-text-secondary)]"
                 />
               </div>
               <AccessModeDropdown
@@ -338,7 +340,7 @@ export function EditPermissionProfileModal({
                   />
                 </div>
 
-                <div className="mt-4 overflow-hidden rounded-xl border border-[var(--oh-border)] bg-[var(--oh-bg-input)]">
+                <div className="mt-4 overflow-hidden rounded-xl border border-[var(--oh-border)] bg-[var(--oh-surface-subtle)]">
                   {integrationListContent}
                 </div>
               </div>
@@ -397,7 +399,7 @@ export function EditPermissionProfileModal({
                       />
                     </div>
 
-                    <div className="mt-4 overflow-hidden rounded-xl border border-[var(--oh-border)] bg-[var(--oh-bg-input)]">
+                    <div className="mt-4 overflow-hidden rounded-xl border border-[var(--oh-border)] bg-[var(--oh-surface-subtle)]">
                       {toolListContent}
                     </div>
                   </>

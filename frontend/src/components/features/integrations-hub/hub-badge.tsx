@@ -22,7 +22,7 @@ export function HubBadge({
         tone === "success" &&
           "border border-[color:rgba(165,231,94,0.25)] bg-[color:rgba(165,231,94,0.12)] text-[var(--oh-color-success)]",
         tone === "warning" &&
-          "border border-[color:rgba(217,181,90,0.25)] bg-[color:rgba(217,181,90,0.12)] text-[var(--oh-warning)]",
+          "border border-[color:rgba(217,181,90,0.25)] bg-[color:rgba(217,181,90,0.12)] text-[color:rgb(217,181,90)]",
         tone === "default" &&
           "border border-[var(--oh-border)] bg-[var(--oh-surface-subtle)] text-foreground",
       )}

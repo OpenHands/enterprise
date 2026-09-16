@@ -8,7 +8,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { unusedWindowMs } from "#/components/features/integrations-hub/hub-format";
+import {
+  hubIntegrationFromUserRequest,
+  unusedWindowMs,
+} from "#/components/features/integrations-hub/hub-format";
 import { formatPermissionProfileSummary } from "#/components/features/integrations-hub/permission-profile-utils";
 import {
   mockApiKeys,
@@ -67,7 +70,8 @@ function useIntegrationsHubStubState(): IntegrationsHubViewModel {
     setIntegrations(mockIntegrationsForWorkspace(isPersonalWorkspace));
   }, [isPersonalWorkspace]);
 
-  const connect = useCallback((slug: string) => {
+  const connect = useCallback((slug: string, seed?: HubIntegration) => {
+    const nextItem = catalogItem(slug) ?? seed;
     setIntegrations((current) => {
       const existing = current.find((item) => item.slug === slug);
       if (existing) {
@@ -77,11 +81,17 @@ function useIntegrationsHubStubState(): IntegrationsHubViewModel {
             : item,
         );
       }
-      const next = catalogItem(slug);
-      return next
-        ? [...current, { ...next, connected: true, enabled: true }]
+      return nextItem
+        ? [...current, { ...nextItem, connected: true, enabled: true }]
         : current;
     });
+    if (seed && !catalogItem(slug)) {
+      setExtraCatalog((current) =>
+        current.some((item) => item.slug === seed.slug)
+          ? current
+          : [...current, { ...seed, connected: true, enabled: true }],
+      );
+    }
   }, []);
 
   const disconnect = useCallback((slug: string) => {
@@ -192,7 +202,7 @@ function useIntegrationsHubStubState(): IntegrationsHubViewModel {
       setUserRequests((current) => {
         const request = current.find((item) => item.id === id);
         if (request?.slug) {
-          connect(request.slug);
+          connect(request.slug, hubIntegrationFromUserRequest(request));
         }
         return current.filter((item) => item.id !== id);
       });

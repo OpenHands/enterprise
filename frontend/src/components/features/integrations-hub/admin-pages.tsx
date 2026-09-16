@@ -24,6 +24,7 @@ import { HubIntegrationEnableRow } from "#/components/features/integrations-hub/
 import {
   formatHubTimestamp,
   hubAuthLabel,
+  hubIntegrationFromUserRequest,
 } from "#/components/features/integrations-hub/hub-format";
 import {
   HubModal,
@@ -41,6 +42,7 @@ import type {
   HubIntegration,
   HubOverviewConnection,
   HubOverviewUser,
+  HubToolAccessMode,
   HubUserRequest,
 } from "#/types/integrations-hub";
 import { formControlTransitionClassName } from "#/utils/form-control-classes";
@@ -57,6 +59,91 @@ import {
   settingsListTableRowClassName,
 } from "#/utils/settings-list-classes";
 import { cn } from "#/utils/utils";
+
+function CatalogConnectorModal({
+  integration,
+  onClose,
+  onRegister,
+  onDelete,
+  onToggleEnabled,
+  onToolAccessModeChange,
+}: {
+  integration: HubIntegration;
+  onClose: () => void;
+  onRegister: () => void;
+  onDelete: () => void;
+  onToggleEnabled: () => void;
+  onToolAccessModeChange: (toolName: string, mode: HubToolAccessMode) => void;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <HubModal
+      ariaLabel={t(I18nKey.INTEGRATIONS_HUB$CONNECTOR_DETAILS, {
+        name: integration.name,
+      })}
+      testId={`connector-details-modal-${integration.slug}`}
+      width="xl"
+      className="min-h-0 max-h-[90vh] gap-0"
+      onClose={onClose}
+    >
+      <div className="shrink-0 border-b border-[var(--oh-border)] px-7 pb-4 pr-12 pt-7">
+        <div className="flex items-start gap-3">
+          <IntegrationProviderIcon
+            provider={integration.slug}
+            logoUrl={integration.logoUrl}
+            size="md"
+          />
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-semibold text-white">
+              {integration.name}
+            </h2>
+            {integration.description ? (
+              <p className="mt-1 text-xs leading-5 text-[var(--oh-text-secondary)]">
+                {integration.description}
+              </p>
+            ) : null}
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              {(integration.categories?.length
+                ? integration.categories
+                : [integration.kind]
+              )
+                .filter(Boolean)
+                .map((category) => (
+                  <span
+                    key={`${integration.slug}-${category}`}
+                    className={hubCardPillClassName}
+                  >
+                    {category}
+                  </span>
+                ))}
+            </div>
+          </div>
+        </div>
+        {integration.connected ? (
+          <HubIntegrationEnableRow
+            integration={integration}
+            onToggleEnabled={onToggleEnabled}
+          />
+        ) : null}
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-4 pt-4">
+        <ConnectorSetupProgress
+          integration={integration}
+          isRegistered={integration.connected}
+          onRegister={onRegister}
+          onDelete={onDelete}
+          onToolAccessModeChange={onToolAccessModeChange}
+        />
+      </div>
+      <div className={hubModalFooterClassName}>
+        <BrandButton type="button" variant="secondary" onClick={onClose}>
+          {t(I18nKey.INTEGRATIONS_HUB$CLOSE)}
+        </BrandButton>
+      </div>
+    </HubModal>
+  );
+}
 
 function hasUserRequestDetails(request: HubUserRequest) {
   return Boolean(
@@ -892,84 +979,19 @@ export function AdminCatalogPage() {
       />
 
       {selected ? (
-        <HubModal
-          ariaLabel={t(I18nKey.INTEGRATIONS_HUB$CONNECTOR_DETAILS, {
-            name: selected.name,
-          })}
-          testId={`connector-details-modal-${selected.slug}`}
-          width="xl"
-          className="min-h-0 max-h-[90vh] gap-0"
+        <CatalogConnectorModal
+          integration={selected}
           onClose={() => setSelectedSlug(null)}
-        >
-          <div className="shrink-0 border-b border-[var(--oh-border)] px-7 pb-4 pr-12 pt-7">
-            <div className="flex items-start gap-3">
-              <IntegrationProviderIcon
-                provider={selected.slug}
-                logoUrl={selected.logoUrl}
-                size="md"
-              />
-              <div className="min-w-0 flex-1">
-                <h2 className="text-base font-semibold text-white">
-                  {selected.name}
-                </h2>
-                {selected.description ? (
-                  <p className="mt-1 text-xs leading-5 text-[var(--oh-text-secondary)]">
-                    {selected.description}
-                  </p>
-                ) : null}
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  {(selected.categories?.length
-                    ? selected.categories
-                    : [selected.kind]
-                  )
-                    .filter(Boolean)
-                    .map((category) => (
-                      <span
-                        key={`${selected.slug}-${category}`}
-                        className={hubCardPillClassName}
-                      >
-                        {category}
-                      </span>
-                    ))}
-                  {hubAuthLabel(selected.authStrategy, t) ? (
-                    <span className={hubCardPillClassName}>
-                      {hubAuthLabel(selected.authStrategy, t)}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-            {selected.connected ? (
-              <HubIntegrationEnableRow
-                integration={selected}
-                onToggleEnabled={() => toggleEnabled(selected.slug)}
-              />
-            ) : null}
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-4 pt-4">
-            <ConnectorSetupProgress
-              integration={selected}
-              isRegistered={selected.connected}
-              onRegister={() => connect(selected.slug)}
-              onDelete={() => {
-                disconnect(selected.slug);
-                setSelectedSlug(null);
-              }}
-              onToolAccessModeChange={(toolName, mode) =>
-                updateToolAccess(selected.slug, toolName, mode)
-              }
-            />
-          </div>
-          <div className={hubModalFooterClassName}>
-            <BrandButton
-              type="button"
-              variant="secondary"
-              onClick={() => setSelectedSlug(null)}
-            >
-              {t(I18nKey.INTEGRATIONS_HUB$CLOSE)}
-            </BrandButton>
-          </div>
-        </HubModal>
+          onRegister={() => connect(selected.slug)}
+          onDelete={() => {
+            disconnect(selected.slug);
+            setSelectedSlug(null);
+          }}
+          onToggleEnabled={() => toggleEnabled(selected.slug)}
+          onToolAccessModeChange={(toolName, mode) =>
+            updateToolAccess(selected.slug, toolName, mode)
+          }
+        />
       ) : null}
 
       {customOpen ? (
@@ -993,14 +1015,46 @@ const userRequestHeaderCellClassName = cn(
 
 export function AdminUserRequestsPage() {
   const { t } = useTranslation();
-  const { userRequests, fulfillUserRequest, dismissUserRequest } =
-    useIntegrationsHubStub();
-  const [pendingAdd, setPendingAdd] = useState<string | null>(null);
+  const {
+    userRequests,
+    catalogIntegrations,
+    connect,
+    disconnect,
+    toggleEnabled,
+    updateToolAccess,
+    dismissUserRequest,
+  } = useIntegrationsHubStub();
+  const [setupRequestId, setSetupRequestId] = useState<string | null>(null);
+  const [setupSeed, setSetupSeed] = useState<HubIntegration | null>(null);
+  const [pendingDismissId, setPendingDismissId] = useState<string | null>(null);
 
-  const pendingAddRequest = useMemo(
-    () => userRequests.find((item) => item.id === pendingAdd) ?? null,
-    [pendingAdd, userRequests],
+  const pendingDismissRequest = useMemo(
+    () => userRequests.find((item) => item.id === pendingDismissId) ?? null,
+    [pendingDismissId, userRequests],
   );
+
+  const selected = useMemo(() => {
+    if (!setupSeed) {
+      return null;
+    }
+    return (
+      catalogIntegrations.find((item) => item.slug === setupSeed.slug) ??
+      setupSeed
+    );
+  }, [catalogIntegrations, setupSeed]);
+
+  const closeSetup = () => {
+    setSetupRequestId(null);
+    setSetupSeed(null);
+  };
+
+  const openSetup = (request: HubUserRequest) => {
+    setSetupRequestId(request.id);
+    setSetupSeed(
+      catalogIntegrations.find((item) => item.slug === request.slug) ??
+        hubIntegrationFromUserRequest(request),
+    );
+  };
 
   return (
     <div
@@ -1112,7 +1166,7 @@ export function AdminUserRequestsPage() {
                           formControlTransitionClassName,
                           "hover:bg-[color:rgba(165,231,94,0.12)]",
                         )}
-                        onClick={() => setPendingAdd(request.id)}
+                        onClick={() => openSetup(request)}
                       >
                         {t(I18nKey.INTEGRATIONS_HUB$ADD)}
                       </button>
@@ -1124,7 +1178,7 @@ export function AdminUserRequestsPage() {
                           formControlTransitionClassName,
                           "hover:bg-[color:rgba(231,106,94,0.12)]",
                         )}
-                        onClick={() => dismissUserRequest(request.id)}
+                        onClick={() => setPendingDismissId(request.id)}
                       >
                         {t(I18nKey.INTEGRATIONS_HUB$DISMISS)}
                       </button>
@@ -1137,16 +1191,37 @@ export function AdminUserRequestsPage() {
         </div>
       )}
 
-      {pendingAddRequest ? (
+      {pendingDismissRequest ? (
         <ConfirmationModal
-          text={t(I18nKey.INTEGRATIONS_HUB$ADD_REQUEST_CONFIRM, {
-            name: pendingAddRequest.name,
+          text={t(I18nKey.INTEGRATIONS_HUB$DISMISS_REQUEST_CONFIRM, {
+            name: pendingDismissRequest.name,
           })}
-          onCancel={() => setPendingAdd(null)}
+          onCancel={() => setPendingDismissId(null)}
           onConfirm={() => {
-            fulfillUserRequest(pendingAddRequest.id);
-            setPendingAdd(null);
+            dismissUserRequest(pendingDismissRequest.id);
+            setPendingDismissId(null);
           }}
+        />
+      ) : null}
+
+      {selected ? (
+        <CatalogConnectorModal
+          integration={selected}
+          onClose={closeSetup}
+          onRegister={() => {
+            connect(selected.slug, selected);
+            if (setupRequestId) {
+              dismissUserRequest(setupRequestId);
+            }
+          }}
+          onDelete={() => {
+            disconnect(selected.slug);
+            closeSetup();
+          }}
+          onToggleEnabled={() => toggleEnabled(selected.slug)}
+          onToolAccessModeChange={(toolName, mode) =>
+            updateToolAccess(selected.slug, toolName, mode)
+          }
         />
       ) : null}
     </div>

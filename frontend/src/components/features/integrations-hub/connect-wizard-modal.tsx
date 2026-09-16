@@ -2,9 +2,6 @@ import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, PlugZap } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { BrandButton } from "#/components/features/settings/brand-button";
-import { IntegrationProviderIcon } from "#/components/features/settings/git-settings/integration-provider-icon";
-import { HubBadge } from "#/components/features/integrations-hub/hub-badge";
-import { hubAuthLabel } from "#/components/features/integrations-hub/hub-format";
 import { HubIntegrationModalHeader } from "#/components/features/integrations-hub/hub-integration-modal-header";
 import { HubToolAccessList } from "#/components/features/integrations-hub/hub-tool-access-list";
 import {
@@ -53,37 +50,28 @@ export function ConnectWizardModal({
         {step === "connect" ? (
           <>
             <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-4 pt-7">
-              <header
-                className="flex items-start gap-3"
-                data-testid="integration-wizard-header"
-              >
-                {selected ? (
-                  <IntegrationProviderIcon
-                    provider={selected.slug}
-                    logoUrl={selected.logoUrl}
-                    size="md"
-                  />
-                ) : (
+              {selected ? (
+                <HubIntegrationModalHeader
+                  integration={selected}
+                  showDescription
+                  testId="integration-wizard-header"
+                />
+              ) : (
+                <header
+                  className="flex items-start gap-3"
+                  data-testid="integration-wizard-header"
+                >
                   <PlugZap className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-                )}
-                <div className="space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="space-y-1">
                     <h2 className="text-lg font-semibold text-white">
-                      {selected?.name ||
-                        t(I18nKey.INTEGRATIONS_HUB$WIZARD_TITLE)}
+                      {t(I18nKey.INTEGRATIONS_HUB$WIZARD_TITLE)}
                     </h2>
-                    {selected && hubAuthLabel(selected.authStrategy, t) ? (
-                      <HubBadge>
-                        {hubAuthLabel(selected.authStrategy, t)}
-                      </HubBadge>
-                    ) : null}
+                    <p className="text-sm leading-6 text-tertiary-light">
+                      {t(I18nKey.INTEGRATIONS_HUB$WIZARD_BODY)}
+                    </p>
                   </div>
-                  <p className="text-sm leading-6 text-tertiary-light">
-                    {selected?.description ||
-                      t(I18nKey.INTEGRATIONS_HUB$WIZARD_BODY)}
-                  </p>
-                </div>
-              </header>
+                </header>
+              )}
 
               <div className="mt-6 space-y-4">
                 {selected ? (
@@ -182,7 +170,7 @@ export function ConnectWizardModal({
           </>
         ) : (
           <>
-            <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-4 pt-7">
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-7 pb-4 pt-7">
               {selected ? (
                 <HubIntegrationModalHeader
                   integration={selected}
@@ -190,7 +178,13 @@ export function ConnectWizardModal({
                   testId="integration-wizard-header"
                 />
               ) : null}
-              <div className={selected ? "mt-6" : undefined}>
+              <div
+                className={
+                  selected
+                    ? "mt-6 flex min-h-0 flex-1 flex-col"
+                    : "flex min-h-0 flex-1 flex-col"
+                }
+              >
                 <HubToolAccessList
                   tools={selected?.tools ?? []}
                   searchTestId="wizard-tools-search"
