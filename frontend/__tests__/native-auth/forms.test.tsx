@@ -6,6 +6,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRoutesStub } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AccountSetup from "#/routes/account-setup";
+import PasswordReset from "#/routes/password-reset";
 import { NativeAuthService } from "#/api/native-auth-service/native-auth-service.api";
 import { openHands } from "#/api/open-hands-axios";
 import { AccountLinkModal } from "#/components/features/admin-users/account-link-modal";
@@ -81,6 +82,21 @@ describe("native account recipient forms", () => {
     expect(window.location.hash).toBe("");
     expect(screen.queryByLabelText("AUTH$NEW_PASSWORD")).not.toBeInTheDocument();
     expect(screen.queryByText("expired-token")).not.toBeInTheDocument();
+  });
+
+  it("resets the password without automatically logging in", async () => {
+    window.history.replaceState({}, "", "/password-reset#token=reset-token");
+    const reset = vi.spyOn(NativeAuthService, "resetPassword").mockResolvedValue(undefined);
+    const login = vi.spyOn(NativeAuthService, "login");
+    const client = mount("/password-reset", PasswordReset);
+    fireEvent.change(await screen.findByLabelText("AUTH$NEW_PASSWORD"), { target: { value: "new very long password" } });
+    fireEvent.change(screen.getByLabelText("AUTH$CONFIRM_PASSWORD"), { target: { value: "new very long password" } });
+    fireEvent.submit(containingForm(screen.getByRole("button", { name: "AUTH$RESET_PASSWORD" })));
+    await screen.findByText("AUTH$PASSWORD_RESET_COMPLETE");
+    expect(reset).toHaveBeenCalledWith({ token: "reset-token", new_password: "new very long password" });
+    expect(login).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe("");
+    expect(JSON.stringify(client.getMutationCache().getAll().map((mutation) => mutation.state))).not.toMatch(/reset-token|new very long password/);
   });
 
   it("masks show-once links from PostHog and supports manual copy fallback", async () => {

@@ -87,6 +87,7 @@ export interface AccountInvitationInput {
 }
 export interface AccountLink {
   invite_url?: string;
+  reset_url?: string;
   expires_at: string;
 }
 export interface NativeLoginInput {
@@ -150,6 +151,18 @@ export const NativeAuthService = {
       ...(await AuthService.nativeSession()),
     };
   },
+  resetPassword: async (input: {
+    token: string;
+    new_password: string;
+  }): Promise<void> => {
+    await openHands.post("/api/auth/password/reset/complete", input);
+  },
+  changePassword: async (input: {
+    current_password: string;
+    new_password: string;
+  }): Promise<void> => {
+    await openHands.post("/api/auth/password/change", input);
+  },
   accounts: async (offset: number): Promise<PaginatedResponse<NativeAccount>> =>
     (
       await openHands.get<{ items: NativeAccount[]; total: number }>(
@@ -180,6 +193,12 @@ export const NativeAuthService = {
   revokeInvitation: async (id: string): Promise<void> => {
     await openHands.delete(`/api/admin/auth-invitations/${id}`);
   },
+  issueReset: async (id: string): Promise<AccountLink> =>
+    (
+      await openHands.post<AccountLink>(
+        `/api/admin/auth-accounts/${id}/password-reset`,
+      )
+    ).data,
   roles: async (): Promise<NativeRole[]> =>
     (
       await openHands.get<{ id: number; name: string }[]>(

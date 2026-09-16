@@ -15,6 +15,7 @@ import {
   useIssueAccountInvitation,
   useReissueAccountInvitation,
   useRevokeAccountInvitation,
+  useIssuePasswordReset,
 } from "#/hooks/mutation/use-native-auth";
 import {
   AccountLink,
@@ -52,10 +53,12 @@ export default function AdminUsers(): React.JSX.Element {
   const issueInvitation = useIssueAccountInvitation();
   const reissue = useReissueAccountInvitation();
   const revokeInvitation = useRevokeAccountInvitation();
+  const issueReset = useIssuePasswordReset();
   const busy =
     issueInvitation.isPending ||
     reissue.isPending ||
-    revokeInvitation.isPending;
+    revokeInvitation.isPending ||
+    issueReset.isPending;
 
   const refresh = async (): Promise<void> => {
     await Promise.all([
@@ -84,6 +87,14 @@ export default function AdminUsers(): React.JSX.Element {
       setOrgId("");
       setRoleId(null);
       await refresh();
+    } catch (cause) {
+      report(cause);
+    }
+  };
+  const resetPassword = async (id: string): Promise<void> => {
+    setError(null);
+    try {
+      setLink(await issueReset.run(id));
     } catch (cause) {
       report(cause);
     }
@@ -215,6 +226,22 @@ export default function AdminUsers(): React.JSX.Element {
           </Typography.H3>
           <p>{accountStatus(selected)}</p>
           <p className="text-sm text-tertiary-alt">{selected.id}</p>
+          {selected.state !== "deleted" && (
+            <div className="flex flex-wrap gap-3">
+              {!selected.is_disabled &&
+                (selected.authentication_methods?.includes("password") ??
+                  true) && (
+                  <BrandButton
+                    type="button"
+                    variant="secondary"
+                    isDisabled={busy}
+                    onClick={() => resetPassword(selected.id)}
+                  >
+                    {t("AUTH$CREATE_RESET_LINK")}
+                  </BrandButton>
+                )}
+            </div>
+          )}
           {selected.pending_invitations.map((invitation) => (
             <p key={invitation.id}>
               {t("AUTH$PENDING_SETUP", {

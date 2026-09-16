@@ -13,6 +13,12 @@ export const useInspectEnrollment = (): EphemeralMutationFor<
 export const useCompleteEnrollment = (): EphemeralMutationFor<
   typeof NativeAuthService.enroll
 > => useEphemeralMutation(NativeAuthService.enroll);
+export const useCompletePasswordReset = (): EphemeralMutationFor<
+  typeof NativeAuthService.resetPassword
+> => useEphemeralMutation(NativeAuthService.resetPassword);
+export const useChangePassword = (): EphemeralMutationFor<
+  typeof NativeAuthService.changePassword
+> => useEphemeralMutation(NativeAuthService.changePassword);
 export const useIssueAccountInvitation = (): EphemeralMutationFor<
   typeof NativeAuthService.invite
 > => useEphemeralMutation(NativeAuthService.invite);
@@ -22,3 +28,6 @@ export const useReissueAccountInvitation = (): EphemeralMutationFor<
 export const useRevokeAccountInvitation = (): EphemeralMutationFor<
   typeof NativeAuthService.revokeInvitation
 > => useEphemeralMutation(NativeAuthService.revokeInvitation);
+export const useIssuePasswordReset = (): EphemeralMutationFor<
+  typeof NativeAuthService.issueReset
+> => useEphemeralMutation(NativeAuthService.issueReset);

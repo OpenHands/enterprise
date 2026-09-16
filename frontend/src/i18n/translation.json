@@ -29591,6 +29591,12 @@
   "AUTH$BACK_TO_LOGIN": {
     "en": "Back to sign in"
   },
+  "AUTH$CANCEL": {
+    "en": "Cancel"
+  },
+  "AUTH$CHANGE_PASSWORD": {
+    "en": "Change password"
+  },
   "AUTH$CLOSE": {
     "en": "Close"
   },
@@ -29601,7 +29607,7 @@
     "en": "Confirm new password"
   },
   "AUTH$CONTACT_ADMIN": {
-    "en": "Contact your administrator for an account setup link."
+    "en": "Contact your administrator for an account setup or password reset link."
   },
   "AUTH$COPIED": {
     "en": "Copied"
@@ -29615,8 +29621,14 @@
   "AUTH$COPY_ONCE_HELP": {
     "en": "Copy this link now and share it securely with the intended recipient. It is shown only once. Reissuing an invitation invalidates the previous link."
   },
+  "AUTH$CREATE_RESET_LINK": {
+    "en": "Create password reset link"
+  },
   "AUTH$CREATE_SETUP_LINK": {
     "en": "Create setup link"
+  },
+  "AUTH$CURRENT_PASSWORD": {
+    "en": "Current password"
   },
   "AUTH$DELETED": {
     "en": "Permanently deleted"
@@ -29626,6 +29638,9 @@
   },
   "AUTH$EMAIL": {
     "en": "Email"
+  },
+  "AUTH$EMAIL_PASSWORD_METHOD": {
+    "en": "Email and password"
   },
   "AUTH$EXISTING_ACCOUNT": {
     "en": "This account already exists. Sign in to accept the invitation."
@@ -29669,11 +29684,17 @@
   "AUTH$PASSWORD": {
     "en": "Password"
   },
+  "AUTH$PASSWORD_CHANGED": {
+    "en": "Your password has been changed. Other sessions have been signed out."
+  },
   "AUTH$PASSWORD_HELP": {
     "en": "Use at least 15 characters. Longer, uncommon passphrases work well."
   },
   "AUTH$PASSWORD_MISMATCH": {
     "en": "The passwords do not match."
+  },
+  "AUTH$PASSWORD_RESET_COMPLETE": {
+    "en": "Your password has been reset. Sign in with your new password."
   },
   "AUTH$PENDING": {
     "en": "Pending"
@@ -29693,11 +29714,17 @@
   "AUTH$PROFILE_UNAVAILABLE": {
     "en": "Profile unavailable; contact an administrator"
   },
+  "AUTH$REAUTH_REQUIRED": {
+    "en": "Confirm your identity to continue."
+  },
   "AUTH$REISSUE": {
     "en": "Reissue link"
   },
   "AUTH$REQUEST_FAILED": {
     "en": "The request could not be completed. Please try again."
+  },
+  "AUTH$RESET_PASSWORD": {
+    "en": "Reset password"
   },
   "AUTH$REVOKE": {
     "en": "Revoke link"
@@ -29717,10 +29744,13 @@
   "AUTH$SIGN_IN": {
     "en": "Sign in"
   },
+  "AUTH$SIGN_IN_METHODS": {
+    "en": "Sign-in methods"
+  },
   "AUTH$USERS": {
     "en": "Users"
   },
   "AUTH$USERS_HELP": {
-    "en": "Create account setup links and review accounts and invitations."
+    "en": "Manage application accounts. Share setup and password reset links with the intended recipient."
   }
 }
