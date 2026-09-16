@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import asyncio
 
-from openhands.sdk.settings import apply_agent_settings_diff
 from sqlalchemy import select
 
+from openhands.sdk.settings import apply_agent_settings_diff
 from server.logger import logger
 from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
