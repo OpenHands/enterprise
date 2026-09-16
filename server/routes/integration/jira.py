@@ -27,6 +27,7 @@ from integrations.utils import HOST_URL
 from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
+from server.auth.composition import get_auth_services
 from server.auth.constants import (
     JIRA_CLIENT_ID,
     JIRA_CLIENT_SECRET,
@@ -424,7 +425,7 @@ async def create_jira_workspace(
     request: Request,
     workspace_data: JiraWorkspaceCreate,
     _: str = Depends(require_permission(Permission.MANAGE_INTEGRATION_PROVIDERS)),
-):
+) -> JSONResponse:
     """Create a new Jira workspace registration.
 
     Setting up the workspace connection (service account, webhook secret) is an
@@ -458,6 +459,10 @@ async def create_jira_workspace(
                 'is_active': workspace_data.is_active,
                 'state': state,
             }
+
+            integration_session.update(
+                await get_auth_services().integrations.session_state(request, user_id)
+            )
 
             created = redis_client.setex(
                 state,
@@ -568,7 +573,9 @@ async def create_jira_workspace(
 
 
 @jira_integration_router.post('/workspaces/link')
-async def create_workspace_link(request: Request, link_data: JiraLinkCreate):
+async def create_workspace_link(
+    request: Request, link_data: JiraLinkCreate
+) -> JSONResponse:
     """Register a user mapping to a Jira workspace."""
     try:
         user_auth = cast(SaasUserAuth, await get_user_auth(request))
@@ -605,6 +612,10 @@ async def create_workspace_link(request: Request, link_data: JiraLinkCreate):
             'target_workspace': link_data.workspace_name,
             'state': state,
         }
+
+        integration_session.update(
+            await get_auth_services().integrations.session_state(request, user_id)
+        )
 
         created = redis_client.setex(
             state,
@@ -648,7 +659,7 @@ async def create_workspace_link(request: Request, link_data: JiraLinkCreate):
 
 
 @jira_integration_router.get('/callback')
-async def jira_callback(request: Request, code: str, state: str):
+async def jira_callback(request: Request, code: str, state: str) -> RedirectResponse:
     integration_session_json = redis_client.get(state)
     if not integration_session_json:
         raise HTTPException(
@@ -656,6 +667,9 @@ async def jira_callback(request: Request, code: str, state: str):
         )
 
     integration_session = json.loads(integration_session_json)
+    await get_auth_services().integrations.validate_callback(
+        request, integration_session, redis_client, state
+    )
 
     # Security check: verify the state parameter
     if integration_session.get('state') != state:

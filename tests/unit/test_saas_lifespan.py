@@ -1,8 +1,31 @@
 """Tests for SaasAppLifespanService."""
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def mock_auth_installation() -> Iterator[AsyncMock]:
+    with patch(
+        'server.auth.bootstrap.initialize_auth_installation', new_callable=AsyncMock
+    ) as initialize:
+        yield initialize
+
+
+async def test_invalid_installation_stops_startup_before_analytics(
+    mock_auth_installation: AsyncMock,
+) -> None:
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    mock_auth_installation.side_effect = RuntimeError('Authentication mode changed')
+    with patch(
+        'server.app_lifespan.saas_app_lifespan_service.init_analytics_service'
+    ) as init_analytics:
+        with pytest.raises(RuntimeError, match='Authentication mode changed'):
+            await SaasAppLifespanService().__aenter__()
+        init_analytics.assert_not_called()
 
 
 @pytest.fixture

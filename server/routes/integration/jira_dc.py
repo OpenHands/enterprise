@@ -38,6 +38,7 @@ from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
+from server.auth.composition import get_auth_services
 from server.auth.constants import (
     AUTOMATION_EVENT_FORWARDING_ENABLED,
     JIRA_DC_BASE_URL,
@@ -578,7 +579,7 @@ async def create_jira_dc_workspace(
     request: Request,
     workspace_data: JiraDcWorkspaceCreate,
     _: str = Depends(require_permission(Permission.MANAGE_INTEGRATION_PROVIDERS)),
-):
+) -> JSONResponse:
     """Create a new Jira DC workspace registration.
 
     Setting up the instance connection (server, service account, webhook) is an
@@ -650,6 +651,10 @@ async def create_jira_dc_workspace(
                 'is_active': workspace_data.is_active,
                 'state': state,
             }
+
+            integration_session.update(
+                await get_auth_services().integrations.session_state(request, user_id)
+            )
 
             created = redis_client.setex(
                 state,
@@ -828,7 +833,9 @@ async def update_jira_dc_workspace_status(
 
 
 @jira_dc_integration_router.post('/workspaces/link')
-async def create_workspace_link(request: Request, link_data: JiraDcLinkCreate):
+async def create_workspace_link(
+    request: Request, link_data: JiraDcLinkCreate
+) -> JSONResponse:
     """Register a user mapping to a Jira DC workspace."""
     try:
         user_auth = cast(SaasUserAuth, await get_user_auth(request))
@@ -854,6 +861,10 @@ async def create_workspace_link(request: Request, link_data: JiraDcLinkCreate):
                 'target_workspace': target_workspace,
                 'state': state,
             }
+
+            integration_session.update(
+                await get_auth_services().integrations.session_state(request, user_id)
+            )
 
             created = redis_client.setex(
                 state,
@@ -907,7 +918,7 @@ async def create_workspace_link(request: Request, link_data: JiraDcLinkCreate):
 
 
 @jira_dc_integration_router.get('/callback')
-async def jira_dc_callback(request: Request, code: str, state: str):
+async def jira_dc_callback(request: Request, code: str, state: str) -> RedirectResponse:
     integration_session_json = redis_client.get(state)
     if not integration_session_json:
         raise HTTPException(
@@ -915,6 +926,9 @@ async def jira_dc_callback(request: Request, code: str, state: str):
         )
 
     integration_session = json.loads(integration_session_json)
+    await get_auth_services().integrations.validate_callback(
+        request, integration_session, redis_client, state
+    )
 
     # Security check: verify the state parameter
     if integration_session.get('state') != state:

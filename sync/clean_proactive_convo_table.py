@@ -12,7 +12,11 @@ from storage.proactive_conversation_store import (
 OLDER_THAN = 30  # 30 minutes
 
 
-async def main():
+async def main() -> None:
+    from server.auth.bootstrap import verify_auth_installation
+
+    await verify_auth_installation()
+
     openhands_logger.info('clean_proactive_convo_table')
     convo_store = ProactiveConversationStore()
     await convo_store.clean_old_convos(older_than_minutes=OLDER_THAN)

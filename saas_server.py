@@ -8,6 +8,14 @@ load_dotenv()
 if not os.getenv('OPENHANDS_CONFIG_CLS'):
     os.environ['OPENHANDS_CONFIG_CLS'] = 'server.config.SaaSServerConfig'
 
+from server.auth.server_wiring import (  # noqa: E402
+    configure_authentication_environment,
+    install_authentication_middleware,
+    install_authentication_routes,
+)
+
+configure_authentication_environment()
+
 # SaaS registers enterprise routes below, then mounts the frontend last. Avoid
 # the base app's import-time SPA mount from shadowing those routes.
 os.environ['SERVE_FRONTEND'] = 'false'
@@ -16,45 +24,29 @@ from fastapi import Request, status  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 
 from openhands.app_server.app import app as base_app  # noqa: E402
-from openhands.app_server.middleware import (  # noqa: E402
-    CacheControlMiddleware,
-)
 from openhands.app_server.static import SPAStaticFiles  # noqa: E402
-from server.auth.auth_config import ENABLE_KEYCLOAK  # noqa: E402
 from server.auth.auth_error import ExpiredError, NoCredentialsError  # noqa: E402
 from server.auth.constants import (  # noqa: E402
-    AZURE_DEVOPS_CLIENT_ID,
-    BITBUCKET_APP_CLIENT_ID,
-    BITBUCKET_DATA_CENTER_HOST,
     ENABLE_JIRA,
     ENABLE_JIRA_DC,
-    GITHUB_APP_CLIENT_ID,
-    GITLAB_APP_CLIENT_ID,
 )
 from server.constants import (  # noqa: E402
-    PERMITTED_CORS_ORIGINS,
     USER_PROVISIONING_ENABLED,
 )
 from server.logger import logger  # noqa: E402
-from server.middleware import (  # noqa: E402
-    ApiKeyAwareCORSMiddleware,
-    SetAuthCookieMiddleware,
-)
 from server.rate_limit import setup_rate_limit_handler  # noqa: E402
 from server.routes.admin_users import admin_user_router  # noqa: E402
 from server.routes.agent_profiles import router as agent_profiles_router  # noqa: E402
 from server.routes.analytics_events import analytics_events_router  # noqa: E402
 from server.routes.api_keys import api_router as api_keys_router  # noqa: E402
-from server.routes.auth import api_router, oauth_router  # noqa: E402
+from server.routes.auth import api_router  # noqa: E402
 from server.routes.billing import billing_router  # noqa: E402
 from server.routes.email import api_router as email_router  # noqa: E402
 from server.routes.feature_flags import (  # noqa: E402
     feature_flag_router,
 )
-from server.routes.github_proxy import add_github_proxy_routes  # noqa: E402
 from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
-from server.routes.integration.slack import slack_router  # noqa: E402
 from server.routes.oauth_device import oauth_device_router  # noqa: E402
 from server.routes.org_invitations import (  # noqa: E402
     accept_router as invitation_accept_router,
@@ -99,12 +91,6 @@ def is_saas():
 
 base_app.include_router(readiness_router)  # Add routes for readiness checks
 base_app.include_router(api_router)  # Add additional route for github auth
-if ENABLE_KEYCLOAK:
-    base_app.include_router(oauth_router)
-else:
-    from server.routes.native_auth import native_auth_router  # noqa: E402
-
-    base_app.include_router(native_auth_router)
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings
 base_app.include_router(
@@ -112,60 +98,6 @@ base_app.include_router(
 )  # Add routes for credit management and Stripe payment integration
 base_app.include_router(shared_conversation_router)
 base_app.include_router(shared_event_router)
-
-# Add GitHub integration router only if GITHUB_APP_CLIENT_ID is set
-if GITHUB_APP_CLIENT_ID:
-    # Make sure that the callback processor is loaded here so we don't get an error when deserializing
-    from integrations.github.github_v1_callback_processor import (  # noqa: E402
-        GithubV1CallbackProcessor,
-    )
-    from server.routes.integration.github import github_integration_router  # noqa: E402
-
-    # Bludgeon mypy into not deleting my import
-    logger.debug(f'Loaded {GithubV1CallbackProcessor.__name__}')
-
-    base_app.include_router(
-        github_integration_router
-    )  # Add additional route for integration webhook events
-
-# Add GitLab integration router only if GITLAB_APP_CLIENT_ID is set
-if GITLAB_APP_CLIENT_ID:
-    # Make sure that the callback processor is loaded here so we don't get an error when deserializing
-    from integrations.gitlab.gitlab_v1_callback_processor import (  # noqa: E402
-        GitlabV1CallbackProcessor,
-    )
-    from server.routes.integration.gitlab import gitlab_integration_router  # noqa: E402
-
-    # Bludgeon mypy into not deleting my import
-    logger.debug(f'Loaded {GitlabV1CallbackProcessor.__name__}')
-
-    base_app.include_router(gitlab_integration_router)
-
-# Add Bitbucket Cloud integration router only if BITBUCKET_APP_CLIENT_ID is set
-if BITBUCKET_APP_CLIENT_ID:
-    from integrations.bitbucket.bitbucket_v1_callback_processor import (  # noqa: E402
-        BitbucketV1CallbackProcessor,
-    )
-    from server.routes.integration.bitbucket import (  # noqa: E402
-        bitbucket_integration_router,
-    )
-
-    logger.debug(f'Loaded {BitbucketV1CallbackProcessor.__name__}')
-
-    base_app.include_router(bitbucket_integration_router)
-
-# Add Azure DevOps integration router only if Azure DevOps OAuth is configured.
-if AZURE_DEVOPS_CLIENT_ID:
-    from integrations.azure_devops.azure_devops_v1_callback_processor import (  # noqa: E402
-        AzureDevOpsV1CallbackProcessor,
-    )
-    from server.routes.integration.azure_devops import (  # noqa: E402
-        azure_devops_integration_router,
-    )
-
-    logger.debug(f'Loaded {AzureDevOpsV1CallbackProcessor.__name__}')
-
-    base_app.include_router(azure_devops_integration_router)
 
 base_app.include_router(api_keys_router)  # Add routes for API key management
 base_app.include_router(service_router)  # Add routes for internal service API
@@ -206,30 +138,10 @@ override_users_me_endpoint(base_app)
 
 base_app.include_router(invitation_router)  # Add routes for org invitation management
 base_app.include_router(invitation_accept_router)  # Add route for accepting invitations
-add_github_proxy_routes(base_app)
-base_app.include_router(slack_router)
 if ENABLE_JIRA:
     base_app.include_router(jira_integration_router)
 if ENABLE_JIRA_DC:
     base_app.include_router(jira_dc_integration_router)
-if BITBUCKET_DATA_CENTER_HOST:
-    from server.routes.bitbucket_dc_proxy import (
-        router as bitbucket_dc_proxy_router,  # noqa: E402
-    )
-
-    base_app.include_router(bitbucket_dc_proxy_router)
-
-    # Bitbucket Data Center resolver webhook (PR comment trigger).
-    from integrations.bitbucket_data_center.bitbucket_dc_v1_callback_processor import (  # noqa: E402
-        BitbucketDCV1CallbackProcessor,
-    )
-    from server.routes.integration.bitbucket_dc import (  # noqa: E402
-        bitbucket_dc_integration_router,
-    )
-
-    logger.debug(f'Loaded {BitbucketDCV1CallbackProcessor.__name__}')
-
-    base_app.include_router(bitbucket_dc_integration_router)
 base_app.include_router(email_router)  # Add routes for email management
 base_app.include_router(
     analytics_events_router
@@ -240,20 +152,8 @@ base_app.include_router(
 )  # Add admin routes for quota (org-level + increase requests)
 
 
-if ENABLE_KEYCLOAK:
-    base_app.add_middleware(
-        ApiKeyAwareCORSMiddleware,
-        allow_origins=PERMITTED_CORS_ORIGINS,
-    )
-base_app.add_middleware(CacheControlMiddleware)
-base_app.middleware('http')(SetAuthCookieMiddleware())
-if not ENABLE_KEYCLOAK:
-    from server.config import get_native_cors_origins  # noqa: E402
-
-    # Native auth errors must also carry the authoritative CORS policy.
-    base_app.add_middleware(
-        ApiKeyAwareCORSMiddleware, allow_origins=get_native_cors_origins()
-    )
+install_authentication_routes(base_app)
+install_authentication_middleware(base_app)
 
 base_app.mount('/', SPAStaticFiles(directory=directory, html=True), name='dist')
 

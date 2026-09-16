@@ -13,11 +13,17 @@ from storage.org import Org
 from storage.org_member import OrgMember
 
 if TYPE_CHECKING:
+    from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
+        ManagedLlmKeyOwnershipTarget,
+    )
     from storage.saas_settings_store import ManagedLlmKeyRotation, SaasSettingsStore
 
 
 class ManagedLlmProvisioning(Protocol):
     async def get_account_email(self, user_id: str) -> str | None: ...
+    async def repair_legacy_keys(
+        self, targets: list['ManagedLlmKeyOwnershipTarget']
+    ) -> dict[str, int | list[dict[str, str]]]: ...
     async def prepare_settings_key(
         self,
         session: AsyncSession,
@@ -55,6 +61,17 @@ class KeycloakManagedLlmProvisioning:
 
         account = await get_auth_services().accounts.get_account_info(user_id)
         return account.email if account is not None else None
+
+    async def repair_legacy_keys(
+        self, targets: list['ManagedLlmKeyOwnershipTarget']
+    ) -> dict[str, int | list[dict[str, str]]]:
+        from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
+            ManagedLlmKeyOwnershipProcessor,
+        )
+
+        return await ManagedLlmKeyOwnershipProcessor(
+            targets=targets
+        ).repair_legacy_keys()
 
     async def prepare_settings_key(
         self,
@@ -136,6 +153,17 @@ class OpenHandsManagedLlmProvisioning:
         if account is None:
             raise ValueError('Account is not available for provisioning')
         return account.email
+
+    async def repair_legacy_keys(
+        self, targets: list['ManagedLlmKeyOwnershipTarget']
+    ) -> dict[str, int | list[dict[str, str]]]:
+        return {
+            'verified': 0,
+            'repaired': 0,
+            'skipped': len(targets),
+            'error_count': 0,
+            'errors': [],
+        }
 
     async def prepare_settings_key(
         self,

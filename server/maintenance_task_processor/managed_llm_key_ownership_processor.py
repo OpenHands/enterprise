@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from openhands.sdk.settings import apply_agent_settings_diff
 from server.logger import logger
@@ -19,7 +19,10 @@ from storage.org_member import (
     OrgMember,
 )
 from storage.org_store import OrgStore
-from storage.saas_settings_store import managed_llm_key_config_from_model
+from storage.saas_settings_store import (
+    ManagedLlmKeyConfig,
+    managed_llm_key_config_from_model,
+)
 
 MANAGED_KEY_REPAIR_BATCH_SIZE = 25
 
@@ -35,21 +38,27 @@ class ManagedLlmKeyOwnershipProcessor(MaintenanceTaskProcessor):
     targets: list[ManagedLlmKeyOwnershipTarget]
 
     @staticmethod
-    def _effective_managed_key_config(org: Org, member: OrgMember):
+    def _effective_managed_key_config(
+        org: Org, member: OrgMember
+    ) -> ManagedLlmKeyConfig | None:
         org_settings = OrgStore.get_agent_settings_from_org(org)
         member_diff = dict(member.agent_settings_diff or {})
         member_diff.pop('mcp_config', None)
         effective_settings = apply_agent_settings_diff(org_settings, member_diff)
-        llm = getattr(effective_settings, 'llm', None)
-        if llm is None:
-            return None
+        llm = effective_settings.llm
         return managed_llm_key_config_from_model(
             llm.model,
             llm.base_url,
         )
 
-    async def __call__(self, task: MaintenanceTask) -> dict:
-        del task
+    async def __call__(
+        self, task: MaintenanceTask
+    ) -> dict[str, int | list[dict[str, str]]]:
+        from server.auth.composition import get_auth_services
+
+        return await get_auth_services().provisioning.repair_legacy_keys(self.targets)
+
+    async def repair_legacy_keys(self) -> dict[str, int | list[dict[str, str]]]:
         verified = 0
         repaired = 0
         skipped = 0
@@ -147,7 +156,7 @@ class ManagedLlmKeyOwnershipProcessor(MaintenanceTaskProcessor):
                             'Generated LiteLLM key failed ownership verification'
                         )
 
-                    member.llm_api_key = new_key
+                    member.llm_api_key = SecretStr(new_key)
                     member.has_custom_llm_api_key = False
                     member.managed_llm_key_ownership_version = (
                         MANAGED_LLM_KEY_OWNERSHIP_VERSION

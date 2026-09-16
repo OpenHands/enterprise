@@ -1,5 +1,4 @@
 import re
-from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -11,9 +10,9 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.app_server.web_client.email_change_config import (
     is_email_change_enabled,
 )
+from server.auth.browser_policy import require_cookie_identity
 from server.auth.constants import KEYCLOAK_CLIENT_ID
-from server.auth.keycloak_manager import get_keycloak_admin
-from server.auth.saas_user_auth import SaasUserAuth
+from server.auth.keycloak_manager import get_keycloak_admin, require_keycloak
 from server.constants import IS_LOCAL_ENV
 from server.routes.auth import set_response_cookie
 from server.utils.rate_limit_utils import (
@@ -27,14 +26,26 @@ from storage.user_store import UserStore
 # Email validation regex pattern
 EMAIL_REGEX = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
-api_router = APIRouter(prefix='/api/email')
+
+def require_keycloak_email() -> None:
+    try:
+        require_keycloak()
+    except RuntimeError as exc:
+        raise HTTPException(
+            403, 'Email changes and verification are unavailable without Keycloak'
+        ) from exc
+
+
+api_router = APIRouter(
+    prefix='/api/email', dependencies=[Depends(require_keycloak_email)]
+)
 
 
 class EmailUpdate(BaseModel):
     email: str
 
     @field_validator('email')
-    def validate_email(cls, v):
+    def validate_email(cls, v: str) -> str:
         if not EMAIL_REGEX.match(v):
             raise ValueError('Invalid email format')
         return v
@@ -82,7 +93,7 @@ async def update_email(
             user_id=user_id, email=email, email_verified=False
         )
 
-        user_auth = cast(SaasUserAuth, await get_user_auth(request))
+        user_auth = require_cookie_identity(await get_user_auth(request))
         await user_auth.refresh()  # refresh so access token has updated email
         user_auth.email = email
         user_auth.email_verified = False
@@ -165,7 +176,7 @@ async def resend_email_verification(
 
 @api_router.get('/verified')
 async def verified_email(request: Request):
-    user_auth = cast(SaasUserAuth, await get_user_auth(request))
+    user_auth = require_cookie_identity(await get_user_auth(request))
     await user_auth.refresh()  # refresh so access token has updated email
     user_auth.email_verified = True
     await UserStore.update_user_email(user_id=user_auth.user_id, email_verified=True)

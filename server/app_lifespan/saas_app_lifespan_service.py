@@ -9,7 +9,10 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+from types import TracebackType
+from typing import TYPE_CHECKING, ClassVar, Self
 
+from pydantic import PrivateAttr
 from sqlalchemy.exc import DBAPIError, OperationalError
 
 from openhands.analytics import get_analytics_service, init_analytics_service
@@ -17,6 +20,9 @@ from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanSe
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
 from server.constants import DEPLOYMENT_MODE, IS_FEATURE_ENV
+
+if TYPE_CHECKING:
+    from storage.org_store import OrgCondenserReconciliationResult
 
 _ORG_CONDENSER_RECONCILIATION_LOCK_ID = 865115708052677401
 _TRANSIENT_SQLSTATES = {
@@ -58,6 +64,15 @@ def _is_transient_reconciliation_error(exc: BaseException) -> bool:
     )
 
 
+def _require_supported_auth_mode() -> None:
+    from server.auth.auth_config import ENABLE_KEYCLOAK
+
+    if not ENABLE_KEYCLOAK:
+        raise RuntimeError(
+            'Password authentication is not available in this release; keep ENABLE_KEYCLOAK=true'
+        )
+
+
 class SaasAppLifespanService(AppLifespanService):
     """Lifespan service for the SaaS server.
 
@@ -65,14 +80,16 @@ class SaasAppLifespanService(AppLifespanService):
     On exit: calls ``analytics_service.shutdown()`` to flush any buffered events.
     """
 
-    async def __aenter__(self) -> SaasAppLifespanService:
-        from server.auth.auth_config import ENABLE_KEYCLOAK
+    supports_native_auth: ClassVar[bool] = True
+    _native_maintenance_task: asyncio.Task[None] | None = PrivateAttr(default=None)
 
-        if not ENABLE_KEYCLOAK:
-            raise RuntimeError(
-                'Password authentication is not available in this release; keep ENABLE_KEYCLOAK=true'
-            )
+    async def __aenter__(self) -> Self:
+        from server.auth.server_wiring import start_authentication_server
 
+        _require_supported_auth_mode()
+
+        # Migrations precede startup; the selected installation initializes once.
+        self._native_maintenance_task = await start_authentication_server()
         # OHE must not initialize telemetry when a legacy key is configured.
         api_key = (
             ''
@@ -151,7 +168,7 @@ class SaasAppLifespanService(AppLifespanService):
         *,
         max_tokens: int,
         overwrite_existing: bool,
-    ):
+    ) -> OrgCondenserReconciliationResult:
         from sqlalchemy import text
 
         from storage.database import a_session_maker
@@ -183,7 +200,15 @@ class SaasAppLifespanService(AppLifespanService):
                 raise TransientReconciliationError from exc
             raise
 
-    async def __aexit__(self, exc_type, exc_value, traceback):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if self._native_maintenance_task is not None:
+            self._native_maintenance_task.cancel()
+            await asyncio.gather(self._native_maintenance_task, return_exceptions=True)
         try:
             svc = get_analytics_service()
             if svc is not None:

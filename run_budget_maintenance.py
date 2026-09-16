@@ -67,6 +67,9 @@ def enqueue_budget_tasks(batch_size: int = BATCH_SIZE) -> int:
 
 
 def main() -> None:
+    from server.auth.bootstrap import verify_auth_installation
+
+    asyncio.run(verify_auth_installation())
     total = enqueue_budget_tasks()
     if total:
         logger.info('Enqueued org budget maintenance tasks', extra={'orgs': total})

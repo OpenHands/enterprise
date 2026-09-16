@@ -2,7 +2,7 @@
 
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
@@ -16,7 +16,7 @@ from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.user_auth import user_auth as user_auth_module
-from server import middleware
+from server import config, middleware
 from server.auth import (
     account_lookup,
     auth_config,
@@ -32,7 +32,7 @@ from server.auth.browser_policy import OpenHandsBrowserPolicy
 from server.auth.native_types import SessionFactory
 from server.auth.saas_user_auth import SaasUserAuth
 from server.routes import auth, native_auth
-from server.services import native_auth_service
+from server.services import native_auth_service, native_integration_auth
 from storage import api_key_store, role_store, user_store
 from storage.api_key_store import ApiKeyStore
 from storage.native_auth import AuthAccount
@@ -54,12 +54,14 @@ async def native_runtime(
 ) -> AsyncIterator[NativeRuntime]:
     for module in (
         auth_config,
+        config,
         keycloak_manager,
         auth,
     ):
         monkeypatch.setattr(module, 'ENABLE_KEYCLOAK', False)
     composition.get_auth_services.cache_clear()
     monkeypatch.setattr(auth_config, 'AUTH_MODE', 'native')
+    monkeypatch.setattr(config, 'AUTH_MODE', 'native')
     monkeypatch.setenv('OH_WEB_URL', ORIGIN)
     monkeypatch.setenv('SUPERADMIN_EMAIL', 'native@example.com')
     monkeypatch.setenv('SUPERADMIN_PASSWORD', PASSWORD)
@@ -81,6 +83,10 @@ async def native_runtime(
     monkeypatch.setattr(native_auth, 'get_native_auth_service', lambda: service)
     monkeypatch.setattr(
         openhands_request_auth, 'get_native_auth_service', lambda: service
+    )
+    # Jira route collection may import this function before the fixture runs.
+    monkeypatch.setattr(
+        native_integration_auth, 'get_native_auth_service', lambda: service
     )
     # The migrated template intentionally clears seeded role/config rows.
     async with async_session_maker() as session, session.begin():
@@ -336,6 +342,26 @@ async def test_password_tos_acceptance_needs_no_keycloak_token_interface(
 
 
 @pytest.mark.asyncio
+async def test_native_token_manager_rejects_unsupported_calls_before_legacy_catches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(keycloak_manager, 'ENABLE_KEYCLOAK', False)
+    from server.auth.token_manager import TokenManager
+
+    with (
+        patch.object(keycloak_manager, 'KeycloakOpenID') as openid,
+        patch.object(keycloak_manager, 'KeycloakAdmin') as admin,
+    ):
+        manager = TokenManager()
+        with pytest.raises(RuntimeError, match='disabled'):
+            await manager.get_keycloak_tokens('code', ORIGIN)
+        with pytest.raises(RuntimeError, match='disabled'):
+            await manager.disable_keycloak_user('user')
+        openid.assert_not_called()
+        admin.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'path',
     [
@@ -454,6 +480,149 @@ async def test_native_explicit_membership_acceptance_precedes_tos_but_keeps_csrf
             headers={'Origin': ORIGIN, 'X-CSRF-Token': await get_csrf_token(client)},
         )
         assert accepted.status_code == 200
+
+
+async def test_native_integration_oauth_is_bound_to_current_browser_session(
+    native_runtime: NativeRuntime,
+) -> None:
+    from server.services.native_integration_auth import (
+        native_integration_session,
+        verify_native_integration_session,
+    )
+
+    _, login, api_key = native_runtime
+    app = native_app()
+
+    @app.post('/integration/jira/workspaces/link')
+    async def start(request: Request) -> dict[str, str | None]:
+        return {
+            'session_id': await native_integration_session(
+                request, str(login.principal.account_id)
+            )
+        }
+
+    @app.get('/integration/jira/callback')
+    async def callback(request: Request) -> dict[str, bool]:
+        await verify_native_integration_session(
+            request,
+            {
+                'keycloak_user_id': str(login.principal.account_id),
+                'native_session_id': str(login.principal.session_id),
+                'operation_type': 'workspace_link',
+            },
+        )
+        return {'linked': True}
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url=ORIGIN,
+        cookies={'openhands_session': login.token},
+    ) as client:
+        started = await client.post(
+            '/integration/jira/workspaces/link',
+            headers={'Origin': ORIGIN, 'X-CSRF-Token': await get_csrf_token(client)},
+        )
+        assert started.status_code == 200
+        assert started.json()['session_id'] == str(login.principal.session_id)
+        accepted = await client.get('/integration/jira/callback')
+        assert accepted.status_code == 200
+        invalid = await client.get(
+            '/integration/jira/callback', headers={'Authorization': 'Bearer invalid'}
+        )
+        assert invalid.status_code == 401
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=ORIGIN
+    ) as client:
+        without_browser = await client.get(
+            '/integration/jira/callback', headers={'Authorization': f'Bearer {api_key}'}
+        )
+        assert without_browser.status_code == 403
+
+
+@pytest.mark.parametrize('kind', ['jira', 'jira_dc'])
+async def test_native_jira_managers_resolve_local_account_and_reject_disabled(
+    native_runtime: NativeRuntime,
+    async_session_maker: SessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    from unittest.mock import MagicMock
+
+    from integrations.jira import jira_manager
+    from integrations.jira_dc import jira_dc_manager
+    from server.auth import token_manager
+
+    _, login, _ = native_runtime
+    account_id = login.principal.account_id
+    from integrations.jira.jira_payload import JiraEventType, JiraWebhookPayload
+    from openhands.app_server.user_auth.user_auth import UserAuth
+    from storage.jira_dc_user import JiraDcUser
+    from storage.jira_user import JiraUser
+    from storage.jira_workspace import JiraWorkspace
+
+    store = MagicMock()
+    linked: JiraUser | JiraDcUser
+    authenticate: Callable[
+        [], Awaitable[tuple[JiraUser | JiraDcUser | None, UserAuth | None]]
+    ]
+    if kind == 'jira':
+        linked = JiraUser(
+            keycloak_user_id=str(account_id),
+            jira_user_id='atlassian-user',
+            jira_workspace_id=17,
+            status='active',
+        )
+        monkeypatch.setattr(jira_manager, 'JIRA_ENABLE_OAUTH', False)
+        jira = jira_manager.JiraManager(token_manager.TokenManager())
+        jira.integration_store = store
+        monkeypatch.setattr(jira, '_send_error_from_payload', AsyncMock())
+        payload = JiraWebhookPayload(
+            event_type=JiraEventType.LABELED_TICKET,
+            raw_event='jira:issue_updated',
+            issue_id='42',
+            issue_key='NATIVE-42',
+            user_email='NATIVE@example.com',
+            display_name='Native User',
+            account_id='atlassian-user',
+            workspace_name='native',
+            base_api_url='https://native.atlassian.net',
+        )
+        workspace = JiraWorkspace(id=17)
+
+        async def authenticate_jira() -> tuple[JiraUser | None, UserAuth | None]:
+            return await jira._authenticate_user(payload, workspace)
+
+        authenticate = authenticate_jira
+    else:
+        linked = JiraDcUser(
+            keycloak_user_id=str(account_id),
+            jira_dc_user_id='jira-user',
+            jira_dc_workspace_id=17,
+            status='active',
+        )
+        monkeypatch.setattr(jira_dc_manager, 'JIRA_DC_ENABLE_OAUTH', False)
+        jira_dc = jira_dc_manager.JiraDcManager(token_manager.TokenManager())
+        jira_dc.integration_store = store
+
+        async def authenticate_jira_dc() -> tuple[JiraDcUser | None, UserAuth | None]:
+            return await jira_dc.authenticate_user(
+                'NATIVE@example.com', 'jira-user', 17
+            )
+
+        authenticate = authenticate_jira_dc
+    store.get_active_user_by_keycloak_id_and_workspace = AsyncMock(return_value=linked)
+
+    linked_user, auth = await authenticate()
+    assert linked_user is linked and type(auth) is SaasUserAuth
+    assert await auth.get_user_id() == str(account_id)
+    store.get_active_user_by_keycloak_id_and_workspace.assert_awaited_once_with(
+        str(account_id), 17
+    )
+    async with async_session_maker() as session, session.begin():
+        await session.execute(
+            update(User).where(User.id == account_id).values(is_disabled=True)
+        )
+    assert await authenticate() == (None, None)
 
 
 @pytest.mark.asyncio
