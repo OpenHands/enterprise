@@ -532,9 +532,6 @@ async def test_paged_member_listing_offers_the_remaining_rows(async_session_make
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='pins search_never_matches_beyond_literal_term — fails on current code'
-)
 async def test_member_search_never_matches_beyond_the_literal_term(
     async_session_maker,
 ):

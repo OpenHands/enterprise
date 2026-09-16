@@ -247,9 +247,15 @@ class OrgMemberStore:
                 .filter(OrgMember.org_id == org_id)
             )
 
-            # Apply email filter if provided
+            # Apply email filter if provided. A metacharacter typed into the members
+            # search box must match itself rather than widen the filter to the org.
             if email_filter:
-                query = query.filter(User.email.ilike(f'%{email_filter}%'))
+                escaped = (
+                    email_filter.replace('\\', '\\\\')
+                    .replace('%', '\\%')
+                    .replace('_', '\\_')
+                )
+                query = query.filter(User.email.ilike(f'%{escaped}%', escape='\\'))
 
             query = query.order_by(OrgMember.user_id).offset(offset).limit(limit + 1)
 
