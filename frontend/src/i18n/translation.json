@@ -29588,6 +29588,9 @@
   "AUTH$ACTIVE": {
     "en": "Active"
   },
+  "AUTH$ADMIN_ACTION_HELP": {
+    "en": "This changes access to the entire application. The server protects the last active superadmin."
+  },
   "AUTH$BACK_TO_LOGIN": {
     "en": "Back to sign in"
   },
@@ -29599,6 +29602,9 @@
   },
   "AUTH$CLOSE": {
     "en": "Close"
+  },
+  "AUTH$CONFIRM": {
+    "en": "Confirm"
   },
   "AUTH$CONFIRM_IDENTITY": {
     "en": "Confirm identity"
@@ -29630,8 +29636,17 @@
   "AUTH$CURRENT_PASSWORD": {
     "en": "Current password"
   },
+  "AUTH$DELETE": {
+    "en": "Permanently delete account"
+  },
   "AUTH$DELETED": {
     "en": "Permanently deleted"
+  },
+  "AUTH$DELETE_HELP": {
+    "en": "This permanently deletes the account and its access. The account cannot sign in again."
+  },
+  "AUTH$DISABLE": {
+    "en": "Disable account"
   },
   "AUTH$DISABLED": {
     "en": "Disabled"
@@ -29642,6 +29657,9 @@
   "AUTH$EMAIL_PASSWORD_METHOD": {
     "en": "Email and password"
   },
+  "AUTH$ENABLE": {
+    "en": "Enable account"
+  },
   "AUTH$EXISTING_ACCOUNT": {
     "en": "This account already exists. Sign in to accept the invitation."
   },
@@ -29650,6 +29668,9 @@
   },
   "AUTH$EXPIRES": {
     "en": "Expires {{date}}"
+  },
+  "AUTH$GRANT_ADMIN": {
+    "en": "Grant superadmin"
   },
   "AUTH$INVITATIONS": {
     "en": "Account invitations"
@@ -29731,6 +29752,9 @@
   },
   "AUTH$REVOKED": {
     "en": "Revoked"
+  },
+  "AUTH$REVOKE_ADMIN": {
+    "en": "Revoke superadmin"
   },
   "AUTH$SELECT_ROLE": {
     "en": "Select a role"

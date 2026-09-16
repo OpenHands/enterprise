@@ -5,7 +5,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRoutesStub } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AdminUsers from "#/routes/admin-users";
-import { NativeAuthService, NativeAccount } from "#/api/native-auth-service/native-auth-service.api";
+import { NativeAuthService, NativeAuthError, NativeAccount } from "#/api/native-auth-service/native-auth-service.api";
 import { useSettingsNavItems } from "#/hooks/use-settings-nav-items";
 
 // Exercise the controller's approved selections; the shared autocomplete is covered in browser QA.
@@ -102,4 +102,42 @@ describe("native Users administration", () => {
     expect(screen.queryByDisplayValue("https://app.test/password-reset#token=only-once")).not.toBeInTheDocument();
   });
 
+  it("reports a rejected last-administrator change after confirmation", async () => {
+    vi.spyOn(NativeAuthService, "profile").mockResolvedValue({ id: "admin", global_permissions: ["manage_users"] });
+    vi.spyOn(NativeAuthService, "accounts").mockResolvedValue({ items: [account], total: 1 });
+    vi.spyOn(NativeAuthService, "account").mockResolvedValue(account);
+    vi.spyOn(NativeAuthService, "invitations").mockResolvedValue({ items: [], total: 0 });
+    vi.spyOn(NativeAuthService, "invitationOrganizations").mockResolvedValue({ items: [], total: 0 });
+    vi.spyOn(NativeAuthService, "roles").mockResolvedValue([]);
+    const superadmins = vi.spyOn(NativeAuthService, "superadmins");
+    const lifecycle = vi.spyOn(NativeAuthService, "lifecycle").mockRejectedValue(new NativeAuthError(409, "Cannot remove the last active superadmin"));
+    mount(AdminUsers);
+    fireEvent.click(await screen.findByRole("button", { name: "member@example.com" }));
+    fireEvent.click(await screen.findByRole("button", { name: "AUTH$DISABLE" }));
+    expect(lifecycle).not.toHaveBeenCalled();
+    expect(superadmins).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "AUTH$GRANT_ADMIN" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "AUTH$CONFIRM" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cannot remove the last active superadmin");
+    expect(lifecycle).toHaveBeenCalledWith({ id: "account-id", action: "disable" });
+  });
+
+  it("requires administrator-management permission and confirmation to grant access", async () => {
+    vi.spyOn(NativeAuthService, "profile").mockResolvedValue({ id: "admin", global_permissions: ["manage_users", "manage_super_admins"] });
+    vi.spyOn(NativeAuthService, "accounts").mockResolvedValue({ items: [account], total: 1 });
+    vi.spyOn(NativeAuthService, "account").mockResolvedValue(account);
+    vi.spyOn(NativeAuthService, "invitations").mockResolvedValue({ items: [], total: 0 });
+    vi.spyOn(NativeAuthService, "invitationOrganizations").mockResolvedValue({ items: [], total: 0 });
+    vi.spyOn(NativeAuthService, "roles").mockResolvedValue([]);
+    vi.spyOn(NativeAuthService, "superadmins").mockResolvedValue({ super_admins: [{ user_id: "admin", email: null }] });
+    const grant = vi.spyOn(NativeAuthService, "setSuperadmin").mockResolvedValue(undefined);
+    mount(AdminUsers);
+    fireEvent.click(await screen.findByRole("button", { name: "member@example.com" }));
+    const button = await screen.findByRole("button", { name: "AUTH$GRANT_ADMIN" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(grant).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "AUTH$CONFIRM" }));
+    await waitFor(() => expect(grant).toHaveBeenCalledWith({ id: "account-id", enabled: true }));
+  });
 });

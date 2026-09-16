@@ -5,6 +5,7 @@ import {
   NativeAccount,
   NativeInvitation,
   NativeRole,
+  NativeSuperadmins,
   PaginatedResponse,
 } from "#/api/native-auth-service/native-auth-service.api";
 import { useCanManageUsers } from "./use-native-profile";
@@ -42,6 +43,16 @@ export function useNativeInvitations(
     enabled: canManageUsers,
   });
 }
+export function useNativeSuperadmins(): UseQueryResult<NativeSuperadmins> {
+  const { data: profile } = useCanManageUsers();
+  return useQuery({
+    queryKey: ["native-superadmins"],
+    queryFn: NativeAuthService.superadmins,
+    enabled:
+      profile?.global_permissions?.includes("manage_super_admins") === true,
+  });
+}
+
 export function useNativeRoles(): UseQueryResult<NativeRole[]> {
   const { canManageUsers } = useCanManageUsers();
   return useQuery({
