@@ -395,5 +395,56 @@ def socket_fam():
 def test_hop_by_hop_sets_cover_dangerous_headers():
     for h in ('host', 'connection', 'transfer-encoding', 'content-length'):
         assert h in _REQUEST_HOP_BY_HOP_HEADERS
-    for h in ('connection', 'transfer-encoding', 'content-length'):
+    # Response body is forwarded verbatim, so content-encoding and content-length
+    # are end-to-end and must be PRESERVED (not stripped). Only true hop-by-hop
+    # headers are stripped on the response side.
+    for h in ('connection', 'transfer-encoding', 'upgrade'):
         assert h in _RESPONSE_HOP_BY_HOP_HEADERS
+    assert 'content-encoding' not in _RESPONSE_HOP_BY_HOP_HEADERS
+    assert 'content-length' not in _RESPONSE_HOP_BY_HOP_HEADERS
+
+
+def test_compressed_response_round_trips_intact(app):
+    """A gzip-compressed upstream response must reach the client with its
+    Content-Encoding and Content-Length headers intact and body bytes
+    unchanged — the proxy forwards raw bytes, so it must not strip the
+    headers that tell the client how to decode them."""
+    import gzip
+
+    _override_user_id(app, 'user-123')
+    client = TestClient(app)
+    payload = b'{"status":"ok"}'
+    compressed = gzip.compress(payload)
+    upstream = _mock_upstream(
+        200,
+        compressed,
+        headers={
+            'content-type': 'application/json',
+            'content-encoding': 'gzip',
+            'content-length': str(len(compressed)),
+        },
+    )
+
+    with (
+        _patch_resolve('abc.prod-runtime.all-hands.dev'),
+        patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
+    ):
+        mock_client, _ctx = _mock_client(upstream)
+        mock_cls.return_value = mock_client
+
+        response = client.post(
+            '/api/cloud-proxy',
+            json={'host': CLOUD_HOST, 'method': 'GET', 'path': '/alive'},
+        )
+
+    assert response.status_code == 200
+    # The proxy forwards the raw compressed bytes unchanged; the TestClient
+    # (browser-equivalent) auto-decompresses based on the preserved
+    # Content-Encoding header, so response.content is the decoded payload.
+    assert response.content == payload
+    # Encoding + length headers preserved so the client can decode.
+    lowered = {k.lower(): v for k, v in response.headers.items()}
+    assert lowered['content-encoding'] == 'gzip'
+    assert lowered['content-length'] == str(len(compressed))
+    # And the payload actually decompresses to the original body.
+    assert gzip.decompress(compressed) == payload

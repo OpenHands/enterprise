@@ -84,11 +84,15 @@ _REQUEST_HOP_BY_HOP_HEADERS = frozenset(
     }
 )
 
+# Response body is forwarded verbatim (upstream.aiter_raw), so the headers that
+# describe that body — content-encoding and content-length — are end-to-end and
+# must be preserved. Stripping content-encoding sends compressed bytes the client
+# cannot decode; stripping content-length while also dropping transfer-encoding
+# leaves the client without a framing/length signal. Only true hop-by-hop headers
+# (RFC 9110 §7.6.1) are stripped here.
 _RESPONSE_HOP_BY_HOP_HEADERS = frozenset(
     {
         'connection',
-        'content-encoding',
-        'content-length',
         'keep-alive',
         'proxy-authenticate',
         'proxy-authorization',
