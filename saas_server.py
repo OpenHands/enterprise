@@ -46,6 +46,9 @@ from server.routes.analytics_events import analytics_events_router  # noqa: E402
 from server.routes.api_keys import api_router as api_keys_router  # noqa: E402
 from server.routes.auth import api_router, oauth_router  # noqa: E402
 from server.routes.billing import billing_router  # noqa: E402
+from server.routes.cloud_proxy import (  # noqa: E402
+    cloud_proxy_router,
+)
 from server.routes.email import api_router as email_router  # noqa: E402
 from server.routes.feature_flags import (  # noqa: E402
     feature_flag_router,
@@ -201,6 +204,9 @@ override_users_me_endpoint(base_app)
 base_app.include_router(invitation_router)  # Add routes for org invitation management
 base_app.include_router(invitation_accept_router)  # Add route for accepting invitations
 add_github_proxy_routes(base_app)
+base_app.include_router(
+    cloud_proxy_router
+)  # Proxy browser requests to per-conversation runtime hosts
 base_app.include_router(slack_router)
 if ENABLE_JIRA:
     base_app.include_router(jira_integration_router)
