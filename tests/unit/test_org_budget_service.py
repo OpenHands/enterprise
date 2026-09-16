@@ -2122,9 +2122,6 @@ async def test_user_budget_row_rejects_personal_org_without_creating_settings(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='reproduces obs:override_written_without_litellm_sync — fails on current code'
-)
 async def test_override_write_reports_failure_when_litellm_is_unreachable(
     async_session_maker, budget_org
 ):

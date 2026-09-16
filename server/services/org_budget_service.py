@@ -771,6 +771,7 @@ class OrgBudgetService:
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         await self._sync_litellm_budgets(org_id, settings, overrides)
+        self._require_applied_sync(settings)
         quint_oracle.log(
             'upsert_user_override',
             'org-budgets',
@@ -794,6 +795,7 @@ class OrgBudgetService:
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         await self._sync_litellm_budgets(org_id, settings, overrides)
+        self._require_applied_sync(settings)
         quint_oracle.log(
             'delete_user_override',
             'org-budgets',
@@ -808,6 +810,23 @@ class OrgBudgetService:
         if settings.enabled and settings.litellm_last_sync_status != 'success':
             return 'pending'
         return 'healthy' if settings.enabled else 'inactive'
+
+    @staticmethod
+    def _require_applied_sync(settings: OrgBudgetSettings) -> None:
+        """Refuse to report a cap the proxy never received.
+
+        _sync_litellm_budgets records an 'error' row and returns rather than raising,
+        so without this an override write answers 200 with the new cap while LiteLLM
+        still enforces the old one.
+        """
+        if settings.litellm_last_sync_status == 'error':
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    'The budget override was not applied to the LLM proxy: '
+                    f'{settings.litellm_last_sync_error or "sync failed"}'
+                ),
+            )
 
     async def _get_or_create_settings(self, org_id: UUID) -> OrgBudgetSettings:
         settings = await self.store.get_settings(org_id)
