@@ -10,6 +10,7 @@ from server.auth import auth_config
 
 if TYPE_CHECKING:
     from server.auth.account_lookup import AccountLookup
+    from server.auth.browser_policy import BrowserPolicy
     from server.auth.integration_link_policy import IntegrationLinkPolicy
     from server.auth.request_auth import RequestAuth
     from server.services.account_profile_provisioning import AccountProfileProvisioning
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class AuthServices:
     requests: RequestAuth
+    browser: BrowserPolicy
     integrations: IntegrationLinkPolicy
     accounts: AccountLookup
     lifecycle: LifecycleOperations
@@ -35,6 +37,7 @@ def build_auth_services() -> AuthServices:
         KeycloakAccountLookup,
         OpenHandsAccountLookup,
     )
+    from server.auth.browser_policy import KeycloakBrowserPolicy, OpenHandsBrowserPolicy
     from server.auth.integration_link_policy import (
         KeycloakIntegrationLinkPolicy,
         OpenHandsIntegrationLinkPolicy,
@@ -61,6 +64,7 @@ def build_auth_services() -> AuthServices:
     if auth_config.ENABLE_KEYCLOAK:
         return AuthServices(
             requests=KeycloakRequestAuth(),
+            browser=KeycloakBrowserPolicy(),
             integrations=KeycloakIntegrationLinkPolicy(),
             accounts=KeycloakAccountLookup(),
             lifecycle=KeycloakUserLifecycleService(),
@@ -70,6 +74,7 @@ def build_auth_services() -> AuthServices:
         )
     return AuthServices(
         requests=OpenHandsRequestAuth(),
+        browser=OpenHandsBrowserPolicy(),
         integrations=OpenHandsIntegrationLinkPolicy(),
         accounts=OpenHandsAccountLookup(),
         lifecycle=OpenHandsUserLifecycleService(),

@@ -6,6 +6,7 @@ from functools import lru_cache
 from urllib.parse import quote, unquote
 from uuid import UUID
 
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi_users.authentication.strategy.db import DatabaseStrategy
 from fastapi_users_db_sqlalchemy.access_token import SQLAlchemyAccessTokenDatabase
 from sqlalchemy import case, delete, select
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.native_password import (
     NativeAuthError,
+    normalize_email,
 )
 from server.auth.native_session import digest_token
 from server.auth.native_types import (
@@ -23,6 +25,7 @@ from server.auth.native_types import (
 )
 from server.auth.password_users import PasswordUser, PasswordUserManager
 from server.constants import DEPLOYMENT_MODE
+from server.services.native_account_service import create_profile, lock_native_lifecycle
 from storage.database import a_session_maker
 from storage.native_auth import (
     AuthAccount,
@@ -227,6 +230,60 @@ class NativeAuthService:
                 token,
                 await _redirect(session, user, return_path),
             )
+
+    async def login(
+        self,
+        email: str,
+        password: str,
+        *,
+        client_ip: str,
+        return_path: str | None = None,
+    ) -> NativeLogin:
+        try:
+            normalized = normalize_email(email)
+        except NativeAuthError:
+            normalized = 'invalid-email'
+        await self.throttle('login', client_ip, normalized)
+        async with self.sessions() as session:
+            manager = PasswordUserManager(session)
+            if normalized == 'invalid-email' or len(password.encode('utf-8')) > 4096:
+                raise NativeAuthError('Invalid email or password', 401)
+            identity = await manager.authenticate(
+                OAuth2PasswordRequestForm(username=normalized, password=password)
+            )
+        if identity is None:
+            raise NativeAuthError('Invalid email or password', 401)
+        async with self.sessions() as session, session.begin():
+            await lock_native_lifecycle(session)
+            credential = await session.scalar(
+                select(PasswordCredential)
+                .where(PasswordCredential.normalized_login_email == normalized)
+                .with_for_update()
+            )
+            if credential is None:
+                raise NativeAuthError('Invalid email or password', 401)
+            from server.services.native_account_service import email_admitted
+
+            account = await session.get(
+                AuthAccount, credential.account_id, with_for_update=True
+            )
+            user = await session.get(User, credential.account_id)
+            if account is None or account.state not in (
+                'profile_present',
+                'reonboardable',
+            ):
+                raise NativeAuthError('Invalid email or password', 401)
+            if (
+                account.normalized_email is None
+                or account.display_email is None
+                or not await email_admitted(session, account.normalized_email)
+            ):
+                raise NativeAuthError('Invalid email or password', 401)
+            if account.state == 'reonboardable' and user is None:
+                user = await create_profile(session, account, account.display_email)
+            elif account.state != 'profile_present' or user is None or user.is_disabled:
+                raise NativeAuthError('Invalid email or password', 401)
+        return await self._new_session(identity.id, return_path)
 
     @staticmethod
     async def authentication_methods(

@@ -3,6 +3,7 @@ import hmac
 import os
 import time
 import typing
+from urllib.parse import urlsplit
 
 import jwt
 import requests  # type: ignore
@@ -11,6 +12,7 @@ from fastapi import HTTPException
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.server_config.server_config import ServerConfig
 from openhands.app_server.types import AppMode
+from server.auth.auth_config import get_native_auth_settings
 from server.auth.constants import (
     AZURE_DEVOPS_CLIENT_ID,
     BITBUCKET_APP_CLIENT_ID,
@@ -27,6 +29,41 @@ from server.auth.constants import (
     RECAPTCHA_SITE_KEY,
 )
 from server.constants import DEPLOYMENT_MODE
+
+
+def get_native_cors_origins() -> list[str]:
+    """Explicit trusted browser origins, including the configured app origin."""
+    indexed = [
+        (int(name.removeprefix('OH_PERMITTED_CORS_ORIGINS_')), value)
+        for name, value in os.environ.items()
+        if name.startswith('OH_PERMITTED_CORS_ORIGINS_')
+        and name.removeprefix('OH_PERMITTED_CORS_ORIGINS_').isdigit()
+    ]
+    configured = (
+        [value for _, value in sorted(indexed)]
+        if indexed
+        else os.getenv('PERMITTED_CORS_ORIGINS', '').split(',')
+    )
+    origins = [get_native_auth_settings().app_origin]
+    for value in configured:
+        origin = value.strip().rstrip('/')
+        if not origin:
+            continue
+        parsed = urlsplit(origin)
+        if (
+            parsed.scheme not in ('http', 'https')
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or '*' in origin
+        ):
+            raise ValueError('CORS requires explicit trusted HTTP(S) origins')
+        parsed.port
+        origins.append(origin)
+    return list(dict.fromkeys(origins))
 
 
 def sign_token(payload: dict[str, object], jwt_secret: str, algorithm='HS256') -> str:

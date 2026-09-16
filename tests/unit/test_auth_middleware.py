@@ -15,8 +15,8 @@ from server.auth.auth_error import (
     NoCredentialsError,
     TokenRefreshError,
 )
+from server.auth.browser_policy import KeycloakBrowserPolicy
 from server.auth.saas_user_auth import SaasUserAuth
-from server.middleware import SetAuthCookieMiddleware
 
 
 @contextmanager
@@ -30,13 +30,14 @@ def _mock_jwt_decode(accepted_tos: bool = True):
 
 @pytest.fixture
 def middleware():
-    return SetAuthCookieMiddleware()
+    return KeycloakBrowserPolicy()
 
 
 @pytest.fixture
 def mock_request():
     request = MagicMock(spec=Request)
     request.cookies = {}
+    request.state.user_auth = None
     return request
 
 
@@ -76,7 +77,7 @@ async def test_middleware_with_cookie_no_refresh(
         mock_user_auth.auth_type = AuthType.COOKIE
 
         with patch(
-            'server.middleware.SetAuthCookieMiddleware._get_user_auth',
+            'server.auth.browser_policy.KeycloakBrowserPolicy._get_user_auth',
             return_value=mock_user_auth,
         ):
             result = await middleware(mock_request, mock_call_next)
@@ -104,10 +105,10 @@ async def test_middleware_with_cookie_and_refresh(
 
         with (
             patch(
-                'server.middleware.SetAuthCookieMiddleware._get_user_auth',
+                'server.auth.browser_policy.KeycloakBrowserPolicy._get_user_auth',
                 return_value=mock_user_auth,
             ),
-            patch('server.middleware.set_response_cookie') as mock_set_cookie,
+            patch('server.routes.auth.set_response_cookie') as mock_set_cookie,
         ):
             result = await middleware(mock_request, mock_call_next)
 
@@ -194,7 +195,7 @@ async def test_middleware_with_expired_auth_cookie(middleware, mock_request):
             side_effect=ExpiredError('Authentication token has expired')
         )
 
-        with patch('server.middleware.logger') as mock_logger:
+        with patch('server.auth.browser_policy.logger') as mock_logger:
             result = await middleware(mock_request, mock_call_next)
 
             assert isinstance(result, JSONResponse)
@@ -252,7 +253,7 @@ async def test_middleware_with_other_auth_error(middleware, mock_request):
         mock_request.cookies = {'keycloak_auth': 'test_cookie'}
         mock_call_next = AsyncMock(side_effect=AuthError('General auth error'))
 
-        with patch('server.middleware.logger') as mock_logger:
+        with patch('server.auth.browser_policy.logger') as mock_logger:
             result = await middleware(mock_request, mock_call_next)
 
             assert isinstance(result, JSONResponse)
@@ -326,7 +327,7 @@ async def test_logout_skips_keycloak_for_bearer_auth():
     revoked. Only ``AuthType.COOKIE`` sessions get logged out at
     Keycloak.
     """
-    middleware = SetAuthCookieMiddleware()
+    middleware = KeycloakBrowserPolicy()
     mock_request = MagicMock(spec=Request)
     mock_request.cookies = {}
 
@@ -336,11 +337,11 @@ async def test_logout_skips_keycloak_for_bearer_auth():
 
     with (
         patch(
-            'server.middleware.get_user_auth',
+            'server.auth.browser_policy.get_user_auth',
             new=AsyncMock(return_value=bearer_user_auth),
         ),
         patch(
-            'server.middleware.token_manager.logout', new=AsyncMock()
+            'server.auth.browser_policy.token_manager.logout', new=AsyncMock()
         ) as mock_kc_logout,
     ):
         await middleware._logout(mock_request)
@@ -355,21 +356,23 @@ async def test_logout_invokes_keycloak_for_cookie_auth():
     This is the path the middleware was originally written for; the new
     bearer-vs-cookie guard inside ``_logout`` must not regress it.
     """
-    middleware = SetAuthCookieMiddleware()
+    middleware = KeycloakBrowserPolicy()
     mock_request = MagicMock(spec=Request)
     mock_request.cookies = {'keycloak_auth': 'test_cookie'}
 
-    cookie_user_auth = MagicMock(spec=SaasUserAuth)
-    cookie_user_auth.auth_type = AuthType.COOKIE
-    cookie_user_auth.refresh_token = SecretStr('cookie-refresh-token')
+    cookie_user_auth = SaasUserAuth(
+        user_id='cookie-user',
+        refresh_token=SecretStr('cookie-refresh-token'),
+        auth_type=AuthType.COOKIE,
+    )
 
     with (
         patch(
-            'server.middleware.get_user_auth',
+            'server.auth.browser_policy.get_user_auth',
             new=AsyncMock(return_value=cookie_user_auth),
         ),
         patch(
-            'server.middleware.token_manager.logout', new=AsyncMock()
+            'server.auth.browser_policy.token_manager.logout', new=AsyncMock()
         ) as mock_kc_logout,
     ):
         await middleware._logout(mock_request)

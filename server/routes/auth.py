@@ -19,8 +19,9 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, RedirectResponse
 from keycloak.exceptions import KeycloakConnectionError
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr, TypeAdapter, with_config
 from sqlalchemy import select
+from typing_extensions import TypedDict
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.integrations.provider import (
@@ -29,10 +30,9 @@ from openhands.app_server.integrations.provider import (
     ProviderToken,
 )
 from openhands.app_server.integrations.service_types import ProviderType, TokenResponse
-from openhands.app_server.user_auth import get_access_token
-from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
+from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.auth_error import TokenRefreshError
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.composition import get_auth_services
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
@@ -42,8 +42,6 @@ from server.auth.constants import (
     ROLE_CHECK_ENABLED,
 )
 from server.auth.cookie_chunking import (
-    delete_chunked_cookie,
-    read_chunked_cookie,
     set_chunked_cookie,
 )
 from server.auth.gitlab_sync import schedule_gitlab_repo_sync
@@ -84,6 +82,14 @@ api_router = APIRouter(prefix='/api')
 oauth_router = APIRouter(prefix='/oauth')
 
 token_manager = TokenManager()
+
+
+@with_config(ConfigDict(strict=True, hide_input_in_errors=True))
+class AcceptTosBody(TypedDict, total=False):
+    redirect_url: str
+
+
+_ACCEPT_TOS_BODY = TypeAdapter(AcceptTosBody)
 
 
 async def _get_keycloak_tokens_or_unavailable(
@@ -284,7 +290,9 @@ async def keycloak_callback(
     error_description: Optional[str] = None,
     kc_action_status: Optional[str] = None,
     user_authorizer: UserAuthorizer = depends_user_authorizer(),
-):
+) -> Response:
+    if not ENABLE_KEYCLOAK:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Not found')
     # Extract redirect URL, reCAPTCHA token, invitation token, and link provider
     redirect_url, recaptcha_token, invitation_token, link_provider = (
         _extract_oauth_state(state)
@@ -754,7 +762,11 @@ async def keycloak_callback(
 
 
 @oauth_router.get('/keycloak/offline/callback')
-async def keycloak_offline_callback(code: str, state: str, request: Request):
+async def keycloak_offline_callback(
+    code: str, state: str, request: Request
+) -> Response:
+    if not ENABLE_KEYCLOAK:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Not found')
     if not code:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -810,35 +822,8 @@ async def github_dummy_callback(request: Request):
 
 
 @api_router.post('/authenticate')
-async def authenticate(request: Request):
-    try:
-        await get_access_token(request)
-        return JSONResponse(
-            status_code=status.HTTP_200_OK, content={'message': 'User authenticated'}
-        )
-    except TokenRefreshError as e:
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={'error': str(e) or e.__class__.__name__},
-        )
-    except Exception:
-        # For any error during authentication, clear the auth cookie and return 401
-        response = JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={'error': 'User is not authenticated'},
-        )
-
-        # Delete the auth cookie (and any sibling chunks) if it exists
-        keycloak_auth_cookie = read_chunked_cookie(request, 'keycloak_auth')
-        if keycloak_auth_cookie:
-            delete_chunked_cookie(
-                response,
-                'keycloak_auth',
-                domain=get_cookie_domain(),
-                samesite=get_cookie_samesite(),
-            )
-
-        return response
+async def authenticate(request: Request) -> JSONResponse:
+    return await get_auth_services().browser.authenticate(request)
 
 
 def _extract_login_inner_return_to(relative_url: str) -> str | None:
@@ -1062,30 +1047,25 @@ async def _get_post_auth_redirect(
 
 
 @api_router.post('/accept_tos')
-async def accept_tos(request: Request):
-    user_auth = cast(SaasUserAuth, await get_user_auth(request))
-    access_token = await user_auth.get_access_token()
-    refresh_token = user_auth.refresh_token
+async def accept_tos(request: Request) -> JSONResponse:
+    user_auth = await get_user_auth(request)
     user_id = await user_auth.get_user_id()
-
-    if not access_token or not refresh_token or not user_id:
-        logger.warning(
-            'accept_tos: missing authentication state',
-            extra={
-                'has_access_token': bool(access_token),
-                'has_refresh_token': bool(refresh_token),
-                'user_id': user_id,
-            },
-        )
+    if not user_id:
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={'error': 'User is not authenticated'},
         )
 
     # Get redirect URL from request body
-    body = await request.json()
+    try:
+        body = _ACCEPT_TOS_BODY.validate_python(await request.json())
+    except ValueError:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, 'Invalid request body'
+        ) from None
     web_url = get_web_url(request)
     redirect_url = body.get('redirect_url', str(web_url))
+    completion = await get_auth_services().browser.prepare_tos(request, redirect_url)
 
     # Update user settings with TOS acceptance
     accepted_tos: datetime = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -1136,24 +1116,13 @@ async def accept_tos(request: Request):
         except Exception:
             logger.exception('analytics:user_signed_up:failed', stack_info=True)
 
-    # Determine final redirect - but don't override if it's the offline token flow
-    # (the offline callback will handle post-auth redirect after storing the token)
-    is_offline_flow = 'offline' in redirect_url
-    if not is_offline_flow:
-        redirect_url = await _get_post_auth_redirect(user_id, redirect_url, web_url)
+    redirect_url = await get_auth_services().browser.tos_redirect(user_id, completion)
 
     response = JSONResponse(
         status_code=status.HTTP_200_OK, content={'redirect_url': redirect_url}
     )
 
-    set_response_cookie(
-        request=request,
-        response=response,
-        keycloak_access_token=access_token.get_secret_value(),
-        keycloak_refresh_token=refresh_token.get_secret_value(),
-        secure=True if web_url.startswith('https') else False,
-        accepted_tos=True,
-    )
+    get_auth_services().browser.complete_tos(request, response, completion)
     return response
 
 
@@ -1281,48 +1250,8 @@ async def complete_onboarding(
 
 
 @api_router.post('/logout')
-async def logout(request: Request):
-    # Always create the response object first to ensure we can return it even if errors occur
-    response = JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content={'message': 'User logged out'},
-    )
-
-    # Always delete the cookie (and any sibling chunks) regardless of what happens
-    delete_chunked_cookie(
-        response,
-        'keycloak_auth',
-        domain=get_cookie_domain(),
-        samesite=get_cookie_samesite(),
-    )
-
-    # Try to properly logout from Keycloak, but don't fail if it doesn't work.
-    #
-    # IMPORTANT: only terminate the Keycloak session when the resolved
-    # auth is the *cookie* (browser session). ``get_user_auth`` resolves
-    # bearer tokens before cookies, so a request that carries both an
-    # ``Authorization: Bearer <api-key>`` header *and* a
-    # ``keycloak_auth`` cookie would otherwise have its API-key-bound
-    # *offline_token* terminated when the user clicked "logout" in the
-    # browser. The browser intent is to drop the cookie session, not to
-    # revoke a long-lived API key. The cookie itself is always deleted
-    # above; we just must not nuke an offline session that belongs to a
-    # different auth surface.
-    try:
-        user_auth = cast(SaasUserAuth, await get_user_auth(request))
-        if (
-            user_auth
-            and user_auth.refresh_token
-            and user_auth.auth_type == AuthType.COOKIE
-        ):
-            refresh_token = user_auth.refresh_token.get_secret_value()
-            await token_manager.logout(refresh_token)
-    except Exception as e:
-        # Log any errors but don't fail the request
-        logger.debug(f'Error during logout: {str(e)}')
-        # We still want to clear the cookie and return success
-
-    return response
+async def logout(request: Request) -> JSONResponse:
+    return await get_auth_services().browser.logout(request)
 
 
 @api_router.get('/refresh-tokens', response_model=TokenResponse)
@@ -1337,6 +1266,7 @@ async def refresh_tokens(
     session_api_key = await get_session_api_key(sid)
     if session_api_key != x_session_api_key:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Forbidden')
+    await get_auth_services().browser.validate_sandbox_owner(user_id, session_api_key)
 
     logger.info(f'Refreshing token for conversation {sid}')
     provider_handler = ProviderHandler(
