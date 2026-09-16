@@ -47,9 +47,7 @@ def client(app):
     return TestClient(app)
 
 
-def _owned_sandbox(
-    host: str = CLOUD_HOST, owner: str = 'user-123'
-) -> SandboxInfo:
+def _owned_sandbox(host: str = CLOUD_HOST, owner: str = 'user-123') -> SandboxInfo:
     return SandboxInfo(
         id='sb-1',
         created_by_user_id=owner,
@@ -172,9 +170,7 @@ def test_session_key_owned_by_other_user_rejected(app):
     from fastapi import HTTPException, status
 
     client = TestClient(app)
-    with _patch_ownership(
-        None, exc=HTTPException(status.HTTP_403_FORBIDDEN)
-    ):
+    with _patch_ownership(None, exc=HTTPException(status.HTTP_403_FORBIDDEN)):
         response = client.post(
             '/api/cloud-proxy',
             json={
@@ -397,9 +393,7 @@ def test_loopback_allowed_with_local_flag(app, monkeypatch):
     client = TestClient(app)
     upstream = _mock_upstream(200, b'ok')
     with (
-        _patch_ownership(
-            _owned_sandbox(host='http://127.0.0.1:8008')
-        ),
+        _patch_ownership(_owned_sandbox(host='http://127.0.0.1:8008')),
         patch('server.routes.cloud_proxy.socket.getaddrinfo') as gai,
         patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
     ):

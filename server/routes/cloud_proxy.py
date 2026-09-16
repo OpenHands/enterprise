@@ -219,11 +219,13 @@ def _resolve_target(host: str) -> tuple[str, str, int, str]:
     """
     base = _validate_host_form(host)
     parsed = urlparse(base)
+    hostname = parsed.hostname
+    assert hostname is not None  # _validate_host_form guarantees a hostname
     allow_local = _allow_local_runtime()
     port = parsed.port or (443 if parsed.scheme == 'https' else 80)
 
     try:
-        addresses = socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
+        addresses = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise HTTPException(
             status_code=400, detail='host could not be resolved'
@@ -250,7 +252,7 @@ def _resolve_target(host: str) -> tuple[str, str, int, str]:
             )
 
     # All resolved addresses passed the filter; connect to the first one.
-    return parsed.hostname, addresses[0][4][0], port, parsed.scheme
+    return hostname, str(addresses[0][4][0]), port, parsed.scheme
 
 
 def _forward_headers(headers: dict[str, str]) -> dict[str, str]:
