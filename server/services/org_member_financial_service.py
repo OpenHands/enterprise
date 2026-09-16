@@ -91,6 +91,7 @@ class OrgMemberFinancialService:
                 next_page_id=None,
             )
 
+        spend_read_failed = False
         try:
             financial_data = await LiteLlmManager.get_team_members_financial_data(
                 str(org_id)
@@ -117,6 +118,7 @@ class OrgMemberFinancialService:
                 },
             )
             financial_data = {}
+            spend_read_failed = True
         except Exception as e:
             logger.warning(
                 'Failed to fetch financial data from LiteLLM',
@@ -127,6 +129,7 @@ class OrgMemberFinancialService:
                 },
             )
             financial_data = {}
+            spend_read_failed = True
 
         team_spend = financial_data.get('team_spend', 0) or 0
         members_financial = financial_data.get('members', {})
@@ -137,13 +140,18 @@ class OrgMemberFinancialService:
             user_id_str = str(member.user_id)
 
             user_financial = members_financial.get(user_id_str, {})
-            individual_spend = user_financial.get('spend', 0) or 0
+            individual_spend = (
+                None if spend_read_failed else (user_financial.get('spend', 0) or 0)
+            )
             max_budget = user_financial.get('max_budget')
             uses_shared_budget = user_financial.get('uses_shared_budget', False)
 
             # For shared team budgets, all members see the same remaining budget,
             # so calculate using the team's total spend rather than per-user spend.
-            if max_budget is not None:
+            if spend_read_failed:
+                # Without a spend figure the remaining budget is unknown too.
+                current_budget = None
+            elif max_budget is not None:
                 if uses_shared_budget:
                     current_budget = max(max_budget - team_spend, 0)
                 else:
@@ -192,4 +200,5 @@ class OrgMemberFinancialService:
             current_page=current_page,
             per_page=limit,
             next_page_id=next_page_id,
+            spend_status='unavailable' if spend_read_failed else 'live',
         )

@@ -772,8 +772,10 @@ class OrgMemberFinancialResponse(BaseModel):
 
     user_id: str
     email: str | None
-    lifetime_spend: float  # Total amount spent (from LiteLLM)
-    current_budget: float  # Remaining budget (max_budget - spend)
+    # None when the spend read failed: a figure the proxy never reported must not be
+    # presented as an observed zero.
+    lifetime_spend: float | None  # Total amount spent (from LiteLLM)
+    current_budget: float | None  # Remaining budget (max_budget - spend)
     max_budget: float | None  # Total allocated budget (None = unlimited)
 
 
@@ -784,6 +786,9 @@ class OrgMemberFinancialPage(BaseModel):
     current_page: int = 1
     per_page: int = 10
     next_page_id: str | None = None
+    # 'unavailable' when the spend read failed, so a caller can tell a genuine zero
+    # from a figure that was never observed.
+    spend_status: Literal['live', 'unavailable'] = 'live'
 
 
 class OrgBudgetThresholdResponse(BaseModel):
