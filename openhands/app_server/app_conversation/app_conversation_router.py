@@ -95,6 +95,7 @@ from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth import get_secrets_store, get_user_settings
 from openhands.app_server.utils.dependencies import get_dependencies
+from openhands.app_server.utils.llm import is_managed_llm_config
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
@@ -826,6 +827,11 @@ async def switch_conversation_profile(
         profile_llm,
         managed_proxy_url=LITE_LLM_API_URL,
         fallback_api_key=getattr(settings_llm, 'api_key', None),
+        fallback_is_managed_key=is_managed_llm_config(
+            getattr(settings_llm, 'model', None),
+            getattr(settings_llm, 'base_url', None),
+            managed_proxy_url=LITE_LLM_API_URL,
+        ),
     )
 
     # The agent-server's LLM registry is first-write-wins by ``usage_id``:

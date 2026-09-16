@@ -643,6 +643,128 @@ async def test_load_canonicalizes_legacy_litellm_proxy_active_llm(
 
 
 @pytest.mark.asyncio
+async def test_load_does_not_attach_custom_byor_key_to_managed_active_model(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """Regression: a member's custom BYOR key must not be attached to a managed
+    (``openhands/``) active model on load.
+
+    Activating a broken custom ("dummy") model persists the dummy key on the
+    member row with ``has_custom_llm_api_key=True``. ``_get_effective_llm_api_key``
+    then returns that dummy key as the effective key, and the old load() lifted it
+    onto the active LLM regardless of model — so the managed default model called
+    the LiteLLM proxy with the dummy key and got a 401 ("LiteLLM Virtual Key
+    expected"). A managed active model must keep its own key (or none), never a
+    BYOR key.
+    """
+    from sqlalchemy import select, update
+
+    from storage.encrypt_utils import encrypt_value
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+    decrypt_value = fixture['decrypt_value']
+
+    # Member carries a custom BYOR ("dummy") key, but the active model is managed.
+    async with async_session_maker() as session:
+        await session.execute(
+            update(OrgMember)
+            .where(OrgMember.org_id == org_id, OrgMember.user_id == admin_user_id)
+            .values(
+                has_custom_llm_api_key=True,
+                _llm_api_key=encrypt_value('dummy_model'),
+                agent_settings_diff={
+                    'llm': {'model': 'openhands/claude-opus-4-5-20251101'},
+                },
+            )
+        )
+        await session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.agent_settings.llm.model == 'openhands/claude-opus-4-5-20251101'
+    # The dummy BYOR key must NOT have been attached to the managed active model.
+    api_key = loaded.agent_settings.llm.api_key
+    secret = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
+    assert secret != 'dummy_model'
+    assert secret is None
+
+    # The member row is unchanged by the read path.
+    with session_maker() as session:
+        member = (
+            session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == org_id, OrgMember.user_id == admin_user_id
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert member is not None
+        assert member.has_custom_llm_api_key is True
+        assert decrypt_value(member._llm_api_key) == 'dummy_model'
+
+
+@pytest.mark.asyncio
+async def test_load_attaches_effective_key_to_byor_active_model(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """Sanity: a BYOR active model still receives the member's custom key.
+
+    Guards against over-correcting: the fix only stops a BYOR key from reaching a
+    *managed* model. A BYOR active model legitimately uses its custom key.
+    """
+    from sqlalchemy import update
+
+    from storage.encrypt_utils import encrypt_value
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+
+    async with async_session_maker() as session:
+        await session.execute(
+            update(OrgMember)
+            .where(OrgMember.org_id == org_id, OrgMember.user_id == admin_user_id)
+            .values(
+                has_custom_llm_api_key=True,
+                _llm_api_key=encrypt_value('customer-anthropic-key'),
+                agent_settings_diff={
+                    'llm': {
+                        'model': 'anthropic/claude-sonnet-4-5-20250929',
+                        'base_url': 'https://api.anthropic.com',
+                    },
+                },
+            )
+        )
+        await session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.agent_settings.llm.model == 'anthropic/claude-sonnet-4-5-20250929'
+    api_key = loaded.agent_settings.llm.api_key
+    secret = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
+    assert secret == 'customer-anthropic-key'
+
+
+@pytest.mark.asyncio
 async def test_load_canonicalizes_legacy_litellm_proxy_llm_profiles(
     async_session_maker, org_with_multiple_members_fixture
 ):

@@ -112,6 +112,7 @@ from openhands.app_server.utils.docker_utils import (
 )
 from openhands.app_server.utils.git import ensure_valid_git_branch_name
 from openhands.app_server.utils.import_utils import get_impl
+from openhands.app_server.utils.llm import is_managed_llm_config
 from openhands.app_server.utils.llm_metadata import (
     get_llm_metadata,
     should_set_litellm_extra_body,
@@ -1092,6 +1093,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     user, settings_llm
                 )
             fallback_api_key = getattr(settings_llm, 'api_key', None)
+            # The active settings LLM's key is only a safe fallback for managed
+            # profiles when that LLM is itself managed. A BYOR/custom active
+            # model's key must not be handed to a managed profile (it would be
+            # sent to the LiteLLM proxy and rejected with a 401).
+            fallback_is_managed_key = is_managed_llm_config(
+                getattr(settings_llm, 'model', None),
+                getattr(settings_llm, 'base_url', None),
+                managed_proxy_url=LITE_LLM_API_URL,
+            )
         except Exception:
             _logger.exception(
                 'Failed to load profiles for sandbox %s',
@@ -1113,6 +1123,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     profile_llm,
                     managed_proxy_url=LITE_LLM_API_URL,
                     fallback_api_key=fallback_api_key,
+                    fallback_is_managed_key=fallback_is_managed_key,
                 )
                 response = await self.httpx_client.post(
                     f'{base_url}/{name}',

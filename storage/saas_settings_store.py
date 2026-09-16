@@ -227,6 +227,7 @@ class SaasSettingsStore(SettingsStore):
         org_member: OrgMember,
         merged_agent_settings: dict[str, Any],
         effective_llm_api_key: SecretStr | None,
+        effective_key_is_managed: bool = True,
         override_agent_profile_id: str | None = None,
         llm_profiles: LLMProfiles | None = None,
     ) -> tuple[dict[str, Any], str, int] | None:
@@ -306,6 +307,7 @@ class SaasSettingsStore(SettingsStore):
                             resolved.llm,
                             managed_proxy_url=LITE_LLM_API_URL,
                             fallback_api_key=effective_llm_api_key,
+                            fallback_is_managed_key=effective_key_is_managed,
                         )
                     }
                 )
@@ -431,13 +433,30 @@ class SaasSettingsStore(SettingsStore):
                 )
                 merged_agent_settings['mcp_config'] = {}
         effective_llm_api_key = self._get_effective_llm_api_key(org, org_member)
-        if effective_llm_api_key is not None:
+        # The effective key is the member/org managed virtual key only when the
+        # member isn't carrying a custom BYOR key. ``_get_effective_llm_api_key``
+        # also returns a custom key (``has_custom_llm_api_key``), which is the
+        # correct credential for a BYOR active model — but it must never be
+        # attached to a *managed* active model: handing a third-party key to the
+        # LiteLLM proxy is what produced the "LiteLLM Virtual Key expected" 401
+        # after a user activated a broken custom model. A managed active model
+        # keeps its own stored key (runtime rotation refresh heals a stale one)
+        # rather than being poisoned with the BYOR key.
+        effective_key_is_managed = not org_member.has_custom_llm_api_key
+        active_llm = merged_agent_settings.get('llm') or {}
+        active_is_managed = managed_llm_key_config_from_model(
+            active_llm.get('model'), active_llm.get('base_url')
+        )
+        if (
+            effective_llm_api_key is not None
+            and (effective_key_is_managed or active_is_managed is None)
+        ):
             merged_agent_settings.setdefault('llm', {})['api_key'] = (
                 effective_llm_api_key.get_secret_value()
                 if isinstance(effective_llm_api_key, SecretStr)
                 else effective_llm_api_key
             )
-        else:
+        elif effective_llm_api_key is None:
             logger.warning(
                 f'No effective LLM API key found for user {self.user_id} '
                 f'in org {org_id} (org key and member key are both unset)'
@@ -574,6 +593,7 @@ class SaasSettingsStore(SettingsStore):
                 org_member,
                 merged_agent_settings,
                 effective_llm_api_key,
+                effective_key_is_managed,
                 override_agent_profile_id,
                 live_llm_profiles,
             )
