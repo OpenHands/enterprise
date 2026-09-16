@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from run_budget_maintenance import _eligible_budget_org_ids
 from server.constants import ORG_SETTINGS_VERSION
@@ -2622,3 +2623,70 @@ async def test_settings_loader_prefers_baseline_rows_and_imports_json_only_keys(
     assert first_rows['a'][:2] == (5.0, 'live_rollover')
     assert first_rows['b'][:2] == (2.0, 'imported')
     assert second_rows == first_rows
+
+
+@pytest.mark.asyncio
+async def test_settings_row_is_created_once_when_two_requests_race(
+    async_session_maker, budget_org
+):
+    # _get_or_create_settings reads the settings row and then inserts one with no lock
+    # and no ON CONFLICT, while OrgBudgetSettings.org_id is unique. Two requests that
+    # both find no row -- the maintenance CronJob covering an org for the first time
+    # while an admin opens its budgets page -- both insert, and the loser dies on the
+    # unique constraint instead of using the row the winner just created.
+    async with async_session_maker() as first, async_session_maker() as second:
+        first_service = OrgBudgetService(first)
+        second_service = OrgBudgetService(second)
+
+        snapshot = _snapshot(team_spend=0.0)
+        snapshot_result = BudgetFinancialSnapshotResult(snapshot=snapshot, status='live')
+        already_read = []
+        real_get_settings = second_service.store.get_settings
+
+        async def _second_request_read(org_id):
+            # This request looked before the other one had inserted, so it sees no row.
+            if not already_read:
+                already_read.append(org_id)
+                return None
+            return await real_get_settings(org_id)
+
+        with (
+            patch.object(
+                first_service, '_get_financial_snapshot', AsyncMock(return_value=snapshot_result)
+            ),
+            patch.object(first_service, '_sync_litellm_budgets', AsyncMock()),
+            patch.object(
+                second_service, '_get_financial_snapshot', AsyncMock(return_value=snapshot_result)
+            ),
+            patch.object(second_service, '_sync_litellm_budgets', AsyncMock()),
+        ):
+            # The winner creates the row and commits it.
+            await first_service.run_budget_maintenance(budget_org.id)
+            await first.commit()
+
+            with patch.object(
+                second_service.store,
+                'get_settings',
+                AsyncMock(side_effect=_second_request_read),
+            ):
+                # The loser proceeds on its stale read and tries to create it again.
+                try:
+                    await second_service.run_budget_maintenance(budget_org.id)
+                    await second.commit()
+                except IntegrityError as exc:
+                    pytest.fail(
+                        f'second request crashed creating a settings row that already '
+                        f'exists: {exc}'
+                    )
+
+    async with async_session_maker() as check:
+        rows = (
+            await check.execute(
+                select(OrgBudgetSettings).where(
+                    OrgBudgetSettings.org_id == budget_org.id
+                )
+            )
+        ).scalars().all()
+
+    # A settings row is created only when the org has none.
+    assert len(rows) == 1

@@ -10,6 +10,7 @@ from uuid import UUID
 import httpx
 from fastapi import HTTPException, Request, status
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.services.injector import Injector, InjectorState
@@ -815,12 +816,24 @@ class OrgBudgetService:
             await self._hydrate_cycle_baselines(settings)
             return settings
 
-        return await self.store.create_settings(
-            org_id=org_id,
-            reset_day=1,
-            cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
-            thresholds=DEFAULT_THRESHOLDS,
-        )
+        # org_id is unique and the insert takes no lock, so two requests that both
+        # read no row -- the maintenance job reaching an org for the first time while
+        # an admin opens its budgets page -- both get here. Insert inside a savepoint
+        # so losing the race costs a re-read rather than failing the request.
+        try:
+            async with self.db_session.begin_nested():
+                settings = await self.store.create_settings(
+                    org_id=org_id,
+                    reset_day=1,
+                    cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
+                    thresholds=DEFAULT_THRESHOLDS,
+                )
+        except IntegrityError:
+            settings = await self.store.get_settings(org_id)
+            if settings is None:
+                raise
+            await self._hydrate_cycle_baselines(settings)
+        return settings
 
     async def _hydrate_cycle_baselines(self, settings: OrgBudgetSettings) -> None:
         """Make the baseline table authoritative for the current cycle.
