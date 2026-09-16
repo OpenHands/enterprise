@@ -87,7 +87,9 @@ class TestAcceptInvitationPostEndpoint:
         return TestClient(auth_app)
 
     @pytest.mark.asyncio
-    async def test_post_accept_success_returns_org_details(self, auth_client):
+    async def test_post_accept_success_returns_org_details(
+        self, auth_client: MagicMock
+    ) -> None:
         """Test that successful POST acceptance returns organization details."""
         from uuid import UUID
 
@@ -103,7 +105,7 @@ class TestAcceptInvitationPostEndpoint:
 
         with (
             patch(
-                'server.routes.org_invitations.OrgInvitationService.accept_invitation',
+                'server.services.org_invitation_service.OrgInvitationService.accept_invitation',
                 new_callable=AsyncMock,
                 return_value=mock_invitation,
             ),
@@ -131,10 +133,12 @@ class TestAcceptInvitationPostEndpoint:
             assert data['role'] == 'member'
 
     @pytest.mark.asyncio
-    async def test_post_accept_expired_returns_400(self, auth_client):
+    async def test_post_accept_expired_returns_400(
+        self, auth_client: MagicMock
+    ) -> None:
         """Test that expired invitation returns 400 with detail."""
         with patch(
-            'server.routes.org_invitations.OrgInvitationService.accept_invitation',
+            'server.services.org_invitation_service.OrgInvitationService.accept_invitation',
             new_callable=AsyncMock,
             side_effect=InvitationExpiredError(),
         ):
@@ -147,10 +151,12 @@ class TestAcceptInvitationPostEndpoint:
             assert response.json()['detail'] == 'invitation_expired'
 
     @pytest.mark.asyncio
-    async def test_post_accept_invalid_returns_400(self, auth_client):
+    async def test_post_accept_invalid_returns_400(
+        self, auth_client: MagicMock
+    ) -> None:
         """Test that invalid invitation returns 400 with detail."""
         with patch(
-            'server.routes.org_invitations.OrgInvitationService.accept_invitation',
+            'server.services.org_invitation_service.OrgInvitationService.accept_invitation',
             new_callable=AsyncMock,
             side_effect=InvitationInvalidError(),
         ):
@@ -163,10 +169,12 @@ class TestAcceptInvitationPostEndpoint:
             assert response.json()['detail'] == 'invitation_invalid'
 
     @pytest.mark.asyncio
-    async def test_post_accept_already_member_returns_409(self, auth_client):
+    async def test_post_accept_already_member_returns_409(
+        self, auth_client: MagicMock
+    ) -> None:
         """Test that already member error returns 409 with detail."""
         with patch(
-            'server.routes.org_invitations.OrgInvitationService.accept_invitation',
+            'server.services.org_invitation_service.OrgInvitationService.accept_invitation',
             new_callable=AsyncMock,
             side_effect=UserAlreadyMemberError(),
         ):
@@ -179,10 +187,12 @@ class TestAcceptInvitationPostEndpoint:
             assert response.json()['detail'] == 'already_member'
 
     @pytest.mark.asyncio
-    async def test_post_accept_email_mismatch_returns_403(self, auth_client):
+    async def test_post_accept_email_mismatch_returns_403(
+        self, auth_client: MagicMock
+    ) -> None:
         """Test that email mismatch error returns 403 with detail."""
         with patch(
-            'server.routes.org_invitations.OrgInvitationService.accept_invitation',
+            'server.services.org_invitation_service.OrgInvitationService.accept_invitation',
             new_callable=AsyncMock,
             side_effect=EmailMismatchError(),
         ):
@@ -236,8 +246,8 @@ class TestCreateInvitationBatchEndpoint:
 
     @pytest.mark.asyncio
     async def test_batch_create_returns_successful_invitations(
-        self, batch_client, mock_invitation
-    ):
+        self, batch_client: MagicMock, mock_invitation: MagicMock
+    ) -> None:
         """Test that batch creation returns successful invitations."""
         mock_invitation_2 = MagicMock()
         mock_invitation_2.id = 2
@@ -255,7 +265,7 @@ class TestCreateInvitationBatchEndpoint:
                 new_callable=AsyncMock,
             ),
             patch(
-                'server.routes.org_invitations.OrgInvitationService.create_invitations_batch',
+                'server.services.org_invitation_service.OrgInvitationService.create_invitations_batch',
                 new_callable=AsyncMock,
                 return_value=([mock_invitation, mock_invitation_2], []),
             ),
@@ -275,8 +285,8 @@ class TestCreateInvitationBatchEndpoint:
 
     @pytest.mark.asyncio
     async def test_batch_create_returns_partial_success(
-        self, batch_client, mock_invitation
-    ):
+        self, batch_client: MagicMock, mock_invitation: MagicMock
+    ) -> None:
         """Test that batch creation returns both successful and failed invitations."""
         failed_emails = [('existing@example.com', 'User is already a member')]
 
@@ -286,7 +296,7 @@ class TestCreateInvitationBatchEndpoint:
                 new_callable=AsyncMock,
             ),
             patch(
-                'server.routes.org_invitations.OrgInvitationService.create_invitations_batch',
+                'server.services.org_invitation_service.OrgInvitationService.create_invitations_batch',
                 new_callable=AsyncMock,
                 return_value=([mock_invitation], failed_emails),
             ),
@@ -307,7 +317,9 @@ class TestCreateInvitationBatchEndpoint:
             assert 'already a member' in data['failed'][0]['error']
 
     @pytest.mark.asyncio
-    async def test_batch_create_permission_denied_returns_403(self, batch_client):
+    async def test_batch_create_permission_denied_returns_403(
+        self, batch_client: MagicMock
+    ) -> None:
         """Test that permission denied returns 403 for entire batch."""
         from server.routes.org_invitation_models import InsufficientPermissionError
 
@@ -317,7 +329,7 @@ class TestCreateInvitationBatchEndpoint:
                 new_callable=AsyncMock,
             ),
             patch(
-                'server.routes.org_invitations.OrgInvitationService.create_invitations_batch',
+                'server.services.org_invitation_service.OrgInvitationService.create_invitations_batch',
                 new_callable=AsyncMock,
                 side_effect=InsufficientPermissionError(
                     'Only owners and admins can invite'
@@ -333,7 +345,9 @@ class TestCreateInvitationBatchEndpoint:
             assert 'owners and admins' in response.json()['detail']
 
     @pytest.mark.asyncio
-    async def test_batch_create_invalid_role_returns_400(self, batch_client):
+    async def test_batch_create_invalid_role_returns_400(
+        self, batch_client: MagicMock
+    ) -> None:
         """Test that invalid role returns 400."""
         with (
             patch(
@@ -341,7 +355,7 @@ class TestCreateInvitationBatchEndpoint:
                 new_callable=AsyncMock,
             ),
             patch(
-                'server.routes.org_invitations.OrgInvitationService.create_invitations_batch',
+                'server.services.org_invitation_service.OrgInvitationService.create_invitations_batch',
                 new_callable=AsyncMock,
                 side_effect=ValueError('Invalid role: superuser'),
             ),

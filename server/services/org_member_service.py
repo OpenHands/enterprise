@@ -3,6 +3,7 @@
 from uuid import UUID
 
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.composition import get_auth_services
 from server.constants import ROLE_ADMIN, ROLE_OWNER
 from server.routes.org_models import (
     CannotModifySelfError,
@@ -55,7 +56,7 @@ class OrgMemberService:
             raise RoleNotFoundError(org_member.role_id)
 
         # Get user email and any instance-level super role.
-        user = await UserStore.get_user_by_id(str(user_id))
+        user = await get_auth_services().accounts.get_user_by_id(str(user_id))
         email = user.email if user and user.email else ''
         super_role = (
             await RoleStore.get_role_by_id(user.role_id)
@@ -88,7 +89,7 @@ class OrgMemberService:
         if role is None:
             raise RoleNotFoundError(org_member.role_id)
 
-        user = await UserStore.get_user_by_id(str(user_id))
+        user = await get_auth_services().accounts.get_user_by_id(str(user_id))
 
         return OrgMemberResponse(
             user_id=str(org_member.user_id),
@@ -246,7 +247,7 @@ class OrgMemberService:
         if not success:
             return False, 'removal_failed'
 
-        user = await UserStore.get_user_by_id(str(target_user_id))
+        user = await get_auth_services().accounts.get_user_by_id(str(target_user_id))
         if user and user.current_org_id == org_id:
             # Fall back to the user's personal workspace (org.id == user.id)
             await UserStore.update_current_org(str(target_user_id), target_user_id)
@@ -329,7 +330,9 @@ class OrgMemberService:
             raise RoleNotFoundError(target_membership.role_id)
 
         if new_role_name is None:
-            user = await UserStore.get_user_by_id(str(target_user_id))
+            user = await get_auth_services().accounts.get_user_by_id(
+                str(target_user_id)
+            )
             return OrgMemberResponse(
                 user_id=str(target_membership.user_id),
                 email=user.email if user else None,
@@ -363,7 +366,7 @@ class OrgMemberService:
         if not updated_member:
             raise MemberUpdateError('Failed to update member')
 
-        user = await UserStore.get_user_by_id(str(target_user_id))
+        user = await get_auth_services().accounts.get_user_by_id(str(target_user_id))
 
         return OrgMemberResponse(
             user_id=str(updated_member.user_id),

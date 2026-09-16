@@ -46,6 +46,7 @@ from openhands.app_server.types import (
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.composition import get_auth_services
 from server.auth.constants import JIRA_ENABLE_OAUTH, JIRA_HTTP_TIMEOUT
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
@@ -292,7 +293,7 @@ class JiraManager(Manager[JiraViewInterface]):
                 return None, None
 
             jira_user = None
-            keycloak_user_id = await self.token_manager.get_user_id_from_user_email(
+            keycloak_user_id = await get_auth_services().accounts.get_user_id_by_email(
                 payload.user_email
             )
             if not keycloak_user_id:

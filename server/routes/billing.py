@@ -14,6 +14,7 @@ from sqlalchemy import select
 from integrations import stripe_service
 from openhands.analytics import get_analytics_service
 from openhands.app_server.user_auth import get_user_id
+from server.auth.composition import get_auth_services
 from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.constants import STRIPE_API_KEY
 from server.logger import logger
@@ -24,7 +25,6 @@ from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
 from storage.subscription_access import SubscriptionAccess
-from storage.user_store import UserStore
 
 stripe.api_key = STRIPE_API_KEY
 billing_router = APIRouter(prefix='/api/billing', tags=['Billing'])
@@ -252,7 +252,7 @@ async def create_checkout_session(
 
 
 @billing_router.get('/success')
-async def success_callback(session_id: str, request: Request):
+async def success_callback(session_id: str, request: Request) -> RedirectResponse:
     # We can't use the auth cookie because of SameSite=strict
     async with a_session_maker() as session:
         result = await session.execute(
@@ -283,7 +283,9 @@ async def success_callback(session_id: str, request: Request):
             )
             raise HTTPException(status.HTTP_400_BAD_REQUEST)
 
-        user = await UserStore.get_user_by_id(billing_session.user_id)
+        user = await get_auth_services().accounts.get_user_by_id(
+            billing_session.user_id
+        )
         if user is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail='User not found')
         user_team_info = await LiteLlmManager.get_user_team_info(

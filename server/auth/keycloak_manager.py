@@ -1,6 +1,7 @@
 from keycloak.keycloak_admin import KeycloakAdmin
 from keycloak.keycloak_openid import KeycloakOpenID
 
+from server.auth.auth_config import ENABLE_KEYCLOAK
 from server.auth.constants import (
     KEYCLOAK_ADMIN_PASSWORD,
     KEYCLOAK_CLIENT_ID,
@@ -20,8 +21,15 @@ logger.debug(
 _keycloak_instances: dict[bool, KeycloakOpenID] = {}
 
 
+def require_keycloak() -> None:
+    """Reject legacy identity operations before constructing any client."""
+    if not ENABLE_KEYCLOAK:
+        raise RuntimeError('Keycloak authentication is disabled')
+
+
 def get_keycloak_openid(external: bool = False) -> KeycloakOpenID:
     """Returns a singleton instance of KeycloakOpenID based on the 'external' flag."""
+    require_keycloak()
     if external not in _keycloak_instances:
         _keycloak_instances[external] = KeycloakOpenID(
             server_url=KEYCLOAK_SERVER_URL_EXT if external else KEYCLOAK_SERVER_URL,
@@ -39,6 +47,7 @@ _keycloak_admin_instances: dict[bool, KeycloakAdmin] = {}
 
 def get_keycloak_admin(external: bool = False) -> KeycloakAdmin:
     """Returns a singleton instance of KeycloakAdmin based on the 'external' flag."""
+    require_keycloak()
     if external not in _keycloak_admin_instances:
         keycloak_admin = KeycloakAdmin(
             server_url=KEYCLOAK_SERVER_URL_EXT if external else KEYCLOAK_SERVER_URL,

@@ -10,6 +10,7 @@ from uuid import UUID as parse_uuid
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.settings import ConversationSettings
+from server.auth.composition import get_auth_services
 from server.constants import ENABLE_BYOR_EXPORT, ORG_SETTINGS_VERSION
 from server.routes.org_models import (
     LiteLLMIntegrationError,
@@ -849,7 +850,7 @@ class OrgService:
             return True
 
         if org_id is None:
-            user = await UserStore.get_user_by_id(user_id)
+            user = await get_auth_services().accounts.get_user_by_id(user_id)
             if not user or not user.current_org_id:
                 return False
             org_id = user.current_org_id

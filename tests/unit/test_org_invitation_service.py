@@ -89,8 +89,8 @@ class TestAcceptInvitationEmailValidation:
 
     @pytest.mark.asyncio
     async def test_accept_invitation_user_no_email_keycloak_fallback_matches(
-        self, mock_invitation
-    ):
+        self, mock_invitation: MagicMock
+    ) -> None:
         """Test that Keycloak email is used when user has no email in database."""
         # Arrange
         user_id = UUID('87654321-4321-8765-4321-876543218765')
@@ -117,9 +117,7 @@ class TestAcceptInvitationEmailValidation:
                 'server.services.org_invitation_service.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
             ) as mock_get_user,
-            patch(
-                'server.services.org_invitation_service.TokenManager'
-            ) as mock_token_manager_class,
+            patch('server.auth.token_manager.TokenManager') as mock_token_manager_class,
             patch(
                 'server.services.org_invitation_service.OrgMemberStore.get_org_member',
                 new_callable=AsyncMock,
@@ -173,8 +171,8 @@ class TestAcceptInvitationEmailValidation:
 
     @pytest.mark.asyncio
     async def test_accept_invitation_user_no_email_keycloak_fallback_persists_email(
-        self, mock_invitation
-    ):
+        self, mock_invitation: MagicMock
+    ) -> None:
         """When User.email is NULL and Keycloak returns an email, the email is
         persisted back to the User record (normalized to snake_case) so the
         members list shows it without requiring the user to log out and back in.
@@ -208,9 +206,7 @@ class TestAcceptInvitationEmailValidation:
                 'server.services.org_invitation_service.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
             ) as mock_get_user,
-            patch(
-                'server.services.org_invitation_service.TokenManager'
-            ) as mock_token_manager_class,
+            patch('server.auth.token_manager.TokenManager') as mock_token_manager_class,
             patch(
                 'server.services.org_invitation_service.OrgMemberStore.get_org_member',
                 new_callable=AsyncMock,
@@ -265,8 +261,8 @@ class TestAcceptInvitationEmailValidation:
 
     @pytest.mark.asyncio
     async def test_accept_invitation_no_email_anywhere_raises_error(
-        self, mock_invitation
-    ):
+        self, mock_invitation: MagicMock
+    ) -> None:
         """Test that EmailMismatchError is raised when user has no email in database or Keycloak."""
         # Arrange
         user_id = UUID('87654321-4321-8765-4321-876543218765')
@@ -288,9 +284,7 @@ class TestAcceptInvitationEmailValidation:
                 'server.services.org_invitation_service.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
             ) as mock_get_user,
-            patch(
-                'server.services.org_invitation_service.TokenManager'
-            ) as mock_token_manager_class,
+            patch('server.auth.token_manager.TokenManager') as mock_token_manager_class,
         ):
             mock_get_invitation.return_value = mock_invitation
             mock_is_expired.return_value = False

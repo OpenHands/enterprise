@@ -28,6 +28,7 @@ from openhands.app_server.integrations.service_types import (
     ProviderType,
 )
 from openhands.app_server.services.jwt_service import JwtService
+from server.auth.composition import get_auth_services
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_REALM_NAME,
@@ -45,7 +46,6 @@ from storage.database import a_session_maker
 from storage.redis import get_redis_client_async
 from storage.slack_team_store import SlackTeamStore
 from storage.slack_user import SlackUser
-from storage.user_store import UserStore
 
 signature_verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
 slack_router = APIRouter(prefix='/slack')
@@ -154,7 +154,7 @@ async def keycloak_callback(
     state: str = '',
     error: str = '',
     jwt_service: JwtService = jwt_service_dependency,
-):
+) -> HTMLResponse | None:
     if not code or error:
         logger.warning(
             'problem_retrieving_keycloak_tokens',
@@ -206,7 +206,7 @@ async def keycloak_callback(
 
     user_info = await token_manager.get_user_info(keycloak_access_token)
     keycloak_user_id = user_info.sub
-    user = await UserStore.get_user_by_id(keycloak_user_id)
+    user = await get_auth_services().accounts.get_user_by_id(keycloak_user_id)
     if not user:
         return _html_response(
             title='Failed to authenticate.',
@@ -236,7 +236,7 @@ async def keycloak_callback(
         logger.error(
             f'Account linking failed, did not find slack team {team_id} for user {keycloak_user_id}'
         )
-        return
+        return None
 
     # Retrieve the display_name from slack
     client = AsyncWebClient(token=bot_access_token)

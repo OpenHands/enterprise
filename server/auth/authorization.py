@@ -39,10 +39,10 @@ from fastapi import Depends, HTTPException, Request, status
 
 from openhands.app_server.user_auth import get_user_auth, get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.composition import get_auth_services
 from storage.org_member_store import OrgMemberStore
 from storage.role import Role
 from storage.role_store import RoleStore
-from storage.user_store import UserStore
 
 
 class Permission(str, Enum):
@@ -321,7 +321,7 @@ async def get_user_super_role(user_id: str) -> Role | None:
         The :class:`Role` referenced by ``user.role_id`` if one is set,
         otherwise ``None``.
     """
-    user = await UserStore.get_user_by_id(user_id)
+    user = await get_auth_services().accounts.get_user_by_id(user_id)
     if not user or user.role_id is None:
         return None
 

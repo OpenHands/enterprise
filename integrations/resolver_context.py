@@ -1,3 +1,4 @@
+from typing import Literal, overload
 from uuid import UUID
 
 from openhands.app_server.integrations.provider import (
@@ -85,10 +86,34 @@ class ResolverUserContext(UserContext):
                 return provider_token.token.get_secret_value()
         return None
 
+    @overload
+    async def get_provider_tokens(
+        self, as_env_vars: Literal[False] = False
+    ) -> PROVIDER_TOKEN_TYPE | None: ...
+
+    @overload
+    async def get_provider_tokens(
+        self, as_env_vars: Literal[True]
+    ) -> dict[str, str]: ...
+
+    @overload
+    async def get_provider_tokens(
+        self, as_env_vars: bool
+    ) -> PROVIDER_TOKEN_TYPE | dict[str, str] | None: ...
+
     async def get_provider_tokens(
         self, as_env_vars: bool = False
     ) -> PROVIDER_TOKEN_TYPE | dict[str, str] | None:
-        return await self.saas_user_auth.get_provider_tokens()
+        provider_tokens = await self.saas_user_auth.get_provider_tokens()
+        if not as_env_vars:
+            return provider_tokens
+        return {
+            ProviderHandler.get_provider_env_key(
+                provider
+            ): token.token.get_secret_value()
+            for provider, token in (provider_tokens or {}).items()
+            if token.token is not None and token.token.get_secret_value()
+        }
 
     async def get_secrets(self) -> dict[str, SecretSource]:
         """Get secrets for the user, including custom secrets."""

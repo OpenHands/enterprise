@@ -1,69 +1,40 @@
-import time
 from dataclasses import dataclass
-from types import MappingProxyType
 from uuid import UUID
 
-import jwt
 from fastapi import HTTPException, Request
-from keycloak.exceptions import KeycloakConnectionError
 from pydantic import SecretStr
-from sqlalchemy import delete, select
-from tenacity import (
-    RetryError,
-)
 
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     CustomSecret,
-    ProviderToken,
-    ProviderType,
 )
+from openhands.app_server.integrations.service_types import ProviderType, UserGitInfo
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth.user_auth import AuthType, UserAuth
 from server.auth.auth_error import (
-    AuthError,
-    BearerTokenError,
-    CookieError,
-    ExpiredError,
     NoCredentialsError,
-    TokenRefreshError,
 )
 from server.auth.authorization import (
     get_role_permissions,
     get_user_org_role,
     get_user_super_role,
 )
-from server.auth.constants import AZURE_DEVOPS_ORGANIZATION, BITBUCKET_DATA_CENTER_HOST
-from server.auth.cookie_chunking import read_chunked_cookie
+from server.auth.composition import get_auth_services
 from server.auth.token_manager import TokenManager
 from server.logger import logger
 from server.rate_limit import RateLimiter, create_redis_rate_limiter
 from server.utils.rate_limit_utils import RATE_LIMIT_AUTH_WINDOWS
 from storage.api_key_store import ApiKeyStore
-from storage.auth_tokens import AuthTokens
-from storage.database import a_session_maker
 from storage.org_store import OrgStore
 from storage.saas_secrets_store import SaasSecretsStore
 from storage.saas_settings_store import SaasSettingsStore
-from storage.user_authorization import UserAuthorizationType
-from storage.user_authorization_store import UserAuthorizationStore
-from storage.user_store import UserStore
 
 token_manager = TokenManager()
 
 
 rate_limiter: RateLimiter | None = create_redis_rate_limiter(RATE_LIMIT_AUTH_WINDOWS)
-
-
-def _is_transient_keycloak_error(exc: BaseException) -> bool:
-    while isinstance(exc, RetryError):
-        retry_exc = exc.last_attempt.exception()
-        if retry_exc is None:
-            return False
-        exc = retry_exc
-    return isinstance(exc, KeycloakConnectionError)
 
 
 @dataclass
@@ -82,6 +53,9 @@ class SaasUserAuth(UserAuth):
     _secrets: Secrets | None = None
     accepted_tos: bool | None = None
     auth_type: AuthType = AuthType.COOKIE
+    # AuthType describes the credential, while transport governs CSRF policy.
+    # In particular, an API key supplied in a cookie is not bearer transport.
+    credential_transport: str = 'keycloak_cookie'
     # API key context fields - populated when authenticated via API key
     api_key_org_id: UUID | None = None  # Org bound to the API key used for auth
     api_key_id: int | None = None
@@ -324,7 +298,7 @@ class SaasUserAuth(UserAuth):
             return requested
 
         # Case 3: Fall back to the user's currently-selected org.
-        user = await UserStore.get_user_by_id(self.user_id)
+        user = await get_auth_services().accounts.get_user_by_id(self.user_id)
         if user is None:
             return None
         return user.current_org_id
@@ -374,58 +348,17 @@ class SaasUserAuth(UserAuth):
         # already has ``self.email`` set from the signed token, so the lookup
         # is skipped in that case.
         if self.email is None:
-            user = await UserStore.get_user_by_id(self.user_id)
+            user = await get_auth_services().accounts.get_user_by_id(self.user_id)
             if user:
                 self.email = user.email
                 self.email_verified = user.email_verified
         return self.email
 
-    async def refresh(self):
-        # API-key (bearer) auth does not carry an offline token. Load it lazily
-        # here, and only when a Keycloak access token is genuinely needed, so
-        # that authentication itself never depends on the offline session.
-        if (
-            self.auth_type == AuthType.BEARER
-            and not self.refresh_token.get_secret_value()
-        ):
-            offline_token = await token_manager.load_offline_token(self.user_id)
-            if not offline_token:
-                raise ExpiredError()
-            self.refresh_token = SecretStr(offline_token)
+    async def refresh(self) -> None:
+        await get_auth_services().requests.refresh(self)
 
-        if self._is_token_expired(self.refresh_token):
-            logger.debug('saas_user_auth_refresh:expired')
-            raise ExpiredError()
-
-        tokens = await token_manager.refresh(self.refresh_token.get_secret_value())
-        self.access_token = SecretStr(tokens['access_token'])
-        self.refresh_token = SecretStr(tokens['refresh_token'])
-        self.refreshed = True
-        if not self.email or not self.email_verified or not self.user_id:
-            # We don't need to verify the signature here because we just refreshed
-            # this token from the IDP via token_manager.refresh()
-            access_token_payload = jwt.decode(
-                tokens['access_token'], options={'verify_signature': False}
-            )
-            self.user_id = access_token_payload['sub']
-            self.email = access_token_payload['email']
-            self.email_verified = access_token_payload['email_verified']
-
-    def _is_token_expired(self, token: SecretStr):
-        logger.debug('saas_user_auth_is_token_expired')
-        # Decode token payload - works with both access and refresh tokens
-        payload = jwt.decode(
-            token.get_secret_value(), options={'verify_signature': False}
-        )
-
-        # Sanity check - make sure we refer to current user
-        assert payload['sub'] == self.user_id
-
-        # Check token expiration
-        expiration = payload.get('exp')
-        if expiration:
-            logger.debug('saas_user_auth_is_token_expired expiration is %d', expiration)
-        return expiration and expiration < time.time()
+    def _is_token_expired(self, token: SecretStr) -> bool:
+        return get_auth_services().requests.token_expired(self, token)
 
     def get_auth_type(self) -> AuthType | None:
         return self.auth_type
@@ -483,7 +416,7 @@ class SaasUserAuth(UserAuth):
         self.secrets_store = secrets_store
         return secrets_store
 
-    async def get_secrets(self):
+    async def get_secrets(self) -> Secrets | None:
         user_secrets = self._secrets
         if user_secrets:
             return user_secrets
@@ -507,102 +440,18 @@ class SaasUserAuth(UserAuth):
         return user_secrets
 
     async def get_access_token(self) -> SecretStr | None:
-        logger.debug('saas_user_auth_get_access_token')
-        try:
-            if self.access_token is None or self._is_token_expired(self.access_token):
-                await self.refresh()
-            return self.access_token
-        except AuthError:
-            # A Keycloak access token requires the user's offline session. For
-            # API-key (bearer) auth that session is optional: provider tokens
-            # and the rest of the request context resolve independently, so a
-            # missing/revoked offline session must not turn a valid key into a
-            # 401. Degrade to None instead of raising.
-            if self.auth_type == AuthType.BEARER:
-                logger.warning('bearer_get_access_token_refresh_failed', exc_info=True)
-                return None
-            raise
-        except Exception as e:
-            if self.auth_type == AuthType.BEARER:
-                logger.warning('bearer_get_access_token_failed', exc_info=True)
-                return None
-            if _is_transient_keycloak_error(e):
-                raise TokenRefreshError(
-                    'Authentication service temporarily unavailable'
-                ) from e
-            raise AuthError() from e
+        return await get_auth_services().requests.get_access_token(self)
+
+    async def get_latest_provider_token(self, provider: ProviderType) -> str | None:
+        return await get_auth_services().requests.get_latest_provider_token(
+            self, provider
+        )
+
+    async def get_user_git_info(self) -> UserGitInfo | None:
+        return await super().get_user_git_info()
 
     async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
-        logger.debug('saas_user_auth_get_provider_tokens')
-        if self.provider_tokens is not None:
-            return self.provider_tokens
-        provider_tokens: dict[ProviderType, ProviderToken] = {}
-
-        user_secrets = await self.get_secrets()
-
-        try:
-            # TODO: I think we can do this in a single request if we refactor
-            async with a_session_maker() as session:
-                result = await session.execute(
-                    select(AuthTokens).where(
-                        AuthTokens.keycloak_user_id == self.user_id
-                    )
-                )
-                tokens = result.scalars().all()
-
-            for token in tokens:
-                idp_type = ProviderType(token.identity_provider)
-                if idp_type == ProviderType.ENTERPRISE_SSO:
-                    # enterprise_sso is a login-only IdP, not a git provider:
-                    # ProviderHandler has no service for it and its tokens
-                    # cannot be refreshed (the row would be deleted and the
-                    # request 401'd). Skip rows minted by older logins.
-                    continue
-                try:
-                    host = None
-                    if user_secrets and idp_type in user_secrets.provider_tokens:
-                        host = user_secrets.provider_tokens[idp_type].host
-
-                    if idp_type == ProviderType.BITBUCKET_DATA_CENTER and not host:
-                        host = BITBUCKET_DATA_CENTER_HOST or None
-
-                    if idp_type == ProviderType.AZURE_DEVOPS and not host:
-                        host = AZURE_DEVOPS_ORGANIZATION or None
-
-                    # Resolve the provider token by user_id directly. This reads
-                    # the encrypted token from the auth_tokens table and refreshes
-                    # via the provider's OAuth endpoint — no Keycloak access
-                    # token / offline session required.
-                    provider_token = await token_manager.get_idp_token_by_user_id(
-                        self.user_id,
-                        idp=idp_type,
-                    )
-                    # TODO: Currently we don't store the IDP user id in our refresh table. We should.
-                    provider_tokens[idp_type] = ProviderToken(
-                        token=SecretStr(provider_token), user_id=None, host=host
-                    )
-                except Exception:
-                    # If there was a problem with a refresh token we log and delete it
-                    logger.exception(
-                        'Error refreshing provider_token token',
-                        extra={
-                            'user_id': self.user_id,
-                            'idp_type': token.identity_provider,
-                        },
-                        stack_info=True,
-                    )
-                    async with a_session_maker() as session:
-                        await session.execute(
-                            delete(AuthTokens).where(AuthTokens.id == token.id)
-                        )
-                        await session.commit()
-                    raise
-
-            self.provider_tokens = MappingProxyType(provider_tokens)
-            return self.provider_tokens
-        except Exception as e:
-            # Any error refreshing tokens means we need to log in again
-            raise AuthError() from e
+        return await get_auth_services().requests.get_provider_tokens(self)
 
     async def get_user_settings_store(self) -> SettingsStore:
         settings_store = self.settings_store
@@ -738,14 +587,9 @@ class SaasUserAuth(UserAuth):
             return None
 
     @classmethod
-    async def get_instance(cls, request: Request) -> UserAuth:
+    async def get_instance(cls, request: Request) -> 'SaasUserAuth':
         logger.debug('saas_user_auth_get_instance')
-        # First we check for for an API Key...
-        logger.debug('saas_user_auth_get_instance:check_bearer')
-        instance = await saas_user_auth_from_bearer(request)
-        if instance is None:
-            logger.debug('saas_user_auth_get_instance:check_cookie')
-            instance = await saas_user_auth_from_cookie(request)
+        instance = await get_auth_services().requests.from_request(request)
         if instance is None:
             logger.debug('saas_user_auth_get_instance:no_credentials')
             raise NoCredentialsError('failed to authenticate')
@@ -764,154 +608,25 @@ class SaasUserAuth(UserAuth):
         return instance
 
     @classmethod
-    async def get_for_user(cls, user_id: str) -> UserAuth:
-        # Background / integration resolver contexts must not depend on the
-        # user's Keycloak offline session either. The offline token (if any) is
-        # loaded lazily by refresh() only when a Keycloak access token is
-        # actually required; provider tokens resolve by user_id directly.
-        return SaasUserAuth(
-            user_id=user_id,
-            refresh_token=SecretStr(''),
-            auth_type=AuthType.BEARER,
-        )
+    async def get_for_user(cls, user_id: str) -> 'SaasUserAuth':
+        return await get_auth_services().requests.for_user(user_id)
 
 
-def get_api_key_from_header(request: Request):
-    auth_header = request.headers.get('Authorization')
-    if auth_header and auth_header.startswith('Bearer '):
-        return auth_header.replace('Bearer ', '')
-
-    # This is a temp hack
-    # Streamable HTTP MCP Client works via redirect requests, but drops the Authorization header for reason
-    # We include `X-Session-API-Key` header by default due to nested runtimes, so it used as a drop in replacement here
-    session_api_key = request.headers.get('X-Session-API-Key')
-    if session_api_key:
-        return session_api_key
-
-    # Fallback to X-Access-Token header as an additional option
-    x_access_token = request.headers.get('X-Access-Token')
-    if x_access_token:
-        return x_access_token
-
-    # Fallback to the `api_key` cookie, which mirrors the X-Access-Token header
-    # Security note: This cookie MUST be marked `Secure; HttpOnly; SameSite=Strict`
-    # (or `Lax`) to mitigate CSRF and XSS risks.
-    return request.cookies.get('api_key')
+def get_api_key_from_header(request: Request) -> str | None:
+    return get_auth_services().requests.api_key(request)
 
 
 async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
-    try:
-        api_key = get_api_key_from_header(request)
-        if not api_key:
-            return None
-
-        api_key_store = ApiKeyStore.get_instance()
-        validation_result = await api_key_store.validate_api_key(api_key)
-        if not validation_result:
-            return None
-        try:
-            UUID(validation_result.user_id)
-        except ValueError:
-            user = None
-        else:
-            user = await UserStore.get_user_by_id(validation_result.user_id)
-            if user is None:
-                return None
-        if user is not None and user.is_disabled:
-            return None
-        # API-key auth is intentionally decoupled from the Keycloak offline
-        # session: we do NOT load an offline token or refresh here. A valid API
-        # key alone authenticates the request. Any provider/access token needed
-        # downstream is resolved independently (see get_provider_tokens /
-        # get_access_token), so a missing or revoked offline session no longer
-        # turns a valid key into a 401 BearerTokenError.
-        return SaasUserAuth(
-            user_id=validation_result.user_id,
-            refresh_token=SecretStr(''),
-            auth_type=AuthType.BEARER,
-            api_key_org_id=validation_result.org_id,
-            api_key_id=validation_result.key_id,
-            api_key_name=validation_result.key_name,
-        )
-    except Exception as exc:
-        raise BearerTokenError from exc
+    return await get_auth_services().requests.from_bearer(request)
 
 
 async def saas_user_auth_from_cookie(request: Request) -> SaasUserAuth | None:
-    try:
-        signed_token = read_chunked_cookie(request, 'keycloak_auth')
-        if not signed_token:
-            return None
-        return await saas_user_auth_from_signed_token(signed_token)
-    except Exception as exc:
-        raise CookieError from exc
+    return await get_auth_services().requests.from_cookie(request)
 
 
 async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
-    logger.debug('saas_user_auth_from_signed_token')
-    from storage.encrypt_utils import get_jwt_service
-
-    decoded = get_jwt_service().verify_jws_token(signed_token)
-    logger.debug('saas_user_auth_from_signed_token:decoded')
-    access_token = decoded['access_token']
-    refresh_token = decoded['refresh_token']
-    logger.debug(
-        'saas_user_auth_from_signed_token',
-        extra={
-            'access_token': access_token,
-            'refresh_token': refresh_token,
-        },
-    )
-    accepted_tos = decoded.get('accepted_tos')
-
-    # The access token was encoded using HS256 on keycloak. Since we signed it, we can trust is was
-    # created by us. So we can grab the user_id and expiration from it without going back to keycloak.
-    access_token_payload = jwt.decode(access_token, options={'verify_signature': False})
-    user_id = access_token_payload['sub']
-    email = access_token_payload['email']
-    email_verified = access_token_payload['email_verified']
-    try:
-        UUID(user_id)
-    except ValueError:
-        user = None
-    else:
-        user = await UserStore.get_user_by_id(user_id)
-        if user is None:
-            raise AuthError('Access denied: user account not found')
-    if user is not None and user.is_disabled:
-        raise AuthError('Access denied: user account is disabled')
-
-    # Check if email is blacklisted (whitelist takes precedence)
-    if email:
-        auth_type = await UserAuthorizationStore.get_authorization_type(email, None)
-        if auth_type == UserAuthorizationType.BLACKLIST:
-            logger.warning(
-                f'Blocked authentication attempt for existing user with email: {email}'
-            )
-            raise AuthError(
-                'Access denied: Your email domain is not allowed to access this service'
-            )
-
-    logger.debug('saas_user_auth_from_signed_token:return')
-
-    return SaasUserAuth(
-        access_token=SecretStr(access_token),
-        refresh_token=SecretStr(refresh_token),
-        user_id=user_id,
-        email=email,
-        email_verified=email_verified,
-        accepted_tos=accepted_tos,
-        auth_type=AuthType.COOKIE,
-    )
+    return await get_auth_services().requests.from_signed_token(signed_token)
 
 
 async def get_user_auth_from_keycloak_id(keycloak_user_id: str) -> UserAuth:
-    # Like get_for_user, this is a background / integration entry point that must
-    # not require the offline session. Mark it BEARER so get_access_token()
-    # degrades gracefully and refresh() lazily loads the offline token only if a
-    # Keycloak access token is genuinely needed.
-    return SaasUserAuth(
-        user_id=keycloak_user_id,
-        refresh_token=SecretStr(''),
-        auth_type=AuthType.BEARER,
-    )
+    return await SaasUserAuth.get_for_user(keycloak_user_id)

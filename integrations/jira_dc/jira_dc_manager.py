@@ -44,6 +44,7 @@ from openhands.app_server.types import (
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.composition import get_auth_services
 from server.auth.constants import JIRA_DC_ENABLE_OAUTH, JIRA_DC_HTTP_TIMEOUT
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
@@ -161,7 +162,7 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
         # preserving the verification guarantee.
         if not JIRA_DC_ENABLE_OAUTH or not jira_dc_user_id or jira_dc_user_id == 'none':
             # Get Keycloak user ID from email
-            keycloak_user_id = await self.token_manager.get_user_id_from_user_email(
+            keycloak_user_id = await get_auth_services().accounts.get_user_id_by_email(
                 user_email
             )
             if not keycloak_user_id:
@@ -389,7 +390,7 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             comment_id=comment_id or '',
         )
 
-    async def receive_message(self, message: Message):
+    async def receive_message(self, message: Message) -> None:
         """Process incoming Jira DC webhook message."""
         payload = message.message.get('payload', {})
         bot_mentions = await self._resolve_service_account_mentions(payload)
@@ -466,7 +467,7 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             )
             # Distinguish "no OpenHands account" from "account exists but not linked
             # to this workspace" so the reply is actionable (mirrors GitHub/BBDC).
-            keycloak_user_id = await self.token_manager.get_user_id_from_user_email(
+            keycloak_user_id = await get_auth_services().accounts.get_user_id_by_email(
                 job_context.user_email
             )
             if keycloak_user_id:

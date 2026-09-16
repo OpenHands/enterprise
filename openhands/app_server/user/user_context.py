@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+from typing import Literal, overload
+from uuid import UUID
 
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
@@ -18,6 +20,10 @@ class UserContext(ABC):
     """Service for managing users."""
 
     # Read methods
+
+    async def get_effective_org_id(self) -> UUID | None:
+        """Return the selected organization, if this authentication context has one."""
+        return None
 
     @abstractmethod
     async def get_user_id(self) -> str | None:
@@ -71,6 +77,21 @@ class UserContext(ABC):
             is_optional: If True, logs at debug level instead of error level
                 when repository is not found. Use for optional repositories.
         """
+
+    @overload
+    async def get_provider_tokens(
+        self, as_env_vars: Literal[False] = False
+    ) -> PROVIDER_TOKEN_TYPE | None: ...
+
+    @overload
+    async def get_provider_tokens(
+        self, as_env_vars: Literal[True]
+    ) -> dict[str, str]: ...
+
+    @overload
+    async def get_provider_tokens(
+        self, as_env_vars: bool
+    ) -> PROVIDER_TOKEN_TYPE | dict[str, str] | None: ...
 
     @abstractmethod
     async def get_provider_tokens(

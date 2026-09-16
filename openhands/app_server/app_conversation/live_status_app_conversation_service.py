@@ -79,7 +79,7 @@ from openhands.app_server.event_callback.event_callback_service import (
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
-from openhands.app_server.integrations.provider import PROVIDER_TOKEN_TYPE, ProviderType
+from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.integrations.service_types import SuggestedTask
 from openhands.app_server.pending_messages.pending_message_service import (
     PendingMessageService,
@@ -1251,10 +1251,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         secrets = await self.user_context.get_secrets()
 
         # Get all provider tokens from user authentication
-        provider_tokens = cast(
-            PROVIDER_TOKEN_TYPE | None,
-            await self.user_context.get_provider_tokens(),
-        )
+        provider_tokens = await self.user_context.get_provider_tokens()
         if provider_tokens:
             # Create secrets for each provider token
             for provider_type, provider_token in provider_tokens.items():
@@ -2444,10 +2441,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Use raw custom secrets, static git provider tokens, and static
         # integration-scoped secrets for ACP conversations.
         secrets: dict = await self.user_context.get_secrets()
-        provider_tokens = cast(
-            PROVIDER_TOKEN_TYPE | None,
-            await self.user_context.get_provider_tokens(),
-        )
+        provider_tokens = await self.user_context.get_provider_tokens()
         if provider_tokens:
             for provider_type, provider_token in provider_tokens.items():
                 if not provider_token.token:

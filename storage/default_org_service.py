@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import SecretStr
 
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.composition import get_auth_services
 from server.constants import ROLE_MEMBER
 from server.routes.org_models import OrgNameExistsError
 from storage.org import Org
@@ -150,9 +151,12 @@ class DefaultOrgBootstrapService:
                         'is_new_user': is_new_user,
                     },
                 )
-                return await UserStore.get_user_by_id(str(user.id)) or updated_user
+                return (
+                    await get_auth_services().accounts.get_user_by_id(str(user.id))
+                    or updated_user
+                )
 
-        return await UserStore.get_user_by_id(str(user.id)) or user
+        return await get_auth_services().accounts.get_user_by_id(str(user.id)) or user
 
     @staticmethod
     async def _get_or_create_org(

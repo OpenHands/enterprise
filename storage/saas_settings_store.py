@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from pydantic import SecretStr
+from pydantic import SecretStr, TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -19,12 +19,11 @@ from openhands.sdk.llm.utils.openhands_provider import (
 )
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import resolve_agent_profile
-from server.auth.token_manager import TokenManager
+from server.auth.composition import get_auth_services
 from server.constants import LITE_LLM_API_URL
 from server.logger import logger
 from server.routes.org_models import (
     MEMBER_PRIVATE_AGENT_KEYS,
-    OrgMemberSettingsUpdate,
 )
 from server.verified_models.default_profile import (
     DEFAULT_LLM_PROFILE_NAME,
@@ -44,11 +43,9 @@ from storage.mcp_config import (
 )
 from storage.org import Org
 from storage.org_member import OrgMember
-from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
 from storage.user import User
 from storage.user_settings import UserSettings
-from storage.user_store import UserStore
 
 
 class ManagedLlmKeyStatus:
@@ -364,7 +361,7 @@ class SaasSettingsStore(SettingsStore):
         profile resolves for *this call only*, and is never persisted to
         ``org_member.active_agent_profile_id``.
         """
-        user = await UserStore.get_user_by_id(self.user_id)
+        user = await get_auth_services().accounts.get_user_by_id(self.user_id)
         if not user:
             logger.error(f'User not found for ID {self.user_id}')
             return None
@@ -641,7 +638,9 @@ class SaasSettingsStore(SettingsStore):
             org.llm_profiles = serialized
             await session.commit()
 
-    async def store(self, item: Settings):
+    async def store(self, item: Settings | None) -> None:
+        from server.auth.composition import get_auth_services
+
         if item is not None and (
             item._resolved_view or item.active_agent_profile_id is not None
         ):
@@ -654,40 +653,15 @@ class SaasSettingsStore(SettingsStore):
                 'Refusing to persist a resolved Agent-Profile settings view; '
                 'store() only accepts persisted settings from a plain load()'
             )
+        if item is None:
+            return
         async with a_session_maker() as session:
-            if not item:
-                return None
-            result = await session.execute(
-                select(User)
-                .options(joinedload(User.org_members))
-                .filter(User.id == uuid.UUID(self.user_id))
+            await get_auth_services().lifecycle.lock_mutation(session)
+            user = await get_auth_services().accounts.get_profile_for_update(
+                session, self.user_id
             )
-            user = result.scalars().first()
-
-            if not user:
-                # Check if we need to migrate from user_settings
-                user_settings = None
-                async with a_session_maker() as new_session:
-                    user_settings = await self._get_user_settings_by_keycloak_id_async(
-                        self.user_id, new_session
-                    )
-                if user_settings:
-                    token_manager = TokenManager()
-                    user_info = await token_manager.get_user_info_from_user_id(
-                        self.user_id
-                    )
-                    if not user_info:
-                        logger.error(f'User info not found for ID {self.user_id}')
-                        return None
-                    user = await UserStore.migrate_user(
-                        self.user_id, user_settings, user_info
-                    )
-                    if not user:
-                        logger.error(f'Failed to migrate user {self.user_id}')
-                        return None
-                else:
-                    logger.error(f'User not found for ID {self.user_id}')
-                    return None
+            if user is None:
+                return
 
             org_id = self._resolve_org_id(user)
 
@@ -727,18 +701,8 @@ class SaasSettingsStore(SettingsStore):
             )
 
             if uses_managed_llm_key:
-                fallback_api_key = (
-                    org_member.llm_api_key
-                    if not org._llm_api_key
-                    and not org_member.has_custom_llm_api_key
-                    and org_member._llm_api_key
-                    else None
-                )
-                await self._ensure_api_key(
-                    item,
-                    str(org_id),
-                    openhands_type=is_openhands_model(llm_model),
-                    fallback_api_key=fallback_api_key,
+                await get_auth_services().provisioning.prepare_settings_key(
+                    session, item, org, org_member, self
                 )
                 item.sync_active_profile_from_settings()
                 self._strip_managed_profile_api_keys(item)
@@ -781,7 +745,11 @@ class SaasSettingsStore(SettingsStore):
                 elif hasattr(org, key) and key not in _ORG_OWNED_SETTINGS_KEYS:
                     setattr(org, key, value)
 
-            current_member_llm_api_key = item.agent_settings.llm.api_key
+            current_member_llm_api_key = (
+                TypeAdapter(SecretStr).validate_python(item.agent_settings.llm.api_key)
+                if item.agent_settings.llm.api_key is not None
+                else None
+            )
             org_default_llm_api_key = org.llm_api_key
             org_default_llm_api_key_raw = (
                 org_default_llm_api_key.get_secret_value()
@@ -789,23 +757,17 @@ class SaasSettingsStore(SettingsStore):
                 else None
             )
             current_member_llm_api_key_raw = (
-                current_member_llm_api_key.get_secret_value()  # type: ignore[union-attr]
+                current_member_llm_api_key.get_secret_value()
                 if current_member_llm_api_key
                 else None
             )
 
             # A non-managed (BYOR) key is the org's key for the shared
             # provider, so it does reach every member row.
-            await OrgMemberStore.update_all_members_settings_async(
+            await get_auth_services().provisioning.persist_shared_key(
                 session,
                 org_id,
-                OrgMemberSettingsUpdate(
-                    llm_api_key=(
-                        current_member_llm_api_key_raw  # type: ignore[arg-type]
-                        if not uses_managed_llm_key
-                        else None
-                    ),
-                ),
+                current_member_llm_api_key_raw if not uses_managed_llm_key else None,
             )
 
             member_mcp_config = org_member.effective_mcp_config
@@ -838,15 +800,19 @@ class SaasSettingsStore(SettingsStore):
 
             if uses_managed_llm_key and current_member_llm_api_key is not None:
                 # Managed/proxy key — store on this member but mark as org-managed
-                org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
+                org_member.llm_api_key = current_member_llm_api_key
                 org_member.has_custom_llm_api_key = False
             elif current_member_llm_api_key_raw is not None:
                 # BYOR: member supplied their own (non-managed) API key
-                org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
+                org_member.llm_api_key = SecretStr(current_member_llm_api_key_raw)
                 org_member.has_custom_llm_api_key = True
             elif org_default_llm_api_key_raw is not None:
                 # No member key, falling back to org default
                 org_member.has_custom_llm_api_key = False
+
+            await get_auth_services().provisioning.finish_member_update(
+                session, org_member, uses_managed_key=uses_managed_llm_key, org=org
+            )
 
             await session.commit()
 
@@ -880,7 +846,7 @@ class SaasSettingsStore(SettingsStore):
             return []
 
         try:
-            user = await UserStore.get_user_by_id(user_id)
+            user = await get_auth_services().accounts.get_user_by_id(user_id)
             if not user:
                 logger.debug(f'No user found for ID {user_id}')
                 return []
@@ -1082,6 +1048,11 @@ class SaasSettingsStore(SettingsStore):
         swallowed. The previous key token is returned for best-effort cleanup
         and is only exposed after a successful persist.
         """
+        from server.auth.composition import get_auth_services
+
+        return await get_auth_services().provisioning.rotate_managed_key(self)
+
+    async def _rotate_keycloak_managed_llm_key(self) -> ManagedLlmKeyRotation:
         settings = await self.load()
         if settings is None:
             return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
@@ -1148,3 +1119,47 @@ class SaasSettingsStore(SettingsStore):
                 new_key=new_key,
                 openhands_type=config.openhands_type,
             )
+
+    async def _rotate_native_managed_llm_key(self) -> ManagedLlmKeyRotation:
+        from server.auth.native_password import NativeAuthError
+        from server.services.native_account_service import lock_native_lifecycle
+        from server.services.native_provisioning_service import (
+            NativeProvisioningService,
+            prepare_managed_member,
+        )
+
+        settings = await self.load()
+        if settings is None:
+            return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
+        llm = settings.agent_settings.llm
+        if managed_llm_key_config_from_model(llm.model, llm.base_url) is None:
+            return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.NOT_MANAGED)
+        async with a_session_maker() as session, session.begin():
+            await lock_native_lifecycle(session)
+            user = await session.get(User, UUID(self.user_id))
+            if user is None or user.is_disabled:
+                return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
+            org_id = self._resolve_org_id(user)
+            org = await session.get(Org, org_id)
+            member = await session.get(OrgMember, (org_id, user.id))
+            if org is None or member is None:
+                return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
+            if org._llm_api_key or member.has_custom_llm_api_key:
+                return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.BYOK)
+            await prepare_managed_member(
+                session, member, force=member.status != 'pending_llm_provisioning'
+            )
+            work_id = member.native_provisioning_id
+        await NativeProvisioningService().reconcile(only_work_id=work_id)
+        async with a_session_maker() as session:
+            member = await session.get(OrgMember, (org_id, UUID(self.user_id)))
+            if (
+                member is None
+                or member.native_provisioning_id != work_id
+                or member.status != 'active'
+            ):
+                raise NativeAuthError(
+                    'Managed LLM key provisioning is pending; retry shortly', 503
+                )
+        # Old keys remain attached to durable cleanup work, never caller cleanup.
+        return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.ROTATED)

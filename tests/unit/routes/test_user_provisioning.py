@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from fastapi import HTTPException, Response
@@ -145,7 +145,7 @@ class TestProvisionUserHandler:
         existing_oh_user: MagicMock | None = None,
         existing_org_member: MagicMock | None = None,
         existing_api_key: str | None = None,
-    ):
+    ) -> tuple[list[contextlib.AbstractContextManager[Mock]], dict[str, Mock]]:
         """Return a stack of patches as a list of context managers.
 
         Tests enter all of them via ``contextlib.ExitStack`` so each
@@ -207,7 +207,7 @@ class TestProvisionUserHandler:
 
         get_org_member_mock = AsyncMock(return_value=existing_org_member)
 
-        patches = [
+        patches: list[contextlib.AbstractContextManager[Mock]] = [
             patch(
                 'server.routes.user_provisioning.TokenManager',
                 return_value=token_manager_mock,
@@ -218,16 +218,16 @@ class TestProvisionUserHandler:
                 return_value=org,
             ),
             patch(
-                'server.routes.user_provisioning.UserStore.create_user',
+                'server.services.account_profile_provisioning.KeycloakAccountProfileProvisioning.create_user',
                 new_callable=AsyncMock,
                 return_value=new_user,
             ),
             patch(
-                'server.routes.user_provisioning.UserStore.get_user_by_email',
+                'server.auth.account_lookup.KeycloakAccountLookup.get_user_by_email',
                 get_user_by_email_mock,
             ),
             patch(
-                'server.routes.user_provisioning.UserStore.get_user_by_id',
+                'server.auth.account_lookup.KeycloakAccountLookup.get_user_by_id',
                 get_user_by_id_mock,
             ),
             patch(
