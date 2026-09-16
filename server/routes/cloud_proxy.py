@@ -156,9 +156,13 @@ class CloudProxyRequest(BaseModel):
         description='Upstream absolute path (must start with /), including query string'
     )
     headers: dict[str, str] = Field(default_factory=dict)
-    # Raw bytes, forwarded verbatim — not JSON-encoded. The caller supplies
-    # Content-Type via ``headers`` so non-JSON bodies (form, multipart, text,
-    # octet-stream) are carried faithfully. None means a body-less request.
+    # Text body forwarded verbatim (httpx UTF-8-encodes the str onto the wire).
+    # The caller supplies Content-Type via ``headers`` so text bodies (JSON,
+    # form-urlencoded, text/plain) are carried faithfully instead of being
+    # JSON-encoded and stamped application/json. Binary bodies are NOT
+    # supported: a JSON envelope cannot carry non-UTF-8 bytes. If binary
+    # passthrough is later needed, add an explicit base64 field (or a
+    # non-JSON envelope) rather than widening this to ``bytes``.
     body: str | None = None
     timeout_seconds: float | None = Field(default=None, gt=0, le=_MAX_TIMEOUT_SECONDS)
 

@@ -317,6 +317,42 @@ def test_forwards_and_streams_response(app):
     assert sent_kwargs['content'] == '{"foo":"bar"}'
 
 
+def test_non_json_text_body_forwarded_verbatim(app):
+    """A form-urlencoded body (text, not JSON) must reach the upstream
+    byte-for-byte with its caller-supplied Content-Type, not be re-encoded as
+    JSON. Proves the transparency contract for text bodies."""
+    client = TestClient(app)
+    upstream = _mock_upstream(200, b'ok')
+    form_body = 'a=1&b=hello%20world'
+
+    with (
+        _patch_ownership(_owned_sandbox()),
+        _patch_resolve('abc.prod-runtime.all-hands.dev'),
+        patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
+    ):
+        mock_client, _ctx = _mock_client(upstream)
+        mock_cls.return_value = mock_client
+
+        response = client.post(
+            '/api/cloud-proxy',
+            json={
+                'method': 'POST',
+                'path': '/upload',
+                'headers': {
+                    'X-Session-API-Key': SESSION_KEY,
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                'body': form_body,
+            },
+        )
+
+    assert response.status_code == 200
+    sent_kwargs = mock_client.build_request.call_args.kwargs
+    # Body forwarded as the raw text, with the caller's Content-Type intact.
+    assert sent_kwargs['content'] == form_body
+    assert sent_kwargs['headers']['Content-Type'] == 'application/x-www-form-urlencoded'
+
+
 def test_response_hop_by_hop_headers_stripped(app):
     client = TestClient(app)
     upstream = _mock_upstream(
