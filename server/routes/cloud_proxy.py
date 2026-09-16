@@ -340,6 +340,17 @@ async def proxy_cloud_request(
 
     hostname, ip, port, scheme = await asyncio.to_thread(_resolve_target, host)
 
+    # The derived host is expected to be a bare origin. If it ever carries a
+    # path prefix (e.g. a runtime routed under /tenant/runtime), pinned_url
+    # below would silently drop it while the final-URL check keeps it — an
+    # asymmetry that misroutes to the wrong upstream path. Fail loud instead.
+    host_path = urlparse(host).path
+    if host_path:
+        raise HTTPException(
+            status_code=502,
+            detail='runtime host must be a bare origin, not a path-prefixed URL',
+        )
+
     # Re-validate the *final* URL: combine host + path and assert the hostname
     # is unchanged, so a crafted path cannot redirect the connection.
     final_url = f'{host}{envelope.path}'
@@ -381,6 +392,12 @@ async def proxy_cloud_request(
             timeout=timeout,
         )
         upstream = await client.send(req, stream=True)
+    except httpx.TimeoutException as exc:
+        # Upstream was reachable but too slow — 504 lets the client distinguish
+        # "upstream slow" from "upstream broken" (502). TimeoutException
+        # subclasses RequestError, so this must precede the broader catch.
+        logger.warning('cloud_proxy upstream timed out: %s', exc)
+        raise HTTPException(status_code=504, detail='upstream timed out') from exc
     except httpx.RequestError as exc:
         # No response to close on a request error; the shared client stays open.
         logger.warning('cloud_proxy upstream request failed: %s', exc)

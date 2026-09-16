@@ -622,6 +622,50 @@ def test_upstream_request_error_returns_502(app):
     assert response.status_code == 502
 
 
+def test_upstream_timeout_returns_504(app):
+    """A slow upstream must surface as 504 Gateway Timeout, not 502, so the
+    client can distinguish "upstream slow" from "upstream broken".
+    TimeoutException subclasses RequestError, so the 504 branch must win."""
+    client = TestClient(app)
+    with (
+        _patch_ownership(_owned_sandbox()),
+        _patch_resolve('abc.prod-runtime.all-hands.dev'),
+        patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client.build_request = MagicMock(return_value=MagicMock())
+        mock_client.send = AsyncMock(side_effect=httpx.ReadTimeout('slow'))
+        mock_client.aclose = AsyncMock()
+        mock_cls.return_value = mock_client
+
+        response = client.post(
+            '/api/cloud-proxy',
+            json={'method': 'GET', 'path': '/alive'},
+        )
+    assert response.status_code == 504
+
+
+def test_path_prefixed_runtime_host_rejected(app):
+    """A runtime host carrying a path prefix would be silently dropped from
+    pinned_url (asymmetry vs. the final-URL check) and misroute. Fail loud."""
+    client = TestClient(app)
+    with (
+        _patch_ownership(
+            _owned_sandbox(host='https://abc.prod-runtime.all-hands.dev/runtime42')
+        ),
+        _patch_resolve('abc.prod-runtime.all-hands.dev'),
+        patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
+    ):
+        mock_client, _ctx = _mock_client(_mock_upstream(200, b'ok'))
+        mock_cls.return_value = mock_client
+
+        response = client.post(
+            '/api/cloud-proxy',
+            json={'method': 'GET', 'path': '/alive'},
+        )
+    assert response.status_code == 502
+
+
 # ---------------------------------------------------------------------------
 # Timeout cap
 # ---------------------------------------------------------------------------
