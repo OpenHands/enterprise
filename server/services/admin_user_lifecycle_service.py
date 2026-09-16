@@ -471,11 +471,15 @@ class OpenHandsUserLifecycleService(_UserDataDeletion):
 
     async def run_maintenance(self) -> dict[str, int]:
         from server.services.native_auth_service import get_native_auth_service
+        from server.services.native_enrollment_service import (
+            get_native_enrollment_service,
+        )
         from server.services.native_provisioning_service import (
             NativeProvisioningService,
         )
 
         await get_native_auth_service().cleanup_expired_state()
+        await get_native_enrollment_service().cleanup_expired_state()
         failures = await self.retry_native_deletions()
         reconciler = NativeProvisioningService()
         cleaned, cleanup_failed = await reconciler.cleanup()

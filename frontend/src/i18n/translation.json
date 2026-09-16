@@ -29579,25 +29579,148 @@
     "uk": "Не вдалося підключити Git-провайдера. Спробуйте ще раз.",
     "ca": "No s'ha pogut connectar el proveïdor de Git. Torna-ho a provar."
   },
+  "AUTH$ACCEPTED": {
+    "en": "Accepted"
+  },
+  "AUTH$ACCOUNTS": {
+    "en": "Accounts"
+  },
+  "AUTH$ACTIVE": {
+    "en": "Active"
+  },
+  "AUTH$BACK_TO_LOGIN": {
+    "en": "Back to sign in"
+  },
+  "AUTH$CLOSE": {
+    "en": "Close"
+  },
   "AUTH$CONFIRM_IDENTITY": {
     "en": "Confirm identity"
   },
+  "AUTH$CONFIRM_PASSWORD": {
+    "en": "Confirm new password"
+  },
   "AUTH$CONTACT_ADMIN": {
-    "en": "Contact your administrator if you need help signing in."
+    "en": "Contact your administrator for an account setup link."
+  },
+  "AUTH$COPIED": {
+    "en": "Copied"
+  },
+  "AUTH$COPY_LINK": {
+    "en": "Copy link"
+  },
+  "AUTH$COPY_MANUALLY": {
+    "en": "Clipboard access is unavailable. Select the link and copy it manually."
+  },
+  "AUTH$COPY_ONCE_HELP": {
+    "en": "Copy this link now and share it securely with the intended recipient. It is shown only once. Reissuing an invitation invalidates the previous link."
+  },
+  "AUTH$CREATE_SETUP_LINK": {
+    "en": "Create setup link"
+  },
+  "AUTH$DELETED": {
+    "en": "Permanently deleted"
+  },
+  "AUTH$DISABLED": {
+    "en": "Disabled"
   },
   "AUTH$EMAIL": {
     "en": "Email"
   },
+  "AUTH$EXISTING_ACCOUNT": {
+    "en": "This account already exists. Sign in to accept the invitation."
+  },
+  "AUTH$EXPIRED": {
+    "en": "Expired"
+  },
+  "AUTH$EXPIRES": {
+    "en": "Expires {{date}}"
+  },
+  "AUTH$INVITATIONS": {
+    "en": "Account invitations"
+  },
+  "AUTH$INVITED_ORG": {
+    "en": "You have been invited to {{name}}."
+  },
+  "AUTH$INVITE_USER": {
+    "en": "Invite a user"
+  },
+  "AUTH$LINK_UNAVAILABLE": {
+    "en": "If this link is missing, expired, or already used, ask your administrator to issue a new one."
+  },
+  "AUTH$NEW_PASSWORD": {
+    "en": "New password"
+  },
+  "AUTH$NO_ACCOUNTS": {
+    "en": "No accounts found."
+  },
+  "AUTH$NO_INVITATIONS": {
+    "en": "No invitations found."
+  },
   "AUTH$NO_LOGIN_METHODS": {
     "en": "No sign-in methods are available. Contact your administrator."
+  },
+  "AUTH$OPTIONAL_ORG": {
+    "en": "Organization (optional)"
+  },
+  "AUTH$ORG_ROLE": {
+    "en": "Organization role"
   },
   "AUTH$PASSWORD": {
     "en": "Password"
   },
+  "AUTH$PASSWORD_HELP": {
+    "en": "Use at least 15 characters. Longer, uncommon passphrases work well."
+  },
+  "AUTH$PASSWORD_MISMATCH": {
+    "en": "The passwords do not match."
+  },
+  "AUTH$PENDING": {
+    "en": "Pending"
+  },
+  "AUTH$PENDING_SETUP": {
+    "en": "Pending setup link expires {{date}}"
+  },
+  "AUTH$PERSONAL_WORKSPACE_ONLY": {
+    "en": "Personal workspace only"
+  },
+  "AUTH$PRIVATE_LINK": {
+    "en": "Private link"
+  },
+  "AUTH$PROFILE_ABSENT": {
+    "en": "Profile removed; sign in again to restore access"
+  },
+  "AUTH$PROFILE_UNAVAILABLE": {
+    "en": "Profile unavailable; contact an administrator"
+  },
+  "AUTH$REISSUE": {
+    "en": "Reissue link"
+  },
   "AUTH$REQUEST_FAILED": {
     "en": "The request could not be completed. Please try again."
   },
+  "AUTH$REVOKE": {
+    "en": "Revoke link"
+  },
+  "AUTH$REVOKED": {
+    "en": "Revoked"
+  },
+  "AUTH$SELECT_ROLE": {
+    "en": "Select a role"
+  },
+  "AUTH$SET_UP_ACCOUNT": {
+    "en": "Set up your account"
+  },
+  "AUTH$SHARE_LINK": {
+    "en": "Share this private link"
+  },
   "AUTH$SIGN_IN": {
     "en": "Sign in"
+  },
+  "AUTH$USERS": {
+    "en": "Users"
+  },
+  "AUTH$USERS_HELP": {
+    "en": "Create account setup links and review accounts and invitations."
   }
 }

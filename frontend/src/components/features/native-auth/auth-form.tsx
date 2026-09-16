@@ -34,12 +34,43 @@ export function AuthError({
   ) : null;
 }
 
+export function PasswordFields(): React.JSX.Element {
+  const { t } = useTranslation();
+  return (
+    <>
+      <SettingsInput
+        className="w-full"
+        label={t("AUTH$NEW_PASSWORD")}
+        type="password"
+        name="password"
+        autoComplete="new-password"
+        minLength={15}
+        maxLength={1024}
+        required
+      />
+      <p className="text-sm text-tertiary-alt">{t("AUTH$PASSWORD_HELP")}</p>
+      <SettingsInput
+        className="w-full"
+        label={t("AUTH$CONFIRM_PASSWORD")}
+        type="password"
+        name="confirmation"
+        autoComplete="new-password"
+        minLength={15}
+        maxLength={1024}
+        required
+      />
+    </>
+  );
+}
+
 export function NativeLoginForm({
   email,
+  invitationToken,
   returnTo = "/",
   onSuccess,
 }: {
   email?: string;
+  invitationToken?: string;
   returnTo?: string;
   onSuccess?: () => void | Promise<void>;
 }): React.JSX.Element {
@@ -62,6 +93,7 @@ export function NativeLoginForm({
         email: String(fields.get("email")),
         password: String(fields.get("password")),
         return_path: returnTo,
+        invitation_token: invitationToken,
       });
       form.reset();
       // A new account/session must not inherit the previous user's cached data.

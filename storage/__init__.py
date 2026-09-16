@@ -1,3 +1,4 @@
+from storage.account_invitation import AccountInvitation
 from storage.api_key import ApiKey
 from storage.auth_tokens import AuthTokens
 from storage.billing_session import BillingSession
@@ -48,6 +49,7 @@ from storage.user_repo_map import UserRepositoryMap
 from storage.user_settings import UserSettings
 
 __all__ = [
+    'AccountInvitation',
     'NativeExternalWork',
     'AuthAccount',
     'AuthInstallation',

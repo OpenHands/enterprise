@@ -5,6 +5,7 @@ No helper commits or calls an identity, billing, or LLM service.
 """
 
 import secrets
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
@@ -17,6 +18,7 @@ from server.constants import (
     get_default_llm_api_key,
     should_use_direct_llm_defaults,
 )
+from storage.account_invitation import AccountInvitation
 from storage.api_key import ApiKey
 from storage.native_auth import (
     AuthAccount,
@@ -187,6 +189,17 @@ async def tombstone_account(session: AsyncSession, account_id: UUID) -> None:
     await _guard_last_admin(session, account_id)
     account.state = 'deleted'
     await mark_account_changed(session, account_id)
+    if account.normalized_email is not None:
+        # Earlier setup links may reserve another UUID for this same email.
+        # Terminal deletion invalidates every pre-deletion admission link.
+        await session.execute(
+            update(AccountInvitation)
+            .where(
+                AccountInvitation.normalized_email == account.normalized_email,
+                AccountInvitation.revoked_at.is_(None),
+            )
+            .values(revoked_at=datetime.now(UTC))
+        )
     await session.execute(
         delete(PasswordCredential).where(PasswordCredential.account_id == account_id)
     )
