@@ -4,13 +4,6 @@ from dataclasses import dataclass
 from typing import Any, Optional
 from uuid import UUID
 
-from openhands.sdk.llm.llm import LLM
-from openhands.sdk.settings import (
-    AgentSettingsConfig,
-    ConversationSettings,
-    OpenHandsAgentSettings,
-    apply_agent_settings_diff,
-)
 from pydantic import SecretStr
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -25,6 +18,13 @@ from openhands.app_server.settings.settings_models import (
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk.llm.llm import LLM
+from openhands.sdk.settings import (
+    AgentSettingsConfig,
+    ConversationSettings,
+    OpenHandsAgentSettings,
+    apply_agent_settings_diff,
+)
 from server.constants import (
     DEFAULT_V1_ENABLED,
     LITE_LLM_API_URL,
@@ -1027,14 +1027,21 @@ class OrgStore:
             llm_settings = OrgStore.get_agent_settings_from_org(updated_org).llm
             llm_model = llm_settings.model
             llm_base_url = llm_settings.base_url
-        normalized_llm_base_url = llm_base_url.rstrip('/') if llm_base_url else None
-        normalized_managed_base_url = LITE_LLM_API_URL.rstrip('/')
         openhands_type = is_openhands_model(llm_model)
-        uses_managed_llm_key = (
-            normalized_llm_base_url == normalized_managed_base_url
-            or (normalized_llm_base_url is None and openhands_type)
-        )
-        if not uses_managed_llm_key:
+        # Classify managed-ness with the canonical
+        # ``managed_llm_key_config_from_model`` detector (same as
+        # ``SaasSettingsStore.store()``) rather than a hand-rolled
+        # ``base_url == LITE_LLM_API_URL`` exact match. A managed OpenHands
+        # model may carry an ``all-hands.dev`` proxy URL that differs from
+        # ``LITE_LLM_API_URL`` by a trailing slash or staging/app subdomain;
+        # the exact match would bail here and leave a stale custom key in the
+        # shared ``_llm_api_key`` slot, so switch-back to the managed profile
+        # kept launching against the old, broken key (#421). Imported locally
+        # to avoid a storage-internal circular import at module load.
+        from storage.saas_settings_store import managed_llm_key_config_from_model
+
+        config = managed_llm_key_config_from_model(llm_model, llm_base_url)
+        if config is None or not config.openhands_type:
             return None
 
         result = await session.execute(

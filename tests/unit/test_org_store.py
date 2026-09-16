@@ -1675,7 +1675,7 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
     org_id = uuid.uuid4()
     admin_user_id = uuid.uuid4()
     member_user_id = uuid.uuid4()
-    managed_url = 'https://litellm.example.com'
+    managed_url = 'https://llm-proxy.app.all-hands.dev'
 
     async with async_session_maker() as session:
         role = Role(name='member', rank=2)
@@ -1901,7 +1901,7 @@ async def test_ensure_managed_key_returns_existing_when_owner_and_auth_valid(
     """When the key is registered AND passes auth verification, return it."""
     user_id = uuid.uuid4()
     org_id = uuid.uuid4()
-    managed_url = 'http://test.url'
+    managed_url = 'https://llm-proxy.app.all-hands.dev'
 
     member = MagicMock(spec=OrgMember)
     member.llm_api_key = SecretStr('existing-managed-key')
@@ -1954,7 +1954,7 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
     """When the key is registered but fails auth verification, rotate it."""
     user_id = uuid.uuid4()
     org_id = uuid.uuid4()
-    managed_url = 'http://test.url'
+    managed_url = 'https://llm-proxy.app.all-hands.dev'
 
     member = MagicMock(spec=OrgMember)
     member.llm_api_key = SecretStr('stale-managed-key')

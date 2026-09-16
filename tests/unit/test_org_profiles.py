@@ -1224,3 +1224,106 @@ class TestSwitchBackWithStaleOrgDefault:
         effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
         assert effective is not None
         assert effective.get_secret_value() == 'fresh-managed-key'
+
+
+class TestSwitchBackManagedProfileWithNonDefaultProxyUrl:
+    """Regression for the managed-key detection gap PR #425 left open.
+
+    ``activate_profile`` and ``_ensure_managed_llm_key_for_user`` classified a
+    profile as managed with a hand-rolled ``base_url == LITE_LLM_API_URL``
+    (exact) check, while ``SaasSettingsStore.store()`` uses the canonical
+    ``managed_llm_key_config_from_model`` (an OpenHands model pointing at *any*
+    ``all-hands.dev`` proxy, or ``None``). When the managed profile's
+    ``base_url`` is an ``all-hands.dev`` URL that differs from
+    ``LITE_LLM_API_URL`` (a trailing slash, an app-vs-staging subdomain, or a
+    profile created in one environment and activated in another), the exact
+    match failed, the stale-key rotation was skipped, and the previous BYOR
+    profile's broken key stayed effective — the "Default still 401s even after
+    switching multiple times" report (#421). Using the canonical detector
+    closes the gap: rotation fires for every genuinely-managed profile.
+    """
+
+    @pytest.mark.asyncio
+    async def test_managed_profile_with_non_default_proxy_url_rotates_stale_key(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        # A live verified default so ``Default`` materializes to an openhands/*
+        # model.
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            # 1. Activate a BYOR profile with a dummy key.
+            await save_profile(
+                org_id=org_id,
+                name='TestModel',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='dummymodel',
+                        base_url='dummymodel',
+                        api_key='dummy-broken-key',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(org_id=org_id, name='TestModel', user_id=user_id)
+            member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+            assert member.has_custom_llm_api_key is True
+            assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
+
+            # 2. Mirror prod: the org's default agent_settings.llm stays pinned
+            #    to the stale BYOR profile (profile switches do not rewrite it).
+            await _set_org_agent_settings(
+                async_session_maker,
+                org_id,
+                {'llm': {'model': 'dummymodel', 'base_url': 'dummymodel'}},
+            )
+
+            # 3. Save + activate a keyless managed profile whose base_url is an
+            #    all-hands.dev proxy URL that is NOT byte-identical to
+            #    ``LITE_LLM_API_URL`` (defaults to the *app* proxy in tests).
+            #    The old exact-match check misclassified this as BYOR and
+            #    skipped rotation; the canonical detector recognizes it as
+            #    managed and force-rotates the stale dummy away.
+            await save_profile(
+                org_id=org_id,
+                name='StagingManaged',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='openhands/deepseek-v4-flash',
+                        base_url='https://llm-proxy.staging.all-hands.dev',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(
+                org_id=org_id, name='StagingManaged', user_id=user_id
+            )
+
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is False
+        assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
+        assert member.llm_api_key.get_secret_value() != 'dummy-broken-key'
+        org = await _read_org(async_session_maker, org_id)
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'fresh-managed-key'

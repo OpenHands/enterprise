@@ -29,7 +29,7 @@ from openhands.app_server.settings.llm_profiles import (
 from openhands.app_server.settings.settings_models import (
     _load_persisted_agent_settings,
 )
-from openhands.app_server.utils.llm import MASKED_API_KEY, is_openhands_model
+from openhands.app_server.utils.llm import MASKED_API_KEY
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM
 from openhands.sdk.profiles import (
@@ -434,17 +434,22 @@ async def activate_profile(
         profile_api_key = llm_dump.get('api_key')
         if profile_api_key and profile_api_key != MASKED_API_KEY:
             llm_dump['api_key'] = MASKED_API_KEY
-            # Classify managed vs. BYOR exactly as SaasSettingsStore.store() so
-            # billing attribution stays correct.
-            base_url = llm_dump.get('base_url')
-            normalized_base_url = base_url.rstrip('/') if base_url else None
-            normalized_managed_base_url = LITE_LLM_API_URL.rstrip('/')
+            # Classify managed vs. BYOR with the canonical
+            # ``managed_llm_key_config_from_model`` detector (same as
+            # ``SaasSettingsStore.store()``) so billing attribution stays
+            # correct. Reusing it rather than hand-rolling a
+            # ``base_url == LITE_LLM_API_URL`` check matters here: a managed
+            # OpenHands model may carry an ``all-hands.dev`` proxy URL that
+            # differs from ``LITE_LLM_API_URL`` by a trailing slash or
+            # staging/app subdomain. The exact-match check would misclassify
+            # it as BYOR, which (in the keyless branch below) skips the
+            # stale-key rotation and leaks the previous profile's broken key
+            # forward (#421).
             uses_managed_llm_key = (
-                normalized_base_url == normalized_managed_base_url
-                or (
-                    normalized_base_url is None
-                    and is_openhands_model(llm_dump.get('model'))
+                managed_llm_key_config_from_model(
+                    llm_dump.get('model'), llm_dump.get('base_url')
                 )
+                is not None
             )
             member.llm_api_key = profile_api_key
             member.has_custom_llm_api_key = not uses_managed_llm_key
@@ -468,18 +473,18 @@ async def activate_profile(
             # When the activated profile uses a managed OpenHands key,
             # re-ensure the member's managed key here — mirroring the
             # ``store()`` path — and force rotation when a stale custom key
-            # is being replaced.
-            base_url = llm_dump.get('base_url')
-            normalized_base_url = base_url.rstrip('/') if base_url else None
-            normalized_managed_base_url = LITE_LLM_API_URL.rstrip('/')
-            uses_managed_llm_key = (
-                normalized_base_url == normalized_managed_base_url
-                or (
-                    normalized_base_url is None
-                    and is_openhands_model(llm_dump.get('model'))
+            # is being replaced. Use the canonical
+            # ``managed_llm_key_config_from_model`` detector (same as
+            # ``store()``) so any OpenHands model pointing at an
+            # ``all-hands.dev`` proxy — not just one whose ``base_url`` is
+            # byte-identical to ``LITE_LLM_API_URL`` — is recognized as
+            # managed and gets its stale key rotated (#421).
+            if (
+                managed_llm_key_config_from_model(
+                    llm_dump.get('model'), llm_dump.get('base_url')
                 )
-            )
-            if uses_managed_llm_key:
+                is not None
+            ):
                 await OrgStore._ensure_managed_llm_key_for_user(
                     session, _org, str(user_id), force=had_custom_key, llm=llm
                 )
