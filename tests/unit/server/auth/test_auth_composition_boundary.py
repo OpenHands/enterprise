@@ -24,11 +24,6 @@ INSTALLATION_BOUNDARIES = {
 }
 # These guards reject an inactive protocol before parsing its credentials or clients.
 PROTOCOL_BOUNDARIES = {
-    # Direct mode remains inactive until the password login layer.
-    'server/app_lifespan/saas_app_lifespan_service.py': {
-        'SaasAppLifespanService.__aenter__',
-        '_require_supported_auth_mode',
-    },
     'server/auth/keycloak_manager.py': {'require_keycloak'},
     'server/routes/auth.py': {'keycloak_callback', 'keycloak_offline_callback'},
     'server/routes/native_auth.py': {'NativeAuthRoute.get_route_handler.handler'},

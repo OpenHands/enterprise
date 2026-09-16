@@ -29578,5 +29578,26 @@
     "tr": "Git sağlayıcısına bağlanılamadı. Lütfen tekrar deneyin.",
     "uk": "Не вдалося підключити Git-провайдера. Спробуйте ще раз.",
     "ca": "No s'ha pogut connectar el proveïdor de Git. Torna-ho a provar."
+  },
+  "AUTH$CONFIRM_IDENTITY": {
+    "en": "Confirm identity"
+  },
+  "AUTH$CONTACT_ADMIN": {
+    "en": "Contact your administrator if you need help signing in."
+  },
+  "AUTH$EMAIL": {
+    "en": "Email"
+  },
+  "AUTH$NO_LOGIN_METHODS": {
+    "en": "No sign-in methods are available. Contact your administrator."
+  },
+  "AUTH$PASSWORD": {
+    "en": "Password"
+  },
+  "AUTH$REQUEST_FAILED": {
+    "en": "The request could not be completed. Please try again."
+  },
+  "AUTH$SIGN_IN": {
+    "en": "Sign in"
   }
 }

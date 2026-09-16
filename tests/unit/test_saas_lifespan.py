@@ -28,6 +28,41 @@ async def test_invalid_installation_stops_startup_before_analytics(
         init_analytics.assert_not_called()
 
 
+async def test_native_startup_initializes_auth_before_starting_workers(
+    mock_auth_installation: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+    from server.auth import auth_config
+
+    monkeypatch.setattr(auth_config, 'ENABLE_KEYCLOAK', False)
+
+    def require_initialized(**kwargs: object) -> None:
+        mock_auth_installation.assert_awaited_once()
+
+    with (
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.init_analytics_service',
+            side_effect=require_initialized,
+        ),
+        patch(
+            'server.services.native_maintenance_service.native_maintenance_loop',
+            new_callable=AsyncMock,
+        ) as maintenance,
+        patch.object(
+            SaasAppLifespanService,
+            '_reconcile_org_condenser_defaults',
+            new_callable=AsyncMock,
+        ),
+    ):
+        service = SaasAppLifespanService()
+        assert await service.__aenter__() is service
+        task = service._native_maintenance_task
+        assert task is not None
+        await task
+        maintenance.assert_awaited_once()
+    mock_auth_installation.assert_awaited_once()
+
+
 @pytest.fixture
 def mock_analytics_service():
     svc = MagicMock()

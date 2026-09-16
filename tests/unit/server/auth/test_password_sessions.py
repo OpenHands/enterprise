@@ -19,16 +19,6 @@ from storage.user import User
 PASSWORD = 'A long password with spaces 987!'
 
 
-async def test_password_mode_cannot_activate_before_application_wiring(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
-
-    monkeypatch.setattr(auth_config, 'ENABLE_KEYCLOAK', False)
-    with pytest.raises(RuntimeError, match='not available in this release'):
-        await SaasAppLifespanService().__aenter__()
-
-
 @pytest.fixture
 async def browser(
     async_session_maker: SessionFactory, monkeypatch: pytest.MonkeyPatch
