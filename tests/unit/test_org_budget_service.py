@@ -2235,9 +2235,6 @@ async def test_maintenance_advances_the_cycle_by_one_reset_period(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='pins member_cap_never_below_cycle_baseline — fails on current code'
-)
 async def test_override_cap_is_never_written_below_the_cycle_baseline(
     async_session_maker, budget_org
 ):

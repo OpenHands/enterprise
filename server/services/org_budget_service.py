@@ -1382,8 +1382,12 @@ class OrgBudgetService:
                 max_budget_in_team = None
                 clear_budget = True
             elif effective_limit is not None:
-                # LiteLLM compares cumulative spend against an absolute member cap.
-                max_budget_in_team = baseline + effective_limit
+                # LiteLLM compares cumulative spend against an absolute member cap, so
+                # the cap must never fall below the member's cycle baseline: such a cap
+                # is already exceeded the moment it is written. Neither the column nor
+                # the service rejects a non-positive allowance, so clamp it here -- no
+                # allowance means no further spend this cycle, not retroactive debt.
+                max_budget_in_team = baseline + max(effective_limit, 0)
                 clear_budget = False
             else:
                 max_budget_in_team = None
