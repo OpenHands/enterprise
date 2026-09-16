@@ -452,17 +452,23 @@ async def activate_profile(
             # No per-profile key: this is a keyless (typically managed)
             # profile such as the live ``Default``. Flip the custom-key flag
             # off so the effective key resolves to the managed/org default.
+            # Capture the prior flag first: if the member previously held a
+            # custom (BYOR) key, that key still sits in the encrypted
+            # ``_llm_api_key`` slot (the same slot the managed key lives in).
+            # ``_ensure_managed_llm_key_for_user``'s "reuse if valid" fast-path
+            # can return that stale custom key as if it were a managed key
+            # (LiteLLM lookups are inconclusive-aware and may report True), so
+            # it must be force-rotated, not trusted — otherwise new
+            # conversations launch against the old, broken profile (#421).
+            had_custom_key = member.has_custom_llm_api_key
             member.has_custom_llm_api_key = False
-            # A prior activation of a custom-key (BYOR) profile wrote that
-            # key into the encrypted ``_llm_api_key`` slot (the same slot the
-            # managed key lives in). With ``has_custom_llm_api_key`` now
-            # False, ``_get_effective_llm_api_key`` would otherwise keep
-            # returning that stale custom key (it falls back to
-            # ``_llm_api_key`` when no org-level key is set), so new
-            # conversations would launch against the old, possibly-broken
-            # profile. When the activated profile uses a managed OpenHands
-            # key, re-ensure the member's managed key here — mirroring the
-            # ``store()`` path — so the stale custom key is replaced.
+            # With ``has_custom_llm_api_key`` now False and (typically) no
+            # org-level key, ``_get_effective_llm_api_key`` falls back to
+            # ``_llm_api_key``, so the slot must hold a valid managed key.
+            # When the activated profile uses a managed OpenHands key,
+            # re-ensure the member's managed key here — mirroring the
+            # ``store()`` path — and force rotation when a stale custom key
+            # is being replaced.
             base_url = llm_dump.get('base_url')
             normalized_base_url = base_url.rstrip('/') if base_url else None
             normalized_managed_base_url = LITE_LLM_API_URL.rstrip('/')
@@ -475,7 +481,7 @@ async def activate_profile(
             )
             if uses_managed_llm_key:
                 await OrgStore._ensure_managed_llm_key_for_user(
-                    session, _org, str(user_id)
+                    session, _org, str(user_id), force=had_custom_key
                 )
 
         member_diff = dict(member.agent_settings_diff or {})

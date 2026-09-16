@@ -997,8 +997,19 @@ class OrgStore:
         session,
         updated_org: Org,
         user_id: str,
+        *,
+        force: bool = False,
     ) -> str | None:
-        """Ensure the acting member has their own managed LLM key."""
+        """Ensure the acting member has their own managed LLM key.
+
+        When ``force`` is True the existing key is never trusted/reused, even
+        if it looks registered/valid: the slot is rotated unconditionally.
+        This is required when the member previously held a custom (BYOR) key
+        in the shared ``_llm_api_key`` slot — that key is not a managed key,
+        so the "reuse if valid" fast-path below (which can return True on
+        inconclusive LiteLLM lookups) must not be allowed to hand it back as
+        if it were a managed key. See ``activate_profile``'s switch-back path.
+        """
         llm_settings = OrgStore.get_agent_settings_from_org(updated_org).llm
         llm_model = llm_settings.model
         llm_base_url = llm_settings.base_url
@@ -1029,11 +1040,15 @@ class OrgStore:
 
         existing_key = acting_member.llm_api_key
         existing_key_raw = existing_key.get_secret_value() if existing_key else None
-        if existing_key_raw and await LiteLlmManager.verify_existing_key(
-            existing_key_raw,
-            user_id,
-            str(updated_org.id),
-            openhands_type=openhands_type,
+        if (
+            not force
+            and existing_key_raw
+            and await LiteLlmManager.verify_existing_key(
+                existing_key_raw,
+                user_id,
+                str(updated_org.id),
+                openhands_type=openhands_type,
+            )
         ):
             # The key is registered in LiteLLM, but it may still be stale
             # (e.g. revoked server-side). Do a real auth check before reusing it.

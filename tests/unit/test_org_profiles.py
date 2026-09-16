@@ -1001,17 +1001,21 @@ class TestActivateReplacesStaleCustomKey:
         assert member.has_custom_llm_api_key is True
         assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
 
-        # 2. Switch back to the managed ``Default`` profile. The stale dummy
-        #    key is unknown to LiteLLM, so verification fails and a fresh
-        #    managed key is minted into the shared slot.
+        # 2. Switch back to the managed ``Default`` profile. The prod failure
+        #    mode is that LiteLLM's key lookups are inconclusive-aware:
+        #    ``verify_existing_key`` returns True when the key-list call yields
+        #    no keys, and ``verify_key`` returns True on anything that isn't an
+        #    explicit auth failure. Mock both to return True so the stale dummy
+        #    key looks "valid" — the force-rotate path must still replace it
+        #    with a fresh managed key rather than reuse it (the 401 repro).
         with (
             patch(
                 'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
-                new=AsyncMock(return_value=False),
+                new=AsyncMock(return_value=True),
             ),
             patch(
                 'storage.lite_llm_manager.LiteLlmManager.verify_key',
-                new=AsyncMock(return_value=False),
+                new=AsyncMock(return_value=True),
             ),
             patch(
                 'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
@@ -1027,7 +1031,8 @@ class TestActivateReplacesStaleCustomKey:
             )
 
         member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
-        # The effective key is now the managed one, not the stale custom key.
+        # The effective key is now the managed one, not the stale custom key —
+        # even though the LiteLLM verification mocks said the dummy was valid.
         assert member.has_custom_llm_api_key is False
         assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
         assert member.llm_api_key.get_secret_value() != 'dummy-broken-key'
