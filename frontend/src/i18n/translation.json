@@ -33625,6 +33625,23 @@
     "uk": "Update from current",
     "ca": "Update from current"
   },
+  "INTEGRATIONS_HUB$PROFILE_SET_DEFAULT": {
+    "en": "Set as default",
+    "ja": "Set as default",
+    "zh-CN": "Set as default",
+    "zh-TW": "Set as default",
+    "ko-KR": "Set as default",
+    "no": "Set as default",
+    "it": "Set as default",
+    "pt": "Set as default",
+    "es": "Set as default",
+    "ar": "Set as default",
+    "fr": "Set as default",
+    "tr": "Set as default",
+    "de": "Set as default",
+    "uk": "Set as default",
+    "ca": "Set as default"
+  },
   "INTEGRATIONS_HUB$PROFILE_DELETE": {
     "en": "Delete profile",
     "ja": "Delete profile",

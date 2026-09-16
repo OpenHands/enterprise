@@ -263,6 +263,27 @@ describe("AgentConnectionPage", () => {
     expect(menu).toBeInTheDocument();
     expect(list.contains(menu)).toBe(false);
     expect(screen.getByTestId("permission-profile-duplicate")).toBeVisible();
+    expect(screen.getByTestId("permission-profile-set-default")).toBeDisabled();
+  });
+
+  it("sets a permission profile as the default", async () => {
+    const user = userEvent.setup();
+    renderHubPage(<AgentConnectionPage />);
+
+    const currentDefault = screen.getByTestId(
+      "permission-profile-row-profile-1",
+    );
+    const nextDefault = screen.getByTestId("permission-profile-row-profile-2");
+    expect(currentDefault).toHaveTextContent("INTEGRATIONS_HUB$DEFAULT");
+    expect(nextDefault).not.toHaveTextContent("INTEGRATIONS_HUB$DEFAULT");
+
+    await user.click(
+      screen.getByTestId("permission-profile-menu-trigger-profile-2"),
+    );
+    await user.click(screen.getByTestId("permission-profile-set-default"));
+
+    expect(nextDefault).toHaveTextContent("INTEGRATIONS_HUB$DEFAULT");
+    expect(currentDefault).not.toHaveTextContent("INTEGRATIONS_HUB$DEFAULT");
   });
 
   it("opens the new profile modal without a current-permissions source", async () => {

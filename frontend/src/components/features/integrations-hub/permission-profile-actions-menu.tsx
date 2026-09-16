@@ -18,6 +18,7 @@ import { cn } from "#/utils/utils";
 
 interface PermissionProfileActionsMenuProps {
   profileName: string;
+  isDefault?: boolean;
   isDeleteDisabled?: boolean;
   anchorRef: RefObject<HTMLElement | null>;
   onClose: () => void;
@@ -25,11 +26,13 @@ interface PermissionProfileActionsMenuProps {
   onDuplicate: () => void;
   onLoadProfile: () => void;
   onUpdateFromCurrent: () => void;
+  onSetDefault: () => void;
   onDelete: () => void;
 }
 
 export function PermissionProfileActionsMenu({
   profileName,
+  isDefault = false,
   isDeleteDisabled = false,
   anchorRef,
   onClose,
@@ -37,6 +40,7 @@ export function PermissionProfileActionsMenu({
   onDuplicate,
   onLoadProfile,
   onUpdateFromCurrent,
+  onSetDefault,
   onDelete,
 }: PermissionProfileActionsMenuProps) {
   const { t } = useTranslation();
@@ -158,6 +162,16 @@ export function PermissionProfileActionsMenu({
         onClick={() => handleAction(onUpdateFromCurrent)}
       >
         {t(I18nKey.INTEGRATIONS_HUB$PROFILE_UPDATE)}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        data-testid="permission-profile-set-default"
+        disabled={isDefault}
+        className={dropdownMenuRowClassName}
+        onClick={() => handleAction(onSetDefault)}
+      >
+        {t(I18nKey.INTEGRATIONS_HUB$PROFILE_SET_DEFAULT)}
       </button>
       <button
         type="button"

@@ -185,6 +185,7 @@ function PermissionProfileMenuButton({
   onClose,
   onEditPermissions,
   onDuplicate,
+  onSetDefault,
   onDelete,
 }: {
   profile: HubPermissionProfile;
@@ -193,6 +194,7 @@ function PermissionProfileMenuButton({
   onClose: () => void;
   onEditPermissions: () => void;
   onDuplicate: () => void;
+  onSetDefault: () => void;
   onDelete: () => void;
 }) {
   const { t } = useTranslation();
@@ -217,6 +219,7 @@ function PermissionProfileMenuButton({
       {isOpen ? (
         <PermissionProfileActionsMenu
           profileName={profile.name}
+          isDefault={profile.isDefault}
           isDeleteDisabled={profile.isDefault}
           anchorRef={triggerRef}
           onClose={onClose}
@@ -224,6 +227,7 @@ function PermissionProfileMenuButton({
           onDuplicate={onDuplicate}
           onLoadProfile={onClose}
           onUpdateFromCurrent={onClose}
+          onSetDefault={onSetDefault}
           onDelete={onDelete}
         />
       ) : null}
@@ -240,6 +244,7 @@ export function AgentConnectionPage() {
     isPersonalWorkspace,
     addPermissionProfile,
     savePermissionProfileSnapshot,
+    setDefaultPermissionProfile,
     deletePermissionProfile,
   } = useIntegrationsHubStub();
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -401,6 +406,7 @@ export function AgentConnectionPage() {
                         profile.snapshot,
                       )
                     }
+                    onSetDefault={() => setDefaultPermissionProfile(profile.id)}
                     onDelete={() => deletePermissionProfile(profile.id)}
                   />
                 </div>

@@ -191,6 +191,7 @@ export interface IntegrationsHubViewModel {
     id: string,
     snapshot: HubPermissionProfileSnapshot,
   ) => void;
+  setDefaultPermissionProfile: (id: string) => void;
   deletePermissionProfile: (id: string) => void;
   disableUnusedTools: (
     thresholdValue: number,

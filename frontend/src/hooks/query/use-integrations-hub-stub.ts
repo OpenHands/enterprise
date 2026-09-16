@@ -268,6 +268,15 @@ function useIntegrationsHubStubState(): IntegrationsHubViewModel {
     [integrations],
   );
 
+  const setDefaultPermissionProfile = useCallback((id: string) => {
+    setPermissionProfiles((current) =>
+      current.map((profile) => ({
+        ...profile,
+        isDefault: profile.id === id,
+      })),
+    );
+  }, []);
+
   const deletePermissionProfile = useCallback((id: string) => {
     setPermissionProfiles((current) =>
       current.filter((profile) => profile.id !== id || profile.isDefault),
@@ -355,6 +364,7 @@ function useIntegrationsHubStubState(): IntegrationsHubViewModel {
     registerCustomMcp,
     addPermissionProfile,
     savePermissionProfileSnapshot,
+    setDefaultPermissionProfile,
     deletePermissionProfile,
     disableUnusedTools,
   };
