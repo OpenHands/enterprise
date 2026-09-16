@@ -31,6 +31,18 @@ CLOUD_HOST = 'https://abc.prod-runtime.all-hands.dev'
 SESSION_KEY = 'sekret'
 
 
+@pytest.fixture(autouse=True)
+def _reset_cloud_proxy_client():
+    """The handler uses a module-level shared httpx client; reset it before
+    each test so per-test patches of ``httpx.AsyncClient`` are picked up and
+    no real client leaks across tests."""
+    import server.routes.cloud_proxy as mod
+
+    mod._cloud_proxy_client = None
+    yield
+    mod._cloud_proxy_client = None
+
+
 @pytest.fixture
 def app():
     application = FastAPI()
@@ -285,19 +297,24 @@ def test_forwards_and_streams_response(app):
                 'path': '/api/conversations/c/condense',
                 'headers': {
                     'X-Session-API-Key': SESSION_KEY,
+                    'Content-Type': 'application/json',
                     'Connection': 'keep-alive',
                 },
-                'body': {'foo': 'bar'},
+                'body': '{"foo":"bar"}',
             },
         )
 
     assert response.status_code == 200
     assert response.text == '{"status":"ok"}'
     # Hop-by-hop request headers must not be forwarded.
-    sent_headers = mock_client.build_request.call_args.kwargs['headers']
+    sent_kwargs = mock_client.build_request.call_args.kwargs
+    sent_headers = sent_kwargs['headers']
     assert 'X-Session-API-Key' in sent_headers
     assert 'Connection' not in sent_headers
     assert 'Host' not in sent_headers
+    # The raw body is forwarded verbatim (content=, not json=) so non-JSON
+    # bodies are carried faithfully; Content-Type comes from the caller.
+    assert sent_kwargs['content'] == '{"foo":"bar"}'
 
 
 def test_response_hop_by_hop_headers_stripped(app):
@@ -574,3 +591,214 @@ def test_compressed_response_round_trips_intact(app):
     assert lowered['content-length'] == str(len(compressed))
     # And the payload actually decompresses to the original body.
     assert gzip.decompress(compressed) == payload
+
+
+# ---------------------------------------------------------------------------
+# TLS invariant: cert is validated against the original hostname, not the
+# pinned IP. This is the load-bearing SSRF-rebinding defense — a future
+# refactor that drops ``sni_hostname`` from the request extensions would pass
+# every other test (which mock httpx.AsyncClient) while silently breaking it,
+# so it is exercised here against a real TLS handshake.
+# ---------------------------------------------------------------------------
+
+_RUNTIME_HOSTNAME = 'abc.prod-runtime.all-hands.dev'
+
+
+def _build_tls_materials(san: str):
+    """Build a CA + leaf cert (valid for ``san``) and return PEM paths."""
+    import datetime
+    import tempfile
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'cloud-proxy-test-ca')])
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1))
+        .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=10))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+
+    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    leaf_subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, san)])
+    leaf_cert = (
+        x509.CertificateBuilder()
+        .subject_name(leaf_subject)
+        .issuer_name(ca_cert.subject)
+        .public_key(leaf_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1))
+        .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=10))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(san)]), critical=False)
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+
+    d = tempfile.mkdtemp()
+    certfile = f'{d}/leaf.pem'
+    keyfile = f'{d}/leaf.key'
+    cafile = f'{d}/ca.pem'
+    with open(certfile, 'wb') as f:
+        f.write(leaf_cert.public_bytes(serialization.Encoding.PEM))
+    with open(keyfile, 'wb') as f:
+        f.write(
+            leaf_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption(),
+            )
+        )
+    with open(cafile, 'wb') as f:
+        f.write(ca_cert.public_bytes(serialization.Encoding.PEM))
+    return certfile, keyfile, cafile
+
+
+async def _tls_server_handle(reader, writer):
+    """Minimal HTTP/1.1 responder over TLS."""
+    try:
+        await reader.read(8192)
+        body = b'{"status":"ok"}'
+        writer.write(
+            b'HTTP/1.1 200 OK\r\n'
+            b'content-type: application/json\r\n'
+            b'content-length: ' + str(len(body)).encode() + b'\r\n'
+            b'connection: close\r\n\r\n' + body
+        )
+        await writer.drain()
+    finally:
+        writer.close()
+
+
+def test_tls_cert_validated_against_hostname_not_pinned_ip(app):
+    """A cert valid for the derived hostname must succeed even though the
+    connection is made to the pinned resolved IP (127.0.0.1). Proves the
+    ``sni_hostname`` extension preserves cert validation on a pinned-IP URL."""
+    import asyncio
+    import ssl
+
+    import httpx
+
+    import server.routes.cloud_proxy as mod
+
+    certfile, keyfile, cafile = _build_tls_materials(_RUNTIME_HOSTNAME)
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(certfile, keyfile)
+    client_ctx = ssl.create_default_context(cafile=cafile)
+
+    async def run_test():
+        server = await asyncio.start_server(
+            _tls_server_handle, host='127.0.0.1', port=0, ssl=server_ctx
+        )
+        port = server.sockets[0].getsockname()[1]
+
+        # Hand the handler a REAL pooled client (only the TLS trust store is
+        # overridden) so the actual handshake runs. Setting the module-level
+        # cache means get_cloud_proxy_client() returns it directly.
+        mod._cloud_proxy_client = httpx.AsyncClient(
+            verify=client_ctx, follow_redirects=False, trust_env=False
+        )
+
+        # Resolve the cloud hostname to 127.0.0.1 on the test server's port.
+        # The handler then pins https://127.0.0.1:{port}/alive with
+        # sni_hostname = _RUNTIME_HOSTNAME — the invariant under test.
+        with (
+            _patch_ownership(_owned_sandbox(host=f'https://{_RUNTIME_HOSTNAME}')),
+            _patch_resolve(_RUNTIME_HOSTNAME, ip='127.0.0.1', port=port, scheme='https'),
+        ):
+            async with server:
+                transport = httpx.ASGITransport(app=app)
+                async with httpx.AsyncClient(transport=transport, base_url='http://test') as asgi:
+                    response = await asgi.post(
+                        '/api/cloud-proxy',
+                        json={
+                            'method': 'GET',
+                            'path': '/alive',
+                            'headers': {'X-Session-API-Key': SESSION_KEY},
+                        },
+                    )
+            await mod._cloud_proxy_client.aclose()
+            return response
+
+    response = asyncio.run(run_test())
+    assert response.status_code == 200
+    assert response.content == b'{"status":"ok"}'
+
+
+def test_tls_cert_wrong_hostname_rejected(app):
+    """A cert valid for a DIFFERENT name must fail TLS even though the
+    connection target is the pinned IP. If this ever passes, the
+    ``sni_hostname`` invariant has been broken and SSRF rebinding is possible."""
+    import asyncio
+    import ssl
+
+    import httpx
+
+    import server.routes.cloud_proxy as mod
+
+    certfile, keyfile, cafile = _build_tls_materials('not-the-runtime.example.com')
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(certfile, keyfile)
+    client_ctx = ssl.create_default_context(cafile=cafile)
+
+    async def run_test():
+        server = await asyncio.start_server(
+            _tls_server_handle, host='127.0.0.1', port=0, ssl=server_ctx
+        )
+        port = server.sockets[0].getsockname()[1]
+
+        mod._cloud_proxy_client = httpx.AsyncClient(
+            verify=client_ctx, follow_redirects=False, trust_env=False
+        )
+
+        with (
+            _patch_ownership(_owned_sandbox(host=f'https://{_RUNTIME_HOSTNAME}')),
+            _patch_resolve(_RUNTIME_HOSTNAME, ip='127.0.0.1', port=port, scheme='https'),
+        ):
+            async with server:
+                transport = httpx.ASGITransport(app=app)
+                async with httpx.AsyncClient(transport=transport, base_url='http://test') as asgi:
+                    response = await asgi.post(
+                        '/api/cloud-proxy',
+                        json={
+                            'method': 'GET',
+                            'path': '/alive',
+                            'headers': {'X-Session-API-Key': SESSION_KEY},
+                        },
+                    )
+            await mod._cloud_proxy_client.aclose()
+            return response
+
+    response = asyncio.run(run_test())
+    # The upstream TLS failure surfaces as a 502 (RequestError → 502). The
+    # important invariant: it must NOT be 200 with the server's body.
+    assert response.status_code != 200
+    assert response.status_code == 502

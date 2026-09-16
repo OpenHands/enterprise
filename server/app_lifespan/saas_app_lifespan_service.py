@@ -194,3 +194,12 @@ class SaasAppLifespanService(AppLifespanService):
             await get_global_config().db_session.close()
         except Exception:
             logger.exception('Error closing DB session injector', stack_info=True)
+
+        # Close the shared cloud-proxy httpx client so its connection pool and
+        # keepalive tasks don't outlive the event loop on worker respawn.
+        try:
+            from server.routes.cloud_proxy import close_cloud_proxy_client
+
+            await close_cloud_proxy_client()
+        except Exception:
+            logger.exception('Error closing cloud-proxy client', stack_info=True)

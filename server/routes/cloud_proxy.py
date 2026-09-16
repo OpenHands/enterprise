@@ -37,7 +37,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, JsonValue, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from openhands.app_server.config import depends_user_context
 from openhands.app_server.sandbox.sandbox_models import AGENT_SERVER, SandboxInfo
@@ -56,6 +56,39 @@ _MAX_TIMEOUT_SECONDS = 60.0
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 
 _SESSION_API_KEY_HEADER = 'X-Session-API-Key'
+
+# Shared across requests so TCP connections and TLS sessions are reused. The
+# per-request timeout is set via build_request(timeout=...), not here. Must be
+# closed on application shutdown (see close_cloud_proxy_client).
+_cloud_proxy_client: httpx.AsyncClient | None = None
+
+
+def get_cloud_proxy_client() -> httpx.AsyncClient:
+    """Lazily build a shared, pooled httpx client.
+
+    ``trust_env=False`` and ``follow_redirects=False`` are set here so no
+    request can be redirected or routed through a transport-proxy env var.
+    """
+    global _cloud_proxy_client
+    if _cloud_proxy_client is None or _cloud_proxy_client.is_closed:
+        _cloud_proxy_client = httpx.AsyncClient(
+            follow_redirects=False,
+            trust_env=False,
+            limits=httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=100,
+                keepalive_expiry=30.0,
+            ),
+        )
+    return _cloud_proxy_client
+
+
+async def close_cloud_proxy_client() -> None:
+    """Close the shared client (call on application shutdown)."""
+    global _cloud_proxy_client
+    if _cloud_proxy_client is not None and not _cloud_proxy_client.is_closed:
+        await _cloud_proxy_client.aclose()
+    _cloud_proxy_client = None
 
 
 def _runtime_host_suffixes() -> tuple[str, ...]:
@@ -123,7 +156,10 @@ class CloudProxyRequest(BaseModel):
         description='Upstream absolute path (must start with /), including query string'
     )
     headers: dict[str, str] = Field(default_factory=dict)
-    body: JsonValue | None = None
+    # Raw bytes, forwarded verbatim — not JSON-encoded. The caller supplies
+    # Content-Type via ``headers`` so non-JSON bodies (form, multipart, text,
+    # octet-stream) are carried faithfully. None means a body-less request.
+    body: str | None = None
     timeout_seconds: float | None = Field(default=None, gt=0, le=_MAX_TIMEOUT_SECONDS)
 
     @field_validator('path')
@@ -317,22 +353,19 @@ async def proxy_cloud_request(
         caller_id,
     )
 
+    client = get_cloud_proxy_client()
     try:
-        client = httpx.AsyncClient(
-            timeout=timeout,
-            follow_redirects=False,
-            trust_env=False,
-        )
         req = client.build_request(
             envelope.method,
             pinned_url,
             headers=_forward_headers(envelope.headers),
-            json=envelope.body if envelope.body is not None else None,
+            content=envelope.body if envelope.body is not None else None,
             extensions=extensions,
+            timeout=timeout,
         )
         upstream = await client.send(req, stream=True)
     except httpx.RequestError as exc:
-        await client.aclose()
+        # No response to close on a request error; the shared client stays open.
         logger.warning('cloud_proxy upstream request failed: %s', exc)
         raise HTTPException(status_code=502, detail='upstream request failed') from exc
 
@@ -348,7 +381,6 @@ async def proxy_cloud_request(
                 yield chunk
         finally:
             await upstream.aclose()
-            await client.aclose()
 
     return StreamingResponse(
         relay(),
