@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
-import { ChevronRight, Clock, MessageSquare } from "lucide-react";
+import { ChevronRight, MessageSquare } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AddCustomMcpModal } from "#/components/features/integrations-hub/add-custom-mcp-modal";
-import { ConnectorSetupProgress } from "#/components/features/integrations-hub/connector-setup-progress";
+import { CatalogConnectorModal } from "#/components/features/integrations-hub/catalog-connector-modal";
 import { HubBadge } from "#/components/features/integrations-hub/hub-badge";
 import { HubCirclePlusCheckToggle } from "#/components/features/integrations-hub/hub-circle-plus-check-toggle";
 import { HubCountBadge } from "#/components/features/integrations-hub/hub-count-badge";
@@ -19,7 +19,6 @@ import {
   hubSearchEmptyStateClassName,
 } from "#/components/features/integrations-hub/hub-card-classes";
 import { HubIntegrationCard } from "#/components/features/integrations-hub/hub-integration-card";
-import { HubIntegrationEnableRow } from "#/components/features/integrations-hub/integration-detail-modal";
 import {
   formatHubTimestamp,
   hubAuthLabel,
@@ -41,7 +40,6 @@ import type {
   HubIntegration,
   HubOverviewConnection,
   HubOverviewUser,
-  HubToolAccessMode,
   HubUserRequest,
 } from "#/types/integrations-hub";
 import { formControlTransitionClassName } from "#/utils/form-control-classes";
@@ -58,84 +56,6 @@ import {
   settingsListTableRowClassName,
 } from "#/utils/settings-list-classes";
 import { cn } from "#/utils/utils";
-
-function CatalogConnectorModal({
-  integration,
-  onClose,
-  onRegister,
-  onDelete,
-  onToggleEnabled,
-  onToolAccessModeChange,
-}: {
-  integration: HubIntegration;
-  onClose: () => void;
-  onRegister: () => void;
-  onDelete: () => void;
-  onToggleEnabled: () => void;
-  onToolAccessModeChange: (toolName: string, mode: HubToolAccessMode) => void;
-}) {
-  const { t } = useTranslation();
-
-  return (
-    <HubModal
-      ariaLabel={t(I18nKey.INTEGRATIONS_HUB$CONNECTOR_DETAILS, {
-        name: integration.name,
-      })}
-      testId={`connector-details-modal-${integration.slug}`}
-      width="xl"
-      className="min-h-0 max-h-[90vh] gap-0"
-      onClose={onClose}
-    >
-      <div className="shrink-0 border-b border-[var(--oh-border)] px-7 pb-4 pr-12 pt-7">
-        <div className="flex items-start gap-3">
-          <IntegrationProviderIcon
-            provider={integration.slug}
-            logoUrl={integration.logoUrl}
-            size="md"
-          />
-          <div className="min-w-0 flex-1">
-            <h2 className="text-base font-semibold text-white">
-              {integration.name}
-            </h2>
-            {integration.description ? (
-              <p className="mt-1 text-xs leading-5 text-[var(--oh-text-secondary)]">
-                {integration.description}
-              </p>
-            ) : null}
-          </div>
-        </div>
-        {integration.connected ? (
-          <HubIntegrationEnableRow
-            integration={integration}
-            onToggleEnabled={onToggleEnabled}
-          />
-        ) : null}
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-4 pt-4">
-        <ConnectorSetupProgress
-          integration={integration}
-          isRegistered={integration.connected}
-          onRegister={onRegister}
-          onDelete={onDelete}
-          onToolAccessModeChange={onToolAccessModeChange}
-        />
-      </div>
-      <div className={cn(hubModalFooterClassName, "justify-between")}>
-        <p className="inline-flex items-center gap-1.5 text-[11px] leading-5 text-[var(--oh-text-secondary)]">
-          <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden />
-          {t(I18nKey.INTEGRATIONS_HUB$SETUP_UPDATED, {
-            when: integration.updatedAt
-              ? new Date(integration.updatedAt).toLocaleString()
-              : new Date().toLocaleString(),
-          })}
-        </p>
-        <BrandButton type="button" variant="secondary" onClick={onClose}>
-          {t(I18nKey.INTEGRATIONS_HUB$CLOSE)}
-        </BrandButton>
-      </div>
-    </HubModal>
-  );
-}
 
 function hasUserRequestDetails(request: HubUserRequest) {
   return Boolean(

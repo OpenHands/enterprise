@@ -46,27 +46,16 @@ function IntegrationsHubLayoutInner() {
     return <Navigate to={PERSONAL_INTEGRATIONS_PATHS.integrations} replace />;
   }
 
-  const isVariantsPreview =
-    location.pathname === INTEGRATIONS_HUB_PATHS.connectorModalVariants;
-
   return (
     <div
       className="flex min-h-0 flex-col gap-4 md:flex-row md:gap-6 lg:gap-10"
       data-testid="integrations-hub-layout"
     >
-      {isVariantsPreview ? null : (
-        <IntegrationsHubNav
-          variant="admin"
-          userRequestCount={hub.userRequests.length}
-        />
-      )}
-      <div
-        className={
-          isVariantsPreview
-            ? "mx-auto flex w-full min-w-0 flex-1 flex-col gap-6"
-            : "mx-auto flex w-full min-w-0 max-w-[800px] flex-1 flex-col gap-6"
-        }
-      >
+      <IntegrationsHubNav
+        variant="admin"
+        userRequestCount={hub.userRequests.length}
+      />
+      <div className="mx-auto flex w-full min-w-0 max-w-[800px] flex-1 flex-col gap-6">
         <Outlet />
       </div>
     </div>

@@ -64,10 +64,6 @@ export default [
           "admin-user-requests",
           "routes/integrations-hub-admin-user-requests.tsx",
         ),
-        route(
-          "connector-modal-variants",
-          "routes/integrations-hub-connector-modal-variants.tsx",
-        ),
       ]),
       route("app", "routes/app-settings.tsx"),
       route("billing", "routes/billing.tsx"),
