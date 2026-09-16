@@ -14,7 +14,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from openhands.app_server.config import get_global_config
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     ExposedUrl,
@@ -24,6 +23,7 @@ from openhands.app_server.sandbox.sandbox_models import (
 from server.routes.cloud_proxy import (
     _REQUEST_HOP_BY_HOP_HEADERS,
     _RESPONSE_HOP_BY_HOP_HEADERS,
+    _user_context_dependency,
     cloud_proxy_router,
 )
 
@@ -67,7 +67,12 @@ class _FakeUserContext:
 
 
 def _user_dep():
-    return get_global_config().user.depends
+    # The route's default is the module-level Depends object; FastAPI keys
+    # overrides on the wrapped callable (``Depends.dependency``), which is the
+    # bound injector method captured at import time. Override that exact object
+    # so the override is stable regardless of how get_global_config() resolves
+    # at test time.
+    return _user_context_dependency.dependency
 
 
 def _override_user(application, user_id: str | None):
