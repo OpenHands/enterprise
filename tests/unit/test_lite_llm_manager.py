@@ -3599,9 +3599,7 @@ class TestFreeTierModelRestriction:
     ):
         async with async_session_maker() as session:
             service = VerifiedModelService(session)
-            await service.create_verified_model(
-                'free-model', 'openhands', is_free=True
-            )
+            await service.create_verified_model('free-model', 'openhands', is_free=True)
             await service.create_verified_model(
                 'paid-model', 'openhands', is_free=False
             )

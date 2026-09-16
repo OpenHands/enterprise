@@ -252,9 +252,7 @@ class TestFreeFlag:
             assert updated.is_free is True
             update_team.assert_not_awaited()
 
-    async def test_delete_free_model_does_not_touch_litellm(
-        self, async_session_maker
-    ):
+    async def test_delete_free_model_does_not_touch_litellm(self, async_session_maker):
         async with async_session_maker() as session:
             service = VerifiedModelService(session)
             with patch(
