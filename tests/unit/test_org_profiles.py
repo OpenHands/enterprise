@@ -1042,3 +1042,89 @@ class TestActivateReplacesStaleCustomKey:
         effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
         assert effective is not None
         assert effective.get_secret_value() == 'fresh-managed-key'
+
+
+class TestE2EStaleDefault401Repro:
+    """End-to-end repro for the SaaS stale-default-model 401.
+
+    Activates a BYOR TestModel with a dummy key, switches back to the
+    managed Default, then loads settings the way conversation-start does
+    (resolve_agent_profile) and asserts the effective LLM api_key is NOT
+    the stale dummy.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stale_dummy_not_effective_after_switch_back(
+        self, async_session_maker, patch_route_db
+    ):
+        from unittest.mock import AsyncMock
+
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        await _set_org_agent_settings(
+            async_session_maker,
+            org_id,
+            {'llm': {'model': 'openhands/deepseek-v4-flash', 'base_url': None}},
+        )
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            # 1. Activate BYOR TestModel with a dummy key.
+            await save_profile(
+                org_id=org_id,
+                name='TestModel',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='anthropic/claude-3-5-sonnet',
+                        base_url='https://api.anthropic.com/v1',
+                        api_key='dummy-broken-key',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(org_id=org_id, name='TestModel', user_id=user_id)
+            member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+            assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
+
+            # 2. Switch back to the managed Default.
+            await activate_profile(org_id=org_id, name='Default', user_id=user_id)
+            member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+            print(
+                'AFTER Default: has_custom=',
+                member.has_custom_llm_api_key,
+                'key=',
+                repr(member.llm_api_key.get_secret_value()),
+            )
+
+            # 3. Resolve the effective key the way ``load()`` does at launch.
+            org = await _read_org(async_session_maker, org_id)
+            effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+            print('EFFECTIVE at launch:', repr(effective))
+            assert effective is not None
+            eff_raw = (
+                effective.get_secret_value()
+                if hasattr(effective, 'get_secret_value')
+                else effective
+            )
+            assert eff_raw != 'dummy-broken-key', (
+                'stale dummy key still effective at conversation launch!'
+            )
+            assert eff_raw == 'fresh-managed-key'
