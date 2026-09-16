@@ -1,6 +1,6 @@
 """API routes for managing the LLM model catalogue (admin only).
 
-Mounted at ``/api/admin/model-catalog``; the legacy
+Mounted at ``/api/admin/models``; the legacy
 ``/api/admin/verified-models`` path is also served as a deprecated alias
 for one release (see OpenHands/enterprise#350 for the rollout plan).
 """
@@ -36,7 +36,7 @@ from server.verified_models.verified_model_service import (
 
 _logger = logging.getLogger(__name__)
 
-api_router = APIRouter(prefix='/api/admin/model-catalog', tags=['Model Catalog'])
+api_router = APIRouter(prefix='/api/admin/models', tags=['Model Catalog'])
 legacy_api_router = APIRouter(
     prefix='/api/admin/verified-models',
     tags=['Model Catalog (deprecated)'],
