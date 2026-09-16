@@ -2086,10 +2086,6 @@ async def test_maintenance_survives_a_stored_reset_day_the_month_lacks(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='reproduces obs:personal_org_settings_created_by_user_row_read '
-    '— fails on current code'
-)
 async def test_user_budget_row_rejects_personal_org_without_creating_settings(
     async_session_maker, personal_org
 ):
