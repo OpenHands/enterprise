@@ -69,7 +69,7 @@ class OrgMemberFinancialService:
                 )
                 raise ValueError(f'Invalid page_id: {page_id}') from e
 
-        members, total_count = await OrgMemberStore.get_org_members_paginated(
+        members, has_more = await OrgMemberStore.get_org_members_paginated(
             org_id=org_id,
             offset=offset,
             limit=limit,
@@ -81,7 +81,7 @@ class OrgMemberFinancialService:
                 'OrgMemberFinancialService_get_org_members_financial_data',
                 'org-budgets',
                 org_id=quint_oracle.In('org', 'ORG_IDS'),
-                total_count=total_count,
+                has_more=has_more,
                 has_next=False,
             )
             return OrgMemberFinancialPage(
@@ -166,9 +166,10 @@ class OrgMemberFinancialService:
         # Calculate current page (1-indexed)
         current_page = (offset // limit) + 1
 
-        # Calculate next_page_id
+        # Calculate next_page_id. get_org_members_paginated reports whether rows
+        # remain, not how many there are in total.
         next_offset = offset + limit
-        next_page_id = str(next_offset) if next_offset < total_count else None
+        next_page_id = str(next_offset) if has_more else None
 
         logger.debug(
             'OrgMemberFinancialService:get_org_members_financial_data:success',
@@ -176,7 +177,7 @@ class OrgMemberFinancialService:
                 'org_id': str(org_id),
                 'items_count': len(items),
                 'current_page': current_page,
-                'total_count': total_count,
+                'has_more': has_more,
             },
         )
 
@@ -184,7 +185,7 @@ class OrgMemberFinancialService:
             'OrgMemberFinancialService_get_org_members_financial_data',
             'org-budgets',
             org_id=quint_oracle.In('org', 'ORG_IDS'),
-            total_count=total_count,
+            has_more=has_more,
             has_next=next_page_id is not None,
         )
         return OrgMemberFinancialPage(
