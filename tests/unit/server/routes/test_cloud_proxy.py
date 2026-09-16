@@ -615,18 +615,25 @@ def _build_tls_materials(san: str):
     from cryptography.x509.oid import NameOID
 
     ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'cloud-proxy-test-ca')])
+    ca_name = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, 'cloud-proxy-test-ca')]
+    )
     ca_cert = (
         x509.CertificateBuilder()
         .subject_name(ca_name)
         .issuer_name(ca_name)
         .public_key(ca_key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1))
-        .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=10))
+        .not_valid_before(
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+        )
+        .not_valid_after(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=10)
+        )
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
         .add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False
+            x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()),
+            critical=False,
         )
         .add_extension(
             x509.KeyUsage(
@@ -653,8 +660,12 @@ def _build_tls_materials(san: str):
         .issuer_name(ca_cert.subject)
         .public_key(leaf_key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1))
-        .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=10))
+        .not_valid_before(
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+        )
+        .not_valid_after(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=10)
+        )
         .add_extension(x509.SubjectAlternativeName([x509.DNSName(san)]), critical=False)
         .add_extension(
             x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
@@ -732,11 +743,15 @@ def test_tls_cert_validated_against_hostname_not_pinned_ip(app):
         # sni_hostname = _RUNTIME_HOSTNAME — the invariant under test.
         with (
             _patch_ownership(_owned_sandbox(host=f'https://{_RUNTIME_HOSTNAME}')),
-            _patch_resolve(_RUNTIME_HOSTNAME, ip='127.0.0.1', port=port, scheme='https'),
+            _patch_resolve(
+                _RUNTIME_HOSTNAME, ip='127.0.0.1', port=port, scheme='https'
+            ),
         ):
             async with server:
                 transport = httpx.ASGITransport(app=app)
-                async with httpx.AsyncClient(transport=transport, base_url='http://test') as asgi:
+                async with httpx.AsyncClient(
+                    transport=transport, base_url='http://test'
+                ) as asgi:
                     response = await asgi.post(
                         '/api/cloud-proxy',
                         json={
@@ -781,11 +796,15 @@ def test_tls_cert_wrong_hostname_rejected(app):
 
         with (
             _patch_ownership(_owned_sandbox(host=f'https://{_RUNTIME_HOSTNAME}')),
-            _patch_resolve(_RUNTIME_HOSTNAME, ip='127.0.0.1', port=port, scheme='https'),
+            _patch_resolve(
+                _RUNTIME_HOSTNAME, ip='127.0.0.1', port=port, scheme='https'
+            ),
         ):
             async with server:
                 transport = httpx.ASGITransport(app=app)
-                async with httpx.AsyncClient(transport=transport, base_url='http://test') as asgi:
+                async with httpx.AsyncClient(
+                    transport=transport, base_url='http://test'
+                ) as asgi:
                     response = await asgi.post(
                         '/api/cloud-proxy',
                         json={
