@@ -7,6 +7,10 @@ import { Provider } from "#/types/settings";
  * User Service API - Handles all user-related API endpoints
  */
 class UserService {
+  static async updateEmail(email: string): Promise<void> {
+    await openHands.post("/api/email", { email }, { withCredentials: true });
+  }
+
   /**
    * Get the current user's Git information
    * @returns Git user information

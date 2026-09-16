@@ -10,7 +10,10 @@ import {
   getRateLimitRetryDelayMs,
 } from "./utils/rate-limit-retry";
 
-const handle401Error = (error: AxiosError, queryClient: QueryClient) => {
+const handle401Error = (
+  error: AxiosError<unknown, unknown>,
+  queryClient: QueryClient,
+): void => {
   if (error?.response?.status === 401 || error?.status === 401) {
     queryClient.invalidateQueries({ queryKey: ["user", "authenticated"] });
   }
@@ -22,7 +25,9 @@ const handle401Error = (error: AxiosError, queryClient: QueryClient) => {
 // as a toast. Producers: openhands/app_server/git/git_router.py,
 // openhands/app_server/user/user_router.py,
 // server/routes/users_v1.py.
-const isExpectedNoGitProviderError = (error: AxiosError): boolean =>
+const isExpectedNoGitProviderError = (
+  error: AxiosError<unknown, unknown>,
+): boolean =>
   error.response?.status === 403 &&
   isAxiosErrorWithDetailField(error) &&
   /^git provider (token required|not connected)/i.test(
@@ -47,7 +52,7 @@ export const queryClient = new QueryClient({
     onError: (error, query) => {
       const isAuthQuery =
         query.queryKey[0] === "user" && query.queryKey[1] === "authenticated";
-      if (!isAuthQuery) {
+      if (!isAuthQuery && !query.meta?.skipAuthInvalidation) {
         handle401Error(error, queryClient);
       }
 
@@ -67,7 +72,8 @@ export const queryClient = new QueryClient({
   }),
   mutationCache: new MutationCache({
     onError: (error, _, __, mutation) => {
-      handle401Error(error, queryClient);
+      if (!mutation?.meta?.skipAuthInvalidation)
+        handle401Error(error, queryClient);
 
       if (!mutation?.meta?.disableToast) {
         const message = retrieveAxiosErrorMessage(error);

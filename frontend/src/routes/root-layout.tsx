@@ -8,6 +8,7 @@ import {
   useSearchParams,
 } from "react-router";
 import { useTranslation } from "react-i18next";
+import { useAuthentication } from "#/hooks/use-authentication";
 import { I18nKey } from "#/i18n/declaration";
 import i18n from "#/i18n";
 import { useIsAuthed } from "#/hooks/query/use-is-authed";
@@ -66,7 +67,7 @@ export function ErrorBoundary() {
   );
 }
 
-export default function MainApp() {
+export default function MainApp(): React.JSX.Element {
   const appTitle = useAppTitle();
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -76,9 +77,11 @@ export default function MainApp() {
   const { migrateUserConsent } = useMigrateUserConsent();
   const { t } = useTranslation();
 
-  const config = useConfig();
+  const config = useConfig({ enabled: true });
+  const authentication = useAuthentication();
   const {
     data: isAuthed,
+    acceptedTos,
     isLoading: isAuthLoading,
     isError: isAuthError,
   } = useIsAuthed();
@@ -183,14 +186,25 @@ export default function MainApp() {
   // Show loading spinner while config or auth is loading
   const isLoading = config.isLoading || isAuthLoading;
 
+  const shouldRedirectToTos =
+    isAuthed === true && acceptedTos === false && pathname !== "/accept-tos";
+  React.useEffect(() => {
+    if (shouldRedirectToTos) {
+      const search = searchParams.toString();
+      const destination = `${pathname}${search ? `?${search}` : ""}`;
+      navigate(`/accept-tos?redirect_url=${encodeURIComponent(destination)}`, {
+        replace: true,
+      });
+    }
+  }, [shouldRedirectToTos, pathname, searchParams, navigate]);
+
   // Only decide to redirect AFTER loading completes
   const shouldRedirectToLogin =
     !isLoading &&
     !isAuthed &&
     !isAuthError &&
-    !isOnIntermediatePage &&
     config.data?.app_mode === "saas" &&
-    !loginMethodExists;
+    authentication.redirectToLogin(isOnIntermediatePage, loginMethodExists);
 
   React.useEffect(() => {
     if (shouldRedirectToLogin) {
@@ -208,7 +222,7 @@ export default function MainApp() {
   }, [shouldRedirectToLogin, pathname, searchParams, navigate]);
 
   // Show loading spinner while loading OR when about to redirect
-  if (isLoading || shouldRedirectToLogin) {
+  if (isLoading || shouldRedirectToLogin || shouldRedirectToTos) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-base">
         <LoadingSpinner size="large" />
@@ -228,7 +242,7 @@ export default function MainApp() {
     isAuthed === false &&
     !isOnIntermediatePage &&
     config.data?.app_mode === "saas" &&
-    loginMethodExists;
+    authentication.showSessionExpired(loginMethodExists);
 
   if (isSessionExpired) {
     return (
@@ -267,9 +281,13 @@ export default function MainApp() {
           className="flex-1 relative overflow-auto custom-scrollbar"
         >
           <OnboardingGuard>
-            <EmailVerificationGuard>
+            {!authentication.emailVerification ? (
               <Outlet />
-            </EmailVerificationGuard>
+            ) : (
+              <EmailVerificationGuard>
+                <Outlet />
+              </EmailVerificationGuard>
+            )}
           </OnboardingGuard>
         </div>
       </div>

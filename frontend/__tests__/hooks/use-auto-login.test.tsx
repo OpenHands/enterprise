@@ -93,4 +93,14 @@ describe("useAutoLogin", () => {
     expect(redirect.searchParams.get("kc_idp_hint")).toBe("azure_devops");
     expect(redirect.searchParams.get("login_method")).toBe("azure_devops");
   });
+  it("ignores a stale provider login method in native mode", async () => {
+    const appUrl = "https://app.test/conversations/abc";
+    vi.stubGlobal("location", { href: appUrl });
+    mockUseConfig.mockReturnValue({ data: { app_mode: "saas", auth_mode: "native", auth_url: "old-keycloak.test" }, isLoading: false });
+    mockUseIsOnIntermediatePage.mockReturnValue(false);
+    mockGetLoginMethod.mockReturnValue("github");
+    renderHook(() => useAutoLogin());
+    await waitFor(() => expect(window.location.href).toBe(appUrl));
+  });
+
 });

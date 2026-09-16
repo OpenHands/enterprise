@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
+import { useAuthentication } from "#/hooks/use-authentication";
 import { useSettings } from "#/hooks/query/use-settings";
 import { SETTINGS_QUERY_KEYS } from "#/hooks/query/query-keys";
-import { openHands } from "#/api/open-hands-axios";
+import { useUpdateEmail } from "#/hooks/mutation/use-update-email";
 import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import { useEmailVerification } from "#/hooks/use-email-verification";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
@@ -36,7 +37,7 @@ function EmailInputSection({
   isEmailValid: boolean;
   emailChangeEnabled: boolean;
   children: React.ReactNode;
-}) {
+}): React.JSX.Element {
   const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-4">
@@ -97,7 +98,7 @@ function EmailInputSection({
 
         {!emailChangeEnabled && (
           <p
-            className="text-sm text-tertiary"
+            className="text-sm text-tertiary-alt"
             data-testid="email-change-disabled"
           >
             {t("SETTINGS$EMAIL_CHANGE_DISABLED")}
@@ -127,14 +128,15 @@ function VerificationAlert() {
 
 // These components have been replaced with toast notifications
 
-function UserSettingsScreen() {
+function UserSettingsScreen(): React.JSX.Element {
   const { t } = useTranslation();
   const { data: settings, isLoading, refetch } = useSettings();
   const { data: config } = useConfig();
+  const authentication = useAuthentication();
   const { organizationId } = useSelectedOrganizationId();
   const [email, setEmail] = useState("");
   const [originalEmail, setOriginalEmail] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
+  const { mutateAsync: updateEmail, isPending: isSaving } = useUpdateEmail();
   const [isEmailValid, setIsEmailValid] = useState(true);
   const queryClient = useQueryClient();
   const pollingIntervalRef = useRef<number | null>(null);
@@ -155,6 +157,8 @@ function UserSettingsScreen() {
       window.clearInterval(pollingIntervalRef.current);
       pollingIntervalRef.current = null;
     }
+
+    if (!authentication.emailVerification) return undefined;
 
     if (
       prevVerificationStatusRef.current === false &&
@@ -183,7 +187,14 @@ function UserSettingsScreen() {
         pollingIntervalRef.current = null;
       }
     };
-  }, [settings?.email_verified, refetch, queryClient, t, organizationId]);
+  }, [
+    settings?.email_verified,
+    refetch,
+    queryClient,
+    t,
+    organizationId,
+    authentication.emailVerification,
+  ]);
 
   const handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newEmail = e.target.value;
@@ -191,11 +202,10 @@ function UserSettingsScreen() {
     setIsEmailValid(EMAIL_REGEX.test(newEmail));
   };
 
-  const handleSaveEmail = async () => {
+  const handleSaveEmail = async (): Promise<void> => {
     if (email === originalEmail || !isEmailValid) return;
     try {
-      setIsSaving(true);
-      await openHands.post("/api/email", { email }, { withCredentials: true });
+      await updateEmail(email);
       setOriginalEmail(email);
       // Display toast notification instead of setting state
       displaySuccessToast(t("SETTINGS$EMAIL_SAVED_SUCCESSFULLY"));
@@ -205,8 +215,6 @@ function UserSettingsScreen() {
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error(t("SETTINGS$FAILED_TO_SAVE_EMAIL"), error);
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -215,7 +223,8 @@ function UserSettingsScreen() {
   };
 
   const isEmailChanged = email !== originalEmail;
-  const emailChangeEnabled = config?.email_change_enabled ?? true;
+  const emailChangeEnabled =
+    config?.email_change_enabled ?? authentication.emailVerification;
 
   return (
     <div data-testid="user-settings-screen" className="flex flex-col h-full">
@@ -231,11 +240,16 @@ function UserSettingsScreen() {
             isSaving={isSaving}
             isResendingVerification={isResendingVerification}
             isEmailChanged={isEmailChanged}
-            emailVerified={settings?.email_verified}
+            emailVerified={
+              authentication.emailVerification
+                ? settings?.email_verified
+                : undefined
+            }
             isEmailValid={isEmailValid}
             emailChangeEnabled={emailChangeEnabled}
           >
-            {settings?.email_verified === false && <VerificationAlert />}
+            {authentication.emailVerification &&
+              settings?.email_verified === false && <VerificationAlert />}
           </EmailInputSection>
         )}
       </div>

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useSearchParams } from "react-router";
 import { useTranslation } from "react-i18next";
+import { useVerifyDevice } from "#/hooks/mutation/use-verify-device";
 import { useIsAuthed } from "#/hooks/query/use-is-authed";
 import { LoginCTA } from "#/components/features/auth/login-cta";
 import { RiskAlert } from "#/components/shared/risk-alert";
@@ -16,7 +17,7 @@ import { useShouldHideOrgSelector } from "#/hooks/use-should-hide-org-selector";
 import { Dropdown } from "#/ui/dropdown/dropdown";
 import type { Organization } from "#/types/org";
 
-export default function DeviceVerify() {
+export default function DeviceVerify(): React.JSX.Element {
   const { t } = useTranslation();
   const [searchParams] = useSearchParams();
   const { data: isAuthed, isLoading: isAuthLoading } = useIsAuthed();
@@ -24,7 +25,7 @@ export default function DeviceVerify() {
     success: boolean;
     messageKey: I18nKey;
   } | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const { run: verifyDevice, isPending: isProcessing } = useVerifyDevice();
   const { isEnterpriseCloud } = useAppMode();
 
   // Organization dropdown state — defaults to the user's current organization.
@@ -54,21 +55,11 @@ export default function DeviceVerify() {
   // Get user_code from URL parameters
   const userCode = searchParams.get("user_code");
 
-  const processDeviceVerification = async (code: string) => {
+  const processDeviceVerification = async (code: string): Promise<void> => {
     try {
-      setIsProcessing(true);
+      const success = await verifyDevice(code);
 
-      // Call the backend API endpoint to process device verification
-      const response = await fetch("/oauth/device/verify-authenticated", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: `user_code=${encodeURIComponent(code)}`,
-        credentials: "include", // Include cookies for authentication
-      });
-
-      if (response.ok) {
+      if (success) {
         // Show success message
         setVerificationResult({
           success: true,
@@ -85,8 +76,6 @@ export default function DeviceVerify() {
         success: false,
         messageKey: I18nKey.DEVICE$ERROR_OCCURRED,
       });
-    } finally {
-      setIsProcessing(false);
     }
   };
 
