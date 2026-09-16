@@ -5,22 +5,23 @@ the runtime host is not the same origin as the Canvas and may not expose CORS
 headers. The Canvas client therefore sends a request envelope to this backend,
 which forwards it to the runtime after validating the destination.
 
-This endpoint is intentionally limited to OpenHands-managed runtime hosts. A
-generic authenticated URL fetcher would be an SSRF primitive because session
-API keys are accepted by this server.
+The destination host is NOT trusted from the client. It is derived from the
+caller's session API key: the key is validated, bound to the authenticated
+user (``validate_session_key_ownership``), and the runtime host is read from
+the resulting ``SandboxInfo.exposed_urls``. The client therefore cannot point
+this proxy at an arbitrary host — only at the runtime that issued the key it
+already owns.
 
-By default only public ``https`` runtime hosts under the configured runtime
-host suffixes (``*.prod-runtime.all-hands.dev`` / ``*.staging-runtime.all-hands.dev``)
-are accepted. Self-hosted or local deployments that run runtimes on loopback
-can opt in with ``CLOUD_PROXY_ALLOW_LOCAL_RUNTIME=1``; this is dev-only and
-must never be enabled in production.
+SSRF hardening: the derived host is still validated against the configured
+runtime host suffixes, resolved once, and the resolved IP is pinned for the
+actual connection (with the original hostname preserved for TLS SNI / cert
+validation). The *final* request URL is re-validated after the host and path
+are combined, so a crafted ``path`` cannot redirect the connection past the
+allowlist. Redirects are not followed and transport-proxy env vars are ignored.
 
-SSRF hardening: the destination host is validated, resolved once, and the
-resolved IP is pinned for the actual connection (with the original hostname
-preserved for TLS SNI / cert validation). The *final* request URL is
-re-validated after the host and path are combined, so a crafted ``path``
-cannot redirect the connection past the host allowlist. Redirects are not
-followed and transport-proxy env vars are ignored.
+Self-hosted or local deployments that run runtimes on loopback can opt in with
+``CLOUD_PROXY_ALLOW_LOCAL_RUNTIME=1``; this is dev-only and must never be
+enabled in production.
 """
 
 from __future__ import annotations
@@ -34,11 +35,14 @@ from typing import Literal
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, JsonValue, field_validator
 
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.config import depends_user_context
+from openhands.app_server.sandbox.sandbox_models import AGENT_SERVER, SandboxInfo
+from openhands.app_server.sandbox.session_auth import validate_session_key_ownership
+from openhands.app_server.user.user_context import UserContext
 from server.logger import logger
 
 _DEFAULT_RUNTIME_HOST_SUFFIXES = (
@@ -50,6 +54,8 @@ _DEFAULT_RUNTIME_HOST_SUFFIXES = (
 # backend->runtime connection open indefinitely.
 _MAX_TIMEOUT_SECONDS = 60.0
 _DEFAULT_TIMEOUT_SECONDS = 30.0
+
+_SESSION_API_KEY_HEADER = 'X-Session-API-Key'
 
 
 def _runtime_host_suffixes() -> tuple[str, ...]:
@@ -105,9 +111,13 @@ _RESPONSE_HOP_BY_HOP_HEADERS = frozenset(
 
 
 class CloudProxyRequest(BaseModel):
-    """Request envelope for forwarding a browser call to a runtime host."""
+    """Request envelope for forwarding a browser call to a runtime host.
 
-    host: str = Field(description='Absolute upstream OpenHands runtime host')
+    The upstream host is intentionally absent: it is derived server-side from
+    the caller's session API key (see ``proxy_cloud_request``), so the client
+    cannot choose the destination.
+    """
+
     method: Literal['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
     path: str = Field(
         description='Upstream absolute path (must start with /), including query string'
@@ -119,7 +129,7 @@ class CloudProxyRequest(BaseModel):
     @field_validator('path')
     @classmethod
     def validate_path(cls, value: str) -> str:
-        # A non-"/"-prefixed path turns the validated host into RFC userinfo
+        # A non-"/"-prefixed path turns the derived host into RFC userinfo
         # when concatenated (e.g. path="@169.254.169.254/...") and redirects
         # the actual connection past the host allowlist. Require an absolute
         # path so host+path cannot re-parse to a different host.
@@ -127,76 +137,88 @@ class CloudProxyRequest(BaseModel):
             raise ValueError('path must be an absolute path starting with /')
         return value
 
-    @field_validator('host')
-    @classmethod
-    def validate_host(cls, value: str) -> str:
-        parsed = urlparse(value)
-        try:
-            port = parsed.port
-        except ValueError as exc:
-            raise ValueError('host must not include an invalid port') from exc
 
-        allow_local = _allow_local_runtime()
-        allowed_schemes = ('https', 'http') if allow_local else ('https',)
-        allows_port = allow_local  # only loopback runtimes carry a port
+def _derive_runtime_host(sandbox_info: SandboxInfo) -> str:
+    """Return the AGENT_SERVER base URL from the validated sandbox.
 
-        if (
-            parsed.scheme not in allowed_schemes
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-            or parsed.query
-            or parsed.fragment
-            or parsed.path not in ('', '/')
-            or (port and not allows_port)
-        ):
-            scheme_desc = 'https' if not allow_local else 'https (or http locally)'
-            port_desc = '' if not allows_port else ', port allowed locally'
-            raise ValueError(
-                f'host must be an absolute {scheme_desc} URL without userinfo, '
-                f'query, fragment, or path{port_desc}'
-            )
-
-        hostname = parsed.hostname.lower().rstrip('.')
-        suffixes = _runtime_host_suffixes()
-        host_allowed = any(hostname.endswith(s) for s in suffixes)
-
-        # In local-runtime mode, loopback hosts on any port are accepted so a
-        # self-hosted Canvas can forward to a co-located agent-server runtime.
-        if allow_local and not host_allowed:
-            try:
-                ip = ipaddress.ip_address(hostname)
-            except ValueError:
-                ip = None
-            host_allowed = (
-                ip is not None and ip.is_loopback
-            ) or hostname == 'localhost'
-
-        if not host_allowed:
-            raise ValueError('host is not an allowed OpenHands runtime host')
-
-        # Preserve the port for loopback runtimes; cloud runtime hosts have none.
-        if port and allow_local:
-            return (
-                f'{"http" if parsed.scheme == "http" else "https"}://{hostname}:{port}'
-            )
-        return f'{parsed.scheme}://{hostname}'
+    The host comes from the runtime's own advertised exposed URLs, not from
+    the client. It is still run through ``_resolve_target`` (suffix allowlist
+    + IP-class rejection + pinning) before any connection is made.
+    """
+    for exposed in sandbox_info.exposed_urls or []:
+        if exposed.name == AGENT_SERVER:
+            return exposed.url
+    raise HTTPException(
+        status_code=502,
+        detail='runtime has no reachable agent-server URL',
+    )
 
 
 cloud_proxy_router = APIRouter(prefix='/api/cloud-proxy', tags=['Cloud Proxy'])
 
+# Module-level dependency so it isn't re-evaluated on every request (B008) and
+# can be overridden in tests via application.dependency_overrides.
+_user_context_dependency = depends_user_context()
 
-def _resolve_target(host: str) -> tuple[str, str, int]:
-    """Resolve the host and return (hostname, pinned_ip, port).
+
+def _validate_host_form(host: str) -> str:
+    """Validate the scheme/hostname form of a server-derived runtime host.
+
+    The host is derived from the runtime's exposed URLs (not from the client),
+    so this is defense-in-depth: it asserts the derived value is an ``https``
+    URL (``http`` only in local mode) whose hostname is under a configured
+    runtime suffix or — in local mode only — a loopback/localhost address.
+    Returns the normalized ``scheme://hostname[:port]`` base.
+    """
+    parsed = urlparse(host)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail='runtime host has an invalid port'
+        ) from exc
+
+    allow_local = _allow_local_runtime()
+    allowed_schemes = ('https', 'http') if allow_local else ('https',)
+
+    if (
+        parsed.scheme not in allowed_schemes
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
+        raise HTTPException(status_code=400, detail='runtime host is not allowed')
+
+    hostname = parsed.hostname.lower().rstrip('.')
+    suffixes = _runtime_host_suffixes()
+    host_allowed = any(hostname.endswith(s) for s in suffixes)
+
+    # In local-runtime mode, loopback hosts on any port are accepted so a
+    # self-hosted Canvas can forward to a co-located agent-server runtime.
+    if allow_local and not host_allowed:
+        try:
+            ip = ipaddress.ip_address(hostname)
+        except ValueError:
+            ip = None
+        host_allowed = (ip is not None and ip.is_loopback) or hostname == 'localhost'
+
+    if not host_allowed:
+        raise HTTPException(status_code=400, detail='runtime host is not allowed')
+
+    if port and allow_local:
+        return f'{"http" if parsed.scheme == "http" else "https"}://{hostname}:{port}'
+    return f'{parsed.scheme}://{hostname}'
+
+
+def _resolve_target(host: str) -> tuple[str, str, int, str]:
+    """Resolve the host and return (hostname, pinned_ip, port, scheme).
 
     Rejects non-public addresses unless local mode is on. The returned IP is
     pinned for the actual connection so a DNS record cannot rebind to a
     private address between the check and the connect.
     """
-    parsed = urlparse(host)
-    if not parsed.hostname:
-        raise HTTPException(status_code=400, detail='host is required')
-
+    base = _validate_host_form(host)
+    parsed = urlparse(base)
     allow_local = _allow_local_runtime()
     port = parsed.port or (443 if parsed.scheme == 'https' else 80)
 
@@ -228,7 +250,7 @@ def _resolve_target(host: str) -> tuple[str, str, int]:
             )
 
     # All resolved addresses passed the filter; connect to the first one.
-    return parsed.hostname, addresses[0][4][0], port
+    return parsed.hostname, addresses[0][4][0], port, parsed.scheme
 
 
 def _forward_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -247,17 +269,32 @@ def _forward_headers(headers: dict[str, str]) -> dict[str, str]:
 )
 async def proxy_cloud_request(
     envelope: CloudProxyRequest,
-    user_id: str | None = Depends(get_user_id),
+    user_context: UserContext = _user_context_dependency,
 ) -> StreamingResponse:
-    """Forward an authenticated request to an allowed OpenHands runtime."""
-    if not user_id:
+    """Forward an authenticated request to the caller's own OpenHands runtime.
+
+    The destination host is derived from the ``X-Session-API-Key`` the client
+    supplies: the key is validated and bound to the authenticated user, then
+    the runtime host is read from the resulting sandbox's exposed URLs. The
+    client never chooses the host, so this cannot be aimed at an arbitrary
+    target.
+    """
+    caller_id = await user_context.get_user_id()
+    if not caller_id:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
-    hostname, ip, port = await asyncio.to_thread(_resolve_target, envelope.host)
+    session_api_key = envelope.headers.get(_SESSION_API_KEY_HEADER)
+    # Bind the session key to the caller: 401 if missing/invalid/not running,
+    # 403 if it belongs to a different user. Returns the sandbox we derive the
+    # runtime host from.
+    sandbox_info = await validate_session_key_ownership(user_context, session_api_key)
+    host = _derive_runtime_host(sandbox_info)
+
+    hostname, ip, port, scheme = await asyncio.to_thread(_resolve_target, host)
 
     # Re-validate the *final* URL: combine host + path and assert the hostname
     # is unchanged, so a crafted path cannot redirect the connection.
-    final_url = f'{envelope.host}{envelope.path}'
+    final_url = f'{host}{envelope.path}'
     final_host = urlparse(final_url).hostname
     if not final_host or final_host.lower().rstrip('.') != hostname:
         raise HTTPException(status_code=400, detail='invalid request path')
@@ -265,7 +302,6 @@ async def proxy_cloud_request(
     # Pin the resolved IP in the URL while preserving the original hostname for
     # TLS SNI / certificate validation via the sni_hostname extension. This
     # closes the DNS-rebinding window between resolve and connect.
-    scheme = urlparse(envelope.host).scheme
     port_suffix = f':{port}' if port not in (443, 80) else ''
     ip_host = f'[{ip}]' if ':' in ip else ip  # bracket IPv6 literals
     pinned_url = f'{scheme}://{ip_host}{port_suffix}{envelope.path}'
@@ -273,7 +309,10 @@ async def proxy_cloud_request(
 
     timeout = envelope.timeout_seconds or _DEFAULT_TIMEOUT_SECONDS
     logger.debug(
-        'cloud_proxy forwarding %s %s (user=%s)', envelope.method, final_url, user_id
+        'cloud_proxy forwarding %s %s (user=%s)',
+        envelope.method,
+        final_url,
+        caller_id,
     )
 
     try:

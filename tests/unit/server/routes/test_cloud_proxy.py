@@ -1,9 +1,11 @@
 """Tests for the cloud-proxy route.
 
-These exercise the real validation and forwarding logic: SSRF bypass attempts,
-the host allowlist, IP-class rejection, loopback/local mode, hop-by-hop header
-stripping, auth enforcement, and that the final (host+path) URL is re-validated.
-The upstream httpx client is mocked so no real network call is made.
+These exercise the real validation and forwarding logic: that the destination
+host is derived from the caller's session key (not the client), that the
+session key is bound to the authenticated user (401/403), SSRF path bypasses,
+IP-class rejection, loopback/local mode, hop-by-hop header stripping, and that
+the final (host+path) URL is re-validated. The upstream httpx client and the
+session-key ownership lookup are mocked so no real network/runtime call is made.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,6 +14,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.app_server.config import get_global_config
+from openhands.app_server.sandbox.sandbox_models import (
+    AGENT_SERVER,
+    ExposedUrl,
+    SandboxInfo,
+    SandboxStatus,
+)
 from server.routes.cloud_proxy import (
     _REQUEST_HOP_BY_HOP_HEADERS,
     _RESPONSE_HOP_BY_HOP_HEADERS,
@@ -19,14 +28,17 @@ from server.routes.cloud_proxy import (
 )
 
 CLOUD_HOST = 'https://abc.prod-runtime.all-hands.dev'
+SESSION_KEY = 'sekret'
 
 
 @pytest.fixture
 def app():
     application = FastAPI()
     application.include_router(cloud_proxy_router)
-    # Default: authenticated. Individual tests can override to None for 401.
-    _override_user_id(application, 'user-123')
+    # Default: authenticated, with a session key that resolves to the caller's
+    # own sandbox on the cloud runtime host. Individual tests override pieces.
+    _override_user(application, 'user-123')
+    _override_ownership(application, _owned_sandbox())
     return application
 
 
@@ -35,21 +47,70 @@ def client(app):
     return TestClient(app)
 
 
-def _override_user_id(application, user_id):
-    """Wire get_user_id to return a fixed identity (or None for 401 tests)."""
-    from openhands.app_server.user_auth import get_user_id
+def _owned_sandbox(
+    host: str = CLOUD_HOST, owner: str = 'user-123'
+) -> SandboxInfo:
+    return SandboxInfo(
+        id='sb-1',
+        created_by_user_id=owner,
+        sandbox_spec_id='spec-1',
+        status=SandboxStatus.RUNNING,
+        session_api_key=SESSION_KEY,
+        exposed_urls=[ExposedUrl(name=AGENT_SERVER, url=host, port=60000)],
+    )
 
+
+class _FakeUserContext:
+    def __init__(self, user_id: str | None) -> None:
+        self._user_id = user_id
+
+    async def get_user_id(self) -> str | None:
+        return self._user_id
+
+
+def _user_dep():
+    return get_global_config().user.depends
+
+
+def _override_user(application, user_id: str | None):
+    """Wire the UserContext dependency to a fixed identity (or None for 401)."""
+    application.dependency_overrides[_user_dep()] = _fake_user_dep(user_id)
+
+
+def _fake_user_dep(user_id: str | None):
     async def _dep():
-        return user_id
+        return _FakeUserContext(user_id)
 
-    application.dependency_overrides[get_user_id] = _dep
+    return _dep
 
 
-def _patch_resolve(hostname, ip='203.0.113.10', port=443):
+def _override_ownership(application, sandbox_info: SandboxInfo | None):
+    """No-op placeholder; ownership is patched per-test via _patch_ownership().
+
+    Kept so the default ``app`` fixture reads clearly; the real ownership
+    behavior is exercised by patching the module-level call in each test.
+    """
+    return sandbox_info
+
+
+def _patch_ownership(sandbox_info: SandboxInfo | None, exc=None):
+    """Patch the module-level ownership call used by the route."""
+    if exc is not None:
+        return patch(
+            'server.routes.cloud_proxy.validate_session_key_ownership',
+            new=AsyncMock(side_effect=exc),
+        )
+    return patch(
+        'server.routes.cloud_proxy.validate_session_key_ownership',
+        new=AsyncMock(return_value=sandbox_info),
+    )
+
+
+def _patch_resolve(hostname, ip='203.0.113.10', port=443, scheme='https'):
     """Patch the blocking resolver to return a public IP without touching DNS."""
     return patch(
         'server.routes.cloud_proxy._resolve_target',
-        return_value=(hostname, ip, port),
+        return_value=(hostname, ip, port, scheme),
     )
 
 
@@ -79,6 +140,82 @@ def _mock_client(upstream):
 
 
 # ---------------------------------------------------------------------------
+# Auth + session-key ownership binding
+# ---------------------------------------------------------------------------
+
+
+def test_unauthenticated_returns_401(app):
+    _override_user(app, None)
+    client = TestClient(app)
+    response = client.post(
+        '/api/cloud-proxy',
+        json={'method': 'GET', 'path': '/alive'},
+    )
+    assert response.status_code == 401
+
+
+def test_missing_session_key_rejected(app):
+    """Ownership validation runs before any forwarding; a missing key 401s."""
+    from fastapi import HTTPException, status
+
+    client = TestClient(app)
+    with _patch_ownership(None, exc=HTTPException(status.HTTP_401_UNAUTHORIZED)):
+        response = client.post(
+            '/api/cloud-proxy',
+            json={'method': 'GET', 'path': '/alive'},
+        )
+    assert response.status_code == 401
+
+
+def test_session_key_owned_by_other_user_rejected(app):
+    """A session key that belongs to a different user must 403."""
+    from fastapi import HTTPException, status
+
+    client = TestClient(app)
+    with _patch_ownership(
+        None, exc=HTTPException(status.HTTP_403_FORBIDDEN)
+    ):
+        response = client.post(
+            '/api/cloud-proxy',
+            json={
+                'method': 'GET',
+                'path': '/alive',
+                'headers': {'X-Session-API-Key': 'stolen'},
+            },
+        )
+    assert response.status_code == 403
+
+
+def test_host_is_derived_from_session_key_not_client(app):
+    """A client-supplied `host` in the envelope must be ignored — the route
+    derives the host from the validated sandbox's exposed URLs."""
+    client = TestClient(app)
+    # Envelope includes a malicious `host`; it must be disregarded.
+    with (
+        _patch_ownership(_owned_sandbox()),
+        _patch_resolve('abc.prod-runtime.all-hands.dev'),
+        patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
+    ):
+        upstream = _mock_upstream(200, b'ok')
+        mock_client, _ctx = _mock_client(upstream)
+        mock_cls.return_value = mock_client
+        response = client.post(
+            '/api/cloud-proxy',
+            json={
+                'host': 'https://evil.com',
+                'method': 'GET',
+                'path': '/alive',
+                'headers': {'X-Session-API-Key': SESSION_KEY},
+            },
+        )
+    assert response.status_code == 200
+    # The pinned URL sent upstream is the derived cloud host, not evil.com.
+    sent_url = mock_client.build_request.call_args.args[1]
+    assert 'evil.com' not in sent_url
+    assert '203.0.113.10' in sent_url  # pinned resolved IP
+
+
+# ---------------------------------------------------------------------------
 # Validation: SSRF bypass via path
 # ---------------------------------------------------------------------------
 
@@ -95,84 +232,32 @@ def test_path_ssrf_bypass_rejected(client, path):
     """A non-absolute path must be rejected so host+path can't re-parse."""
     response = client.post(
         '/api/cloud-proxy',
-        json={'host': CLOUD_HOST, 'method': 'GET', 'path': path},
+        json={'method': 'GET', 'path': path},
     )
     assert response.status_code == 422
 
 
 def test_protocol_relative_path_keeps_host(app):
-    """A path starting with // is allowed (it keeps the validated host) but
-    must still be re-checked so the final URL host is unchanged."""
-    _override_user_id(app, 'user-123')
+    """A path starting with // keeps the derived host; final URL re-checked."""
     client = TestClient(app)
-    with _patch_resolve('abc.prod-runtime.all-hands.dev'):
-        # Re-validation should pass; we only assert it does not 400/422 on path.
+    with (
+        _patch_ownership(_owned_sandbox()),
+        _patch_resolve('abc.prod-runtime.all-hands.dev'),
+        patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
+    ):
+        upstream = _mock_upstream(200, b'ok')
+        mock_client, _ctx = _mock_client(upstream)
+        mock_cls.return_value = mock_client
         response = client.post(
             '/api/cloud-proxy',
-            json={'host': CLOUD_HOST, 'method': 'GET', 'path': '//169.254.169.254/'},
+            json={
+                'method': 'GET',
+                'path': '//169.254.169.254/',
+                'headers': {'X-Session-API-Key': SESSION_KEY},
+            },
         )
     assert response.status_code != 422  # path accepted
     assert response.status_code != 400  # final host unchanged
-
-
-def test_non_allowed_host_rejected(client):
-    response = client.post(
-        '/api/cloud-proxy',
-        json={'host': 'https://evil.com', 'method': 'GET', 'path': '/x'},
-    )
-    assert response.status_code == 422
-
-
-def test_http_rejected_unless_local(client):
-    response = client.post(
-        '/api/cloud-proxy',
-        json={
-            'host': 'http://abc.prod-runtime.all-hands.dev',
-            'method': 'GET',
-            'path': '/x',
-        },
-    )
-    assert response.status_code == 422
-
-
-def test_userinfo_in_host_rejected(client):
-    response = client.post(
-        '/api/cloud-proxy',
-        json={
-            'host': 'https://u:p@abc.prod-runtime.all-hands.dev',
-            'method': 'GET',
-            'path': '/x',
-        },
-    )
-    assert response.status_code == 422
-
-
-def test_suffix_override_accepted(client, monkeypatch):
-    monkeypatch.setenv('CLOUD_PROXY_RUNTIME_HOST_SUFFIXES', '.my-runtime.example')
-    response = client.post(
-        '/api/cloud-proxy',
-        json={'host': 'https://run.my-runtime.example', 'method': 'GET', 'path': '/x'},
-    )
-    # Host validation must pass (not 422). It then reaches the resolver, which
-    # fails on a non-resolvable test domain -> 400. Either proves validation
-    # accepted the overridden suffix.
-    assert response.status_code in (400, 200)
-
-
-# ---------------------------------------------------------------------------
-# Auth enforcement
-# ---------------------------------------------------------------------------
-
-
-def test_unauthenticated_returns_401(app):
-    _override_user_id(app, None)
-    client = TestClient(app)
-    with _patch_resolve('abc.prod-runtime.all-hands.dev'):
-        response = client.post(
-            '/api/cloud-proxy',
-            json={'host': CLOUD_HOST, 'method': 'GET', 'path': '/alive'},
-        )
-    assert response.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -181,11 +266,11 @@ def test_unauthenticated_returns_401(app):
 
 
 def test_forwards_and_streams_response(app):
-    _override_user_id(app, 'user-123')
     client = TestClient(app)
     upstream = _mock_upstream(200, b'{"status":"ok"}')
 
     with (
+        _patch_ownership(_owned_sandbox()),
         _patch_resolve('abc.prod-runtime.all-hands.dev'),
         patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
     ):
@@ -195,10 +280,12 @@ def test_forwards_and_streams_response(app):
         response = client.post(
             '/api/cloud-proxy',
             json={
-                'host': CLOUD_HOST,
                 'method': 'POST',
                 'path': '/api/conversations/c/condense',
-                'headers': {'X-Session-API-Key': 'sekret', 'Connection': 'keep-alive'},
+                'headers': {
+                    'X-Session-API-Key': SESSION_KEY,
+                    'Connection': 'keep-alive',
+                },
                 'body': {'foo': 'bar'},
             },
         )
@@ -213,7 +300,6 @@ def test_forwards_and_streams_response(app):
 
 
 def test_response_hop_by_hop_headers_stripped(app):
-    _override_user_id(app, 'user-123')
     client = TestClient(app)
     upstream = _mock_upstream(
         500,
@@ -227,6 +313,7 @@ def test_response_hop_by_hop_headers_stripped(app):
     )
 
     with (
+        _patch_ownership(_owned_sandbox()),
         _patch_resolve('abc.prod-runtime.all-hands.dev'),
         patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
     ):
@@ -235,7 +322,7 @@ def test_response_hop_by_hop_headers_stripped(app):
 
         response = client.post(
             '/api/cloud-proxy',
-            json={'host': CLOUD_HOST, 'method': 'GET', 'path': '/alive'},
+            json={'method': 'GET', 'path': '/alive'},
         )
 
     assert response.status_code == 500
@@ -250,18 +337,19 @@ def test_response_hop_by_hop_headers_stripped(app):
 
 
 def test_final_url_host_mismatch_rejected(app):
-    """If the resolver's hostname disagrees with the envelope host, the final
+    """If the resolver's hostname disagrees with the derived host, the final
     URL re-validation must reject (defense against any path that changes host)."""
-    _override_user_id(app, 'user-123')
     client = TestClient(app)
-    # Resolver returns a different hostname than the envelope host parses to.
-    with patch(
-        'server.routes.cloud_proxy._resolve_target',
-        return_value=('not-the-same-host', '203.0.113.10', 443),
+    with (
+        _patch_ownership(_owned_sandbox()),
+        patch(
+            'server.routes.cloud_proxy._resolve_target',
+            return_value=('not-the-same-host', '203.0.113.10', 443, 'https'),
+        ),
     ):
         response = client.post(
             '/api/cloud-proxy',
-            json={'host': CLOUD_HOST, 'method': 'GET', 'path': '/alive'},
+            json={'method': 'GET', 'path': '/alive'},
         )
     assert response.status_code == 400
     assert 'path' in response.json()['detail']
@@ -273,15 +361,17 @@ def test_final_url_host_mismatch_rejected(app):
 
 
 def test_private_ip_rejected(app):
-    _override_user_id(app, 'user-123')
     client = TestClient(app)
-    with patch('server.routes.cloud_proxy.socket.getaddrinfo') as gai:
+    with (
+        _patch_ownership(_owned_sandbox()),
+        patch('server.routes.cloud_proxy.socket.getaddrinfo') as gai,
+    ):
         gai.return_value = [
             (socket_fam(), 1, 6, '', ('10.0.0.1', 443)),
         ]
         response = client.post(
             '/api/cloud-proxy',
-            json={'host': CLOUD_HOST, 'method': 'GET', 'path': '/alive'},
+            json={'method': 'GET', 'path': '/alive'},
         )
     assert response.status_code == 400
     assert 'non-public' in response.json()['detail']
@@ -289,23 +379,27 @@ def test_private_ip_rejected(app):
 
 def test_loopback_rejected_without_local_flag(app, monkeypatch):
     monkeypatch.delenv('CLOUD_PROXY_ALLOW_LOCAL_RUNTIME', raising=False)
-    _override_user_id(app, 'user-123')
     client = TestClient(app)
-    with patch('server.routes.cloud_proxy.socket.getaddrinfo') as gai:
+    with (
+        _patch_ownership(_owned_sandbox()),
+        patch('server.routes.cloud_proxy.socket.getaddrinfo') as gai,
+    ):
         gai.return_value = [(socket_fam(), 1, 6, '', ('127.0.0.1', 443))]
         response = client.post(
             '/api/cloud-proxy',
-            json={'host': CLOUD_HOST, 'method': 'GET', 'path': '/alive'},
+            json={'method': 'GET', 'path': '/alive'},
         )
     assert response.status_code == 400
 
 
 def test_loopback_allowed_with_local_flag(app, monkeypatch):
     monkeypatch.setenv('CLOUD_PROXY_ALLOW_LOCAL_RUNTIME', '1')
-    _override_user_id(app, 'user-123')
     client = TestClient(app)
     upstream = _mock_upstream(200, b'ok')
     with (
+        _patch_ownership(
+            _owned_sandbox(host='http://127.0.0.1:8008')
+        ),
         patch('server.routes.cloud_proxy.socket.getaddrinfo') as gai,
         patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
     ):
@@ -316,9 +410,9 @@ def test_loopback_allowed_with_local_flag(app, monkeypatch):
         response = client.post(
             '/api/cloud-proxy',
             json={
-                'host': 'http://127.0.0.1:8008',
                 'method': 'GET',
                 'path': '/alive',
+                'headers': {'X-Session-API-Key': SESSION_KEY},
             },
         )
     assert response.status_code == 200
@@ -328,16 +422,50 @@ def test_loopback_allowed_with_local_flag(app, monkeypatch):
 def test_unresolvable_host_rejected(app):
     import socket as _socket
 
-    _override_user_id(app, 'user-123')
     client = TestClient(app)
-    with patch('server.routes.cloud_proxy.socket.getaddrinfo') as gai:
+    with (
+        _patch_ownership(_owned_sandbox()),
+        patch('server.routes.cloud_proxy.socket.getaddrinfo') as gai,
+    ):
         gai.side_effect = _socket.gaierror('nope')
         response = client.post(
             '/api/cloud-proxy',
-            json={'host': CLOUD_HOST, 'method': 'GET', 'path': '/alive'},
+            json={'method': 'GET', 'path': '/alive'},
         )
     assert response.status_code == 400
     assert 'resolved' in response.json()['detail']
+
+
+def test_derived_host_not_under_suffix_rejected(app, monkeypatch):
+    """Even though the host is server-derived, a runtime that advertises a host
+    outside the allowlist must be rejected (defense-in-depth)."""
+    monkeypatch.delenv('CLOUD_PROXY_ALLOW_LOCAL_RUNTIME', raising=False)
+    client = TestClient(app)
+    with _patch_ownership(_owned_sandbox(host='https://evil.com')):
+        response = client.post(
+            '/api/cloud-proxy',
+            json={'method': 'GET', 'path': '/alive'},
+        )
+    assert response.status_code == 400
+
+
+def test_no_agent_server_url_rejected(app):
+    """A sandbox with no AGENT_SERVER exposed URL cannot be proxied."""
+    client = TestClient(app)
+    bare = SandboxInfo(
+        id='sb-1',
+        created_by_user_id='user-123',
+        sandbox_spec_id='spec-1',
+        status=SandboxStatus.RUNNING,
+        session_api_key=SESSION_KEY,
+        exposed_urls=[],
+    )
+    with _patch_ownership(bare):
+        response = client.post(
+            '/api/cloud-proxy',
+            json={'method': 'GET', 'path': '/alive'},
+        )
+    assert response.status_code == 502
 
 
 # ---------------------------------------------------------------------------
@@ -348,9 +476,9 @@ def test_unresolvable_host_rejected(app):
 def test_upstream_request_error_returns_502(app):
     import httpx
 
-    _override_user_id(app, 'user-123')
     client = TestClient(app)
     with (
+        _patch_ownership(_owned_sandbox()),
         _patch_resolve('abc.prod-runtime.all-hands.dev'),
         patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
     ):
@@ -362,7 +490,7 @@ def test_upstream_request_error_returns_502(app):
 
         response = client.post(
             '/api/cloud-proxy',
-            json={'host': CLOUD_HOST, 'method': 'GET', 'path': '/alive'},
+            json={'method': 'GET', 'path': '/alive'},
         )
     assert response.status_code == 502
 
@@ -376,7 +504,6 @@ def test_timeout_over_cap_rejected(client):
     response = client.post(
         '/api/cloud-proxy',
         json={
-            'host': CLOUD_HOST,
             'method': 'GET',
             'path': '/x',
             'timeout_seconds': 99999,
@@ -411,7 +538,6 @@ def test_compressed_response_round_trips_intact(app):
     headers that tell the client how to decode them."""
     import gzip
 
-    _override_user_id(app, 'user-123')
     client = TestClient(app)
     payload = b'{"status":"ok"}'
     compressed = gzip.compress(payload)
@@ -426,6 +552,7 @@ def test_compressed_response_round_trips_intact(app):
     )
 
     with (
+        _patch_ownership(_owned_sandbox()),
         _patch_resolve('abc.prod-runtime.all-hands.dev'),
         patch('server.routes.cloud_proxy.httpx.AsyncClient') as mock_cls,
     ):
@@ -434,7 +561,7 @@ def test_compressed_response_round_trips_intact(app):
 
         response = client.post(
             '/api/cloud-proxy',
-            json={'host': CLOUD_HOST, 'method': 'GET', 'path': '/alive'},
+            json={'method': 'GET', 'path': '/alive'},
         )
 
     assert response.status_code == 200

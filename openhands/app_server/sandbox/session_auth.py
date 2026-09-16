@@ -103,7 +103,7 @@ async def validate_session_key(session_api_key: str | None) -> SandboxInfo:
 async def validate_session_key_ownership(
     user_context: UserContext,
     session_api_key: str | None,
-) -> None:
+) -> SandboxInfo:
     """Validate session key and verify it belongs to a sandbox owned by the caller.
 
     This combines session key validation with ownership verification, ensuring
@@ -112,6 +112,11 @@ async def validate_session_key_ownership(
     Args:
         user_context: The authenticated user's context.
         session_api_key: The session API key to validate.
+
+    Returns:
+        The ``SandboxInfo`` for the validated, owned sandbox — callers that need
+        the sandbox's runtime host or exposed URLs can use it instead of doing a
+        second lookup.
 
     Raises:
         HTTPException(401): if the key is missing, invalid, or user cannot be determined.
@@ -137,3 +142,5 @@ async def validate_session_key_ownership(
             status.HTTP_403_FORBIDDEN,
             detail='Session API key does not belong to the authenticated user',
         )
+
+    return sandbox_info
