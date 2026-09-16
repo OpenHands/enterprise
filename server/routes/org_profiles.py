@@ -481,7 +481,7 @@ async def activate_profile(
             )
             if uses_managed_llm_key:
                 await OrgStore._ensure_managed_llm_key_for_user(
-                    session, _org, str(user_id), force=had_custom_key
+                    session, _org, str(user_id), force=had_custom_key, llm=llm
                 )
 
         member_diff = dict(member.agent_settings_diff or {})

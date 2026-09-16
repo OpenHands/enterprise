@@ -4,6 +4,13 @@ from dataclasses import dataclass
 from typing import Any, Optional
 from uuid import UUID
 
+from openhands.sdk.llm.llm import LLM
+from openhands.sdk.settings import (
+    AgentSettingsConfig,
+    ConversationSettings,
+    OpenHandsAgentSettings,
+    apply_agent_settings_diff,
+)
 from pydantic import SecretStr
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -18,12 +25,6 @@ from openhands.app_server.settings.settings_models import (
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.app_server.utils.logger import openhands_logger as logger
-from openhands.sdk.settings import (
-    AgentSettingsConfig,
-    ConversationSettings,
-    OpenHandsAgentSettings,
-    apply_agent_settings_diff,
-)
 from server.constants import (
     DEFAULT_V1_ENABLED,
     LITE_LLM_API_URL,
@@ -999,6 +1000,7 @@ class OrgStore:
         user_id: str,
         *,
         force: bool = False,
+        llm: LLM | None = None,
     ) -> str | None:
         """Ensure the acting member has their own managed LLM key.
 
@@ -1009,10 +1011,22 @@ class OrgStore:
         so the "reuse if valid" fast-path below (which can return True on
         inconclusive LiteLLM lookups) must not be allowed to hand it back as
         if it were a managed key. See ``activate_profile``'s switch-back path.
+
+        ``llm`` overrides the LLM config used to classify the key as managed.
+        ``activate_profile`` passes the *activated profile's* LLM so the
+        classification reflects the profile being switched to (e.g. the
+        managed ``Default``), not the org's persisted default
+        ``agent_settings.llm`` — which may still point at a prior BYOR
+        profile and would otherwise cause this method to bail out before
+        rotating the stale custom key (#421).
         """
-        llm_settings = OrgStore.get_agent_settings_from_org(updated_org).llm
-        llm_model = llm_settings.model
-        llm_base_url = llm_settings.base_url
+        if llm is not None:
+            llm_model = llm.model
+            llm_base_url = llm.base_url
+        else:
+            llm_settings = OrgStore.get_agent_settings_from_org(updated_org).llm
+            llm_model = llm_settings.model
+            llm_base_url = llm_settings.base_url
         normalized_llm_base_url = llm_base_url.rstrip('/') if llm_base_url else None
         normalized_managed_base_url = LITE_LLM_API_URL.rstrip('/')
         openhands_type = is_openhands_model(llm_model)
