@@ -27,7 +27,6 @@ ORG_ID = uuid.UUID('7694c7b6-f959-4b81-92e9-b09c206f5081')
 ADMIN_USER_ID = uuid.UUID('7694c7b6-f959-4b81-92e9-b09c206f5082')
 CONFIG = MetaProfile(
     classifier_model='classifier',
-    default_model='default',
     prompt_template='Route {{ instance_text }}',
 )
 

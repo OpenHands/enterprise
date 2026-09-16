@@ -160,7 +160,6 @@ class SaasSettingsStore(SettingsStore):
         meta_profile = MetaProfile.model_validate(raw_meta_profile)
         referenced_names = {
             meta_profile.classifier_model,
-            meta_profile.default_model,
             *(item.model for item in meta_profile.classes),
         }
         profiles = load_llm_profiles(org)

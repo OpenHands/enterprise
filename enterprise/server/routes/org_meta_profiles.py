@@ -31,7 +31,6 @@ class OrgMetaProfiles(BaseModel):
 class MetaProfileInfo(BaseModel):
     name: str
     classifier_model: str
-    default_model: str
     num_classes: int
 
 
@@ -116,7 +115,6 @@ def _validate_profile_references(org: Org, config: MetaProfile) -> None:
     profiles = _load_profiles(org)
     referenced_names = {
         config.classifier_model,
-        config.default_model,
         *(item.model for item in config.classes),
     }
     for name in sorted(referenced_names):
@@ -142,7 +140,6 @@ async def list_meta_profiles(
             MetaProfileInfo(
                 name=name,
                 classifier_model=config.classifier_model,
-                default_model=config.default_model,
                 num_classes=len(config.classes),
             )
             for name, config in sorted(profiles.profiles.items())
