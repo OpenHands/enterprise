@@ -693,7 +693,10 @@ class OrgStore:
 
     @staticmethod
     async def delete_org_cascade(
-        org_id: UUID, requester_user_id: str | None = None
+        org_id: UUID,
+        requester_user_id: str | None = None,
+        *,
+        terminal_account_id: UUID | None = None,
     ) -> Org | None:
         """Delete organization and all associated data in cascade, including external LiteLLM cleanup.
 
@@ -705,7 +708,7 @@ class OrgStore:
           of the org being deleted — the personal-org self-service case), the
           requester's user row is cascade-deleted in the same transaction. The
           Keycloak account is left untouched, so on the user's next login
-          ``UserStore.create_user`` re-onboards them as a brand-new user. The
+          ``KeycloakAccountProfileProvisioning.create_user`` re-onboards them as a brand-new user. The
           new ``User.id`` and ``Org.id`` are derived from the Keycloak ``sub``
           claim, which is stable across logins, so the re-created personal-org
           identity matches the deleted one (``User.id == Org.id ==
@@ -732,7 +735,10 @@ class OrgStore:
                 left without any organization by the deletion.
             Exception: If database operations or LiteLLM cleanup fail
         """
+        from server.auth.composition import get_auth_services
+
         async with a_session_maker() as session:
+            await get_auth_services().lifecycle.lock_mutation(session)
             # First get the organization to return it
             result = await session.execute(select(Org).filter(Org.id == org_id))
             org = result.scalars().first()
@@ -793,6 +799,10 @@ class OrgStore:
                 requester_orphan_ids = [
                     uid for uid in orphaned_user_ids if uid == requester_user_id
                 ]
+
+                await get_auth_services().lifecycle.mark_org_orphans(
+                    session, requester_orphan_ids, terminal_account_id
+                )
 
                 # 1. Delete conversation data for organization conversations
                 await session.execute(
@@ -872,7 +882,7 @@ class OrgStore:
 
                 # 3a. Cascade-delete the requester if they are a sole-org user
                 # (personal-org self-service path). Their personal-org identity
-                # is preserved on re-login because UserStore.create_user derives
+                # is preserved on re-login because KeycloakAccountProfileProvisioning.create_user derives
                 # both User.id and Org.id from the Keycloak ``sub`` claim (which
                 # is stable across logins), so a re-onboarded user receives the
                 # same UUIDs they had before. Downstream systems keyed on
@@ -952,7 +962,7 @@ class OrgStore:
                 # and the ``org`` row survives the transaction even though
                 # every preceding step committed. Forgetting the ``await``
                 # here would leave the next sign-in colliding on
-                # ``org_pkey`` in ``UserStore.create_user``, because both
+                # ``org_pkey`` in ``KeycloakAccountProfileProvisioning.create_user``, because both
                 # the surviving row and the new row are keyed on the same
                 # stable Keycloak ``sub``. Awaited explicitly to make that
                 # invariant load-bearing rather than incidental.
@@ -963,11 +973,9 @@ class OrgStore:
                     'Deleting LiteLLM team within database transaction',
                     extra={'org_id': str(org_id)},
                 )
-                await LiteLlmManager.delete_team(str(org_id))
-
-                if requester_orphan_ids:
-                    for user_id in requester_orphan_ids:
-                        await OrgStore._delete_litellm_user_best_effort(user_id, org_id)
+                await get_auth_services().provisioning.delete_org_resources(
+                    session, org_id, requester_orphan_ids
+                )
 
                 # 7. Commit all changes only if everything succeeded
                 await session.commit()

@@ -159,6 +159,6 @@ async def cleanup_native_resource(
                 f'{LITE_LLM_API_URL}/team/delete', json={'team_ids': [str(org_id)]}
             )
         else:
-            raise ValueError('Unknown native external cleanup operation')
+            raise ValueError('Unknown authentication resource cleanup operation')
         if response.status_code != 404:
             response.raise_for_status()
