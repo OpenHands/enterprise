@@ -767,15 +767,18 @@ class GitOrgAlreadyClaimedError(Exception):
         )
 
 
+# How a spend figure was obtained: read from LiteLLM now, served from an earlier
+# cached read, or not obtained at all. Shared by every response that reports spend.
+SpendStatus = Literal['live', 'stale', 'unavailable']
+
+
 class OrgMemberFinancialResponse(BaseModel):
     """Financial data for a single organization member."""
 
     user_id: str
     email: str | None
-    # None when the spend read failed: a figure the proxy never reported must not be
-    # presented as an observed zero.
-    lifetime_spend: float | None  # Total amount spent (from LiteLLM)
-    current_budget: float | None  # Remaining budget (max_budget - spend)
+    lifetime_spend: float | None  # Total amount spent (None = never observed)
+    current_budget: float | None  # Remaining budget (None = spend never observed)
     max_budget: float | None  # Total allocated budget (None = unlimited)
 
 
@@ -786,9 +789,9 @@ class OrgMemberFinancialPage(BaseModel):
     current_page: int = 1
     per_page: int = 10
     next_page_id: str | None = None
-    # 'unavailable' when the spend read failed, so a caller can tell a genuine zero
-    # from a figure that was never observed.
-    spend_status: Literal['live', 'unavailable'] = 'live'
+    # Describes the spend read behind this page. A row can still carry a null
+    # lifetime_spend under 'live' when the read simply had no entry for that member.
+    spend_status: SpendStatus
 
 
 class OrgBudgetThresholdResponse(BaseModel):
@@ -851,7 +854,7 @@ class OrgBudgetSettingsResponse(BaseModel):
     default_user_monthly_limit: float | None = None
     cycle_start_at: datetime
     cycle_end_at: datetime
-    spend_status: Literal['live', 'stale', 'unavailable']
+    spend_status: SpendStatus
     spend_observed_at: datetime | None = None
     current_spend: float | None = None
     current_spend_percentage: float | None = None
