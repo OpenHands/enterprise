@@ -78,6 +78,7 @@ export function PostHogWrapper({ children }: { children: React.ReactNode }) {
       apiKey={posthogClientKey}
       options={{
         api_host: "https://us.i.posthog.com",
+        autocapture: false,
         person_profiles: "identified_only",
         capture_performance: {
           network_timing: true,
