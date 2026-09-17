@@ -953,16 +953,8 @@ class TestActivateTransactionAtomicity:
 
 
 class TestActivateReplacesStaleCustomKey:
-    """Activating a keyless managed profile after a custom-key profile must not
-    leave the previous profile's (possibly broken) key as the effective key.
-
-    Regression for the SaaS "stale default model" bug: activate a BYOR profile
-    with a dummy key, then activate the managed ``Default`` profile. The member's
-    encrypted ``_llm_api_key`` slot (shared by custom and managed keys) must be
-    repopulated with a fresh managed key, not keep the dummy one — otherwise
-    ``_get_effective_llm_api_key`` keeps resolving the stale custom key and new
-    conversations launch against the old profile.
-    """
+    """Activating a managed profile after a BYOR one must repopulate the shared
+    _llm_api_key slot with a fresh managed key, not keep the stale dummy."""
 
     @pytest.mark.asyncio
     async def test_switching_to_managed_default_replaces_stale_custom_key(
@@ -970,14 +962,11 @@ class TestActivateReplacesStaleCustomKey:
     ):
         org_id = patch_route_db
 
-        # Org default is a managed OpenHands model, so the managed-key ensure
-        # path actually mints a key for the acting member.
         await _set_org_agent_settings(
             async_session_maker,
             org_id,
             {'llm': {'model': 'openhands/deepseek-v4-flash', 'base_url': None}},
         )
-        # A live verified default so ``Default`` materializes to an openhands/* model.
         async with async_session_maker() as session:
             session.add(
                 StoredVerifiedModel(
@@ -1011,13 +1000,10 @@ class TestActivateReplacesStaleCustomKey:
         assert member.has_custom_llm_api_key is True
         assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
 
-        # 2. Switch back to the managed ``Default`` profile. The prod failure
-        #    mode is that LiteLLM's key lookups are inconclusive-aware:
-        #    ``verify_existing_key`` returns True when the key-list call yields
-        #    no keys, and ``verify_key`` returns True on anything that isn't an
-        #    explicit auth failure. Mock both to return True so the stale dummy
-        #    key looks "valid" — the force-rotate path must still replace it
-        #    with a fresh managed key rather than reuse it (the 401 repro).
+        # 2. Switch back to managed Default. LiteLLM lookups are
+        #    inconclusive-aware (verify_existing_key/verify_key return True on
+        #    no-key / non-auth-failure), so mock both True — the force-rotate
+        #    path must still replace the "valid"-looking dummy.
         with (
             patch(
                 'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
@@ -1041,13 +1027,9 @@ class TestActivateReplacesStaleCustomKey:
             )
 
         member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
-        # The effective key is now the managed one, not the stale custom key —
-        # even though the LiteLLM verification mocks said the dummy was valid.
         assert member.has_custom_llm_api_key is False
         assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
         assert member.llm_api_key.get_secret_value() != 'dummy-broken-key'
-        # ``_get_effective_llm_api_key`` resolves the managed key (the real
-        # consumer of this bug at conversation-launch time).
         org = await _read_org(async_session_maker, org_id)
         effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
         assert effective is not None
@@ -1055,13 +1037,8 @@ class TestActivateReplacesStaleCustomKey:
 
 
 class TestE2EStaleDefault401Repro:
-    """End-to-end repro for the SaaS stale-default-model 401.
-
-    Activates a BYOR TestModel with a dummy key, switches back to the
-    managed Default, then loads settings the way conversation-start does
-    (resolve_agent_profile) and asserts the effective LLM api_key is NOT
-    the stale dummy.
-    """
+    """E2E: after BYOR->managed switch-back, the launch-time effective key is
+    not the stale dummy."""
 
     @pytest.mark.asyncio
     async def test_stale_dummy_not_effective_after_switch_back(
@@ -1117,17 +1094,10 @@ class TestE2EStaleDefault401Repro:
             # 2. Switch back to the managed Default.
             await activate_profile(org_id=org_id, name='Default', user_id=user_id)
             member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
-            print(
-                'AFTER Default: has_custom=',
-                member.has_custom_llm_api_key,
-                'key=',
-                repr(member.llm_api_key.get_secret_value()),
-            )
 
-            # 3. Resolve the effective key the way ``load()`` does at launch.
+            # 3. Resolve the effective key the way load() does at launch.
             org = await _read_org(async_session_maker, org_id)
             effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
-            print('EFFECTIVE at launch:', repr(effective))
             assert effective is not None
             eff_raw = (
                 effective.get_secret_value()
@@ -1141,20 +1111,9 @@ class TestE2EStaleDefault401Repro:
 
 
 class TestSwitchBackWithStaleOrgDefault:
-    """Regression for the prod failure mode c1990f1 missed.
-
-    The earlier tests set the org's default ``agent_settings.llm`` to the
-    managed OpenHands model *before* switching back, so
-    ``_ensure_managed_llm_key_for_user`` (which classified managed-ness from
-    the org default) happily minted a fresh key. In production the org default
-    stays pinned to the prior BYOR profile after a profile switch (the switch
-    only advances ``profiles.active`` and the member diff), so the org default
-    is the stale BYOR config. With that, the force-rotate path bailed out
-    (``uses_managed_llm_key == False``) and the stale dummy key survived in
-    ``_llm_api_key`` — the live 401. The fix classifies from the *activated
-    profile's* LLM, so this test asserts rotation happens even when the org
-    default is the stale BYOR config.
-    """
+    """Rotation must fire even when the org default agent_settings.llm is still
+    pinned to the stale BYOR profile (classification comes from the activated
+    profile's LLM, not the org default)."""
 
     @pytest.mark.asyncio
     async def test_switch_back_rotates_when_org_default_is_stale_byor(
@@ -1163,7 +1122,6 @@ class TestSwitchBackWithStaleOrgDefault:
         org_id = patch_route_db
         user_id = str(ADMIN_USER_ID)
 
-        # A live verified default so ``Default`` materializes to an openhands/* model.
         async with async_session_maker() as session:
             session.add(
                 StoredVerifiedModel(
@@ -1202,18 +1160,15 @@ class TestSwitchBackWithStaleOrgDefault:
             assert member.has_custom_llm_api_key is True
             assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
 
-            # 2. Mirror prod: the org's default agent_settings.llm stays pinned
-            #    to the stale BYOR profile (profile switches do not rewrite it).
+            # 2. Mirror prod: org default agent_settings.llm stays pinned to
+            #    the stale BYOR profile (profile switches don't rewrite it).
             await _set_org_agent_settings(
                 async_session_maker,
                 org_id,
                 {'llm': {'model': 'dummymodel', 'base_url': 'dummymodel'}},
             )
 
-            # 3. Switch back to the managed ``Default``. The org default is the
-            #    stale BYOR config, so classification must come from the
-            #    activated profile (managed) — otherwise no rotation happens and
-            #    the dummy key survives.
+            # 3. Switch back to managed Default.
             await activate_profile(org_id=org_id, name='Default', user_id=user_id)
 
         member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
@@ -1227,21 +1182,9 @@ class TestSwitchBackWithStaleOrgDefault:
 
 
 class TestSwitchBackManagedProfileWithNonDefaultProxyUrl:
-    """Regression for the managed-key detection gap PR #425 left open.
-
-    ``activate_profile`` and ``_ensure_managed_llm_key_for_user`` classified a
-    profile as managed with a hand-rolled ``base_url == LITE_LLM_API_URL``
-    (exact) check, while ``SaasSettingsStore.store()`` uses the canonical
-    ``managed_llm_key_config_from_model`` (an OpenHands model pointing at *any*
-    ``all-hands.dev`` proxy, or ``None``). When the managed profile's
-    ``base_url`` is an ``all-hands.dev`` URL that differs from
-    ``LITE_LLM_API_URL`` (a trailing slash, an app-vs-staging subdomain, or a
-    profile created in one environment and activated in another), the exact
-    match failed, the stale-key rotation was skipped, and the previous BYOR
-    profile's broken key stayed effective — the "Default still 401s even after
-    switching multiple times" report (#421). Using the canonical detector
-    closes the gap: rotation fires for every genuinely-managed profile.
-    """
+    """A managed profile whose base_url is an all-hands.dev proxy URL that
+    isn't byte-identical to LITE_LLM_API_URL is still recognized as managed and
+    gets its stale key rotated (canonical detector)."""
 
     @pytest.mark.asyncio
     async def test_managed_profile_with_non_default_proxy_url_rotates_stale_key(
@@ -1250,8 +1193,6 @@ class TestSwitchBackManagedProfileWithNonDefaultProxyUrl:
         org_id = patch_route_db
         user_id = str(ADMIN_USER_ID)
 
-        # A live verified default so ``Default`` materializes to an openhands/*
-        # model.
         async with async_session_maker() as session:
             session.add(
                 StoredVerifiedModel(
@@ -1290,8 +1231,7 @@ class TestSwitchBackManagedProfileWithNonDefaultProxyUrl:
             assert member.has_custom_llm_api_key is True
             assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
 
-            # 2. Mirror prod: the org's default agent_settings.llm stays pinned
-            #    to the stale BYOR profile (profile switches do not rewrite it).
+            # 2. Org default stays pinned to the stale BYOR profile.
             await _set_org_agent_settings(
                 async_session_maker,
                 org_id,
@@ -1299,11 +1239,7 @@ class TestSwitchBackManagedProfileWithNonDefaultProxyUrl:
             )
 
             # 3. Save + activate a keyless managed profile whose base_url is an
-            #    all-hands.dev proxy URL that is NOT byte-identical to
-            #    ``LITE_LLM_API_URL`` (defaults to the *app* proxy in tests).
-            #    The old exact-match check misclassified this as BYOR and
-            #    skipped rotation; the canonical detector recognizes it as
-            #    managed and force-rotates the stale dummy away.
+            #    all-hands.dev proxy URL not byte-identical to LITE_LLM_API_URL.
             await save_profile(
                 org_id=org_id,
                 name='StagingManaged',
@@ -1330,23 +1266,9 @@ class TestSwitchBackManagedProfileWithNonDefaultProxyUrl:
 
 
 class TestSwitchBackClearsStaleOrgLevelKey:
-    """Regression for the prod 401 PR #425 did not fix.
-
-    The earlier switch-back tests set the org's ``agent_settings.llm`` to the
-    BYOR model/base_url but never persisted a BYOR key into ``org._llm_api_key``
-    — so they could not reproduce the live failure. In production, saving a
-    BYOR profile as the org default (``POST /orgs/app``) writes the BYOR key
-    into the org-level ``_llm_api_key`` column, and that column is never
-    cleared on a profile switch. ``_get_effective_llm_api_key`` checks
-    ``org.llm_api_key`` *before* the member slot, so a stale dummy there wins
-    over the freshly-rotated member managed key and every new conversation
-    launches against the dummy — ``Received=dumm****odel``.
-
-    This test pins the org-level key to the dummy BYOR value (the exact prod
-    state observed via the live settings-load probe) and asserts that
-    switching back to the managed ``Default`` clears it, so the effective key
-    resolves to the fresh managed key rather than the stale dummy.
-    """
+    """A stale org-level _llm_api_key (set when a BYOR profile was the org
+    default) shadows the rotated member key at launch, so switch-back to a
+    managed profile must clear it."""
 
     @pytest.mark.asyncio
     async def test_switch_back_clears_stale_org_llm_api_key(
@@ -1390,11 +1312,10 @@ class TestSwitchBackClearsStaleOrgLevelKey:
             )
             await activate_profile(org_id=org_id, name='TestModel', user_id=user_id)
 
-            # 2. Mirror prod exactly: the BYOR default was saved via the
-            #    org-defaults path, so both the org's agent_settings.llm AND
-            #    the org-level _llm_api_key hold the dummy BYOR config. The
-            #    member slot is rotated by activate, but the org-level key
-            #    persists until the switch-back repairs it.
+            # 2. Mirror prod: BYOR default saved via the org-defaults path, so
+            #    both agent_settings.llm and the org-level _llm_api_key hold the
+            #    dummy. The member slot is rotated by activate, but the org-level
+            #    key persists until switch-back repairs it.
             await _set_org_agent_settings(
                 async_session_maker,
                 org_id,
@@ -1407,16 +1328,13 @@ class TestSwitchBackClearsStaleOrgLevelKey:
                 org.llm_api_key = 'dummymodel'
                 await session.commit()
 
-            # Sanity: the org-level dummy is in place and would win at launch.
             org = await _read_org(async_session_maker, org_id)
             assert org.llm_api_key is not None
             assert org.llm_api_key.get_secret_value() == 'dummymodel'
 
-            # 3. Switch back to the managed Default.
+            # 3. Switch back to managed Default.
             await activate_profile(org_id=org_id, name='Default', user_id=user_id)
 
-        # The org-level stale BYOR key must be cleared so it can no longer
-        # shadow the member's fresh managed key.
         org = await _read_org(async_session_maker, org_id)
         assert org.llm_api_key is None, (
             'stale org-level BYOR key survived the switch-back — it would '

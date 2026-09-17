@@ -1004,21 +1004,14 @@ class OrgStore:
     ) -> str | None:
         """Ensure the acting member has their own managed LLM key.
 
-        When ``force`` is True the existing key is never trusted/reused, even
-        if it looks registered/valid: the slot is rotated unconditionally.
-        This is required when the member previously held a custom (BYOR) key
-        in the shared ``_llm_api_key`` slot — that key is not a managed key,
-        so the "reuse if valid" fast-path below (which can return True on
-        inconclusive LiteLLM lookups) must not be allowed to hand it back as
-        if it were a managed key. See ``activate_profile``'s switch-back path.
+        ``force`` rotates the slot unconditionally even if the existing key
+        looks valid — required when the slot still holds a stale BYOR key,
+        which the reuse fast-path below can otherwise hand back as managed.
 
-        ``llm`` overrides the LLM config used to classify the key as managed.
-        ``activate_profile`` passes the *activated profile's* LLM so the
-        classification reflects the profile being switched to (e.g. the
-        managed ``Default``), not the org's persisted default
-        ``agent_settings.llm`` — which may still point at a prior BYOR
-        profile and would otherwise cause this method to bail out before
-        rotating the stale custom key (#421).
+        ``llm`` overrides the LLM used to classify the key as managed;
+        ``activate_profile`` passes the activated profile's LLM so
+        classification reflects the profile being switched to, not the org's
+        persisted default (which may still point at a prior BYOR profile).
         """
         if llm is not None:
             llm_model = llm.model
@@ -1028,30 +1021,16 @@ class OrgStore:
             llm_model = llm_settings.model
             llm_base_url = llm_settings.base_url
         openhands_type = is_openhands_model(llm_model)
-        # Classify managed-ness with the canonical
-        # ``managed_llm_key_config_from_model`` detector (same as
-        # ``SaasSettingsStore.store()``) rather than a hand-rolled
-        # ``base_url == LITE_LLM_API_URL`` exact match. A managed OpenHands
-        # model may carry an ``all-hands.dev`` proxy URL that differs from
-        # ``LITE_LLM_API_URL`` by a trailing slash or staging/app subdomain;
-        # the exact match would bail here and leave a stale custom key in the
-        # shared ``_llm_api_key`` slot, so switch-back to the managed profile
-        # kept launching against the old, broken key (#421). Imported locally
-        # to avoid a storage-internal circular import at module load.
+        # Imported locally to avoid a storage-internal circular import.
         from storage.saas_settings_store import managed_llm_key_config_from_model
 
         config = managed_llm_key_config_from_model(llm_model, llm_base_url)
         if config is None or not config.openhands_type:
             return None
 
-        # A managed profile uses per-member keys; ``org._llm_api_key`` only
-        # ever holds a BYOR/org-custom key (managed keys are minted into the
-        # member slot below). When the active default becomes a managed
-        # OpenHands model, any org-level BYOR key left from a prior profile is
-        # stale: ``_get_effective_llm_api_key`` checks ``org.llm_api_key``
-        # before the member slot, so a stale dummy there poisons every launch
-        # even after the member slot was rotated (#421). Clear it so the
-        # effective key falls through to the freshly-rotated member key.
+        # _get_effective_llm_api_key checks org.llm_api_key before the member
+        # slot, so a stale org-level BYOR key would shadow the rotated member
+        # key at launch. Clear it on switch to a managed profile (#421).
         if updated_org.llm_api_key is not None:
             logger.info(
                 'Clearing stale org-level BYOR LLM key on switch to managed profile',

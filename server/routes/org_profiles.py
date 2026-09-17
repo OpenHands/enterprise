@@ -434,17 +434,9 @@ async def activate_profile(
         profile_api_key = llm_dump.get('api_key')
         if profile_api_key and profile_api_key != MASKED_API_KEY:
             llm_dump['api_key'] = MASKED_API_KEY
-            # Classify managed vs. BYOR with the canonical
-            # ``managed_llm_key_config_from_model`` detector (same as
-            # ``SaasSettingsStore.store()``) so billing attribution stays
-            # correct. Reusing it rather than hand-rolling a
-            # ``base_url == LITE_LLM_API_URL`` check matters here: a managed
-            # OpenHands model may carry an ``all-hands.dev`` proxy URL that
-            # differs from ``LITE_LLM_API_URL`` by a trailing slash or
-            # staging/app subdomain. The exact-match check would misclassify
-            # it as BYOR, which (in the keyless branch below) skips the
-            # stale-key rotation and leaks the previous profile's broken key
-            # forward (#421).
+            # Reuse the canonical managed-key detector (same as store()) so a
+            # managed model carrying an all-hands.dev proxy URL isn't
+            # misclassified as BYOR.
             uses_managed_llm_key = (
                 managed_llm_key_config_from_model(
                     llm_dump.get('model'), llm_dump.get('base_url')
@@ -454,31 +446,13 @@ async def activate_profile(
             member.llm_api_key = profile_api_key
             member.has_custom_llm_api_key = not uses_managed_llm_key
         else:
-            # No per-profile key: this is a keyless (typically managed)
-            # profile such as the live ``Default``. Flip the custom-key flag
-            # off so the effective key resolves to the managed/org default.
-            # Capture the prior flag first: if the member previously held a
-            # custom (BYOR) key, that key still sits in the encrypted
-            # ``_llm_api_key`` slot (the same slot the managed key lives in).
-            # ``_ensure_managed_llm_key_for_user``'s "reuse if valid" fast-path
-            # can return that stale custom key as if it were a managed key
-            # (LiteLLM lookups are inconclusive-aware and may report True), so
-            # it must be force-rotated, not trusted — otherwise new
-            # conversations launch against the old, broken profile (#421).
+            # Keyless (typically managed) profile: flip the custom-key flag
+            # off. If the member previously held a BYOR key it still sits in
+            # the shared _llm_api_key slot, so force-rotate a managed key in
+            # place rather than letting the reuse fast-path hand the stale
+            # key back (#421).
             had_custom_key = member.has_custom_llm_api_key
             member.has_custom_llm_api_key = False
-            # With ``has_custom_llm_api_key`` now False and (typically) no
-            # org-level key, ``_get_effective_llm_api_key`` falls back to
-            # ``_llm_api_key``, so the slot must hold a valid managed key.
-            # When the activated profile uses a managed OpenHands key,
-            # re-ensure the member's managed key here — mirroring the
-            # ``store()`` path — and force rotation when a stale custom key
-            # is being replaced. Use the canonical
-            # ``managed_llm_key_config_from_model`` detector (same as
-            # ``store()``) so any OpenHands model pointing at an
-            # ``all-hands.dev`` proxy — not just one whose ``base_url`` is
-            # byte-identical to ``LITE_LLM_API_URL`` — is recognized as
-            # managed and gets its stale key rotated (#421).
             if (
                 managed_llm_key_config_from_model(
                     llm_dump.get('model'), llm_dump.get('base_url')
