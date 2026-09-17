@@ -75,32 +75,30 @@ class OrgBudgetStore:
         existing: list[OrgBudgetThreshold],
         new_thresholds,
     ) -> None:
-        # _maybe_send_alerts dedupes on last_triggered_cycle_start, which lives on the
-        # threshold row. Replacing the rows wholesale would drop it and re-arm every
-        # alert inside the live cycle, so carry the latch across for any percentage
-        # that survives the edit. A percentage being added has never fired, so it
-        # correctly starts unlatched.
-        latches = {
-            threshold.percentage: (
-                threshold.last_triggered_at,
-                threshold.last_triggered_cycle_start,
-            )
-            for threshold in existing
-        }
+        # A threshold is identified by its percentage, not by its row: the
+        # once-per-cycle alert latch lives on the row, so a surviving percentage is
+        # updated in place rather than replaced.
+        wanted = {threshold.percentage: threshold for threshold in new_thresholds}
+        kept: set[int] = set()
         for threshold in existing:
-            await self.db_session.delete(threshold)
-        for threshold in new_thresholds:
-            last_triggered_at, last_triggered_cycle_start = latches.get(
-                threshold.percentage, (None, None)
-            )
+            update = wanted.get(threshold.percentage)
+            # No unique index backs (org_id, percentage), so a duplicate row is
+            # dropped rather than updated into a second copy of the same threshold.
+            if update is None or threshold.percentage in kept:
+                await self.db_session.delete(threshold)
+                continue
+            threshold.email_enabled = update.email_enabled
+            threshold.slack_enabled = update.slack_enabled
+            kept.add(threshold.percentage)
+        for percentage, update in wanted.items():
+            if percentage in kept:
+                continue
             self.db_session.add(
                 OrgBudgetThreshold(
                     org_id=org_id,
-                    percentage=threshold.percentage,
-                    email_enabled=threshold.email_enabled,
-                    slack_enabled=threshold.slack_enabled,
-                    last_triggered_at=last_triggered_at,
-                    last_triggered_cycle_start=last_triggered_cycle_start,
+                    percentage=percentage,
+                    email_enabled=update.email_enabled,
+                    slack_enabled=update.slack_enabled,
                 )
             )
         await self.db_session.flush()
