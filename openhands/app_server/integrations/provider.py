@@ -7,7 +7,6 @@ from types import MappingProxyType
 from typing import cast
 from urllib.parse import quote
 
-import httpx
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -39,11 +38,9 @@ from openhands.app_server.integrations.service_types import (
     ProviderType,
     Repository,
     SuggestedTask,
-    TokenResponse,
     User,
 )
 from openhands.app_server.utils.auth import looks_like_jwt
-from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 
 
@@ -119,8 +116,6 @@ class ProviderHandler:
         external_auth_id: str | None = None,
         external_auth_token: SecretStr | None = None,
         external_token_manager: bool = False,
-        session_api_key: str | None = None,
-        sid: str | None = None,
     ):
         if not isinstance(provider_tokens, MappingProxyType):
             raise TypeError(
@@ -139,13 +134,7 @@ class ProviderHandler:
         self.external_auth_id = external_auth_id
         self.external_auth_token = external_auth_token
         self.external_token_manager = external_token_manager
-        self.session_api_key = session_api_key
-        self.sid = sid
         self._provider_tokens = provider_tokens
-        WEB_HOST = os.getenv('WEB_HOST', '').strip()
-        self.REFRESH_TOKEN_URL = (
-            f'https://{WEB_HOST}/api/refresh-tokens' if WEB_HOST else None
-        )
 
     @property
     def provider_tokens(self) -> PROVIDER_TOKEN_TYPE:
@@ -191,38 +180,6 @@ class ProviderHandler:
                 raise exc
 
         raise AuthenticationError('Need valid provider token')
-
-    async def _get_latest_provider_token(
-        self, provider: ProviderType
-    ) -> SecretStr | None:
-        """Get latest token from service"""
-        if not self.REFRESH_TOKEN_URL:
-            logger.warning('Refresh token URL not set')
-            return None
-        try:
-            async with httpx.AsyncClient(verify=httpx_verify_option()) as client:
-                headers = (
-                    {'X-Session-API-Key': self.session_api_key}
-                    if self.session_api_key
-                    else {}
-                )
-                resp = await client.get(
-                    self.REFRESH_TOKEN_URL,
-                    headers=headers,
-                    params={'provider': provider.value, 'sid': self.sid},
-                )
-
-            resp.raise_for_status()
-            data = TokenResponse.model_validate_json(resp.text)
-            return SecretStr(data.token)
-
-        except Exception:
-            logger.exception(
-                f'Failed to fetch latest token for provider {provider}',
-                stack_info=True,
-            )
-
-        return None
 
     async def get_github_installations(self) -> list[str]:
         service = cast(InstallationsService, self.get_service(ProviderType.GITHUB))
