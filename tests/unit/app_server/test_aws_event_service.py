@@ -414,3 +414,180 @@ class TestAwsEventServiceInjectorEndpointUrl:
 
         injector = aws_event_service.AwsEventServiceInjector(bucket_name='my-bucket')
         assert injector.endpoint_url is None
+
+
+def _make_s3_client_with_store() -> tuple[MagicMock, dict[str, bytes]]:
+    """Return a mock S3 client backed by an in-memory {key: bytes} store.
+
+    Supports the operations used by AwsEventService: get_object, put_object,
+    head_object, list_objects_v2, copy_object, delete_object.
+    """
+    store: dict[str, bytes] = {}
+
+    def get_object(Bucket, Key):
+        if Key not in store:
+            err = {'Error': {'Code': 'NoSuchKey'}}
+            raise botocore.exceptions.ClientError(err, 'GetObject')
+        body = MagicMock()
+        body.__enter__ = MagicMock(return_value=body)
+        body.__exit__ = MagicMock(return_value=False)
+        body.read.return_value = store[Key]
+        return {'Body': body}
+
+    def put_object(Bucket, Key, Body):
+        store[Key] = Body if isinstance(Body, bytes) else Body.encode('utf-8')
+
+    def head_object(Bucket, Key):
+        if Key not in store:
+            err = {'Error': {'Code': '404'}}
+            raise botocore.exceptions.ClientError(err, 'HeadObject')
+        return {}
+
+    def list_objects_v2(Bucket, Prefix, **kwargs):
+        contents = [{'Key': k} for k in sorted(store) if k.startswith(str(Prefix))]
+        return {'Contents': contents, 'IsTruncated': False}
+
+    def copy_object(Bucket, CopySource, Key):
+        src = CopySource['Key']
+        store[Key] = store[src]
+
+    def delete_object(Bucket, Key):
+        store.pop(Key, None)
+
+    client = MagicMock()
+    client.get_object.side_effect = get_object
+    client.put_object.side_effect = put_object
+    client.head_object.side_effect = head_object
+    client.list_objects_v2.side_effect = list_objects_v2
+    client.copy_object.side_effect = copy_object
+    client.delete_object.side_effect = delete_object
+    return client, store
+
+
+class TestAwsEventServiceIndex:
+    """Tests for the S3 index primitives and end-to-end index behavior."""
+
+    @pytest.fixture
+    def store_service(self):
+        client, store = _make_s3_client_with_store()
+        svc = AwsEventService(
+            prefix=Path('users'),
+            user_id='test_user',
+            app_conversation_info_service=None,
+            s3_client=client,
+            bucket_name='test-bucket',
+            app_conversation_info_load_tasks={},
+        )
+        return svc, store
+
+    @pytest.mark.asyncio
+    async def test_index_store_and_load(self, store_service):
+        svc, store = store_service
+        conversation_path = await svc.get_conversation_path(uuid4())
+        index_path = svc._index_path(conversation_path)
+        index = [['id1', '2025-01-01T00:00:00', 'TokenEvent']]
+
+        svc._store_index(index_path, index)
+        assert str(index_path) in store
+
+        loaded = svc._load_index(index_path)
+        assert loaded == index
+
+    def test_index_load_missing_returns_none(self, store_service):
+        svc, _ = store_service
+        path = Path('users/test_user/v1_conversations/abc/index.json')
+        assert svc._load_index(path) is None
+
+    def test_index_exists_true_false(self, store_service):
+        svc, store = store_service
+        path = Path('users/test_user/v1_conversations/abc/index.json')
+        assert not svc._index_exists(path)
+        store[str(path)] = b'[]'
+        assert svc._index_exists(path)
+
+    @pytest.mark.asyncio
+    async def test_invalidate_renames_index_to_stale(self, store_service):
+        svc, store = store_service
+        conversation_path = await svc.get_conversation_path(uuid4())
+        index_path = svc._index_path(conversation_path)
+        stale_path = svc._index_stale_path(conversation_path)
+        store[str(index_path)] = b'[]'
+
+        svc._invalidate_index(conversation_path)
+        assert str(index_path) not in store
+        assert str(stale_path) in store
+
+    @pytest.mark.asyncio
+    async def test_invalidate_idempotent_when_no_index(self, store_service):
+        svc, store = store_service
+        conversation_path = await svc.get_conversation_path(uuid4())
+        # No index.json present -> no-op, no error.
+        svc._invalidate_index(conversation_path)
+        assert svc._index_stale_path(conversation_path) not in store
+
+    @pytest.mark.asyncio
+    async def test_search_builds_and_uses_index(self, store_service):
+        svc, _ = store_service
+        conversation_id = uuid4()
+        for _ in range(3):
+            await svc.save_event(conversation_id, create_token_event())
+
+        result = await svc.search_events(conversation_id)
+        assert len(result.items) == 3
+
+        # index.json should now exist in the store.
+        conversation_path = await svc.get_conversation_path(conversation_id)
+        index_path = svc._index_path(conversation_path)
+        assert svc._index_exists(index_path)
+
+        # Second search uses the index without rebuilding.
+        result2 = await svc.search_events(conversation_id)
+        assert len(result2.items) == 3
+
+    @pytest.mark.asyncio
+    async def test_save_invalidates_then_search_rebuilds(self, store_service):
+        svc, _ = store_service
+        conversation_id = uuid4()
+        await svc.save_event(conversation_id, create_token_event())
+        await svc.search_events(conversation_id)  # build index
+
+        conversation_path = await svc.get_conversation_path(conversation_id)
+        index_path = svc._index_path(conversation_path)
+        stale_path = svc._index_stale_path(conversation_path)
+        assert svc._index_exists(index_path)
+
+        await svc.save_event(conversation_id, create_token_event())
+        assert not svc._index_exists(index_path)
+        assert svc._index_exists(stale_path)
+
+        # Search rebuilds from stale + scans the new event.
+        result = await svc.search_events(conversation_id)
+        assert len(result.items) == 2
+        assert svc._index_exists(index_path)
+
+    @pytest.mark.asyncio
+    async def test_malformed_index_rebuilds(self, store_service):
+        svc, store = store_service
+        conversation_id = uuid4()
+        await svc.save_event(conversation_id, create_token_event())
+        await svc.search_events(conversation_id)
+        conversation_path = await svc.get_conversation_path(conversation_id)
+        index_path = svc._index_path(conversation_path)
+        store[str(index_path)] = b'{not json'
+
+        result = await svc.search_events(conversation_id)
+        assert len(result.items) == 1
+
+    @pytest.mark.asyncio
+    async def test_filtered_count_via_index(self, store_service):
+        svc, _ = store_service
+        conversation_id = uuid4()
+        for _ in range(3):
+            await svc.save_event(conversation_id, create_token_event())
+        await svc.save_event(conversation_id, create_pause_event())
+        await svc.search_events(conversation_id)  # build index
+
+        count = await svc.count_events(conversation_id, kind__eq='TokenEvent')
+        assert count == 3
+        count_pause = await svc.count_events(conversation_id, kind__eq='PauseEvent')
+        assert count_pause == 1

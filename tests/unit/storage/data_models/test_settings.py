@@ -230,6 +230,73 @@ def test_settings_update_replaces_existing_mcp_servers():
     assert mcp['fresh'].url == 'https://example.com/fresh'
 
 
+@pytest.mark.parametrize(
+    ('deleted', 'kept'),
+    (('plain', 'secured'), ('secured', 'plain')),
+)
+def test_settings_update_null_mcp_entry_deletes_only_that_server(deleted, kept):
+    """A ``null`` map entry deletes that server; siblings keep their credentials."""
+    # Arrange
+    servers = {
+        'plain': {'url': 'https://plain.example.com/mcp', 'enabled': False},
+        'secured': {
+            'url': 'https://secured.example.com/mcp',
+            'headers': {'Authorization': 'Bearer real-key'},
+        },
+    }
+    settings = Settings(
+        agent_settings=OpenHandsAgentSettings(
+            llm=LLM(model='sdk-model'), mcp_config=servers
+        )
+    )
+
+    # Act
+    settings.update({'agent_settings_diff': {'mcp_config': {deleted: None}}})
+
+    # Assert
+    mcp = settings.agent_settings.mcp_config
+    assert set(mcp) == {kept}
+    assert dump_mcp_config(mcp) == {kept: servers[kept]}
+
+
+def test_settings_update_null_mcp_entry_patch_keeps_untouched_servers():
+    """A patch mixing a deletion with a submitted server only touches those keys."""
+    # Arrange
+    settings = Settings(
+        agent_settings=OpenHandsAgentSettings(
+            mcp_config={
+                'untouched': {
+                    'url': 'https://untouched.example.com/mcp',
+                    'headers': {'Authorization': 'Bearer real-key'},
+                },
+                'old-name': {'url': 'https://renamed.example.com/mcp'},
+            }
+        )
+    )
+
+    # Act: the sparse rename shape — tombstone the old key, submit the new one
+    settings.update(
+        {
+            'agent_settings_diff': {
+                'mcp_config': {
+                    'old-name': None,
+                    'new-name': {'url': 'https://renamed.example.com/mcp'},
+                }
+            }
+        }
+    )
+
+    # Assert
+    mcp = settings.agent_settings.mcp_config
+    assert set(mcp) == {'untouched', 'new-name'}
+    assert mcp['new-name'].url == 'https://renamed.example.com/mcp'
+    assert mcp['untouched'].headers is not None
+    assert (
+        mcp['untouched'].headers['Authorization'].get_secret_value()
+        == 'Bearer real-key'
+    )
+
+
 def _settings_with_mcp_auth(
     url: str = 'https://integration.example.com/mcp',
 ) -> Settings:

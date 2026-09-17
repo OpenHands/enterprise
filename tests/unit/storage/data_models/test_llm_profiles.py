@@ -55,12 +55,16 @@ def test_require_raises_profile_not_found_with_name():
     assert "'missing'" in str(exc_info.value)
 
 
-def test_summaries_returns_name_model_base_url_and_api_key_set():
+def test_summaries_returns_name_model_base_url_key_state_and_connection():
     profiles = LLMProfiles()
     profiles.save('p1', _make_llm(model='openai/gpt-4o', api_key='sk-1'))
     profiles.save(
         'p2',
-        LLM(model='anthropic/claude-opus-4', base_url='https://example.com'),
+        LLM(
+            model='anthropic/claude-opus-4',
+            base_url='https://example.com',
+            provider_connection_id='conn-1',
+        ),
     )
 
     summaries = {s['name']: s for s in profiles.summaries()}
@@ -70,12 +74,14 @@ def test_summaries_returns_name_model_base_url_and_api_key_set():
         'model': 'openai/gpt-4o',
         'base_url': None,
         'api_key_set': True,
+        'provider_connection_id': None,
     }
     assert summaries['p2'] == {
         'name': 'p2',
         'model': 'anthropic/claude-opus-4',
         'base_url': 'https://example.com',
         'api_key_set': False,
+        'provider_connection_id': 'conn-1',
     }
 
 

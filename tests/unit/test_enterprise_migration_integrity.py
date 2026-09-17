@@ -299,3 +299,14 @@ def test_invalid_down_revision_type_fails(versions_dir: Path):
         'down_revision must be None, a string, or a sequence of strings' in error
         for error in errors
     )
+
+
+def test_real_enterprise_migrations_have_a_single_linear_chain():
+    """Guard the checked-in versions dir against revision collisions (e.g. two
+    files claiming the same revision id) — the same check CI runs, kept green
+    in the unit suite too."""
+    module = load_module()
+
+    errors = module.check_migration_integrity()
+
+    assert errors == []

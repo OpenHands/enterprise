@@ -1,6 +1,7 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 import { usePostHog } from "posthog-js/react";
+import { useNavigate } from "react-router";
 import { useSaveSettings } from "#/hooks/mutation/use-save-settings";
 import { useSettings } from "#/hooks/query/use-settings";
 import { AvailableLanguages } from "#/i18n";
@@ -25,6 +26,7 @@ import {
 } from "#/types/settings";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { useSandboxSpecs } from "#/hooks/query/use-sandbox-specs";
+import { GpgKeyModal } from "#/components/features/settings/git-settings/gpg-key-modal";
 
 export const clientLoader = createPermissionGuard(
   "manage_application_settings",
@@ -33,6 +35,7 @@ export const clientLoader = createPermissionGuard(
 function AppSettingsScreen() {
   const posthog = usePostHog();
   const { t } = useTranslation();
+  const navigate = useNavigate();
 
   const { mutate: saveSettings, isPending } = useSaveSettings();
   const { data: settings, isLoading } = useSettings();
@@ -40,6 +43,8 @@ function AppSettingsScreen() {
   const { data: sandboxSpecsPage, isLoading: sandboxSpecsLoading } =
     useSandboxSpecs();
   const isSaasMode = config?.app_mode === "saas";
+  const isEnterpriseSelfHosted =
+    isSaasMode && config?.feature_flags?.deployment_mode === "self_hosted";
 
   const [languageInputHasChanged, setLanguageInputHasChanged] =
     React.useState(false);
@@ -74,6 +79,7 @@ function AppSettingsScreen() {
     React.useState(false);
   const [gitFullCloneHasChanged, setGitFullCloneHasChanged] =
     React.useState(false);
+  const [gpgKeyModalIsVisible, setGpgKeyModalIsVisible] = React.useState(false);
 
   const formAction = (formData: FormData) => {
     const languageLabel = formData.get("language-input")?.toString();
@@ -129,7 +135,9 @@ function AppSettingsScreen() {
 
     saveSettings(settingsPayload, {
       onSuccess: () => {
-        handleCaptureConsent(posthog, enableAnalytics);
+        if (!isEnterpriseSelfHosted) {
+          handleCaptureConsent(posthog, enableAnalytics);
+        }
         displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
       },
       onError: (error) => {
@@ -251,18 +259,24 @@ function AppSettingsScreen() {
             onChange={checkIfLanguageInputHasChanged}
           />
 
-          <SettingsSwitch
-            testId="enable-analytics-switch"
-            name={isSaasMode ? undefined : "enable-analytics-switch"}
-            defaultIsToggled={
-              isSaasMode ? true : (settings.user_consents_to_analytics ?? true)
-            }
-            isToggled={isSaasMode ? true : undefined}
-            isDisabled={isSaasMode}
-            onToggle={isSaasMode ? undefined : checkIfAnalyticsSwitchHasChanged}
-          >
-            {t(I18nKey.ANALYTICS$SEND_ANONYMOUS_DATA)}
-          </SettingsSwitch>
+          {!isEnterpriseSelfHosted && (
+            <SettingsSwitch
+              testId="enable-analytics-switch"
+              name={isSaasMode ? undefined : "enable-analytics-switch"}
+              defaultIsToggled={
+                isSaasMode
+                  ? true
+                  : (settings.user_consents_to_analytics ?? true)
+              }
+              isToggled={isSaasMode ? true : undefined}
+              isDisabled={isSaasMode}
+              onToggle={
+                isSaasMode ? undefined : checkIfAnalyticsSwitchHasChanged
+              }
+            >
+              {t(I18nKey.ANALYTICS$SEND_ANONYMOUS_DATA)}
+            </SettingsSwitch>
+          )}
 
           <SettingsSwitch
             testId="enable-sound-notifications-switch"
@@ -383,9 +397,27 @@ function AppSettingsScreen() {
                 placeholder={t(I18nKey.SETTINGS$GIT_EMAIL_PLACEHOLDER)}
                 className="w-full max-w-[680px]"
               />
+              <BrandButton
+                testId="set-gpg-key-button"
+                type="button"
+                variant="secondary"
+                onClick={() => setGpgKeyModalIsVisible(true)}
+              >
+                {t(I18nKey.SETTINGS$GPG_KEY_BUTTON)}
+              </BrandButton>
             </div>
           </div>
         </div>
+      )}
+
+      {gpgKeyModalIsVisible && (
+        <GpgKeyModal
+          onClose={() => setGpgKeyModalIsVisible(false)}
+          onSaved={() => {
+            setGpgKeyModalIsVisible(false);
+            navigate("/settings/secrets");
+          }}
+        />
       )}
 
       <div className="flex gap-6 p-6 justify-end">

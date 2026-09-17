@@ -15,6 +15,7 @@ import { AzureDevOpsTokenInput } from "#/components/features/settings/git-settin
 import { AzureDevOpsWebhookManager } from "#/components/features/settings/git-settings/azure-devops-webhook-manager";
 import { ForgejoTokenInput } from "#/components/features/settings/git-settings/forgejo-token-input";
 import { ConfigureGitHubRepositoriesAnchor } from "#/components/features/settings/git-settings/configure-github-repositories-anchor";
+import { GitProviderConnection } from "#/components/features/settings/git-settings/git-provider-connection";
 import { ConfigureAzureDevOpsAnchor } from "#/components/features/settings/git-settings/configure-azure-devops-anchor";
 import { InstallSlackAppAnchor } from "#/components/features/settings/git-settings/install-slack-app-anchor";
 import DebugStackframeDot from "#/icons/debug-stackframe-dot.svg?react";
@@ -62,6 +63,26 @@ function GitSettingsScreen() {
     }
 
     params.delete("jira_dc_webhook");
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}${
+        window.location.hash
+      }`,
+    );
+  }, [t]);
+
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const linkStatus = params.get("link_status");
+    if (!linkStatus) {
+      return;
+    }
+
+    displayErrorToast(t(I18nKey.GIT_PROVIDER$LINK_FAILED));
+
+    params.delete("link_status");
     const query = params.toString();
     window.history.replaceState(
       null,
@@ -221,8 +242,13 @@ function GitSettingsScreen() {
     !bitbucketDCHostInputHasValue &&
     !azureDevOpsHostInputHasValue &&
     !forgejoHostInputHasValue;
-  const shouldRenderGitHubConfigureButton = isSaas && config?.github_app_slug;
+  const shouldRenderGitHubSection =
+    isSaas && Boolean(config?.providers_configured?.includes("github"));
+  const shouldRenderGitHubConfigureButton =
+    shouldRenderGitHubSection && isGitHubTokenSet && config?.github_app_slug;
   const shouldRenderGitLabSection = isSaas && Boolean(config?.gitlab_enabled);
+  const shouldRenderBitbucketSection =
+    isSaas && Boolean(config?.providers_configured?.includes("bitbucket"));
   const shouldRenderBitbucketDCSection =
     isSaas &&
     Boolean(config?.providers_configured?.includes("bitbucket_data_center"));
@@ -242,15 +268,23 @@ function GitSettingsScreen() {
     >
       {!isLoading && (
         <div className="flex flex-col">
-          {shouldRenderGitHubConfigureButton && (
+          {shouldRenderGitHubSection && (
             <>
-              <div className="pb-1 flex flex-col">
-                <h3 className="text-xl font-medium text-white">
+              <div className="flex flex-col gap-4 pb-8">
+                <Typography.H3 className="text-xl">
                   {t(I18nKey.SETTINGS$GITHUB)}
-                </h3>
-                <ConfigureGitHubRepositoriesAnchor
-                  slug={config.github_app_slug!}
-                />
+                </Typography.H3>
+                <GitProviderConnection
+                  provider="github"
+                  providerName={t(I18nKey.SETTINGS$GITHUB)}
+                  isConnected={isGitHubTokenSet}
+                >
+                  {shouldRenderGitHubConfigureButton && (
+                    <ConfigureGitHubRepositoriesAnchor
+                      slug={config.github_app_slug!}
+                    />
+                  )}
+                </GitProviderConnection>
               </div>
               <div className="w-1/2 border-b border-gray-200" />
             </>
@@ -262,22 +296,29 @@ function GitSettingsScreen() {
                 <Typography.H3 className="text-xl">
                   {t(I18nKey.SETTINGS$GITLAB)}
                 </Typography.H3>
-                <div className="flex items-center">
-                  <DebugStackframeDot
-                    className="w-6 h-6 shrink-0"
-                    color={isGitLabTokenSet ? "#BCFF8C" : "#FF684E"}
-                  />
-                  <Typography.Text
-                    className="text-sm text-gray-400"
-                    testId="gitlab-status-text"
-                  >
-                    {t(I18nKey.COMMON$STATUS)}:{" "}
-                    {isGitLabTokenSet
-                      ? t(I18nKey.STATUS$CONNECTED)
-                      : t(I18nKey.SETTINGS$GITLAB_NOT_CONNECTED)}
-                  </Typography.Text>
-                </div>
-                {isGitLabTokenSet && <GitLabWebhookManager />}
+                <GitProviderConnection
+                  provider="gitlab"
+                  providerName={t(I18nKey.SETTINGS$GITLAB)}
+                  isConnected={isGitLabTokenSet}
+                >
+                  <GitLabWebhookManager />
+                </GitProviderConnection>
+              </div>
+              <div className="w-1/2 border-b border-gray-200" />
+            </>
+          )}
+
+          {shouldRenderBitbucketSection && (
+            <>
+              <div className="mt-6 flex flex-col gap-4 pb-8">
+                <Typography.H3 className="text-xl">
+                  {t(I18nKey.SETTINGS$BITBUCKET)}
+                </Typography.H3>
+                <GitProviderConnection
+                  provider="bitbucket"
+                  providerName={t(I18nKey.SETTINGS$BITBUCKET)}
+                  isConnected={isBitbucketTokenSet}
+                />
               </div>
               <div className="w-1/2 border-b border-gray-200" />
             </>

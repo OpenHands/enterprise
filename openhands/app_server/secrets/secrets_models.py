@@ -8,6 +8,7 @@ This module contains:
 """
 
 from collections.abc import Mapping
+from enum import Enum
 from types import MappingProxyType
 from typing import Any
 
@@ -31,6 +32,13 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.utils.env_var_validation import validate_env_var_name
+
+
+class CustomSecretScope(str, Enum):
+    """Scope of a custom secret — personal or org-shared."""
+
+    PERSONAL = 'personal'
+    ORGANIZATION = 'organization'
 
 
 class Secrets(BaseModel):
@@ -178,6 +186,7 @@ class CustomSecretWithoutValue(BaseModel):
 
     name: str
     description: str | None = None
+    scope: CustomSecretScope = CustomSecretScope.PERSONAL
 
     @field_validator('name')
     @classmethod

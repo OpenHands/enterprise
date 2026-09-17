@@ -6,9 +6,9 @@ This is the frontend of the OpenHands project. It is a React application that pr
 
 ## Tech Stack
 
-- Remix SPA Mode (React + Vite + React Router)
+- React + Vite + React Router 7
 - TypeScript
-- Redux
+- Zustand
 - TanStack Query
 - Tailwind CSS
 - i18next
@@ -38,7 +38,7 @@ npm install
 
 ### Running the Application in Development Mode
 
-We use `msw` to mock the backend API. To start the application with the mocked backend, run the following command:
+To start the application in development mode (without API mocking), run:
 
 ```sh
 npm run dev
@@ -46,7 +46,14 @@ npm run dev
 
 This will start the application in development mode. Open [http://localhost:3001](http://localhost:3001) to view it in the browser.
 
-**NOTE: The backend is _partially_ mocked using `msw`. Therefore, some features may not work as they would with the actual backend.**
+To start with a mocked backend using `msw`, use the dedicated scripts:
+
+```sh
+npm run dev:mock      # mocked API, OSS mode
+npm run dev:mock:saas # mocked API, SaaS mode
+```
+
+**NOTE: When using `dev:mock`, the backend is _partially_ mocked using `msw`. Therefore, some features may not work as they would with the actual backend.**
 
 See the [Development.md](../Development.md) for extra tips on how to run in development mode.
 
@@ -110,7 +117,7 @@ frontend
 │   ├── mocks # MSW mocks for development
 │   ├── routes # React Router file-based routes
 │   ├── services
-│   ├── state # Redux state management
+│   ├── stores # Zustand state management
 │   ├── types
 │   ├── utils # Utility/helper functions
 │   └── root.tsx # Entry point
@@ -133,7 +140,7 @@ components
 
 - Real-time updates with WebSockets
 - Internationalization
-- Router data loading with Remix
+- Router data loading with React Router
 - User authentication with GitHub OAuth (if saas mode is enabled)
 
 ## Testing
@@ -163,7 +170,7 @@ npm run test:coverage
 
 1. **Component Testing**
    - Test components in isolation
-   - Use our custom [`renderWithProviders()`](https://github.com/OpenHands/OpenHands/blob/ce26f1c6d3feec3eedf36f823dee732b5a61e517/frontend/test-utils.tsx#L56-L85) that wraps the components we want to test in our providers. It is especially useful for components that use Redux
+   - Use our custom [`renderWithProviders()`](https://github.com/OpenHands/OpenHands/blob/ce26f1c6d3feec3eedf36f823dee732b5a61e517/frontend/test-utils.tsx#L56-L85) that wraps the components we want to test in our providers. It is especially useful for components that use TanStack Query or i18next
    - Use `render()` from React Testing Library to render components
    - Prefer querying elements by role, label, or test ID over CSS selectors
    - Test both rendering and interaction scenarios
@@ -247,4 +254,4 @@ Tests are automatically run during:
 
 ## Contributing
 
-Please read the [CONTRIBUTING.md](../CONTRIBUTING.md) file for details on our code of conduct, and the process for submitting pull requests to us.
+For contribution guidelines, see the [contributing section on our website](https://www.openhands.dev/contact) for details on our code of conduct and the process for submitting pull requests.

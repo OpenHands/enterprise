@@ -3,6 +3,7 @@ import {
   isAxiosErrorWithDetailField,
   isAxiosErrorWithErrorField,
   isAxiosErrorWithMessageField,
+  isAxiosErrorWithStructuredDetail,
 } from "./type-guards";
 
 /**
@@ -18,7 +19,9 @@ export const retrieveAxiosErrorMessage = (error: AxiosError) => {
     isAxiosErrorWithDetailField(error) &&
     error.response?.data.detail
   ) {
-    errorMessage = error.response?.data.detail;
+    errorMessage = error.response.data.detail;
+  } else if (isAxiosErrorWithStructuredDetail(error)) {
+    errorMessage = error.response?.data.detail.message ?? error.message;
   } else if (
     isAxiosErrorWithMessageField(error) &&
     error.response?.data.message
