@@ -22,7 +22,13 @@ from jwt import InvalidTokenError
 from pydantic import SecretStr
 
 from openhands import tools  # type: ignore[attr-defined]
-from openhands.agent_server.models import ConversationInfo, Success
+from openhands.agent_server.models import (
+    ConversationInfo,
+    StartChildConversationRequest,
+    StartChildConversationResponse,
+    Success,
+    TextContent,
+)
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server import shared
 from openhands.app_server.app_conversation.app_conversation_info_service import (
@@ -31,7 +37,11 @@ from openhands.app_server.app_conversation.app_conversation_info_service import 
 from openhands.app_server.app_conversation.app_conversation_models import (
     ACP_SERVER_TAG_KEY,
     AppConversationInfo,
+    AppConversationStartRequest,
+    AppConversationStartTask,
+    AppConversationStartTaskStatus,
     ConversationTrigger,
+    SendMessageRequest,
 )
 from openhands.app_server.config import (
     depends_app_conversation_info_service,
@@ -622,6 +632,112 @@ async def _resolve_user_context(user_id: str | None) -> AuthUserContext:
     """Resolve a UserContext from a user_id, falling back to DefaultUserAuth in OSS mode."""
     user_auth = await get_user_auth_for_user(user_id) if user_id else DefaultUserAuth()
     return AuthUserContext(user_auth=user_auth)
+
+
+async def _resolve_conversation_org_id(conversation_id: UUID) -> UUID | None:
+    """Organization that owns *conversation_id* in SaaS; ``None`` in OSS mode.
+
+    Imported lazily, like the daily-quota helpers: the SaaS storage layer only
+    exists in the enterprise deployment.
+    """
+    try:
+        from sqlalchemy import select
+
+        from storage.database import a_session_maker
+        from storage.stored_conversation_metadata_saas import (
+            StoredConversationMetadataSaas,
+        )
+    except ImportError:
+        return None
+
+    async with a_session_maker() as session:
+        result = await session.execute(
+            select(StoredConversationMetadataSaas.org_id).where(
+                StoredConversationMetadataSaas.conversation_id == str(conversation_id)
+            )
+        )
+        return result.scalar_one_or_none()
+
+
+@router.post(
+    '/conversations/{conversation_id}/children',
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        404: {'description': 'Parent conversation not found'},
+        500: {'description': 'Child conversation failed to start'},
+    },
+)
+async def start_child_conversation(
+    conversation_id: UUID,
+    request: StartChildConversationRequest,
+    sandbox_record: SandboxRecord = Depends(valid_sandbox),
+) -> StartChildConversationResponse:
+    """Launcher behind the ``start_child_conversation`` tool for Cloud parents.
+
+    Called by the agent-server inside the parent's sandbox. The child is
+    provisioned through the normal app-conversation lifecycle as the parent's
+    owner, in the parent's organization, and linked via
+    ``parent_conversation_id``; sandbox, repository, branch and model are
+    inherited from the parent. ``isolation`` is not applicable here: children
+    share the parent's sandbox and its workspace layout.
+    """
+    state = InjectorState()
+    setattr(state, USER_CONTEXT_ATTR, ADMIN)
+    async with get_app_conversation_info_service(state) as info_service:
+        parent = await info_service.get_app_conversation_info(conversation_id)
+    if parent is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail='Parent conversation not found'
+        )
+    if (
+        parent.created_by_user_id != sandbox_record.created_by_user_id
+        or parent.sandbox_id != sandbox_record.id
+    ):
+        raise AuthError()
+
+    user_context = await _resolve_user_context(parent.created_by_user_id)
+    # Scope the launch to the parent's organization rather than the owner's
+    # currently selected one, so the lookup, quota and SaaS metadata all agree.
+    org_id = await _resolve_conversation_org_id(parent.id)
+    set_org_override = getattr(
+        user_context.user_auth, 'set_effective_org_id_override', None
+    )
+    if org_id is not None and callable(set_org_override):
+        set_org_override(org_id)
+
+    start_request = AppConversationStartRequest(
+        parent_conversation_id=parent.id,
+        initial_message=SendMessageRequest(
+            role='user', content=[TextContent(text=request.task)]
+        ),
+        title=request.title,
+    )
+    start_state = InjectorState()
+    setattr(start_state, USER_CONTEXT_ATTR, user_context)
+    task: AppConversationStartTask | None = None
+    async with get_app_conversation_service(start_state) as app_conversation_service:
+        async for task in app_conversation_service.start_app_conversation(
+            start_request
+        ):
+            if task.status == AppConversationStartTaskStatus.ERROR:
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=task.detail or 'Child conversation failed to start',
+                )
+    if task is None or task.app_conversation_id is None:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Child conversation did not become ready',
+        )
+
+    web_url = get_global_config().web_url
+    return StartChildConversationResponse(
+        conversation_id=task.app_conversation_id,
+        parent_conversation_id=parent.id,
+        status=task.status.value,
+        title=request.title,
+        url=f'{web_url}/conversations/{task.app_conversation_id}' if web_url else None,
+    )
 
 
 @router.get('/secrets')
