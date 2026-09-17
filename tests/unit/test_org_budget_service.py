@@ -17,6 +17,7 @@ from server.routes.org_models import (
     OrgBudgetThresholdUpdate,
 )
 from server.services.org_budget_service import (
+    _UNIQUE_VIOLATION,
     DEFAULT_THRESHOLDS,
     BudgetFinancialSnapshotResult,
     LiteLlmFinancialSnapshot,
@@ -2626,6 +2627,27 @@ async def test_settings_loader_prefers_baseline_rows_and_imports_json_only_keys(
     assert second_rows == first_rows
 
 
+def _patch_stale_first_read(service: OrgBudgetService):
+    """Make the service's first settings read miss, and later ones hit Postgres.
+
+    This is the loser of the race: it looked before the winner had inserted, so
+    it goes on to insert itself, and the recovery re-read that follows runs
+    against the real row.
+    """
+    real_get_settings = service.store.get_settings
+    already_read = []
+
+    async def _stale_then_real(org_id):
+        if not already_read:
+            already_read.append(org_id)
+            return None
+        return await real_get_settings(org_id)
+
+    return patch.object(
+        service.store, 'get_settings', AsyncMock(side_effect=_stale_then_real)
+    )
+
+
 @pytest.mark.asyncio
 async def test_settings_row_is_created_once_when_two_requests_race(
     async_session_maker, budget_org
@@ -2643,16 +2665,6 @@ async def test_settings_row_is_created_once_when_two_requests_race(
         snapshot_result = BudgetFinancialSnapshotResult(
             snapshot=snapshot, status='live'
         )
-        already_read = []
-        real_get_settings = second_service.store.get_settings
-
-        async def _second_request_read(org_id):
-            # This request looked before the other one had inserted, so it sees no row.
-            if not already_read:
-                already_read.append(org_id)
-                return None
-            return await real_get_settings(org_id)
-
         with (
             patch.object(
                 first_service,
@@ -2671,11 +2683,7 @@ async def test_settings_row_is_created_once_when_two_requests_race(
             await first_service.run_budget_maintenance(budget_org.id)
             await first.commit()
 
-            with patch.object(
-                second_service.store,
-                'get_settings',
-                AsyncMock(side_effect=_second_request_read),
-            ):
+            with _patch_stale_first_read(second_service):
                 # The loser proceeds on its stale read and tries to create it again.
                 try:
                     await second_service.run_budget_maintenance(budget_org.id)
@@ -2712,6 +2720,124 @@ async def test_settings_row_is_created_once_when_two_requests_race(
 
     # A settings row is created only when the org has none.
     assert len(rows) == 1
-    # The savepoint rollback discards the loser's threshold rows too, so the org
-    # keeps one set rather than two.
+    # The org keeps one set of threshold rows rather than two. create_settings
+    # flushes the settings row before adding any threshold row, so today the
+    # loser's insert already fails before writing one; this pins that the org ends
+    # up with a single set however create_settings orders its statements.
     assert len(thresholds) == len(DEFAULT_THRESHOLDS)
+
+
+@pytest.mark.asyncio
+async def test_race_recovery_hydrates_the_winners_cycle_baselines(
+    async_session_maker, budget_org
+):
+    # The loser returns the winner's settings row, whose user_cycle_start_spend
+    # JSON map has not been reconciled against the baseline table. Skipping
+    # hydration on this path hands the caller a stale baseline, so the next
+    # threshold evaluation compares live spend against the wrong number and the
+    # request succeeds with a bad answer.
+    cycle_start_at = _current_cycle_start(datetime.now(UTC), 1)
+    async with async_session_maker() as winner:
+        winner.add(
+            OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=False,
+                reset_day=1,
+                cycle_start_at=cycle_start_at,
+                cycle_start_spend=0.0,
+                user_cycle_start_spend={},
+            )
+        )
+        winner.add(
+            OrgBudgetCycleBaseline(
+                org_id=budget_org.id,
+                user_id='member',
+                cycle_start_at=cycle_start_at,
+                baseline_spend=7.0,
+                source=OrgBudgetCycleBaseline.SOURCE_LIVE_ROLLOVER,
+                observed_at=datetime.now(UTC),
+            )
+        )
+        await winner.commit()
+
+    async with async_session_maker() as loser:
+        loser_service = OrgBudgetService(loser)
+        with _patch_stale_first_read(loser_service):
+            settings = await loser_service._get_or_create_settings(budget_org.id)
+
+    assert settings.user_cycle_start_spend == {'member': 7.0}
+
+
+@pytest.mark.asyncio
+async def test_race_recovery_reraises_when_the_re_read_finds_nothing(
+    async_session_maker, budget_org
+):
+    # The re-read sees the winner's row only under READ COMMITTED. When it comes
+    # back empty there is nothing to return, and _get_or_create_settings declares
+    # -> OrgBudgetSettings, so returning None would surface several frames away as
+    # an AttributeError on NoneType rather than as the unique violation it is.
+    async with async_session_maker() as winner:
+        winner.add(
+            OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=False,
+                reset_day=1,
+                cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
+                cycle_start_spend=0.0,
+                user_cycle_start_spend={},
+            )
+        )
+        await winner.commit()
+
+    async with async_session_maker() as loser:
+        loser_service = OrgBudgetService(loser)
+        with patch.object(
+            loser_service.store, 'get_settings', AsyncMock(return_value=None)
+        ):
+            with pytest.raises(IntegrityError) as excinfo:
+                await loser_service._get_or_create_settings(budget_org.id)
+
+    assert excinfo.value.orig.sqlstate == _UNIQUE_VIOLATION
+
+
+@pytest.mark.asyncio
+async def test_non_unique_integrity_error_is_not_swallowed_by_the_recovery_read(
+    async_session_maker, budget_org
+):
+    # Only a unique violation means the race was lost. Any other IntegrityError
+    # must come back out even when the recovery re-read would have found a row,
+    # which is the one input that tells the SQLSTATE guard apart from catching
+    # every IntegrityError: an org missing its row fails the re-read too, so it
+    # re-raises either way. The error is synthesised because no reachable state
+    # of this code path raises a non-unique violation; the real get_settings
+    # still drives the recovery read against Postgres.
+    async with async_session_maker() as winner:
+        winner.add(
+            OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=False,
+                reset_day=1,
+                cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
+                cycle_start_spend=0.0,
+                user_cycle_start_spend={},
+            )
+        )
+        await winner.commit()
+
+    async with async_session_maker() as loser:
+        loser_service = OrgBudgetService(loser)
+        not_null_violation = Exception('null value in column violates not-null')
+        not_null_violation.sqlstate = '23502'
+
+        with (
+            _patch_stale_first_read(loser_service),
+            patch.object(
+                loser_service.store,
+                'create_settings',
+                AsyncMock(side_effect=IntegrityError('INSERT', {}, not_null_violation)),
+            ),
+        ):
+            with pytest.raises(IntegrityError) as excinfo:
+                await loser_service._get_or_create_settings(budget_org.id)
+
+    assert excinfo.value.orig.sqlstate == '23502'
