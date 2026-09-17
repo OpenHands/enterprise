@@ -109,11 +109,10 @@ def _subtract_month(year: int, month: int) -> tuple[int, int]:
 def _cycle_day(year: int, month: int, reset_day: int) -> int:
     """The reset day this month can actually hold.
 
-    reset_day is a plain Integer column with no CHECK constraint, so a stored 29-31
-    would otherwise make datetime() raise in every shorter month and take down every
-    budget request for that organization.
+    reset_day is a plain Integer column with no CHECK constraint, so it is untrusted:
+    clamp both ends to keep every value a day datetime() accepts.
     """
-    return min(reset_day, calendar.monthrange(year, month)[1])
+    return max(1, min(reset_day, calendar.monthrange(year, month)[1]))
 
 
 def _current_cycle_start(now: datetime, reset_day: int) -> datetime:

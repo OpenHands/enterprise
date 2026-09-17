@@ -2082,6 +2082,21 @@ async def test_maintenance_survives_a_stored_reset_day_the_month_lacks(
     assert result['cycle_start_at'] is not None
 
 
+@pytest.mark.parametrize('reset_day', [-1, 0, 1, 15, 28, 29, 30, 31])
+def test_cycle_boundaries_stay_ordered_for_any_stored_reset_day(reset_day):
+    # reset_day is untrusted, so every value must yield a real date and a strictly
+    # increasing sequence of cycle starts: _roll_cycle_if_needed advances only while
+    # now >= next_cycle, and a boundary that repeats or moves backwards would either
+    # wedge that loop or re-baseline cycle_start_spend twice for one period.
+    cycle_start = _current_cycle_start(datetime(2026, 1, 15, tzinfo=UTC), reset_day)
+    assert cycle_start <= datetime(2026, 1, 15, tzinfo=UTC)
+
+    for _ in range(40):
+        next_cycle = _next_cycle_start(cycle_start, reset_day)
+        assert next_cycle > cycle_start
+        cycle_start = next_cycle
+
+
 @pytest.mark.asyncio
 @pytest.mark.skip(
     reason='reproduces obs:personal_org_settings_created_by_user_row_read '
