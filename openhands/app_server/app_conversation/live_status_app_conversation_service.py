@@ -1480,21 +1480,41 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 user.id, effective_org_id=org_id
             )
 
-            # Managed model with no usable key: the read-path guard in load()
-            # stripped a BYOR key (member activated a broken custom model then
-            # switched back to a managed profile), or the managed slot was
-            # never populated. Mint a fresh managed key rather than launching
-            # keyless (which the proxy rejects). ``force=True`` mints even when
-            # the member is still in the BYOR state and clears it.
-            if not has_usable_key:
+            # A managed model must launch with a *managed* LiteLLM virtual key
+            # (one starting with ``sk-``). The read-path guard in load() strips
+            # a BYOR key from the FINAL effective model on the resolve-requested
+            # launch view, but the profile-seed view (``_seed_llm_profiles_to_
+            # sandbox``) fetches settings via a plain ``get_user_info()`` — no
+            # resolution, so that guard is skipped and ``materialize_default``
+            # can swap the model to managed while a leaked BYOR key stays
+            # attached. ``get_current_managed_llm_key`` returns ``None`` in that
+            # same state (it bails when ``has_custom_llm_api_key``), so the only
+            # reliable signal that the carried key is wrong-type is: the model
+            # is managed but the key isn't the org's current managed virtual key.
+            # Mint a fresh managed key (``force=True`` clears the BYOR state)
+            # rather than launching with a third-party key the proxy rejects
+            # with the "LiteLLM Virtual Key expected" 401.
+            managed_key = await settings_store.get_current_managed_llm_key()
+            key_matches_current = (
+                has_usable_key and managed_key is not None and managed_key == key
+            )
+            if not key_matches_current:
                 _logger.info(
-                    'managed_llm_key_refresh:mint_missing_key',
+                    'managed_llm_key_refresh:mint_managed_key',
                     extra={
                         'user_id': user.id,
                         'org_id': str(org_id),
                         'model': llm.model,
                         'has_key': bool(key),
                         'is_masked_key': key == '**********',
+                        'has_current_managed_key': managed_key is not None,
+                        'reason': (
+                            'no_usable_key'
+                            if not has_usable_key
+                            else 'no_current_managed_key'
+                            if managed_key is None
+                            else 'key_mismatch'
+                        ),
                     },
                 )
                 rotation = await settings_store.rotate_managed_llm_key(force=True)
@@ -1524,37 +1544,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
                 return llm
 
-            _logger.debug(
-                'managed_llm_key_refresh:checking_current_key',
-                extra={
-                    'user_id': user.id,
-                    'org_id': str(org_id),
-                    'model': llm.model,
-                    'base_url': llm.base_url,
-                },
-            )
-            managed_key = await settings_store.get_current_managed_llm_key()
-            if managed_key is None:
-                _logger.debug(
-                    'managed_llm_key_refresh:skip_no_current_managed_key',
-                    extra={
-                        'user_id': user.id,
-                        'org_id': str(org_id),
-                        'model': llm.model,
-                    },
-                )
-                return llm
-            if managed_key != key:
-                _logger.debug(
-                    'managed_llm_key_refresh:skip_key_mismatch',
-                    extra={
-                        'user_id': user.id,
-                        'org_id': str(org_id),
-                        'model': llm.model,
-                    },
-                )
-                return llm
-
+            # The carried key is the org's current managed key — verify it is
+            # still live and rotate (without force) when stale.
             key_belongs_to_user = await LiteLlmManager.verify_existing_key(
                 key,
                 user.id,
