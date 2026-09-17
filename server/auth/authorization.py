@@ -97,11 +97,11 @@ class Permission(str, Enum):
     MANAGE_ORG_CLAIMS = 'manage_org_claims'
 
     # Automations
-    # Members get VIEW_AUTOMATIONS (read-only: list, get, runs).
-    # MANAGE_AUTOMATIONS (create, edit, delete, dispatch) is admin/owner only.
-    # The automation creator also retains edit access to their own automations
-    # via an in-handler ownership check (automation.user_id == user.user_id),
-    # not via a permission string.
+    # All users get VIEW_AUTOMATIONS (list, get, runs).
+    # All users get MANAGE_AUTOMATIONS to create automations and manage their own.
+    # The automation service enforces ownership checks: members can only edit/delete
+    # automations where automation.user_id == user.user_id. Admins and owners can
+    # edit/delete any automation in their organization.
     VIEW_AUTOMATIONS = 'view_automations'
     MANAGE_AUTOMATIONS = 'manage_automations'
 
@@ -244,10 +244,10 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             # Settings (View only)
             Permission.VIEW_ORG_SETTINGS,
             Permission.VIEW_LLM_SETTINGS,
-            # Automations (view only — members can list and read but not
-            # create/edit/delete/dispatch; the creator of an automation
-            # retains edit access via an in-handler ownership check)
+            # Automations — members can create and manage their own automations
+            # (ownership checks enforced in automation service)
             Permission.VIEW_AUTOMATIONS,
+            Permission.MANAGE_AUTOMATIONS,
         ]
     ),
 }
