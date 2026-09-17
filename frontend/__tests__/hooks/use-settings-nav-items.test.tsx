@@ -191,6 +191,36 @@ describe("useSettingsNavItems", () => {
       expect(
         findItemByPath(result.current, "/settings/integrations"),
       ).toBeDefined();
+
+      const orgItems = result.current
+        .filter(
+          (item): item is Extract<SettingsNavRenderedItem, { type: "item" }> =>
+            item.type === "item" && item.item.section === "org",
+        )
+        .map((item) => ({ to: item.item.to, text: item.item.text }));
+      expect(orgItems).toEqual([
+        {
+          to: "/settings/usage-monitoring",
+          text: "SETTINGS$NAV_ADMIN_DASHBOARD",
+        },
+        { to: "/settings/budgets", text: "SETTINGS$NAV_BUDGETS" },
+        { to: "/settings/org-members", text: "SETTINGS$NAV_ORG_MEMBERS" },
+        {
+          to: "/settings/integrations-hub",
+          text: "SETTINGS$NAV_INTEGRATIONS_HUB",
+        },
+        { to: "/settings/org-defaults", text: "COMMON$LANGUAGE_MODEL_LLM" },
+        {
+          to: "/settings/org-defaults/condenser",
+          text: "SETTINGS$NAV_CONDENSER",
+        },
+        {
+          to: "/settings/org-defaults/verification",
+          text: "SETTINGS$NAV_VERIFICATION",
+        },
+        { to: "/settings/credits", text: "SETTINGS$NAV_CREDITS" },
+        { to: "/settings/org", text: "SETTINGS$NAV_ORGANIZATION" },
+      ]);
     });
 
     it("should hide org routes when isPersonalOrg is true", async () => {

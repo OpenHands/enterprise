@@ -512,4 +512,29 @@ describe("Dropdown", () => {
       expect(screen.queryByText("Option 3")).not.toBeInTheDocument();
     });
   });
+
+  describe("Footer", () => {
+    it("should render a footer action under the options and close on click", async () => {
+      const user = userEvent.setup();
+      const onCreate = vi.fn();
+      render(
+        <Dropdown
+          options={mockOptions}
+          footer={
+            <button type="button" onClick={onCreate}>
+              Create Organization
+            </button>
+          }
+        />,
+      );
+
+      await user.click(screen.getByTestId("dropdown-trigger"));
+      expect(screen.getByText("Option 3")).toBeInTheDocument();
+      expect(screen.getByText("Create Organization")).toBeInTheDocument();
+
+      await user.click(screen.getByText("Create Organization"));
+      expect(onCreate).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText("Option 3")).not.toBeInTheDocument();
+    });
+  });
 });

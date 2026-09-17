@@ -39,7 +39,7 @@ vi.mock("react-i18next", async () => {
       t: (key: string) => {
         const translations: Record<string, string> = {
           SETTINGS$NAV_INTEGRATIONS: "Integrations",
-          SETTINGS$NAV_INTEGRATIONS_HUB: "Integrations Hub",
+          SETTINGS$NAV_INTEGRATIONS_HUB: "Integrations Admin",
           SETTINGS$NAV_APPLICATION: "Application",
           SETTINGS$NAV_CREDITS: "Billing & Credits",
           SETTINGS$NAV_API_KEYS: "API Keys",
@@ -793,7 +793,7 @@ describe("Settings Screen", () => {
         within(navbar).queryByRole("link", { name: "Integrations" }),
       ).not.toBeInTheDocument();
       expect(
-        within(navbar).getByRole("link", { name: "Integrations Hub" }),
+        within(navbar).getByRole("link", { name: "Integrations Admin" }),
       ).toBeInTheDocument();
       // Other pages should still be visible
       expect(
@@ -842,7 +842,7 @@ describe("Settings Screen", () => {
         within(navbar).queryByRole("link", { name: "Integrations" }),
       ).not.toBeInTheDocument();
       expect(
-        within(navbar).getByRole("link", { name: "Integrations Hub" }),
+        within(navbar).getByRole("link", { name: "Integrations Admin" }),
       ).toBeInTheDocument();
       // Other pages should still be visible
       expect(
@@ -878,7 +878,7 @@ describe("Settings Screen", () => {
         within(navbar).queryByRole("link", { name: "Integrations" }),
       ).not.toBeInTheDocument();
       expect(
-        within(navbar).queryByRole("link", { name: "Integrations Hub" }),
+        within(navbar).queryByRole("link", { name: "Integrations Admin" }),
       ).not.toBeInTheDocument();
       // Other OSS pages should still be visible
       expect(
@@ -921,7 +921,7 @@ describe("Settings Screen", () => {
 
       const navbar = await screen.findByTestId("settings-navbar");
       expect(
-        within(navbar).queryByRole("link", { name: "Integrations Hub" }),
+        within(navbar).queryByRole("link", { name: "Integrations Admin" }),
       ).not.toBeInTheDocument();
       expect(
         within(navbar).getByRole("link", { name: "Integrations" }),
@@ -963,7 +963,7 @@ describe("Settings Screen", () => {
         within(navbar).getByRole("link", { name: "Integrations" }),
       ).toBeInTheDocument();
       expect(
-        within(navbar).queryByRole("link", { name: "Integrations Hub" }),
+        within(navbar).queryByRole("link", { name: "Integrations Admin" }),
       ).not.toBeInTheDocument();
     });
   });
