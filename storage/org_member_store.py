@@ -21,6 +21,7 @@ from storage.org_default_settings import strip_unset_condenser_max_tokens
 from storage.org_member import OrgMember
 from storage.user import User
 from storage.user_settings import UserSettings
+from utils.sql import escape_ilike
 
 _MISSING = object()
 
@@ -213,7 +214,7 @@ class OrgMemberStore:
 
             if email_filter:
                 query = query.join(User, User.id == OrgMember.user_id).filter(
-                    User.email.ilike(f'%{email_filter}%')
+                    User.email.ilike(f'%{escape_ilike(email_filter)}%', escape='\\')
                 )
 
             result = await session.execute(query)
@@ -247,15 +248,11 @@ class OrgMemberStore:
                 .filter(OrgMember.org_id == org_id)
             )
 
-            # Apply email filter if provided. A metacharacter typed into the members
-            # search box must match itself rather than widen the filter to the org.
+            # Apply email filter if provided
             if email_filter:
-                escaped = (
-                    email_filter.replace('\\', '\\\\')
-                    .replace('%', '\\%')
-                    .replace('_', '\\_')
+                query = query.filter(
+                    User.email.ilike(f'%{escape_ilike(email_filter)}%', escape='\\')
                 )
-                query = query.filter(User.email.ilike(f'%{escaped}%', escape='\\'))
 
             query = query.order_by(OrgMember.user_id).offset(offset).limit(limit + 1)
 
