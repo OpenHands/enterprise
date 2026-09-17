@@ -2602,13 +2602,9 @@ async def test_accept_tos_links_signup_analytics_to_posthog_session(mock_request
             'server.routes.auth.get_user_auth',
             AsyncMock(return_value=mock_user_auth),
         ),
-        patch(
-            'server.routes.auth.a_session_maker', return_value=mock_session_context
-        ),
+        patch('server.routes.auth.a_session_maker', return_value=mock_session_context),
         patch('server.routes.auth.set_response_cookie'),
-        patch(
-            'server.routes.auth.get_analytics_service', return_value=mock_analytics
-        ),
+        patch('server.routes.auth.get_analytics_service', return_value=mock_analytics),
         patch(
             'server.routes.auth._get_post_auth_redirect',
             AsyncMock(return_value='http://example.com'),
@@ -2622,7 +2618,6 @@ async def test_accept_tos_links_signup_analytics_to_posthog_session(mock_request
         mock_analytics.track_user_signed_up.call_args.kwargs['session_id']
         == 'session-123'
     )
-
 
 
 @pytest.mark.asyncio
