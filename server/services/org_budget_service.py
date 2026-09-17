@@ -60,6 +60,9 @@ DEFAULT_THRESHOLDS = (
 LITELLM_FINANCIAL_READ_MAX_ATTEMPTS = 3
 LITELLM_FINANCIAL_READ_RETRY_DELAY_SECONDS = 0.1
 
+# Postgres SQLSTATE for unique_violation.
+_UNIQUE_VIOLATION = '23505'
+
 
 @dataclass
 class BudgetCycle:
@@ -816,10 +819,8 @@ class OrgBudgetService:
             await self._hydrate_cycle_baselines(settings)
             return settings
 
-        # org_id is unique and the insert takes no lock, so two requests that both
-        # read no row -- the maintenance job reaching an org for the first time while
-        # an admin opens its budgets page -- both get here. Insert inside a savepoint
-        # so losing the race costs a re-read rather than failing the request.
+        # Insert inside a savepoint so a concurrent creator's unique violation does
+        # not poison the caller's transaction.
         try:
             async with self.db_session.begin_nested():
                 settings = await self.store.create_settings(
@@ -828,7 +829,15 @@ class OrgBudgetService:
                     cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
                     thresholds=DEFAULT_THRESHOLDS,
                 )
-        except IntegrityError:
+        except IntegrityError as exc:
+            # Only a unique violation means the race was lost; create_settings also
+            # writes rows carrying an FK to org.id, and a missing org must keep its
+            # own error rather than be reported as a re-read that found nothing.
+            if getattr(exc.orig, 'sqlstate', None) != _UNIQUE_VIOLATION:
+                raise
+            # Finding the winner's committed row depends on READ COMMITTED, where
+            # each statement takes a fresh snapshot. Under REPEATABLE READ this
+            # session's snapshot predates that commit and the re-read returns None.
             settings = await self.store.get_settings(org_id)
             if settings is None:
                 raise

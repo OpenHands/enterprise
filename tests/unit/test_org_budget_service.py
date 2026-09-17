@@ -17,6 +17,7 @@ from server.routes.org_models import (
     OrgBudgetThresholdUpdate,
 )
 from server.services.org_budget_service import (
+    DEFAULT_THRESHOLDS,
     BudgetFinancialSnapshotResult,
     LiteLlmFinancialSnapshot,
     LiteLlmMemberFinancialSnapshot,
@@ -2639,7 +2640,9 @@ async def test_settings_row_is_created_once_when_two_requests_race(
         second_service = OrgBudgetService(second)
 
         snapshot = _snapshot(team_spend=0.0)
-        snapshot_result = BudgetFinancialSnapshotResult(snapshot=snapshot, status='live')
+        snapshot_result = BudgetFinancialSnapshotResult(
+            snapshot=snapshot, status='live'
+        )
         already_read = []
         real_get_settings = second_service.store.get_settings
 
@@ -2652,11 +2655,15 @@ async def test_settings_row_is_created_once_when_two_requests_race(
 
         with (
             patch.object(
-                first_service, '_get_financial_snapshot', AsyncMock(return_value=snapshot_result)
+                first_service,
+                '_get_financial_snapshot',
+                AsyncMock(return_value=snapshot_result),
             ),
             patch.object(first_service, '_sync_litellm_budgets', AsyncMock()),
             patch.object(
-                second_service, '_get_financial_snapshot', AsyncMock(return_value=snapshot_result)
+                second_service,
+                '_get_financial_snapshot',
+                AsyncMock(return_value=snapshot_result),
             ),
             patch.object(second_service, '_sync_litellm_budgets', AsyncMock()),
         ):
@@ -2681,12 +2688,30 @@ async def test_settings_row_is_created_once_when_two_requests_race(
 
     async with async_session_maker() as check:
         rows = (
-            await check.execute(
-                select(OrgBudgetSettings).where(
-                    OrgBudgetSettings.org_id == budget_org.id
+            (
+                await check.execute(
+                    select(OrgBudgetSettings).where(
+                        OrgBudgetSettings.org_id == budget_org.id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
+        thresholds = (
+            (
+                await check.execute(
+                    select(OrgBudgetThreshold).where(
+                        OrgBudgetThreshold.org_id == budget_org.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     # A settings row is created only when the org has none.
     assert len(rows) == 1
+    # The savepoint rollback discards the loser's threshold rows too, so the org
+    # keeps one set rather than two.
+    assert len(thresholds) == len(DEFAULT_THRESHOLDS)
