@@ -2272,16 +2272,25 @@ async def test_override_cap_is_never_written_below_the_cycle_baseline(
         await session.commit()
 
         service = OrgBudgetService(session)
-        snapshot = _snapshot(
+        before = _snapshot(
             team_spend=baseline, members={str(user_id): (baseline, None, True)}
         )
+        # What LiteLLM holds once the clamped cap has been written: the member is
+        # capped at their baseline, having spent nothing of their own this cycle.
+        after = _snapshot(
+            team_spend=baseline,
+            team_max_budget=baseline + 250.0,
+            members={str(user_id): (baseline, baseline, False)},
+        )
+        snapshots = [before, after]
         with (
             patch.object(
                 service,
                 '_get_financial_snapshot',
                 AsyncMock(
-                    return_value=BudgetFinancialSnapshotResult(
-                        snapshot=snapshot, status='live'
+                    side_effect=lambda *args, **kwargs: BudgetFinancialSnapshotResult(
+                        snapshot=snapshots.pop(0) if snapshots else after,
+                        status='live',
                     )
                 ),
             ),
@@ -2297,6 +2306,7 @@ async def test_override_cap_is_never_written_below_the_cycle_baseline(
             await service.upsert_user_override(
                 budget_org.id, user_id, monthly_limit=-100.0, is_disabled=False
             )
+            state = await service.get_budget_state(budget_org.id)
 
     written_caps = [
         call_args.kwargs['max_budget']
@@ -2307,6 +2317,9 @@ async def test_override_cap_is_never_written_below_the_cycle_baseline(
     # A cap below the cycle baseline is already exceeded the moment it is written.
     assert written_caps
     assert min(written_caps) >= baseline
+    # Drift detection has to expect the clamped cap too, or the org is stuck
+    # degraded — and degraded is a 503 on the budgets routes — for good.
+    assert state['reconciliation_state'] == 'healthy'
 
 
 @pytest.mark.asyncio
