@@ -335,6 +335,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 20,
@@ -348,6 +349,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
             sort_order=sort_order,
             page_id=page_id,
             limit=limit,
@@ -366,6 +368,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
     ) -> int:
         return await self.app_conversation_info_service.count_app_conversation_info(
             title__contains=title__contains,
@@ -374,6 +377,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
         )
 
     async def get_app_conversation(
@@ -658,7 +662,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 llm_model = request_agent.llm.model
                 agent_kind = 'openhands'
 
-            conversation_tags: dict[str, str] = dict(tags)
+            conversation_tags: dict[str, str] = {**(request.tags or {}), **tags}
             if request.selected_repository:
                 conversation_tags['repo_name'] = request.selected_repository
             if request.git_provider:
@@ -2818,8 +2822,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # This uses Pydantic's model_fields_set to detect which fields were set,
         # allowing us to distinguish between "not provided" and "explicitly set to None"
         for field_name in request.model_fields_set:
+            if field_name == 'tags':
+                continue
             value = getattr(request, field_name)
             setattr(info, field_name, value)
+
+        # Tags are applied as a merge patch: a None value deletes the key and keys
+        # not mentioned in the request are left untouched.
+        if request.tags is not None:
+            merged_tags = dict(info.tags)
+            for key, tag_value in request.tags.items():
+                if tag_value is None:
+                    merged_tags.pop(key, None)
+                else:
+                    merged_tags[key] = tag_value
+            info.tags = merged_tags
 
         info = await self.app_conversation_info_service.save_app_conversation_info(info)
         conversations = await self._build_app_conversations([info])
