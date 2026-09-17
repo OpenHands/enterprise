@@ -5711,7 +5711,7 @@ posthog = ["posthog (>=6,<7)"]
 
 [[package]]
 name = "openhands-sdk"
-version = "1.44.1"
+version = "1.46.0"
 description = "OpenHands SDK - Core functionality for building AI agents"
 optional = false
 python-versions = ">=3.12"
@@ -5720,10 +5720,10 @@ files = []
 develop = false
 
 [package.dependencies]
-agent-client-protocol = ">=0.10.1"
+agent-client-protocol = ">=0.10.1,<0.11.0"
 deprecation = ">=2.1.0"
 fakeredis = {version = ">=2.32.1", extras = ["lua"]}
-fastmcp = ">=3.0.0"
+fastmcp = ">=3.2.0"
 filelock = ">=3.20.1"
 httpx = {version = ">=0.27.0", extras = ["socks"]}
 joserfc = ">=1.6.8"
@@ -5748,7 +5748,7 @@ vertex = ["google-cloud-aiplatform (>=1.38)"]
 type = "git"
 url = "https://github.com/OpenHands/software-agent-sdk.git"
 reference = "jmj/pareto-prompt-meta-profiles"
-resolved_reference = "f87603e8f32b422530d3db15a1a8ba74035888c2"
+resolved_reference = "c34b04450b6b9f679218c103e01d0253a4bce208"
 subdirectory = "openhands-sdk"
 
 [[package]]
