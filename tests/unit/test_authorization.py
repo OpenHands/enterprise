@@ -158,6 +158,7 @@ class TestRolePermissions:
         assert Permission.CHANGE_ORGANIZATION_NAME in owner_perms
         assert Permission.DELETE_ORGANIZATION in owner_perms
         assert Permission.MANAGE_AUTOMATIONS in owner_perms
+        assert Permission.MANAGE_ALL_AUTOMATIONS in owner_perms
         assert Permission.VIEW_AUTOMATIONS in owner_perms
         assert Permission.VIEW_ORG_CONVERSATIONS in owner_perms
         assert Permission.MANAGE_INTEGRATION_PROVIDERS in owner_perms
@@ -181,6 +182,7 @@ class TestRolePermissions:
         assert Permission.CHANGE_USER_ROLE_MEMBER in admin_perms
         assert Permission.CHANGE_USER_ROLE_ADMIN in admin_perms
         assert Permission.MANAGE_AUTOMATIONS in admin_perms
+        assert Permission.MANAGE_ALL_AUTOMATIONS in admin_perms
         assert Permission.VIEW_AUTOMATIONS in admin_perms
         assert Permission.VIEW_ORG_CONVERSATIONS in admin_perms
         assert Permission.MANAGE_INTEGRATION_PROVIDERS in admin_perms
@@ -220,6 +222,8 @@ class TestRolePermissions:
         assert Permission.VIEW_ORG_CONVERSATIONS not in member_perms
         # Member can create and manage their own automations
         assert Permission.MANAGE_AUTOMATIONS in member_perms
+        # Member cannot manage other users' automations
+        assert Permission.MANAGE_ALL_AUTOMATIONS not in member_perms
 
     def test_create_organization_is_not_org_scoped_for_any_role(self):
         """

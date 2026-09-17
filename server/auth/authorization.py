@@ -98,12 +98,12 @@ class Permission(str, Enum):
 
     # Automations
     # All users get VIEW_AUTOMATIONS (list, get, runs).
-    # All users get MANAGE_AUTOMATIONS to create automations and manage their own.
-    # The automation service enforces ownership checks: members can only edit/delete
-    # automations where automation.user_id == user.user_id. Admins and owners can
-    # edit/delete any automation in their organization.
+    # All users get MANAGE_AUTOMATIONS to create and manage their own automations.
+    # Admins/owners additionally get MANAGE_ALL_AUTOMATIONS to edit/delete/dispatch
+    # any automation in their organization.
     VIEW_AUTOMATIONS = 'view_automations'
     MANAGE_AUTOMATIONS = 'manage_automations'
+    MANAGE_ALL_AUTOMATIONS = 'manage_all_automations'
 
     # User provisioning (create new Keycloak/OpenHands users directly in an org)
     PROVISION_USER = 'provision_user'
@@ -192,6 +192,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             # Automations (full read/write)
             Permission.VIEW_AUTOMATIONS,
             Permission.MANAGE_AUTOMATIONS,
+            Permission.MANAGE_ALL_AUTOMATIONS,
             # User provisioning
             Permission.PROVISION_USER,
             # Organization Conversations (Admin/Owner only)
@@ -225,6 +226,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             # Automations (full read/write)
             Permission.VIEW_AUTOMATIONS,
             Permission.MANAGE_AUTOMATIONS,
+            Permission.MANAGE_ALL_AUTOMATIONS,
             # User provisioning
             Permission.PROVISION_USER,
             # Organization Conversations (Admin/Owner only)
