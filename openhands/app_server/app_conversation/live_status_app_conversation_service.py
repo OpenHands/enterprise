@@ -134,6 +134,7 @@ from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
+from openhands.sdk.tool import Tool
 from openhands.sdk.tool.builtins import SwitchLLMTool
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
@@ -141,6 +142,7 @@ from openhands.sdk.utils.redact import (
     sanitize_config,
 )
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
+from openhands.tools.child_conversation import StartChildConversationTool
 from openhands.tools.preset.default import (
     get_default_tools,
     register_builtins_agents,
@@ -2171,6 +2173,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             if user.agent_settings.enable_sub_agents:
                 agent_definitions = list(get_registered_agent_definitions())
+            if self.web_url:
+                # Server-side child launches: the tool runs inside the sandbox
+                # and calls back into this app server, which provisions the
+                # child through the normal lifecycle (see webhook_router).
+                tools.append(
+                    Tool(
+                        name=StartChildConversationTool.name,
+                        params={
+                            'launch_url': (
+                                f'{self.web_url}/api/v1/webhooks/conversations/'
+                                f'{conversation_id}/children'
+                            )
+                        },
+                    )
+                )
 
         # --- build AgentSettings and create agent ---------------------------
         configured_agent_settings = user.agent_settings.model_copy(
