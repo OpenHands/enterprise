@@ -158,6 +158,7 @@ class TestRolePermissions:
         assert Permission.CHANGE_ORGANIZATION_NAME in owner_perms
         assert Permission.DELETE_ORGANIZATION in owner_perms
         assert Permission.MANAGE_AUTOMATIONS in owner_perms
+        assert Permission.MANAGE_ALL_AUTOMATIONS in owner_perms
         assert Permission.VIEW_AUTOMATIONS in owner_perms
         assert Permission.VIEW_ORG_CONVERSATIONS in owner_perms
         assert Permission.MANAGE_INTEGRATION_PROVIDERS in owner_perms
@@ -181,6 +182,7 @@ class TestRolePermissions:
         assert Permission.CHANGE_USER_ROLE_MEMBER in admin_perms
         assert Permission.CHANGE_USER_ROLE_ADMIN in admin_perms
         assert Permission.MANAGE_AUTOMATIONS in admin_perms
+        assert Permission.MANAGE_ALL_AUTOMATIONS in admin_perms
         assert Permission.VIEW_AUTOMATIONS in admin_perms
         assert Permission.VIEW_ORG_CONVERSATIONS in admin_perms
         assert Permission.MANAGE_INTEGRATION_PROVIDERS in admin_perms
@@ -218,8 +220,10 @@ class TestRolePermissions:
         assert Permission.CHANGE_ORGANIZATION_NAME not in member_perms
         assert Permission.DELETE_ORGANIZATION not in member_perms
         assert Permission.VIEW_ORG_CONVERSATIONS not in member_perms
-        # Member has view-only automations access — no create/edit/delete
-        assert Permission.MANAGE_AUTOMATIONS not in member_perms
+        # Member can create and manage their own automations
+        assert Permission.MANAGE_AUTOMATIONS in member_perms
+        # Member cannot manage other users' automations
+        assert Permission.MANAGE_ALL_AUTOMATIONS not in member_perms
 
     def test_create_organization_is_not_org_scoped_for_any_role(self):
         """
@@ -272,8 +276,8 @@ class TestGetRolePermissions:
         perms = get_role_permissions('member')
         assert Permission.VIEW_LLM_SETTINGS in perms
         assert Permission.VIEW_AUTOMATIONS in perms
+        assert Permission.MANAGE_AUTOMATIONS in perms
         assert Permission.EDIT_LLM_SETTINGS not in perms
-        assert Permission.MANAGE_AUTOMATIONS not in perms
 
     def test_get_invalid_role_permissions(self):
         """
