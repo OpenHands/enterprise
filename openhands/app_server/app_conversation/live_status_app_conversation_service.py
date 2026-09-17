@@ -1478,6 +1478,45 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             settings_store = await SaasSettingsStore.get_instance(
                 user.id, effective_org_id=org_id
             )
+            # Heal orgs left broken by #421: a stale org-level BYOR key shadows
+            # the member's managed key. PR #425 prevents new occurrences; this
+            # restores already-broken users on their next load. Clearing the
+            # stale field flips the effective key off the dummy, then we
+            # force-rotate a fresh managed key so the returned LLM carries it
+            # (otherwise the existing verify path would skip on key mismatch).
+            if await settings_store.clear_stale_org_level_llm_key_if_managed():
+                _logger.info(
+                    'managed_llm_key_refresh:cleared_stale_org_level_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                    },
+                )
+                rotation = await settings_store.rotate_managed_llm_key()
+                if rotation.status == ManagedLlmKeyStatus.ROTATED and rotation.new_key:
+                    _logger.info(
+                        'managed_llm_key_refresh:rotated_after_clear',
+                        extra={
+                            'user_id': user.id,
+                            'org_id': str(org_id),
+                            'model': llm.model,
+                            'openhands_type': getattr(rotation, 'openhands_type', None),
+                        },
+                    )
+                    self.user_context.invalidate_user_info_cache()
+                    return llm.model_copy(
+                        update={'api_key': SecretStr(rotation.new_key)}
+                    )
+                _logger.warning(
+                    'managed_llm_key_refresh:clear_without_rotation',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                        'status': rotation.status,
+                    },
+                )
             managed_key = await settings_store.get_current_managed_llm_key()
             if managed_key is None:
                 _logger.debug(

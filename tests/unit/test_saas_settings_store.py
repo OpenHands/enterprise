@@ -1125,6 +1125,87 @@ async def test_store_clears_member_custom_key_when_switching_to_managed_profile(
 
 
 @pytest.mark.asyncio
+async def test_clear_stale_org_level_key_when_active_default_is_managed(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """#421 broken state: org._llm_api_key holds a stale BYOR dummy while the
+    active default is a managed openhands model. clear_* must clear it."""
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        org.agent_settings = {'llm': {'model': 'openhands/claude-opus-4-5-20251101'}}
+        org.llm_api_key = 'dummymodel'
+        # Clear the member's stale BYOR diff so the resolved default is the
+        # org-level managed model (load() merges org defaults with the member
+        # diff, and the fixture seeds a non-managed member diff).
+        admin_member = next(m for m in org.org_members if m.user_id == admin_user_id)
+        admin_member.agent_settings_diff = {}
+        admin_member.has_custom_llm_api_key = False
+        session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        cleared = await store.clear_stale_org_level_llm_key_if_managed()
+
+    assert cleared is True
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        assert org._llm_api_key is None
+
+
+@pytest.mark.asyncio
+async def test_clear_stale_org_level_key_skips_when_active_default_is_byor(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """A legit BYOR-active org keeps its real org-level key — the managed
+    classifier is false, so clear_* must not touch it."""
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+
+    real_byor_key = 'real-byor-secret'
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        org.agent_settings = {
+            'llm': {
+                'model': 'anthropic/claude-3-5-sonnet',
+                'base_url': 'https://api.anthropic.com/v1',
+            }
+        }
+        org.llm_api_key = real_byor_key
+        session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        cleared = await store.clear_stale_org_level_llm_key_if_managed()
+
+    assert cleared is False
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        assert org.llm_api_key is not None
+        assert org.llm_api_key.get_secret_value() == real_byor_key
+
+
+@pytest.mark.asyncio
 async def test_store_reuses_existing_managed_key_for_blank_openhands_profile(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):

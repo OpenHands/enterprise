@@ -964,10 +964,18 @@ class TestLiveStatusAppConversationService:
 
     @staticmethod
     def _install_managed_key_refresh_modules(
-        monkeypatch, *, get_key, rotate_key, verify_key, verify_existing_key=None
+        monkeypatch,
+        *,
+        get_key,
+        rotate_key,
+        verify_key,
+        verify_existing_key=None,
+        clear_stale_org_key=None,
     ):
         if verify_existing_key is None:
             verify_existing_key = AsyncMock(return_value=True)
+        if clear_stale_org_key is None:
+            clear_stale_org_key = AsyncMock(return_value=False)
 
         storage_mod = types.ModuleType('storage')
         lite_llm_mod = types.ModuleType('storage.lite_llm_manager')
@@ -979,6 +987,7 @@ class TestLiveStatusAppConversationService:
         store = SimpleNamespace(
             get_current_managed_llm_key=get_key,
             rotate_managed_llm_key=rotate_key,
+            clear_stale_org_level_llm_key_if_managed=clear_stale_org_key,
         )
         saas_settings_mod = types.ModuleType('storage.saas_settings_store')
         saas_settings_mod.ManagedLlmKeyStatus = SimpleNamespace(ROTATED='rotated')
@@ -1054,6 +1063,54 @@ class TestLiveStatusAppConversationService:
         )
         verify_key.assert_awaited_once_with('sk-old-managed-key', 'user-123')
         rotate_key.assert_awaited_once_with()
+        self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_heals_stale_org_level_key(
+        self, monkeypatch
+    ):
+        """Broken #421 state: active default is managed but ``org._llm_api_key``
+        still holds a stale BYOR dummy shadowing the member key. The refresh
+        path clears it and force-rotates instead of falling through to the
+        verify path (which would skip on the resulting key mismatch)."""
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+
+        get_key = AsyncMock(return_value='sk-old-managed-key')
+        rotate_key = AsyncMock(
+            return_value=SimpleNamespace(
+                status='rotated', new_key='sk-new-managed-key', openhands_type=True
+            )
+        )
+        # The heal branch: clear reports a stale org-level key was present.
+        clear_stale_org_key = AsyncMock(return_value=True)
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=get_key,
+            rotate_key=rotate_key,
+            verify_key=AsyncMock(return_value=False),
+            verify_existing_key=AsyncMock(return_value=True),
+            clear_stale_org_key=clear_stale_org_key,
+        )
+
+        # The effective api_key is the stale org dummy, not the member key.
+        llm = LLM(
+            model='openhands/gpt-5.5',
+            base_url='https://llm-proxy.app.all-hands.dev',
+            api_key=SecretStr('dummymodel'),
+        )
+
+        refreshed = await self.service._maybe_refresh_managed_llm_key(
+            self.mock_user, llm
+        )
+
+        assert refreshed.api_key.get_secret_value() == 'sk-new-managed-key'
+        clear_stale_org_key.assert_awaited_once_with()
+        rotate_key.assert_awaited_once_with()
+        # The verify path must be bypassed — no key comparison against the dummy.
+        get_key.assert_not_awaited()
         self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
 
     @pytest.mark.asyncio
