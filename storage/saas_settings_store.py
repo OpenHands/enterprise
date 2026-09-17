@@ -189,7 +189,24 @@ class SaasSettingsStore(SettingsStore):
     def _get_effective_llm_api_key(
         org: Org,
         org_member: OrgMember,
+        *,
+        active_is_managed: bool,
     ) -> SecretStr | None:
+        # A managed active model must launch with a *managed* key — the org's
+        # managed virtual key, or the member's own managed key — never the
+        # member's stale BYOR/custom key left over from a previously-activated
+        # broken model. Returning the custom key for a managed model is the
+        # read-path leak: it gets attached to the managed model and sent to the
+        # LiteLLM proxy, which rejects a non-``sk-`` key with the "LiteLLM
+        # Virtual Key expected" 401. ``has_custom_llm_api_key`` is sticky (it
+        # stays True after switching the active model away from a BYOR model),
+        # so it must NOT gate the managed path — only the BYOR path.
+        if active_is_managed:
+            if org.llm_api_key:
+                return org.llm_api_key
+            if not org_member.has_custom_llm_api_key and org_member._llm_api_key:
+                return org_member.llm_api_key
+            return None
         if org_member.has_custom_llm_api_key:
             return org_member.llm_api_key
         if org.llm_api_key:
@@ -432,7 +449,21 @@ class SaasSettingsStore(SettingsStore):
                     exc_info=True,
                 )
                 merged_agent_settings['mcp_config'] = {}
-        effective_llm_api_key = self._get_effective_llm_api_key(org, org_member)
+        composed_llm = merged_agent_settings.get('llm') or {}
+        composed_config = managed_llm_key_config_from_model(
+            composed_llm.get('model'), composed_llm.get('base_url')
+        )
+        # The active settings model's managed-ness drives key resolution: a
+        # managed active model must take a managed key (org-level, or the
+        # member's own managed key), never the member's stale BYOR/custom key.
+        # ``has_custom_llm_api_key`` is sticky (it stays True after switching
+        # the active model away from a BYOR model), so it cannot gate the
+        # managed path — that was the read-path leak (custom key attached to a
+        # managed model -> LiteLLM "Virtual Key expected" 401).
+        active_is_managed = composed_config is not None
+        effective_llm_api_key = self._get_effective_llm_api_key(
+            org, org_member, active_is_managed=active_is_managed
+        )
         # The effective key is the member/org managed virtual key only when the
         # member isn't carrying a custom BYOR key. ``_get_effective_llm_api_key``
         # also returns a custom key (``has_custom_llm_api_key``), which is the
@@ -451,11 +482,7 @@ class SaasSettingsStore(SettingsStore):
         # — so the persisted/round-trip view keeps the user's key (settings
         # writes never drop it) while the launch view never sends a BYOR key to
         # a managed model.
-        effective_key_is_managed = not org_member.has_custom_llm_api_key
-        composed_llm = merged_agent_settings.get('llm') or {}
-        composed_config = managed_llm_key_config_from_model(
-            composed_llm.get('model'), composed_llm.get('base_url')
-        )
+        effective_key_is_managed = active_is_managed
         if effective_llm_api_key is not None and (
             effective_key_is_managed or composed_config is None
         ):

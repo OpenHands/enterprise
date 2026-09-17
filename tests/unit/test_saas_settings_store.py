@@ -2439,8 +2439,73 @@ async def test_store_replaces_mcp_config_on_delete(
 class TestGetEffectiveLlmApiKey:
     """Regression tests for SaasSettingsStore._get_effective_llm_api_key() - GitHub #14898."""
 
+    def test_managed_active_model_uses_org_key_not_stale_custom_key(self):
+        """A managed active model must use the org's managed key, never the
+        member's stale BYOR/custom key (the read-path leak: custom key on a
+        managed model -> LiteLLM "Virtual Key expected" 401). has_custom is
+        sticky and must NOT gate the managed path.
+        """
+        from pydantic import SecretStr
+
+        from storage.saas_settings_store import SaasSettingsStore
+
+        org = MagicMock()
+        org.llm_api_key = SecretStr('sk-org-managed-key')
+
+        member = MagicMock()
+        member.has_custom_llm_api_key = True  # sticky from a prior BYOR model
+        member.llm_api_key = SecretStr('dummymodel')  # stale custom key
+
+        result = SaasSettingsStore._get_effective_llm_api_key(
+            org, member, active_is_managed=True
+        )
+
+        assert result == SecretStr('sk-org-managed-key')
+
+    def test_managed_active_model_returns_none_when_no_managed_key(self):
+        """Managed active model, no org key, member in BYOR state (has_custom
+        True): return None rather than the stale custom key. The launch refresh
+        then mints a member-level managed key for member-managed orgs.
+        """
+        from pydantic import SecretStr
+
+        from storage.saas_settings_store import SaasSettingsStore
+
+        org = MagicMock()
+        org.llm_api_key = None
+
+        member = MagicMock()
+        member.has_custom_llm_api_key = True
+        member._llm_api_key = 'encrypted-dummy'
+        type(member).llm_api_key = PropertyMock(return_value=SecretStr('dummymodel'))
+
+        result = SaasSettingsStore._get_effective_llm_api_key(
+            org, member, active_is_managed=True
+        )
+
+        assert result is None
+
+    def test_byor_active_model_uses_member_custom_key(self):
+        """A BYOR/custom active model keeps the member's custom key."""
+        from pydantic import SecretStr
+
+        from storage.saas_settings_store import SaasSettingsStore
+
+        org = MagicMock()
+        org.llm_api_key = SecretStr('sk-org-managed-key')
+
+        member = MagicMock()
+        member.has_custom_llm_api_key = True
+        member.llm_api_key = SecretStr('byor-key')
+
+        result = SaasSettingsStore._get_effective_llm_api_key(
+            org, member, active_is_managed=False
+        )
+
+        assert result == SecretStr('byor-key')
+
     def test_returns_member_key_when_has_custom_is_true(self):
-        """When has_custom_llm_api_key is True, returns member's LLM API key."""
+        """When has_custom_llm_api_key is True (BYOR active model), returns member's LLM API key."""
         from pydantic import SecretStr
 
         from storage.saas_settings_store import SaasSettingsStore
@@ -2452,7 +2517,9 @@ class TestGetEffectiveLlmApiKey:
         member.has_custom_llm_api_key = True
         member.llm_api_key = SecretStr('member-api-key')
 
-        result = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        result = SaasSettingsStore._get_effective_llm_api_key(
+            org, member, active_is_managed=False
+        )
 
         assert result == SecretStr('member-api-key')
 
@@ -2483,7 +2550,9 @@ class TestGetEffectiveLlmApiKey:
 
         type(member).llm_api_key = PropertyMock(side_effect=raise_on_access)
 
-        result = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        result = SaasSettingsStore._get_effective_llm_api_key(
+            org, member, active_is_managed=False
+        )
 
         # Must return org key when has_custom_llm_api_key is False
         assert result == SecretStr('org-api-key')
@@ -2507,7 +2576,9 @@ class TestGetEffectiveLlmApiKey:
         member._llm_api_key = 'encrypted-managed-key'  # truthy => set
         type(member).llm_api_key = PropertyMock(return_value=SecretStr('managed-key'))
 
-        result = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        result = SaasSettingsStore._get_effective_llm_api_key(
+            org, member, active_is_managed=False
+        )
 
         assert result == SecretStr('managed-key')
 
@@ -2525,7 +2596,9 @@ class TestGetEffectiveLlmApiKey:
             side_effect=AssertionError('should not decrypt an unset member key')
         )
 
-        result = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        result = SaasSettingsStore._get_effective_llm_api_key(
+            org, member, active_is_managed=False
+        )
 
         assert result is None
 
