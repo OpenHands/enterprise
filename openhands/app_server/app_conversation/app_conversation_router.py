@@ -95,10 +95,10 @@ from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth import get_secrets_store, get_user_settings
 from openhands.app_server.utils.dependencies import get_dependencies
-from openhands.app_server.utils.llm import is_managed_llm_config
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
+from openhands.app_server.utils.llm import is_managed_llm_config
 from openhands.sdk.agent.acp_file_credentials import is_valid_codex_auth
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.skills import KeywordTrigger, TaskTrigger

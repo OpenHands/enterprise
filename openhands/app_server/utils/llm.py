@@ -130,8 +130,7 @@ def is_managed_llm_config(
         managed_proxy_url.rstrip('/') if managed_proxy_url else None
     )
     uses_openhands_provider_proxy = is_openhands_model(model) and (
-        normalized_base_url is None
-        or 'all-hands.dev' in normalized_base_url.lower()
+        normalized_base_url is None or 'all-hands.dev' in normalized_base_url.lower()
     )
     uses_managed_base_url = (
         normalized_managed_base_url is not None

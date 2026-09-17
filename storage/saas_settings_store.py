@@ -439,17 +439,25 @@ class SaasSettingsStore(SettingsStore):
         # correct credential for a BYOR active model — but it must never be
         # attached to a *managed* active model: handing a third-party key to the
         # LiteLLM proxy is what produced the "LiteLLM Virtual Key expected" 401
-        # after a user activated a broken custom model. A managed active model
-        # keeps its own stored key (runtime rotation refresh heals a stale one)
-        # rather than being poisoned with the BYOR key.
+        # after a user activated a broken custom model.
+        #
+        # This composed-path lift populates the persisted/seed view (the
+        # legacy-Default seed below captures the key from ``merged_llm``, and
+        # the persisted round-trip must keep the member's key). The leak is NOT
+        # blocked here: materialize-Default + agent-profile resolution can swap
+        # the model to a managed one and copy a profile's stored BYOR key onto
+        # it. That is handled by the launch-key guard below, which strips a
+        # wrong-type key from the FINAL effective model in the launch view only
+        # — so the persisted/round-trip view keeps the user's key (settings
+        # writes never drop it) while the launch view never sends a BYOR key to
+        # a managed model.
         effective_key_is_managed = not org_member.has_custom_llm_api_key
-        active_llm = merged_agent_settings.get('llm') or {}
-        active_is_managed = managed_llm_key_config_from_model(
-            active_llm.get('model'), active_llm.get('base_url')
+        composed_llm = merged_agent_settings.get('llm') or {}
+        composed_config = managed_llm_key_config_from_model(
+            composed_llm.get('model'), composed_llm.get('base_url')
         )
-        if (
-            effective_llm_api_key is not None
-            and (effective_key_is_managed or active_is_managed is None)
+        if effective_llm_api_key is not None and (
+            effective_key_is_managed or composed_config is None
         ):
             merged_agent_settings.setdefault('llm', {})['api_key'] = (
                 effective_llm_api_key.get_secret_value()
@@ -602,6 +610,39 @@ class SaasSettingsStore(SettingsStore):
                 kwargs['agent_settings'] = resolved_dump
                 kwargs['active_agent_profile_id'] = resolved_id
                 kwargs['active_agent_profile_revision'] = resolved_revision
+
+        # Launch-key guard (launch view only): the effective model is now
+        # finalized (post materialize-Default + agent-profile resolution). If
+        # the FINAL effective model is managed but the member is in a BYOR
+        # state (``effective_key_is_managed=False``), the composed lift above
+        # may have placed the BYOR key on a model that materialize then swapped
+        # to managed — or a profile's stored key may be the wrong type. Strip
+        # it so a managed model never launches with a BYOR key (the
+        # "LiteLLM Virtual Key expected" 401); the managed model launches
+        # keyless and ``_maybe_refresh_managed_llm_key`` mints a fresh managed
+        # key at conversation start. Persisted/round-trip loads keep the
+        # composed key so settings writes never drop a user's key.
+        if resolution_requested:
+            final_agent_settings = dict(kwargs.get('agent_settings') or {})
+            final_llm = dict(final_agent_settings.get('llm') or {})
+            final_is_managed = (
+                managed_llm_key_config_from_model(
+                    final_llm.get('model'), final_llm.get('base_url')
+                )
+                is not None
+            )
+            if effective_key_is_managed != final_is_managed:
+                final_llm['api_key'] = None
+                final_agent_settings['llm'] = final_llm
+                kwargs['agent_settings'] = final_agent_settings
+            elif effective_llm_api_key is not None:
+                final_llm['api_key'] = (
+                    effective_llm_api_key.get_secret_value()
+                    if isinstance(effective_llm_api_key, SecretStr)
+                    else effective_llm_api_key
+                )
+                final_agent_settings['llm'] = final_llm
+                kwargs['agent_settings'] = final_agent_settings
 
         settings = Settings(**kwargs)
         settings._mcp_config_updated = False
@@ -1080,7 +1121,9 @@ class SaasSettingsStore(SettingsStore):
                 return None
             return org_member.llm_api_key.get_secret_value()
 
-    async def rotate_managed_llm_key(self) -> ManagedLlmKeyRotation:
+    async def rotate_managed_llm_key(
+        self, *, force: bool = False
+    ) -> ManagedLlmKeyRotation:
         """Force-rotate the managed LiteLLM/OpenHands key for this user/org.
 
         Centralizes the managed-key lifecycle so callers (e.g. the API-key
@@ -1101,6 +1144,15 @@ class SaasSettingsStore(SettingsStore):
         is reported explicitly (``MISSING_MEMBER``) rather than silently
         swallowed. The previous key token is returned for best-effort cleanup
         and is only exposed after a successful persist.
+
+        ``force`` mints a fresh managed key even when the member is in a BYOR
+        state (``has_custom_llm_api_key=True``). This is the read-path recovery
+        for a member who activated a broken custom model and then switched back
+        to a managed profile: the managed model launches keyless (the load()
+        guard strips the BYOR key), and the launch-time refresh calls this with
+        ``force=True`` to mint a managed key and clear the BYOR state. A truly
+        BYOK org (``org._llm_api_key`` set) is still rejected — those orgs do
+        not use managed keys at all.
         """
         settings = await self.load()
         if settings is None:
@@ -1134,7 +1186,7 @@ class SaasSettingsStore(SettingsStore):
             if org_member is None:
                 return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
 
-            if org_member.has_custom_llm_api_key:
+            if org_member.has_custom_llm_api_key and not force:
                 return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.BYOK)
 
             existing_key = org_member.llm_api_key if org_member._llm_api_key else None

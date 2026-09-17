@@ -2599,3 +2599,199 @@ def test_profile_sync_skips_non_openhands_agent_kind():
     active = settings.llm_profiles.require('Default')
     assert active.model == 'litellm_proxy/claude-sonnet-4-5-20250929'
     assert active.base_url == 'http://x:4000'
+
+
+@pytest.mark.asyncio
+async def test_repro_dummy_byor_key_leaks_into_managed_default(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """Repro: user adds a broken dummy BYOR LLM (custom key) while the active
+    profile is the managed 'Default'. Loading the launch view must NOT attach
+    the dummy key to the managed Default model.
+    """
+    from sqlalchemy import select, update
+
+    from server.verified_models.verified_model_service import StoredVerifiedModel
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+
+    async with async_session_maker() as session:
+        await session.execute(
+            update(Org)
+            .where(Org.id == org_id)
+            .values(
+                llm_profiles={
+                    'profiles': {'Default': {'model': 'openhands/gpt-5.2'}},
+                    'active': 'Default',
+                }
+            )
+        )
+        member = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == org_id, OrgMember.user_id == admin_user_id
+                )
+            )
+        ).scalar_one()
+        # Member "added a dummy broken LLM": a BYOR key persisted on the member
+        # row with has_custom_llm_api_key=True (exactly what store() writes for
+        # a non-managed model whose key the member supplied). ``llm_api_key`` is
+        # an encrypting property, so set it on the instance, not via bulk update.
+        member.llm_api_key = 'dummymodel'
+        member.has_custom_llm_api_key = True
+        member.agent_settings_diff = {
+            'llm': {
+                'model': 'dummymodel',
+                'base_url': 'http://dummy.example.com/v1',
+            }
+        }
+        session.add(
+            StoredVerifiedModel(
+                model_name='gpt-5.2',
+                provider='openhands',
+                is_enabled=True,
+                is_verified=True,
+                is_free=True,
+                is_default=True,
+            )
+        )
+        await session.commit()
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await SaasSettingsStore(str(admin_user_id)).load(
+            resolve_agent_profile=True
+        )
+
+    assert loaded is not None
+    llm = loaded.agent_settings.llm
+    # The managed Default model must never carry the dummy BYOR key. The
+    # read-path guard strips it (keyless) so the launch-time mint can mint a
+    # fresh managed key — see test_rotate_managed_llm_key_force_mints_*.
+    assert llm.api_key is None or llm.api_key.get_secret_value() != 'dummymodel', (
+        f'dummy BYOR key leaked onto managed Default model: {llm.api_key!r}'
+    )
+
+
+@pytest.mark.asyncio
+async def test_rotate_managed_llm_key_force_mints_when_member_in_byor_state(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """``rotate_managed_llm_key(force=True)`` mints a fresh managed key even
+    when the member is in a BYOR state (``has_custom_llm_api_key=True``), and
+    clears the BYOR flag — the read-path recovery for switching back to a
+    managed profile after activating a broken custom model.
+    """
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import select, update
+
+    from server.verified_models.verified_model_service import StoredVerifiedModel
+    from storage.lite_llm_manager import get_openhands_cloud_key_alias
+    from storage.org import Org
+    from storage.org_member import OrgMember
+    from storage.saas_settings_store import ManagedLlmKeyStatus
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+
+    async with async_session_maker() as session:
+        await session.execute(
+            update(Org)
+            .where(Org.id == org_id)
+            .values(
+                llm_profiles={
+                    'profiles': {'Default': {'model': 'openhands/gpt-5.2'}},
+                    'active': 'Default',
+                }
+            )
+        )
+        member = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == org_id, OrgMember.user_id == admin_user_id
+                )
+            )
+        ).scalar_one()
+        member.llm_api_key = 'dummymodel'
+        member.has_custom_llm_api_key = True
+        member.agent_settings_diff = {
+            'llm': {'model': 'dummymodel', 'base_url': 'http://dummy.example.com/v1'}
+        }
+        session.add(
+            StoredVerifiedModel(
+                model_name='gpt-5.2',
+                provider='openhands',
+                is_enabled=True,
+                is_verified=True,
+                is_free=True,
+                is_default=True,
+            )
+        )
+        await session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    expected_alias = get_openhands_cloud_key_alias(str(admin_user_id), str(org_id))
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
+            new_callable=AsyncMock,
+        ) as mock_delete,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.generate_key',
+            new_callable=AsyncMock,
+            return_value='sk-fresh-managed',
+        ) as mock_generate,
+    ):
+        rotation = await store.rotate_managed_llm_key(force=True)
+
+    assert rotation.status == ManagedLlmKeyStatus.ROTATED
+    assert rotation.new_key == 'sk-fresh-managed'
+    assert rotation.old_key == 'dummymodel'
+    mock_delete.assert_awaited_once_with(key_alias=expected_alias)
+    mock_generate.assert_awaited_once()
+
+    # The BYOR state is cleared and the fresh managed key persisted.
+    async with async_session_maker() as session:
+        member = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == org_id, OrgMember.user_id == admin_user_id
+                )
+            )
+        ).scalar_one()
+        assert member.has_custom_llm_api_key is False
+        assert member.llm_api_key.get_secret_value() == 'sk-fresh-managed'
+
+    # Without force, a BYOR member is rejected (preserves the existing contract).
+    async with async_session_maker() as session:
+        member = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == org_id, OrgMember.user_id == admin_user_id
+                )
+            )
+        ).scalar_one()
+        member.llm_api_key = 'dummymodel'
+        member.has_custom_llm_api_key = True
+        await session.commit()
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        rotation = await store.rotate_managed_llm_key()
+    assert rotation.status == ManagedLlmKeyStatus.BYOK

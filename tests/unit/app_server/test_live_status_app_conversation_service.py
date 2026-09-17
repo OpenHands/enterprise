@@ -1239,6 +1239,111 @@ class TestLiveStatusAppConversationService:
         rotate_key.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_mints_when_keyless(self, monkeypatch):
+        """A managed model with no usable key (read-path guard stripped a BYOR
+        key after switching back to a managed profile) must mint a fresh managed
+        key at launch rather than going to the proxy keyless.
+        """
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+        get_key = AsyncMock(return_value=None)
+        rotate_key = AsyncMock(
+            return_value=SimpleNamespace(status='rotated', new_key='sk-fresh-minted')
+        )
+        verify_key = AsyncMock()
+        verify_existing_key = AsyncMock()
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=get_key,
+            rotate_key=rotate_key,
+            verify_key=verify_key,
+            verify_existing_key=verify_existing_key,
+        )
+
+        # Managed model, no api_key — exactly what load() produces after the
+        # read-path guard strips a BYOR key from a managed effective model.
+        llm = LLM(model='openhands/gpt-5.5', base_url=None, api_key=None)
+
+        refreshed = await self.service._maybe_refresh_managed_llm_key(
+            self.mock_user, llm
+        )
+
+        assert refreshed.api_key.get_secret_value() == 'sk-fresh-minted'
+        # force=True so the mint proceeds even though the member is still in a
+        # BYOR state (has_custom_llm_api_key=True).
+        rotate_key.assert_awaited_once_with(force=True)
+        # The stale-key validation path is skipped entirely on the mint branch.
+        get_key.assert_not_called()
+        verify_key.assert_not_called()
+        self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_mints_when_masked_key(
+        self, monkeypatch
+    ):
+        """A masked ('**********') key on a managed model is treated as no usable
+        key and minted, not sent to the proxy as-is.
+        """
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+        rotate_key = AsyncMock(
+            return_value=SimpleNamespace(status='rotated', new_key='sk-fresh-minted')
+        )
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=AsyncMock(return_value=None),
+            rotate_key=rotate_key,
+            verify_key=AsyncMock(),
+        )
+
+        llm = LLM(
+            model='openhands/gpt-5.5',
+            base_url=None,
+            api_key=SecretStr('**********'),
+        )
+
+        refreshed = await self.service._maybe_refresh_managed_llm_key(
+            self.mock_user, llm
+        )
+
+        assert refreshed.api_key.get_secret_value() == 'sk-fresh-minted'
+        rotate_key.assert_awaited_once_with(force=True)
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_mint_not_applied_returns_keyless(
+        self, monkeypatch
+    ):
+        """If the mint rotation does not yield a new key, the LLM is returned
+        unchanged (keyless) — best-effort, never raises.
+        """
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+        rotate_key = AsyncMock(
+            return_value=SimpleNamespace(status='byok', new_key=None)
+        )
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=AsyncMock(return_value=None),
+            rotate_key=rotate_key,
+            verify_key=AsyncMock(),
+        )
+
+        llm = LLM(model='openhands/gpt-5.5', base_url=None, api_key=None)
+
+        refreshed = await self.service._maybe_refresh_managed_llm_key(
+            self.mock_user, llm
+        )
+
+        assert refreshed is llm
+        rotate_key.assert_awaited_once_with(force=True)
+
+    @pytest.mark.asyncio
     async def test_configure_llm_and_mcp_with_custom_model(self):
         """Test _configure_llm_and_mcp with custom LLM model."""
         # Arrange
