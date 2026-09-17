@@ -5968,7 +5968,7 @@ memory-profiler = "0.61.0"
 numpy = "2.4.4"
 openai = "2.33.0"
 openhands-agent-server = "1.44.1"
-openhands-sdk = {git = "https://github.com/OpenHands/software-agent-sdk.git", rev = "jmj/pareto-prompt-meta-profiles", subdirectory = "openhands-sdk"}
+openhands-sdk = {git = "https://github.com/OpenHands/software-agent-sdk.git", rev = "99c79324d94bd17afc19dd26d58c3753066d3708", subdirectory = "openhands-sdk"}
 openhands-tools = "1.44.1"
 opentelemetry-api = "1.39.1"
 opentelemetry-exporter-otlp-proto-grpc = "1.39.1"
@@ -6058,8 +6058,8 @@ vertex = ["google-cloud-aiplatform (>=1.38)"]
 [package.source]
 type = "git"
 url = "https://github.com/OpenHands/software-agent-sdk.git"
-reference = "jmj/pareto-prompt-meta-profiles"
-resolved_reference = "f87603e8f32b422530d3db15a1a8ba74035888c2"
+reference = "99c79324d94bd17afc19dd26d58c3753066d3708"
+resolved_reference = "99c79324d94bd17afc19dd26d58c3753066d3708"
 subdirectory = "openhands-sdk"
 
 [[package]]
@@ -14582,4 +14582,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12,<3.14"
-content-hash = "2e7215f4895f640f0733ce7b076066c9d70f30ec39cb5345102958e2de905fa3"
+content-hash = "c0215f3fe53b5091a7120ba37e948bafbd6424ad042eac9647ee06ad349b2382"
