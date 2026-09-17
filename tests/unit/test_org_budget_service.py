@@ -2459,61 +2459,6 @@ async def test_threshold_added_mid_cycle_alerts_once_for_spend_already_past_it(
     ] == [80, 90]
 
 
-@pytest.mark.asyncio
-async def test_dropping_a_threshold_leaves_the_others_latched(
-    async_session_maker, budget_org
-):
-    cycle_start = datetime.now(UTC)
-    async with async_session_maker() as session:
-        session.add_all(
-            [
-                OrgBudgetThreshold(
-                    org_id=budget_org.id,
-                    percentage=80,
-                    email_enabled=True,
-                    slack_enabled=False,
-                    last_triggered_at=cycle_start,
-                    last_triggered_cycle_start=cycle_start,
-                ),
-                OrgBudgetThreshold(
-                    org_id=budget_org.id,
-                    percentage=90,
-                    email_enabled=True,
-                    slack_enabled=False,
-                    last_triggered_at=cycle_start,
-                    last_triggered_cycle_start=cycle_start,
-                ),
-            ]
-        )
-        await session.commit()
-
-        store = OrgBudgetStore(session)
-        await store.replace_thresholds(
-            budget_org.id,
-            await store.get_thresholds(budget_org.id),
-            [
-                OrgBudgetThresholdUpdate(
-                    percentage=90, email_enabled=False, slack_enabled=True
-                )
-            ],
-        )
-        await session.commit()
-
-        rows = await store.get_thresholds(budget_org.id)
-
-    # Dropping the 80% threshold rewrites neither the settings nor the latch of the
-    # 90% one that survived the edit.
-    assert [
-        (
-            row.percentage,
-            row.email_enabled,
-            row.slack_enabled,
-            row.last_triggered_cycle_start,
-        )
-        for row in rows
-    ] == [(90, False, True, cycle_start)]
-
-
 async def _baseline_rows(session, org_id, cycle_start_at) -> dict[str, tuple]:
     result = await session.execute(
         select(OrgBudgetCycleBaseline)

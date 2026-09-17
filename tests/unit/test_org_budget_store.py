@@ -1,4 +1,4 @@
-"""Tests for the per-member budget cycle baseline store."""
+"""Tests for the org budget store: cycle baselines and threshold edits."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ import pytest
 from sqlalchemy import select
 
 from server.constants import ORG_SETTINGS_VERSION
+from server.routes.org_models import OrgBudgetThresholdUpdate
 from storage.org import Org
 from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
 from storage.org_budget_store import OrgBudgetStore
+from storage.org_budget_threshold import OrgBudgetThreshold
 
 CYCLE_A = datetime(2026, 9, 1, tzinfo=UTC)
 CYCLE_B = datetime(2026, 10, 1, tzinfo=UTC)
@@ -31,6 +33,25 @@ async def budget_org(async_session_maker):
         session.add(org)
         await session.commit()
     return org
+
+
+def _latched_threshold(org_id, percentage: int, cycle_start) -> OrgBudgetThreshold:
+    """A threshold that has already alerted in the cycle starting at cycle_start."""
+    return OrgBudgetThreshold(
+        org_id=org_id,
+        percentage=percentage,
+        email_enabled=True,
+        slack_enabled=False,
+        last_triggered_at=cycle_start,
+        last_triggered_cycle_start=cycle_start,
+    )
+
+
+async def _replace_thresholds(session, org_id, updates) -> list[OrgBudgetThreshold]:
+    store = OrgBudgetStore(session)
+    await store.replace_thresholds(org_id, await store.get_thresholds(org_id), updates)
+    await session.commit()
+    return await store.get_thresholds(org_id)
 
 
 async def _rows(session, org_id) -> list[OrgBudgetCycleBaseline]:
@@ -150,3 +171,113 @@ async def test_record_with_no_baselines_is_a_noop(async_session_maker, budget_or
 
         assert await store.get_cycle_baselines(budget_org.id, CYCLE_A) == {}
         assert await _rows(session, budget_org.id) == []
+
+
+@pytest.mark.asyncio
+async def test_dropping_a_threshold_leaves_the_others_latched(
+    async_session_maker, budget_org
+):
+    cycle_start = datetime.now(UTC)
+    async with async_session_maker() as session:
+        session.add_all(
+            [
+                _latched_threshold(budget_org.id, 80, cycle_start),
+                _latched_threshold(budget_org.id, 90, cycle_start),
+            ]
+        )
+        await session.commit()
+
+        rows = await _replace_thresholds(
+            session,
+            budget_org.id,
+            [
+                OrgBudgetThresholdUpdate(
+                    percentage=90, email_enabled=False, slack_enabled=True
+                )
+            ],
+        )
+
+    # Dropping the 80% threshold rewrites neither the settings nor the latch of the
+    # 90% one that survived the edit.
+    assert [
+        (
+            row.percentage,
+            row.email_enabled,
+            row.slack_enabled,
+            row.last_triggered_cycle_start,
+        )
+        for row in rows
+    ] == [(90, False, True, cycle_start)]
+
+
+@pytest.mark.asyncio
+async def test_editing_thresholds_leaves_every_surviving_row_latched(
+    async_session_maker, budget_org
+):
+    # An org carries three thresholds by default, so a real edit keeps several
+    # latched rows at once: every survivor is updated in place, not just the first.
+    cycle_start = datetime.now(UTC)
+    async with async_session_maker() as session:
+        session.add_all(
+            [
+                _latched_threshold(budget_org.id, 80, cycle_start),
+                _latched_threshold(budget_org.id, 90, cycle_start),
+            ]
+        )
+        await session.commit()
+
+        rows = await _replace_thresholds(
+            session,
+            budget_org.id,
+            [
+                OrgBudgetThresholdUpdate(
+                    percentage=80, email_enabled=True, slack_enabled=True
+                ),
+                OrgBudgetThresholdUpdate(
+                    percentage=90, email_enabled=True, slack_enabled=True
+                ),
+            ],
+        )
+
+    assert [
+        (row.percentage, row.slack_enabled, row.last_triggered_cycle_start)
+        for row in rows
+    ] == [(80, True, cycle_start), (90, True, cycle_start)]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_rows_for_one_percentage_collapse_onto_the_latched_row(
+    async_session_maker, budget_org
+):
+    # No unique index backs (org_id, percentage), so the table can already hold two
+    # rows for one percentage. The edit collapses them onto the latched copy, which
+    # is what stops _maybe_send_alerts paging twice in one cycle.
+    cycle_start = datetime.now(UTC)
+    async with async_session_maker() as session:
+        session.add_all(
+            [
+                _latched_threshold(budget_org.id, 80, cycle_start),
+                OrgBudgetThreshold(
+                    org_id=budget_org.id,
+                    percentage=80,
+                    email_enabled=True,
+                    slack_enabled=False,
+                ),
+            ]
+        )
+        await session.commit()
+
+        rows = await _replace_thresholds(
+            session,
+            budget_org.id,
+            [
+                OrgBudgetThresholdUpdate(
+                    percentage=80, email_enabled=True, slack_enabled=True
+                )
+            ],
+        )
+
+    assert [
+        (row.percentage, row.slack_enabled, row.last_triggered_cycle_start)
+        for row in rows
+    ] == [(80, True, cycle_start)]
