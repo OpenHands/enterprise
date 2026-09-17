@@ -1044,6 +1044,21 @@ class OrgStore:
         if config is None or not config.openhands_type:
             return None
 
+        # A managed profile uses per-member keys; ``org._llm_api_key`` only
+        # ever holds a BYOR/org-custom key (managed keys are minted into the
+        # member slot below). When the active default becomes a managed
+        # OpenHands model, any org-level BYOR key left from a prior profile is
+        # stale: ``_get_effective_llm_api_key`` checks ``org.llm_api_key``
+        # before the member slot, so a stale dummy there poisons every launch
+        # even after the member slot was rotated (#421). Clear it so the
+        # effective key falls through to the freshly-rotated member key.
+        if updated_org.llm_api_key is not None:
+            logger.info(
+                'Clearing stale org-level BYOR LLM key on switch to managed profile',
+                extra={'user_id': user_id, 'org_id': str(updated_org.id)},
+            )
+            updated_org.llm_api_key = None
+
         result = await session.execute(
             select(OrgMember).where(
                 OrgMember.org_id == updated_org.id,

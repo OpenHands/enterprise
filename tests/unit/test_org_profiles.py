@@ -1327,3 +1327,105 @@ class TestSwitchBackManagedProfileWithNonDefaultProxyUrl:
         effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
         assert effective is not None
         assert effective.get_secret_value() == 'fresh-managed-key'
+
+
+class TestSwitchBackClearsStaleOrgLevelKey:
+    """Regression for the prod 401 PR #425 did not fix.
+
+    The earlier switch-back tests set the org's ``agent_settings.llm`` to the
+    BYOR model/base_url but never persisted a BYOR key into ``org._llm_api_key``
+    — so they could not reproduce the live failure. In production, saving a
+    BYOR profile as the org default (``POST /orgs/app``) writes the BYOR key
+    into the org-level ``_llm_api_key`` column, and that column is never
+    cleared on a profile switch. ``_get_effective_llm_api_key`` checks
+    ``org.llm_api_key`` *before* the member slot, so a stale dummy there wins
+    over the freshly-rotated member managed key and every new conversation
+    launches against the dummy — ``Received=dumm****odel``.
+
+    This test pins the org-level key to the dummy BYOR value (the exact prod
+    state observed via the live settings-load probe) and asserts that
+    switching back to the managed ``Default`` clears it, so the effective key
+    resolves to the fresh managed key rather than the stale dummy.
+    """
+
+    @pytest.mark.asyncio
+    async def test_switch_back_clears_stale_org_llm_api_key(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            # 1. Activate a BYOR TestModel with a dummy key.
+            await save_profile(
+                org_id=org_id,
+                name='TestModel',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='dummymodel',
+                        base_url='dummymodel',
+                        api_key='dummymodel',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(org_id=org_id, name='TestModel', user_id=user_id)
+
+            # 2. Mirror prod exactly: the BYOR default was saved via the
+            #    org-defaults path, so both the org's agent_settings.llm AND
+            #    the org-level _llm_api_key hold the dummy BYOR config. The
+            #    member slot is rotated by activate, but the org-level key
+            #    persists until the switch-back repairs it.
+            await _set_org_agent_settings(
+                async_session_maker,
+                org_id,
+                {'llm': {'model': 'dummymodel', 'base_url': 'dummymodel'}},
+            )
+            async with async_session_maker() as session:
+                org = (
+                    await session.execute(select(Org).where(Org.id == org_id))
+                ).scalar_one()
+                org.llm_api_key = 'dummymodel'
+                await session.commit()
+
+            # Sanity: the org-level dummy is in place and would win at launch.
+            org = await _read_org(async_session_maker, org_id)
+            assert org.llm_api_key is not None
+            assert org.llm_api_key.get_secret_value() == 'dummymodel'
+
+            # 3. Switch back to the managed Default.
+            await activate_profile(org_id=org_id, name='Default', user_id=user_id)
+
+        # The org-level stale BYOR key must be cleared so it can no longer
+        # shadow the member's fresh managed key.
+        org = await _read_org(async_session_maker, org_id)
+        assert org.llm_api_key is None, (
+            'stale org-level BYOR key survived the switch-back — it would '
+            'shadow the member managed key at launch (#421)'
+        )
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is False
+        assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'fresh-managed-key'
+        assert effective.get_secret_value() != 'dummymodel'
