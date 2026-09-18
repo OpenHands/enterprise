@@ -2720,10 +2720,7 @@ async def test_settings_row_is_created_once_when_two_requests_race(
 
     # A settings row is created only when the org has none.
     assert len(rows) == 1
-    # The org keeps one set of threshold rows rather than two. create_settings
-    # flushes the settings row before adding any threshold row, so today the
-    # loser's insert already fails before writing one; this pins that the org ends
-    # up with a single set however create_settings orders its statements.
+    # ...and one set of threshold rows, not the winner's stacked on the loser's.
     assert len(thresholds) == len(DEFAULT_THRESHOLDS)
 
 
@@ -2804,13 +2801,9 @@ async def test_race_recovery_reraises_when_the_re_read_finds_nothing(
 async def test_non_unique_integrity_error_is_not_swallowed_by_the_recovery_read(
     async_session_maker, budget_org
 ):
-    # Only a unique violation means the race was lost. Any other IntegrityError
-    # must come back out even when the recovery re-read would have found a row,
-    # which is the one input that tells the SQLSTATE guard apart from catching
-    # every IntegrityError: an org missing its row fails the re-read too, so it
-    # re-raises either way. The error is synthesised because no reachable state
-    # of this code path raises a non-unique violation; the real get_settings
-    # still drives the recovery read against Postgres.
+    # Only a unique violation means the race was lost; any other IntegrityError
+    # must propagate even when the recovery re-read would have found a row. This
+    # is what separates the SQLSTATE guard from catching every IntegrityError.
     async with async_session_maker() as winner:
         winner.add(
             OrgBudgetSettings(

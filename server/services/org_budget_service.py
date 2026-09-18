@@ -17,6 +17,7 @@ from openhands.app_server.services.injector import Injector, InjectorState
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import RoleName
 from server.services.smtp_email_service import SMTPEmailService
+from storage.database import sqlstate
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
 from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
@@ -833,7 +834,7 @@ class OrgBudgetService:
             # Only a unique violation means the race was lost; create_settings also
             # writes rows carrying an FK to org.id, and a missing org must keep its
             # own error rather than be reported as a re-read that found nothing.
-            if getattr(exc.orig, 'sqlstate', None) != _UNIQUE_VIOLATION:
+            if sqlstate(exc) != _UNIQUE_VIOLATION:
                 raise
             # Finding the winner's committed row depends on READ COMMITTED, where
             # each statement takes a fresh snapshot. Under REPEATABLE READ this
