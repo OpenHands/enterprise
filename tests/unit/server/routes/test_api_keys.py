@@ -666,6 +666,11 @@ class TestRefreshManagedLlmApiKey:
             mock_generate,
             mock_delete_token,
         ):
+            # Record cross-mock call order to assert delete-then-generate.
+            order_parent = MagicMock()
+            order_parent.attach_mock(mock_delete_token, 'delete_key')
+            order_parent.attach_mock(mock_generate, 'generate_key')
+
             store = SaasSettingsStore(user_id, effective_org_id=org_id)
             rotation = await store.rotate_managed_llm_key()
 
@@ -675,15 +680,23 @@ class TestRefreshManagedLlmApiKey:
         assert rotation.new_key == 'sk-new-managed-key'
 
         expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
-        # Generate-before-delete: the new key is minted first, and only the
-        # *specific* previous key is removed — never delete_key_by_alias, which
-        # would wipe a key a concurrent rotation minted under the shared alias
-        # and orphan a sandbox's token (enterprise#439).
+        # Delete-then-generate: the *specific* previous key is removed before the
+        # replacement is minted under the same (shared) alias. This ordering is
+        # mandatory because LiteLLM enforces unique key aliases — minting first
+        # ("generate-before-delete") is rejected with a 400 alias-conflict. We
+        # never call delete_key_by_alias, which under the old concurrent path
+        # wiped a key another rotation had just handed to a sandbox
+        # (enterprise#439).
         mock_delete_alias.assert_not_called()
         mock_generate.assert_awaited_once_with(
             user_id, str(org_id), expected_alias, {'type': 'openhands'}
         )
         mock_delete_token.assert_awaited_once_with('sk-old-managed-key')
+        order = [name for name, *_ in order_parent.mock_calls]
+        assert order.index('delete_key') < order.index('generate_key'), (
+            'old key must be deleted before generating the replacement under the '
+            'same alias (LiteLLM requires unique aliases)'
+        )
 
         member = await self._member_key(async_session_maker, org_id, user_id)
         assert member.llm_api_key.get_secret_value() == 'sk-new-managed-key'
@@ -868,7 +881,7 @@ class TestRefreshManagedLlmApiKey:
         self, async_session_maker, managed_env
     ):
         """When the observed stale key is still the current key, rotation
-        proceeds (generate-before-delete, specific-key cleanup).
+        proceeds (delete-then-generate, specific-key cleanup).
         """
         user_id, org_id = await self._seed(async_session_maker)
 
@@ -893,7 +906,7 @@ class TestRefreshManagedLlmApiKey:
         self, async_session_maker, managed_env
     ):
         """Concurrent rotations for one org serialize under the per-org advisory
-        lock and use generate-before-delete + specific-key deletion, so the
+        lock and use delete-then-generate + specific-key deletion, so the
         surviving key is never deleted and the shared alias is never wiped
         (the enterprise#439 root cause).
         """
@@ -949,7 +962,7 @@ class TestRefreshManagedLlmApiKey:
             )
 
         assert result == ManagedLlmApiKeyRefreshResponse(refreshed=True)
-        # The store rotates generate-before-delete and cleans up the specific
+        # The store rotates delete-then-generate and cleans up the specific
         # previous key itself; the alias is never wiped (enterprise#439) and the
         # route no longer deletes the old token a second time.
         mock_delete_alias.assert_not_called()

@@ -460,8 +460,8 @@ async def refresh_managed_llm_api_key(
     """Refresh the managed OpenHands LiteLLM key for the current user/org.
 
     Delegates the full managed-key lifecycle (effective-config classification,
-    generate-before-delete rotation with OpenHands metadata, persistence, and
-    best-effort deletion of the previous key) to
+    serialized delete-then-generate rotation with OpenHands metadata,
+    persistence, and cleanup of the previous key) to
     ``SaasSettingsStore.rotate_managed_llm_key`` so the route does not
     duplicate the storage-layer machinery. Only managed LiteLLM/OpenHands-
     provider effective configs are rotated; BYOK/custom and non-managed configs
