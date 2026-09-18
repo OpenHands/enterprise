@@ -1,6 +1,6 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "daily"
@@ -18,23 +18,6 @@ updates:
       mcp-packages:
         patterns:
           - "mcp"
-      security-all:
-        applies-to: "security-updates"
-        patterns:
-          - "*"
-      version-all:
-        applies-to: "version-updates"
-        patterns:
-          - "*"
-
-  - package-ecosystem: "pip"
-    directory: "/enterprise"
-    schedule:
-      interval: "daily"
-    cooldown:
-      default-days: 7
-    open-pull-requests-limit: 5
-    groups:
       security-all:
         applies-to: "security-updates"
         patterns:

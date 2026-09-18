@@ -8,8 +8,7 @@ from typing import AsyncGenerator
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartRequest,
@@ -20,26 +19,6 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 from openhands.app_server.app_conversation.sql_app_conversation_start_task_service import (
     SQLAppConversationStartTaskService,
 )
-from openhands.app_server.utils.sql_utils import Base
-
-
-@pytest.fixture
-async def async_engine():
-    """Create an async SQLite engine for testing."""
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-        echo=False,
-    )
-
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield engine
-
-    await engine.dispose()
 
 
 @pytest.fixture

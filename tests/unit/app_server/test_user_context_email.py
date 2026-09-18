@@ -70,6 +70,30 @@ class TestAuthUserContextEffectiveOrg:
         assert await ctx.get_effective_org_id() is None
 
 
+class TestAuthUserContextCacheInvalidation:
+    def test_discards_both_user_and_settings_views(self):
+        user_auth = MagicMock(spec=UserAuth)
+        ctx = AuthUserContext(user_auth=user_auth)
+        ctx._user_info = MagicMock()
+        ctx._resolved_user_info = MagicMock()
+
+        ctx.invalidate_user_info_cache()
+
+        assert ctx._user_info is None
+        assert ctx._resolved_user_info is None
+        user_auth.invalidate_user_settings_cache.assert_called_once_with()
+
+    def test_user_auth_discards_persisted_and_resolved_settings(self):
+        user_auth = MagicMock(spec=UserAuth)
+        user_auth._settings = MagicMock()
+        user_auth._resolved_settings = MagicMock()
+
+        UserAuth.invalidate_user_settings_cache(user_auth)
+
+        assert user_auth._settings is None
+        assert user_auth._resolved_settings is None
+
+
 class TestSpecifyUserContextEmail:
     """Admin contexts have no associated end-user email."""
 
