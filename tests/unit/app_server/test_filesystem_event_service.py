@@ -773,6 +773,47 @@ class TestEventIndex:
         )
 
     @pytest.mark.asyncio
+    async def test_iter_events_for_export_loads_events_in_batches(
+        self, service: FilesystemEventService, monkeypatch
+    ):
+        """Export loads events in chunks, not all at once, and keeps timestamp order.
+
+        With a batch size of 3 and 7 events, _load_events_from_paths should be
+        called 3 times (3 + 3 + 1), never with more than 3 paths at a time.
+        """
+        from openhands.app_server.event import event_service_base
+
+        monkeypatch.setattr(event_service_base, '_index_rebuild_batch_size', lambda: 3)
+
+        conversation_id = uuid4()
+        events = []
+        for _ in range(7):
+            event = create_token_event()
+            events.append(event)
+            await service.save_event(conversation_id, event)
+            time.sleep(0.01)
+        # Build the index up front so only the export's own loads are recorded.
+        await service.search_events(conversation_id, limit=1)
+
+        call_sizes: list[int] = []
+        original = service._load_events_from_paths
+
+        async def spy(paths: list[Path]) -> list[Event | None]:
+            call_sizes.append(len(paths))
+            return await original(paths)
+
+        service._load_events_from_paths = spy  # type: ignore[assignment]
+        try:
+            result = [
+                event async for event in service.iter_events_for_export(conversation_id)
+            ]
+        finally:
+            service._load_events_from_paths = original  # type: ignore[assignment]
+
+        assert call_sizes == [3, 3, 1]
+        assert [event.id for event in result] == [event.id for event in events]
+
+    @pytest.mark.asyncio
     async def test_rebuild_loads_events_in_batches(
         self, service: FilesystemEventService, monkeypatch
     ):
