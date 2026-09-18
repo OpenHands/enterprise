@@ -1089,14 +1089,19 @@ class SaasSettingsStore(SettingsStore):
         Concurrency safety (enterprise#439). The mutation runs under a per-org
         transaction advisory lock, so two rotations for the same org serialize
         instead of interleaving. Within the lock the current key is re-read and
-        only the *specific* previous key is deleted before the replacement is
-        minted under the same (shared) alias — never ``delete_key_by_alias``,
-        which under the old concurrent path wiped a key another rotation had just
-        minted and left a sandbox holding an orphaned token
-        (``token_not_found_in_db`` 401). LiteLLM enforces unique key aliases, so
-        the previous key must be removed before the replacement can be minted;
-        serialization means this delete can no longer race a concurrent
-        rotation's freshly-minted key.
+        the shared alias is cleared (``delete_key_by_alias``) before the
+        replacement is minted under the same alias. The #439 root cause was this
+        by-alias delete running *unserialized*: an overlapping rotation wiped a
+        key another had just minted and handed to a sandbox, leaving an orphaned
+        token (``token_not_found_in_db`` 401). Under the advisory lock the delete
+        can no longer race a concurrent rotation's freshly-minted key, and
+        ``only_if_current`` (below) stops an overlapping refresh from rotating a
+        key already handed to a sandbox. LiteLLM enforces unique key aliases, so
+        the alias must be freed before minting; clearing by alias (rather than
+        only the specific previous key) also self-heals a divergent alias — e.g.
+        after a rotation whose LiteLLM key was minted but whose DB commit failed
+        — which would otherwise wedge every future rotation on a unique-alias
+        conflict.
 
         ``only_if_current`` makes stale-key refresh idempotent: pass the key the
         caller observed as stale, and if a concurrent rotation already replaced
@@ -1191,24 +1196,26 @@ class SaasSettingsStore(SettingsStore):
                 )
 
             # Delete-then-generate under the lock. LiteLLM requires unique key
-            # aliases, so the previous key holding this org's shared alias must
-            # be removed before the replacement is minted under the same alias.
-            # We delete the *specific* previous key (not ``delete_key_by_alias``);
-            # the per-org advisory lock serializes rotations, so this delete can
-            # no longer race a concurrent rotation's freshly-minted key, and
+            # aliases, so the shared alias must be freed before the replacement
+            # is minted under the same alias. ``delete_key_by_alias`` is safe
+            # here because the per-org advisory lock serializes rotations (the
+            # #439 root cause was this by-alias delete running unserialized) and
             # ``only_if_current`` above stops an overlapping refresh from
-            # rotating (and deleting) a key already handed to a sandbox.
-            if old_key:
-                try:
-                    await LiteLlmManager.delete_key(old_key)
-                except Exception:
-                    logger.warning(
-                        'saas_settings_store:rotate_managed_llm_key:old_key_cleanup_failed',
-                        extra={'user_id': self.user_id, 'org_id': org_id_str},
-                        exc_info=True,
-                    )
-
+            # deleting a key already handed to a sandbox. Clearing by alias
+            # (rather than only the specific previous key) also self-heals a
+            # divergent alias — e.g. after a rotation whose LiteLLM key was
+            # minted but whose DB commit failed — which would otherwise wedge
+            # every future rotation on a unique-alias conflict.
             key_alias = get_openhands_cloud_key_alias(self.user_id, org_id_str)
+            try:
+                await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
+            except Exception:
+                logger.warning(
+                    'saas_settings_store:rotate_managed_llm_key:old_key_cleanup_failed',
+                    extra={'user_id': self.user_id, 'org_id': org_id_str},
+                    exc_info=True,
+                )
+
             generated_key = await LiteLlmManager.generate_key(
                 self.user_id,
                 org_id_str,
