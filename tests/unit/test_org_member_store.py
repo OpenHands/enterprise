@@ -890,6 +890,7 @@ async def test_get_org_members_count_with_email_filter(async_session_maker):
         ('\\', {'dave\\ops@example.com'}),
         ('%_\\', set()),
         ('alice', {'alice@example.com'}),
+        ('ALICE', {'alice@example.com'}),
     ],
 )
 async def test_member_email_filter_treats_metacharacters_literally(
