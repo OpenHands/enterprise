@@ -328,25 +328,32 @@ class EventServiceBase(EventService, ABC):
     async def iter_events_for_export(
         self, conversation_id: UUID
     ) -> AsyncGenerator[Event, None]:
-        """Iterate all events once in timestamp order for trajectory export."""
+        """Iterate all events once in timestamp order for trajectory export.
+
+        Loads events in batches so at most one batch of event objects is alive
+        at a time, regardless of conversation size.
+        """
         conversation_path = await self.get_conversation_path(conversation_id)
         index = await self._get_or_rebuild_index(conversation_path)
         entries = self._sort_index(index, EventSortOrder.TIMESTAMP)
-        paths = [
-            self._event_id_to_path(conversation_path, entry[0]) for entry in entries
-        ]
-        loaded = await self._load_events_from_paths(paths)
-        by_id = {
-            event.id.replace('-', '')
-            if isinstance(event.id, str)
-            else event.id.hex: event
-            for event in loaded
-            if event is not None
-        }  # type: ignore[union-attr]
-        for entry in entries:
-            event = by_id.get(entry[0])
-            if event is not None:
-                yield event
+        batch_size = _index_rebuild_batch_size()
+        for i in range(0, len(entries), batch_size):
+            batch = entries[i : i + batch_size]
+            paths = [
+                self._event_id_to_path(conversation_path, entry[0]) for entry in batch
+            ]
+            loaded = await self._load_events_from_paths(paths)
+            by_id = {
+                event.id.replace('-', '')
+                if isinstance(event.id, str)
+                else event.id.hex: event
+                for event in loaded
+                if event is not None
+            }  # type: ignore[union-attr]
+            for entry in batch:
+                event = by_id.get(entry[0])
+                if event is not None:
+                    yield event
 
     async def count_events(
         self,

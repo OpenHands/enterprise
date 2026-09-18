@@ -36,6 +36,7 @@ from openhands.app_server.app_conversation.app_conversation_service import (
 )
 from openhands.app_server.app_conversation.live_status_app_conversation_service import (
     LiveStatusAppConversationService,
+    LiveStatusAppConversationServiceInjector,
     _exception_detail,
     _resolve_title_llm_profile,
     effective_disabled_skills,
@@ -3139,6 +3140,40 @@ class TestLiveStatusAppConversationService:
             await self.service.export_conversation(conversation_id)
 
         self.mock_event_service.iter_events_for_export.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_export_conversation_skips_size_check_when_limit_disabled(self):
+        """Test export streams every event without counting when the limit is 0."""
+        conversation_id = uuid4()
+        mock_conversation_info = Mock(spec=AppConversationInfo)
+        mock_conversation_info.id = conversation_id
+        mock_conversation_info.model_dump_json = Mock(return_value='{}')
+
+        mock_event = Mock(spec=Event)
+        mock_event.id = uuid4()
+        mock_event.model_dump = Mock(return_value={'id': str(mock_event.id)})
+
+        self.service.export_max_events = 0
+        self.mock_app_conversation_info_service.get_app_conversation_info = AsyncMock(
+            return_value=mock_conversation_info
+        )
+        self.mock_event_service.count_events = AsyncMock(return_value=50_000)
+        self.mock_event_service.iter_events_for_export = Mock(
+            return_value=_async_iter([mock_event])
+        )
+
+        result = await self.service.export_conversation(conversation_id)
+
+        with zipfile.ZipFile(io.BytesIO(result), 'r') as zipf:
+            event_files = [f for f in zipf.namelist() if f.startswith('event_')]
+            assert len(event_files) == 1
+        self.mock_event_service.count_events.assert_not_awaited()
+
+    def test_injector_export_limit_disabled_by_default(self):
+        """Test the injector does not cap exports unless explicitly configured."""
+        injector = LiveStatusAppConversationServiceInjector()
+
+        assert injector.export_max_events == 0
 
     def _arrange_start_app_conversation(
         self,

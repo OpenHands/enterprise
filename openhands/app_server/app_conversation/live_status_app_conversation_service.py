@@ -3142,8 +3142,11 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
         ),
     )
     export_max_events: int = Field(
-        default=10000,
-        description='The maximum number of events allowed in a conversation export',
+        default=0,
+        description=(
+            'The maximum number of events allowed in a conversation export '
+            '(0 disables the limit)'
+        ),
     )
     export_lock_ttl_seconds: int = Field(
         default=3600,
