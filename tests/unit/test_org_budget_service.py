@@ -2323,6 +2323,87 @@ async def test_override_cap_is_never_written_below_the_cycle_baseline(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('limit', [-100.0, 0.0])
+async def test_non_positive_org_default_limit_caps_members_at_their_baseline(
+    async_session_maker, budget_org, limit
+):
+    # A non-positive default_user_monthly_limit reaches the same arithmetic by a
+    # different route than an override, and zero is the clamp's own output: a
+    # falsy-vs-None check anywhere on that path silently returns the member to the
+    # shared team budget instead of capping them.
+    user_id = uuid4()
+    baseline = 100.0
+    async with async_session_maker() as session:
+        session.add_all(
+            [
+                Role(id=1, name='member', rank=1),
+                User(id=user_id, current_org_id=budget_org.id),
+                OrgMember(
+                    org_id=budget_org.id,
+                    user_id=user_id,
+                    role_id=1,
+                    llm_api_key='test-api-key',
+                    status='active',
+                ),
+                OrgBudgetSettings(
+                    org_id=budget_org.id,
+                    enabled=True,
+                    reset_day=1,
+                    monthly_limit=250.0,
+                    default_user_monthly_limit=limit,
+                    cycle_start_at=datetime.now(UTC),
+                    cycle_start_spend=baseline,
+                    user_cycle_start_spend={str(user_id): baseline},
+                    litellm_known_member_ids=[str(user_id)],
+                ),
+            ]
+        )
+        await session.commit()
+
+        service = OrgBudgetService(session)
+        settings = await service._get_or_create_settings(budget_org.id)
+        overrides = await service._get_overrides(budget_org.id)
+        before = _snapshot(
+            team_spend=baseline, members={str(user_id): (baseline, None, True)}
+        )
+        after = _snapshot(
+            team_spend=baseline,
+            team_max_budget=baseline + 250.0,
+            members={str(user_id): (baseline, baseline, False)},
+        )
+        snapshots = [before, after]
+        with (
+            patch.object(
+                service,
+                '_get_financial_snapshot',
+                AsyncMock(
+                    side_effect=lambda *args, **kwargs: BudgetFinancialSnapshotResult(
+                        snapshot=snapshots.pop(0) if snapshots else after,
+                        status='live',
+                    )
+                ),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_team',
+                AsyncMock(),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_user_in_team',
+                AsyncMock(),
+            ) as update_user,
+        ):
+            await service._sync_litellm_budgets(budget_org.id, settings, overrides)
+            state = await service.get_budget_state(budget_org.id)
+
+    call_args = update_user.await_args_list[-1]
+    # No allowance means no further spend this cycle: a private cap at the
+    # baseline, not a fall-through to the shared team budget.
+    assert call_args.kwargs['max_budget'] == baseline
+    assert call_args.kwargs['clear_budget'] is False
+    assert state['reconciliation_state'] == 'healthy'
+
+
+@pytest.mark.asyncio
 @pytest.mark.skip(
     reason='pins alert_fires_at_most_once_per_cycle — fails on current code'
 )
