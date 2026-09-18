@@ -1053,7 +1053,7 @@ class TestLiveStatusAppConversationService:
             openhands_type=True,
         )
         verify_key.assert_awaited_once_with('sk-old-managed-key', 'user-123')
-        rotate_key.assert_awaited_once_with()
+        rotate_key.assert_awaited_once_with(only_if_current='sk-old-managed-key')
         self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
 
     @pytest.mark.asyncio
@@ -1097,7 +1097,7 @@ class TestLiveStatusAppConversationService:
             openhands_type=True,
         )
         verify_key.assert_not_awaited()
-        rotate_key.assert_awaited_once_with()
+        rotate_key.assert_awaited_once_with(only_if_current='sk-admin-managed-key')
         self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
 
     @pytest.mark.asyncio
