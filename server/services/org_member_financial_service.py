@@ -89,8 +89,11 @@ class OrgMemberFinancialService:
                 current_page=(offset // limit) + 1,
                 per_page=limit,
                 next_page_id=None,
+                # No rows, so no spend was read: the page cannot claim a live figure.
+                spend_status='unavailable',
             )
 
+        spend_read_failed = False
         try:
             financial_data = await LiteLlmManager.get_team_members_financial_data(
                 str(org_id)
@@ -117,6 +120,7 @@ class OrgMemberFinancialService:
                 },
             )
             financial_data = {}
+            spend_read_failed = True
         except Exception as e:
             logger.warning(
                 'Failed to fetch financial data from LiteLLM',
@@ -127,6 +131,7 @@ class OrgMemberFinancialService:
                 },
             )
             financial_data = {}
+            spend_read_failed = True
 
         team_spend = financial_data.get('team_spend', 0) or 0
         members_financial = financial_data.get('members', {})
@@ -136,18 +141,25 @@ class OrgMemberFinancialService:
             user = member.user
             user_id_str = str(member.user_id)
 
+            # A member absent from a successful read is as unobserved as one whose
+            # read failed outright: LiteLLM reported no spend for them, which is not
+            # the same as reporting a spend of zero.
+            spend_observed = not spend_read_failed and user_id_str in members_financial
             user_financial = members_financial.get(user_id_str, {})
-            individual_spend = user_financial.get('spend', 0) or 0
+            individual_spend = (
+                (user_financial.get('spend', 0) or 0) if spend_observed else None
+            )
             max_budget = user_financial.get('max_budget')
             uses_shared_budget = user_financial.get('uses_shared_budget', False)
 
-            # For shared team budgets, all members see the same remaining budget,
-            # so calculate using the team's total spend rather than per-user spend.
-            if max_budget is not None:
+            if individual_spend is None:
+                current_budget = None
+            elif max_budget is not None:
+                # For shared team budgets, all members see the same remaining budget,
+                # so calculate using the team's total spend rather than per-user spend.
                 if uses_shared_budget:
                     current_budget = max(max_budget - team_spend, 0)
                 else:
-                    # Individual budget - use individual spend
                     current_budget = max(max_budget - individual_spend, 0)
             else:
                 # If no max_budget, current_budget is unlimited (represented as 0)
@@ -192,4 +204,5 @@ class OrgMemberFinancialService:
             current_page=current_page,
             per_page=limit,
             next_page_id=next_page_id,
+            spend_status='unavailable' if spend_read_failed else 'live',
         )
