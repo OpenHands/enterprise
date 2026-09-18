@@ -2118,6 +2118,25 @@ async def test_user_budget_row_rejects_personal_org_without_creating_settings(
 
 
 @pytest.mark.asyncio
+async def test_user_budget_row_rejection_is_recorded_by_quint_oracle(
+    async_session_maker, personal_org
+):
+    # The guard passes its entry-point label to _reject_personal_org so the Quint
+    # oracle records which operation rejected the personal workspace. That label is
+    # the signal the Quint model keys on, and the sibling guards pass theirs too;
+    # pin it here so a future refactor can't silently drop it.
+    oracle = MagicMock()
+    oracle.In = lambda value, domain: value
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        with patch('server.services.org_budget_service.quint_oracle', oracle):
+            with pytest.raises(HTTPException):
+                await service.get_user_budget_row(personal_org.id, personal_org.id)
+    oracle.log.assert_called_once()
+    assert oracle.log.call_args.args[0] == 'get_user_budget_row'
+
+
+@pytest.mark.asyncio
 @pytest.mark.skip(
     reason='reproduces obs:override_written_without_litellm_sync — fails on current code'
 )
