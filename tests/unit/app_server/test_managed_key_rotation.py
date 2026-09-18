@@ -240,7 +240,7 @@ async def test_rotate_refreshes_stale_managed_key(monkeypatch):
 
     assert result.api_key.get_secret_value() == 'sk-fresh'
     mocks['verify'].assert_awaited_once_with('sk-old-managed', 'user-1')
-    mocks['rotate'].assert_awaited_once_with()
+    mocks['rotate'].assert_awaited_once_with(only_if_current='sk-old-managed')
 
 
 @pytest.mark.asyncio
@@ -375,7 +375,7 @@ async def test_rotate_handles_rotation_not_applied(monkeypatch):
     result = await _maybe_rotate_stale_managed_key(llm, store, 'user-1')
 
     assert result is llm
-    mocks['rotate'].assert_awaited_once_with()
+    mocks['rotate'].assert_awaited_once_with(only_if_current='sk-dead')
 
 
 @pytest.mark.asyncio
@@ -426,7 +426,7 @@ async def test_save_profile_rotates_stale_managed_key(
 
         assert resp.status_code == 201
         mocks['verify'].assert_awaited_once_with('sk-old-managed', 'test-user')
-        mocks['rotate'].assert_awaited_once_with()
+        mocks['rotate'].assert_awaited_once_with(only_if_current='sk-old-managed')
 
         stored = await saas_store.load()
         saved = stored.llm_profiles.get('managed')
@@ -529,7 +529,7 @@ async def test_activate_profile_rotates_stale_managed_key(monkeypatch, settings_
 
         assert resp.status_code == 200
         mocks['verify'].assert_awaited_once_with('sk-old-managed', 'test-user')
-        mocks['rotate'].assert_awaited_once_with()
+        mocks['rotate'].assert_awaited_once_with(only_if_current='sk-old-managed')
 
         stored = await saas_store.load()
         # Rotated key lands in active settings AND the saved profile.
@@ -597,7 +597,7 @@ async def test_store_settings_rotates_stale_managed_key(monkeypatch, settings_st
 
         assert resp.status_code == 200
         mocks['verify'].assert_awaited_once_with('sk-old-managed', 'test-user')
-        mocks['rotate'].assert_awaited_once_with()
+        mocks['rotate'].assert_awaited_once_with(only_if_current='sk-old-managed')
 
         stored = await saas_store.load()
         assert stored.agent_settings.llm.api_key.get_secret_value() == 'sk-fresh'

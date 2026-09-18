@@ -1524,7 +1524,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'managed_llm_key_refresh:stale_key_detected',
                 extra={'user_id': user.id, 'org_id': str(org_id), 'model': llm.model},
             )
-            rotation = await settings_store.rotate_managed_llm_key()
+            # Pass the stale key so overlapping refreshes are idempotent: if a
+            # concurrent start already rotated it, reuse that fresh key instead
+            # of rotating again and orphaning the sandbox's key (enterprise#439).
+            rotation = await settings_store.rotate_managed_llm_key(only_if_current=key)
             if rotation.status == ManagedLlmKeyStatus.ROTATED and rotation.new_key:
                 _logger.info(
                     'managed_llm_key_refresh:rotated',
