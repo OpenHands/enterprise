@@ -40,9 +40,7 @@
 // OrgBudgetStore.replace_thresholds drops the rows that carry
 // last_triggered_cycle_start, re-arming every alert inside the live cycle; and
 // get_user_budget_row never calls _reject_personal_org, so it creates budget
-// settings for a personal workspace that every other entry point refuses. So is the
-// member financial listing's next_page_id, which compares the offset against the
-// has_more boolean the caller bound as `total_count`.
+// settings for a personal workspace that every other entry point refuses.
 module org_budgets {
   import basicSpells.* from "./spells/basicSpells"
 
@@ -213,14 +211,6 @@ module org_budgets {
   /// An absent email_filter: `if email_filter:` is falsy, so no filter is applied.
   pure val NO_FILTER: Term = { lit: "", metas: Set(), hits: USERS }
 
-  /// The second element of get_org_members_paginated's tuple, as the caller binds it.
-  /// The store declares it `has_more: bool`, so in production it only ever arrives as
-  /// False or True -- 0 or 1 once the caller compares an offset against it. A larger
-  /// value is what a caller gets only when the collaborator returns a real row count.
-  /// 0 and 1 are the two values the declared `bool` can arrive as; 5 and 25 are the
-  /// real row counts a collaborator returning an actual count supplies.
-  pure val TOTAL_COUNTS: Set[int] = Set(0, 1, 5, 25)
-
   /// The documented ValueError: page_id must parse as an integer, and be non-negative.
   pure def page_id_ok(p: PageId): bool =
     match p { | NoPage => true | Unparsable => false | Page(o) => o >= 0 }
@@ -233,6 +223,25 @@ module org_budgets {
     l.foldl({ i: 0, out: List() }, (a, u) =>
       if (a.i >= offset and a.out.length() < lim + 1) { i: a.i + 1, out: a.out.append(u) }
       else { i: a.i + 1, out: a.out }).out
+
+  /// The rows `.filter(OrgMember.org_id == org_id)` joined with the unescaped ILIKE
+  /// leaves, in `order_by(OrgMember.user_id)`.
+  pure def matched_members(st: State, filt: Term): List[str] =
+    USER_LIST.select(u =>
+      st.org_members.contains(u) and raw_ilike_rows(filt).contains(u))
+
+  /// The has_more OrgMemberStore.get_org_members_paginated hands back
+  /// (storage/org_member_store.py:223): it over-fetches one row past the page and
+  /// reports whether that row came back.
+  pure def store_has_more(matched: List[str], offset: int, lim: int): bool =
+    page_window(matched, offset, lim).length() > lim
+
+  /// Whether rows are left behind this page, counted off the whole ordered result
+  /// rather than through the store's over-fetch. Agreeing with `store_has_more` on
+  /// every input is the point: it is the same question asked without the windowing, so
+  /// a page_window that stops mirroring `.limit(limit + 1)` breaks the comparison.
+  pure def rows_left_behind(matched: List[str], offset: int, lim: int): bool =
+    matched.length() > offset + lim
 
   // -- persisted rows --------------------------------------------------------------
 
@@ -318,7 +327,7 @@ module org_budgets {
 
   /// One page of the member financial listing: whether more rows remained, and
   /// whether the response offered a next_page_id for them.
-  type PageTrace = { has_more: bool, next_offered: bool }
+  type PageTrace = { rows_remain: bool, next_offered: bool }
 
   /// One finished _sync_litellm_budgets: the caps it meant to write, the snapshot
   /// it read back, and whether it reported success.
@@ -1026,17 +1035,14 @@ module org_budgets {
   /// (server/services/org_member_financial_service.py:21). Three things happen here
   /// that nothing else in this component does: a LiteLLM read that is not a 401/403 is
   /// swallowed and every member's spend is reported as a plain zero; the email filter
-  /// reaches ILIKE with no escaping at all; and get_org_members_paginated returns
-  /// (rows, has_more) while the caller binds the flag as `total_count`, so next_page_id
-  /// compares an offset against a boolean.
+  /// reaches ILIKE with no escaping at all; and next_page_id is derived from the
+  /// store's has_more flag rather than from a row count the caller never receives.
   pure def do_member_financial_page(
-    st: State, page: PageId, lim: int, filt: Term, total_count: int
+    st: State, page: PageId, lim: int, filt: Term
   ): State = {
     val offset = page_offset(page)
-    val matched = USER_LIST.select(u =>
-      st.org_members.contains(u) and raw_ilike_rows(filt).contains(u))
+    val matched = matched_members(st, filt)
     val window = page_window(matched, offset, lim)
-    val has_more = window.length() > lim
     val shown = window.foldl({ i: 0, out: Set() }, (a, u) =>
       if (a.i < lim) { i: a.i + 1, out: a.out.union(Set(u)) }
       else { i: a.i + 1, out: a.out }).out
@@ -1044,7 +1050,7 @@ module org_budgets {
       // the empty-members early return: LiteLLM is never read at all
       { ...st,
         last_search: Some({ hits: filt.hits, rows: Set() }),
-        last_page: Some({ has_more: false, next_offered: false }) }
+        last_page: Some({ rows_remain: false, next_offered: false }) }
     else if (st.read_fault == FatalError)
       // a 401/403 is deliberately re-raised: the request dies, nothing is reported
       { ...st, financial_auth_raised: true }
@@ -1052,10 +1058,8 @@ module org_budgets {
       val zeroed = not(st.read_fault == NoFault or st.read_fault == Malformed)
       { ...st,
         last_search: Some({ hits: filt.hits, rows: shown }),
-        // next_page_id compares the offset against whatever the caller bound as
-        // `total_count` -- the store's has_more flag in production, a real count only
-        // when a collaborator supplies one.
-        last_page: Some({ has_more: has_more, next_offered: offset + lim < total_count }),
+        last_page: Some({ rows_remain: rows_left_behind(matched, offset, lim),
+                          next_offered: store_has_more(matched, offset, lim) }),
         financial_zeroed: st.financial_zeroed or zeroed,
         last_presented: Some({ status: Live, observed_key: dkey(st.now),
                                at_key: dkey(st.now), real: not(zeroed) }) }
@@ -1340,17 +1344,20 @@ module org_budgets {
   /// OrgMemberFinancialService.get_org_members_financial_data
   /// (server/services/org_member_financial_service.py:21). page_id must parse as a
   /// non-negative integer or the call raises ValueError.
-  /// `total_count` is the second element get_org_members_paginated handed back, logged
-  /// because the caller cannot derive it. Conformance fact: `has_next`, whether the
-  /// page handed back a next_page_id.
+  /// `has_more` is the flag get_org_members_paginated handed back, logged because the
+  /// caller cannot derive it, and guarded against the flag the model derives from the
+  /// same over-fetch. Conformance fact: `has_next`, whether the page handed back a
+  /// next_page_id.
   action OrgMemberFinancialService_get_org_members_financial_data(
     org_id: str, page_id: PageId, limit: int, email_filter: Term,
-    total_count: int, has_next: bool
+    has_more: bool, has_next: bool
   ): bool = all {
     page_id_ok(page_id),
     {
-      val post = do_member_financial_page(s, page_id, limit, email_filter, total_count)
+      val post = do_member_financial_page(s, page_id, limit, email_filter)
       all {
+        has_more == store_has_more(
+          matched_members(s, email_filter), page_offset(page_id), limit),
         has_next == next_offered_of(post),
         s' = post,
       }
@@ -1502,20 +1509,22 @@ module org_budgets {
     {
       nondet org_id = ORG_IDS.oneOf()
       nondet page_id = PAGE_IDS.oneOf()
-      nondet total_count = TOTAL_COUNTS.oneOf()
+      nondet has_more = Set(store_has_more(
+        matched_members(s, NO_FILTER), page_offset(page_id), 1)).oneOf()
       nondet has_next = Set(next_offered_of(
-        do_member_financial_page(s, page_id, 1, NO_FILTER, total_count))).oneOf()
+        do_member_financial_page(s, page_id, 1, NO_FILTER))).oneOf()
       OrgMemberFinancialService_get_org_members_financial_data(
-        org_id, page_id, 1, NO_FILTER, total_count, has_next)
+        org_id, page_id, 1, NO_FILTER, has_more, has_next)
     },
     {
       nondet org_id = ORG_IDS.oneOf()
       nondet email_filter = TERMS.oneOf()
-      nondet total_count2 = TOTAL_COUNTS.oneOf()
+      nondet has_more_b = Set(store_has_more(
+        matched_members(s, email_filter), 0, 10)).oneOf()
       nondet has_next2 = Set(next_offered_of(
-        do_member_financial_page(s, NoPage, 10, email_filter, total_count2))).oneOf()
+        do_member_financial_page(s, NoPage, 10, email_filter))).oneOf()
       OrgMemberFinancialService_get_org_members_financial_data(
-        org_id, NoPage, 10, email_filter, total_count2, has_next2)
+        org_id, NoPage, 10, email_filter, has_more_b, has_next2)
     },
     concurrent_maintenance_roll,
     {
@@ -1579,7 +1588,7 @@ module org_budgets {
   val paged_listing_offers_the_remaining_rows: bool =
     match s.last_page {
       | None => true
-      | Some(p) => p.has_more implies p.next_offered
+      | Some(p) => p.rows_remain implies p.next_offered
     }
 
   /// Each threshold alerts once per cycle. A second alert for the same threshold in
@@ -1724,5 +1733,5 @@ module org_budgets {
 
   /// A member financial page had more rows behind it than it returned.
   val member_listing_page_had_more_rows: bool =
-    match s.last_page { | None => false | Some(p) => p.has_more }
+    match s.last_page { | None => false | Some(p) => p.rows_remain }
 }

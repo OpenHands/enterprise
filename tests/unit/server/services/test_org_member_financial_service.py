@@ -79,7 +79,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = litellm_data
 
             # Act
@@ -134,7 +134,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = litellm_data
 
             # Act
@@ -169,7 +169,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -205,7 +205,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.side_effect = Exception('LiteLLM unavailable')
 
             # Act
@@ -236,7 +236,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 25)  # 25 total
+            mock_get_paginated.return_value = ([mock_org_member], True)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -272,7 +272,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 5)  # 5 total
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -301,7 +301,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
             'server.services.org_member_financial_service.OrgMemberStore.get_org_members_paginated',
             new_callable=AsyncMock,
         ) as mock_get_paginated:
-            mock_get_paginated.return_value = ([], 0)
+            mock_get_paginated.return_value = ([], False)
 
             # Act
             result = await OrgMemberFinancialService.get_org_members_financial_data(
@@ -362,7 +362,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -404,7 +404,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([member_no_user], 1)
+            mock_get_paginated.return_value = ([member_no_user], False)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -441,7 +441,7 @@ async def test_failed_spend_read_is_not_reported_as_zero_spend(org_id, mock_org_
             new_callable=AsyncMock,
         ) as mock_get_financial,
     ):
-        mock_get_paginated.return_value = ([mock_org_member], 1)
+        mock_get_paginated.return_value = ([mock_org_member], False)
         mock_get_financial.side_effect = TimeoutError('timed out')
 
         try:
@@ -459,9 +459,6 @@ async def test_failed_spend_read_is_not_reported_as_zero_spend(org_id, mock_org_
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='pins paged_listing_offers_the_remaining_rows — fails on current code'
-)
 async def test_paged_member_listing_offers_the_remaining_rows(async_session_maker):
     # OrgMemberStore.get_org_members_paginated returns (rows, has_more: bool), but the
     # service binds the flag as `total_count` and then computes
