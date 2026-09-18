@@ -42,6 +42,14 @@ vi.mock("#/hooks/query/use-me", () => ({
   useMe: () => mockMe,
 }));
 
+const mockQuotaStatus = vi.hoisted(() => ({
+  data: { daily_limit: 100 } as { daily_limit: number | null } | undefined,
+}));
+
+vi.mock("#/hooks/query/use-quota-status", () => ({
+  useQuotaStatus: () => mockQuotaStatus,
+}));
+
 const queryClient = new QueryClient();
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
@@ -99,6 +107,31 @@ describe("useSettingsNavItems", () => {
     mockOrgTypeAndAccess.selectedOrg = null;
     mockOrgTypeAndAccess.canViewOrgRoutes = false;
     mockMe.data = null;
+    mockQuotaStatus.data = { daily_limit: 100 };
+  });
+
+  it("should show quota route when a daily limit is configured", async () => {
+    mockConfig("saas");
+    mockMe.data = { role: "member" };
+    mockQuotaStatus.data = { daily_limit: 100 };
+
+    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+    await waitFor(() => {
+      expect(findItemByPath(result.current, "/settings/quota")).toBeDefined();
+    });
+  });
+
+  it("should hide quota route when the daily limit is unlimited", async () => {
+    mockConfig("saas");
+    mockMe.data = { role: "member" };
+    mockQuotaStatus.data = { daily_limit: null };
+
+    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+    await waitFor(() => {
+      expect(findItemByPath(result.current, "/settings/quota")).toBeUndefined();
+    });
   });
 
   it("should return SAAS_NAV_ITEMS minus billing/org/org-members when userRole is 'member'", async () => {
@@ -109,8 +142,9 @@ describe("useSettingsNavItems", () => {
     const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
 
     await waitFor(() => {
-      // Members should not see billing, org, or org-members routes
+      // Members should not see billing, credits, org, or org-members routes
       expect(findItemByPath(result.current, "/settings/billing")).toBeUndefined();
+      expect(findItemByPath(result.current, "/settings/credits")).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/org")).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/org-members")).toBeUndefined();
       // Personal LLM/Condenser/Verification routes are hidden in SaaS;
@@ -176,6 +210,9 @@ describe("useSettingsNavItems", () => {
       ).toBeDefined();
       expect(
         findItemByPath(result.current, "/settings/org-members"),
+      ).toBeDefined();
+      expect(
+        findItemByPath(result.current, "/settings/credits"),
       ).toBeDefined();
       expect(
         findItemByPath(result.current, "/settings/usage-monitoring"),
@@ -291,6 +328,10 @@ describe("useSettingsNavItems", () => {
       expect(
         findItemByPath(result.current, "/settings/billing"),
       ).toBeUndefined();
+      // Credits replaces billing for team orgs
+      expect(
+        findItemByPath(result.current, "/settings/credits"),
+      ).toBeDefined();
     });
 
     it("should show billing route for personal org", async () => {
@@ -314,6 +355,9 @@ describe("useSettingsNavItems", () => {
       expect(
         findItemByPath(result.current, "/settings/billing"),
       ).toBeDefined();
+      expect(
+        findItemByPath(result.current, "/settings/credits"),
+      ).toBeUndefined();
     });
   });
 
@@ -494,6 +538,29 @@ describe("useSettingsNavItems", () => {
         expect(
           findItemByPath(result.current, "/settings/verification"),
         ).toBeUndefined();
+      });
+    });
+
+    it("adds a This org chip on the personal settings header for team-org admins", async () => {
+      mockConfig("saas");
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.isPersonalOrg = false;
+      mockOrgTypeAndAccess.organizationId = "org-123";
+      mockMe.data = { role: "admin" };
+
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      await waitFor(() => {
+        const personalHeader = result.current.find(
+          (item) =>
+            item.type === "header" &&
+            item.text === "SETTINGS$PERSONAL_SETTINGS_HEADER",
+        );
+        expect(personalHeader).toEqual({
+          type: "header",
+          text: "SETTINGS$PERSONAL_SETTINGS_HEADER",
+          chip: "SETTINGS$THIS_ORG_CHIP",
+        });
       });
     });
 
