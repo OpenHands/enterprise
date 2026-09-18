@@ -2097,6 +2097,34 @@ def test_cycle_boundaries_stay_ordered_for_any_stored_reset_day(reset_day):
         cycle_start = next_cycle
 
 
+@pytest.mark.parametrize(
+    ('now', 'reset_day', 'expected_start', 'expected_next'),
+    [
+        # 1 and 15 are the only values the PATCH endpoint allows: the clamp is a no-op.
+        (datetime(2026, 1, 15), 15, datetime(2026, 1, 15), datetime(2026, 2, 15)),
+        (datetime(2026, 1, 15), 1, datetime(2026, 1, 1), datetime(2026, 2, 1)),
+        # 31 clamps down to the last day a short month holds, and back up afterwards.
+        (datetime(2026, 2, 28), 31, datetime(2026, 2, 28), datetime(2026, 3, 31)),
+        (datetime(2026, 3, 15), 31, datetime(2026, 2, 28), datetime(2026, 3, 31)),
+        # 0 and below clamp up to the 1st.
+        (datetime(2026, 1, 15), 0, datetime(2026, 1, 1), datetime(2026, 2, 1)),
+    ],
+)
+def test_cycle_boundaries_land_on_the_day_the_month_holds(
+    now, reset_day, expected_start, expected_next
+):
+    # Ordering alone is satisfied by a great many wrong clamps, so pin the dates the
+    # boundaries actually land on: that the clamp reads the month's length rather than
+    # the weekday of its 1st, that the guard compares against the clamped day, that the
+    # previous-month branch clamps with its own month, and that a cycle pushed down to
+    # the 28th in February climbs back to the 31st in March instead of ratcheting.
+    cycle_start = _current_cycle_start(now.replace(tzinfo=UTC), reset_day)
+    assert cycle_start == expected_start.replace(tzinfo=UTC)
+    assert _next_cycle_start(cycle_start, reset_day) == expected_next.replace(
+        tzinfo=UTC
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.skip(
     reason='reproduces obs:personal_org_settings_created_by_user_row_read '
