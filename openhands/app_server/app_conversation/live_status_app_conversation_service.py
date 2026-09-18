@@ -1493,28 +1493,41 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                         'model': llm.model,
                     },
                 )
+                # Clearing the stale org-level shadow is the heal; we still need
+                # the returned LLM to carry a valid managed key on *this* request.
+                # Prefer a freshly rotated key, but if rotation yields none
+                # (MISSING_MEMBER / already-current / LiteLLM transient) fall back
+                # to re-resolving the effective key off the now-healed DB. Without
+                # this re-resolve we'd drop through to the mismatch bail below and
+                # return the original stale llm — healing the DB but not the
+                # in-flight request, so the 401 would persist until the next load.
                 rotation = await settings_store.rotate_managed_llm_key()
-                if rotation.status == ManagedLlmKeyStatus.ROTATED and rotation.new_key:
+                healed_key: str | None = (
+                    rotation.new_key
+                    if rotation.status == ManagedLlmKeyStatus.ROTATED
+                    and rotation.new_key
+                    else await settings_store.get_current_managed_llm_key()
+                )
+                if healed_key:
                     _logger.info(
-                        'managed_llm_key_refresh:rotated_after_clear',
+                        'managed_llm_key_refresh:healed_after_clear',
                         extra={
                             'user_id': user.id,
                             'org_id': str(org_id),
                             'model': llm.model,
+                            'rotation_status': getattr(rotation, 'status', None),
                             'openhands_type': getattr(rotation, 'openhands_type', None),
                         },
                     )
                     self.user_context.invalidate_user_info_cache()
-                    return llm.model_copy(
-                        update={'api_key': SecretStr(rotation.new_key)}
-                    )
+                    return llm.model_copy(update={'api_key': SecretStr(healed_key)})
                 _logger.warning(
-                    'managed_llm_key_refresh:clear_without_rotation',
+                    'managed_llm_key_refresh:cleared_without_key',
                     extra={
                         'user_id': user.id,
                         'org_id': str(org_id),
                         'model': llm.model,
-                        'status': rotation.status,
+                        'rotation_status': getattr(rotation, 'status', None),
                     },
                 )
             managed_key = await settings_store.get_current_managed_llm_key()
