@@ -75,15 +75,24 @@ class OrgBudgetStore:
         existing: list[OrgBudgetThreshold],
         new_thresholds,
     ) -> None:
-        # A threshold is identified by its percentage, not by its row: the
-        # once-per-cycle alert latch lives on the row, so a surviving percentage is
-        # updated in place rather than replaced.
+        # A threshold's identity is its percentage, because the once-per-cycle
+        # alert latch lives on the row.
         wanted = {threshold.percentage: threshold for threshold in new_thresholds}
         kept: set[int] = set()
+        # No unique index backs (org_id, percentage), so the table can hold duplicate
+        # rows for one percentage. Process the most-recently latched row first so the
+        # loop keeps the latch and drops the duplicates, rather than keeping whichever
+        # row the query happened to return first.
+        existing = sorted(
+            existing,
+            key=lambda t: t.last_triggered_cycle_start
+            or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
         for threshold in existing:
             update = wanted.get(threshold.percentage)
-            # No unique index backs (org_id, percentage), so a duplicate row is
-            # dropped rather than updated into a second copy of the same threshold.
+            # Drop rows for percentages no longer wanted, and drop the already-seen
+            # duplicates so one percentage collapses onto a single (latched) row.
             if update is None or threshold.percentage in kept:
                 await self.db_session.delete(threshold)
                 continue

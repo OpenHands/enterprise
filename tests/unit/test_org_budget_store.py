@@ -254,15 +254,17 @@ async def test_duplicate_rows_for_one_percentage_collapse_onto_the_latched_row(
     # is what stops _maybe_send_alerts paging twice in one cycle.
     cycle_start = datetime.now(UTC)
     async with async_session_maker() as session:
+        # Insert the unlatched row first so the collapse cannot pass by relying on
+        # the latched row being returned first; it must actively prefer the latch.
         session.add_all(
             [
-                _latched_threshold(budget_org.id, 80, cycle_start),
                 OrgBudgetThreshold(
                     org_id=budget_org.id,
                     percentage=80,
                     email_enabled=True,
                     slack_enabled=False,
                 ),
+                _latched_threshold(budget_org.id, 80, cycle_start),
             ]
         )
         await session.commit()
