@@ -237,8 +237,9 @@ module org_budgets {
     page_window(matched, offset, lim).length() > lim
 
   /// Whether rows are left behind this page, counted off the whole ordered result
-  /// rather than through the store's over-fetch. Independent of `store_has_more`,
-  /// which is what makes comparing the two worth anything.
+  /// rather than through the store's over-fetch. Agreeing with `store_has_more` on
+  /// every input is the point: it is the same question asked without the windowing, so
+  /// a page_window that stops mirroring `.limit(limit + 1)` breaks the comparison.
   pure def rows_left_behind(matched: List[str], offset: int, lim: int): bool =
     matched.length() > offset + lim
 
