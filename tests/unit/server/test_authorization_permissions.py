@@ -11,7 +11,7 @@ def _role_block(source: str, role_name: str) -> str:
 
 
 def test_automation_roles_include_expected_permissions():
-    source = Path('enterprise/server/auth/authorization.py').read_text()
+    source = Path('server/auth/authorization.py').read_text()
     assert "VIEW_AUTOMATIONS = 'view_automations'" in source
 
     for role_name in ('RoleName.OWNER', 'RoleName.ADMIN'):
