@@ -166,8 +166,7 @@ class OrgMemberFinancialService:
         # Calculate current page (1-indexed)
         current_page = (offset // limit) + 1
 
-        # Calculate next_page_id. get_org_members_paginated reports whether rows
-        # remain, not how many there are in total.
+        # Calculate next_page_id
         next_offset = offset + limit
         next_page_id = str(next_offset) if has_more else None
 
