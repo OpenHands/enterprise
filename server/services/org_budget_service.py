@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -105,16 +106,28 @@ def _subtract_month(year: int, month: int) -> tuple[int, int]:
     return year, month - 1
 
 
+def _cycle_day(year: int, month: int, reset_day: int) -> int:
+    """The reset day this month can actually hold.
+
+    reset_day is a plain Integer column with no CHECK constraint, so it is untrusted:
+    clamp both ends to keep every value a day datetime() accepts.
+    """
+    return max(1, min(reset_day, calendar.monthrange(year, month)[1]))
+
+
 def _current_cycle_start(now: datetime, reset_day: int) -> datetime:
-    if now.day >= reset_day:
-        return datetime(now.year, now.month, reset_day, tzinfo=UTC)
+    day_this_month = _cycle_day(now.year, now.month, reset_day)
+    if now.day >= day_this_month:
+        return datetime(now.year, now.month, day_this_month, tzinfo=UTC)
     prev_year, prev_month = _subtract_month(now.year, now.month)
-    return datetime(prev_year, prev_month, reset_day, tzinfo=UTC)
+    return datetime(
+        prev_year, prev_month, _cycle_day(prev_year, prev_month, reset_day), tzinfo=UTC
+    )
 
 
 def _next_cycle_start(cycle_start: datetime, reset_day: int) -> datetime:
     year, month = _add_month(cycle_start.year, cycle_start.month)
-    return datetime(year, month, reset_day, tzinfo=UTC)
+    return datetime(year, month, _cycle_day(year, month, reset_day), tzinfo=UTC)
 
 
 def _optional_nonnegative_float(value: object, field_name: str) -> float | None:
