@@ -50,6 +50,10 @@ class Permission(str, Enum):
 
     # Secrets
     MANAGE_SECRETS = 'manage_secrets'
+    # Org-shared secrets — create/edit/delete secrets shared org-wide.
+    # Admin/Owner only; all members can *use* (read names, consume in
+    # conversations/automations) org-shared secrets.
+    MANAGE_ORG_SECRETS = 'manage_org_secrets'
 
     # MCP
     MANAGE_MCP = 'manage_mcp'
@@ -163,6 +167,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
         [
             # Settings (Full access)
             Permission.MANAGE_SECRETS,
+            Permission.MANAGE_ORG_SECRETS,
             Permission.MANAGE_MCP,
             Permission.MANAGE_INTEGRATIONS,
             Permission.MANAGE_APPLICATION_SETTINGS,
@@ -199,6 +204,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
         [
             # Settings (Full access)
             Permission.MANAGE_SECRETS,
+            Permission.MANAGE_ORG_SECRETS,
             Permission.MANAGE_MCP,
             Permission.MANAGE_INTEGRATIONS,
             Permission.MANAGE_APPLICATION_SETTINGS,
