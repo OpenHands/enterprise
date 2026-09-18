@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AxiosError } from "axios";
 import { openHands } from "#/api/open-hands-axios";
 import { useConfig } from "./use-config";
+import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 
 export const LLM_API_KEY_QUERY_KEY = "llm-api-key";
 
@@ -16,14 +17,18 @@ export interface LlmApiKeyError {
 
 export function useLlmApiKey() {
   const { data: config } = useConfig();
+  const { organizationId } = useSelectedOrganizationId();
 
   const query = useQuery({
-    queryKey: [LLM_API_KEY_QUERY_KEY],
-    // Fetch the BYOR key on SaaS, or whenever the deployment has explicitly
-    // enabled BYOR export (e.g. self-hosted installs without billing).
+    queryKey: [LLM_API_KEY_QUERY_KEY, organizationId],
+    // On SaaS the BYOR key is scoped to the selected organization, so wait
+    // for one to be selected. Otherwise fetch whenever the deployment has
+    // explicitly enabled BYOR export (e.g. self-hosted installs without
+    // billing).
     enabled:
-      config?.app_mode === "saas" ||
-      !!config?.feature_flags?.enable_byor_export,
+      config?.app_mode === "saas"
+        ? !!organizationId
+        : !!config?.feature_flags?.enable_byor_export,
     queryFn: async () => {
       const { data } =
         await openHands.get<LlmApiKeyResponse>("/api/keys/llm/byor");

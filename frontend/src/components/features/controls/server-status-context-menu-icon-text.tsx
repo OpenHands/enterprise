@@ -1,3 +1,6 @@
+import { dropdownMenuRowForegroundClassName } from "#/utils/dropdown-classes";
+import { cn } from "#/utils/utils";
+
 interface ServerStatusContextMenuIconTextProps {
   icon: React.ReactNode;
   text: string;
@@ -13,7 +16,10 @@ export function ServerStatusContextMenuIconText({
 }: ServerStatusContextMenuIconTextProps) {
   return (
     <button
-      className="flex items-center justify-between p-2 hover:bg-[#5C5D62] rounded text-sm text-white font-normal leading-5 cursor-pointer w-full"
+      className={cn(
+        dropdownMenuRowForegroundClassName,
+        "justify-between text-white",
+      )}
       onClick={onClick}
       data-testid={testId}
       type="button"
