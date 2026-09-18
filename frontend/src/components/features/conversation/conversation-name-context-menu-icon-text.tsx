@@ -1,4 +1,8 @@
 import { cn } from "#/utils/utils";
+import {
+  dropdownMenuRowGapClassName,
+  dropdownMenuRowIconWrapperClassName,
+} from "#/utils/dropdown-classes";
 
 interface ConversationNameContextMenuIconTextProps {
   icon: React.ReactNode;
@@ -14,12 +18,17 @@ export function ConversationNameContextMenuIconText({
   return (
     <div
       className={cn(
-        "flex items-center gap-2 p-2 hover:bg-[#5C5D62] rounded",
+        "flex min-w-0 w-full items-center",
+        dropdownMenuRowGapClassName,
         className,
       )}
     >
-      {icon}
-      {text}
+      <span className={dropdownMenuRowIconWrapperClassName} aria-hidden>
+        {icon}
+      </span>
+      <span className="min-w-0 truncate text-sm font-normal leading-5">
+        {text}
+      </span>
     </div>
   );
 }
