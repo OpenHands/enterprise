@@ -300,7 +300,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
         """
         GIVEN: Organization with no members
         WHEN: get_org_members_financial_data is called
-        THEN: Returns empty items list
+        THEN: Returns empty items list with spend_status 'unavailable'
         """
         # Arrange
         with patch(
@@ -317,6 +317,8 @@ class TestOrgMemberFinancialServiceGetFinancialData:
             # Assert
             assert len(result.items) == 0
             assert result.next_page_id is None
+            # No rows means no spend was read, so the page must not claim a live figure.
+            assert result.spend_status == 'unavailable'
 
     @pytest.mark.asyncio
     async def test_invalid_page_id_raises_value_error(self, org_id):
