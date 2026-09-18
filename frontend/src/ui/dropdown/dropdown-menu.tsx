@@ -1,6 +1,11 @@
 /* eslint-disable react/jsx-props-no-spreading */
 import { cn } from "#/utils/utils";
 import { DropdownOption } from "./types";
+import {
+  dropdownMenuListClassName,
+  dropdownMenuPanelPaddingClassName,
+  dropdownMenuRowClassName,
+} from "#/utils/dropdown-classes";
 
 interface DropdownMenuProps {
   isOpen: boolean;
@@ -26,8 +31,10 @@ export function DropdownMenu({
   return (
     <div
       className={cn(
-        "absolute z-10 w-full mt-1",
-        "bg-[#1F1F1F] border border-[#242424] rounded-lg",
+        "absolute z-50 overflow-hidden text-white",
+        "w-full mt-1",
+        "bg-tertiary rounded-[6px] context-menu-box-shadow",
+        dropdownMenuPanelPaddingClassName,
         "max-h-60 overflow-auto",
         !isOpen && "hidden",
       )}
@@ -36,9 +43,11 @@ export function DropdownMenu({
       // right after selection; cancel that default here.
       onClick={(event) => event.preventDefault()}
     >
-      <ul {...getMenuProps({ className: "p-1" })}>
+      <ul
+        {...getMenuProps({ className: cn("p-0", dropdownMenuListClassName) })}
+      >
         {isOpen && filteredOptions.length === 0 && (
-          <li className="px-2 py-2 text-sm text-gray-400 italic">
+          <li className="px-2 py-2 text-sm text-[var(--oh-muted)] italic">
             {emptyMessage}
           </li>
         )}
@@ -50,15 +59,14 @@ export function DropdownMenu({
                 item: option,
                 index,
                 className: cn(
-                  "px-2 py-2 cursor-pointer text-sm rounded-md",
-                  "text-white focus:outline-none font-normal",
-                  selectedItem?.value === option.value
-                    ? "bg-[#C9B974] text-black"
-                    : "hover:bg-[#5C5D62]",
+                  dropdownMenuRowClassName,
+                  "focus:outline-none",
+                  selectedItem?.value === option.value &&
+                    "bg-[var(--oh-interactive-selected)] text-white",
                 ),
               })}
             >
-              {option.label}
+              <span className="min-w-0 truncate">{option.label}</span>
             </li>
           ))}
       </ul>

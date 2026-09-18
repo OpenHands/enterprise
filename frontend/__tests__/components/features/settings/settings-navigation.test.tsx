@@ -13,6 +13,31 @@ vi.mock("react-router", async () => ({
   useRevalidator: () => ({ revalidate: vi.fn() }),
 }));
 
+vi.mock("#/hooks/query/use-git-user", () => ({
+  useGitUser: () => ({
+    data: { avatar_url: "https://example.com/avatar.png", login: "neo-user" },
+    isFetching: false,
+  }),
+}));
+
+vi.mock("#/hooks/query/use-settings", () => ({
+  useSettings: () => ({
+    data: { email: "neo@example.com" },
+  }),
+}));
+
+vi.mock("#/hooks/mutation/use-logout", () => ({
+  useLogout: () => ({ mutate: vi.fn() }),
+}));
+
+vi.mock("#/hooks/use-app-mode", () => ({
+  useAppMode: () => ({ isSaas: true, isEnterpriseCloud: true }),
+}));
+
+vi.mock("#/components/shared/buttons/styled-tooltip", () => ({
+  StyledTooltip: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 const mockConfig = () => {
   vi.spyOn(OptionService, "getConfig").mockResolvedValue({
     app_mode: "saas",
@@ -25,7 +50,9 @@ const toRenderedItems = (items: SettingsNavItem[]): SettingsNavRenderedItem[] =>
 
 const ITEMS_WITHOUT_ORG = SAAS_NAV_ITEMS.filter(
   (item) =>
-    item.to !== "/settings/org" && item.to !== "/settings/org-members",
+    item.to !== "/settings/org" &&
+    item.to !== "/settings/org-members" &&
+    item.to !== "/settings/credits",
 );
 
 const renderSettingsNavigation = (
@@ -59,17 +86,35 @@ describe("SettingsNavigation", () => {
     useSelectedOrganizationStore.setState({ organizationId: "org-1" });
   });
 
+  describe("settings brand header", () => {
+    it("should show Account label and Back to App link to canvas", async () => {
+      renderSettingsNavigation();
+
+      await screen.findByTestId("settings-navbar");
+
+      const backLinks = screen.getAllByTestId("settings-back-to-app");
+      expect(backLinks.length).toBeGreaterThan(0);
+      expect(backLinks[0]).toHaveAttribute(
+        "href",
+        `${window.location.origin}/canvas`,
+      );
+      expect(backLinks[0]).toHaveTextContent("SETTINGS$BACK_TO_APP");
+      expect(screen.getAllByText("ORG$ACCOUNT").length).toBeGreaterThan(0);
+    });
+  });
+
   describe("renders navigation items passed via props", () => {
     it("should render org routes when included in navigation items", async () => {
       renderSettingsNavigation(toRenderedItems(SAAS_NAV_ITEMS));
 
       await screen.findByTestId("settings-navbar");
 
-      const orgMembersLink = await screen.findByText("SETTINGS$NAV_ORG_MEMBERS");
-      const orgLink = await screen.findByText("SETTINGS$NAV_ORGANIZATION");
-
-      expect(orgMembersLink).toBeInTheDocument();
-      expect(orgLink).toBeInTheDocument();
+      expect(
+        (await screen.findAllByText("SETTINGS$NAV_ORG_MEMBERS")).length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getAllByText("SETTINGS$NAV_ORGANIZATION").length,
+      ).toBeGreaterThan(0);
     });
 
     it("should not render org routes when excluded from navigation items", async () => {
@@ -91,11 +136,12 @@ describe("SettingsNavigation", () => {
 
       // Verify non-org items are rendered (using their i18n keys as text since
       // react-i18next returns the key when no translation is loaded)
-      const secretsLink = await screen.findByText("SETTINGS$NAV_SECRETS");
-      const apiKeysLink = await screen.findByText("SETTINGS$NAV_API_KEYS");
-
-      expect(secretsLink).toBeInTheDocument();
-      expect(apiKeysLink).toBeInTheDocument();
+      expect(
+        (await screen.findAllByText("SETTINGS$NAV_SECRETS")).length,
+      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("SETTINGS$NAV_API_KEYS").length).toBeGreaterThan(
+        0,
+      );
     });
 
     it("should render empty nav when given an empty items list", async () => {
@@ -109,6 +155,21 @@ describe("SettingsNavigation", () => {
 
       expect(orgMembersLink).not.toBeInTheDocument();
       expect(orgLink).not.toBeInTheDocument();
+    });
+
+    it("should render Account brand chrome and user menu", async () => {
+      renderSettingsNavigation(toRenderedItems(SAAS_NAV_ITEMS));
+
+      await screen.findByTestId("settings-navbar");
+
+      expect(
+        screen.getAllByTestId("settings-back-to-app").length,
+      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("ORG$ACCOUNT").length).toBeGreaterThan(0);
+      expect(
+        screen.getAllByTestId("settings-nav-user-menu").length,
+      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("neo@example.com").length).toBeGreaterThan(0);
     });
   });
 
@@ -125,7 +186,9 @@ describe("SettingsNavigation", () => {
       await screen.findByTestId("settings-navbar");
 
       // Assert
-      expect(screen.getByText("SETTINGS$ORG_SETTINGS_HEADER")).toBeInTheDocument();
+      expect(
+        screen.getAllByText("SETTINGS$ORG_SETTINGS_HEADER").length,
+      ).toBeGreaterThan(0);
     });
 
     it("should render dividers when included in navigation items", async () => {
@@ -161,8 +224,12 @@ describe("SettingsNavigation", () => {
       await screen.findByTestId("settings-navbar");
 
       // Assert
-      expect(screen.getByText("SETTINGS$ORG_SETTINGS_HEADER")).toBeInTheDocument();
-      expect(screen.getByText("SETTINGS$PERSONAL_SETTINGS_HEADER")).toBeInTheDocument();
+      expect(
+        screen.getAllByText("SETTINGS$ORG_SETTINGS_HEADER").length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getAllByText("SETTINGS$PERSONAL_SETTINGS_HEADER").length,
+      ).toBeGreaterThan(0);
     });
   });
 });

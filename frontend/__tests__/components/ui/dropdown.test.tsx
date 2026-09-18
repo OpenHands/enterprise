@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { Dropdown } from "#/ui/dropdown/dropdown";
@@ -34,6 +34,47 @@ describe("Dropdown", () => {
       expect(screen.getByText("Option 2")).toBeInTheDocument();
       expect(screen.getByText("Option 3")).toBeInTheDocument();
     });
+
+    it("should open when clicking the trigger shell surface", () => {
+      render(
+        <Dropdown
+          options={mockOptions}
+          searchable={false}
+          defaultValue={mockOptions[0]}
+        />,
+      );
+
+      expect(screen.queryByText("Option 2")).not.toBeInTheDocument();
+
+      const shell = screen.getByRole("combobox").parentElement;
+      expect(shell).not.toBeNull();
+      expect(shell).toHaveClass("cursor-pointer");
+
+      // Click the shell itself (padding/gap), not the nested input/caret.
+      fireEvent.click(shell!);
+
+      expect(screen.getByText("Option 1")).toBeInTheDocument();
+      expect(screen.getByText("Option 2")).toBeInTheDocument();
+      expect(screen.getByText("Option 3")).toBeInTheDocument();
+    });
+
+    it("should toggle closed when clicking the input on a non-searchable dropdown", async () => {
+      const user = userEvent.setup();
+      render(
+        <Dropdown
+          options={mockOptions}
+          searchable={false}
+          defaultValue={mockOptions[0]}
+        />,
+      );
+
+      const input = screen.getByRole("combobox");
+      await user.click(input);
+      expect(screen.getByText("Option 2")).toBeInTheDocument();
+
+      await user.click(input);
+      expect(screen.queryByText("Option 2")).not.toBeInTheDocument();
+    });
   });
 
   describe("Type-ahead / Search", () => {
@@ -64,6 +105,51 @@ describe("Dropdown", () => {
 
       expect(screen.getByText("Option 1")).toBeInTheDocument();
       expect(screen.queryByText("Option 2")).not.toBeInTheDocument();
+    });
+
+    it("should not filter options when searchable is false", async () => {
+      const user = userEvent.setup();
+      render(<Dropdown options={mockOptions} searchable={false} />);
+
+      const trigger = screen.getByTestId("dropdown-trigger");
+      await user.click(trigger);
+
+      const input = screen.getByRole("combobox");
+      expect(input).toHaveAttribute("readonly");
+
+      // skipClick: typing focuses via click by default, which would toggle
+      // a non-searchable select closed before the keystrokes run.
+      await user.type(input, "Option 1", { skipClick: true });
+
+      expect(screen.getByText("Option 1")).toBeInTheDocument();
+      expect(screen.getByText("Option 2")).toBeInTheDocument();
+      expect(screen.getByText("Option 3")).toBeInTheDocument();
+      expect(input).toHaveValue("");
+    });
+
+    it("should keep the selected label when reopening a non-searchable dropdown", async () => {
+      const user = userEvent.setup();
+      render(
+        <Dropdown
+          options={mockOptions}
+          searchable={false}
+          defaultValue={mockOptions[0]}
+        />,
+      );
+
+      const input = screen.getByRole("combobox");
+      expect(input).toHaveValue("Option 1");
+
+      const trigger = screen.getByTestId("dropdown-trigger");
+      await user.click(trigger);
+
+      expect(input).toHaveValue("Option 1");
+      expect(
+        screen.getByRole("option", { name: "Option 1" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("option", { name: "Option 2" }),
+      ).toBeInTheDocument();
     });
 
     it("should show all options when search is cleared", async () => {
@@ -408,10 +494,10 @@ describe("Dropdown", () => {
   });
 
   describe("Cursor position preservation", () => {
-    it("should keep menu open when clicking the input while dropdown is open", async () => {
+    it("should keep menu open when clicking the input while a searchable dropdown is open", async () => {
       // Without a stateReducer, Downshift's default InputClick behavior
       // toggles the menu (closes it if already open). The stateReducer
-      // should override this to keep the menu open so users can click
+      // should override this for searchable dropdowns so users can click
       // to reposition their cursor without losing the dropdown.
       const user = userEvent.setup();
       render(<Dropdown options={mockOptions} />);
