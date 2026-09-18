@@ -1,9 +1,40 @@
 import React from "react";
+import type { CaptureResult } from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
 import { queryClient } from "#/query-client-config";
 import OptionService from "#/api/option-service/option-service.api";
 import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
+
+type DeploymentKind = "local" | "remote";
+
+type WebClientTelemetryConfig = Awaited<
+  ReturnType<typeof OptionService.getConfig>
+>;
+
+function getDeploymentKind(config: WebClientTelemetryConfig): DeploymentKind {
+  if (
+    config.app_mode === "saas" &&
+    config.feature_flags?.deployment_mode !== "self_hosted"
+  ) {
+    return "remote";
+  }
+  return "local";
+}
+
+function addDeploymentKind(
+  event: CaptureResult | null,
+  deploymentKind: DeploymentKind,
+): CaptureResult | null {
+  if (!event) return null;
+  return {
+    ...event,
+    properties: {
+      ...event.properties,
+      deployment_kind: deploymentKind,
+    },
+  };
+}
 
 const POSTHOG_BOOTSTRAP_KEY = "posthog_bootstrap";
 
@@ -43,6 +74,8 @@ export function PostHogWrapper({ children }: { children: React.ReactNode }) {
   const [posthogClientKey, setPosthogClientKey] = React.useState<string | null>(
     null,
   );
+  const [deploymentKind, setDeploymentKind] =
+    React.useState<DeploymentKind>("local");
   const [isLoading, setIsLoading] = React.useState(true);
   const bootstrapIds = React.useMemo(() => getBootstrapIds(), []);
 
@@ -58,6 +91,7 @@ export function PostHogWrapper({ children }: { children: React.ReactNode }) {
         const isEnterpriseSelfHosted =
           config.app_mode === "saas" &&
           config.feature_flags?.deployment_mode === "self_hosted";
+        setDeploymentKind(getDeploymentKind(config));
         setPosthogClientKey(
           isEnterpriseSelfHosted ? null : config.posthog_client_key,
         );
@@ -85,6 +119,7 @@ export function PostHogWrapper({ children }: { children: React.ReactNode }) {
         },
         capture_exceptions: true,
         bootstrap: bootstrapIds,
+        before_send: (event) => addDeploymentKind(event, deploymentKind),
         __add_tracing_headers: [window.location.hostname],
       }}
     >
