@@ -1484,6 +1484,7 @@ class TestSuperRolePermissions:
                 Permission.MANAGE_SUPER_ADMINS,
                 Permission.MANAGE_FEATURE_FLAGS,
                 Permission.MANAGE_ORG_QUOTA,
+                Permission.VIEW_AUTOMATIONS,
                 Permission.MANAGE_USERS,
             ]
         )
