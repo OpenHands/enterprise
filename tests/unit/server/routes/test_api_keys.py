@@ -432,7 +432,7 @@ class TestRefreshManagedLlmApiKey:
     """Test the managed LLM API key refresh endpoint.
 
     These tests exercise the REAL managed-key lifecycle
-    (``SaasSettingsStore.rotate_managed_llm_key``) against an in-memory SQLite
+    (``SaasSettingsStore.rotate_managed_llm_key``) against the test
     database, mocking only the external LiteLLM HTTP calls. They prove the
     actual managed-config classification (from effective org+member settings,
     with org-default precedence), the OpenHands metadata attachment, and the

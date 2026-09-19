@@ -189,14 +189,14 @@ def test_upgrade_encrypted_llm_profiles_reencrypts_changed_rows(monkeypatch):
 
 
 def test_upgrade_rejects_non_postgresql(monkeypatch):
-    bind = SimpleNamespace(dialect=SimpleNamespace(name='sqlite'))
+    bind = SimpleNamespace(dialect=SimpleNamespace(name='mysql'))
     monkeypatch.setattr(
         migration_143,
         'op',
         SimpleNamespace(get_bind=lambda: bind),
     )
 
-    with pytest.raises(RuntimeError, match='Unsupported database dialect: sqlite'):
+    with pytest.raises(RuntimeError, match='Unsupported database dialect: mysql'):
         migration_143.upgrade()
 
 

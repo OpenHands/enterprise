@@ -499,17 +499,14 @@ async def test_ensure_api_key_generates_new_key_when_verification_fails():
 
 @pytest.fixture
 def org_with_multiple_members_fixture(session_maker):
-    """Set up an organization with multiple members for testing LLM settings propagation.
-
-    Uses sync session to avoid UUID conversion issues with async SQLite.
-    """
+    """Set up an organization with multiple members for testing LLM settings propagation."""
     from storage.encrypt_utils import decrypt_value
     from storage.org import Org
     from storage.org_member import OrgMember
     from storage.role import Role
     from storage.user import User
 
-    # Use realistic UUIDs that work well with SQLite
+    # Fixed UUIDs keep the assertions below readable.
     org_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081')
     admin_user_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5082')
     member1_user_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5083')
@@ -1954,7 +1951,6 @@ async def test_llm_profiles_are_encrypted_at_rest(
 
     async with async_session_maker() as session:
         # Bypass the ORM-level TypeDecorator by reading the raw cell.
-        # SQLite stores UUIDs hyphen-stripped, so normalize both sides.
         rows = (
             await session.execute(text('SELECT id, llm_profiles FROM "user"'))
         ).all()

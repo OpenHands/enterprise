@@ -525,7 +525,6 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         # Query existing record using secure select (filters for V1 and user if available)
         # Row-lock so concurrent snapshots (stats events, run-end pull)
         # serialize per conversation instead of racing the guard/ledger.
-        # No-op on SQLite.
         query = await self._secure_select()
         query = query.where(
             StoredConversationMetadata.conversation_id == str(conversation_id)
@@ -848,8 +847,10 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         )
 
     def _fix_timezone(self, value: datetime | None) -> datetime:
-        """Sqlite does not store timezones - and since we can't update the existing models
-        we assume UTC if the timezone is missing. Returns current UTC time if value is None.
+        """Return ``value`` as an aware UTC datetime.
+
+        A value missing its timezone is assumed to be UTC. ``None`` becomes the
+        current UTC time.
         """
         if value is None:
             # Fallback for legacy data: use current time to match model defaults.
