@@ -40,6 +40,7 @@ def resolve_profile_llm(
     *,
     managed_proxy_url: str,
     fallback_api_key: Any = None,
+    fallback_is_managed_key: bool = True,
 ) -> LLM:
     """Resolve a saved profile's LLM for activation on the agent server.
 
@@ -57,6 +58,16 @@ def resolve_profile_llm(
     org-profiles routes normally apply — pins the profile to a credential that
     dies at the next rotation with no path back. The org's current key is the
     only authoritative one for anything pointed at the managed proxy.
+
+    ``fallback_is_managed_key`` gates that managed-proxy branch (override *and*
+    keyless fill): only the org/member's current *managed* virtual key is
+    authoritative for a managed profile. When the active settings LLM is a
+    BYOR/custom config, its key is not a managed key, and handing it to a
+    managed profile sends a third-party credential to the LiteLLM proxy — which
+    rejects it with a 401 ("LiteLLM Virtual Key expected"). Callers must pass
+    ``False`` whenever ``fallback_api_key`` came from a non-managed settings LLM
+    so the managed profile keeps its own (possibly stale) key rather than being
+    poisoned; runtime rotation refresh handles a stale managed key.
     """
     resolved = profile_llm.model_copy(
         update={
@@ -74,9 +85,17 @@ def resolve_profile_llm(
     routes_to_managed_proxy = bool(
         managed_proxy_url and resolved.base_url == managed_proxy_url
     )
-    if has_real_api_key(fallback_api_key) and (
-        routes_to_managed_proxy or not has_real_api_key(resolved.api_key)
-    ):
+    if not has_real_api_key(fallback_api_key):
+        return resolved
+    if routes_to_managed_proxy:
+        # A managed profile may only take a *managed* key — never a BYOR/custom
+        # one. Without that guard, activating a broken custom model poisons every
+        # managed (including the default) profile with the custom key.
+        if fallback_is_managed_key:
+            resolved = resolved.model_copy(update={'api_key': fallback_api_key})
+        return resolved
+    if not has_real_api_key(resolved.api_key):
+        # BYOR/keyless profile: fill from the fallback (unchanged behaviour).
         resolved = resolved.model_copy(update={'api_key': fallback_api_key})
     return resolved
 
