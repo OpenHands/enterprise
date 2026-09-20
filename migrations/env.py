@@ -16,6 +16,10 @@ from alembic import context  # noqa: E402
 from google.cloud.sql.connector import Connector  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
 
+from openhands.db.session_timezone import (  # noqa: E402
+    build_libpq_timezone_args,
+    build_pg8000_timezone_args,
+)
 from openhands.db.ssl import build_db_url_query, build_pg8000_connect_args  # noqa: E402
 from storage.base import Base  # noqa: E402
 
@@ -54,6 +58,7 @@ def get_engine(database_name=DB_NAME):
                 user=DB_USER,
                 password=DB_PASS.strip(),
                 db=database_name,
+                **build_pg8000_timezone_args(),
             )
 
         return create_engine(
@@ -67,17 +72,21 @@ def get_engine(database_name=DB_NAME):
     else:
         scheme = f'postgresql+{DB_DRIVER}' if DB_DRIVER else 'postgresql'
         url = f'{scheme}://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{database_name}'
-        if DB_DRIVER != 'pg8000':
+        if DB_DRIVER == 'pg8000':
+            connect_args = {
+                **build_pg8000_connect_args(DB_SSL_MODE),
+                **build_pg8000_timezone_args(),
+            }
+        else:
             url += build_db_url_query(DB_SSL_MODE)
+            connect_args = build_libpq_timezone_args()
         return create_engine(
             url,
             pool_size=POOL_SIZE,
             max_overflow=MAX_OVERFLOW,
             pool_pre_ping=True,
             pool_use_lifo=True,
-            connect_args=(
-                build_pg8000_connect_args(DB_SSL_MODE) if DB_DRIVER == 'pg8000' else {}
-            ),
+            connect_args=connect_args,
         )
 
 

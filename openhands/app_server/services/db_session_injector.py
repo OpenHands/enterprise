@@ -19,6 +19,10 @@ from sqlalchemy.pool import NullPool
 from sqlalchemy.util import await_only
 
 from openhands.app_server.services.injector import Injector, InjectorState
+from openhands.db.session_timezone import (
+    build_asyncpg_timezone_args,
+    build_pg8000_timezone_args,
+)
 from openhands.db.ssl import build_asyncpg_connect_args, build_pg8000_connect_args
 
 _logger = logging.getLogger(__name__)
@@ -102,6 +106,7 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
             user=self.user,
             password=password.get_secret_value(),
             db=self.name,
+            **build_pg8000_timezone_args(),
         )
 
     async def _create_async_gcp_db_connection(self):
@@ -127,6 +132,7 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
             user=self.user,
             password=password.get_secret_value(),
             db=self.name,
+            **build_asyncpg_timezone_args(),
         )
         return conn
 
@@ -208,7 +214,10 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
             if self.host:
                 async_engine = create_async_engine(
                     url,
-                    connect_args=build_asyncpg_connect_args(self.ssl_mode),
+                    connect_args={
+                        **build_asyncpg_connect_args(self.ssl_mode),
+                        **build_asyncpg_timezone_args(),
+                    },
                     pool_size=self.pool_size,
                     max_overflow=self.max_overflow,
                     pool_recycle=self.pool_recycle,
@@ -233,6 +242,7 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
             engine = self._create_gcp_engine()
         else:
             url: str | URL
+            connect_args: dict[str, Any] = {}
             if self.host:
                 try:
                     import pg8000  # noqa: F401
@@ -249,11 +259,15 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
                     port=self.port,
                     database=self.name,
                 )
+                connect_args = {
+                    **build_pg8000_connect_args(self.ssl_mode),
+                    **build_pg8000_timezone_args(),
+                }
             else:
                 url = f'sqlite:///{self.persistence_dir}/openhands.db'
             engine = create_engine(
                 url,
-                connect_args=build_pg8000_connect_args(self.ssl_mode),
+                connect_args=connect_args,
                 pool_size=self.pool_size,
                 max_overflow=self.max_overflow,
                 pool_recycle=self.pool_recycle,
