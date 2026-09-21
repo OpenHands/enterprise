@@ -864,6 +864,49 @@ async def test_get_user_orgs_paginated_with_pagination(
 
 
 @pytest.mark.asyncio
+async def test_get_user_orgs_paginated_filters_by_name(
+    session_maker, async_session_maker, mock_litellm_api
+):
+    """
+    GIVEN: User is a member of organizations named 'Acme' and 'Beta Org'
+    WHEN: get_user_orgs_paginated is called with name='Acme'
+    THEN: Only the organization named 'Acme' is returned
+    """
+    # Arrange
+    user_id = uuid.uuid4()
+
+    with session_maker() as session:
+        org1 = Org(name='Acme')
+        org2 = Org(name='Beta Org')
+        session.add_all([org1, org2])
+        session.flush()
+
+        user = User(id=user_id, current_org_id=org1.id)
+        role = Role(id=1, name='member', rank=2)
+        session.add_all([user, role])
+        session.flush()
+
+        member1 = OrgMember(
+            org_id=org1.id, user_id=user_id, role_id=1, llm_api_key='key1'
+        )
+        member2 = OrgMember(
+            org_id=org2.id, user_id=user_id, role_id=1, llm_api_key='key2'
+        )
+        session.add_all([member1, member2])
+        session.commit()
+
+    # Act
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        orgs, next_page_id = await OrgService.get_user_orgs_paginated(
+            user_id=str(user_id), name='Acme'
+        )
+
+    # Assert
+    assert [org.name for org in orgs] == ['Acme']
+    assert next_page_id is None
+
+
+@pytest.mark.asyncio
 async def test_get_user_orgs_paginated_empty_results(async_session_maker):
     """
     GIVEN: User has no organizations

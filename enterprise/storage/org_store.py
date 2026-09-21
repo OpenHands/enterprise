@@ -281,7 +281,10 @@ class OrgStore:
 
     @staticmethod
     async def get_user_orgs_paginated(
-        user_id: UUID, page_id: str | None = None, limit: int = 100
+        user_id: UUID,
+        page_id: str | None = None,
+        limit: int = 100,
+        name: str | None = None,
     ) -> tuple[list[Org], str | None]:
         """Get paginated list of organizations for a user.
 
@@ -289,6 +292,7 @@ class OrgStore:
             user_id: User UUID
             page_id: Optional page ID (offset as string) for pagination
             limit: Maximum number of organizations to return
+            name: Optional exact organization name filter
 
         Returns:
             Tuple of (list of Org objects, next_page_id or None)
@@ -301,6 +305,10 @@ class OrgStore:
                 .filter(OrgMember.user_id == user_id)
                 .order_by(Org.name)
             )
+
+            # Apply optional exact name filter
+            if name is not None:
+                query = query.filter(Org.name == name)
 
             # Apply pagination offset
             if page_id is not None:

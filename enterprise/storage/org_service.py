@@ -645,7 +645,10 @@ class OrgService:
 
     @staticmethod
     async def get_user_orgs_paginated(
-        user_id: str, page_id: str | None = None, limit: int = 100
+        user_id: str,
+        page_id: str | None = None,
+        limit: int = 100,
+        name: str | None = None,
     ):
         """
         Get paginated list of organizations for a user.
@@ -654,13 +657,19 @@ class OrgService:
             user_id: User ID (string that will be converted to UUID)
             page_id: Optional page ID (offset as string) for pagination
             limit: Maximum number of organizations to return
+            name: Optional exact organization name filter
 
         Returns:
             Tuple of (list of Org objects, next_page_id or None)
         """
         logger.debug(
             'Fetching paginated organizations for user',
-            extra={'user_id': user_id, 'page_id': page_id, 'limit': limit},
+            extra={
+                'user_id': user_id,
+                'page_id': page_id,
+                'limit': limit,
+                'org_name': name,
+            },
         )
 
         # Convert user_id string to UUID
@@ -668,7 +677,7 @@ class OrgService:
 
         # Fetch organizations from store
         orgs, next_page_id = await OrgStore.get_user_orgs_paginated(
-            user_id=user_uuid, page_id=page_id, limit=limit
+            user_id=user_uuid, page_id=page_id, limit=limit, name=name
         )
 
         logger.debug(

@@ -932,6 +932,66 @@ async def test_list_user_orgs_empty(mock_app_list):
 
 
 @pytest.mark.asyncio
+async def test_list_user_orgs_filters_by_name(mock_app_list):
+    """
+    GIVEN: User is a member of an organization named 'Acme'
+    WHEN: GET /api/organizations?name=Acme is called
+    THEN: The name filter reaches the service and the matching org is returned
+    """
+    # Arrange
+    org_id = uuid.uuid4()
+    mock_org = Org(
+        id=org_id,
+        name='Acme',
+        contact_name='John Doe',
+        contact_email='john@example.com',
+    )
+    mock_user = MagicMock()
+    mock_user.current_org_id = org_id
+    mock_get_user_orgs = AsyncMock(return_value=([mock_org], None))
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.get_user_orgs_paginated',
+            mock_get_user_orgs,
+        ),
+    ):
+        client = TestClient(mock_app_list)
+
+        # Act
+        response = client.get('/api/organizations', params={'name': 'Acme'})
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert mock_get_user_orgs.await_args.kwargs['name'] == 'Acme'
+    response_data = response.json()
+    assert len(response_data['items']) == 1
+    assert response_data['items'][0]['id'] == str(org_id)
+    assert response_data['items'][0]['name'] == 'Acme'
+
+
+@pytest.mark.asyncio
+async def test_list_user_orgs_empty_name_rejected(mock_app_list):
+    """
+    GIVEN: An empty name filter
+    WHEN: GET /api/organizations?name= is called
+    THEN: 422 validation error is returned
+    """
+    # Arrange
+    client = TestClient(mock_app_list)
+
+    # Act
+    response = client.get('/api/organizations?name=')
+
+    # Assert
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
 async def test_list_user_orgs_invalid_limit_negative(mock_app_list):
     """
     GIVEN: Invalid limit parameter (negative)
