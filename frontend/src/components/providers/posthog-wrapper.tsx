@@ -55,7 +55,12 @@ export function PostHogWrapper({ children }: { children: React.ReactNode }) {
           queryFn: OptionService.getConfig,
           ...CONFIG_CACHE_OPTIONS,
         });
-        setPosthogClientKey(config.posthog_client_key);
+        const isEnterpriseSelfHosted =
+          config.app_mode === "saas" &&
+          config.feature_flags?.deployment_mode === "self_hosted";
+        setPosthogClientKey(
+          isEnterpriseSelfHosted ? null : config.posthog_client_key,
+        );
       } catch {
         displayErrorToast("Error fetching PostHog client key");
       } finally {

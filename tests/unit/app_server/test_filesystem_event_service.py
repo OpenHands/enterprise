@@ -14,6 +14,7 @@ import pytest
 
 from openhands.agent_server.models import EventPage, EventSortOrder
 from openhands.app_server.event.filesystem_event_service import FilesystemEventService
+from openhands.sdk import Event
 from openhands.sdk.event import PauseEvent, TokenEvent
 
 
@@ -467,3 +468,349 @@ class TestFilesystemEventServiceIntegration:
 
         result = await service.search_events(conversation_id)
         assert len(result.items) == 3
+
+
+class TestEventIndex:
+    """Tests for the per-conversation event index.
+
+    The index is a JSON file of [[event_id, timestamp, kind], ...] stored next
+    to the events. search_events/count_events use it to avoid loading every
+    event; save_event invalidates it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_search_creates_index_file(self, service: FilesystemEventService):
+        """A search on a conversation with no index rebuilds and writes index.json."""
+        conversation_id = uuid4()
+        for _ in range(3):
+            await service.save_event(conversation_id, create_token_event())
+
+        # save_event invalidates, so index.json should be absent, index_stale absent
+        # (first time, there was nothing to rename).
+        conversation_path = await service.get_conversation_path(conversation_id)
+        index_path = service._index_path(conversation_path)
+        stale_path = service._index_stale_path(conversation_path)
+        assert not index_path.exists()
+        assert not stale_path.exists()
+
+        # A search rebuilds the index.
+        await service.search_events(conversation_id)
+        assert index_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_search_uses_existing_index_no_scan(
+        self, service: FilesystemEventService
+    ):
+        """When index.json is present and fresh, search reads it without rebuilding."""
+        conversation_id = uuid4()
+        events = [create_token_event() for _ in range(3)]
+        for event in events:
+            await service.save_event(conversation_id, event)
+
+        # First search builds the index.
+        await service.search_events(conversation_id)
+        await service.get_conversation_path(conversation_id)
+
+        # Patch _search_paths to raise if called -- the fresh-index path must
+        # never scan.
+        original_search_paths = service._search_paths
+
+        def fail_if_scanned(prefix: Path, page_id: str | None = None) -> list[Path]:
+            raise AssertionError('search_events scanned paths on fresh index')
+
+        service._search_paths = fail_if_scanned  # type: ignore[assignment]
+        try:
+            result = await service.search_events(conversation_id)
+            assert len(result.items) == 3
+        finally:
+            service._search_paths = original_search_paths  # type: ignore[assignment]
+
+    @pytest.mark.asyncio
+    async def test_save_event_invalidates_index(self, service: FilesystemEventService):
+        """save_event renames index.json -> index_stale.json (idempotent)."""
+        conversation_id = uuid4()
+        await service.save_event(conversation_id, create_token_event())
+        await service.search_events(conversation_id)  # builds index.json
+        conversation_path = await service.get_conversation_path(conversation_id)
+        index_path = service._index_path(conversation_path)
+        stale_path = service._index_stale_path(conversation_path)
+        assert index_path.exists()
+        assert not stale_path.exists()
+
+        await service.save_event(conversation_id, create_token_event())
+        assert not index_path.exists()
+        assert stale_path.exists()
+
+        # Second save with no index.json: idempotent no-op, stale stays.
+        await service.save_event(conversation_id, create_token_event())
+        assert not index_path.exists()
+        assert stale_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_search_rebuilds_from_stale_incrementally(
+        self, service: FilesystemEventService
+    ):
+        """After invalidation, search seeds from index_stale.json and scans the diff."""
+        conversation_id = uuid4()
+        # Save 2 events, build index.
+        e1 = create_token_event()
+        e2 = create_token_event()
+        await service.save_event(conversation_id, e1)
+        await service.save_event(conversation_id, e2)
+        await service.search_events(conversation_id)
+
+        # Save a 3rd event -> invalidates.
+        e3 = create_token_event()
+        await service.save_event(conversation_id, e3)
+
+        conversation_path = await service.get_conversation_path(conversation_id)
+        stale_path = service._index_stale_path(conversation_path)
+        assert stale_path.exists()
+
+        # Search should rebuild: seed from stale (2 entries) + scan diff (1 event).
+        result = await service.search_events(conversation_id)
+        ids = {e1.id, e2.id, e3.id}
+        assert {item.id for item in result.items} == ids
+        # Fresh index now exists with 3 entries.
+        import json
+
+        index_path = service._index_path(conversation_path)
+        data = json.loads(index_path.read_text())
+        assert len(data) == 3
+
+    @pytest.mark.asyncio
+    async def test_search_full_rebuild_when_no_index(
+        self, service: FilesystemEventService
+    ):
+        """With neither index.json nor index_stale.json, search does a full scan."""
+        conversation_id = uuid4()
+        events = [create_token_event() for _ in range(3)]
+        for event in events:
+            await service.save_event(conversation_id, event)
+
+        # No search yet -> no index files at all.
+        result = await service.search_events(conversation_id)
+        assert len(result.items) == 3
+
+    @pytest.mark.asyncio
+    async def test_malformed_index_triggers_rebuild(
+        self, service: FilesystemEventService
+    ):
+        """A corrupt index.json is treated as missing and rebuilt."""
+        conversation_id = uuid4()
+        await service.save_event(conversation_id, create_token_event())
+        await service.search_events(conversation_id)  # build valid index
+
+        conversation_path = await service.get_conversation_path(conversation_id)
+        index_path = service._index_path(conversation_path)
+        # Corrupt the index.
+        index_path.write_text('{not valid json')
+
+        result = await service.search_events(conversation_id)
+        assert len(result.items) == 1
+        # Index was rewritten correctly.
+        import json
+
+        data = json.loads(index_path.read_text())
+        assert len(data) == 1
+
+    @pytest.mark.asyncio
+    async def test_malformed_stale_index_triggers_full_rebuild(
+        self, service: FilesystemEventService
+    ):
+        """A corrupt index_stale.json is ignored, falling back to a full scan."""
+        conversation_id = uuid4()
+        await service.save_event(conversation_id, create_token_event())
+        await service.search_events(conversation_id)
+        conversation_path = await service.get_conversation_path(conversation_id)
+        index_path = service._index_path(conversation_path)
+        stale_path = service._index_stale_path(conversation_path)
+
+        # Simulate: index.json gone (stale), stale corrupt.
+        index_path.unlink()
+        stale_path.write_text('not json')
+
+        result = await service.search_events(conversation_id)
+        assert len(result.items) == 1
+
+    @pytest.mark.asyncio
+    async def test_filtered_count_uses_index_no_event_loads(
+        self, service: FilesystemEventService
+    ):
+        """Filtered count_events counts index entries without loading events."""
+        conversation_id = uuid4()
+        token_events = [create_token_event() for _ in range(3)]
+        pause_event = create_pause_event()
+        for event in token_events + [pause_event]:
+            await service.save_event(conversation_id, event)
+
+        # Build the index.
+        await service.search_events(conversation_id)
+
+        # Patch _load_event to fail if called.
+        original_load = service._load_event
+
+        def fail_if_loaded(path: Path) -> Event | None:
+            raise AssertionError('count_events loaded an event from the index path')
+
+        service._load_event = fail_if_loaded  # type: ignore[assignment]
+        try:
+            count = await service.count_events(conversation_id, kind__eq='TokenEvent')
+            assert count == 3
+        finally:
+            service._load_event = original_load  # type: ignore[assignment]
+
+    @pytest.mark.asyncio
+    async def test_count_events_no_filter_counts_paths(
+        self, service: FilesystemEventService
+    ):
+        """Unfiltered count still uses the cheap path-count, not the index."""
+        conversation_id = uuid4()
+        for _ in range(4):
+            await service.save_event(conversation_id, create_token_event())
+
+        count = await service.count_events(conversation_id)
+        assert count == 4
+
+    @pytest.mark.asyncio
+    async def test_index_dedups_by_event_id(self, service: FilesystemEventService):
+        """Re-saving the same event id does not duplicate it in the index."""
+        conversation_id = uuid4()
+        event = create_token_event()
+        await service.save_event(conversation_id, event)
+        # Re-save the same id (simulating an idempotent retry).
+        await service.save_event(conversation_id, event)
+
+        result = await service.search_events(conversation_id)
+        ids = [item.id for item in result.items]
+        assert len(ids) == 1
+        assert ids[0] == event.id
+
+    @pytest.mark.asyncio
+    async def test_index_handles_out_of_order_timestamps(
+        self, service: FilesystemEventService
+    ):
+        """Events saved out of timestamp order are sorted correctly via the index."""
+        conversation_id = uuid4()
+        # Create events with explicit timestamps in reverse order.
+        from datetime import datetime, timedelta
+
+        base = datetime(2025, 1, 1, 12, 0, 0)
+        events = []
+        for i in range(3):
+            e = create_token_event()
+            # Set timestamps: newest first in save order.
+            e = e.model_copy(
+                update={'timestamp': (base + timedelta(hours=2 - i)).isoformat()}
+            )
+            events.append(e)
+            await service.save_event(conversation_id, e)
+
+        # Ascending sort.
+        result = await service.search_events(
+            conversation_id, sort_order=EventSortOrder.TIMESTAMP
+        )
+        timestamps = [item.timestamp for item in result.items]
+        assert timestamps == sorted(timestamps)
+
+        # Descending sort.
+        result_desc = await service.search_events(
+            conversation_id, sort_order=EventSortOrder.TIMESTAMP_DESC
+        )
+        timestamps_desc = [item.timestamp for item in result_desc.items]
+        assert timestamps_desc == sorted(timestamps_desc, reverse=True)
+
+    @pytest.mark.asyncio
+    async def test_pagination_only_loads_page_events(
+        self, service: FilesystemEventService
+    ):
+        """Pagination loads only the events for the requested page."""
+        conversation_id = uuid4()
+        for _ in range(10):
+            await service.save_event(conversation_id, create_token_event())
+
+        # Build index.
+        await service.search_events(conversation_id, limit=100)
+
+        # Track which events get loaded on a single page request.
+        loaded_paths: list[Path] = []
+        original_load = service._load_event
+
+        def tracking_load(path: Path) -> Event | None:
+            loaded_paths.append(path)
+            return original_load(path)
+
+        service._load_event = tracking_load  # type: ignore[assignment]
+        try:
+            result = await service.search_events(conversation_id, limit=3)
+            assert len(result.items) == 3
+            # Only the 3 page events should be loaded, not all 10.
+            assert len(loaded_paths) == 3
+        finally:
+            service._load_event = original_load  # type: ignore[assignment]
+
+    @pytest.mark.asyncio
+    async def test_iter_events_for_export_uses_index(
+        self, service: FilesystemEventService
+    ):
+        """iter_events_for_export yields all events in timestamp order via the index."""
+        import time
+
+        conversation_id = uuid4()
+        events = []
+        for _ in range(3):
+            event = create_token_event()
+            events.append(event)
+            await service.save_event(conversation_id, event)
+            time.sleep(0.01)
+
+        result = [
+            event async for event in service.iter_events_for_export(conversation_id)
+        ]
+        assert [event.id for event in result] == [event.id for event in events]
+        assert [event.timestamp for event in result] == sorted(
+            event.timestamp for event in result
+        )
+
+    @pytest.mark.asyncio
+    async def test_rebuild_loads_events_in_batches(
+        self, service: FilesystemEventService, monkeypatch
+    ):
+        """Streaming rebuild loads events in chunks, not all at once.
+
+        With a batch size of 3 and 7 events, _load_events_from_paths should be
+        called 3 times (3 + 3 + 1), never with more than 3 paths at a time.
+        """
+        from openhands.app_server.event import event_service_base
+
+        monkeypatch.setattr(event_service_base, '_index_rebuild_batch_size', lambda: 3)
+
+        conversation_id = uuid4()
+        for _ in range(7):
+            await service.save_event(conversation_id, create_token_event())
+
+        # Spy on _load_events_from_paths to record the batch sizes it receives.
+        call_sizes: list[int] = []
+        original = service._load_events_from_paths
+
+        async def spy(paths: list[Path]) -> list[Event | None]:
+            call_sizes.append(len(paths))
+            return await original(paths)
+
+        service._load_events_from_paths = spy  # type: ignore[assignment]
+        try:
+            result = await service.search_events(conversation_id)
+            assert len(result.items) == 7
+            # The rebuild loads events in batches of 3: [3, 3, 1].
+            # search_events then loads the page events (limit=100 -> all 7).
+            # So the full call sequence is [3, 3, 1, 7].
+            # Verify the rebuild portion (first 3 calls) is batched.
+            rebuild_calls = call_sizes[:3]
+            assert rebuild_calls == [3, 3, 1], (
+                f'Unexpected rebuild batch sizes: {rebuild_calls} '
+                f'(full calls: {call_sizes})'
+            )
+            # No rebuild call exceeded the batch size.
+            assert max(rebuild_calls) <= 3
+        finally:
+            service._load_events_from_paths = original  # type: ignore[assignment]

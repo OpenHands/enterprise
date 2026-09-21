@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -18,7 +19,19 @@ from openhands.app_server.conversation_paths import V1_CONVERSATIONS_DIR
 from openhands.app_server.event.event_service import EventService
 from openhands.app_server.event_callback.event_callback_models import EventKind
 from openhands.sdk import Event
-from openhands.sdk.utils.paging import page_iterator
+
+_logger = logging.getLogger(__name__)
+
+# An index entry is [event_id, timestamp, kind]. event_id is stored without
+# dashes so it maps directly to the stored filename (see _event_id_to_path).
+# timestamp is the ISO-8601 string from Event.timestamp; kind is the event
+# subclass name (Event.kind). These three fields are sufficient for every
+# current filter (kind__eq, timestamp__gte/lt) and sort order.
+IndexEntry = list[str]  # [event_id, timestamp, kind]
+Index = list[IndexEntry]
+
+INDEX_FILENAME = 'index.json'
+INDEX_STALE_FILENAME = 'index_stale.json'
 
 
 def _event_load_concurrency() -> int:
@@ -26,6 +39,20 @@ def _event_load_concurrency() -> int:
         return max(1, int(os.getenv('EVENT_SERVICE_LOAD_EVENT_CONCURRENCY', '10')))
     except ValueError:
         return 10
+
+
+def _index_rebuild_batch_size() -> int:
+    """Number of events to load per batch during a streaming index rebuild.
+
+    Bounds transient memory: at most this many event objects are alive at once
+    during a rebuild, regardless of conversation size. The index entries
+    (~300 B each) accumulate in the seeded dict — that is the irreducible
+    memory cost of the index itself.
+    """
+    try:
+        return max(1, int(os.getenv('EVENT_INDEX_REBUILD_BATCH_SIZE', '200')))
+    except ValueError:
+        return 200
 
 
 @dataclass
@@ -52,6 +79,42 @@ class EventServiceBase(EventService, ABC):
     @abstractmethod
     def _search_paths(self, prefix: Path) -> list[Path]:
         """Search paths."""
+
+    # -- Index storage primitives (implemented per backend) ----------------
+    # An index is a JSON file ([[event_id, timestamp, kind], ...]) stored
+    # next to the events in a conversation directory. Each backend provides
+    # its own I/O primitives because the operations differ (atomic rename
+    # on the filesystem vs copy+delete on object stores). All paths are
+    # absolute keys/paths within the backend's namespace.
+
+    @abstractmethod
+    def _index_path(self, conversation_path: Path) -> Path:
+        """Return the path of the index file for a conversation directory."""
+
+    @abstractmethod
+    def _index_stale_path(self, conversation_path: Path) -> Path:
+        """Return the path of the stale index file for a conversation directory."""
+
+    @abstractmethod
+    def _index_exists(self, path: Path) -> bool:
+        """Whether an index file exists at the given path."""
+
+    @abstractmethod
+    def _load_index(self, path: Path) -> Index | None:
+        """Load and parse an index file. Returns None if missing or malformed."""
+
+    @abstractmethod
+    def _store_index(self, path: Path, index: Index) -> None:
+        """Write an index file to the given path."""
+
+    @abstractmethod
+    def _invalidate_index(self, conversation_path: Path) -> None:
+        """Atomically (best-effort) rename index.json -> index_stale.json.
+
+        Implementations must be idempotent: if index.json is absent this is
+        a no-op. If index_stale.json already exists it should be overwritten
+        (the newer snapshot wins) rather than erroring.
+        """
 
     async def _load_events_from_paths(self, paths: list[Path]) -> list[Event | None]:
         loop = asyncio.get_running_loop()
@@ -91,6 +154,123 @@ class EventServiceBase(EventService, ABC):
         event: Event = await loop.run_in_executor(None, self._load_event, path)  # type: ignore[arg-type]
         return event
 
+    # -- Index helpers ------------------------------------------------------
+
+    def _event_id_to_path(self, conversation_path: Path, event_id: str) -> Path:
+        """Derive the stored-event path from an event id in an index entry.
+
+        The index stores event ids without dashes so they map directly to the
+        filenames written by save_event.
+        """
+        return conversation_path / f'{event_id}.json'
+
+    def _filter_index(
+        self,
+        index: Index,
+        kind__eq: EventKind | None,
+        timestamp_gte_str: str | None,
+        timestamp_lt_str: str | None,
+    ) -> list[IndexEntry]:
+        """Return index entries matching the given filters."""
+        result = []
+        for entry in index:
+            _, timestamp, kind = entry
+            if kind__eq and kind != kind__eq:
+                continue
+            if timestamp_gte_str and timestamp < timestamp_gte_str:
+                continue
+            if timestamp_lt_str and timestamp >= timestamp_lt_str:
+                continue
+            result.append(entry)
+        return result
+
+    def _sort_index(
+        self, entries: list[IndexEntry], sort_order: EventSortOrder
+    ) -> list[IndexEntry]:
+        """Sort index entries by timestamp."""
+        if not sort_order:
+            return entries
+        return sorted(
+            entries,
+            key=lambda e: e[1],
+            reverse=(sort_order == EventSortOrder.TIMESTAMP_DESC),
+        )
+
+    def _entry_for_event(self, event: Event) -> IndexEntry:
+        """Build an index entry from a loaded event."""
+        if isinstance(event.id, str):
+            id_hex = event.id.replace('-', '')
+        else:
+            id_hex = event.id.hex  # type: ignore[unreachable]
+        return [id_hex, event.timestamp, event.kind]
+
+    async def _get_or_rebuild_index(self, conversation_path: Path) -> Index:
+        """Return a fresh index for a conversation, rebuilding if needed.
+
+        Reader rule (lock-free, safe under append-only data):
+        - index.json present & valid  -> use it, ignore index_stale.json
+        - else index_stale.json present -> seed from it, scan diff, write index.json
+        - else (neither)              -> full scan, write index.json
+        Only the rebuild paths write index.json; the fresh-read path never writes.
+        """
+        loop = asyncio.get_running_loop()
+        index_path = self._index_path(conversation_path)
+        if await loop.run_in_executor(None, self._index_exists, index_path):
+            index = await loop.run_in_executor(None, self._load_index, index_path)
+            if index is not None:
+                return index
+            # Present but malformed -> treat as missing and rebuild below.
+
+        return await self._rebuild_index(conversation_path)
+
+    async def _rebuild_index(self, conversation_path: Path) -> Index:
+        """Rebuild and persist the index.
+
+        Seeds from index_stale.json if present, then scans for any event files
+        not already in the seed and loads only those. Deduplicates by event id.
+        Loads missing events in batches so transient memory is bounded by the
+        batch size, not the conversation size. Writes index.json.
+        """
+        loop = asyncio.get_running_loop()
+        stale_path = self._index_stale_path(conversation_path)
+        seeded: dict[str, IndexEntry] = {}
+        if await loop.run_in_executor(None, self._index_exists, stale_path):
+            stale = await loop.run_in_executor(None, self._load_index, stale_path)
+            if stale:
+                for entry in stale:
+                    seeded[entry[0]] = entry
+
+        # Scan all event files to find ids missing from the seed.
+        paths = await loop.run_in_executor(None, self._search_paths, conversation_path)
+        known_ids = set(seeded.keys())
+        # Index files are not events; exclude them by filename.
+        missing_paths = [
+            p
+            for p in paths
+            if p.name not in (INDEX_FILENAME, INDEX_STALE_FILENAME)
+            and p.stem not in known_ids
+        ]
+
+        # Load missing events in batches so we never hold all event objects in
+        # memory at once. Each batch is loaded, converted to index entries
+        # (~300 B each), merged into the seeded dict, then discarded before the
+        # next batch is loaded.
+        batch_size = _index_rebuild_batch_size()
+        for i in range(0, len(missing_paths), batch_size):
+            batch = missing_paths[i : i + batch_size]
+            loaded = await self._load_events_from_paths(batch)
+            for event in loaded:
+                if event is None:
+                    continue
+                entry = self._entry_for_event(event)
+                seeded[entry[0]] = entry
+            # batch and loaded go out of scope here; event objects are GC-able.
+
+        index = list(seeded.values())
+        index_path = self._index_path(conversation_path)
+        await loop.run_in_executor(None, self._store_index, index_path, index)
+        return index
+
     async def search_events(
         self,
         conversation_id: UUID,
@@ -101,44 +281,47 @@ class EventServiceBase(EventService, ABC):
         page_id: str | None = None,
         limit: int = 100,
     ) -> EventPage:
-        """Search events matching the given filters."""
-        loop = asyncio.get_running_loop()
-        prefix = await self.get_conversation_path(conversation_id)
-        paths = await loop.run_in_executor(None, self._search_paths, prefix)
+        """Search events matching the given filters.
 
-        events = await self._load_events_from_paths(paths)
-        # Convert datetime filters to ISO strings so they can be compared
-        # against event.timestamp (which is stored as an ISO 8601 string).
+        Uses the per-conversation index to filter/sort in memory and loads only
+        the events for the requested page instead of every event in the
+        conversation.
+        """
+        conversation_path = await self.get_conversation_path(conversation_id)
+        index = await self._get_or_rebuild_index(conversation_path)
+
         timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
-        items = []
-        for event in events:
-            if not event:
-                continue
-            if kind__eq and event.kind != kind__eq:
-                continue
-            if timestamp_gte_str and event.timestamp < timestamp_gte_str:
-                continue
-            if timestamp_lt_str and event.timestamp >= timestamp_lt_str:
-                continue
-            items.append(event)
+        entries = self._filter_index(
+            index, kind__eq, timestamp_gte_str, timestamp_lt_str
+        )
+        entries = self._sort_index(entries, sort_order)
 
-        if sort_order:
-            items.sort(
-                key=lambda e: e.timestamp,
-                reverse=(sort_order == EventSortOrder.TIMESTAMP_DESC),
-            )
-
-        # Apply pagination to items (not paths)
+        # Apply pagination to the index entries (not loaded events).
         start_offset = 0
         next_page_id = None
         if page_id:
             start_offset = int(page_id)
-            items = items[start_offset:]
-        if len(items) > limit:
+            entries = entries[start_offset:]
+        if len(entries) > limit:
             next_page_id = str(start_offset + limit)
-            items = items[:limit]
+            entries = entries[:limit]
+
+        # Load only the events for this page.
+        paths = [
+            self._event_id_to_path(conversation_path, entry[0]) for entry in entries
+        ]
+        loaded = await self._load_events_from_paths(paths)
+        items = [event for event in loaded if event is not None]
+        # Preserve the index order (concurrent load may reorder results).
+        by_id = {
+            event.id.replace('-', '')
+            if isinstance(event.id, str)
+            else event.id.hex: event
+            for event in items
+        }  # type: ignore[union-attr]
+        items = [by_id[entry[0]] for entry in entries if entry[0] in by_id]
 
         return EventPage(items=items, next_page_id=next_page_id)
 
@@ -146,14 +329,24 @@ class EventServiceBase(EventService, ABC):
         self, conversation_id: UUID
     ) -> AsyncGenerator[Event, None]:
         """Iterate all events once in timestamp order for trajectory export."""
-        loop = asyncio.get_running_loop()
-        prefix = await self.get_conversation_path(conversation_id)
-        paths = await loop.run_in_executor(None, self._search_paths, prefix)
-        events = await self._load_events_from_paths(paths)
-        items = [event for event in events if event]
-        items.sort(key=lambda event: event.timestamp)
-        for event in items:
-            yield event
+        conversation_path = await self.get_conversation_path(conversation_id)
+        index = await self._get_or_rebuild_index(conversation_path)
+        entries = self._sort_index(index, EventSortOrder.TIMESTAMP)
+        paths = [
+            self._event_id_to_path(conversation_path, entry[0]) for entry in entries
+        ]
+        loaded = await self._load_events_from_paths(paths)
+        by_id = {
+            event.id.replace('-', '')
+            if isinstance(event.id, str)
+            else event.id.hex: event
+            for event in loaded
+            if event is not None
+        }  # type: ignore[union-attr]
+        for entry in entries:
+            event = by_id.get(entry[0])
+            if event is not None:
+                yield event
 
     async def count_events(
         self,
@@ -169,17 +362,16 @@ class EventServiceBase(EventService, ABC):
             result = await self._count_events_no_filter(conversation_path)
             return result
 
-        events = page_iterator(
-            self.search_events,
-            conversation_id=conversation_id,
-            kind__eq=kind__eq,
-            timestamp__gte=timestamp__gte,
-            timestamp__lt=timestamp__lt,
+        # Filtered count: use the index and count matching entries in memory,
+        # avoiding any event loads.
+        conversation_path = await self.get_conversation_path(conversation_id)
+        index = await self._get_or_rebuild_index(conversation_path)
+        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
+        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
+        entries = self._filter_index(
+            index, kind__eq, timestamp_gte_str, timestamp_lt_str
         )
-        result = 0
-        async for event in events:
-            result += 1
-        return result
+        return len(entries)
 
     async def _count_events_no_filter(self, conversation_path: Path) -> int:
         """Count all event files in the conversation directory without filtering."""
@@ -195,6 +387,11 @@ class EventServiceBase(EventService, ABC):
         path = (await self.get_conversation_path(conversation_id)) / f'{id_hex}.json'
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._store_event, path, event)
+        # Invalidate the index so the next search rebuilds it. Idempotent: a
+        # no-op if index.json is already absent (already stale). This is the
+        # only writer of the stale marker.
+        conversation_path = path.parent
+        await loop.run_in_executor(None, self._invalidate_index, conversation_path)
 
     async def batch_get_events(
         self, conversation_id: UUID, event_ids: list[UUID]
