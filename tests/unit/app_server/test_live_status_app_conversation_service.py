@@ -64,12 +64,12 @@ from openhands.app_server.utils.redis_lock import RedisLockUnavailable
 from openhands.sdk import Agent, AgentContext, Event
 from openhands.sdk.llm import LLM
 from openhands.sdk.secret import LookupSecret, StaticSecret
-from openhands.sdk.tool import Tool
 from openhands.sdk.settings import (
     ACP_PROVIDERS,
     ConversationSettings,
     OpenHandsAgentSettings,
 )
+from openhands.sdk.tool import Tool
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 

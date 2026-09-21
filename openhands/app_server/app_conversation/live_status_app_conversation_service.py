@@ -135,12 +135,12 @@ from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
 from openhands.sdk.tool.builtins import SwitchLLMTool
+from openhands.sdk.tool.defaults import SUB_AGENT_TOOL_NAME
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
     redact_text_secrets,
     sanitize_config,
 )
-from openhands.sdk.tool.defaults import SUB_AGENT_TOOL_NAME
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 from openhands.tools.preset.default import (
     get_default_tools,
