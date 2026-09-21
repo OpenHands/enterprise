@@ -38,12 +38,18 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
     resolve_sandbox_spec,
 )
 from openhands.app_server.services.injector import InjectorState
+from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
 
 _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
+
+# The Docker daemon is the store for sandbox identity - these labels carry it.
+MANAGED_LABEL = 'openhands.managed'
+SANDBOX_SPEC_ID_LABEL = 'openhands.sandbox_spec_id'
+CREATED_BY_USER_ID_LABEL = 'openhands.created_by_user_id'
 
 
 def _get_use_host_network_default() -> bool:
@@ -99,6 +105,7 @@ class DockerSandboxService(SandboxService):
     health_check_path: str | None
     httpx_client: httpx.AsyncClient
     max_num_sandboxes: int
+    user_context: UserContext
     web_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
     extra_hosts: dict[str, str] = field(default_factory=dict)
@@ -106,7 +113,40 @@ class DockerSandboxService(SandboxService):
     startup_grace_seconds: int = STARTUP_GRACE_SECONDS
     use_host_network: bool = False
     kvm_enabled: bool = False
-    default_sandbox_spec_id: str | None = None
+
+    async def _owned_label_filters(self) -> list[str]:
+        """Docker label filters narrowing a lookup to what the caller may see.
+
+        A caller with a user id sees only their own sandboxes. A caller without
+        one (OSS single user mode, and the admin contexts used by webhook and
+        session key auth) sees every managed sandbox.
+        """
+        filters = [f'{MANAGED_LABEL}=true']
+        user_id = await self.user_context.get_user_id()
+        if user_id:
+            filters.append(f'{CREATED_BY_USER_ID_LABEL}={user_id}')
+        return filters
+
+    async def _list_owned_containers(self) -> list:
+        """List the containers visible to the caller."""
+        return self.docker_client.containers.list(
+            all=True, filters={'label': await self._owned_label_filters()}
+        )
+
+    async def _get_owned_container(self, sandbox_id: str):
+        """Get a container by id, or None when the caller may not see it."""
+        try:
+            container = self.docker_client.containers.get(sandbox_id)
+        except (NotFound, APIError):
+            return None
+
+        labels = container.labels or {}
+        if labels.get(MANAGED_LABEL) != 'true':
+            return None
+        user_id = await self.user_context.get_user_id()
+        if user_id and labels.get(CREATED_BY_USER_ID_LABEL) != user_id:
+            return None
+        return container
 
     def _find_unused_port(self) -> int:
         """Find an unused port on the host machine."""
@@ -142,7 +182,7 @@ class DockerSandboxService(SandboxService):
                 result[env_var] = None
         return result
 
-    async def _container_to_sandbox_info(self, container) -> SandboxInfo | None:
+    async def _container_to_sandbox_info(self, container) -> SandboxInfo:
         """Convert Docker container to SandboxInfo."""
         # Convert Docker status to runtime status
         status = self._docker_status_to_sandbox_status(container.status)
@@ -219,29 +259,21 @@ class DockerSandboxService(SandboxService):
                                     )
                                 )
 
-        if not container.image.tags:
-            _logger.debug(
-                f'Skipping container {container.name!r}: image has no tags (image id: {container.image.id})'
-            )
-            return None
+        labels = container.labels or {}
 
         return SandboxInfo(
             id=container.name,
-            created_by_user_id=None,
-            sandbox_spec_id=container.image.tags[0],
+            created_by_user_id=labels.get(CREATED_BY_USER_ID_LABEL),
+            sandbox_spec_id=labels.get(SANDBOX_SPEC_ID_LABEL, ''),
             status=status,
             session_api_key=session_api_key,
             exposed_urls=exposed_urls,
             created_at=created_at,
         )
 
-    async def _container_to_checked_sandbox_info(self, container) -> SandboxInfo | None:
+    async def _container_to_checked_sandbox_info(self, container) -> SandboxInfo:
         sandbox_info = await self._container_to_sandbox_info(container)
-        if (
-            sandbox_info
-            and self.health_check_path is not None
-            and sandbox_info.exposed_urls
-        ):
+        if self.health_check_path is not None and sandbox_info.exposed_urls:
             app_server_url = next(
                 exposed_url.url
                 for exposed_url in sandbox_info.exposed_urls
@@ -291,19 +323,10 @@ class DockerSandboxService(SandboxService):
     ) -> SandboxPage:
         """Search for sandboxes."""
         try:
-            # Get all containers with our prefix
-            all_containers = self.docker_client.containers.list(all=True)
-            sandboxes = []
-
-            for container in all_containers:
-                if container.name and container.name.startswith(
-                    self.container_name_prefix
-                ):
-                    sandbox_info = await self._container_to_checked_sandbox_info(
-                        container
-                    )
-                    if sandbox_info:
-                        sandboxes.append(sandbox_info)
+            sandboxes = [
+                await self._container_to_checked_sandbox_info(container)
+                for container in await self._list_owned_containers()
+            ]
 
             # Sort by creation time (newest first)
             sandboxes.sort(key=lambda x: x.created_at, reverse=True)
@@ -332,33 +355,32 @@ class DockerSandboxService(SandboxService):
     async def get_sandbox(self, sandbox_id: str) -> SandboxInfo | None:
         """Get a single sandbox info."""
         try:
-            if not sandbox_id.startswith(self.container_name_prefix):
+            container = await self._get_owned_container(sandbox_id)
+            if container is None:
                 return None
-            container = self.docker_client.containers.get(sandbox_id)
             return await self._container_to_checked_sandbox_info(container)
         except (NotFound, APIError):
             return None
+
+    async def _find_owned_container_by_session_api_key(self, session_api_key: str):
+        """Find the caller's container holding the given session API key."""
+        for container in await self._list_owned_containers():
+            env_vars = self._get_container_env_vars(container)
+            if env_vars.get(SESSION_API_KEY_VARIABLE) == session_api_key:
+                return container
+        return None
 
     async def get_sandbox_by_session_api_key(
         self, session_api_key: str
     ) -> SandboxInfo | None:
         """Get a single sandbox by session API key."""
         try:
-            # Get all containers with our prefix
-            all_containers = self.docker_client.containers.list(all=True)
-
-            for container in all_containers:
-                if container.name and container.name.startswith(
-                    self.container_name_prefix
-                ):
-                    # Check if this container has the matching session API key
-                    env_vars = self._get_container_env_vars(container)
-                    container_session_key = env_vars.get(SESSION_API_KEY_VARIABLE)
-
-                    if container_session_key == session_api_key:
-                        return await self._container_to_checked_sandbox_info(container)
-
-            return None
+            container = await self._find_owned_container_by_session_api_key(
+                session_api_key
+            )
+            if container is None:
+                return None
+            return await self._container_to_checked_sandbox_info(container)
         except (NotFound, APIError):
             return None
 
@@ -367,18 +389,17 @@ class DockerSandboxService(SandboxService):
     ) -> SandboxRecord | None:
         """Get persisted sandbox identity by session API key."""
         try:
-            all_containers = self.docker_client.containers.list(all=True)
-            for container in all_containers:
-                if container.name and container.name.startswith(
-                    self.container_name_prefix
-                ):
-                    env_vars = self._get_container_env_vars(container)
-                    if env_vars.get(SESSION_API_KEY_VARIABLE) == session_api_key:
-                        return SandboxRecord(
-                            id=container.name,
-                            created_by_user_id=None,
-                        )
-            return None
+            container = await self._find_owned_container_by_session_api_key(
+                session_api_key
+            )
+            if container is None:
+                return None
+            return SandboxRecord(
+                id=container.name,
+                created_by_user_id=(container.labels or {}).get(
+                    CREATED_BY_USER_ID_LABEL
+                ),
+            )
         except (NotFound, APIError):
             return None
 
@@ -398,9 +419,10 @@ class DockerSandboxService(SandboxService):
         # Enforce sandbox limits by cleaning up old sandboxes
         await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
 
+        user_default_spec_id = await self.user_context.get_default_sandbox_spec_id()
         sandbox_spec = await resolve_sandbox_spec(
             sandbox_spec_id,
-            self.default_sandbox_spec_id,
+            user_default_spec_id,
             self.sandbox_spec_service,
             _logger,
         )
@@ -452,10 +474,14 @@ class DockerSandboxService(SandboxService):
                 port_mappings[exposed_port.container_port] = host_port
                 env_vars[exposed_port.name] = str(exposed_port.container_port)
 
-        # Prepare labels
+        # Prepare labels - these carry sandbox identity and ownership
         labels = {
-            'sandbox_spec_id': sandbox_spec.id,
+            MANAGED_LABEL: 'true',
+            SANDBOX_SPEC_ID_LABEL: sandbox_spec.id,
         }
+        user_id = await self.user_context.get_user_id()
+        if user_id:
+            labels[CREATED_BY_USER_ID_LABEL] = user_id
 
         # Prepare volumes
         volumes = {
@@ -508,9 +534,7 @@ class DockerSandboxService(SandboxService):
                 devices=devices,
             )
 
-            sandbox_info = await self._container_to_sandbox_info(container)
-            assert sandbox_info is not None
-            return sandbox_info
+            return await self._container_to_sandbox_info(container)
 
         except APIError as e:
             raise SandboxError('Failed to start container') from e
@@ -521,9 +545,9 @@ class DockerSandboxService(SandboxService):
         await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
 
         try:
-            if not sandbox_id.startswith(self.container_name_prefix):
+            container = await self._get_owned_container(sandbox_id)
+            if container is None:
                 return False
-            container = self.docker_client.containers.get(sandbox_id)
 
             if container.status == 'paused':
                 container.unpause()
@@ -537,9 +561,9 @@ class DockerSandboxService(SandboxService):
     async def pause_sandbox(self, sandbox_id: str) -> bool:
         """Pause a running sandbox."""
         try:
-            if not sandbox_id.startswith(self.container_name_prefix):
+            container = await self._get_owned_container(sandbox_id)
+            if container is None:
                 return False
-            container = self.docker_client.containers.get(sandbox_id)
 
             if container.status == 'running':
                 container.pause()
@@ -551,9 +575,9 @@ class DockerSandboxService(SandboxService):
     async def delete_sandbox(self, sandbox_id: str) -> bool:
         """Delete a sandbox."""
         try:
-            if not sandbox_id.startswith(self.container_name_prefix):
+            container = await self._get_owned_container(sandbox_id)
+            if container is None:
                 return False
-            container = self.docker_client.containers.get(sandbox_id)
 
             # Stop the container if it's running
             if container.status in ['running', 'paused']:
@@ -561,15 +585,6 @@ class DockerSandboxService(SandboxService):
 
             # Remove the container
             container.remove()
-
-            # Remove associated volume
-            try:
-                volume_name = f'openhands-workspace-{sandbox_id}'
-                volume = self.docker_client.volumes.get(volume_name)
-                volume.remove()
-            except (NotFound, APIError):
-                # Volume might not exist or already removed
-                pass
 
             return True
         except (NotFound, APIError):
@@ -686,6 +701,7 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
             get_global_config,
             get_httpx_client,
             get_sandbox_spec_service,
+            get_user_context,
         )
 
         # Get web_url and permitted_cors_origins from global config
@@ -693,6 +709,7 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
         web_url = config.web_url
 
         async with (
+            get_user_context(state, request) as user_context,
             get_httpx_client(state) as httpx_client,
             get_sandbox_spec_service(state) as sandbox_spec_service,
         ):
@@ -706,6 +723,7 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
                 health_check_path=self.health_check_path,
                 httpx_client=httpx_client,
                 max_num_sandboxes=self.max_num_sandboxes,
+                user_context=user_context,
                 web_url=web_url,
                 permitted_cors_origins=config.permitted_cors_origins,
                 extra_hosts=self.extra_hosts,

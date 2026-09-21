@@ -12,10 +12,14 @@ The functionality includes:
 """
 
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from openhands.app_server.sandbox.docker_sandbox_service import (
+    MANAGED_LABEL,
+    SANDBOX_SPEC_ID_LABEL,
+)
 from openhands.app_server.sandbox.docker_sandbox_spec_service import (
     get_default_sandbox_specs as get_default_docker_sandbox_specs,
 )
@@ -29,6 +33,14 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
     AUTO_FORWARD_PREFIXES,
     get_agent_server_env,
 )
+
+
+def _user_context():
+    """Mock UserContext for an OSS single user caller."""
+    context = AsyncMock()
+    context.get_user_id.return_value = None
+    context.get_default_sandbox_spec_id.return_value = None
+    return context
 
 
 class TestGetAgentServerEnv:
@@ -765,7 +777,10 @@ class TestDockerSandboxServiceEnvIntegration:
         mock_docker_client = MagicMock()
         mock_container = MagicMock()
         mock_container.name = 'oh-test-abc123'
-        mock_container.image.tags = ['test-image:latest']
+        mock_container.labels = {
+            MANAGED_LABEL: 'true',
+            SANDBOX_SPEC_ID_LABEL: 'test-image:latest',
+        }
         mock_container.attrs = {
             'Created': '2024-01-01T00:00:00Z',
             'Config': {
@@ -799,6 +814,7 @@ class TestDockerSandboxServiceEnvIntegration:
             # Create service
             service = DockerSandboxService(
                 sandbox_spec_service=mock_spec_service,
+                user_context=_user_context(),
                 container_name_prefix='oh-test-',
                 host_port=3000,
                 container_url_pattern='http://localhost:{port}',
@@ -857,7 +873,10 @@ class TestDockerSandboxServiceEnvIntegration:
             mock_docker_client = MagicMock()
             mock_container = MagicMock()
             mock_container.name = 'oh-test-abc123'
-            mock_container.image.tags = ['test-image:latest']
+            mock_container.labels = {
+                MANAGED_LABEL: 'true',
+                SANDBOX_SPEC_ID_LABEL: 'test-image:latest',
+            }
             mock_container.attrs = {
                 'Created': '2024-01-01T00:00:00Z',
                 'Config': {
@@ -881,6 +900,7 @@ class TestDockerSandboxServiceEnvIntegration:
             # Create service with host network enabled
             service = DockerSandboxService(
                 sandbox_spec_service=mock_spec_service,
+                user_context=_user_context(),
                 container_name_prefix='oh-test-',
                 host_port=3000,
                 container_url_pattern='http://localhost:{port}',
@@ -930,7 +950,10 @@ class TestDockerSandboxServiceEnvIntegration:
             mock_docker_client = MagicMock()
             mock_container = MagicMock()
             mock_container.name = 'oh-test-abc123'
-            mock_container.image.tags = ['test-image:latest']
+            mock_container.labels = {
+                MANAGED_LABEL: 'true',
+                SANDBOX_SPEC_ID_LABEL: 'test-image:latest',
+            }
             mock_container.attrs = {
                 'Created': '2024-01-01T00:00:00Z',
                 'Config': {
@@ -954,6 +977,7 @@ class TestDockerSandboxServiceEnvIntegration:
             # Create service with bridge network (default)
             service = DockerSandboxService(
                 sandbox_spec_service=mock_spec_service,
+                user_context=_user_context(),
                 container_name_prefix='oh-test-',
                 host_port=3000,
                 container_url_pattern='http://localhost:{port}',
