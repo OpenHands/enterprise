@@ -1206,6 +1206,44 @@ async def test_clear_stale_org_level_key_skips_when_active_default_is_byor(
 
 
 @pytest.mark.asyncio
+async def test_clear_stale_org_level_key_is_noop_when_already_healed(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """Idempotency: an already-healed org (active default managed AND
+    org._llm_api_key already None) is a no-op — clear_* must return False so the
+    caller does not re-rotate the managed key on every load."""
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        org.agent_settings = {'llm': {'model': 'openhands/claude-opus-4-5-20251101'}}
+        org.llm_api_key = None
+        admin_member = next(m for m in org.org_members if m.user_id == admin_user_id)
+        admin_member.agent_settings_diff = {}
+        admin_member.has_custom_llm_api_key = False
+        session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        cleared = await store.clear_stale_org_level_llm_key_if_managed()
+
+    assert cleared is False
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        assert org._llm_api_key is None
+
+
+@pytest.mark.asyncio
 async def test_store_reuses_existing_managed_key_for_blank_openhands_profile(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
