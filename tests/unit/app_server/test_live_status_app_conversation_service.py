@@ -64,6 +64,7 @@ from openhands.app_server.utils.redis_lock import RedisLockUnavailable
 from openhands.sdk import Agent, AgentContext, Event
 from openhands.sdk.llm import LLM
 from openhands.sdk.secret import LookupSecret, StaticSecret
+from openhands.sdk.tool import Tool
 from openhands.sdk.settings import (
     ACP_PROVIDERS,
     ConversationSettings,
@@ -1649,6 +1650,91 @@ class TestLiveStatusAppConversationService:
         )
 
         assert request.title_llm_profile == 'Titles'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[Tool(name='terminal')],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_honours_a_profiles_tool_selection(self, mock_tools):
+        """A resolved profile's tools reach the launch instead of the default set.
+
+        Without this the agent-profile tool picker is inert on cloud: the
+        selection is resolved, carried into `agent_settings`, and then thrown
+        away here.
+        """
+        self.mock_user.agent_settings = OpenHandsAgentSettings(
+            llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+            tools=[Tool(name='glob'), Tool(name='grep')],
+        )
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+        self.service._load_skills_and_update_agent = AsyncMock(
+            side_effect=lambda agent, **_: agent
+        )
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=Mock(spec=AsyncRemoteWorkspace),
+            selected_repository='test_repo',
+        )
+
+        assert [t.name for t in result.agent.tools] == ['glob', 'grep']
+        mock_tools.assert_not_called()
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions',
+        return_value=[],
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[Tool(name='terminal')],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_registers_sub_agents_for_a_selected_tool_set(
+        self, _mock_tools, mock_definitions
+    ):
+        """Selecting the delegation tool set still registers the sub-agents.
+
+        The profile path pins `enable_sub_agents` off — the selection in
+        `tools` is what asks for delegation now.
+        """
+        self.mock_user.agent_settings = OpenHandsAgentSettings(
+            llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+            tools=[Tool(name='terminal'), Tool(name='task_tool_set')],
+            enable_sub_agents=False,
+        )
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+        self.service._load_skills_and_update_agent = AsyncMock(
+            side_effect=lambda agent, **_: agent
+        )
+
+        await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=Mock(spec=AsyncRemoteWorkspace),
+            selected_repository='test_repo',
+        )
+
+        mock_definitions.assert_called_once()
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
