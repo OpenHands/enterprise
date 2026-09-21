@@ -214,6 +214,25 @@ Each integration follows a consistent pattern with service classes, storage mode
 - Database changes require careful migration planning in `migrations/`
 - Always test changes against both the app server and the SaaS server
 
+**Detecting "cloud (app.all-hands.dev) vs self-hosted" — ALWAYS use `DEPLOYMENT_MODE`, never `app_mode`:**
+These two signals measure different axes and are NOT interchangeable. Mixing them up is a recurring bug source, so follow this rule exactly:
+
+- Use `from server.constants import DEPLOYMENT_MODE` and branch on `DEPLOYMENT_MODE == 'cloud'` (self-hosted is `== 'self_hosted'`).
+  - `'cloud'` == All-Hands-managed domains: `app.all-hands.dev`, `app.openhands.ai`, and any `*.all-hands.dev` / `*.openhands.ai` / `*.openhands.dev` (this includes staging/feature envs), unless overridden by `OH_DEPLOYMENT_MODE`. Defined in `server/constants.py` (`_get_deployment_mode`).
+  - `'self_hosted'` == self-hosted enterprise installs.
+- **Never** use `self.app_mode != 'saas'` (or `app_mode == AppMode.SAAS`) to distinguish cloud from self-hosted. `app_mode` (`openhands/app_server/config_api/config_models.py`, values `'oss'` / `'saas'`) only separates the pure OSS server (`OPENHANDS`) from the SaaS/enterprise server. Both `app.all-hands.dev` **and** self-hosted enterprise run the SaaS server, so `app_mode == 'saas'` is true for both — it cannot tell them apart.
+
+| Deployment                        | `app_mode` | `DEPLOYMENT_MODE` |
+|-----------------------------------|------------|--------------------|
+| `app.all-hands.dev` (cloud SaaS)  | `saas`     | `cloud`            |
+| Staging/feature envs              | `saas`     | `cloud`            |
+| Self-hosted enterprise            | `saas`     | `self_hosted`      |
+| Pure OSS                          | `oss`      | `self_hosted`      |
+
+- Correct: `if DEPLOYMENT_MODE == 'cloud':` to gate code that must run only on the managed cloud (e.g. `app.all-hands.dev`).
+- Wrong: `if self.app_mode != 'saas':` — this only excludes the OSS server; it will still run on self-hosted enterprise.
+- Need production-only (exclude even staging)? Combine with a host check on `server.constants.HOST` (e.g. `HOST == 'app.all-hands.dev'`); `DEPLOYMENT_MODE` alone treats staging as `cloud`.
+
 **Testing Best Practices:**
 
 **Database Testing:**
