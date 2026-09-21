@@ -1,7 +1,7 @@
 """Unit and integration tests for organization LLM profiles router."""
 
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -17,6 +17,7 @@ from server.verified_models.verified_model_service import StoredVerifiedModel
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.role import Role
+from storage.saas_settings_store import SaasSettingsStore
 from storage.user import User
 
 # Mock the database module before importing the router — matches the
@@ -506,9 +507,19 @@ class TestProfileLifecycleIntegration:
             )
             await session.commit()
 
-        await activate_profile(
-            org_id=org_id, name='Default', user_id=str(ADMIN_USER_ID)
-        )
+        # Activating the managed ``Default`` mints a managed key for the member
+        # (the profile is managed even though the org's default
+        # ``agent_settings.llm`` is not), so stub the LiteLLM manager.
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            await activate_profile(
+                org_id=org_id, name='Default', user_id=str(ADMIN_USER_ID)
+            )
         member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
         assert member.agent_settings_diff['llm']['model'] == 'openhands/minimax-m2.5'
 
@@ -939,3 +950,400 @@ class TestActivateTransactionAtomicity:
         # A non-managed (BYOR) key takes effect via the encrypted member store.
         assert member.has_custom_llm_api_key is True
         assert member.llm_api_key.get_secret_value() == 'byor-secret'
+
+
+class TestActivateReplacesStaleCustomKey:
+    """Activating a managed profile after a BYOR one must repopulate the shared
+    _llm_api_key slot with a fresh managed key, not keep the stale dummy."""
+
+    @pytest.mark.asyncio
+    async def test_switching_to_managed_default_replaces_stale_custom_key(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        await _set_org_agent_settings(
+            async_session_maker,
+            org_id,
+            {'llm': {'model': 'openhands/deepseek-v4-flash', 'base_url': None}},
+        )
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        # 1. Activate a BYOR profile with a dummy key.
+        await save_profile(
+            org_id=org_id,
+            name='TestModel',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='anthropic/claude-3-5-sonnet',
+                    base_url='https://api.anthropic.com/v1',
+                    api_key='dummy-broken-key',
+                )
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+        await activate_profile(
+            org_id=org_id, name='TestModel', user_id=str(ADMIN_USER_ID)
+        )
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is True
+        assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
+
+        # 2. Switch back to managed Default. LiteLLM lookups are
+        #    inconclusive-aware (verify_existing_key/verify_key return True on
+        #    no-key / non-auth-failure), so mock both True — the force-rotate
+        #    path must still replace the "valid"-looking dummy.
+        with (
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager.verify_key',
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
+                new=AsyncMock(),
+            ),
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager.generate_key',
+                new=AsyncMock(return_value='fresh-managed-key'),
+            ),
+        ):
+            await activate_profile(
+                org_id=org_id, name='Default', user_id=str(ADMIN_USER_ID)
+            )
+
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is False
+        assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
+        assert member.llm_api_key.get_secret_value() != 'dummy-broken-key'
+        org = await _read_org(async_session_maker, org_id)
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'fresh-managed-key'
+
+
+class TestE2EStaleDefault401Repro:
+    """E2E: after BYOR->managed switch-back, the launch-time effective key is
+    not the stale dummy."""
+
+    @pytest.mark.asyncio
+    async def test_stale_dummy_not_effective_after_switch_back(
+        self, async_session_maker, patch_route_db
+    ):
+        from unittest.mock import AsyncMock
+
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        await _set_org_agent_settings(
+            async_session_maker,
+            org_id,
+            {'llm': {'model': 'openhands/deepseek-v4-flash', 'base_url': None}},
+        )
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            # 1. Activate BYOR TestModel with a dummy key.
+            await save_profile(
+                org_id=org_id,
+                name='TestModel',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='anthropic/claude-3-5-sonnet',
+                        base_url='https://api.anthropic.com/v1',
+                        api_key='dummy-broken-key',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(org_id=org_id, name='TestModel', user_id=user_id)
+            member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+            assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
+
+            # 2. Switch back to the managed Default.
+            await activate_profile(org_id=org_id, name='Default', user_id=user_id)
+            member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+
+            # 3. Resolve the effective key the way load() does at launch.
+            org = await _read_org(async_session_maker, org_id)
+            effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+            assert effective is not None
+            eff_raw = (
+                effective.get_secret_value()
+                if hasattr(effective, 'get_secret_value')
+                else effective
+            )
+            assert eff_raw != 'dummy-broken-key', (
+                'stale dummy key still effective at conversation launch!'
+            )
+            assert eff_raw == 'fresh-managed-key'
+
+
+class TestSwitchBackWithStaleOrgDefault:
+    """Rotation must fire even when the org default agent_settings.llm is still
+    pinned to the stale BYOR profile (classification comes from the activated
+    profile's LLM, not the org default)."""
+
+    @pytest.mark.asyncio
+    async def test_switch_back_rotates_when_org_default_is_stale_byor(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            # 1. Activate a BYOR TestModel with a dummy key.
+            await save_profile(
+                org_id=org_id,
+                name='TestModel',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='dummymodel',
+                        base_url='dummymodel',
+                        api_key='dummy-broken-key',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(org_id=org_id, name='TestModel', user_id=user_id)
+            member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+            assert member.has_custom_llm_api_key is True
+            assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
+
+            # 2. Mirror prod: org default agent_settings.llm stays pinned to
+            #    the stale BYOR profile (profile switches don't rewrite it).
+            await _set_org_agent_settings(
+                async_session_maker,
+                org_id,
+                {'llm': {'model': 'dummymodel', 'base_url': 'dummymodel'}},
+            )
+
+            # 3. Switch back to managed Default.
+            await activate_profile(org_id=org_id, name='Default', user_id=user_id)
+
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is False
+        assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
+        assert member.llm_api_key.get_secret_value() != 'dummy-broken-key'
+        org = await _read_org(async_session_maker, org_id)
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'fresh-managed-key'
+
+
+class TestSwitchBackManagedProfileWithNonDefaultProxyUrl:
+    """A managed profile whose base_url is an all-hands.dev proxy URL that
+    isn't byte-identical to LITE_LLM_API_URL is still recognized as managed and
+    gets its stale key rotated (canonical detector)."""
+
+    @pytest.mark.asyncio
+    async def test_managed_profile_with_non_default_proxy_url_rotates_stale_key(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            # 1. Activate a BYOR profile with a dummy key.
+            await save_profile(
+                org_id=org_id,
+                name='TestModel',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='dummymodel',
+                        base_url='dummymodel',
+                        api_key='dummy-broken-key',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(org_id=org_id, name='TestModel', user_id=user_id)
+            member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+            assert member.has_custom_llm_api_key is True
+            assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
+
+            # 2. Org default stays pinned to the stale BYOR profile.
+            await _set_org_agent_settings(
+                async_session_maker,
+                org_id,
+                {'llm': {'model': 'dummymodel', 'base_url': 'dummymodel'}},
+            )
+
+            # 3. Save + activate a keyless managed profile whose base_url is an
+            #    all-hands.dev proxy URL not byte-identical to LITE_LLM_API_URL.
+            await save_profile(
+                org_id=org_id,
+                name='StagingManaged',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='openhands/deepseek-v4-flash',
+                        base_url='https://llm-proxy.staging.all-hands.dev',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(
+                org_id=org_id, name='StagingManaged', user_id=user_id
+            )
+
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is False
+        assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
+        assert member.llm_api_key.get_secret_value() != 'dummy-broken-key'
+        org = await _read_org(async_session_maker, org_id)
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'fresh-managed-key'
+
+
+class TestSwitchBackClearsStaleOrgLevelKey:
+    """A stale org-level _llm_api_key (set when a BYOR profile was the org
+    default) shadows the rotated member key at launch, so switch-back to a
+    managed profile must clear it."""
+
+    @pytest.mark.asyncio
+    async def test_switch_back_clears_stale_org_llm_api_key(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            # 1. Activate a BYOR TestModel with a dummy key.
+            await save_profile(
+                org_id=org_id,
+                name='TestModel',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='dummymodel',
+                        base_url='dummymodel',
+                        api_key='dummymodel',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(org_id=org_id, name='TestModel', user_id=user_id)
+
+            # 2. Mirror prod: BYOR default saved via the org-defaults path, so
+            #    both agent_settings.llm and the org-level _llm_api_key hold the
+            #    dummy. The member slot is rotated by activate, but the org-level
+            #    key persists until switch-back repairs it.
+            await _set_org_agent_settings(
+                async_session_maker,
+                org_id,
+                {'llm': {'model': 'dummymodel', 'base_url': 'dummymodel'}},
+            )
+            async with async_session_maker() as session:
+                org = (
+                    await session.execute(select(Org).where(Org.id == org_id))
+                ).scalar_one()
+                org.llm_api_key = 'dummymodel'
+                await session.commit()
+
+            org = await _read_org(async_session_maker, org_id)
+            assert org.llm_api_key is not None
+            assert org.llm_api_key.get_secret_value() == 'dummymodel'
+
+            # 3. Switch back to managed Default.
+            await activate_profile(org_id=org_id, name='Default', user_id=user_id)
+
+        org = await _read_org(async_session_maker, org_id)
+        assert org.llm_api_key is None, (
+            'stale org-level BYOR key survived the switch-back — it would '
+            'shadow the member managed key at launch (#421)'
+        )
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is False
+        assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'fresh-managed-key'
+        assert effective.get_secret_value() != 'dummymodel'
