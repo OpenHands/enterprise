@@ -47,5 +47,23 @@ sandbox metadata (`oh_managed`, `oh_user_id`, `oh_spec_id`), and each sandbox's
 session API key is derived from its id with the app server's encryption key, so
 both survive an app server restart with nothing persisted.
 
-`OH_WEB_URL` must be publicly reachable: the agent server posts events back over
-a webhook, and unlike the remote runtime backend there is no polling fallback.
+### Known limitations
+
+Headless flows — integration-triggered runs with no browser attached — are not
+fully supported by this backend in v1.
+
+**`OH_WEB_URL` must be publicly reachable.** The agent server posts events back
+over a webhook, and unlike the remote runtime backend there is no polling
+fallback. A sandbox started against a localhost app server runs, but its events
+never arrive.
+
+**A sandbox holds a one-hour lease.** E2B caps `timeout_seconds` at 3600 and
+rejects anything above it, so a longer lease is not available. On expiry the
+sandbox pauses rather than being destroyed (`on_timeout: pause` with
+`auto_resume: true`), parking as a memory snapshot with its filesystem and
+processes intact. An interactive session self-heals: the browser's next request
+wakes the sandbox in about 0.3 s and the conversation carries on. A headless run
+has no such request, so it can stall at the one-hour mark with nothing to
+resume it. The fix for a follow-up is to renew the lease when the sandbox
+delivers a webhook — during a headless run that is the one signal that tracks
+actual activity.

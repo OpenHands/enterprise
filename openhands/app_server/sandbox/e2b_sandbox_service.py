@@ -715,11 +715,16 @@ class E2BSandboxServiceInjector(SandboxServiceInjector):
             'the E2B_API_URL env var, then to https://api.{domain}.'
         ),
     )
+    # 3600 is E2B's hard server-side ceiling, not a preference: anything above
+    # it - 3601 included - is rejected with `400: Timeout cannot be greater
+    # than 1 hours`. Configuring a longer lease is not available as a way to
+    # keep a long conversation alive.
     timeout_seconds: int = Field(
         default=3600,
         description=(
-            'Sandbox lifetime in seconds, measured from the last create, resume '
-            'or keepalive. On expiry the sandbox is paused rather than killed.'
+            'Sandbox lifetime in seconds, measured from the last create or '
+            'resume. On expiry the sandbox is paused rather than killed. E2B '
+            'caps this at one hour.'
         ),
     )
     max_num_sandboxes: int = Field(
