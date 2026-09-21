@@ -233,6 +233,12 @@ These two signals measure different axes and are NOT interchangeable. Mixing the
 - Wrong: `if self.app_mode != 'saas':` — this only excludes the OSS server; it will still run on self-hosted enterprise.
 - Need production-only (exclude even staging)? Combine with a host check on `server.constants.HOST` (e.g. `HOST == 'app.all-hands.dev'`); `DEPLOYMENT_MODE` alone treats staging as `cloud`.
 
+**The word "SaaS" is overloaded — disambiguate before coding:**
+In everyday language a user saying "SaaS" / "in SaaS" / "SaaS-only" / "this is a SaaS bug" almost always means **the hosted cloud product (`app.all-hands.dev`)**, i.e. `DEPLOYMENT_MODE == 'cloud'`. But in this codebase the enum value `AppMode.SAAS` is the SaaS *server class* and is true for **both** `app.all-hands.dev` and self-hosted enterprise. These are not the same thing. So:
+- Do NOT reach for `app_mode == 'saas'` / `self.app_mode != 'saas'` just because the request contains the word "saas".
+- When a request says "SaaS" and is gating/scoping behavior (e.g. "only run this on SaaS", "hide this on SaaS", "fix this in SaaS"), assume the user likely means **cloud (`app.all-hands.dev`) = `DEPLOYMENT_MODE == 'cloud'`** — and if it's genuinely ambiguous whether they mean cloud-only vs. (cloud + self-hosted enterprise), **ask the user to clarify** before implementing, rather than silently picking `app_mode`.
+- `app_mode == 'saas'` is the right signal only when the distinction is OSS-vs-not-OSS (pure OpenHands app server vs. the SaaS/enterprise server), never for cloud-vs-self-hosted.
+
 **Testing Best Practices:**
 
 **Database Testing:**
