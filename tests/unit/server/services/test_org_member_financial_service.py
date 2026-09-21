@@ -529,6 +529,99 @@ async def test_paged_member_listing_offers_the_remaining_rows(async_session_make
 
 
 @pytest.mark.asyncio
+async def test_member_financial_listing_pages_through_every_member(
+    async_session_maker,
+):
+    # End-to-end guard for the members financial listing: an admin paging the
+    # budgets member table hits GET /organizations/{org_id}/members/financial and
+    # follows next_page_id until it comes back None. When the service mis-binds the
+    # store's has_more flag as total_count, next_page_id is None from the first page
+    # on, so this walk terminates after one member and the rest of the org is
+    # unreachable through the API. Driving the real route + service + store past the
+    # first page is what distinguishes the broken caller from the fixed one; the
+    # single-page assertion above cannot.
+    from server.constants import ORG_SETTINGS_VERSION
+    from server.routes.orgs import get_org_members_financial
+    from storage.org import Org
+    from storage.role import Role
+    from storage.user import User
+
+    org_id = uuid.uuid4()
+    expected_user_ids: set[str] = set()
+    async with async_session_maker() as session:
+        session.add_all(
+            [
+                Org(
+                    id=org_id,
+                    name=f'test-org-{org_id}',
+                    org_version=ORG_SETTINGS_VERSION,
+                    enable_proactive_conversation_starters=True,
+                ),
+                Role(id=1, name='member', rank=1),
+            ]
+        )
+        await session.flush()
+        for index in range(3):
+            user_id = uuid.uuid4()
+            expected_user_ids.add(str(user_id))
+            session.add_all(
+                [
+                    User(
+                        id=user_id,
+                        current_org_id=org_id,
+                        email=f'member{index}@example.com',
+                    ),
+                    OrgMember(
+                        org_id=org_id,
+                        user_id=user_id,
+                        role_id=1,
+                        llm_api_key='test-api-key',
+                        status='active',
+                    ),
+                ]
+            )
+        await session.commit()
+
+    with (
+        patch('storage.org_member_store.a_session_maker', async_session_maker),
+        patch(
+            'server.services.org_member_financial_service.LiteLlmManager.get_team_members_financial_data',
+            new_callable=AsyncMock,
+        ) as mock_get_financial,
+    ):
+        mock_get_financial.return_value = {
+            'team_max_budget': None,
+            'team_spend': 0,
+            'members': {},
+        }
+
+        seen_user_ids: list[str] = []
+        pages: list[str | None] = []
+        page_id: str | None = None
+        # One member per page over three members needs at most three requests; the
+        # guard stops a broken pagination contract from looping forever.
+        for _ in range(len(expected_user_ids) + 1):
+            page = await get_org_members_financial(
+                org_id=org_id,
+                page_id=page_id,
+                limit=1,
+                email=None,
+                user_id=str(uuid.uuid4()),
+            )
+            seen_user_ids.extend(item.user_id for item in page.items)
+            pages.append(page.next_page_id)
+            if page.next_page_id is None:
+                break
+            page_id = page.next_page_id
+
+    # Every member is reachable exactly once, and reaching all three took more than
+    # the first page — the remaining rows were served, not stranded behind it.
+    assert set(seen_user_ids) == expected_user_ids
+    assert len(seen_user_ids) == len(expected_user_ids)
+    assert len(pages) > 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.skip(
     reason='pins search_never_matches_beyond_literal_term — fails on current code'
 )
