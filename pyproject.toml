@@ -27,6 +27,7 @@ dependencies = [
   "deprecation==2.1.0",
   "dirhash==0.5.0",
   "docker==7.1.0",
+  "e2b==2.46.0",
   "fastapi",
   "fastmcp>=3.2,<4",
   "gitpython==3.1.59",
