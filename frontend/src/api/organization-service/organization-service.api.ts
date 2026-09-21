@@ -385,6 +385,34 @@ export const organizationService = {
     return data;
   },
 
+  getMyBudget: async ({
+    orgId,
+    includeSpend = true,
+  }: {
+    orgId: string;
+    includeSpend?: boolean;
+  }) => {
+    const { data } = await openHands.get<OrgMyBudget>(
+      `/api/organizations/${orgId}/budgets/me`,
+      { params: { include_spend: includeSpend } },
+    );
+    return data;
+  },
+
+  getMyUsage: async ({
+    orgId,
+    timeWindow,
+  }: {
+    orgId: string;
+    timeWindow: string;
+  }) => {
+    const { data } = await openHands.get<OrgMyUsageStats>(
+      `/api/organizations/${orgId}/conversations/my-usage`,
+      { params: { time_window: timeWindow } },
+    );
+    return data;
+  },
+
   updateBudgetSettings: async ({
     orgId,
     payload,
@@ -599,6 +627,32 @@ interface OrgUsageStats {
   team_usage: TeamUsageData[];
   model_usage: ModelUsageData[];
   agent_usage: AgentUsageData[];
+}
+
+export interface OrgMyUsageStats {
+  total_spend: number;
+  previous_period_spend: number;
+  daily_spend: { date: string; cost: number }[];
+  model_usage: ModelUsageData[];
+  recent_usage: {
+    conversation_id: string;
+    title: string | null;
+    updated_at: string | null;
+    accumulated_cost: number;
+  }[];
+}
+
+export interface OrgMyBudget {
+  enabled: boolean;
+  monthly_limit?: number | null;
+  is_disabled?: boolean;
+  is_override?: boolean;
+  limit_updated_at?: string | null;
+  current_spend?: number | null;
+  cycle_start_at?: string | null;
+  cycle_end_at?: string | null;
+  spend_status?: "live" | "stale" | "unavailable" | null;
+  spend_observed_at?: string | null;
 }
 
 interface OrgBudgetThreshold {

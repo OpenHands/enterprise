@@ -11,6 +11,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.testclient import TestClient
+from freezegun import freeze_time
 
 from openhands.app_server.user_auth import get_user_id
 from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
@@ -29,6 +30,7 @@ from server.routes.org_models import (
     OrgMemberPage,
     OrgMemberResponse,
     OrgMemberUpdate,
+    OrgMyUsageStats,
     OrgNameExistsError,
     OrgNotFoundError,
     OrgUpdate,
@@ -39,6 +41,8 @@ from server.routes.orgs import (
     get_me,
     get_org_defaults_settings,
     get_org_members,
+    org_budget_service_dependency,
+    org_conversation_service_dependency,
     org_router,
     remove_org_member,
     update_org_defaults_settings,
@@ -4119,3 +4123,200 @@ class TestGetOrgMemberEndpoint:
         # Assert
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         mock_get_member.assert_not_awaited()
+
+
+# =============================================================================
+# Tests for the caller's own budget and usage (GET .../budgets/me, .../my-usage)
+# =============================================================================
+
+
+@pytest.fixture
+def own_budget_api(mock_app):
+    """A plain ``member`` caller, with the budget and usage services faked."""
+    budget_service = AsyncMock()
+    budget_service.get_my_budget.return_value = {'enabled': True, 'monthly_limit': 50.0}
+    usage_service = AsyncMock()
+    usage_service.get_my_usage_stats.return_value = OrgMyUsageStats(total_spend=3.0)
+    mock_app.dependency_overrides[org_budget_service_dependency.dependency] = (
+        lambda: budget_service
+    )
+    mock_app.dependency_overrides[org_conversation_service_dependency.dependency] = (
+        lambda: usage_service
+    )
+    member_role = MagicMock()
+    member_role.name = 'member'
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=member_role),
+    ):
+        yield TestClient(mock_app), budget_service, usage_service
+
+
+@pytest.mark.asyncio
+async def test_member_reads_own_budget_without_admin_privileges(own_budget_api, org_id):
+    """
+    GIVEN: A caller whose only role in the organization is ``member``
+    WHEN: GET /api/organizations/{org_id}/budgets/me is called
+    THEN: Their own budget is returned
+    """
+    # Arrange
+    client, _, _ = own_budget_api
+
+    # Act
+    response = client.get(f'/api/organizations/{org_id}/budgets/me')
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()['monthly_limit'] == 50.0
+
+
+@pytest.mark.asyncio
+async def test_own_budget_is_always_read_for_the_authenticated_user(
+    own_budget_api, org_id, target_user_id
+):
+    """
+    GIVEN: A caller who names another user in the request
+    WHEN: GET /api/organizations/{org_id}/budgets/me is called
+    THEN: The budget is still read for the authenticated caller only
+    """
+    # Arrange
+    client, budget_service, _ = own_budget_api
+
+    # Act
+    client.get(
+        f'/api/organizations/{org_id}/budgets/me', params={'user_id': target_user_id}
+    )
+
+    # Assert
+    budget_service.get_my_budget.assert_awaited_once_with(
+        uuid.UUID(org_id), uuid.UUID(TEST_USER_ID), include_spend=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_own_budget_enabled_check_does_not_request_spend(own_budget_api, org_id):
+    """
+    GIVEN: A caller that only needs to know whether budgets are enabled
+    WHEN: GET .../budgets/me?include_spend=false is called
+    THEN: The budget is read without spend
+    """
+    # Arrange
+    client, budget_service, _ = own_budget_api
+
+    # Act
+    client.get(
+        f'/api/organizations/{org_id}/budgets/me', params={'include_spend': 'false'}
+    )
+
+    # Assert
+    budget_service.get_my_budget.assert_awaited_once_with(
+        uuid.UUID(org_id), uuid.UUID(TEST_USER_ID), include_spend=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_own_budget_is_forbidden_for_non_members(own_budget_api, org_id):
+    """
+    GIVEN: A caller who is not a member of the organization
+    WHEN: GET /api/organizations/{org_id}/budgets/me is called
+    THEN: 403 Forbidden is returned and no budget is read
+    """
+    # Arrange
+    client, budget_service, _ = own_budget_api
+
+    # Act
+    with patch(
+        'server.auth.authorization.get_user_org_role', AsyncMock(return_value=None)
+    ):
+        response = client.get(f'/api/organizations/{org_id}/budgets/me')
+
+    # Assert
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    budget_service.get_my_budget.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_member_reads_own_usage_without_admin_privileges(own_budget_api, org_id):
+    """
+    GIVEN: A caller whose only role in the organization is ``member``
+    WHEN: GET /api/organizations/{org_id}/conversations/my-usage is called
+    THEN: Their own last-30-days usage is returned, rather than the request
+          being routed to the admin-only conversation detail endpoint
+    """
+    # Arrange
+    client, _, usage_service = own_budget_api
+
+    # Act
+    response = client.get(f'/api/organizations/{org_id}/conversations/my-usage')
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()['total_spend'] == 3.0
+    usage_service.get_my_usage_stats.assert_awaited_once_with(
+        org_id=uuid.UUID(org_id), user_id=uuid.UUID(TEST_USER_ID), days=30
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('time_window', 'days'), [('7d', 7), ('90d', 90)])
+async def test_own_usage_covers_the_requested_time_window(
+    own_budget_api, org_id, time_window, days
+):
+    """
+    GIVEN: A member asking for a specific time window
+    WHEN: GET .../conversations/my-usage?time_window=... is called
+    THEN: Usage is read for that many days
+    """
+    # Arrange
+    client, _, usage_service = own_budget_api
+
+    # Act
+    client.get(
+        f'/api/organizations/{org_id}/conversations/my-usage',
+        params={'time_window': time_window},
+    )
+
+    # Assert
+    assert usage_service.get_my_usage_stats.await_args.kwargs['days'] == days
+
+
+@pytest.mark.asyncio
+async def test_own_usage_year_to_date_starts_on_january_first(own_budget_api, org_id):
+    """
+    GIVEN: A member asking for year-to-date usage on March 1st
+    WHEN: GET .../conversations/my-usage?time_window=ytd is called
+    THEN: Usage is read for the 60 days since January 1st
+    """
+    # Arrange
+    client, _, usage_service = own_budget_api
+
+    # Act
+    with freeze_time('2026-03-01 12:00:00'):
+        client.get(
+            f'/api/organizations/{org_id}/conversations/my-usage',
+            params={'time_window': 'ytd'},
+        )
+
+    # Assert
+    assert usage_service.get_my_usage_stats.await_args.kwargs['days'] == 60
+
+
+@pytest.mark.asyncio
+async def test_own_usage_rejects_an_unknown_time_window(own_budget_api, org_id):
+    """
+    GIVEN: A member asking for a time window that is not supported
+    WHEN: GET .../conversations/my-usage?time_window=1h is called
+    THEN: 400 Bad Request is returned and no usage is read
+    """
+    # Arrange
+    client, _, usage_service = own_budget_api
+
+    # Act
+    response = client.get(
+        f'/api/organizations/{org_id}/conversations/my-usage',
+        params={'time_window': '1h'},
+    )
+
+    # Assert
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    usage_service.get_my_usage_stats.assert_not_awaited()
