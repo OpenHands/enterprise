@@ -19,7 +19,6 @@ describe("GitOrgRow", () => {
     renderWithProviders(
       <GitOrgRow
         org={createOrg({ provider: "GitLab", name: "MyOrg" })}
-        isLast={false}
         onClaim={vi.fn()}
         onDisconnect={vi.fn()}
       />,
@@ -34,7 +33,6 @@ describe("GitOrgRow", () => {
     renderWithProviders(
       <GitOrgRow
         org={createOrg()}
-        isLast={false}
         onClaim={vi.fn()}
         onDisconnect={vi.fn()}
       />,
@@ -52,7 +50,6 @@ describe("GitOrgRow", () => {
           provider: "bitbucket_data_center",
           name: "PROJ",
         })}
-        isLast={false}
         onClaim={vi.fn()}
         onDisconnect={vi.fn()}
       />,

@@ -1,7 +1,7 @@
 """Add per-member budget cycle baselines with provenance.
 
-Revision ID: 162
-Revises: 161
+Revision ID: 164
+Revises: 163
 Create Date: 2026-09-11 00:00:00.000000
 """
 
@@ -10,8 +10,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '162'
-down_revision: str | None = '161'
+revision: str = '164'
+down_revision: str | None = '163'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -20,6 +20,13 @@ def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != 'postgresql':
         raise RuntimeError(f'Unsupported database dialect: {bind.dialect.name}')
+
+    inspector = sa.inspect(bind)
+    if inspector.has_table('org_budget_cycle_baseline'):
+        # Already applied (e.g. under its previous revision id 162). Treat as
+        # a no-op so this migration is safe to re-run on databases that have
+        # already moved past the conflicting revision.
+        return
 
     op.create_table(
         'org_budget_cycle_baseline',

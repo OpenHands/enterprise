@@ -862,4 +862,25 @@ describe("SdkSectionPage", () => {
       );
     });
   });
+
+  it("shows an unavailable empty state when the requested schema section is missing", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({
+        agent_settings_schema: {
+          model_name: "AgentSettings",
+          sections: [],
+        },
+      }),
+    );
+
+    renderSdkSectionPage({
+      settingsSources: [
+        { settingsSource: "agent_settings", sectionKeys: ["condenser"] },
+      ],
+    });
+
+    expect(
+      await screen.findByTestId("sdk-schema-unavailable"),
+    ).toBeInTheDocument();
+  });
 });
