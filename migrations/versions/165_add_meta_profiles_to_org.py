@@ -1,7 +1,7 @@
 """Add meta_profiles column to org table.
 
-Revision ID: 164
-Revises: 163
+Revision ID: 165
+Revises: 164
 Create Date: 2026-09-01
 """
 
@@ -10,8 +10,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '164'
-down_revision: str | None = '163'
+revision: str = '165'
+down_revision: str | None = '164'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

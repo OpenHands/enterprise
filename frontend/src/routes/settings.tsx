@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Outlet, redirect, useLocation, useMatches } from "react-router";
+import { Outlet, replace, useLocation, useMatches } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Route } from "./+types/settings";
 import OptionService from "#/api/option-service/option-service.api";
@@ -20,6 +20,10 @@ import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
 import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organization-store";
 import { rolePermissions } from "#/utils/org/permissions";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
+import {
+  ORG_QUERY_PARAM,
+  switchOrganizationFromUrl,
+} from "#/utils/org/org-url-param";
 import {
   ADMIN_ONLY_SETTINGS_PATHS,
   isSettingsPageHidden,
@@ -48,7 +52,16 @@ const ORG_WIDE_BADGE_PATHS = new Set<string>([
   "/settings/org-defaults",
   "/settings/org-defaults/condenser",
   "/settings/org-defaults/verification",
+  "/settings/budgets",
+  "/settings/credits",
 ]);
+
+/**
+ * Empty loader data for successful permission checks.
+ * React Router's dataStrategy treats a missing/`null` route result as an error
+ * during revalidation/HMR, so always return a concrete object on the allow path.
+ */
+const SETTINGS_LOADER_OK = {} as const;
 
 export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   const url = new URL(request.url);
@@ -56,23 +69,46 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
 
   const isAdminOnlyPath = ADMIN_ONLY_SETTINGS_PATHS.has(pathname);
 
-  // Step 1: Get config first (needed for all checks, no user data required)
-  const config = await queryClient.fetchQuery<WebClientConfig>({
-    queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
-    queryFn: OptionService.getConfig,
-    ...CONFIG_CACHE_OPTIONS,
-  });
+  // Step 1: Get config first (needed for all checks, no user data required).
+  // Network/proxy failures must not crash the settings shell into ErrorBoundary.
+  let config: WebClientConfig | undefined;
+  try {
+    config = await queryClient.fetchQuery<WebClientConfig>({
+      queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
+      queryFn: OptionService.getConfig,
+      ...CONFIG_CACHE_OPTIONS,
+    });
+  } catch {
+    return SETTINGS_LOADER_OK;
+  }
 
   const isSaas = config?.app_mode === "saas";
   const featureFlags = config?.feature_flags;
 
+  // Honor `?org=<id>` deep links (e.g. agent-canvas "All Cloud Settings"):
+  // switch the current org before any settings guard runs, then strip the
+  // param so the next loader pass evaluates the guards against the new org.
+  // Child route guards skip their redirects while the param is present.
+  //
+  // Every redirect in this loader uses `replace` so guard hops leave no
+  // history entry: Back must return to where the user came from (e.g.
+  // agent-canvas at /canvas), not bounce forward again (OHE-3242).
+  const orgIdFromUrl = url.searchParams.get(ORG_QUERY_PARAM);
+  if (isSaas && orgIdFromUrl) {
+    const handled = await switchOrganizationFromUrl(orgIdFromUrl, featureFlags);
+    if (handled) {
+      url.searchParams.delete(ORG_QUERY_PARAM);
+      return replace(`${pathname}${url.search}`);
+    }
+  }
+
   if (pathname === "/settings/admin-dashboard") {
-    return redirect(isSaas ? "/settings/usage-monitoring" : "/settings");
+    return replace(isSaas ? "/settings/usage-monitoring" : "/settings");
   }
 
   // Step 2: Check SAAS_ONLY_PATHS for OSS mode (no user data required)
   if (!isSaas && SAAS_ONLY_PATHS.includes(pathname)) {
-    return redirect("/settings");
+    return replace("/settings");
   }
 
   // Step 3: Check feature flag-based hiding and redirect IMMEDIATELY (no user data required)
@@ -80,7 +116,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   if (isSettingsPageHidden(pathname, featureFlags)) {
     const fallbackPath = getFirstAvailablePath(isSaas, featureFlags);
     if (fallbackPath && fallbackPath !== pathname) {
-      return redirect(fallbackPath);
+      return replace(fallbackPath);
     }
   }
 
@@ -111,7 +147,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
           staleTime: 1000 * 60 * 5,
         });
         if (personalSettings?.agent_settings?.agent_kind === "acp") {
-          return redirect("/settings/agent");
+          return replace("/settings/agent");
         }
       } catch {
         // Settings unfetchable (unauthed, no org, network) — let the
@@ -122,35 +158,57 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
 
   if (
     pathname === "/settings/billing" ||
+    pathname === "/settings/credits" ||
     pathname === "/settings/org" ||
     pathname === "/settings/org-members" ||
     isAdminOnlyPath
   ) {
     const user = await getActiveOrganizationUser();
 
-    const orgId = getSelectedOrganizationIdFromStore();
     const organizationsData = queryClient.getQueryData<{
       items: Organization[];
       currentOrgId: string | null;
     }>(["organizations"]);
+    // After a hard load the selected-org store is empty (in-memory only), so
+    // fall back to the backend's current org like getActiveOrganizationUser.
+    const orgId =
+      getSelectedOrganizationIdFromStore() ??
+      organizationsData?.currentOrgId ??
+      organizationsData?.items?.[0]?.id ??
+      null;
     const selectedOrg = organizationsData?.items?.find(
       (org) => org.id === orgId,
     );
     const isPersonalOrg = selectedOrg?.is_personal === true;
     const isTeamOrg = !!selectedOrg && !selectedOrg.is_personal;
+    const billingHidden = isBillingHidden(
+      config,
+      rolePermissions[user?.role ?? "member"].includes("view_billing"),
+    );
 
     if (pathname === "/settings/billing") {
-      if (
-        !user ||
-        isBillingHidden(
-          config,
-          rolePermissions[user.role ?? "member"].includes("view_billing"),
-        ) ||
-        isTeamOrg
-      ) {
+      if (!user || billingHidden) {
         if (isSaas) {
           const fallbackPath = getFirstAvailablePath(isSaas, featureFlags);
-          return redirect(fallbackPath ?? "/settings");
+          return replace(fallbackPath ?? "/settings");
+        }
+      } else if (isTeamOrg) {
+        // Stripe checkout still returns to /settings/billing; send team orgs
+        // to Credits and preserve checkout status for the success/cancel toast.
+        const checkout = url.searchParams.get("checkout");
+        return replace(
+          checkout
+            ? `/settings/credits?checkout=${encodeURIComponent(checkout)}`
+            : "/settings/credits",
+        );
+      }
+    }
+
+    if (pathname === "/settings/credits") {
+      if (!user || billingHidden || isPersonalOrg || !isTeamOrg) {
+        if (isSaas) {
+          const fallbackPath = getFirstAvailablePath(isSaas, featureFlags);
+          return replace(fallbackPath ?? "/settings");
         }
       }
     }
@@ -162,7 +220,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
         !rolePermissions[role].includes("view_billing") ||
         isPersonalOrg
       ) {
-        return redirect("/settings");
+        return replace("/settings");
       }
     }
 
@@ -173,19 +231,19 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
         !rolePermissions[role].includes("invite_user_to_organization") ||
         isPersonalOrg
       ) {
-        return redirect("/settings");
+        return replace("/settings");
       }
     }
 
     if (isAdminOnlyPath) {
       const role = user?.role ?? "member";
       if (!user || (role !== "admin" && role !== "owner") || isPersonalOrg) {
-        return redirect("/settings");
+        return replace("/settings");
       }
     }
   }
 
-  return null;
+  return SETTINGS_LOADER_OK;
 };
 
 function SettingsScreen() {
@@ -205,20 +263,27 @@ function SettingsScreen() {
   const orgWideBadgeVariant =
     me?.role === "member" ? "managed-by-admin" : "org-wide";
 
-  // Current section title for the main content area
-  const currentSectionTitle = useMemo(() => {
-    // Find the current item from rendered items
+  const { currentSectionTitle, currentSectionSubtitle } = useMemo(() => {
     const currentRenderedItem = navItems.find(
       (item) => item.type === "item" && item.item.to === location.pathname,
     );
-    if (currentRenderedItem && currentRenderedItem.type === "item") {
-      return currentRenderedItem.item.text;
+    if (currentRenderedItem?.type === "item") {
+      return {
+        currentSectionTitle: currentRenderedItem.item.text,
+        currentSectionSubtitle: currentRenderedItem.item.subtitle,
+      };
     }
-    // Default to the first available navigation item if current page is not found
     const firstItem = navItems.find((item) => item.type === "item");
-    return firstItem && firstItem.type === "item"
-      ? firstItem.item.text
-      : "SETTINGS$TITLE";
+    if (firstItem?.type === "item") {
+      return {
+        currentSectionTitle: firstItem.item.text,
+        currentSectionSubtitle: firstItem.item.subtitle,
+      };
+    }
+    return {
+      currentSectionTitle: "SETTINGS$TITLE",
+      currentSectionSubtitle: null as string | null,
+    };
   }, [navItems, location.pathname]);
 
   const routeHandle = matches.find((m) => m.pathname === location.pathname)
@@ -226,20 +291,30 @@ function SettingsScreen() {
   const shouldHideTitle = routeHandle?.hideTitle === true;
 
   return (
-    <main data-testid="settings-screen" className="h-full">
-      <SettingsLayout navigationItems={navItems}>
-        <div className="flex flex-col gap-6 h-full min-h-0">
+    <main data-testid="settings-screen" className="min-h-0 h-full">
+      <SettingsLayout
+        navigationItems={navItems}
+        topBanner={
+          shouldShowOrgWideBadge ? (
+            <OrgWideSettingsBadge variant={orgWideBadgeVariant} />
+          ) : undefined
+        }
+      >
+        <div className="flex flex-col gap-6 pb-8">
           {!shouldHideTitle && (
-            <div className="flex items-center gap-3 flex-wrap">
+            <header className="space-y-1">
               <Typography.H2>{t(currentSectionTitle)}</Typography.H2>
-              {shouldShowOrgWideBadge && (
-                <OrgWideSettingsBadge variant={orgWideBadgeVariant} />
-              )}
-            </div>
+              {currentSectionSubtitle ? (
+                <p
+                  data-testid="settings-page-subtitle"
+                  className="text-sm leading-5 text-muted"
+                >
+                  {t(currentSectionSubtitle)}
+                </p>
+              ) : null}
+            </header>
           )}
-          <div className="flex-1 min-h-0 overflow-auto custom-scrollbar-always">
-            <Outlet />
-          </div>
+          <Outlet />
         </div>
       </SettingsLayout>
     </main>

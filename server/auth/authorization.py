@@ -116,7 +116,6 @@ class Permission(str, Enum):
     # explicit permission -- it is NOT implied by any org-scoped role and is
     # granted only to the ``superadmin`` super role.
     MANAGE_SUPER_ADMINS = 'manage_super_admins'
-    MANAGE_USERS = 'manage_users'
 
     # Instance-level feature flag administration: create/update/delete flags
     # and their targeting rules. Granted only to the ``superadmin`` super role.
@@ -278,7 +277,6 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             # mutation access org-scoped: this deliberately does not grant
             # MANAGE_AUTOMATIONS.
             Permission.VIEW_AUTOMATIONS,
-            Permission.MANAGE_USERS,
         ]
     ),
     RoleName.MEMBER: frozenset(),
