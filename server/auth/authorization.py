@@ -50,6 +50,10 @@ class Permission(str, Enum):
 
     # Secrets
     MANAGE_SECRETS = 'manage_secrets'
+    # Org-shared secrets — create/edit/delete secrets shared org-wide.
+    # Admin/Owner only; all members can *use* (read names, consume in
+    # conversations/automations) org-shared secrets.
+    MANAGE_ORG_SECRETS = 'manage_org_secrets'
 
     # MCP
     MANAGE_MCP = 'manage_mcp'
@@ -112,7 +116,6 @@ class Permission(str, Enum):
     # explicit permission -- it is NOT implied by any org-scoped role and is
     # granted only to the ``superadmin`` super role.
     MANAGE_SUPER_ADMINS = 'manage_super_admins'
-    MANAGE_USERS = 'manage_users'
 
     # Instance-level feature flag administration: create/update/delete flags
     # and their targeting rules. Granted only to the ``superadmin`` super role.
@@ -163,6 +166,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
         [
             # Settings (Full access)
             Permission.MANAGE_SECRETS,
+            Permission.MANAGE_ORG_SECRETS,
             Permission.MANAGE_MCP,
             Permission.MANAGE_INTEGRATIONS,
             Permission.MANAGE_APPLICATION_SETTINGS,
@@ -199,6 +203,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
         [
             # Settings (Full access)
             Permission.MANAGE_SECRETS,
+            Permission.MANAGE_ORG_SECRETS,
             Permission.MANAGE_MCP,
             Permission.MANAGE_INTEGRATIONS,
             Permission.MANAGE_APPLICATION_SETTINGS,
@@ -268,7 +273,6 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.MANAGE_SUPER_ADMINS,
             Permission.MANAGE_FEATURE_FLAGS,
             Permission.MANAGE_ORG_QUOTA,
-            Permission.MANAGE_USERS,
         ]
     ),
     RoleName.MEMBER: frozenset(),

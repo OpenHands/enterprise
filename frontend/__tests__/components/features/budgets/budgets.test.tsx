@@ -284,7 +284,9 @@ describe("Budgets", () => {
     await renderBudgets();
 
     await user.click(screen.getByRole("button", { name: "User overrides" }));
-    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.click(
+      screen.getByRole("button", { name: "Edit budget for User One" }),
+    );
     const overrideInput = screen.getByRole("spinbutton");
     await user.clear(overrideInput);
     await user.type(overrideInput, "75");
