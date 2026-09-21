@@ -524,6 +524,40 @@ export const organizationService = {
     if (timeWindow) params.set("time_window", timeWindow);
     return `/api/organizations/${orgId}/conversations/export?${params.toString()}`;
   },
+
+  // ---- Organization-shared secrets ----
+  // Org-shared secrets are usable by all org members but can only be
+  // created/edited/deleted by admins/owners (MANAGE_ORG_SECRETS). The
+  // value is write-once and never read back by anyone.
+  createOrgSecret: async (
+    orgId: string,
+    payload: { name: string; value: string; description?: string },
+  ) => {
+    const { status } = await openHands.post(
+      `/api/organizations/${orgId}/secrets`,
+      payload,
+    );
+    return status === 201;
+  },
+
+  updateOrgSecret: async (
+    orgId: string,
+    secretName: string,
+    payload: { name?: string; description?: string },
+  ) => {
+    const { status } = await openHands.put(
+      `/api/organizations/${orgId}/secrets/${encodeURIComponent(secretName)}`,
+      payload,
+    );
+    return status === 200;
+  },
+
+  deleteOrgSecret: async (orgId: string, secretName: string) => {
+    const { status } = await openHands.delete(
+      `/api/organizations/${orgId}/secrets/${encodeURIComponent(secretName)}`,
+    );
+    return status === 200;
+  },
 };
 
 // Types for org conversation APIs
