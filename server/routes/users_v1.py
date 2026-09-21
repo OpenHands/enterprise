@@ -35,6 +35,7 @@ from openhands.app_server.settings.provider_connections import (
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.dependencies import get_dependencies
+from openhands.app_server.utils.llm import is_managed_llm_config
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
 from server.constants import LITE_LLM_API_URL
@@ -95,12 +96,22 @@ def _resolve_exposed_llm_profiles(user_info: SaasUserInfo) -> None:
     # ACP agent-settings variants have no ``llm`` field, hence the getattrs.
     settings_llm = getattr(user_info.agent_settings, 'llm', None)
     fallback_api_key = getattr(settings_llm, 'api_key', None)
+    # Only the active settings LLM's key is a safe fallback for *managed*
+    # profiles when that LLM is itself a managed config. A BYOR/custom active
+    # model's key must never be handed to a managed profile (it would be sent
+    # to the LiteLLM proxy and rejected with a 401).
+    fallback_is_managed_key = is_managed_llm_config(
+        getattr(settings_llm, 'model', None),
+        getattr(settings_llm, 'base_url', None),
+        managed_proxy_url=LITE_LLM_API_URL,
+    )
     profiles = user_info.llm_profiles.profiles
     for name, profile_llm in profiles.items():
         profiles[name] = resolve_profile_llm(
             profile_llm,
             managed_proxy_url=LITE_LLM_API_URL,
             fallback_api_key=fallback_api_key,
+            fallback_is_managed_key=fallback_is_managed_key,
         )
 
 

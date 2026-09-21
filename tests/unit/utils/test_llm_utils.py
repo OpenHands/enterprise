@@ -7,6 +7,7 @@ from openhands.app_server.utils.llm import (
     get_openhands_models,
     get_provider_api_base,
     get_supported_llm_models,
+    is_managed_llm_config,
     is_openhands_model,
 )
 
@@ -41,6 +42,70 @@ class TestIsOpenhandsModel:
         assert is_openhands_model('openhands') is False  # Missing slash
         assert is_openhands_model('openhandsx/model') is False  # Extra char
         assert is_openhands_model('OPENHANDS/model') is False  # Wrong case
+
+
+class TestIsManagedLlmConfig:
+    """Tests for is_managed_llm_config — gates which key a profile may take."""
+
+    MANAGED = 'https://llm-proxy.app.all-hands.dev'
+
+    def test_openhands_model_with_explicit_managed_base_url(self):
+        assert is_managed_llm_config(
+            'openhands/claude-sonnet-4-5-20250929',
+            self.MANAGED,
+            managed_proxy_url=self.MANAGED,
+        )
+
+    def test_openhands_model_with_trailing_slash_base_url(self):
+        assert is_managed_llm_config(
+            'openhands/claude-sonnet-4-5-20250929',
+            self.MANAGED + '/',
+            managed_proxy_url=self.MANAGED,
+        )
+
+    def test_openhands_model_infers_managed_when_base_url_none(self):
+        assert is_managed_llm_config(
+            'openhands/claude-opus-4-8', None, managed_proxy_url=self.MANAGED
+        )
+
+    def test_openhands_model_with_all_hands_dev_base_url(self):
+        assert is_managed_llm_config(
+            'openhands/claude-opus-4-8',
+            'https://llm-proxy.staging.app.all-hands.dev',
+            managed_proxy_url=self.MANAGED,
+        )
+
+    def test_litellm_proxy_prefix_with_managed_base_url(self):
+        assert is_managed_llm_config(
+            'litellm_proxy/claude-sonnet-4-5-20250929',
+            self.MANAGED,
+            managed_proxy_url=self.MANAGED,
+        )
+
+    def test_byor_model_is_not_managed(self):
+        assert not is_managed_llm_config(
+            'anthropic/claude-sonnet-4-5-20250929',
+            'https://api.anthropic.com',
+            managed_proxy_url=self.MANAGED,
+        )
+
+    def test_byor_model_with_no_base_url_is_not_managed(self):
+        assert not is_managed_llm_config(
+            'anthropic/claude-sonnet-4-5-20250929',
+            None,
+            managed_proxy_url=self.MANAGED,
+        )
+
+    def test_none_model_is_not_managed(self):
+        assert not is_managed_llm_config(None, None, managed_proxy_url=self.MANAGED)
+
+    def test_empty_base_url_is_not_managed(self):
+        # base_url == '' is an explicit "clear"; must not infer managed.
+        assert not is_managed_llm_config(
+            'anthropic/claude-sonnet-4-5-20250929',
+            '',
+            managed_proxy_url=self.MANAGED,
+        )
 
 
 class TestAssignProvider:

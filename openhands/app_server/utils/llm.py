@@ -113,6 +113,32 @@ def is_openhands_model(model: str | None) -> bool:
     return bool(model and model.startswith('openhands/'))
 
 
+def is_managed_llm_config(
+    model: str | None, base_url: str | None, *, managed_proxy_url: str | None
+) -> bool:
+    """Return True when an LLM config routes through the managed LiteLLM proxy.
+
+    Mirrors the managed-key predicate in
+    :func:`storage.saas_settings_store.managed_llm_key_config_from_model` so the
+    app-server layers that must not import the storage package classify managed
+    configs identically. A managed config is the only one entitled to the
+    member/org managed virtual key — a BYOR/custom config must never be handed
+    that key, and conversely a managed config must never be handed a BYOR key.
+    """
+    normalized_base_url = base_url.rstrip('/') if base_url else None
+    normalized_managed_base_url = (
+        managed_proxy_url.rstrip('/') if managed_proxy_url else None
+    )
+    uses_openhands_provider_proxy = is_openhands_model(model) and (
+        normalized_base_url is None or 'all-hands.dev' in normalized_base_url.lower()
+    )
+    uses_managed_base_url = (
+        normalized_managed_base_url is not None
+        and normalized_base_url == normalized_managed_base_url
+    )
+    return uses_managed_base_url or uses_openhands_provider_proxy
+
+
 # Canonical masked placeholder for LLM API keys. Matches pydantic's
 # ``SecretStr`` default representation so request/response payloads that pass
 # through ``model_dump(mode='json')`` stay consistent with payloads that the
