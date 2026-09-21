@@ -4,18 +4,20 @@ import { useOrganization } from "#/hooks/query/use-organization";
 import { useMe } from "#/hooks/query/use-me";
 import { useConfig } from "#/hooks/query/use-config";
 import { I18nKey } from "#/i18n/declaration";
-import { CreditsChip } from "#/ui/credits-chip";
-import { InteractiveChip } from "#/ui/interactive-chip";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
-import { isBillingHidden } from "#/utils/org/billing-visibility";
 import { DeleteOrgConfirmationModal } from "#/components/features/org/delete-org-confirmation-modal";
 import { GitConversationRouting } from "#/components/features/org/git-conversation-routing";
 import { ChangeOrgNameModal } from "#/components/features/org/change-org-name-modal";
-import { AddCreditsModal } from "#/components/features/org/add-credits-modal";
-import { useBalance } from "#/hooks/query/use-balance";
+import { BrandButton } from "#/components/features/settings/brand-button";
 import { useOrganizations } from "#/hooks/query/use-organizations";
 import { cn } from "#/utils/utils";
+import {
+  formControlHeightClassName,
+  formControlRadiusClassName,
+  formControlBorderClassName,
+  formControlSurfaceClassName,
+} from "#/utils/form-control-classes";
 
 export const clientLoader = createPermissionGuard("view_billing");
 
@@ -23,15 +25,12 @@ function ManageOrg() {
   const { t } = useTranslation();
   const { data: me } = useMe();
   const { data: organization } = useOrganization();
-  const { data: balance } = useBalance();
   const { data: config } = useConfig();
   const { data: orgsData } = useOrganizations();
 
   const role = me?.role ?? "member";
   const { hasPermission } = usePermission(role);
 
-  const [addCreditsFormVisible, setAddCreditsFormVisible] =
-    React.useState(false);
   const [changeOrgNameFormVisible, setChangeOrgNameFormVisible] =
     React.useState(false);
   const [deleteOrgConfirmationVisible, setDeleteOrgConfirmationVisible] =
@@ -39,7 +38,6 @@ function ManageOrg() {
 
   const canChangeOrgName = !!me && hasPermission("change_organization_name");
   const canDeleteOrg = !!me && hasPermission("delete_organization");
-  const canAddCredits = !!me && hasPermission("add_credits");
   const canManageOrgClaims = !!me && hasPermission("manage_org_claims");
   // In org-only installs with a single visible org, git claims are not
   // needed: resolver conversations follow the user's current org and
@@ -50,15 +48,11 @@ function ManageOrg() {
     config?.feature_flags?.hide_personal_workspaces === true &&
     orgsData?.organizations?.length === 1 &&
     orgsData.organizations[0]?.is_personal !== true;
-  const shouldHideBilling = isBillingHidden(
-    config,
-    hasPermission("view_billing"),
-  );
 
   return (
     <div
       data-testid="manage-org-screen"
-      className="flex flex-col items-start gap-6"
+      className="flex w-full flex-col items-start gap-6"
     >
       {changeOrgNameFormVisible && (
         <ChangeOrgNameModal
@@ -71,49 +65,26 @@ function ManageOrg() {
         />
       )}
 
-      {!shouldHideBilling && (
-        <div className="flex flex-col gap-2">
-          <span className="text-white text-xs font-semibold">
-            {t(I18nKey.ORG$CREDITS)}
-          </span>
-          <div className="flex items-center gap-2">
-            {balance !== undefined && (
-              <CreditsChip testId="available-credits">
-                {balance === null
-                  ? t(I18nKey.CONVERSATION$NO_BUDGET_LIMIT)
-                  : `$${Number(balance).toFixed(2)}`}
-              </CreditsChip>
-            )}
-            {canAddCredits && (
-              <InteractiveChip onClick={() => setAddCreditsFormVisible(true)}>
-                {t(I18nKey.ORG$ADD)}
-              </InteractiveChip>
-            )}
-          </div>
-        </div>
-      )}
-
-      {addCreditsFormVisible && !shouldHideBilling && (
-        <AddCreditsModal onClose={() => setAddCreditsFormVisible(false)} />
-      )}
-
-      <div data-testid="org-name" className="flex flex-col gap-2 w-sm">
-        <span className="text-white text-xs font-semibold">
-          {t(I18nKey.ORG$ORGANIZATION_NAME)}
-        </span>
+      <div data-testid="org-name" className="flex w-sm flex-col gap-2.5">
+        <span className="text-sm">{t(I18nKey.ORG$ORGANIZATION_NAME)}</span>
 
         <div
           className={cn(
-            "text-sm p-3 bg-modal-input rounded",
-            "flex items-center justify-between",
+            formControlHeightClassName,
+            formControlRadiusClassName,
+            formControlBorderClassName,
+            formControlSurfaceClassName,
+            "flex w-full items-center justify-between px-3 text-sm text-white",
           )}
         >
-          <span className="text-white">{organization?.name}</span>
+          <span className="min-w-0 truncate text-white">
+            {organization?.name}
+          </span>
           {canChangeOrgName && (
             <button
               type="button"
               onClick={() => setChangeOrgNameFormVisible(true)}
-              className="text-sm text-org-text font-normal leading-5 hover:text-white transition-colors cursor-pointer"
+              className="shrink-0 cursor-pointer text-sm font-normal leading-5 text-[var(--oh-muted)] transition-[color] duration-75 hover:text-white motion-reduce:transition-none"
             >
               {t(I18nKey.ORG$CHANGE)}
             </button>
@@ -122,17 +93,19 @@ function ManageOrg() {
       </div>
 
       {canDeleteOrg && (
-        <button
+        <BrandButton
           type="button"
+          variant="ghost-danger"
           onClick={() => setDeleteOrgConfirmationVisible(true)}
-          className="text-xs text-[#FF3B30] cursor-pointer font-semibold hover:underline"
         >
           {t(I18nKey.ORG$DELETE_ORGANIZATION)}
-        </button>
+        </BrandButton>
       )}
 
       {canManageOrgClaims && !hideGitConversationRouting && (
-        <GitConversationRouting />
+        <div className="mt-2 w-full border-t border-[var(--oh-border)] pt-6">
+          <GitConversationRouting />
+        </div>
       )}
     </div>
   );
