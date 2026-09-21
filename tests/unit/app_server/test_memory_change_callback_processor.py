@@ -1,11 +1,14 @@
 """Unit tests for MemoryChangeCallbackProcessor.
 
 These tests construct real ``ObservationEvent`` + ``FileEditorObservation``
-instances (no mocks) and exercise the processor's detection and recording
-logic directly.
+instances (no mocks for the event/observation layer) and exercise the
+processor's detection and recording logic directly. The DB-writing
+``_store_memory_context`` method is patched to avoid requiring a live
+PostgreSQL instance.
 """
 
 import json
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -61,6 +64,15 @@ def _make_callback(conversation_id) -> EventCallback:
     )
 
 
+def _patch_store_memory_context():
+    """Patch ``_store_memory_context`` so tests don't need a live DB."""
+    return patch.object(
+        MemoryChangeCallbackProcessor,
+        '_store_memory_context',
+        new_callable=AsyncMock,
+    )
+
+
 class TestMemoryChangeCallbackProcessor:
     """Tests for MemoryChangeCallbackProcessor."""
 
@@ -71,7 +83,8 @@ class TestMemoryChangeCallbackProcessor:
         event = _make_observation_event(_PROJECT_PATH)
         processor = MemoryChangeCallbackProcessor()
 
-        result = await processor(conversation_id, callback, event)
+        with _patch_store_memory_context():
+            result = await processor(conversation_id, callback, event)
 
         assert result is not None
         assert result.status is EventCallbackResultStatus.SUCCESS
@@ -91,7 +104,8 @@ class TestMemoryChangeCallbackProcessor:
         event = _make_observation_event(_USER_PATH)
         processor = MemoryChangeCallbackProcessor()
 
-        result = await processor(conversation_id, callback, event)
+        with _patch_store_memory_context():
+            result = await processor(conversation_id, callback, event)
 
         assert result is not None
         detail = json.loads(result.detail)
@@ -110,7 +124,8 @@ class TestMemoryChangeCallbackProcessor:
         )
         processor = MemoryChangeCallbackProcessor()
 
-        result = await processor(conversation_id, callback, event)
+        with _patch_store_memory_context():
+            result = await processor(conversation_id, callback, event)
 
         assert result is not None
         detail = json.loads(result.detail)
@@ -125,9 +140,25 @@ class TestMemoryChangeCallbackProcessor:
         event = _make_observation_event(_PROJECT_PATH)
         processor = MemoryChangeCallbackProcessor()
 
-        await processor(conversation_id, callback, event)
+        with _patch_store_memory_context():
+            await processor(conversation_id, callback, event)
 
         assert callback.status is EventCallbackStatus.ACTIVE
+
+    @pytest.mark.asyncio
+    async def test_stores_memory_context_to_user_record(self):
+        """The processor should call _store_memory_context with the new content."""
+        conversation_id = uuid4()
+        callback = _make_callback(conversation_id)
+        event = _make_observation_event(
+            _PROJECT_PATH, new_content='updated memory text'
+        )
+        processor = MemoryChangeCallbackProcessor()
+
+        with _patch_store_memory_context() as mock_store:
+            await processor(conversation_id, callback, event)
+
+        mock_store.assert_called_once_with(conversation_id, 'updated memory text')
 
     @pytest.mark.asyncio
     async def test_skips_non_observation_event(self):

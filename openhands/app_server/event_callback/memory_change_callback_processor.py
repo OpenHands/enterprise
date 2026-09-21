@@ -2,8 +2,8 @@
 
 When an agent edits its persistent memory file (MEMORY.md) via the
 file_editor tool during a conversation, this processor captures the
-before/after content so the change can be propagated to other
-conversations/sessions sharing the same memory tiers.
+before/after content and stores the new content in the user record's
+``memory_context`` column so it can be injected into future conversations.
 
 Known coverage limitation:
     This approach only detects changes made via the file_editor tool. The
@@ -29,6 +29,8 @@ from openhands.app_server.event_callback.event_callback_result_models import (
     EventCallbackResult,
     EventCallbackResultStatus,
 )
+from openhands.app_server.services.injector import InjectorState
+from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
 from openhands.sdk import Event
 from openhands.sdk.event import ObservationEvent
 
@@ -46,7 +48,8 @@ _logger = logging.getLogger(__name__)
 
 
 class MemoryChangeCallbackProcessor(EventCallbackProcessor):
-    """Detect and record MEMORY.md updates made via the file_editor tool.
+    """Detect MEMORY.md updates made via the file_editor tool and persist
+    the new content to the user record.
 
     Unlike ``SetTitleCallbackProcessor`` this processor never self-disables:
     a conversation can update its memory multiple times, so the callback must
@@ -67,9 +70,6 @@ class MemoryChangeCallbackProcessor(EventCallbackProcessor):
         if event.tool_name != 'file_editor':
             return None
 
-        # Importing FileEditorObservation triggers openhands.tools, which
-        # _import_all_tools() at the bottom of webhook_router.py already does
-        # at import time; guard the isinstance check regardless.
         from openhands.tools.file_editor.definition import FileEditorObservation
 
         observation = event.observation
@@ -112,6 +112,11 @@ class MemoryChangeCallbackProcessor(EventCallbackProcessor):
             path,
         )
 
+        # Persist the new memory content to the user record so it can be
+        # injected into future conversations. The user_id is resolved from
+        # the conversation's created_by_user_id field.
+        await self._store_memory_context(conversation_id, new_content)
+
         detail = json.dumps(
             {
                 'memory_tier': tier,
@@ -128,6 +133,73 @@ class MemoryChangeCallbackProcessor(EventCallbackProcessor):
             event_id=event.id,
             conversation_id=conversation_id,
             detail=detail,
+        )
+
+    async def _store_memory_context(
+        self, conversation_id: UUID, memory_context: str | None
+    ) -> None:
+        """Write the new memory content to the creating user's record.
+
+        Uses ADMIN context to look up the conversation, then performs a
+        column-specific UPDATE on the user table so concurrent settings
+        saves are not affected.
+        """
+        from uuid import UUID as UUIDType
+
+        from sqlalchemy import update
+
+        from openhands.app_server.config import get_app_conversation_service
+        from storage.database import a_session_maker
+        from storage.user import User
+
+        # Resolve the user_id from the conversation record.
+        state = InjectorState()
+        setattr(state, USER_CONTEXT_ATTR, ADMIN)
+        async with get_app_conversation_service(state) as app_conversation_service:
+            app_conversation = await app_conversation_service.get_app_conversation(
+                conversation_id
+            )
+        if app_conversation is None:
+            _logger.warning(
+                'Cannot store memory context: conversation %s not found',
+                conversation_id,
+            )
+            return
+
+        user_id_str = app_conversation.created_by_user_id
+        if not user_id_str:
+            _logger.warning(
+                'Conversation %s has no created_by_user_id; '
+                'cannot store memory context',
+                conversation_id,
+            )
+            return
+
+        try:
+            user_uuid = UUIDType(user_id_str)
+        except ValueError:
+            _logger.warning(
+                'Invalid user_id %s for conversation %s',
+                user_id_str,
+                conversation_id,
+            )
+            return
+
+        # Column-specific update: only touch ``memory_context`` so
+        # concurrent settings saves are not affected.
+        async with a_session_maker() as session:
+            await session.execute(
+                update(User)
+                .where(User.id == user_uuid)
+                .values(memory_context=memory_context)
+            )
+            await session.commit()
+
+        _logger.info(
+            'Stored memory_context (%d chars) for user %s from conversation %s',
+            len(memory_context) if memory_context else 0,
+            user_id_str,
+            conversation_id,
         )
 
 

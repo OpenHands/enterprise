@@ -3415,18 +3415,16 @@ class TestLiveStatusAppConversationService:
         'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
     )
     @pytest.mark.asyncio
-    async def test_start_app_conversation_registers_memory_processor_when_load_memory(
+    async def test_start_app_conversation_registers_memory_processor_when_enable_memory_context(
         self, mock_conversation_info_class, mock_remote_workspace_class
     ):
-        """MemoryChangeCallbackProcessor is registered when load_memory is enabled."""
+        """MemoryChangeCallbackProcessor is registered when enable_memory_context is enabled."""
         conversation_id = uuid4()
         self._arrange_start_app_conversation(
             conversation_id, mock_conversation_info_class, mock_remote_workspace_class
         )
-        # Override agent_settings to carry an AgentContext with load_memory=True.
-        self.mock_user.agent_settings = OpenHandsAgentSettings(
-            agent_context=AgentContext(load_memory=True),
-        )
+        # Enable enterprise persistent memory on the user record.
+        self.mock_user.enable_memory_context = True
 
         request = AppConversationStartRequest()
         async for _task in self.service._start_app_conversation(request):
@@ -3447,15 +3445,15 @@ class TestLiveStatusAppConversationService:
         'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
     )
     @pytest.mark.asyncio
-    async def test_start_app_conversation_skips_memory_processor_when_load_memory_off(
+    async def test_start_app_conversation_skips_memory_processor_when_enable_memory_context_off(
         self, mock_conversation_info_class, mock_remote_workspace_class
     ):
-        """MemoryChangeCallbackProcessor is NOT registered when load_memory is off."""
+        """MemoryChangeCallbackProcessor is NOT registered when enable_memory_context is off."""
         conversation_id = uuid4()
         self._arrange_start_app_conversation(
             conversation_id, mock_conversation_info_class, mock_remote_workspace_class
         )
-        # Default agent_settings has no load_memory (defaults to False).
+        # enable_memory_context defaults to off (not set on _TestUserInfo).
         request = AppConversationStartRequest()
         async for _task in self.service._start_app_conversation(request):
             pass
