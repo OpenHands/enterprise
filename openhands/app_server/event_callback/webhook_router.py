@@ -50,9 +50,6 @@ from openhands.app_server.event_callback.event_callback_models import EventCallb
 from openhands.app_server.event_callback.event_callback_result_models import (
     EventCallbackResultStatus,
 )
-from openhands.app_server.event_callback.memory_change_callback_processor import (
-    MemoryChangeCallbackProcessor,
-)
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
@@ -471,24 +468,6 @@ async def on_conversation_update(
                     processor=SetTitleCallbackProcessor(),
                 )
             )
-
-            # Register MemoryChangeCallbackProcessor when the user has
-            # persistent memory enabled. The ``load_memory`` flag lives on
-            # ``AgentContext`` (resolved lazily by LocalConversation); here we
-            # only need the user's intent, so a getattr fallback keeps this
-            # forward-compatible across SDK versions that predate the field.
-            agent = conversation_info.agent
-            agent_context = getattr(agent, 'agent_context', None)
-            if agent_context is not None and getattr(
-                agent_context, 'load_memory', False
-            ):
-                await event_callback_service.save_event_callback(
-                    EventCallback(
-                        conversation_id=conversation_info.id,
-                        event_kind=MemoryChangeCallbackProcessor.get_event_kind(),
-                        processor=MemoryChangeCallbackProcessor(),
-                    )
-                )
 
     return Success()
 

@@ -76,6 +76,9 @@ from openhands.app_server.event_callback.event_callback_models import EventCallb
 from openhands.app_server.event_callback.event_callback_service import (
     EventCallbackService,
 )
+from openhands.app_server.event_callback.memory_change_callback_processor import (
+    MemoryChangeCallbackProcessor,
+)
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
@@ -702,6 +705,23 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
                 if not has_set_title_processor:
                     processors.append(SetTitleCallbackProcessor())
+
+            # Register MemoryChangeCallbackProcessor when the user has
+            # persistent memory enabled. ``load_memory`` lives on the user's
+            # ``agent_settings.agent_context`` (the source of truth — the
+            # fresh AgentContext built in _build_start_conversation_request
+            # drops it). Use getattr for forward-compat with SDK versions that
+            # predate the field.
+            user_agent_context = getattr(user.agent_settings, 'agent_context', None)
+            if user_agent_context is not None and getattr(
+                user_agent_context, 'load_memory', False
+            ):
+                has_memory_processor = any(
+                    isinstance(processor, MemoryChangeCallbackProcessor)
+                    for processor in processors
+                )
+                if not has_memory_processor:
+                    processors.append(MemoryChangeCallbackProcessor())
 
             # Save processors
             for processor in processors:
