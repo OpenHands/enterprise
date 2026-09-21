@@ -1484,7 +1484,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # stale field flips the effective key off the dummy, then we
             # force-rotate a fresh managed key so the returned LLM carries it
             # (otherwise the existing verify path would skip on key mismatch).
-            if await settings_store.clear_stale_org_level_llm_key_if_managed():
+            # Gate to the All-Hands-managed cloud: ``app_mode == 'saas'`` is also
+            # true on self-hosted OHE, where clearing an org-level key breaks a
+            # legitimately managed enterprise org. ``DEPLOYMENT_MODE`` is the axis
+            # that actually separates cloud from self-hosted.
+            from server.constants import DEPLOYMENT_MODE
+
+            if (
+                DEPLOYMENT_MODE == 'cloud'
+                and await settings_store.clear_stale_org_level_llm_key_if_managed()
+            ):
                 _logger.info(
                     'managed_llm_key_refresh:cleared_stale_org_level_key',
                     extra={
