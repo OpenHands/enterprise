@@ -9,6 +9,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 from pydantic import SecretStr
+from sqlalchemy import update
 
 from openhands.app_server.user_auth.user_auth import AuthType
 from server.auth.saas_user_auth import SaasUserAuth
@@ -34,6 +35,7 @@ from storage.saas_settings_store import (
     ManagedLlmKeyConfig,
     ManagedLlmKeyStatus,
     SaasSettingsStore,
+    _org_rotation_advisory_lock_key,
     managed_llm_key_config_from_model,
 )
 from storage.user import User
@@ -901,6 +903,68 @@ class TestRefreshManagedLlmApiKey:
         mock_generate.assert_awaited_once()
         mock_delete_alias.assert_awaited_once_with(key_alias=expected_alias)
         mock_delete_token.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rotate_only_if_current_mints_when_member_has_no_key(
+        self, async_session_maker, managed_env
+    ):
+        """A member with no stored key must be minted a real one even under
+        ``only_if_current``: ``None != <observed key>`` must not be read as
+        "a concurrent rotation already replaced it" and short-circuit to
+        ROTATED with ``new_key=None``.
+        """
+        user_id, org_id = await self._seed(async_session_maker)
+        expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
+
+        # ``_llm_api_key = ''`` is how an unset member key is stored (the column
+        # is NOT NULL); ``rotate`` reads that as ``old_key is None``.
+        async with async_session_maker() as session:
+            await session.execute(
+                update(OrgMember)
+                .where(
+                    OrgMember.org_id == org_id,
+                    OrgMember.user_id == uuid.UUID(user_id),
+                )
+                .values(_llm_api_key='')
+            )
+            await session.commit()
+
+        with self._patched(async_session_maker) as (
+            mock_delete_alias,
+            mock_generate,
+            mock_delete_token,
+        ):
+            store = SaasSettingsStore(user_id, effective_org_id=org_id)
+            rotation = await store.rotate_managed_llm_key(
+                only_if_current='sk-a-key-the-caller-observed'
+            )
+
+        assert rotation.status == ManagedLlmKeyStatus.ROTATED
+        assert rotation.new_key == 'sk-new-managed-key'
+        mock_generate.assert_awaited_once()
+        mock_delete_alias.assert_awaited_once_with(key_alias=expected_alias)
+        mock_delete_token.assert_not_called()
+
+        member = await self._member_key(async_session_maker, org_id, user_id)
+        assert member.llm_api_key.get_secret_value() == 'sk-new-managed-key'
+
+    def test_rotation_advisory_lock_key_is_per_org_and_fits_bigint(self):
+        """The per-org advisory lock key must be stable, distinct per org, and
+        fit a signed 64-bit ``bigint`` (Postgres ``pg_advisory_xact_lock``'s
+        argument). A constant or under-wide key silently collapses per-org
+        serialization onto a shared lock or collides unrelated orgs.
+        """
+        org_a, org_b = str(uuid.uuid4()), str(uuid.uuid4())
+
+        key_a = _org_rotation_advisory_lock_key(org_a)
+        assert _org_rotation_advisory_lock_key(org_a) == key_a
+        assert _org_rotation_advisory_lock_key(org_b) != key_a
+
+        assert -(2**63) <= key_a < 2**63
+        # Derived from the full 64 bits, so distinct orgs collide at ~2^-64
+        # rather than the ~2^-32 a narrower digest would give.
+        keys = [_org_rotation_advisory_lock_key(str(uuid.uuid4())) for _ in range(16)]
+        assert max(abs(k) for k in keys) > 2**48
 
     @pytest.mark.asyncio
     async def test_concurrent_rotations_serialize_without_orphaning_survivor(
