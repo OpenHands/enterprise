@@ -2546,18 +2546,13 @@ async def test_override_cap_is_never_written_below_the_cycle_baseline(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='pins alert_fires_at_most_once_per_cycle — fails on current code'
-)
 async def test_threshold_alerts_once_per_cycle_across_a_settings_edit(
     async_session_maker, budget_org
 ):
-    # _maybe_send_alerts dedupes on threshold.last_triggered_cycle_start, but
-    # OrgBudgetStore.replace_thresholds deletes every threshold row and inserts fresh
-    # ones carrying no latch columns. An admin who edits the thresholds -- here just
-    # turning Slack on for the 80% alert -- re-arms every alert inside the live cycle,
-    # so the next maintenance run pages the same admins again for spend they have
-    # already acknowledged.
+    # _maybe_send_alerts dedupes on threshold.last_triggered_cycle_start, which lives
+    # on the threshold row. An admin who edits the thresholds -- here just turning
+    # Slack on for the 80% alert -- must not re-arm alerts inside the live cycle and
+    # page the same admins again for spend they have already acknowledged.
     reset_day = 1
     cycle_start = datetime.now(UTC)
     async with async_session_maker() as session:
@@ -2620,6 +2615,81 @@ async def test_threshold_alerts_once_per_cycle_across_a_settings_edit(
 
     # Each threshold alerts once per cycle.
     assert send_alerts.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_threshold_added_mid_cycle_alerts_once_for_spend_already_past_it(
+    async_session_maker, budget_org
+):
+    # Adding a threshold below the current spend pages the admins for it right away,
+    # once -- without re-arming the thresholds that already fired this cycle.
+    cycle_start = datetime.now(UTC)
+    async with async_session_maker() as session:
+        session.add_all(
+            [
+                OrgBudgetSettings(
+                    org_id=budget_org.id,
+                    enabled=True,
+                    reset_day=1,
+                    monthly_limit=100.0,
+                    cycle_start_at=cycle_start,
+                    cycle_start_spend=0.0,
+                ),
+                OrgBudgetThreshold(
+                    org_id=budget_org.id,
+                    percentage=80,
+                    email_enabled=True,
+                    slack_enabled=False,
+                ),
+            ]
+        )
+        await session.commit()
+
+        service = OrgBudgetService(session)
+        snapshot = _snapshot(team_spend=95.0)
+        with (
+            patch.object(
+                service,
+                '_get_financial_snapshot',
+                AsyncMock(
+                    return_value=BudgetFinancialSnapshotResult(
+                        snapshot=snapshot, status='live'
+                    )
+                ),
+            ),
+            patch.object(
+                service, '_sync_litellm_budgets', AsyncMock(return_value=snapshot)
+            ),
+            patch.object(service, '_send_alerts', AsyncMock()) as send_alerts,
+        ):
+            await service.run_budget_maintenance(budget_org.id)
+            assert [
+                call_args.args[2].percentage
+                for call_args in send_alerts.await_args_list
+            ] == [80]
+
+            await service.update_budget_settings(
+                budget_org.id,
+                OrgBudgetSettingsUpdate(
+                    thresholds=[
+                        OrgBudgetThresholdUpdate(
+                            percentage=80, email_enabled=True, slack_enabled=False
+                        ),
+                        OrgBudgetThresholdUpdate(
+                            percentage=90, email_enabled=True, slack_enabled=False
+                        ),
+                    ]
+                ),
+            )
+            await session.commit()
+
+            await service.run_budget_maintenance(budget_org.id)
+            await service.run_budget_maintenance(budget_org.id)
+
+    # The new 90% threshold pages once; the 80% one stays latched.
+    assert [
+        call_args.args[2].percentage for call_args in send_alerts.await_args_list
+    ] == [80, 90]
 
 
 async def _baseline_rows(session, org_id, cycle_start_at) -> dict[str, tuple]:
