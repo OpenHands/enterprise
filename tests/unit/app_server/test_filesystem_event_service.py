@@ -831,10 +831,10 @@ class TestEventIndex:
         assert [event.id for event in result] == [event.id for event in events]
 
     @pytest.mark.asyncio
-    async def test_iter_events_for_export_prefetches_only_one_batch(
+    async def test_iter_events_for_export_loads_lazily(
         self, service: FilesystemEventService, monkeypatch
     ):
-        """Batch n+2 is not loaded until batch n has been consumed."""
+        """Batch n+1 is not loaded until batch n has been consumed."""
         from openhands.app_server.event import event_service_base
 
         monkeypatch.setattr(event_service_base, '_export_batch_size', lambda: 3)
@@ -846,35 +846,12 @@ class TestEventIndex:
         gen = service.iter_events_for_export(conversation_id)
         first = await anext(gen)
         assert first.id == events[0].id
-        # Let the prefetch of batch 2 start; batch 3 must not be requested yet.
-        await asyncio.sleep(0)
-        assert call_sizes == [3, 3]
+        assert call_sizes == [3]
         # Consume the rest of batch 1 and the first event of batch 2.
         for _ in range(3):
             await anext(gen)
-        await asyncio.sleep(0)
-        assert call_sizes == [3, 3, 1]
+        assert call_sizes == [3, 3]
         await gen.aclose()
-
-    @pytest.mark.asyncio
-    async def test_iter_events_for_export_cancels_prefetch_on_close(
-        self, service: FilesystemEventService, monkeypatch
-    ):
-        """Closing the generator early does not leave a prefetch task running."""
-        from openhands.app_server.event import event_service_base
-
-        monkeypatch.setattr(event_service_base, '_export_batch_size', lambda: 2)
-        conversation_id = uuid4()
-        await _save_ordered_events(service, conversation_id, 6)
-        await service.search_events(conversation_id, limit=1)
-
-        gen = service.iter_events_for_export(conversation_id)
-        await anext(gen)
-        before = {t for t in asyncio.all_tasks() if not t.done()}
-        await gen.aclose()
-        await asyncio.sleep(0)
-        leaked = [t for t in before if not t.done() and t is not asyncio.current_task()]
-        assert leaked == []
 
     @pytest.mark.asyncio
     async def test_iter_events_for_export_skips_missing_events(

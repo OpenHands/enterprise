@@ -58,9 +58,9 @@ def _index_rebuild_batch_size() -> int:
 def _export_batch_size() -> int:
     """Number of events to load per batch during a trajectory export.
 
-    Bounds export memory independently of the index rebuild: at most two
-    batches of fully loaded Event objects are alive at once (the batch being
-    written and the prefetched next one), regardless of conversation size.
+    Bounds export memory independently of the index rebuild: at most one batch
+    of fully loaded Event objects is alive at once, regardless of conversation
+    size.
     """
     try:
         return max(1, int(os.getenv('EVENT_EXPORT_BATCH_SIZE', '200')))
@@ -342,46 +342,33 @@ class EventServiceBase(EventService, ABC):
     ) -> AsyncGenerator[Event, None]:
         """Iterate all events once in timestamp order for trajectory export.
 
-        Events are loaded in batches of EVENT_EXPORT_BATCH_SIZE with the next
-        batch prefetched while the current one is yielded, so memory stays
-        bounded and reads keep flowing without waiting on every batch barrier.
+        Events are loaded one batch of EVENT_EXPORT_BATCH_SIZE at a time, so
+        memory is bounded by the batch rather than the conversation. Each batch
+        waits for its slowest read before the next starts; prefetching the next
+        batch measured only a few percent faster under the GIL, so this stays
+        simple.
         """
         conversation_path = await self.get_conversation_path(conversation_id)
         index = await self._get_or_rebuild_index(conversation_path)
         entries = self._sort_index(index, EventSortOrder.TIMESTAMP)
         batch_size = _export_batch_size()
-        batches = [
-            entries[i : i + batch_size] for i in range(0, len(entries), batch_size)
-        ]
-
-        def load(batch: list[IndexEntry]) -> asyncio.Task[list[Event | None]]:
+        for i in range(0, len(entries), batch_size):
+            batch = entries[i : i + batch_size]
             paths = [
                 self._event_id_to_path(conversation_path, entry[0]) for entry in batch
             ]
-            return asyncio.create_task(self._load_events_from_paths(paths))
-
-        pending = load(batches[0]) if batches else None
-        try:
-            for n, batch in enumerate(batches):
-                assert pending is not None
-                loaded = await pending
-                pending = load(batches[n + 1]) if n + 1 < len(batches) else None
-                by_id = {
-                    event.id.replace('-', '')
-                    if isinstance(event.id, str)
-                    else event.id.hex: event
-                    for event in loaded
-                    if event is not None
-                }  # type: ignore[union-attr]
-                for entry in batch:
-                    event = by_id.get(entry[0])
-                    if event is not None:
-                        yield event
-        finally:
-            # A consumer that stops early (client disconnect) must not leave a
-            # prefetch running.
-            if pending is not None:
-                pending.cancel()
+            loaded = await self._load_events_from_paths(paths)
+            by_id = {
+                event.id.replace('-', '')
+                if isinstance(event.id, str)
+                else event.id.hex: event
+                for event in loaded
+                if event is not None
+            }  # type: ignore[union-attr]
+            for entry in batch:
+                event = by_id.get(entry[0])
+                if event is not None:
+                    yield event
 
     async def count_events(
         self,
