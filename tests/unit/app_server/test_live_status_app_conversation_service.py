@@ -1910,6 +1910,75 @@ class TestLiveStatusAppConversationService:
         return_value=[],
     )
     @pytest.mark.asyncio
+    async def test_build_request_adds_child_conversation_launcher(self, _mock_tools):
+        """Cloud agents get start_child_conversation pointed back at this app server."""
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+        conversation_id = uuid4()
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=conversation_id,
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=None,
+        )
+
+        launchers = [
+            tool
+            for tool in result.agent.tools
+            if tool.name == 'start_child_conversation'
+        ]
+        assert len(launchers) == 1
+        assert launchers[0].params == {
+            'launch_url': (
+                'https://test.example.com/api/v1/webhooks/conversations/'
+                f'{conversation_id}/children'
+            )
+        }
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_skips_child_conversation_launcher_without_web_url(
+        self, _mock_tools
+    ):
+        """Without a reachable app server URL the tool is not offered at all."""
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service.web_url = None
+
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=None,
+        )
+
+        assert all(
+            tool.name != 'start_child_conversation' for tool in result.agent.tools
+        )
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
     async def test_build_request_skills_loading_fails_gracefully(self, _mock_tools):
         """Conversation still starts when skills loading raises."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
