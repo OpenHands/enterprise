@@ -218,6 +218,9 @@ class SandboxService(ABC):
 
         Return True if the sandbox exists and is being resumed or is already running.
         Return False if the sandbox did not exist.
+        Implementations may raise SandboxError with status 409 when the sandbox
+        exists but cannot be resumed from its current state, or 502 when the
+        backing runtime API fails.
         """
 
     async def wait_for_sandbox_running(
