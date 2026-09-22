@@ -10,6 +10,20 @@ from server.routes.org_models import (
     OrgMemberFinancialResponse,
 )
 from storage.lite_llm_manager import LiteLlmManager
+
+# The Quint oracle client is vendored under quint-specs/, which the application
+# image does not ship. Without it the instrumentation below is a no-op, so the
+# app must not depend on it being importable.
+try:
+    import quint_oracle
+except ModuleNotFoundError:  # pragma: no cover
+    from types import SimpleNamespace
+
+    quint_oracle = SimpleNamespace(
+        log=lambda *args, **kwargs: None,
+        In=lambda value, domain: value,
+    )
+
 from storage.org_member_store import OrgMemberStore
 
 
@@ -47,9 +61,15 @@ class OrgMemberFinancialService:
                 if offset < 0:
                     raise ValueError('page_id must be non-negative')
             except ValueError as e:
+                quint_oracle.log(
+                    'OrgMemberFinancialService_get_org_members_financial_data',
+                    'org-budgets',
+                    org_id=quint_oracle.In('org', 'ORG_IDS'),
+                    outcome='rejected',
+                )
                 raise ValueError(f'Invalid page_id: {page_id}') from e
 
-        members, total_count = await OrgMemberStore.get_org_members_paginated(
+        members, has_more = await OrgMemberStore.get_org_members_paginated(
             org_id=org_id,
             offset=offset,
             limit=limit,
@@ -57,13 +77,23 @@ class OrgMemberFinancialService:
         )
 
         if not members:
+            quint_oracle.log(
+                'OrgMemberFinancialService_get_org_members_financial_data',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+                has_more=has_more,
+                has_next=False,
+            )
             return OrgMemberFinancialPage(
                 items=[],
                 current_page=(offset // limit) + 1,
                 per_page=limit,
                 next_page_id=None,
+                # No rows, so no spend was read: the page cannot claim a live figure.
+                spend_status='unavailable',
             )
 
+        spend_read_failed = False
         try:
             financial_data = await LiteLlmManager.get_team_members_financial_data(
                 str(org_id)
@@ -90,6 +120,7 @@ class OrgMemberFinancialService:
                 },
             )
             financial_data = {}
+            spend_read_failed = True
         except Exception as e:
             logger.warning(
                 'Failed to fetch financial data from LiteLLM',
@@ -100,6 +131,7 @@ class OrgMemberFinancialService:
                 },
             )
             financial_data = {}
+            spend_read_failed = True
 
         team_spend = financial_data.get('team_spend', 0) or 0
         members_financial = financial_data.get('members', {})
@@ -109,18 +141,25 @@ class OrgMemberFinancialService:
             user = member.user
             user_id_str = str(member.user_id)
 
+            # A member absent from a successful read is as unobserved as one whose
+            # read failed outright: LiteLLM reported no spend for them, which is not
+            # the same as reporting a spend of zero.
+            spend_observed = not spend_read_failed and user_id_str in members_financial
             user_financial = members_financial.get(user_id_str, {})
-            individual_spend = user_financial.get('spend', 0) or 0
+            individual_spend = (
+                (user_financial.get('spend', 0) or 0) if spend_observed else None
+            )
             max_budget = user_financial.get('max_budget')
             uses_shared_budget = user_financial.get('uses_shared_budget', False)
 
-            # For shared team budgets, all members see the same remaining budget,
-            # so calculate using the team's total spend rather than per-user spend.
-            if max_budget is not None:
+            if individual_spend is None:
+                current_budget = None
+            elif max_budget is not None:
+                # For shared team budgets, all members see the same remaining budget,
+                # so calculate using the team's total spend rather than per-user spend.
                 if uses_shared_budget:
                     current_budget = max(max_budget - team_spend, 0)
                 else:
-                    # Individual budget - use individual spend
                     current_budget = max(max_budget - individual_spend, 0)
             else:
                 # If no max_budget, current_budget is unlimited (represented as 0)
@@ -141,7 +180,7 @@ class OrgMemberFinancialService:
 
         # Calculate next_page_id
         next_offset = offset + limit
-        next_page_id = str(next_offset) if next_offset < total_count else None
+        next_page_id = str(next_offset) if has_more else None
 
         logger.debug(
             'OrgMemberFinancialService:get_org_members_financial_data:success',
@@ -149,13 +188,21 @@ class OrgMemberFinancialService:
                 'org_id': str(org_id),
                 'items_count': len(items),
                 'current_page': current_page,
-                'total_count': total_count,
+                'has_more': has_more,
             },
         )
 
+        quint_oracle.log(
+            'OrgMemberFinancialService_get_org_members_financial_data',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            has_more=has_more,
+            has_next=next_page_id is not None,
+        )
         return OrgMemberFinancialPage(
             items=items,
             current_page=current_page,
             per_page=limit,
             next_page_id=next_page_id,
+            spend_status='unavailable' if spend_read_failed else 'live',
         )

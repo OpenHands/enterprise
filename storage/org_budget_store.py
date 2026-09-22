@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Iterable
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_threshold import OrgBudgetThreshold
 from storage.org_user_budget_override import OrgUserBudgetOverride
@@ -72,15 +75,39 @@ class OrgBudgetStore:
         existing: list[OrgBudgetThreshold],
         new_thresholds,
     ) -> None:
+        # A threshold's identity is its percentage, because the once-per-cycle
+        # alert latch lives on the row.
+        wanted = {threshold.percentage: threshold for threshold in new_thresholds}
+        kept: set[int] = set()
+        # No unique index backs (org_id, percentage), so the table can hold duplicate
+        # rows for one percentage. Process the most-recently latched row first so the
+        # loop keeps the latch and drops the duplicates, rather than keeping whichever
+        # row the query happened to return first.
+        existing = sorted(
+            existing,
+            key=lambda t: t.last_triggered_cycle_start
+            or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
         for threshold in existing:
-            await self.db_session.delete(threshold)
-        for threshold in new_thresholds:
+            update = wanted.get(threshold.percentage)
+            # Drop rows for percentages no longer wanted, and drop the already-seen
+            # duplicates so one percentage collapses onto a single (latched) row.
+            if update is None or threshold.percentage in kept:
+                await self.db_session.delete(threshold)
+                continue
+            threshold.email_enabled = update.email_enabled
+            threshold.slack_enabled = update.slack_enabled
+            kept.add(threshold.percentage)
+        for percentage, update in wanted.items():
+            if percentage in kept:
+                continue
             self.db_session.add(
                 OrgBudgetThreshold(
                     org_id=org_id,
-                    percentage=threshold.percentage,
-                    email_enabled=threshold.email_enabled,
-                    slack_enabled=threshold.slack_enabled,
+                    percentage=percentage,
+                    email_enabled=update.email_enabled,
+                    slack_enabled=update.slack_enabled,
                 )
             )
         await self.db_session.flush()
@@ -127,6 +154,68 @@ class OrgBudgetStore:
     async def delete_override(self, override: OrgUserBudgetOverride) -> None:
         await self.db_session.delete(override)
         await self.db_session.flush()
+
+    async def get_cycle_baselines(
+        self, org_id: UUID, cycle_start_at: datetime
+    ) -> dict[str, float]:
+        result = await self.db_session.execute(
+            select(
+                OrgBudgetCycleBaseline.user_id, OrgBudgetCycleBaseline.baseline_spend
+            )
+            .where(OrgBudgetCycleBaseline.org_id == org_id)
+            .where(OrgBudgetCycleBaseline.cycle_start_at == cycle_start_at)
+        )
+        return {user_id: baseline_spend for user_id, baseline_spend in result.all()}
+
+    async def record_cycle_baselines(
+        self,
+        org_id: UUID,
+        cycle_start_at: datetime,
+        baselines: Mapping[str, float],
+        *,
+        source: str,
+        observed_at: datetime,
+        replace: bool = False,
+    ) -> None:
+        """Insert baseline rows for one cycle.
+
+        ``replace=False`` keeps an existing row for the same member and cycle
+        (first writer wins), which is what concurrent reconcilers need.
+        ``replace=True`` overwrites it and is reserved for explicit admin
+        re-baselining.
+        """
+        if not baselines:
+            return
+        now = datetime.now(UTC)
+        stmt = insert(OrgBudgetCycleBaseline).values(
+            [
+                {
+                    'org_id': org_id,
+                    'user_id': user_id,
+                    'cycle_start_at': cycle_start_at,
+                    'baseline_spend': baseline_spend,
+                    'source': source,
+                    'observed_at': observed_at,
+                    'created_at': now,
+                    'updated_at': now,
+                }
+                for user_id, baseline_spend in baselines.items()
+            ]
+        )
+        constraint = 'uq_org_budget_cycle_baseline_member_cycle'
+        if replace:
+            stmt = stmt.on_conflict_do_update(
+                constraint=constraint,
+                set_={
+                    'baseline_spend': stmt.excluded.baseline_spend,
+                    'source': stmt.excluded.source,
+                    'observed_at': stmt.excluded.observed_at,
+                    'updated_at': now,
+                },
+            )
+        else:
+            stmt = stmt.on_conflict_do_nothing(constraint=constraint)
+        await self.db_session.execute(stmt)
 
     async def flush(self) -> None:
         await self.db_session.flush()

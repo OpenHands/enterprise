@@ -1,11 +1,13 @@
 """Store class for managing organizations."""
 
+from dataclasses import dataclass
 from typing import Any, Optional
 from uuid import UUID
 
 from pydantic import SecretStr
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from openhands.app_server.settings.settings_models import (
@@ -16,6 +18,7 @@ from openhands.app_server.settings.settings_models import (
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk.llm.llm import LLM
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
@@ -39,12 +42,24 @@ from storage.lite_llm_manager import (
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_threshold import OrgBudgetThreshold
+from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_git_claim import OrgGitClaim
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.user import User
 from storage.user_settings import UserSettings
+
+
+@dataclass(frozen=True)
+class OrgCondenserReconciliationResult:
+    """Summary of org condenser max-token reconciliation."""
+
+    updated_count: int
+    skipped_agent_variant_count: int
+    skipped_condenser_variant_count: int
+    malformed_repaired_count: int
+
 
 _ORG_SETTINGS_EXCLUDED_FIELDS = {
     'id',
@@ -116,12 +131,126 @@ class OrgStore:
                     }
                 },
             )
+            org.agent_settings = apply_configured_org_condenser_default(
+                org.agent_settings
+            )
             if org.v1_enabled is None:
                 org.v1_enabled = DEFAULT_V1_ENABLED
             session.add(org)
             await session.commit()
             await session.refresh(org)
             return org
+
+    @staticmethod
+    async def reconcile_applicable_org_condenser_max_tokens(
+        session: AsyncSession,
+        *,
+        max_tokens: int,
+        overwrite_existing: bool,
+    ) -> OrgCondenserReconciliationResult:
+        """Reconcile org-level LLM-summarizing condenser token thresholds."""
+
+        statement = text(
+            """
+            WITH candidate AS (
+                SELECT id, COALESCE(agent_settings::jsonb, '{}'::jsonb) AS settings
+                FROM org
+            ),
+            classified AS (
+                SELECT
+                    id,
+                    settings,
+                    CASE
+                        WHEN settings ->> 'agent_kind' IS NOT NULL
+                             AND settings ->> 'agent_kind' NOT IN ('openhands', 'llm')
+                            THEN 'skipped_agent'
+                        WHEN jsonb_typeof(settings -> 'condenser') = 'object'
+                             AND settings -> 'condenser' ->> 'condenser_kind' IS NOT NULL
+                             AND settings -> 'condenser' ->> 'condenser_kind' != 'llm_summarizing'
+                            THEN 'skipped_condenser'
+                        WHEN settings -> 'condenser' IS NOT NULL
+                             AND jsonb_typeof(settings -> 'condenser') IS DISTINCT FROM 'object'
+                            THEN 'malformed_applicable'
+                        ELSE 'applicable'
+                    END AS category
+                FROM candidate
+            ),
+            to_update AS (
+                SELECT
+                    id,
+                    category,
+                    jsonb_set(
+                        jsonb_set(
+                            settings,
+                            '{condenser}',
+                            CASE
+                                WHEN jsonb_typeof(settings -> 'condenser') = 'object'
+                                    THEN settings -> 'condenser'
+                                ELSE '{"condenser_kind":"llm_summarizing"}'::jsonb
+                            END,
+                            true
+                        ),
+                        '{condenser,max_tokens}',
+                        to_jsonb(CAST(:max_tokens AS integer)),
+                        true
+                    ) AS new_settings
+                FROM classified
+                WHERE category IN ('applicable', 'malformed_applicable')
+                  AND (
+                    (:overwrite_existing AND settings #> '{condenser,max_tokens}'
+                        IS DISTINCT FROM to_jsonb(CAST(:max_tokens AS integer)))
+                    OR ((NOT :overwrite_existing) AND NULLIF(
+                        settings #> '{condenser,max_tokens}',
+                        'null'::jsonb
+                    ) IS NULL)
+                  )
+            ),
+            updated AS (
+                UPDATE org AS o
+                SET
+                    agent_settings = to_update.new_settings::json,
+                    updated_at = now()
+                FROM to_update
+                WHERE o.id = to_update.id
+                  AND (
+                    (:overwrite_existing AND o.agent_settings::jsonb #> '{condenser,max_tokens}'
+                        IS DISTINCT FROM to_jsonb(CAST(:max_tokens AS integer)))
+                    OR ((NOT :overwrite_existing) AND NULLIF(
+                        o.agent_settings::jsonb #> '{condenser,max_tokens}',
+                        'null'::jsonb
+                    ) IS NULL)
+                  )
+                RETURNING o.id, to_update.category
+            )
+            SELECT
+                (SELECT count(*) FROM updated)::int AS updated_count,
+                (SELECT count(*) FROM classified WHERE category = 'skipped_agent')::int
+                    AS skipped_agent_variant_count,
+                (SELECT count(*) FROM classified WHERE category = 'skipped_condenser')::int
+                    AS skipped_condenser_variant_count,
+                (SELECT count(*) FROM updated WHERE category = 'malformed_applicable')::int
+                    AS malformed_repaired_count
+            """
+        )
+        row = (
+            (
+                await session.execute(
+                    statement,
+                    {
+                        'max_tokens': max_tokens,
+                        'overwrite_existing': overwrite_existing,
+                    },
+                )
+            )
+            .mappings()
+            .one()
+        )
+        return OrgCondenserReconciliationResult(
+            updated_count=row['updated_count'],
+            skipped_agent_variant_count=row['skipped_agent_variant_count'],
+            skipped_condenser_variant_count=row['skipped_condenser_variant_count'],
+            malformed_repaired_count=row['malformed_repaired_count'],
+        )
 
     @staticmethod
     async def get_org_by_id(org_id: UUID) -> Org | None:
@@ -320,7 +449,10 @@ class OrgStore:
 
     @staticmethod
     async def get_user_orgs_paginated(
-        user_id: UUID, page_id: str | None = None, limit: int = 100
+        user_id: UUID,
+        page_id: str | None = None,
+        limit: int = 100,
+        name: str | None = None,
     ) -> tuple[list[Org], str | None]:
         """Get paginated list of organizations for a user.
 
@@ -328,6 +460,7 @@ class OrgStore:
             user_id: User UUID
             page_id: Optional page ID (offset as string) for pagination
             limit: Maximum number of organizations to return
+            name: Optional exact organization name filter
 
         Returns:
             Tuple of (list of Org objects, next_page_id or None)
@@ -340,6 +473,10 @@ class OrgStore:
                 .filter(OrgMember.user_id == user_id)
                 .order_by(Org.name)
             )
+
+            # Apply optional exact name filter
+            if name is not None:
+                query = query.filter(Org.name == name)
 
             # Apply pagination offset
             if page_id is not None:
@@ -869,20 +1006,45 @@ class OrgStore:
         session,
         updated_org: Org,
         user_id: str,
+        *,
+        force: bool = False,
+        llm: LLM | None = None,
     ) -> str | None:
-        """Ensure the acting member has their own managed LLM key."""
-        llm_settings = OrgStore.get_agent_settings_from_org(updated_org).llm
-        llm_model = llm_settings.model
-        llm_base_url = llm_settings.base_url
-        normalized_llm_base_url = llm_base_url.rstrip('/') if llm_base_url else None
-        normalized_managed_base_url = LITE_LLM_API_URL.rstrip('/')
+        """Ensure the acting member has their own managed LLM key.
+
+        ``force`` rotates the slot unconditionally even if the existing key
+        looks valid — required when the slot still holds a stale BYOR key,
+        which the reuse fast-path below can otherwise hand back as managed.
+
+        ``llm`` overrides the LLM used to classify the key as managed;
+        ``activate_profile`` passes the activated profile's LLM so
+        classification reflects the profile being switched to, not the org's
+        persisted default (which may still point at a prior BYOR profile).
+        """
+        if llm is not None:
+            llm_model = llm.model
+            llm_base_url = llm.base_url
+        else:
+            llm_settings = OrgStore.get_agent_settings_from_org(updated_org).llm
+            llm_model = llm_settings.model
+            llm_base_url = llm_settings.base_url
         openhands_type = is_openhands_model(llm_model)
-        uses_managed_llm_key = (
-            normalized_llm_base_url == normalized_managed_base_url
-            or (normalized_llm_base_url is None and openhands_type)
-        )
-        if not uses_managed_llm_key:
+        # Imported locally to avoid a storage-internal circular import.
+        from storage.saas_settings_store import managed_llm_key_config_from_model
+
+        config = managed_llm_key_config_from_model(llm_model, llm_base_url)
+        if config is None or not config.openhands_type:
             return None
+
+        # _get_effective_llm_api_key checks org.llm_api_key before the member
+        # slot, so a stale org-level BYOR key would shadow the rotated member
+        # key at launch. Clear it on switch to a managed profile (#421).
+        if updated_org.llm_api_key is not None:
+            logger.info(
+                'Clearing stale org-level BYOR LLM key on switch to managed profile',
+                extra={'user_id': user_id, 'org_id': str(updated_org.id)},
+            )
+            updated_org.llm_api_key = None
 
         result = await session.execute(
             select(OrgMember).where(
@@ -901,11 +1063,15 @@ class OrgStore:
 
         existing_key = acting_member.llm_api_key
         existing_key_raw = existing_key.get_secret_value() if existing_key else None
-        if existing_key_raw and await LiteLlmManager.verify_existing_key(
-            existing_key_raw,
-            user_id,
-            str(updated_org.id),
-            openhands_type=openhands_type,
+        if (
+            not force
+            and existing_key_raw
+            and await LiteLlmManager.verify_existing_key(
+                existing_key_raw,
+                user_id,
+                str(updated_org.id),
+                openhands_type=openhands_type,
+            )
         ):
             # The key is registered in LiteLLM, but it may still be stale
             # (e.g. revoked server-side). Do a real auth check before reusing it.

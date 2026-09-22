@@ -35,7 +35,10 @@ from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.auth import looks_like_jwt
-from openhands.app_server.utils.git import ensure_valid_git_branch_name
+from openhands.app_server.utils.git import (
+    configure_git_user_settings,
+    ensure_valid_git_branch_name,
+)
 from openhands.sdk import Agent, LLMSummarizingCondenser
 from openhands.sdk.context import AgentContext
 from openhands.sdk.llm import LLM
@@ -325,26 +328,11 @@ class AppConversationServiceBase(AppConversationService, ABC):
         """
         try:
             user_info = await self.user_context.get_user_info()
-
-            if user_info.git_user_name:
-                cmd = f'git config --global user.name "{user_info.git_user_name}"'
-                result = await workspace.execute_command(cmd, workspace.working_dir)
-                if result.exit_code:
-                    _logger.warning(f'Git config user.name failed: {result.stderr}')
-                else:
-                    _logger.info(
-                        f'Git configured with user.name={user_info.git_user_name}'
-                    )
-
-            if user_info.git_user_email:
-                cmd = f'git config --global user.email "{user_info.git_user_email}"'
-                result = await workspace.execute_command(cmd, workspace.working_dir)
-                if result.exit_code:
-                    _logger.warning(f'Git config user.email failed: {result.stderr}')
-                else:
-                    _logger.info(
-                        f'Git configured with user.email={user_info.git_user_email}'
-                    )
+            await configure_git_user_settings(
+                workspace,
+                user_info.git_user_name,
+                user_info.git_user_email,
+            )
         except Exception as e:
             _logger.warning(f'Failed to configure git user settings: {e}')
 

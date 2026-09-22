@@ -14,6 +14,21 @@ from storage.stored_custom_secrets import StoredCustomSecrets
 from storage.user_store import UserStore
 
 
+def _resolve_unique_name(name: str, taken: set[str]) -> str:
+    """Return ``name`` if not in ``taken``, else append ``_2``, ``_3``, …
+
+    The stored name is left untouched — this is a display/runtime-only
+    deduplication so that a personal secret and an org-shared secret with
+    the same base name are both usable as distinct env vars.
+    """
+    if name not in taken:
+        return name
+    suffix = 2
+    while f'{name}_{suffix}' in taken:
+        suffix += 1
+    return f'{name}_{suffix}'
+
+
 @dataclass
 class SaasSecretsStore(SecretsStore):
     user_id: str
@@ -32,28 +47,95 @@ class SaasSecretsStore(SecretsStore):
         org_id = self.effective_org_id or (user.current_org_id if user else None)
 
         async with a_session_maker() as session:
-            # Fetch all secrets for the given user ID
-            query = select(StoredCustomSecrets).filter(
-                StoredCustomSecrets.keycloak_user_id == self.user_id
+            # Fetch the user's personal secrets (is_org_shared=False)
+            personal_query = select(StoredCustomSecrets).filter(
+                StoredCustomSecrets.keycloak_user_id == self.user_id,
+                StoredCustomSecrets.is_org_shared.is_(False),
             )
             if org_id is not None:
-                query = query.filter(StoredCustomSecrets.org_id == org_id)
-            result = await session.execute(query)
-            settings = result.scalars().all()
+                personal_query = personal_query.filter(
+                    StoredCustomSecrets.org_id == org_id
+                )
+            personal_result = await session.execute(personal_query)
+            personal_secrets = personal_result.scalars().all()
 
-            if not settings:
+            # Fetch org-shared secrets (is_org_shared=True) for this org.
+            # Available to all members; the value is decrypted and surfaced
+            # to the runtime but never exposed via the listing API.
+            shared_secrets: list[StoredCustomSecrets] = []
+            if org_id is not None:
+                shared_query = select(StoredCustomSecrets).filter(
+                    StoredCustomSecrets.org_id == org_id,
+                    StoredCustomSecrets.is_org_shared.is_(True),
+                )
+                shared_result = await session.execute(shared_query)
+                shared_secrets = shared_result.scalars().all()
+
+            all_secrets = list(personal_secrets) + list(shared_secrets)
+
+            if not all_secrets:
                 return Secrets()
 
-            kwargs = {}
-            for secret in settings:
-                kwargs[secret.secret_name] = {
+            # Merge personal + shared, applying suffix dedup on name
+            # collisions. Personal secrets keep the bare name; org-shared
+            # secrets that collide get ``_2``, ``_3``, … appended.
+            kwargs: dict[str, dict[str, str | None]] = {}
+            taken_names: set[str] = set()
+
+            # Personal first — they win the bare name.
+            for secret in personal_secrets:
+                effective_name = _resolve_unique_name(secret.secret_name, taken_names)
+                kwargs[effective_name] = {
                     'secret': secret.secret_value,
                     'description': secret.description,
                 }
+                taken_names.add(effective_name)
+
+            # Shared next — suffixed on collision.
+            for secret in shared_secrets:
+                effective_name = _resolve_unique_name(secret.secret_name, taken_names)
+                kwargs[effective_name] = {
+                    'secret': secret.secret_value,
+                    'description': secret.description,
+                }
+                taken_names.add(effective_name)
 
             self._decrypt_kwargs(kwargs)
 
             return Secrets(custom_secrets=kwargs)  # type: ignore[arg-type]
+
+    async def list_personal(
+        self,
+    ) -> list[tuple[str, str | None]]:
+        """Return ``(name, description)`` for the user's personal secrets.
+
+        Org-shared secrets are excluded. Used by the listing API to show
+        scope badges — the runtime ``load()`` merges both, but the listing
+        API needs to distinguish them.
+        """
+        if not self.user_id:
+            return []
+        user = await UserStore.get_user_by_id(self.user_id)
+        org_id = self.effective_org_id or (user.current_org_id if user else None)
+
+        async with a_session_maker() as session:
+            query = select(StoredCustomSecrets).filter(
+                StoredCustomSecrets.keycloak_user_id == self.user_id,
+                StoredCustomSecrets.is_org_shared.is_(False),
+            )
+            if org_id is not None:
+                query = query.filter(StoredCustomSecrets.org_id == org_id)
+            result = await session.execute(query)
+            rows = result.scalars().all()
+            return [
+                (
+                    row.secret_name,
+                    self._jwt_svc.decrypt_value(row.description)
+                    if row.description
+                    else None,
+                )
+                for row in rows
+            ]
 
     async def store(self, item: Secrets):
         user = await UserStore.get_user_by_id(self.user_id)
@@ -62,13 +144,16 @@ class SaasSecretsStore(SecretsStore):
         org_id = self.effective_org_id or user.current_org_id
 
         async with a_session_maker() as session:
-            # Incoming secrets are always the most updated ones
-            # Delete existing records for this user AND organization only
+            # Incoming secrets are always the most updated ones.
+            # Delete existing **personal** records for this user AND
+            # organization only — org-shared secrets (is_org_shared=True)
+            # must survive personal-secret rewrites.
             # org_id is always set: it's either the effective org from
             # the request or the user's non-nullable current_org_id.
             delete_query = delete(StoredCustomSecrets).filter(
                 StoredCustomSecrets.keycloak_user_id == self.user_id,
                 StoredCustomSecrets.org_id == org_id,
+                StoredCustomSecrets.is_org_shared.is_(False),
             )
             await session.execute(delete_query)
 

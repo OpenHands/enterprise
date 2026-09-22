@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,14 +11,18 @@ from uuid import UUID
 import httpx
 from fastapi import HTTPException, Request, status
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.services.injector import Injector, InjectorState
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import RoleName
+from server.routes.org_models import SpendStatus
 from server.services.smtp_email_service import SMTPEmailService
+from storage.database import sqlstate
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
+from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_store import OrgBudgetStore
 from storage.org_budget_threshold import OrgBudgetThreshold
@@ -26,6 +31,21 @@ from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
 from storage.slack_team import SlackTeam
 from storage.user import User
+from utils.sql import escape_ilike
+
+# The Quint oracle client is vendored under quint-specs/, which the application
+# image does not ship. Without it the instrumentation below is a no-op, so the
+# app must not depend on it being importable.
+try:
+    import quint_oracle
+except ModuleNotFoundError:  # pragma: no cover
+    from types import SimpleNamespace
+
+    quint_oracle = SimpleNamespace(
+        log=lambda *args, **kwargs: None,
+        In=lambda value, domain: value,
+    )
+
 
 try:
     from slack_sdk.web.async_client import AsyncWebClient
@@ -43,6 +63,9 @@ DEFAULT_THRESHOLDS = (
 
 LITELLM_FINANCIAL_READ_MAX_ATTEMPTS = 3
 LITELLM_FINANCIAL_READ_RETRY_DELAY_SECONDS = 0.1
+
+# Postgres SQLSTATE for unique_violation.
+_UNIQUE_VIOLATION = '23505'
 
 
 @dataclass
@@ -69,8 +92,13 @@ class LiteLlmFinancialSnapshot:
 @dataclass(frozen=True)
 class BudgetFinancialSnapshotResult:
     snapshot: LiteLlmFinancialSnapshot | None
-    status: Literal['live', 'stale', 'unavailable']
+    status: SpendStatus
     error: str | None = None
+
+
+BudgetReconciliationState = Literal[
+    'inactive', 'pending', 'healthy', 'degraded', 'failed'
+]
 
 
 def _add_month(year: int, month: int) -> tuple[int, int]:
@@ -85,16 +113,28 @@ def _subtract_month(year: int, month: int) -> tuple[int, int]:
     return year, month - 1
 
 
+def _cycle_day(year: int, month: int, reset_day: int) -> int:
+    """The reset day this month can actually hold.
+
+    reset_day is a plain Integer column with no CHECK constraint, so it is untrusted:
+    clamp both ends to keep every value a day datetime() accepts.
+    """
+    return max(1, min(reset_day, calendar.monthrange(year, month)[1]))
+
+
 def _current_cycle_start(now: datetime, reset_day: int) -> datetime:
-    if now.day >= reset_day:
-        return datetime(now.year, now.month, reset_day, tzinfo=UTC)
+    day_this_month = _cycle_day(now.year, now.month, reset_day)
+    if now.day >= day_this_month:
+        return datetime(now.year, now.month, day_this_month, tzinfo=UTC)
     prev_year, prev_month = _subtract_month(now.year, now.month)
-    return datetime(prev_year, prev_month, reset_day, tzinfo=UTC)
+    return datetime(
+        prev_year, prev_month, _cycle_day(prev_year, prev_month, reset_day), tzinfo=UTC
+    )
 
 
 def _next_cycle_start(cycle_start: datetime, reset_day: int) -> datetime:
     year, month = _add_month(cycle_start.year, cycle_start.month)
-    return datetime(year, month, reset_day, tzinfo=UTC)
+    return datetime(year, month, _cycle_day(year, month, reset_day), tzinfo=UTC)
 
 
 def _optional_nonnegative_float(value: object, field_name: str) -> float | None:
@@ -227,6 +267,13 @@ def _effective_user_budget_limit(
     return default_limit, False, False
 
 
+def _member_cap(baseline: float, effective_limit: float) -> float:
+    # LiteLLM compares cumulative spend against an absolute member cap, so a cap
+    # below the member's cycle baseline is already exceeded the moment it is
+    # written. Nothing rejects a non-positive allowance, so clamp it here.
+    return baseline + max(effective_limit, 0)
+
+
 def _budget_values_match(actual: float | None, expected: float | None) -> bool:
     if actual is None or expected is None:
         return actual is expected
@@ -271,8 +318,94 @@ def _budget_sync_readback_errors(
     return errors
 
 
-def _escape_ilike(value: str) -> str:
-    return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+def _desired_team_budget(settings: OrgBudgetSettings) -> float | None:
+    if settings.enabled and settings.monthly_limit:
+        return settings.cycle_start_spend + settings.monthly_limit
+    return None
+
+
+def _budget_policy_comparison(
+    settings: OrgBudgetSettings,
+    overrides: list[OrgUserBudgetOverride],
+    org_member_ids: set[str],
+    snapshot_result: BudgetFinancialSnapshotResult,
+) -> dict:
+    """Compare desired Enterprise policy with a fresh LiteLLM readback."""
+    desired_team_budget = _desired_team_budget(settings)
+    snapshot = snapshot_result.snapshot if snapshot_result.status == 'live' else None
+    applied_team_budget = snapshot.team_max_budget if snapshot is not None else None
+
+    policy_matches: bool | None = None
+    drift_errors: list[str] = []
+    if snapshot is not None:
+        override_map = {str(override.user_id): override for override in overrides}
+        baselines = settings.user_cycle_start_spend or {}
+        expected_member_budgets: dict[str, float | None] = {}
+        for user_id in sorted(org_member_ids):
+            if user_id not in snapshot.members:
+                drift_errors.append(f'member_missing_from_litellm: {user_id}')
+                continue
+            effective_limit, is_disabled, _ = _effective_user_budget_limit(
+                override_map.get(user_id), settings.default_user_monthly_limit
+            )
+            if settings.enabled and not is_disabled and effective_limit is not None:
+                baseline = baselines.get(user_id)
+                if baseline is None:
+                    drift_errors.append(f'member_cycle_baseline_missing: {user_id}')
+                    continue
+                expected_member_budgets[user_id] = _member_cap(
+                    baseline, effective_limit
+                )
+            else:
+                expected_member_budgets[user_id] = None
+
+        drift_errors.extend(
+            _budget_sync_readback_errors(
+                snapshot,
+                desired_team_budget,
+                expected_member_budgets,
+            )
+        )
+        policy_matches = not drift_errors
+
+    sync_status = settings.litellm_last_sync_status
+    if snapshot is None:
+        if sync_status == 'error':
+            reconciliation_state: BudgetReconciliationState = 'failed'
+        elif settings.enabled:
+            reconciliation_state = 'pending' if sync_status is None else 'degraded'
+        else:
+            reconciliation_state = 'inactive'
+    elif policy_matches is False or sync_status == 'error':
+        reconciliation_state = 'degraded'
+    elif settings.enabled:
+        reconciliation_state = 'healthy' if sync_status == 'success' else 'pending'
+    else:
+        reconciliation_state = 'inactive'
+
+    reconciliation_error = settings.litellm_last_sync_error
+    if reconciliation_error is None and drift_errors:
+        reconciliation_error = drift_errors[0]
+        if len(drift_errors) > 1:
+            reconciliation_error += f' (+{len(drift_errors) - 1} more)'
+    if reconciliation_error is None and snapshot is None and settings.enabled:
+        reconciliation_error = snapshot_result.error
+
+    return {
+        'reconciliation_state': reconciliation_state,
+        'reconciliation_error': reconciliation_error,
+        'desired_team_max_budget': desired_team_budget,
+        'applied_team_max_budget': applied_team_budget,
+        'budget_policy_matches': policy_matches,
+        'applied_at': (
+            settings.litellm_last_sync_at
+            if policy_matches is True and sync_status == 'success'
+            else None
+        ),
+        'applied_policy_observed_at': (
+            snapshot.observed_at if snapshot is not None else None
+        ),
+    }
 
 
 class OrgBudgetService:
@@ -292,8 +425,17 @@ class OrgBudgetService:
         result = await self.db_session.execute(select(User.id).where(User.id == org_id))
         return result.scalar_one_or_none() is not None
 
-    async def _reject_personal_org(self, org_id: UUID) -> None:
+    async def _reject_personal_org(
+        self, org_id: UUID, quint_action: str | None = None
+    ) -> None:
         if await self._is_personal_org(org_id):
+            if quint_action is not None:
+                quint_oracle.log(
+                    quint_action,
+                    'org-budgets',
+                    org_id=quint_oracle.In('personal', 'ORG_IDS'),
+                    outcome='rejected',
+                )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='Organization budgets are not available for personal workspaces',
@@ -307,9 +449,10 @@ class OrgBudgetService:
         users_search: str | None = None,
         users_status: str | None = None,
     ):
-        await self._reject_personal_org(org_id)
+        await self._reject_personal_org(org_id, 'get_budget_state')
         settings = await self._get_or_create_settings(org_id)
         thresholds = await self._get_thresholds(org_id)
+        overrides = await self._get_overrides(org_id)
         cycle = self._current_cycle(settings)
 
         snapshot_result = await self._get_financial_snapshot(
@@ -329,6 +472,18 @@ class OrgBudgetService:
             users_search=users_search,
             users_status=users_status,
         )
+        quint_oracle.log(
+            'get_budget_state',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            spend_status=snapshot_result.status,
+        )
+        policy_comparison = _budget_policy_comparison(
+            settings,
+            overrides,
+            org_member_ids,
+            snapshot_result,
+        )
         return {
             'settings': settings,
             'thresholds': thresholds,
@@ -347,10 +502,17 @@ class OrgBudgetService:
             'users_total': users_total,
             'users_page': users_page,
             'users_per_page': users_per_page,
+            **policy_comparison,
         }
 
     async def run_budget_maintenance(self, org_id: UUID) -> dict:
         if await self._is_personal_org(org_id):
+            quint_oracle.log(
+                'run_budget_maintenance',
+                'org-budgets',
+                org_id=quint_oracle.In('personal', 'ORG_IDS'),
+                cycle_rolled=False,
+            )
             return {
                 'cycle_start_at': None,
                 'cycle_end_at': None,
@@ -370,12 +532,19 @@ class OrgBudgetService:
             allow_stale=False,
         )
         if snapshot_result.snapshot is None:
+            reconciliation_error = self._snapshot_unavailable_detail()
             if settings.enabled:
                 await self._block_litellm_admission(org_id, settings)
             await self._record_litellm_sync(
                 settings,
                 'error',
-                self._snapshot_unavailable_detail(),
+                reconciliation_error,
+            )
+            quint_oracle.log(
+                'run_budget_maintenance',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+                cycle_rolled=False,
             )
             return {
                 'cycle_start_at': cycle.start_at,
@@ -383,6 +552,8 @@ class OrgBudgetService:
                 'cycle_rolled': False,
                 'current_spend': None,
                 'skipped': 'litellm_spend_unavailable',
+                'reconciliation_status': 'error',
+                'reconciliation_error': reconciliation_error,
             }
 
         snapshot = snapshot_result.snapshot
@@ -410,13 +581,20 @@ class OrgBudgetService:
 
         if cycle_due:
             if repair_result.snapshot is None:
+                reconciliation_error = (
+                    repair_result.error
+                    or 'LiteLLM membership repair failed before cycle rollover.'
+                )[:500]
                 await self._record_litellm_sync(
                     settings,
                     'error',
-                    (
-                        repair_result.error
-                        or 'LiteLLM membership repair failed before cycle rollover.'
-                    )[:500],
+                    reconciliation_error,
+                )
+                quint_oracle.log(
+                    'run_budget_maintenance',
+                    'org-budgets',
+                    org_id=quint_oracle.In('org', 'ORG_IDS'),
+                    cycle_rolled=False,
                 )
                 return {
                     'cycle_start_at': cycle.start_at,
@@ -424,6 +602,8 @@ class OrgBudgetService:
                     'cycle_rolled': False,
                     'current_spend': _litellm_cycle_spend(settings, snapshot),
                     'skipped': 'litellm_membership_repair_failed',
+                    'reconciliation_status': 'error',
+                    'reconciliation_error': reconciliation_error,
                 }
             snapshot = repair_result.snapshot
 
@@ -458,11 +638,19 @@ class OrgBudgetService:
                     org_id, settings, overrides, snapshot=snapshot
                 )
 
+        quint_oracle.log(
+            'run_budget_maintenance',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            cycle_rolled=cycle_rolled,
+        )
         return {
             'cycle_start_at': cycle.start_at,
             'cycle_end_at': cycle.end_at,
             'cycle_rolled': cycle_rolled,
             'current_spend': current_spend,
+            'reconciliation_status': settings.litellm_last_sync_status,
+            'reconciliation_error': settings.litellm_last_sync_error,
         }
 
     async def update_budget_settings(
@@ -474,7 +662,7 @@ class OrgBudgetService:
         users_search: str | None = None,
         users_status: str | None = None,
     ):
-        await self._reject_personal_org(org_id)
+        await self._reject_personal_org(org_id, 'update_budget_settings')
         settings = await self._get_or_create_settings(org_id)
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
@@ -501,6 +689,12 @@ class OrgBudgetService:
         if settings.enabled and (
             settings.monthly_limit is None or settings.monthly_limit <= 0
         ):
+            quint_oracle.log(
+                'update_budget_settings',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+                outcome='rejected',
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='monthly_limit is required when budgets are enabled',
@@ -514,6 +708,11 @@ class OrgBudgetService:
                 require_complete_membership=True,
             )
             if snapshot_result.snapshot is None:
+                quint_oracle.log(
+                    'update_budget_settings',
+                    'org-budgets',
+                    org_id=quint_oracle.In('org', 'ORG_IDS'),
+                )
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=self._snapshot_unavailable_detail(),
@@ -527,6 +726,15 @@ class OrgBudgetService:
                 user_id: member.spend
                 for user_id, member in baseline_snapshot.members.items()
             }
+            # An explicit admin re-baseline: replace any row for this cycle.
+            await self.store.record_cycle_baselines(
+                org_id,
+                settings.cycle_start_at,
+                settings.user_cycle_start_spend,
+                source=OrgBudgetCycleBaseline.SOURCE_ENABLEMENT,
+                observed_at=baseline_snapshot.observed_at,
+                replace=True,
+            )
             settings.litellm_known_member_ids = sorted(
                 await self._org_member_ids(org_id)
             )
@@ -569,6 +777,18 @@ class OrgBudgetService:
             users_search=users_search,
             users_status=users_status,
         )
+        quint_oracle.log(
+            'update_budget_settings',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            budget_enabled=settings.enabled,
+        )
+        policy_comparison = _budget_policy_comparison(
+            settings,
+            overrides,
+            org_member_ids,
+            snapshot_result,
+        )
         return {
             'settings': settings,
             'thresholds': thresholds,
@@ -587,6 +807,7 @@ class OrgBudgetService:
             'users_total': users_total,
             'users_page': users_page,
             'users_per_page': users_per_page,
+            **policy_comparison,
         }
 
     async def upsert_user_override(
@@ -596,7 +817,7 @@ class OrgBudgetService:
         monthly_limit: float | None,
         is_disabled: bool,
     ) -> OrgUserBudgetOverride:
-        await self._reject_personal_org(org_id)
+        await self._reject_personal_org(org_id, 'upsert_user_override')
         override = await self.store.upsert_override(
             org_id=org_id,
             user_id=user_id,
@@ -606,29 +827,111 @@ class OrgBudgetService:
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         await self._sync_litellm_budgets(org_id, settings, overrides)
+        quint_oracle.log(
+            'upsert_user_override',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            override_count=len(overrides),
+        )
         return override
 
     async def delete_user_override(self, org_id: UUID, user_id: UUID) -> None:
-        await self._reject_personal_org(org_id)
+        await self._reject_personal_org(org_id, 'delete_user_override')
         override = await self._get_override(org_id, user_id)
         if override is None:
+            # The early return: no row, so no resync and no post-state count to read.
+            quint_oracle.log(
+                'delete_user_override',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+            )
             return
         await self.store.delete_override(override)
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         await self._sync_litellm_budgets(org_id, settings, overrides)
+        quint_oracle.log(
+            'delete_user_override',
+            'org-budgets',
+            org_id=quint_oracle.In('org', 'ORG_IDS'),
+            override_count=len(overrides),
+        )
+
+    async def get_reconciliation_state(self, org_id: UUID) -> BudgetReconciliationState:
+        settings = await self._get_or_create_settings(org_id)
+        if settings.litellm_last_sync_status == 'error':
+            return 'degraded'
+        if settings.enabled and settings.litellm_last_sync_status != 'success':
+            return 'pending'
+        return 'healthy' if settings.enabled else 'inactive'
 
     async def _get_or_create_settings(self, org_id: UUID) -> OrgBudgetSettings:
         settings = await self.store.get_settings(org_id)
         if settings:
+            await self._hydrate_cycle_baselines(settings)
             return settings
 
-        return await self.store.create_settings(
-            org_id=org_id,
-            reset_day=1,
-            cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
-            thresholds=DEFAULT_THRESHOLDS,
+        # Insert inside a savepoint so a concurrent creator's unique violation does
+        # not poison the caller's transaction.
+        try:
+            async with self.db_session.begin_nested():
+                settings = await self.store.create_settings(
+                    org_id=org_id,
+                    reset_day=1,
+                    cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
+                    thresholds=DEFAULT_THRESHOLDS,
+                )
+        except IntegrityError as exc:
+            # Only a unique violation means the race was lost; create_settings also
+            # writes rows carrying an FK to org.id, and a missing org must keep its
+            # own error rather than be reported as a re-read that found nothing.
+            if sqlstate(exc) != _UNIQUE_VIOLATION:
+                raise
+            # Finding the winner's committed row depends on READ COMMITTED, where
+            # each statement takes a fresh snapshot. Under REPEATABLE READ this
+            # session's snapshot predates that commit and the re-read returns None.
+            settings = await self.store.get_settings(org_id)
+            if settings is None:
+                raise
+            await self._hydrate_cycle_baselines(settings)
+        return settings
+
+    async def _hydrate_cycle_baselines(self, settings: OrgBudgetSettings) -> None:
+        """Make the baseline table authoritative for the current cycle.
+
+        Rows win over the ``user_cycle_start_spend`` JSON map, which is still
+        dual-written during the compatibility window. Keys only the JSON holds
+        (written by a release before migration 162) are imported so the window
+        converges; the log line is the signal that it has not converged yet.
+        """
+        json_baselines = dict(settings.user_cycle_start_spend or {})
+        rows = await self.store.get_cycle_baselines(
+            settings.org_id, settings.cycle_start_at
         )
+        json_only = {
+            user_id: baseline
+            for user_id, baseline in json_baselines.items()
+            if user_id not in rows
+        }
+        if json_only:
+            logger.info(
+                'org_budget_cycle_baseline_json_only',
+                extra={
+                    'org_id': str(settings.org_id),
+                    'cycle_start_at': str(settings.cycle_start_at),
+                    'user_ids': sorted(json_only),
+                },
+            )
+            await self.store.record_cycle_baselines(
+                settings.org_id,
+                settings.cycle_start_at,
+                json_only,
+                source=OrgBudgetCycleBaseline.SOURCE_IMPORTED,
+                observed_at=datetime.now(UTC),
+            )
+        merged = {**json_baselines, **rows}
+        if merged != json_baselines:
+            settings.user_cycle_start_spend = merged
 
     async def _get_thresholds(self, org_id: UUID) -> list[OrgBudgetThreshold]:
         return await self.store.get_thresholds(org_id)
@@ -672,6 +975,13 @@ class OrgBudgetService:
         settings.user_cycle_start_spend = {
             user_id: member.spend for user_id, member in snapshot.members.items()
         }
+        await self.store.record_cycle_baselines(
+            org_id,
+            settings.cycle_start_at,
+            settings.user_cycle_start_spend,
+            source=OrgBudgetCycleBaseline.SOURCE_LIVE_ROLLOVER,
+            observed_at=snapshot.observed_at,
+        )
         settings.litellm_known_member_ids = sorted(await self._org_member_ids(org_id))
         for threshold in thresholds:
             threshold.last_triggered_at = None
@@ -870,7 +1180,7 @@ class OrgBudgetService:
 
         search_value = (users_search or '').strip()
         if search_value:
-            escaped = _escape_ilike(search_value)
+            escaped = escape_ilike(search_value)
             pattern = f'%{escaped}%'
             query = query.where(
                 or_(
@@ -936,7 +1246,7 @@ class OrgBudgetService:
             override, settings.default_user_monthly_limit
         )
         user_id_str = str(user_id)
-        return {
+        user_row = {
             'user_id': str(org_member.user_id),
             'user_email': user.email,
             'user_name': user.git_user_name,
@@ -947,6 +1257,68 @@ class OrgBudgetService:
             'effective_monthly_limit': effective_limit,
             'is_disabled': is_disabled,
             'is_override': is_override,
+        }
+        policy_comparison = _budget_policy_comparison(
+            settings,
+            overrides,
+            await self._org_member_ids(org_id),
+            snapshot_result,
+        )
+        user_row.update(
+            reconciliation_state=policy_comparison['reconciliation_state'],
+            reconciliation_error=policy_comparison['reconciliation_error'],
+            applied_at=policy_comparison['applied_at'],
+        )
+        return user_row
+
+    async def get_my_budget(
+        self, org_id: UUID, user_id: UUID, include_spend: bool = True
+    ) -> dict:
+        """Read-only view of one member's own budget for the current cycle.
+
+        Unlike ``get_user_budget_row`` this never creates a settings row, so it
+        is safe to call for orgs that have not configured budgets.
+        ``include_spend=False`` answers only whether budgets are enabled,
+        without reading LiteLLM.
+        """
+        if await self._is_personal_org(org_id):
+            return {'enabled': False}
+        settings = await self.store.get_settings(org_id)
+        if settings is None or not settings.enabled:
+            return {'enabled': False}
+        if not include_spend:
+            return {'enabled': True}
+
+        await self._hydrate_cycle_baselines(settings)
+        override = await self._get_override(org_id, user_id)
+        snapshot_result = await self._get_financial_snapshot(
+            org_id, settings, allow_stale=True
+        )
+        snapshot = snapshot_result.snapshot
+        effective_limit, is_disabled, is_override = _effective_user_budget_limit(
+            override, settings.default_user_monthly_limit
+        )
+        user_id_str = str(user_id)
+        cycle = self._current_cycle(settings)
+        return {
+            'enabled': True,
+            'monthly_limit': effective_limit,
+            'is_disabled': is_disabled,
+            'is_override': is_override,
+            # The settings row is rewritten on every spend snapshot, so only an
+            # override carries a meaningful "set on" date.
+            'limit_updated_at': override.updated_at if override else None,
+            'current_spend': _litellm_member_cycle_spend(
+                settings,
+                user_id_str,
+                snapshot.members.get(user_id_str) if snapshot is not None else None,
+            ),
+            'cycle_start_at': cycle.start_at,
+            'cycle_end_at': cycle.end_at,
+            'spend_status': snapshot_result.status,
+            'spend_observed_at': (
+                snapshot.observed_at if snapshot is not None else None
+            ),
         }
 
     async def _record_litellm_sync(
@@ -1172,6 +1544,8 @@ class OrgBudgetService:
         override_map = {str(o.user_id): o for o in overrides}
         existing_user_baselines = settings.user_cycle_start_spend or {}
         active_user_baselines: dict[str, float] = {}
+        added_baselines: dict[str, float] = {}
+        recovered_baselines: dict[str, float] = {}
         expected_member_budgets: dict[str, float | None] = {}
 
         for user_id in sorted(org_member_ids & litellm_member_ids):
@@ -1179,7 +1553,9 @@ class OrgBudgetService:
             baseline = existing_user_baselines.get(user_id)
             if baseline is None:
                 baseline = info.spend
+                added_baselines[user_id] = baseline
                 if settings.enabled and user_id not in new_member_ids:
+                    recovered_baselines[user_id] = added_baselines.pop(user_id)
                     # Legacy rows: migration 149 added baselines without a
                     # backfill and migration 156 marked every member known, so
                     # there is no cycle-start history. Anchor to live cumulative
@@ -1203,8 +1579,7 @@ class OrgBudgetService:
                 max_budget_in_team = None
                 clear_budget = True
             elif effective_limit is not None:
-                # LiteLLM compares cumulative spend against an absolute member cap.
-                max_budget_in_team = baseline + effective_limit
+                max_budget_in_team = _member_cap(baseline, effective_limit)
                 clear_budget = False
             else:
                 max_budget_in_team = None
@@ -1239,6 +1614,17 @@ class OrgBudgetService:
                 active_user_baselines[user_id] = baseline
 
         settings.user_cycle_start_spend = active_user_baselines
+        for initialized, source in (
+            (added_baselines, OrgBudgetCycleBaseline.SOURCE_MEMBER_ADDED),
+            (recovered_baselines, OrgBudgetCycleBaseline.SOURCE_UPGRADE_RECOVERY),
+        ):
+            await self.store.record_cycle_baselines(
+                org_id,
+                settings.cycle_start_at,
+                initialized,
+                source=source,
+                observed_at=snapshot.observed_at,
+            )
         settings.litellm_known_member_ids = sorted(
             (known_member_ids & org_member_ids) | (org_member_ids & litellm_member_ids)
         )
