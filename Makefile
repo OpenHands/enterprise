@@ -32,6 +32,9 @@ DB_NAME ?= openhands
 DB_USER ?= postgres
 DB_PASS ?= postgres
 LOCAL_DB_CONTAINER ?= openhands-postgres
+# A named volume, so deleting the container does not take the data with it.
+# `make reset-db` is the only thing that removes it.
+LOCAL_DB_VOLUME ?= openhands-postgres-data
 # Matches the image the test suite uses (tests/postgres_testdb.py).
 LOCAL_DB_IMAGE ?= postgres:16
 # Applied only to the targets that talk to the local database, so the SaaS
@@ -258,6 +261,7 @@ local-db: check-docker
 	else \
 		docker run -d --name $(LOCAL_DB_CONTAINER) \
 			-p $(DB_PORT):5432 \
+			-v $(LOCAL_DB_VOLUME):/var/lib/postgresql/data \
 			-e POSTGRES_USER=$(DB_USER) \
 			-e POSTGRES_PASSWORD=$(DB_PASS) \
 			-e POSTGRES_DB=$(DB_NAME) \
@@ -276,11 +280,12 @@ local-db: check-docker
 	@$(LOCAL_DB_ENV) uv run alembic upgrade head
 	@echo "$(GREEN)Local database ready on $(DB_HOST):$(DB_PORT).$(RESET)"
 
-# Throw the local database away and build a fresh one. `-v` also drops the
-# anonymous volume the postgres image creates, which is where the data lives.
+# Throw the local database away and build a fresh one. The data lives in a named
+# volume, which `docker rm -v` leaves alone, so remove it by name.
 reset-db: check-docker
 	@echo "$(YELLOW)Removing local PostgreSQL ($(LOCAL_DB_CONTAINER)) and its data...$(RESET)"
-	@docker rm -f -v $(LOCAL_DB_CONTAINER) > /dev/null 2>&1 || true
+	@docker rm -f $(LOCAL_DB_CONTAINER) > /dev/null 2>&1 || true
+	@docker volume rm $(LOCAL_DB_VOLUME) > /dev/null 2>&1 || true
 	@$(MAKE) -s local-db
 
 # Start backend
