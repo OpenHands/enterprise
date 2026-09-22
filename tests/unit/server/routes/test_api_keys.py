@@ -9,6 +9,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 from pydantic import SecretStr
+from sqlalchemy import update
 
 from openhands.app_server.user_auth.user_auth import AuthType
 from server.auth.saas_user_auth import SaasUserAuth
@@ -34,6 +35,7 @@ from storage.saas_settings_store import (
     ManagedLlmKeyConfig,
     ManagedLlmKeyStatus,
     SaasSettingsStore,
+    _org_rotation_advisory_lock_key,
     managed_llm_key_config_from_model,
 )
 from storage.user import User
@@ -432,7 +434,7 @@ class TestRefreshManagedLlmApiKey:
     """Test the managed LLM API key refresh endpoint.
 
     These tests exercise the REAL managed-key lifecycle
-    (``SaasSettingsStore.rotate_managed_llm_key``) against the test
+    (``SaasSettingsStore.rotate_managed_llm_key``) against a PostgreSQL
     database, mocking only the external LiteLLM HTTP calls. They prove the
     actual managed-config classification (from effective org+member settings,
     with org-default precedence), the OpenHands metadata attachment, and the
@@ -666,6 +668,11 @@ class TestRefreshManagedLlmApiKey:
             mock_generate,
             mock_delete_token,
         ):
+            # Record cross-mock call order to assert delete-then-generate.
+            order_parent = MagicMock()
+            order_parent.attach_mock(mock_delete_alias, 'delete_key_by_alias')
+            order_parent.attach_mock(mock_generate, 'generate_key')
+
             store = SaasSettingsStore(user_id, effective_org_id=org_id)
             rotation = await store.rotate_managed_llm_key()
 
@@ -675,13 +682,23 @@ class TestRefreshManagedLlmApiKey:
         assert rotation.new_key == 'sk-new-managed-key'
 
         expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
-        # The alias is deleted before generating, so rotation never orphans.
+        # Delete-then-generate: the shared alias is cleared before the
+        # replacement is minted under the same alias. This ordering is mandatory
+        # because LiteLLM enforces unique key aliases — minting first
+        # ("generate-before-delete") is rejected with a 400 alias-conflict.
+        # delete_key_by_alias is safe here (not the #439 bug) because the per-org
+        # advisory lock serializes rotations; the specific-key delete is not used
+        # so a divergent alias self-heals.
         mock_delete_alias.assert_awaited_once_with(key_alias=expected_alias)
         mock_generate.assert_awaited_once_with(
             user_id, str(org_id), expected_alias, {'type': 'openhands'}
         )
-        # The previous token is NOT deleted by the store; the route does that.
         mock_delete_token.assert_not_called()
+        order = [name for name, *_ in order_parent.mock_calls]
+        assert order.index('delete_key_by_alias') < order.index('generate_key'), (
+            'alias must be cleared before generating the replacement under the '
+            'same alias (LiteLLM requires unique aliases)'
+        )
 
         member = await self._member_key(async_session_maker, org_id, user_id)
         assert member.llm_api_key.get_secret_value() == 'sk-new-managed-key'
@@ -703,7 +720,7 @@ class TestRefreshManagedLlmApiKey:
         with self._patched(async_session_maker) as (
             mock_delete_alias,
             mock_generate,
-            _mock_delete_token,
+            mock_delete_token,
         ):
             store = SaasSettingsStore(user_id, effective_org_id=org_id)
             rotation = await store.rotate_managed_llm_key()
@@ -715,6 +732,7 @@ class TestRefreshManagedLlmApiKey:
         mock_generate.assert_awaited_once_with(
             user_id, str(org_id), expected_alias, None
         )
+        mock_delete_token.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_rotate_non_managed_byok_base_url_is_rejected(
@@ -824,16 +842,187 @@ class TestRefreshManagedLlmApiKey:
         mock_generate.assert_not_called()
         mock_delete_token.assert_not_called()
 
+    # --- concurrency safety (enterprise#439) ---
+
+    @pytest.mark.asyncio
+    async def test_rotate_only_if_current_skips_when_key_already_replaced(
+        self, async_session_maker, managed_env
+    ):
+        """Idempotent refresh: when a concurrent rotation already replaced the
+        stale key, passing ``only_if_current`` reuses the current key instead of
+        rotating again (which would delete the key that rotation handed to a
+        sandbox, causing ``token_not_found_in_db``).
+        """
+        user_id, org_id = await self._seed(async_session_maker)
+
+        with self._patched(async_session_maker) as (
+            mock_delete_alias,
+            mock_generate,
+            mock_delete_token,
+        ):
+            store = SaasSettingsStore(user_id, effective_org_id=org_id)
+            # The member holds 'sk-old-managed-key'; we pass a *different* key
+            # as the one we observed stale, i.e. a concurrent rotation already
+            # replaced it.
+            rotation = await store.rotate_managed_llm_key(
+                only_if_current='sk-a-previous-stale-key'
+            )
+
+        assert rotation.status == ManagedLlmKeyStatus.ROTATED
+        assert rotation.new_key == 'sk-old-managed-key'
+        assert rotation.old_key == 'sk-old-managed-key'
+        mock_generate.assert_not_called()
+        mock_delete_alias.assert_not_called()
+        mock_delete_token.assert_not_called()
+
+        member = await self._member_key(async_session_maker, org_id, user_id)
+        assert member.llm_api_key.get_secret_value() == 'sk-old-managed-key'
+
+    @pytest.mark.asyncio
+    async def test_rotate_only_if_current_rotates_when_key_matches(
+        self, async_session_maker, managed_env
+    ):
+        """When the observed stale key is still the current key, rotation
+        proceeds (delete-then-generate: clear the alias, then mint).
+        """
+        user_id, org_id = await self._seed(async_session_maker)
+
+        with self._patched(async_session_maker) as (
+            mock_delete_alias,
+            mock_generate,
+            mock_delete_token,
+        ):
+            store = SaasSettingsStore(user_id, effective_org_id=org_id)
+            rotation = await store.rotate_managed_llm_key(
+                only_if_current='sk-old-managed-key'
+            )
+
+        expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
+        assert rotation.status == ManagedLlmKeyStatus.ROTATED
+        assert rotation.new_key == 'sk-new-managed-key'
+        mock_generate.assert_awaited_once()
+        mock_delete_alias.assert_awaited_once_with(key_alias=expected_alias)
+        mock_delete_token.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rotate_only_if_current_mints_when_member_has_no_key(
+        self, async_session_maker, managed_env
+    ):
+        """A member with no stored key must be minted a real one even under
+        ``only_if_current``: ``None != <observed key>`` must not be read as
+        "a concurrent rotation already replaced it" and short-circuit to
+        ROTATED with ``new_key=None``.
+        """
+        user_id, org_id = await self._seed(async_session_maker)
+        expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
+
+        # ``_llm_api_key = ''`` is how an unset member key is stored (the column
+        # is NOT NULL); ``rotate`` reads that as ``old_key is None``.
+        async with async_session_maker() as session:
+            await session.execute(
+                update(OrgMember)
+                .where(
+                    OrgMember.org_id == org_id,
+                    OrgMember.user_id == uuid.UUID(user_id),
+                )
+                .values(_llm_api_key='')
+            )
+            await session.commit()
+
+        with self._patched(async_session_maker) as (
+            mock_delete_alias,
+            mock_generate,
+            mock_delete_token,
+        ):
+            store = SaasSettingsStore(user_id, effective_org_id=org_id)
+            rotation = await store.rotate_managed_llm_key(
+                only_if_current='sk-a-key-the-caller-observed'
+            )
+
+        assert rotation.status == ManagedLlmKeyStatus.ROTATED
+        assert rotation.new_key == 'sk-new-managed-key'
+        mock_generate.assert_awaited_once()
+        mock_delete_alias.assert_awaited_once_with(key_alias=expected_alias)
+        mock_delete_token.assert_not_called()
+
+        member = await self._member_key(async_session_maker, org_id, user_id)
+        assert member.llm_api_key.get_secret_value() == 'sk-new-managed-key'
+
+    def test_rotation_advisory_lock_key_is_per_org_and_fits_bigint(self):
+        """The per-org advisory lock key must be stable, distinct per org, and
+        fit a signed 64-bit ``bigint`` (Postgres ``pg_advisory_xact_lock``'s
+        argument). A constant or under-wide key silently collapses per-org
+        serialization onto a shared lock or collides unrelated orgs.
+        """
+        org_a, org_b = str(uuid.uuid4()), str(uuid.uuid4())
+
+        key_a = _org_rotation_advisory_lock_key(org_a)
+        assert _org_rotation_advisory_lock_key(org_a) == key_a
+        assert _org_rotation_advisory_lock_key(org_b) != key_a
+
+        assert -(2**63) <= key_a < 2**63
+        # Derived from the full 64 bits, so distinct orgs collide at ~2^-64
+        # rather than the ~2^-32 a narrower digest would give.
+        keys = [_org_rotation_advisory_lock_key(str(uuid.uuid4())) for _ in range(16)]
+        assert max(abs(k) for k in keys) > 2**48
+
+    @pytest.mark.asyncio
+    async def test_concurrent_rotations_serialize_without_orphaning_survivor(
+        self, async_session_maker, managed_env
+    ):
+        """Overlapping stale-key refreshes for one org (the enterprise#439
+        scenario) serialize under the per-org advisory lock: exactly one rotation
+        mints a new key and the rest reuse it via ``only_if_current``, so every
+        start converges on the same valid key and no sandbox is orphaned.
+        """
+        import asyncio
+
+        user_id, org_id = await self._seed(async_session_maker)
+        expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
+
+        with self._patched(async_session_maker) as (
+            mock_delete_alias,
+            mock_generate,
+            mock_delete_token,
+        ):
+            mock_generate.side_effect = [f'sk-gen-{i}' for i in range(20)]
+
+            async def _refresh():
+                # Every start observed the same stale key 'sk-old-managed-key'.
+                store = SaasSettingsStore(user_id, effective_org_id=org_id)
+                return await store.rotate_managed_llm_key(
+                    only_if_current='sk-old-managed-key'
+                )
+
+            results = await asyncio.gather(*[_refresh() for _ in range(4)])
+
+        assert all(r.status == ManagedLlmKeyStatus.ROTATED for r in results)
+
+        member = await self._member_key(async_session_maker, org_id, user_id)
+        final_key = member.llm_api_key.get_secret_value()
+
+        # All four starts converge on the one freshly-minted key.
+        handed = {r.new_key for r in results}
+        assert handed == {final_key}
+        assert final_key == 'sk-gen-0'
+        # Only the winner rotates: one alias-clear + one mint; the losers reuse
+        # the current key instead of rotating (and orphaning) it.
+        mock_generate.assert_awaited_once()
+        mock_delete_alias.assert_awaited_once_with(key_alias=expected_alias)
+        mock_delete_token.assert_not_called()
+
     # --- endpoint wiring (delegates to the real store) ---
 
     @pytest.mark.asyncio
     async def test_route_refreshes_and_deletes_previous_token(
         self, async_session_maker, managed_env
     ):
-        """The endpoint delegates to the real store and best-effort deletes the
-        old token only after the new key is persisted.
+        """The endpoint delegates the whole managed-key lifecycle to the store,
+        which clears the alias then mints the replacement; the route does not
+        delete keys itself.
         """
         user_id, org_id = await self._seed(async_session_maker)
+        expected_alias = get_openhands_cloud_key_alias(user_id, str(org_id))
 
         with self._patched_route(async_session_maker, user_id, org_id) as (
             mock_delete_alias,
@@ -845,10 +1034,11 @@ class TestRefreshManagedLlmApiKey:
             )
 
         assert result == ManagedLlmApiKeyRefreshResponse(refreshed=True)
-        mock_delete_alias.assert_awaited_once()
+        # The store clears the shared alias under the advisory lock, then mints;
+        # the route no longer deletes any key itself.
+        mock_delete_alias.assert_awaited_once_with(key_alias=expected_alias)
         mock_generate.assert_awaited_once()
-        # The old token is deleted best-effort after persist.
-        mock_delete_token.assert_awaited_once_with('sk-old-managed-key')
+        mock_delete_token.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_route_rejects_non_managed_effective_config(
@@ -931,29 +1121,28 @@ class TestRefreshManagedLlmApiKey:
         mock_delete_token.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_route_continues_when_old_key_delete_fails(
+    async def test_route_continues_when_alias_clear_fails(
         self, async_session_maker, managed_env
     ):
+        """A best-effort alias-clear failure does not abort the rotation: the
+        store logs it and still mints + persists the replacement key.
+        """
         user_id, org_id = await self._seed(async_session_maker)
 
-        with (
-            self._patched_route(async_session_maker, user_id, org_id) as (
-                _mock_delete_alias,
-                _mock_generate,
-                _mock_delete_token_ok,
-            ),
-            patch(
-                'storage.lite_llm_manager.LiteLlmManager.delete_key',
-                new_callable=AsyncMock,
-                side_effect=Exception('delete failed'),
-            ) as mock_delete_token,
+        with self._patched_route(async_session_maker, user_id, org_id) as (
+            mock_delete_alias,
+            mock_generate,
+            mock_delete_token,
         ):
+            mock_delete_alias.side_effect = Exception('alias clear failed')
             result = await refresh_managed_llm_api_key(
                 user_id=user_id, effective_org_id=org_id
             )
 
         assert result == ManagedLlmApiKeyRefreshResponse(refreshed=True)
-        mock_delete_token.assert_awaited_once_with('sk-old-managed-key')
+        mock_delete_alias.assert_awaited_once()
+        mock_generate.assert_awaited_once()
+        mock_delete_token.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_route_unexpected_error_returns_500(self, managed_env):
