@@ -37,6 +37,11 @@ with patch.dict(
     from openhands.app_server.services.db_session_injector import (
         DbSessionInjector,
     )
+    from openhands.db.session_timezone import (
+        build_asyncpg_timezone_args,
+        build_libpq_timezone_args,
+        build_pg8000_timezone_args,
+    )
     from openhands.db.ssl import (
         build_asyncpg_connect_args,
         build_db_url_query,
@@ -235,7 +240,9 @@ class TestDbSessionInjectorConnections:
             assert 'test_db' in url_str
 
             # Verify other parameters
-            assert call_args[1]['connect_args'] == {}
+            assert call_args[1]['connect_args'] == {
+                'startup_params': {'timezone': 'UTC'}
+            }
             assert call_args[1]['pool_size'] == 25
             assert call_args[1]['max_overflow'] == 10
             assert call_args[1]['pool_pre_ping']
@@ -269,7 +276,9 @@ class TestDbSessionInjectorConnections:
             assert 'test_db' in url_str
 
             # Verify other parameters
-            assert call_args[1]['connect_args'] == {}
+            assert call_args[1]['connect_args'] == {
+                'server_settings': {'timezone': 'UTC'}
+            }
             assert call_args[1]['pool_size'] == 25
             assert call_args[1]['max_overflow'] == 10
             assert call_args[1]['pool_pre_ping']
@@ -294,7 +303,8 @@ class TestDbSessionInjectorConnections:
             service.get_db_engine()
 
             assert mock_create_engine.call_args[1]['connect_args'] == {
-                'ssl_context': True
+                'ssl_context': True,
+                'startup_params': {'timezone': 'UTC'},
             }
 
     @pytest.mark.asyncio
@@ -317,7 +327,8 @@ class TestDbSessionInjectorConnections:
             await service.get_async_db_engine()
 
             assert mock_create_async_engine.call_args[1]['connect_args'] == {
-                'ssl': 'require'
+                'ssl': 'require',
+                'server_settings': {'timezone': 'UTC'},
             }
 
     def test_build_pg8000_connect_args_for_ssl_modes(self):
@@ -341,6 +352,25 @@ class TestDbSessionInjectorConnections:
     def test_build_connect_args_rejects_unsupported_ssl_mode(self):
         with pytest.raises(ValueError, match='Unsupported DB_SSL_MODE'):
             build_pg8000_connect_args('verify-full')
+
+    def test_build_timezone_args_pin_utc_as_startup_parameters(self):
+        assert build_pg8000_timezone_args() == {'startup_params': {'timezone': 'UTC'}}
+        assert build_asyncpg_timezone_args() == {'server_settings': {'timezone': 'UTC'}}
+        assert build_libpq_timezone_args() == {'options': '-c timezone=UTC'}
+
+    def test_sqlite_connection_passes_no_connect_args(self, temp_persistence_dir):
+        service = DbSessionInjector(
+            persistence_dir=temp_persistence_dir, ssl_mode='require'
+        )
+
+        with patch(
+            'openhands.app_server.services.db_session_injector.create_engine'
+        ) as mock_create_engine:
+            mock_create_engine.return_value = MagicMock()
+
+            service.get_db_engine()
+
+            assert mock_create_engine.call_args[1]['connect_args'] == {}
 
     @patch(
         'openhands.app_server.services.db_session_injector.DbSessionInjector._create_gcp_engine'
@@ -551,6 +581,7 @@ class TestDbSessionInjectorGCPIntegration:
                 user='test_user',
                 password='test_password',
                 db='test_db',
+                startup_params={'timezone': 'UTC'},
             )
 
     @pytest.mark.asyncio
@@ -573,6 +604,7 @@ class TestDbSessionInjectorGCPIntegration:
                 user='test_user',
                 password='test_password',
                 db='test_db',
+                server_settings={'timezone': 'UTC'},
             )
 
 
