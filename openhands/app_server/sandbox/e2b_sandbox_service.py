@@ -106,6 +106,22 @@ def _as_e2b_spec(sandbox_spec: SandboxSpecInfo) -> E2BSandboxSpecInfo:
     return E2BSandboxSpecInfo(**sandbox_spec.model_dump())
 
 
+def _init_api_key(sandbox_spec: E2BSandboxSpecInfo) -> str | None:
+    """The template's init key, treating an empty value as unset."""
+    if sandbox_spec.init_api_key is None:
+        return None
+    return sandbox_spec.init_api_key.get_secret_value() or None
+
+
+MISSING_INIT_API_KEY = (
+    'has no init API key. The E2B template boots its agent server with a '
+    'static OH_SECRET_KEY, and the app server must be configured with the '
+    'same value: set E2B_INIT_API_KEY (or '
+    'OH_SANDBOX_SPEC_SPECS_0_INIT_API_KEY) to the key the template was built '
+    'with - scripts/e2b/build_template.py prints it.'
+)
+
+
 @dataclass
 class E2BSandboxService(SandboxService):
     """Sandbox service backed by E2B Firecracker microVMs.
@@ -443,6 +459,14 @@ class E2BSandboxService(SandboxService):
             )
         )
 
+        # Checked before create: without the key the init handshake cannot
+        # succeed, so the sandbox would be built only to be killed a moment
+        # later with a 401 that says nothing about the actual cause.
+        if _init_api_key(sandbox_spec) is None:
+            raise SandboxError(
+                f'Sandbox spec {sandbox_spec.id!r} {MISSING_INIT_API_KEY}'
+            )
+
         user_id = await self.user_context.get_user_id()
         metadata = {
             MANAGED_METADATA_KEY: 'true',
@@ -514,9 +538,8 @@ class E2BSandboxService(SandboxService):
         )
         await self._wait_for_dormant(agent_server_url)
 
-        headers = {}
-        if sandbox_spec.init_api_key:
-            headers['X-Init-API-Key'] = sandbox_spec.init_api_key.get_secret_value()
+        init_api_key = _init_api_key(sandbox_spec)
+        headers = {'X-Init-API-Key': init_api_key} if init_api_key else {}
         try:
             response = await self.httpx_client.post(
                 f'{agent_server_url}/api/init',
@@ -532,6 +555,12 @@ class E2BSandboxService(SandboxService):
                 f'Agent server init for sandbox {e2b_sandbox_id} returned '
                 f'{response.status_code}: {response.text}'
             )
+            if response.status_code == 401:
+                raise SandboxError(
+                    f'The agent server in sandbox {e2b_sandbox_id} rejected the '
+                    'init API key. It must match the OH_SECRET_KEY baked into '
+                    f'template {sandbox_spec.id!r}.'
+                )
             raise SandboxError(f'Failed to initialize sandbox {e2b_sandbox_id}')
 
     async def _wait_for_dormant(self, agent_server_url: str) -> None:

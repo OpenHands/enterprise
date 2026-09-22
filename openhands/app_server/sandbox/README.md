@@ -31,7 +31,7 @@ with `RUNTIME=e2b`, which also selects `E2BSandboxSpecService`.
 | `E2B_DOMAIN` | Domain sandbox ports are exposed under, as `https://{port}-{sandbox_id}.{domain}` |
 | `E2B_API_URL` | Control plane URL. Self hosted clusters only; otherwise `https://api.{domain}` |
 | `E2B_TEMPLATE` | Template to start sandboxes from. Defaults to `openhands-agent-server` |
-| `E2B_INIT_API_KEY` | The `OH_SECRET_KEY` baked into the template, sent as `X-Init-API-Key` on `POST /api/init` |
+| `E2B_INIT_API_KEY` | **Required.** The `OH_SECRET_KEY` baked into the template, sent as `X-Init-API-Key` on `POST /api/init` |
 
 Build the template first — sandboxes are created from it, not from an image
 reference:
@@ -40,7 +40,15 @@ reference:
 uv run scripts/e2b/build_template.py
 ```
 
-The script prints the `E2B_INIT_API_KEY` to configure the app server with.
+The script generates an init key, bakes it into the template as
+`OH_SECRET_KEY`, and prints it at the end as `E2B_INIT_API_KEY=...`. **That
+value must be given to the app server**, either as `E2B_INIT_API_KEY` or as
+`OH_SANDBOX_SPEC_SPECS_0_INIT_API_KEY`. The two are one key seen from two
+sides: the template boots its agent server holding it, and the app server has
+to present the same value to claim a sandbox. Without it `start_sandbox` fails
+before creating anything; with the wrong value the agent server answers `POST
+/api/init` with a 401. Pass `--init-api-key` to rebuild a template without
+rotating its key.
 
 The backend keeps no state of its own. Ownership and spec identity live in E2B
 sandbox metadata (`oh_managed`, `oh_user_id`, `oh_spec_id`), and each sandbox's

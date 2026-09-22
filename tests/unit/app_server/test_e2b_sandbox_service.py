@@ -375,12 +375,43 @@ class TestInitHandshake:
         assert 'OH_WEB_URL' in warning.call_args.args[0]
 
     @pytest.mark.asyncio
-    async def test_no_init_header_when_the_template_has_no_key(self, sdk):
+    @pytest.mark.parametrize('init_api_key', [None, ''])
+    async def test_a_missing_init_key_fails_before_creating_a_sandbox(
+        self, sdk, init_api_key
+    ):
         agent_server = FakeAgentServer()
 
-        await _service(httpx_client=agent_server, init_api_key=None).start_sandbox()
+        with pytest.raises(SandboxError) as raised:
+            await _service(
+                httpx_client=agent_server, init_api_key=init_api_key
+            ).start_sandbox()
 
-        assert agent_server.init_post_headers[0] == {}
+        sdk.create.assert_not_awaited()
+        sdk.kill.assert_not_awaited()
+        assert not agent_server.init_post_bodies
+        assert 'E2B_INIT_API_KEY' in str(raised.value.detail)
+        assert 'OH_SECRET_KEY' in str(raised.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_init_key_says_so(self, sdk):
+        agent_server = FakeAgentServer(init_post_status=401)
+
+        with pytest.raises(SandboxError) as raised:
+            await _service(httpx_client=agent_server).start_sandbox()
+
+        detail = str(raised.value.detail)
+        assert 'init API key' in detail
+        assert 'OH_SECRET_KEY' in detail
+        assert INIT_API_KEY not in detail
+
+    @pytest.mark.asyncio
+    async def test_other_init_failures_keep_the_generic_message(self, sdk):
+        agent_server = FakeAgentServer(init_post_status=500)
+
+        with pytest.raises(SandboxError) as raised:
+            await _service(httpx_client=agent_server).start_sandbox()
+
+        assert 'Failed to initialize sandbox' in str(raised.value.detail)
 
     @pytest.mark.asyncio
     async def test_waits_for_dormant_through_edge_errors(self, sdk):
@@ -416,7 +447,7 @@ class TestInitHandshake:
 
     @pytest.mark.asyncio
     async def test_kills_the_sandbox_when_init_is_rejected(self, sdk):
-        agent_server = FakeAgentServer(init_post_status=401)
+        agent_server = FakeAgentServer(init_post_status=403)
 
         with pytest.raises(SandboxError):
             await _service(httpx_client=agent_server).start_sandbox()
