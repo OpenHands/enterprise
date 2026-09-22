@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,12 +11,15 @@ from uuid import UUID
 import httpx
 from fastapi import HTTPException, Request, status
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.services.injector import Injector, InjectorState
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import RoleName
+from server.routes.org_models import SpendStatus
 from server.services.smtp_email_service import SMTPEmailService
+from storage.database import sqlstate
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
 from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
@@ -27,6 +31,7 @@ from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
 from storage.slack_team import SlackTeam
 from storage.user import User
+from utils.sql import escape_ilike
 
 # The Quint oracle client is vendored under quint-specs/, which the application
 # image does not ship. Without it the instrumentation below is a no-op, so the
@@ -59,6 +64,9 @@ DEFAULT_THRESHOLDS = (
 LITELLM_FINANCIAL_READ_MAX_ATTEMPTS = 3
 LITELLM_FINANCIAL_READ_RETRY_DELAY_SECONDS = 0.1
 
+# Postgres SQLSTATE for unique_violation.
+_UNIQUE_VIOLATION = '23505'
+
 
 @dataclass
 class BudgetCycle:
@@ -84,7 +92,7 @@ class LiteLlmFinancialSnapshot:
 @dataclass(frozen=True)
 class BudgetFinancialSnapshotResult:
     snapshot: LiteLlmFinancialSnapshot | None
-    status: Literal['live', 'stale', 'unavailable']
+    status: SpendStatus
     error: str | None = None
 
 
@@ -105,16 +113,28 @@ def _subtract_month(year: int, month: int) -> tuple[int, int]:
     return year, month - 1
 
 
+def _cycle_day(year: int, month: int, reset_day: int) -> int:
+    """The reset day this month can actually hold.
+
+    reset_day is a plain Integer column with no CHECK constraint, so it is untrusted:
+    clamp both ends to keep every value a day datetime() accepts.
+    """
+    return max(1, min(reset_day, calendar.monthrange(year, month)[1]))
+
+
 def _current_cycle_start(now: datetime, reset_day: int) -> datetime:
-    if now.day >= reset_day:
-        return datetime(now.year, now.month, reset_day, tzinfo=UTC)
+    day_this_month = _cycle_day(now.year, now.month, reset_day)
+    if now.day >= day_this_month:
+        return datetime(now.year, now.month, day_this_month, tzinfo=UTC)
     prev_year, prev_month = _subtract_month(now.year, now.month)
-    return datetime(prev_year, prev_month, reset_day, tzinfo=UTC)
+    return datetime(
+        prev_year, prev_month, _cycle_day(prev_year, prev_month, reset_day), tzinfo=UTC
+    )
 
 
 def _next_cycle_start(cycle_start: datetime, reset_day: int) -> datetime:
     year, month = _add_month(cycle_start.year, cycle_start.month)
-    return datetime(year, month, reset_day, tzinfo=UTC)
+    return datetime(year, month, _cycle_day(year, month, reset_day), tzinfo=UTC)
 
 
 def _optional_nonnegative_float(value: object, field_name: str) -> float | None:
@@ -247,6 +267,13 @@ def _effective_user_budget_limit(
     return default_limit, False, False
 
 
+def _member_cap(baseline: float, effective_limit: float) -> float:
+    # LiteLLM compares cumulative spend against an absolute member cap, so a cap
+    # below the member's cycle baseline is already exceeded the moment it is
+    # written. Nothing rejects a non-positive allowance, so clamp it here.
+    return baseline + max(effective_limit, 0)
+
+
 def _budget_values_match(actual: float | None, expected: float | None) -> bool:
     if actual is None or expected is None:
         return actual is expected
@@ -326,7 +353,9 @@ def _budget_policy_comparison(
                 if baseline is None:
                     drift_errors.append(f'member_cycle_baseline_missing: {user_id}')
                     continue
-                expected_member_budgets[user_id] = baseline + effective_limit
+                expected_member_budgets[user_id] = _member_cap(
+                    baseline, effective_limit
+                )
             else:
                 expected_member_budgets[user_id] = None
 
@@ -377,10 +406,6 @@ def _budget_policy_comparison(
             snapshot.observed_at if snapshot is not None else None
         ),
     }
-
-
-def _escape_ilike(value: str) -> str:
-    return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 
 class OrgBudgetService:
@@ -815,12 +840,30 @@ class OrgBudgetService:
             await self._hydrate_cycle_baselines(settings)
             return settings
 
-        return await self.store.create_settings(
-            org_id=org_id,
-            reset_day=1,
-            cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
-            thresholds=DEFAULT_THRESHOLDS,
-        )
+        # Insert inside a savepoint so a concurrent creator's unique violation does
+        # not poison the caller's transaction.
+        try:
+            async with self.db_session.begin_nested():
+                settings = await self.store.create_settings(
+                    org_id=org_id,
+                    reset_day=1,
+                    cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
+                    thresholds=DEFAULT_THRESHOLDS,
+                )
+        except IntegrityError as exc:
+            # Only a unique violation means the race was lost; create_settings also
+            # writes rows carrying an FK to org.id, and a missing org must keep its
+            # own error rather than be reported as a re-read that found nothing.
+            if sqlstate(exc) != _UNIQUE_VIOLATION:
+                raise
+            # Finding the winner's committed row depends on READ COMMITTED, where
+            # each statement takes a fresh snapshot. Under REPEATABLE READ this
+            # session's snapshot predates that commit and the re-read returns None.
+            settings = await self.store.get_settings(org_id)
+            if settings is None:
+                raise
+            await self._hydrate_cycle_baselines(settings)
+        return settings
 
     async def _hydrate_cycle_baselines(self, settings: OrgBudgetSettings) -> None:
         """Make the baseline table authoritative for the current cycle.
@@ -1121,7 +1164,7 @@ class OrgBudgetService:
 
         search_value = (users_search or '').strip()
         if search_value:
-            escaped = _escape_ilike(search_value)
+            escaped = escape_ilike(search_value)
             pattern = f'%{escaped}%'
             query = query.where(
                 or_(
@@ -1211,6 +1254,56 @@ class OrgBudgetService:
             applied_at=policy_comparison['applied_at'],
         )
         return user_row
+
+    async def get_my_budget(
+        self, org_id: UUID, user_id: UUID, include_spend: bool = True
+    ) -> dict:
+        """Read-only view of one member's own budget for the current cycle.
+
+        Unlike ``get_user_budget_row`` this never creates a settings row, so it
+        is safe to call for orgs that have not configured budgets.
+        ``include_spend=False`` answers only whether budgets are enabled,
+        without reading LiteLLM.
+        """
+        if await self._is_personal_org(org_id):
+            return {'enabled': False}
+        settings = await self.store.get_settings(org_id)
+        if settings is None or not settings.enabled:
+            return {'enabled': False}
+        if not include_spend:
+            return {'enabled': True}
+
+        await self._hydrate_cycle_baselines(settings)
+        override = await self._get_override(org_id, user_id)
+        snapshot_result = await self._get_financial_snapshot(
+            org_id, settings, allow_stale=True
+        )
+        snapshot = snapshot_result.snapshot
+        effective_limit, is_disabled, is_override = _effective_user_budget_limit(
+            override, settings.default_user_monthly_limit
+        )
+        user_id_str = str(user_id)
+        cycle = self._current_cycle(settings)
+        return {
+            'enabled': True,
+            'monthly_limit': effective_limit,
+            'is_disabled': is_disabled,
+            'is_override': is_override,
+            # The settings row is rewritten on every spend snapshot, so only an
+            # override carries a meaningful "set on" date.
+            'limit_updated_at': override.updated_at if override else None,
+            'current_spend': _litellm_member_cycle_spend(
+                settings,
+                user_id_str,
+                snapshot.members.get(user_id_str) if snapshot is not None else None,
+            ),
+            'cycle_start_at': cycle.start_at,
+            'cycle_end_at': cycle.end_at,
+            'spend_status': snapshot_result.status,
+            'spend_observed_at': (
+                snapshot.observed_at if snapshot is not None else None
+            ),
+        }
 
     async def _record_litellm_sync(
         self,
@@ -1397,8 +1490,7 @@ class OrgBudgetService:
                 max_budget_in_team = None
                 clear_budget = True
             elif effective_limit is not None:
-                # LiteLLM compares cumulative spend against an absolute member cap.
-                max_budget_in_team = baseline + effective_limit
+                max_budget_in_team = _member_cap(baseline, effective_limit)
                 clear_budget = False
             else:
                 max_budget_in_team = None
