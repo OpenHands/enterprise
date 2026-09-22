@@ -141,16 +141,27 @@ async def list_user_orgs(
         int,
         Query(title='The max number of results in the page', gt=0, le=100),
     ] = 100,
+    name: Annotated[
+        str | None,
+        Query(
+            title='Filter organizations by exact name',
+            min_length=1,
+            max_length=255,
+        ),
+    ] = None,
     user_id: str = Depends(get_user_id),
 ) -> OrgPage:
     """List organizations for the authenticated user.
 
     This endpoint returns a paginated list of all organizations that the
-    authenticated user is a member of.
+    authenticated user is a member of. When ``name`` is provided, only the
+    member organization with exactly that name is returned; a name the user
+    has no membership in yields an empty page.
 
     Args:
         page_id: Optional page ID (offset) for pagination
         limit: Maximum number of organizations to return (1-100, default 100)
+        name: Optional exact organization name filter
         user_id: Authenticated user ID (injected by dependency)
 
     Returns:
@@ -165,6 +176,7 @@ async def list_user_orgs(
             'user_id': user_id,
             'page_id': page_id,
             'limit': limit,
+            'org_name': name,
         },
     )
 
@@ -180,6 +192,7 @@ async def list_user_orgs(
             user_id=user_id,
             page_id=page_id,
             limit=limit,
+            name=name,
         )
 
         # Convert Org entities to OrgResponse objects
