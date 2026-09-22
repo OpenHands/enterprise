@@ -55,8 +55,8 @@ from openhands.app_server.utils.docker_utils import (
 _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
 
-# Ownership lives in the `v1_sandbox` table (see `sandbox_store`). These labels
-# tag managed containers so that one with no row can be found.
+# Ownership lives in the sandbox table (see `sandbox_store`). These labels tag
+# managed containers so that one with no row can be found.
 MANAGED_LABEL = 'openhands.managed'
 SANDBOX_SPEC_ID_LABEL = 'openhands.sandbox_spec_id'
 CREATED_BY_USER_ID_LABEL = 'openhands.created_by_user_id'
@@ -134,8 +134,8 @@ class DockerSandboxService(SandboxService):
     def _managed_containers_by_name(self) -> dict[str, object]:
         """Every managed container on the host, indexed by name.
 
-        Ownership has already been decided by the query against `v1_sandbox`,
-        so this only supplies live status.
+        Ownership has already been decided by the query against the sandbox
+        table, so this only supplies live status.
         """
         containers = self.docker_client.containers.list(
             all=True,
@@ -347,7 +347,7 @@ class DockerSandboxService(SandboxService):
     ) -> SandboxPage:
         """Search for sandboxes.
 
-        One query against `v1_sandbox` for the page, then one list of the
+        One query against the sandbox table for the page, then one list of the
         managed containers for their live status.
         """
         page = await search_stored_sandboxes(
@@ -613,17 +613,15 @@ class DockerSandboxService(SandboxService):
             return False
 
     async def delete_sandbox(self, sandbox_id: str) -> bool:
-        """Delete a sandbox.
+        """Delete a sandbox and its row.
 
-        The row is soft deleted rather than removed, and its key hash is
-        cleared so a leaked key stops resolving. A container the daemon has
-        already lost still retires its row, so the record cannot outlive what
-        it describes.
+        A container the daemon has already lost still has its row removed, so
+        the record cannot outlive what it describes.
 
         Returns False only when there is no such sandbox or the caller may not
         see it. A daemon failure part way through raises
-        ``SandboxDeleteRetryError``, so a container that is still running is
-        never reported as gone.
+        ``SandboxDeleteRetryError`` and keeps the row, so a container that is
+        still running is never reported as gone.
         """
         stored_sandbox = await self._get_stored_sandbox(sandbox_id)
         if stored_sandbox is None:
@@ -639,7 +637,7 @@ class DockerSandboxService(SandboxService):
                 # Remove the container
                 container.remove()
             except NotFound:
-                # Removed under us. The row still needs retiring.
+                # Removed under us. The row still needs removing.
                 pass
             except APIError as exc:
                 _logger.exception(
@@ -649,8 +647,7 @@ class DockerSandboxService(SandboxService):
                     f'Could not complete delete for sandbox {sandbox_id}: {exc}'
                 ) from exc
 
-        stored_sandbox.deleted_at = utc_now()
-        stored_sandbox.session_api_key_hash = None
+        await self.db_session.delete(stored_sandbox)
         return True
 
 

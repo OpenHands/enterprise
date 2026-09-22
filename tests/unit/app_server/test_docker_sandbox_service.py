@@ -1,7 +1,7 @@
 """Tests for DockerSandboxService.
 
 This module tests the Docker sandbox service implementation, focusing on:
-- `v1_sandbox` as the store for ownership and spec identity
+- the sandbox table as the store for ownership and spec identity
 - user scoping, including cross user isolation and the admin (no user id) case
 - container lifecycle management (start, pause, resume, delete)
 - search and retrieval with pagination off the table
@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 from docker.errors import APIError, DockerException, NotFound
+from sqlalchemy import select
 
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox import docker_sandbox_spec_service
@@ -65,7 +66,7 @@ def _stored(
     session_api_key: str | None = None,
     created_at: datetime | None = None,
 ) -> StoredSandbox:
-    """The `v1_sandbox` row start_sandbox writes for a container."""
+    """The sandbox table row start_sandbox writes for a container."""
     return StoredSandbox(
         id=sandbox_id,
         backend=DOCKER_BACKEND,
@@ -76,6 +77,15 @@ def _stored(
         ),
         created_at=created_at or CREATED_AT,
     )
+
+
+async def _row_exists(db_session, sandbox_id: str) -> bool:
+    """Whether the sandbox's row is still in the database."""
+    await db_session.flush()
+    result = await db_session.execute(
+        select(StoredSandbox.id).where(StoredSandbox.id == sandbox_id)
+    )
+    return result.scalar_one_or_none() is not None
 
 
 def _user_context(
@@ -1033,7 +1043,7 @@ class TestDockerSandboxService:
         assert result is True
         mock_container.pause.assert_not_called()
 
-    async def test_delete_sandbox_success(self, service, store):
+    async def test_delete_sandbox_success(self, service, store, db_session):
         """Test successful sandbox deletion."""
         # Setup
         stored_sandbox = _stored('oh-test-abc123', session_api_key='session_key_123')
@@ -1050,8 +1060,7 @@ class TestDockerSandboxService:
         assert result is True
         mock_container.stop.assert_called_once_with(timeout=10)
         mock_container.remove.assert_called_once()
-        assert stored_sandbox.deleted_at is not None
-        assert stored_sandbox.session_api_key_hash is None
+        assert not await _row_exists(db_session, 'oh-test-abc123')
 
     async def test_delete_sandbox_hides_the_sandbox_afterwards(self, service, store):
         """Test that a deleted sandbox drops out of every read path."""
@@ -1072,13 +1081,12 @@ class TestDockerSandboxService:
             await service.get_sandbox_record_by_session_api_key('session_key_123')
         ) is None
 
-    async def test_delete_sandbox_retires_a_row_whose_container_is_gone(
-        self, service, store
+    async def test_delete_sandbox_removes_a_row_whose_container_is_gone(
+        self, service, store, db_session
     ):
-        """Test that a row outliving its container is still retired."""
+        """Test that a row outliving its container is still removed."""
         # Setup
-        stored_sandbox = _stored('oh-test-abc123')
-        await store(stored_sandbox)
+        await store(_stored('oh-test-abc123'))
         service.docker_client.containers.get.side_effect = NotFound('gone')
 
         # Execute
@@ -1086,13 +1094,14 @@ class TestDockerSandboxService:
 
         # Verify
         assert result is True
-        assert stored_sandbox.deleted_at is not None
+        assert not await _row_exists(db_session, 'oh-test-abc123')
 
-    async def test_delete_sandbox_failure_is_retryable(self, service, store):
+    async def test_delete_sandbox_failure_is_retryable(
+        self, service, store, db_session
+    ):
         """A container that is still running must not be reported as gone."""
         # Setup
-        stored_sandbox = _stored('oh-test-abc123', session_api_key='session_key_123')
-        await store(stored_sandbox)
+        await store(_stored('oh-test-abc123', session_api_key='session_key_123'))
         mock_container = MagicMock()
         mock_container.status = 'running'
         mock_container.labels = _labels()
@@ -1103,7 +1112,7 @@ class TestDockerSandboxService:
         with pytest.raises(SandboxDeleteRetryError):
             await service.delete_sandbox('oh-test-abc123')
 
-        assert stored_sandbox.deleted_at is None
+        assert await _row_exists(db_session, 'oh-test-abc123')
 
     async def test_delete_sandbox_already_stopped(self, service, store):
         """Test sandbox deletion when the container has already exited."""
@@ -1348,7 +1357,7 @@ class TestDockerSandboxService:
 
 
 class TestDockerSandboxServiceOwnership:
-    """Test cases for ownership held in `v1_sandbox`."""
+    """Test cases for ownership held in the sandbox table."""
 
     @pytest.fixture
     def user_a_service(self, service):
@@ -1455,7 +1464,6 @@ class TestDockerSandboxServiceOwnership:
         assert stored_sandbox.session_api_key_hash == hash_session_api_key(
             'test_session_key'
         )
-        assert stored_sandbox.deleted_at is None
 
     @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
     @patch('os.urandom')
