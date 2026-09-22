@@ -179,28 +179,6 @@ export function Budgets() {
     ? parseFloat(defaultAmount).toLocaleString()
     : "0";
 
-  const handleReset = () => {
-    if (!budgetData) return;
-    setOrgBudgetEnabled(budgetData.enabled);
-    setMonthlyLimit(
-      budgetData.monthly_limit ? budgetData.monthly_limit.toString() : "",
-    );
-    setBillingCycle(budgetData.reset_day === 15 ? "15th" : "1st");
-    setSlackChannel(budgetData.slack_channel ?? "");
-    setThresholds(
-      budgetData.thresholds.map((threshold) => ({
-        percentage: threshold.percentage,
-        email_enabled: threshold.email_enabled,
-        slack_enabled: threshold.slack_enabled,
-      })),
-    );
-    setDefaultAmount(
-      budgetData.default_user_monthly_limit
-        ? budgetData.default_user_monthly_limit.toString()
-        : "",
-    );
-  };
-
   const handleSaveOrgBudget = () => {
     if (!organizationId || !isMonthlyLimitValid) return;
     updateBudgets.mutate({
@@ -424,7 +402,6 @@ export function Budgets() {
           slackIntegrationEnabled={slackIntegrationEnabled}
           slackChannel={slackChannel}
           onSlackChannelChange={setSlackChannel}
-          onReset={handleReset}
           onSave={handleSaveOrgBudget}
           isSaving={updateBudgets.isPending}
           isMonthlyLimitValid={isMonthlyLimitValid}

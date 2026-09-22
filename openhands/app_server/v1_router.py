@@ -7,6 +7,12 @@ from openhands.app_server.event_callback import (
     webhook_router,
 )
 from openhands.app_server.git.git_router import router as git_router
+from openhands.app_server.mcp.mcp_oauth_router import (
+    callback_router as mcp_oauth_callback_router,
+)
+from openhands.app_server.mcp.mcp_oauth_router import (
+    router as mcp_oauth_router,
+)
 from openhands.app_server.mcp.mcp_test_router import router as mcp_test_router
 from openhands.app_server.pending_messages.pending_message_router import (
     router as pending_message_router,
@@ -36,4 +42,6 @@ router.include_router(webhook_router.router)
 router.include_router(web_client_router.router)
 router.include_router(git_router)
 router.include_router(mcp_test_router)
+router.include_router(mcp_oauth_router)
+router.include_router(mcp_oauth_callback_router)
 router.include_router(config_router)

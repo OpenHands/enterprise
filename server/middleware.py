@@ -180,6 +180,10 @@ class SetAuthCookieMiddleware:
             '/oauth/device/authorize',
             '/oauth/device/token',
             '/api/v1/web-client/config',
+            # OAuth providers redirect the user's browser here after an MCP
+            # server install consent; the cross-site navigation carries no
+            # session cookie and the route validates its single-use state.
+            '/api/v1/mcp/oauth/callback',
         )
         if path in ignore_paths:
             return False

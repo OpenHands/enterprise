@@ -24,9 +24,6 @@ from openhands.app_server.app_conversation.app_conversation_start_task_service i
     AppConversationStartTaskServiceInjector,
 )
 from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanService
-from openhands.app_server.app_lifespan.oss_app_lifespan_service import (
-    OssAppLifespanService,
-)
 from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.config_api.llm_model_service import (
     LLMModelService,
@@ -171,16 +168,11 @@ def resolve_provider_llm_base_url(
     return base_url
 
 
-def _get_default_lifespan():
-    # Check legacy parameters for saas mode. If we are in SAAS mode use
-    # SaasAppLifespanService to initialize PostHog analytics
-    if 'saas' in (os.getenv('OPENHANDS_CONFIG_CLS') or '').lower():
-        from server.app_lifespan.saas_app_lifespan_service import (
-            SaasAppLifespanService,
-        )
+def _get_default_lifespan() -> AppLifespanService:
+    # Imported lazily to match every other openhands/ -> server/ import.
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
 
-        return SaasAppLifespanService()
-    return OssAppLifespanService()
+    return SaasAppLifespanService()
 
 
 def _get_default_file_store() -> FileStore:
@@ -230,7 +222,7 @@ class AppServerConfig(OpenHandsModel):
         )
     )
     # Services
-    lifespan: AppLifespanService | None = Field(default_factory=_get_default_lifespan)
+    lifespan: AppLifespanService = Field(default_factory=_get_default_lifespan)
     app_mode: AppMode = AppMode.OPENHANDS
     web_client: WebClientConfigInjector = Field(
         default_factory=DefaultWebClientConfigInjector
@@ -519,7 +511,7 @@ def get_jwt_service(
     return injector.context(state, request)
 
 
-def get_app_lifespan_service() -> AppLifespanService | None:
+def get_app_lifespan_service() -> AppLifespanService:
     config = get_global_config()
     return config.lifespan
 

@@ -17,6 +17,7 @@ from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanSe
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
 from server.constants import DEPLOYMENT_MODE, IS_FEATURE_ENV
+from storage.database import sqlstate
 
 _ORG_CONDENSER_RECONCILIATION_LOCK_ID = 865115708052677401
 _TRANSIENT_SQLSTATES = {
@@ -32,15 +33,6 @@ class TransientReconciliationError(Exception):
     """Retryable org defaults reconciliation failure."""
 
 
-def _sqlstate(exc: BaseException) -> str | None:
-    orig = getattr(exc, 'orig', None)
-    for attr in ('sqlstate', 'pgcode'):
-        value = getattr(orig, attr, None)
-        if isinstance(value, str):
-            return value
-    return None
-
-
 def _is_transient_reconciliation_error(exc: BaseException) -> bool:
     if isinstance(exc, OperationalError):
         return True
@@ -48,7 +40,7 @@ def _is_transient_reconciliation_error(exc: BaseException) -> bool:
         return False
     if exc.connection_invalidated:
         return True
-    state = _sqlstate(exc)
+    state = sqlstate(exc)
     return bool(
         state
         and (
@@ -79,6 +71,7 @@ class SaasAppLifespanService(AppLifespanService):
             host=host,
             app_mode=AppMode.SAAS,
             is_feature_env=IS_FEATURE_ENV,
+            deployment_kind=('local' if DEPLOYMENT_MODE == 'self_hosted' else 'remote'),
         )
         await self._reconcile_org_condenser_defaults()
         return self
