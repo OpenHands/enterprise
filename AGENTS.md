@@ -148,7 +148,7 @@ Frontend:
 The SaaS/enterprise modules extend the OpenHands app server (`openhands/`). They live at the repository root, next to it:
 - `server/` - the SaaS server: authentication and user management (Keycloak integration), org management, billing (Stripe), routes, services
 - `storage/` - SQLAlchemy models and stores (PostgreSQL in production and in unit tests)
-- `integrations/` - GitHub, GitLab, Bitbucket, Azure DevOps, Jira, Linear and Slack integrations
+- `integrations/` - GitHub, GitLab, Bitbucket, Bitbucket Data Center, Azure DevOps, Jira, Jira Data Center and Slack integrations
 - `sync/` - CronJob entrypoints (`python -m sync.<job>`)
 - `analytics/`, `utils/` - SaaS analytics user provider and shared helpers
 - `migrations/` + `alembic.ini` - Alembic database migrations
@@ -206,8 +206,9 @@ The SaaS server uses Alembic for PostgreSQL-only database migrations. When makin
 The codebase includes integrations for:
 - **GitHub** - PR management, webhooks, app installations
 - **GitLab** - Similar to GitHub but for GitLab instances
-- **Jira** - Issue tracking and project management
-- **Linear** - Modern issue tracking
+- **Bitbucket** - Cloud and Data Center variants
+- **Azure DevOps** - Repository and PR management
+- **Jira** - Cloud and Data Center variants
 - **Slack** - Team communication and notifications
 
 Each integration follows a consistent pattern with service classes, storage models, and API endpoints.
@@ -296,8 +297,7 @@ In everyday language a user saying "SaaS" / "in SaaS" / "SaaS-only" / "this is a
 ## Template for Github Pull Request
 
 If you are starting a pull request (PR), please follow the template in `.github/pull_request_template.md`.
-- The PR template now starts with a `HUMAN:` section, the human-tested checkbox, and an `AGENT:` section.
-- `.github/workflows/pr-readiness-confirm.yml` checks non-draft PRs for non-empty text between `HUMAN:` and the human-tested checkbox; if present it adds a 👍 reaction, and if absent it posts a reminder comment.
+- The PR template starts with a `HUMAN:` section, the human-tested checkbox, and an `AGENT:` section.
 
 
 ## Implementation Details
