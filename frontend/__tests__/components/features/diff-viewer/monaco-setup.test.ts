@@ -1,37 +1,46 @@
-import { describe, it, expect, vi } from "vitest";
-import { loader } from "@monaco-editor/react";
+import { describe, it, expect, vi, beforeAll } from "vitest";
 import * as monaco from "monaco-editor";
-import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-import CssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
-import HtmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
-import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
-// The module under test does all of its work as import side effects.
-import "#/components/features/diff-viewer/monaco-setup";
+import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
+import JsonWorker from "monaco-editor/language/json/json.worker.js?worker";
+import CssWorker from "monaco-editor/language/css/css.worker.js?worker";
+import HtmlWorker from "monaco-editor/language/html/html.worker.js?worker";
+import TsWorker from "monaco-editor/language/typescript/ts.worker.js?worker";
+
+/** Records `loader.config` calls from the mocked `@monaco-editor/react`. */
+const loaderCalls = () =>
+  (globalThis as unknown as { __loaderCalls: unknown[][] }).__loaderCalls;
 
 vi.mock("monaco-editor", () => ({ editor: {}, languages: {} }));
 
-vi.mock("@monaco-editor/react", () => ({
-  loader: { config: vi.fn() },
-}));
+vi.mock("@monaco-editor/react", () => {
+  const g = globalThis as unknown as { __loaderCalls?: unknown[][] };
+  g.__loaderCalls = [];
+  return {
+    loader: {
+      config: (...args: unknown[]) => {
+        g.__loaderCalls!.push(args);
+      },
+    },
+  };
+});
 
-vi.mock("monaco-editor/esm/vs/editor/editor.worker?worker", () => ({
+vi.mock("monaco-editor/editor/editor.worker.js?worker", () => ({
   default: class MockEditorWorker {},
 }));
 
-vi.mock("monaco-editor/esm/vs/language/json/json.worker?worker", () => ({
+vi.mock("monaco-editor/language/json/json.worker.js?worker", () => ({
   default: class MockJsonWorker {},
 }));
 
-vi.mock("monaco-editor/esm/vs/language/css/css.worker?worker", () => ({
+vi.mock("monaco-editor/language/css/css.worker.js?worker", () => ({
   default: class MockCssWorker {},
 }));
 
-vi.mock("monaco-editor/esm/vs/language/html/html.worker?worker", () => ({
+vi.mock("monaco-editor/language/html/html.worker.js?worker", () => ({
   default: class MockHtmlWorker {},
 }));
 
-vi.mock("monaco-editor/esm/vs/language/typescript/ts.worker?worker", () => ({
+vi.mock("monaco-editor/language/typescript/ts.worker.js?worker", () => ({
   default: class MockTsWorker {},
 }));
 
@@ -39,12 +48,20 @@ const getWorker = (label: string) =>
   globalThis.MonacoEnvironment?.getWorker?.("test-worker-id", label);
 
 describe("monaco-setup", () => {
+  beforeAll(async () => {
+    // The module under test does all of its work as import side effects, so it
+    // must be imported after the mocks above are registered.
+    await import("#/components/features/diff-viewer/monaco-setup");
+  });
+
   it("points the @monaco-editor/react loader at the bundled monaco instance", () => {
     // With a monaco instance configured, loader.init() resolves with it and
     // never injects the cdn.jsdelivr.net <script> tag, which the CSP
     // (script-src 'self' ...) blocks and air-gapped installs cannot reach.
-    expect(loader.config).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(loader.config).mock.lastCall?.[0]?.monaco).toBe(monaco);
+    expect(loaderCalls().length).toBeGreaterThanOrEqual(1);
+    expect(
+      (loaderCalls().at(-1)?.[0] as { monaco: unknown }).monaco,
+    ).toBe(monaco);
   });
 
   it("routes json language services to the bundled json worker", () => {

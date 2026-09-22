@@ -84,11 +84,7 @@ interface OrganizationBudgetTabProps {
   syncStatus: string | null;
   syncError: string | null;
   reconciliationState:
-    | "inactive"
-    | "pending"
-    | "healthy"
-    | "degraded"
-    | "failed";
+    "inactive" | "pending" | "healthy" | "degraded" | "failed";
   reconciliationError: string | null;
   desiredTeamMaxBudget: number | null;
   appliedTeamMaxBudget: number | null;

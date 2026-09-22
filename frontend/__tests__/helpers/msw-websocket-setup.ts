@@ -1,5 +1,5 @@
 import { ws } from "msw";
-import { setupServer } from "msw/node";
+import { server } from "#/mocks/node";
 
 /**
  * Creates a WebSocket link for MSW testing
@@ -10,16 +10,15 @@ export const createWebSocketLink = (url = "ws://localhost/events/socket") =>
   ws.link(url);
 
 /**
- * Creates and configures an MSW server for WebSocket testing
- * @param wsLink - WebSocket link to use for the server
- * @returns Configured MSW server
+ * Returns the MSW server that WebSocket handlers should be registered on.
+ *
+ * MSW >=2.13 dispatches every matching WebSocket handler, and each listening
+ * `setupServer()` installs its own interceptor. Creating a second server here
+ * (on top of the global one started in `vitest.setup.ts`) makes every
+ * connection emit two `connection` events, so reuse the global server.
  */
-export const createWebSocketMockServer = (wsLink: ReturnType<typeof ws.link>) =>
-  setupServer(
-    wsLink.addEventListener("connection", ({ server }) => {
-      server.connect();
-    }),
-  );
+export const createWebSocketMockServer = (_wsLink: ReturnType<typeof ws.link>) =>
+  server;
 
 /**
  * Creates a complete WebSocket testing setup with server and link

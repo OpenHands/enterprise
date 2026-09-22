@@ -10,26 +10,26 @@ const renderTerminal = (commands: Command[] = []) => {
   return renderWithProviders(<Terminal />);
 };
 
+// Terminal is now read-only - no user input functionality
+global.ResizeObserver = vi.fn().mockImplementation(() => ({
+  observe: vi.fn(),
+  disconnect: vi.fn(),
+}));
+
+const mockTerminal = {
+  open: vi.fn(),
+  write: vi.fn(),
+  writeln: vi.fn(),
+  dispose: vi.fn(),
+  loadAddon: vi.fn(),
+};
+
+vi.mock("@xterm/xterm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@xterm/xterm")>()),
+  Terminal: vi.fn().mockImplementation(() => mockTerminal),
+}));
+
 describe.skip("Terminal", () => {
-  // Terminal is now read-only - no user input functionality
-  global.ResizeObserver = vi.fn().mockImplementation(() => ({
-    observe: vi.fn(),
-    disconnect: vi.fn(),
-  }));
-
-  const mockTerminal = {
-    open: vi.fn(),
-    write: vi.fn(),
-    writeln: vi.fn(),
-    dispose: vi.fn(),
-    loadAddon: vi.fn(),
-  };
-
-  vi.mock("@xterm/xterm", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@xterm/xterm")>()),
-    Terminal: vi.fn().mockImplementation(() => mockTerminal),
-  }));
-
   afterEach(() => {
     vi.clearAllMocks();
   });

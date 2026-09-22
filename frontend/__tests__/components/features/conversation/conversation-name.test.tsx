@@ -691,6 +691,12 @@ describe("ConversationNameContextMenu", () => {
   });
 });
 
+vi.mock("#/hooks/mutation/use-update-conversation-public-flag", () => ({
+  useUpdateConversationPublicFlag: () => ({
+    mutate: vi.fn(),
+  }),
+}));
+
 describe("ConversationNameContextMenu - Share Link Functionality", () => {
   const mockWriteText = vi.fn().mockResolvedValue(undefined);
 
@@ -704,12 +710,6 @@ describe("ConversationNameContextMenu - Share Link Functionality", () => {
     onCopyShareLink: mockOnCopyShareLink,
     shareUrl: "https://example.com/shared/conversations/test-id",
   };
-
-  vi.mock("#/hooks/mutation/use-update-conversation-public-flag", () => ({
-    useUpdateConversationPublicFlag: () => ({
-      mutate: vi.fn(),
-    }),
-  }));
 
   beforeAll(() => {
     // Mock navigator.clipboard

@@ -59,11 +59,9 @@ vi.mock("#/hooks/query/use-user-conversation", () => ({
 // MSW WebSocket mock setup
 const { wsLink, server: mswServer } = conversationWebSocketTestSetup();
 
-beforeAll(() => {
-  // The global MSW server from vitest.setup.ts is already running
-  // We just need to start our WebSocket-specific server
-  mswServer.listen({ onUnhandledRequest: "bypass" });
-});
+// The global MSW server from vitest.setup.ts is already listening; the
+// WebSocket setup reuses it (see helpers/msw-websocket-setup.ts), so its
+// lifecycle stays owned by the global setup.
 
 beforeEach(() => {
   useSelectedOrganizationStore.setState({ organizationId: "test-org-id" });
@@ -79,9 +77,6 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  // Close the WebSocket MSW server
-  mswServer.close();
-
   // Give time for any pending WebSocket connections to close. This is very important to prevent serious memory leaks
   await new Promise((resolve) => {
     setTimeout(resolve, 500);
