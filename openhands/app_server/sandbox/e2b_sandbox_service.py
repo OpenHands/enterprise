@@ -144,9 +144,10 @@ class E2BSandboxService(SandboxService):
 
     Sandboxes are created from an E2B template that boots the agent server in
     deferred-init mode, and ``start_sandbox`` completes the ``/api/init``
-    handshake before returning. Ownership, spec identity and the hash of the
-    session API key live in the ``v1_sandbox`` table; the matching E2B
-    metadata is written too, as the tag a reconciler needs.
+    handshake before returning. Ownership, spec identity and the session API
+    key live in the ``v1_sandbox`` table, the key encrypted at rest because
+    E2B offers nowhere to read it back from. The matching E2B metadata is
+    written too, as the tag a reconciler needs.
 
     E2B requires a publicly reachable ``OH_WEB_URL`` for agent server event
     callbacks. There is no polling fallback for this backend, so conversations
