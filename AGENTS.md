@@ -10,19 +10,20 @@ To set up the entire repo, including frontend and backend, run `make build`.
 You don't need to do this unless the user asks you to, or if you're trying to run the entire application.
 
 ## Running OpenHands with OpenHands:
-There is no non-SaaS local run target. The only way to run the full application is the SaaS backend, which
-needs the SaaS environment (Postgres, Keycloak, ...) described in `dev_config/local_saas/README.md`:
+To run the full application to debug issues (`make local-db` starts a PostgreSQL container and migrates it;
+the app never migrates on startup):
 ```bash
 export INSTALL_DOCKER=0
 export RUNTIME=local
-make build && make run-saas FRONTEND_PORT=12000 FRONTEND_HOST=0.0.0.0 BACKEND_HOST=0.0.0.0 &> /tmp/openhands-log.txt &
+make build && make local-db
+make run FRONTEND_PORT=12000 FRONTEND_HOST=0.0.0.0 BACKEND_HOST=0.0.0.0 &> /tmp/openhands-log.txt &
 ```
 
 Local run troubleshooting notes:
 - If the backend fails with `nc: command not found`, install `netcat-openbsd`.
 - If local runtime startup fails with `duplicate session: test-session`, clear the stale tmux session on the default socket: `tmux -S /tmp/tmux-$(id -u)/default kill-session -t test-session`.
 - Local runtime browser startup expects Playwright browsers under `~/.cache/playwright`; if needed run `PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/playwright uv run playwright install chromium`.
-- In this sandbox environment, an inherited `SESSION_API_KEY` can make `/api/v1/settings` return 401 in the browser. Unset it before `make run-saas` when you want to use the local web UI directly.
+- In this sandbox environment, an inherited `SESSION_API_KEY` can make `/api/v1/settings` return 401 in the browser. Unset it before `make run` when you want to use the local web UI directly.
 - In this sandbox, `frontend`'s `npm run dev:mock` / `dev:mock:saas` can start but still be awkward to browse through the work-host proxy. For PR QA screenshots, a reliable fallback is to `npm run build` with the desired `VITE_MOCK_*` env, then serve `build/` with a tiny custom HTTP server that returns the minimal mock JSON endpoints needed by the settings page.
 
 
@@ -104,7 +105,7 @@ When working on a PR that requires design documents, scripts meant for developme
 ## Repository Structure
 Backend:
 - Located in the `openhands` directory
-- The current V1 application server lives in `openhands/app_server/`. `make start-saas-backend` launches `saas_server:app`, which includes the V1 routes by default unless `ENABLE_V1=0`.
+- The current V1 application server lives in `openhands/app_server/`. `make start-backend` launches `openhands.server.listen:app`, which includes the V1 routes by default unless `ENABLE_V1=0`. It needs PostgreSQL; `make local-db` provides one.
 - For V1 web-app docs, LLM setup should point users to the Settings UI.
 - Testing:
   - All tests are in `tests/unit/test_*.py`
