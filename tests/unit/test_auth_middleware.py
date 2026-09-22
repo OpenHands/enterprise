@@ -501,3 +501,23 @@ async def test_middleware_does_not_skip_similar_non_webhook_paths(
         assert result.status_code == status.HTTP_401_UNAUTHORIZED
         # Should NOT call next for non-webhook paths when auth is missing
         mock_call_next.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_middleware_skips_mcp_oauth_callback(
+    middleware, mock_request, mock_response
+):
+    """The OAuth provider's cross-site redirect carries no session cookie; the
+    route validates its own single-use state instead."""
+    mock_request.cookies = {}
+    mock_request.url = MagicMock()
+    mock_request.url.hostname = 'localhost'
+    mock_request.url.path = '/api/v1/mcp/oauth/callback'
+    mock_call_next = AsyncMock(return_value=mock_response)
+
+    # Act
+    result = await middleware(mock_request, mock_call_next)
+
+    # Assert - middleware should skip auth check and call next
+    assert result == mock_response
+    mock_call_next.assert_called_once_with(mock_request)

@@ -141,8 +141,7 @@ class FeatureFlagStore:
 
     @staticmethod
     async def _delete_flag(flag: FeatureFlag, session: AsyncSession) -> None:
-        # Delete rules explicitly so the cascade works even on backends (e.g.
-        # SQLite) that do not enforce FK ondelete=CASCADE.
+        # Remove the rules before the flag they belong to.
         await session.execute(
             delete(FeatureFlagRule).where(FeatureFlagRule.flag_id == flag.id)
         )

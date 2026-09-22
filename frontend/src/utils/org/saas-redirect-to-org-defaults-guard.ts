@@ -1,10 +1,11 @@
-import { redirect } from "react-router";
+import { replace } from "react-router";
 import { queryClient } from "#/query-client-config";
 import OptionService from "#/api/option-service/option-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { CONFIG_CACHE_OPTIONS, QUERY_KEYS } from "#/hooks/query/query-keys";
 import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organization-store";
 import { OrganizationsQueryData } from "#/types/org";
+import { hasPendingOrgSwitch } from "#/utils/org/org-url-param";
 
 const FALLBACK_REDIRECT_PATH = "/settings/user";
 
@@ -29,6 +30,10 @@ const fetchOrganizations = () =>
 export const requireOrgDefaultsRedirect =
   (redirectPath: string = FALLBACK_REDIRECT_PATH) =>
   async ({ request }: { request: Request }) => {
+    // The settings loader is consuming a pending `?org=` switch on this pass
+    // and will redirect without the param; redirecting here would drop it.
+    if (hasPendingOrgSwitch(request)) return null;
+
     const config = await fetchConfig();
 
     if (config?.app_mode !== "saas") return null;
@@ -54,5 +59,7 @@ export const requireOrgDefaultsRedirect =
     const currentPath = new URL(request.url).pathname;
     if (currentPath === redirectPath) return null;
 
-    return redirect(redirectPath);
+    // `replace` so Back from the org-defaults page returns to where the user
+    // entered settings from (e.g. agent-canvas), not to this redirecting URL.
+    return replace(redirectPath);
   };

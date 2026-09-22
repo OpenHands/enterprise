@@ -1,11 +1,15 @@
 import { type PropsWithChildren } from "react";
 import { Toaster, type ToasterProps } from "sonner";
 
-export const ToastManager = (props: PropsWithChildren<ToasterProps>) => {
+export const ToastManager = ({
+  children,
+  position = "top-right",
+  ...props
+}: PropsWithChildren<ToasterProps>) => {
   return (
     <>
-      <Toaster {...props} />
-      {props.children}
+      <Toaster position={position} {...props} />
+      {children}
     </>
   );
 };

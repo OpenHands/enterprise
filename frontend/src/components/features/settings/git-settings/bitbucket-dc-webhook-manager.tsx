@@ -8,6 +8,11 @@ import { useUninstallBitbucketDCWebhook } from "#/hooks/mutation/use-uninstall-b
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 import { Typography } from "#/ui/typography";
+import {
+  settingsListContainerClassName,
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+} from "#/utils/settings-list-classes";
 
 interface BitbucketDCWebhookManagerProps {
   className?: string;
@@ -129,17 +134,17 @@ export function BitbucketDCWebhookManager({
         {t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_MANAGER_DESCRIPTION)}
       </Typography.Text>
 
-      <div className="border border-neutral-700 rounded-lg overflow-hidden">
+      <div className={settingsListContainerClassName}>
         <table className="w-full">
-          <thead className="bg-neutral-800">
+          <thead className={settingsListTableHeadClassName}>
             <tr>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+              <th className={settingsListTableHeaderCellClassName}>
                 {t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_COLUMN_REPOSITORY)}
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+              <th className={settingsListTableHeaderCellClassName}>
                 {t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_COLUMN_STATUS)}
               </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+              <th className={settingsListTableHeaderCellClassName}>
                 {t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_COLUMN_ACTION)}
               </th>
             </tr>

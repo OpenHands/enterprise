@@ -69,6 +69,9 @@ See [our documentation](https://docs.openhands.dev/openhands/usage/llms/llms) fo
 ### 4. Run the Application
 
 ```bash
+# Start a local PostgreSQL and migrate it (once per machine)
+make local-db
+
 # Run both backend and frontend
 make run
 
@@ -77,7 +80,10 @@ make start-backend  # Backend only on port 3000
 make start-frontend # Frontend only on port 3001
 ```
 
-These targets serve the current OpenHands V1 API by default. In the codebase, `make start-backend` runs `openhands.server.listen:app`, and that app includes the `openhands/app_server` V1 routes unless `ENABLE_V1=0`.
+`make start-backend` runs `openhands.server.listen:app`, which serves the `openhands/app_server` V1 API
+unless `ENABLE_V1=0`. It needs PostgreSQL: `make local-db` starts one in a container and applies the
+migrations, or set `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS` to point at your own. Migrations are
+never applied automatically on startup.
 
 To run the SaaS/enterprise server (`saas_server:app`, what Kubernetes deploys) use `make start-saas-backend` or
 `make run-saas`; it needs the SaaS environment (Postgres, Keycloak, ...) described in
@@ -143,6 +149,9 @@ See the [macOS section above](#3-configure-the-language-model) for guidance: con
 ### 4. Run the Application
 
 ```bash
+# Start a local PostgreSQL and migrate it (once per machine)
+make local-db
+
 # Run both backend and frontend
 make run
 
@@ -201,6 +210,9 @@ See the [macOS section above](#3-configure-the-language-model) for the current V
 ### 6. Run the Application
 
 ```bash
+# Start a local PostgreSQL and migrate it (once per machine)
+make local-db
+
 # Run both backend and frontend
 make run
 
@@ -238,14 +250,6 @@ make docker-dev
 
 For more details, see the [dev container documentation](./containers/dev/README.md).
 
-### Alternative: Docker Run
-
-If you just want to run OpenHands without setting up a dev environment:
-
-```bash
-make docker-run
-```
-
 If you don't have `make` installed, run:
 
 ```bash
@@ -282,7 +286,7 @@ You can use OpenHands to develop and improve OpenHands itself!
 ```bash
 export INSTALL_DOCKER=0
 export RUNTIME=local
-make build && make run
+make build && make local-db && make run
 ```
 
 Access the interface at:
