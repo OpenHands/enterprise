@@ -24,9 +24,6 @@ from openhands.app_server.app_conversation.app_conversation_start_task_service i
     AppConversationStartTaskServiceInjector,
 )
 from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanService
-from openhands.app_server.app_lifespan.oss_app_lifespan_service import (
-    OssAppLifespanService,
-)
 from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.config_api.llm_model_service import (
     LLMModelService,
@@ -171,7 +168,7 @@ def resolve_provider_llm_base_url(
     return base_url
 
 
-def _get_default_lifespan():
+def _get_default_lifespan() -> AppLifespanService | None:
     # Check legacy parameters for saas mode. If we are in SAAS mode use
     # SaasAppLifespanService to initialize PostHog analytics
     if 'saas' in (os.getenv('OPENHANDS_CONFIG_CLS') or '').lower():
@@ -180,7 +177,9 @@ def _get_default_lifespan():
         )
 
         return SaasAppLifespanService()
-    return OssAppLifespanService()
+    # Outside SaaS mode there is nothing to do on startup. Schema is owned by the
+    # enterprise alembic chain in migrations/, applied by `alembic upgrade head`.
+    return None
 
 
 def _get_default_file_store() -> FileStore:
