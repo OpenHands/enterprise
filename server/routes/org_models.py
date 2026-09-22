@@ -229,6 +229,7 @@ class OrgResponse(BaseModel):
     credits: float | None = None
     credits_available: bool = False
     is_personal: bool = False
+    is_visible: bool = True
 
     @classmethod
     def from_org(
@@ -236,6 +237,7 @@ class OrgResponse(BaseModel):
         org: Org,
         credits: OrgCreditsResult | float | None = None,
         user_id: str | None = None,
+        is_visible: bool = True,
     ) -> 'OrgResponse':
         """Create an OrgResponse from an Org entity."""
         if isinstance(credits, OrgCreditsResult):
@@ -270,6 +272,7 @@ class OrgResponse(BaseModel):
             credits=credit_balance,
             credits_available=credits_available,
             is_personal=str(org.id) == user_id if user_id else False,
+            is_visible=is_visible,
         )
 
 
