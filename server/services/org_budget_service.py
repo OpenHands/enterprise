@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from openhands.app_server.services.injector import Injector, InjectorState
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import RoleName
+from server.routes.org_models import SpendStatus
 from server.services.smtp_email_service import SMTPEmailService
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
@@ -86,7 +87,7 @@ class LiteLlmFinancialSnapshot:
 @dataclass(frozen=True)
 class BudgetFinancialSnapshotResult:
     snapshot: LiteLlmFinancialSnapshot | None
-    status: Literal['live', 'stale', 'unavailable']
+    status: SpendStatus
     error: str | None = None
 
 
