@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.utils import utc_now
-from openhands.app_server.errors import SandboxError
+from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.docker_sandbox_spec_service import get_docker_client
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
@@ -620,6 +620,11 @@ class DockerSandboxService(SandboxService):
         cleared so a leaked key stops resolving. A container the daemon has
         already lost still retires its row, so the record cannot outlive what
         it describes.
+
+        Returns False only when there is no such sandbox or the caller may not
+        see it. A daemon failure part way through raises
+        ``SandboxDeleteRetryError``, so a container that is still running is
+        never reported as gone.
         """
         stored_sandbox = await self._get_stored_sandbox(sandbox_id)
         if stored_sandbox is None:
@@ -635,12 +640,15 @@ class DockerSandboxService(SandboxService):
                 # Remove the container
                 container.remove()
             except NotFound:
+                # Removed under us. The row still needs retiring.
                 pass
-            except APIError:
+            except APIError as exc:
                 _logger.exception(
                     f'Error deleting container {sandbox_id}', stack_info=True
                 )
-                return False
+                raise SandboxDeleteRetryError(
+                    f'Could not complete delete for sandbox {sandbox_id}: {exc}'
+                ) from exc
 
         stored_sandbox.deleted_at = utc_now()
         stored_sandbox.session_api_key_hash = None

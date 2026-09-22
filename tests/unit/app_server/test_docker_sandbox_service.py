@@ -17,7 +17,7 @@ import httpx
 import pytest
 from docker.errors import APIError, DockerException, NotFound
 
-from openhands.app_server.errors import SandboxError
+from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox import docker_sandbox_spec_service
 from openhands.app_server.sandbox.docker_sandbox_service import (
     CREATED_BY_USER_ID_LABEL,
@@ -1084,6 +1084,23 @@ class TestDockerSandboxService:
         # Verify
         assert result is True
         assert stored_sandbox.deleted_at is not None
+
+    async def test_delete_sandbox_failure_is_retryable(self, service, store):
+        """A container that is still running must not be reported as gone."""
+        # Setup
+        stored_sandbox = _stored('oh-test-abc123', session_api_key='session_key_123')
+        await store(stored_sandbox)
+        mock_container = MagicMock()
+        mock_container.status = 'running'
+        mock_container.labels = _labels()
+        mock_container.stop.side_effect = APIError('daemon busy')
+        service.docker_client.containers.get.return_value = mock_container
+
+        # Execute / Verify
+        with pytest.raises(SandboxDeleteRetryError):
+            await service.delete_sandbox('oh-test-abc123')
+
+        assert stored_sandbox.deleted_at is None
 
     async def test_delete_sandbox_already_stopped(self, service, store):
         """Test sandbox deletion when the container has already exited."""
