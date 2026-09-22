@@ -49,12 +49,18 @@ BLUE=$(shell tput -Txterm setaf 6)
 RESET=$(shell tput -Txterm sgr0)
 
 # Build
+# Set AGENT_CANVAS=1 to also build the Agent Canvas bundle (network access
+# required; see build-agent-canvas below). Off by default so the CI build stays
+# hermetic.
 build:
 	@echo "$(GREEN)Building project...$(RESET)"
 	@$(MAKE) -s check-dependencies
 	@$(MAKE) -s install-python-dependencies
 	@$(MAKE) -s install-frontend-dependencies
 	@$(MAKE) -s install-pre-commit-hooks
+ifeq ($(AGENT_CANVAS),1)
+	@$(MAKE) -s build-agent-canvas
+endif
 	@$(MAKE) -s build-frontend
 	@echo "$(GREEN)Build completed successfully.$(RESET)"
 
@@ -252,6 +258,30 @@ build-frontend:
 	@echo "$(YELLOW)Building frontend...$(RESET)"
 	@cd frontend && npm run prepare && npm run build
 
+# Build the Agent Canvas SPA (OpenHands/OpenHands) into frontend/public/canvas
+# so it is served at /canvas. In cloud /canvas is a separate service behind an
+# ingress rule; locally there is no ingress, so the bundle is baked in here.
+#
+# Deliberately NOT part of `build`: `make build` is a required CI step
+# (.github/workflows/py-tests.yml) and cloning+building a second repository
+# there would add a network dependency and a new failure mode to a job that
+# currently works. Only the local run targets need /canvas.
+#
+# Fail-soft on purpose: /canvas is scaffolding over a still-working OSS
+# frontend, so a canvas build failure (e.g. no network) must not stop the app
+# from starting. The backend and dev server both no-op when the bundle is
+# absent.
+# Temporary: when the OSS frontend is retired, /canvas is the only surface.
+build-agent-canvas:
+	@echo "$(YELLOW)Building Agent Canvas SPA...$(RESET)"
+	@cd frontend && npm run build:agent-canvas \
+		|| echo "$(YELLOW)Agent Canvas build failed; continuing without /canvas.$(RESET)"
+
+# Install frontend deps and build the canvas bundle that `run*` serves at /canvas.
+prepare-local-frontend:
+	@$(MAKE) -s install-frontend-dependencies
+	@$(MAKE) -s build-agent-canvas
+
 # Start (or reuse) a local PostgreSQL container and migrate it to head. Run this
 # once before `make run`; migrations are never applied automatically on startup.
 local-db: check-docker
@@ -326,6 +356,7 @@ _run_setup:
 # Run the app (needs `make local-db`, or DB_HOST pointed at your own PostgreSQL)
 run:
 	@echo "$(YELLOW)Running the app...$(RESET)"
+	@$(MAKE) -s prepare-local-frontend
 	@$(MAKE) -s _run_setup
 	@$(MAKE) -s start-frontend
 	@echo "$(GREEN)Application started successfully.$(RESET)"
@@ -333,6 +364,7 @@ run:
 # Run the SaaS app (SaaS backend + frontend dev server)
 run-saas:
 	@echo "$(YELLOW)Running the SaaS app...$(RESET)"
+	@$(MAKE) -s prepare-local-frontend
 	@$(MAKE) -s _run_saas_setup
 	@$(MAKE) -s start-frontend
 	@echo "$(GREEN)Application started successfully.$(RESET)"
@@ -428,5 +460,5 @@ help:
 	@echo "  $(GREEN)help$(RESET)                - Display this help message, providing information on available targets."
 
 # Phony targets
-.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend local-db reset-db start-backend start-saas-backend start-frontend _run_setup _run_saas_setup _wait_for_backend run run-saas setup-config setup-config-prompts setup-config-basic docker-dev clean help
+.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend build-agent-canvas prepare-local-frontend local-db reset-db start-backend start-saas-backend start-frontend _run_setup _run_saas_setup _wait_for_backend run run-saas setup-config setup-config-prompts setup-config-basic docker-dev clean help
 .PHONY: kind

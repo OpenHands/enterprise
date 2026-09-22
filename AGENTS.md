@@ -126,6 +126,8 @@ Frontend:
   - Our test framework is vitest
 - Building:
   - Build for production: `npm run build`
+  - The app ships a second SPA, Agent Canvas (`OpenHands/OpenHands`), at `/canvas`. In cloud this is a separate service behind an ingress rule; locally it is built into this app so `/` → `/canvas` works without ingress. `make build-agent-canvas` (or `npm run build:agent-canvas`) clones the pinned tag, builds it with `VITE_BASE_PATH=/canvas`, and stages it at `frontend/public/canvas`, which `npm run build` copies to `frontend/build/canvas`. The Vite dev server serves it via `frontend/vite-plugin-agent-canvas.ts`, and the backend mounts it at `/canvas` (`openhands/app_server/app.py`, `saas_server.py`) ahead of the `/` catch-all. This is temporary scaffolding: when the OSS frontend is retired, `/canvas` becomes the only surface.
+  - Canvas is deliberately NOT part of `make build`, because `make build` is a required CI step (`.github/workflows/py-tests.yml`) and cloning a second repository there would add a network dependency and a new failure mode to a job that currently works. Use `AGENT_CANVAS=1 make build` when you do want it in the build output. `make run` / `make run-saas` prepare it via `prepare-local-frontend`, and that step is fail-soft: /canvas is scaffolding over a still-working OSS frontend, so a canvas build failure must not block startup.
 - Environment Variables:
   - Set in `frontend/.env` or as environment variables
   - Available variables: VITE_BACKEND_HOST, VITE_USE_TLS, VITE_INSECURE_SKIP_VERIFY, VITE_FRONTEND_PORT

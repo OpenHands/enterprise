@@ -462,12 +462,12 @@ async def refresh_managed_llm_api_key(
     """Refresh the managed OpenHands LiteLLM key for the current user/org.
 
     Delegates the full managed-key lifecycle (effective-config classification,
-    alias cleanup, key generation with OpenHands metadata, and persistence) to
+    serialized delete-then-generate rotation with OpenHands metadata,
+    persistence, and cleanup of the previous key) to
     ``SaasSettingsStore.rotate_managed_llm_key`` so the route does not
     duplicate the storage-layer machinery. Only managed LiteLLM/OpenHands-
     provider effective configs are rotated; BYOK/custom and non-managed configs
-    are rejected before any key is generated. The previous key token is deleted
-    best-effort only after the replacement is persisted.
+    are rejected before any key is generated.
     """
     logger.info(
         'Starting managed LLM API key refresh',
@@ -496,22 +496,9 @@ async def refresh_managed_llm_api_key(
                 detail=(f'User {user_id} is not a member of org {effective_org_id}'),
             )
 
-        # The replacement is already persisted; clean up the previous token
-        # best-effort. The deterministic alias was already deleted by the
-        # rotation, so failure here only leaves a stale token, not an orphan.
-        if rotation.old_key and rotation.old_key != rotation.new_key:
-            try:
-                await LiteLlmManager.delete_key(rotation.old_key)
-            except Exception as exc:
-                logger.warning(
-                    'Failed to delete previous managed LLM key after refresh',
-                    extra={
-                        'user_id': user_id,
-                        'org_id': str(effective_org_id),
-                        'error': str(exc),
-                    },
-                )
-
+        # The store already generated-before-deleted and cleaned up the
+        # previous key (best-effort) under a per-org lock, so the route does
+        # not delete it again.
         logger.info(
             'Managed LLM API key refresh completed successfully',
             extra={'user_id': user_id, 'org_id': str(effective_org_id)},

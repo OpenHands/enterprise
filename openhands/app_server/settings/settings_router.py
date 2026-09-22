@@ -202,7 +202,11 @@ async def _maybe_rotate_stale_managed_key(
         return llm
 
     try:
-        rotation = await settings_store.rotate_managed_llm_key()
+        # Pass the observed stale key so overlapping refreshes are idempotent:
+        # if a concurrent start/write already rotated it, reuse that fresh key
+        # instead of rotating again and orphaning a sandbox's key
+        # (enterprise#439).
+        rotation = await settings_store.rotate_managed_llm_key(only_if_current=raw_key)
     except Exception:
         logger.warning(
             'settings:managed_key_rotate_failed',
