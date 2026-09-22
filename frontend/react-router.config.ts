@@ -12,7 +12,8 @@ const unpackClientDirectory = async () => {
   const fs = await import("fs");
   const path = await import("path");
 
-  const buildDir = path.resolve(__dirname, "build");
+  // React Router 8 loads this config as ESM, where `__dirname` is undefined.
+  const buildDir = path.resolve(import.meta.dirname, "build");
   const clientDir = path.resolve(buildDir, "client");
 
   const files = await fs.promises.readdir(clientDir);
