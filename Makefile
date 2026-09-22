@@ -36,6 +36,7 @@ build:
 	@$(MAKE) -s install-python-dependencies
 	@$(MAKE) -s install-frontend-dependencies
 	@$(MAKE) -s install-pre-commit-hooks
+	@$(MAKE) -s build-agent-canvas
 	@$(MAKE) -s build-frontend
 	@echo "$(GREEN)Build completed successfully.$(RESET)"
 
@@ -233,6 +234,16 @@ build-frontend:
 	@echo "$(YELLOW)Building frontend...$(RESET)"
 	@cd frontend && npm run prepare && npm run build
 
+# Build the Agent Canvas SPA (OpenHands/OpenHands) into frontend/public/canvas
+# so it is served at /canvas. In cloud /canvas is a separate service behind an
+# ingress rule; locally there is no ingress, so the bundle is baked into this
+# app instead. Must run *before* build-frontend, which stages public/ into
+# build/ (and wipes build/canvas if a previous build output was left there).
+# Temporary: when the OSS frontend is retired, /canvas is the only surface.
+build-agent-canvas:
+	@echo "$(YELLOW)Building Agent Canvas SPA...$(RESET)"
+	@cd frontend && npm run build:agent-canvas
+
 # Start backend
 start-backend:
 	@echo "$(YELLOW)Starting backend...$(RESET)"
@@ -379,5 +390,5 @@ help:
 	@echo "  $(GREEN)help$(RESET)                - Display this help message, providing information on available targets."
 
 # Phony targets
-.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend start-backend start-saas-backend start-frontend _run_setup _run_saas_setup run run-saas run-wsl setup-config setup-config-prompts setup-config-basic openhands-cloud-run docker-dev docker-run clean help
+.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend build-agent-canvas start-backend start-saas-backend start-frontend _run_setup _run_saas_setup run run-saas run-wsl setup-config setup-config-prompts setup-config-basic openhands-cloud-run docker-dev docker-run clean help
 .PHONY: kind

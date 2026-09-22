@@ -124,6 +124,7 @@ Frontend:
   - Our test framework is vitest
 - Building:
   - Build for production: `npm run build`
+  - The app ships a second SPA, Agent Canvas (`OpenHands/OpenHands`), at `/canvas`. In cloud this is a separate service behind an ingress rule; locally it is built into this app so `/` → `/canvas` works without ingress. `make build-agent-canvas` (or `npm run build:agent-canvas`) clones the pinned tag, builds it with `VITE_BASE_PATH=/canvas`, and stages it at `frontend/public/canvas`, which `npm run build` copies to `frontend/build/canvas`. `make build` runs this before `build-frontend` on purpose: the React Router build wipes its output dir, so the canvas bundle must be staged into `public/` first. The Vite dev server serves it via `frontend/vite-plugin-agent-canvas.ts`, and the backend mounts it at `/canvas` (`openhands/app_server/app.py`, `saas_server.py`) ahead of the `/` catch-all. This is temporary scaffolding: when the OSS frontend is retired, `/canvas` becomes the only surface.
 - Environment Variables:
   - Set in `frontend/.env` or as environment variables
   - Available variables: VITE_BACKEND_HOST, VITE_USE_TLS, VITE_INSECURE_SKIP_VERIFY, VITE_FRONTEND_PORT
