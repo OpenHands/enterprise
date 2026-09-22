@@ -46,6 +46,7 @@ const SAAS_ONLY_PATHS = [
   "/settings/org-defaults/verification",
   "/settings/usage-monitoring",
   "/settings/budgets",
+  "/settings/your-budget",
 ];
 
 const ORG_WIDE_BADGE_PATHS = new Set<string>([
@@ -161,6 +162,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     pathname === "/settings/credits" ||
     pathname === "/settings/org" ||
     pathname === "/settings/org-members" ||
+    pathname === "/settings/your-budget" ||
     isAdminOnlyPath
   ) {
     const user = await getActiveOrganizationUser();
@@ -238,6 +240,13 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     if (isAdminOnlyPath) {
       const role = user?.role ?? "member";
       if (!user || (role !== "admin" && role !== "owner") || isPersonalOrg) {
+        return replace("/settings");
+      }
+    }
+
+    // Open to every role; personal workspaces have no budgets.
+    if (pathname === "/settings/your-budget") {
+      if (!user || !isTeamOrg) {
         return replace("/settings");
       }
     }

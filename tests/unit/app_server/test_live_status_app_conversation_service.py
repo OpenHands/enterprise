@@ -23,10 +23,12 @@ from openhands.app_server.acp_providers import (
     SURFACED_ACP_PROVIDERS,
 )
 from openhands.app_server.app_conversation.app_conversation_models import (
+    ARCHIVE_WORKSPACE_PATH_TAG_KEY,
     AgentType,
     AppConversationInfo,
     AppConversationStartRequest,
     AppConversationStartTaskStatus,
+    AppConversationUpdateRequest,
     ConversationTrigger,
 )
 from openhands.app_server.app_conversation.app_conversation_service import (
@@ -964,10 +966,18 @@ class TestLiveStatusAppConversationService:
 
     @staticmethod
     def _install_managed_key_refresh_modules(
-        monkeypatch, *, get_key, rotate_key, verify_key, verify_existing_key=None
+        monkeypatch,
+        *,
+        get_key,
+        rotate_key,
+        verify_key,
+        verify_existing_key=None,
+        clear_stale_org_key=None,
     ):
         if verify_existing_key is None:
             verify_existing_key = AsyncMock(return_value=True)
+        if clear_stale_org_key is None:
+            clear_stale_org_key = AsyncMock(return_value=False)
 
         storage_mod = types.ModuleType('storage')
         lite_llm_mod = types.ModuleType('storage.lite_llm_manager')
@@ -979,6 +989,7 @@ class TestLiveStatusAppConversationService:
         store = SimpleNamespace(
             get_current_managed_llm_key=get_key,
             rotate_managed_llm_key=rotate_key,
+            clear_stale_org_level_llm_key_if_managed=clear_stale_org_key,
         )
         saas_settings_mod = types.ModuleType('storage.saas_settings_store')
         saas_settings_mod.ManagedLlmKeyStatus = SimpleNamespace(ROTATED='rotated')
@@ -1054,6 +1065,103 @@ class TestLiveStatusAppConversationService:
         )
         verify_key.assert_awaited_once_with('sk-old-managed-key', 'user-123')
         rotate_key.assert_awaited_once_with()
+        self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_heals_stale_org_level_key(
+        self, monkeypatch
+    ):
+        """Broken #421 state: active default is managed but ``org._llm_api_key``
+        still holds a stale BYOR dummy shadowing the member key. The refresh
+        path clears it and force-rotates instead of falling through to the
+        verify path (which would skip on the resulting key mismatch)."""
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+
+        get_key = AsyncMock(return_value='sk-old-managed-key')
+        rotate_key = AsyncMock(
+            return_value=SimpleNamespace(
+                status='rotated', new_key='sk-new-managed-key', openhands_type=True
+            )
+        )
+        # The heal branch: clear reports a stale org-level key was present.
+        clear_stale_org_key = AsyncMock(return_value=True)
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=get_key,
+            rotate_key=rotate_key,
+            verify_key=AsyncMock(return_value=False),
+            verify_existing_key=AsyncMock(return_value=True),
+            clear_stale_org_key=clear_stale_org_key,
+        )
+
+        # The effective api_key is the stale org dummy, not the member key.
+        llm = LLM(
+            model='openhands/gpt-5.5',
+            base_url='https://llm-proxy.app.all-hands.dev',
+            api_key=SecretStr('dummymodel'),
+        )
+
+        refreshed = await self.service._maybe_refresh_managed_llm_key(
+            self.mock_user, llm
+        )
+
+        assert refreshed.api_key.get_secret_value() == 'sk-new-managed-key'
+        clear_stale_org_key.assert_awaited_once_with()
+        rotate_key.assert_awaited_once_with()
+        # The verify path must be bypassed — no key comparison against the dummy.
+        get_key.assert_not_awaited()
+        self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_heals_via_re_resolve_when_rotation_skips(
+        self, monkeypatch
+    ):
+        """Candidate-2 regression: ``clear_stale`` healed the DB (org shadow gone)
+        but ``rotate_managed_llm_key`` returned no new key (MISSING_MEMBER /
+        already-current / LiteLLM transient). The heal must still flip the
+        in-flight LLM to the effective managed key re-resolved off the now-healed
+        DB, instead of dropping through to the mismatch bail that returns the
+        stale dummy and leaves the 401 for the next load."""
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+
+        # The member's stored managed key is fresh and valid; rotation is a no-op.
+        get_key = AsyncMock(return_value='sk-fresh-managed-key')
+        rotate_key = AsyncMock(
+            return_value=SimpleNamespace(status='already_current', new_key=None)
+        )
+        clear_stale_org_key = AsyncMock(return_value=True)
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=get_key,
+            rotate_key=rotate_key,
+            verify_key=AsyncMock(return_value=False),
+            verify_existing_key=AsyncMock(return_value=True),
+            clear_stale_org_key=clear_stale_org_key,
+        )
+
+        # Effective key is the stale org dummy shadowing the member's fresh key.
+        llm = LLM(
+            model='openhands/gpt-5.5',
+            base_url='https://llm-proxy.app.all-hands.dev',
+            api_key=SecretStr('dummymodel'),
+        )
+
+        refreshed = await self.service._maybe_refresh_managed_llm_key(
+            self.mock_user, llm
+        )
+
+        # Healed in-flight: the returned LLM carries the re-resolved managed key,
+        # not the stale dummy — so the 401 is cleared on this same request.
+        assert refreshed.api_key.get_secret_value() == 'sk-fresh-managed-key'
+        clear_stale_org_key.assert_awaited_once_with()
+        rotate_key.assert_awaited_once_with()
+        get_key.assert_awaited_once_with()
         self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
 
     @pytest.mark.asyncio
@@ -3493,6 +3601,154 @@ class TestLiveStatusAppConversationService:
         assert saved_info.tags['repo_name'] == 'OpenHands/OpenHands'
         assert saved_info.tags['git_provider'] == 'github'
         assert saved_info.tags['selected_branch'] == 'main'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_stores_request_tags(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """Caller-supplied tags are saved alongside the server-managed tags."""
+        # Arrange
+        conversation_id = uuid4()
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+
+        mock_sandbox_spec = Mock(spec=SandboxSpecInfo)
+        mock_sandbox_spec.working_dir = '/test/workspace'
+        self.mock_sandbox.sandbox_spec_id = str(uuid4())
+        self.mock_sandbox.id = str(uuid4())
+        self.mock_sandbox.session_api_key = 'test_session_key'
+        self.mock_sandbox.exposed_urls = [
+            ExposedUrl(name=AGENT_SERVER, url='http://agent-server:8000', port=60000)
+        ]
+        self.mock_sandbox_service.get_sandbox = AsyncMock(
+            return_value=self.mock_sandbox
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            return_value=mock_sandbox_spec
+        )
+        mock_remote_workspace_class.return_value = Mock()
+
+        async def mock_wait_for_sandbox(task):
+            task.sandbox_id = self.mock_sandbox.id
+            yield task
+
+        async def mock_run_setup_scripts(
+            task, sandbox, workspace, agent_server_url, conversation_id
+        ):
+            yield task
+
+        self.service._wait_for_sandbox_start = mock_wait_for_sandbox
+        self.service.run_setup_scripts = mock_run_setup_scripts
+        self.service._seed_sandbox_profiles = AsyncMock()
+
+        mock_agent = Mock()
+        mock_agent.agent_kind = 'openhands'
+        mock_agent.llm.model = 'gpt-4'
+        mock_start_request = Mock(spec=StartConversationRequest)
+        mock_start_request.agent = mock_agent
+        mock_start_request.model_dump.return_value = {'test': 'data'}
+        self.service._build_start_conversation_request_for_user = AsyncMock(
+            return_value=mock_start_request
+        )
+
+        mock_conversation_info = Mock()
+        mock_conversation_info.id = conversation_id
+        mock_conversation_info_class.model_validate.return_value = (
+            mock_conversation_info
+        )
+        mock_response = Mock()
+        mock_response.json.return_value = {'id': str(conversation_id)}
+        mock_response.raise_for_status = Mock()
+        self.mock_httpx_client.post = AsyncMock(return_value=mock_response)
+        self.mock_event_callback_service.save_event_callback = AsyncMock()
+
+        request = AppConversationStartRequest(
+            tags={'environmenturl': 'https://env.example.com/abc'}
+        )
+
+        # Act
+        async for _ in self.service._start_app_conversation(request):
+            pass
+
+        # Assert
+        saved_info = self.mock_app_conversation_info_service.save_app_conversation_info.call_args[
+            0
+        ][0]
+        assert saved_info.tags['environmenturl'] == 'https://env.example.com/abc'
+        assert ARCHIVE_WORKSPACE_PATH_TAG_KEY in saved_info.tags
+
+    @pytest.mark.asyncio
+    async def test_update_app_conversation_merges_tags(self):
+        """Tags are merged: values are upserted, null deletes, the rest is kept."""
+        # Arrange
+        info = AppConversationInfo(
+            created_by_user_id='test_user_123',
+            sandbox_id='sandbox-1',
+            title='Conversation',
+            tags={
+                ARCHIVE_WORKSPACE_PATH_TAG_KEY: '/workspace/project',
+                'environmenturl': 'https://env/old',
+                'obsolete': 'value',
+            },
+        )
+        self.mock_app_conversation_info_service.get_app_conversation_info = AsyncMock(
+            return_value=info
+        )
+        self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock(
+            side_effect=lambda saved: saved
+        )
+        self.service._build_app_conversations = AsyncMock(
+            side_effect=lambda infos: infos
+        )
+        request = AppConversationUpdateRequest(
+            tags={'environmenturl': 'https://env/new', 'obsolete': None, 'team': 'x'}
+        )
+
+        # Act
+        result = await self.service.update_app_conversation(info.id, request)
+
+        # Assert
+        assert result is not None
+        assert result.tags == {
+            ARCHIVE_WORKSPACE_PATH_TAG_KEY: '/workspace/project',
+            'environmenturl': 'https://env/new',
+            'team': 'x',
+        }
+
+    @pytest.mark.asyncio
+    async def test_update_app_conversation_without_tags_keeps_existing_tags(self):
+        """Updating other fields leaves the conversation tags untouched."""
+        # Arrange
+        info = AppConversationInfo(
+            created_by_user_id='test_user_123',
+            sandbox_id='sandbox-1',
+            title='Old title',
+            tags={'environmenturl': 'https://env/a'},
+        )
+        self.mock_app_conversation_info_service.get_app_conversation_info = AsyncMock(
+            return_value=info
+        )
+        self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock(
+            side_effect=lambda saved: saved
+        )
+        self.service._build_app_conversations = AsyncMock(
+            side_effect=lambda infos: infos
+        )
+        request = AppConversationUpdateRequest(title='New title')
+
+        # Act
+        result = await self.service.update_app_conversation(info.id, request)
+
+        # Assert
+        assert result is not None
+        assert result.title == 'New title'
+        assert result.tags == {'environmenturl': 'https://env/a'}
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'

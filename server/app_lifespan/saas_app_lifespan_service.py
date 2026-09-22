@@ -71,6 +71,7 @@ class SaasAppLifespanService(AppLifespanService):
             host=host,
             app_mode=AppMode.SAAS,
             is_feature_env=IS_FEATURE_ENV,
+            deployment_kind=('local' if DEPLOYMENT_MODE == 'self_hosted' else 'remote'),
         )
         await self._reconcile_org_condenser_defaults()
         return self
