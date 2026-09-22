@@ -305,9 +305,8 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
 
         total_deleted = 0
         while True:
-            # Select the IDs of the next batch to delete. Selecting IDs first
-            # (rather than DELETE ... LIMIT) keeps this portable across
-            # SQLite (tests) and PostgreSQL (production).
+            # Select the IDs of the next batch to delete: postgres has no
+            # DELETE ... LIMIT.
             id_query = (
                 select(StoredAppConversationStartTask.id)
                 .where(StoredAppConversationStartTask.created_at < cutoff)

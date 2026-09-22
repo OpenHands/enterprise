@@ -228,6 +228,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 100,
@@ -251,6 +252,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
         )
 
         # Add sort order
@@ -306,6 +308,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
     ) -> int:
         """Count sandboxed conversations matching the given filters."""
         query = select(func.count(StoredConversationMetadata.conversation_id)).where(
@@ -320,6 +323,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
         )
 
         result = await self.db_session.execute(query)
@@ -335,6 +339,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
     ) -> Select:
         # Apply the same filters as search_app_conversations
         conditions: list[ColumnElement[bool]] = []
@@ -361,6 +366,12 @@ class SQLAppConversationInfoService(AppConversationInfoService):
 
         if sandbox_id__eq is not None:
             conditions.append(StoredConversationMetadata.sandbox_id == sandbox_id__eq)
+
+        if tags__contains:
+            for key, value in tags__contains.items():
+                conditions.append(
+                    StoredConversationMetadata.tags[key].as_string() == value
+                )
 
         if conditions:
             query = query.where(*conditions)
@@ -525,7 +536,6 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         # Query existing record using secure select (filters for V1 and user if available)
         # Row-lock so concurrent snapshots (stats events, run-end pull)
         # serialize per conversation instead of racing the guard/ledger.
-        # No-op on SQLite.
         query = await self._secure_select()
         query = query.where(
             StoredConversationMetadata.conversation_id == str(conversation_id)
@@ -848,8 +858,10 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         )
 
     def _fix_timezone(self, value: datetime | None) -> datetime:
-        """Sqlite does not store timezones - and since we can't update the existing models
-        we assume UTC if the timezone is missing. Returns current UTC time if value is None.
+        """Return ``value`` as an aware UTC datetime.
+
+        A value missing its timezone is assumed to be UTC. ``None`` becomes the
+        current UTC time.
         """
         if value is None:
             # Fallback for legacy data: use current time to match model defaults.

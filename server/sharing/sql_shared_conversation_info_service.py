@@ -148,8 +148,10 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
         )
 
     def _fix_timezone(self, value: datetime | None) -> datetime:
-        """Sqlite does not store timezones - and since we can't update the existing models
-        we assume UTC if the timezone is missing. Returns current UTC time if value is None.
+        """Return ``value`` as an aware UTC datetime.
+
+        A value missing its timezone is assumed to be UTC. ``None`` becomes the
+        current UTC time.
         """
         if value is None:
             # Fallback for legacy data: use current time to match model defaults.
