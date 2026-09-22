@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -189,6 +189,15 @@ describe("Integrations Hub admin nav", () => {
         name: /INTEGRATIONS_HUB\$NAV_ADMIN_USER_REQUESTS/,
       }),
     ).toHaveAttribute("href", INTEGRATIONS_HUB_PATHS.adminUserRequests);
+
+    const adminLinks = within(nav)
+      .getAllByRole("link")
+      .map((link) => link.getAttribute("href"));
+    expect(adminLinks).toEqual([
+      INTEGRATIONS_HUB_PATHS.adminCatalog,
+      INTEGRATIONS_HUB_PATHS.adminOverview,
+      INTEGRATIONS_HUB_PATHS.adminUserRequests,
+    ]);
 
     expect(screen.getByTestId("dashboard-nav-trailing-count")).toHaveTextContent(
       "3",

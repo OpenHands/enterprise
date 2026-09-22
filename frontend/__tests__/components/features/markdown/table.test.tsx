@@ -25,10 +25,16 @@ describe("table (markdown)", () => {
       <MarkdownRenderer>{GFM_TABLE}</MarkdownRenderer>,
     );
 
-    // Wide tables must not break chat layout — wrapper enables overflow
-    const wrapper = container.querySelector(".overflow-x-auto");
-    expect(wrapper).not.toBeNull();
-    expect(wrapper?.querySelector("table")).not.toBeNull();
+    const wrapper = screen.getByTestId("markdown-table-scroll");
+    expect(wrapper).toHaveClass("overflow-x-auto");
+    expect(wrapper.querySelector("table")).not.toBeNull();
+    expect(container.querySelector(".overflow-x-auto")).not.toBeNull();
+    expect(
+      screen.getByTestId("markdown-table-scroll-fade-left"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("markdown-table-scroll-fade-right"),
+    ).toBeInTheDocument();
   });
 
   it("should render header cells as styled <th> elements", () => {

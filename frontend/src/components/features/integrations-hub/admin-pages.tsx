@@ -42,6 +42,7 @@ import type {
   HubOverviewUser,
   HubUserRequest,
 } from "#/types/integrations-hub";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { formControlTransitionClassName } from "#/utils/form-control-classes";
 import {
   settingsListContainerClassName,
@@ -49,6 +50,7 @@ import {
   settingsListIconActionButtonClassName,
   settingsListRowClassName,
   settingsListRowHoverClassName,
+  settingsListScrollFadeFromClassName,
   settingsListSectionHeaderClassName,
   settingsListTableCellClassName,
   settingsListTableHeadClassName,
@@ -985,121 +987,131 @@ export function AdminUserRequestsPage() {
         </div>
       ) : (
         <div
-          className={cn("overflow-x-auto", settingsListContainerClassName)}
+          className={cn(
+            settingsListContainerClassName,
+            settingsListScrollFadeFromClassName,
+          )}
           data-testid="user-requests-list"
         >
-          <table className="w-full min-w-max text-left">
-            <thead className={settingsListTableHeadClassName}>
-              <tr>
-                <th className={userRequestHeaderCellClassName}>
-                  {t(I18nKey.INTEGRATIONS_HUB$COLUMN_INTEGRATION)}
-                </th>
-                <th className={userRequestHeaderCellClassName}>
-                  {t(I18nKey.INTEGRATIONS_HUB$COLUMN_REQUESTED_BY)}
-                </th>
-                <th className={userRequestHeaderCellClassName}>
-                  {t(I18nKey.INTEGRATIONS_HUB$COLUMN_REQUESTED)}
-                </th>
-                <th className={userRequestHeaderCellClassName}>
-                  {t(I18nKey.INTEGRATIONS_HUB$COLUMN_NOTES)}
-                </th>
-                <th className={userRequestHeaderCellClassName}>
-                  <span className="sr-only">
-                    {t(I18nKey.INTEGRATIONS_HUB$COLUMN_ACTIONS)}
-                  </span>
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--oh-border)]">
-              {userRequests.map((request) => (
-                <tr
-                  key={request.id}
-                  data-testid={`integrations-hub-user-request-${request.id}`}
-                >
-                  <td className={settingsListTableCellClassName}>
-                    <div className="flex min-w-0 items-center gap-2">
-                      <IntegrationProviderIcon
-                        provider={request.slug}
-                        size="sm"
-                      />
-                      <div className="min-w-0">
-                        <HubTruncatedText
-                          text={request.name}
-                          className="text-sm text-white"
-                        />
-                        <p className="text-[10px] leading-4 text-muted">
-                          {request.source === "catalog"
-                            ? t(I18nKey.INTEGRATIONS_HUB$SOURCE_CATALOG)
-                            : t(I18nKey.INTEGRATIONS_HUB$SOURCE_CUSTOM)}
-                        </p>
-                      </div>
-                    </div>
-                  </td>
-                  <td
-                    className={cn(settingsListTableCellClassName, "text-white")}
+          <HorizontalScrollFade>
+            <table className="w-full min-w-max text-left">
+              <thead className={settingsListTableHeadClassName}>
+                <tr>
+                  <th className={userRequestHeaderCellClassName}>
+                    {t(I18nKey.INTEGRATIONS_HUB$COLUMN_INTEGRATION)}
+                  </th>
+                  <th className={userRequestHeaderCellClassName}>
+                    {t(I18nKey.INTEGRATIONS_HUB$COLUMN_REQUESTED_BY)}
+                  </th>
+                  <th className={userRequestHeaderCellClassName}>
+                    {t(I18nKey.INTEGRATIONS_HUB$COLUMN_REQUESTED)}
+                  </th>
+                  <th className={userRequestHeaderCellClassName}>
+                    {t(I18nKey.INTEGRATIONS_HUB$COLUMN_NOTES)}
+                  </th>
+                  <th className={userRequestHeaderCellClassName}>
+                    <span className="sr-only">
+                      {t(I18nKey.INTEGRATIONS_HUB$COLUMN_ACTIONS)}
+                    </span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--oh-border)]">
+                {userRequests.map((request) => (
+                  <tr
+                    key={request.id}
+                    data-testid={`integrations-hub-user-request-${request.id}`}
                   >
-                    {request.requestedBy}
-                  </td>
-                  <td className={settingsListTableCellClassName}>
-                    <TimestampCell value={request.createdAt} />
-                  </td>
-                  <td className={settingsListTableCellClassName}>
-                    {hasUserRequestDetails(request) ? (
-                      <HubHoverCard
-                        testId={`user-request-notes-${request.id}`}
-                        content={<UserRequestNotesContent request={request} />}
-                      >
+                    <td className={settingsListTableCellClassName}>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <IntegrationProviderIcon
+                          provider={request.slug}
+                          size="sm"
+                        />
+                        <div className="min-w-0">
+                          <HubTruncatedText
+                            text={request.name}
+                            className="text-sm text-white"
+                          />
+                          <p className="text-[10px] leading-4 text-muted">
+                            {request.source === "catalog"
+                              ? t(I18nKey.INTEGRATIONS_HUB$SOURCE_CATALOG)
+                              : t(I18nKey.INTEGRATIONS_HUB$SOURCE_CUSTOM)}
+                          </p>
+                        </div>
+                      </div>
+                    </td>
+                    <td
+                      className={cn(
+                        settingsListTableCellClassName,
+                        "text-white",
+                      )}
+                    >
+                      {request.requestedBy}
+                    </td>
+                    <td className={settingsListTableCellClassName}>
+                      <TimestampCell value={request.createdAt} />
+                    </td>
+                    <td className={settingsListTableCellClassName}>
+                      {hasUserRequestDetails(request) ? (
+                        <HubHoverCard
+                          testId={`user-request-notes-${request.id}`}
+                          content={
+                            <UserRequestNotesContent request={request} />
+                          }
+                        >
+                          <button
+                            type="button"
+                            aria-label={t(I18nKey.INTEGRATIONS_HUB$NOTES_ARIA)}
+                            className={cn(
+                              settingsListIconActionButtonClassName,
+                              "text-[var(--oh-text-secondary)]",
+                            )}
+                          >
+                            <MessageSquare
+                              className="size-4"
+                              aria-hidden
+                              strokeWidth={2}
+                            />
+                          </button>
+                        </HubHoverCard>
+                      ) : (
+                        <span className="text-white">—</span>
+                      )}
+                    </td>
+                    <td className={settingsListTableCellClassName}>
+                      <div className="flex justify-end gap-2">
                         <button
                           type="button"
-                          aria-label={t(I18nKey.INTEGRATIONS_HUB$NOTES_ARIA)}
+                          data-testid={`user-request-add-${request.id}`}
                           className={cn(
-                            settingsListIconActionButtonClassName,
-                            "text-[var(--oh-text-secondary)]",
+                            "inline-flex h-7 cursor-pointer items-center rounded-md px-2 text-xs font-medium text-[var(--oh-success)]",
+                            formControlTransitionClassName,
+                            "hover:bg-[color:rgba(165,231,94,0.12)]",
                           )}
+                          onClick={() => openSetup(request)}
                         >
-                          <MessageSquare
-                            className="size-4"
-                            aria-hidden
-                            strokeWidth={2}
-                          />
+                          {t(I18nKey.INTEGRATIONS_HUB$ADD)}
                         </button>
-                      </HubHoverCard>
-                    ) : (
-                      <span className="text-white">—</span>
-                    )}
-                  </td>
-                  <td className={settingsListTableCellClassName}>
-                    <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        data-testid={`user-request-add-${request.id}`}
-                        className={cn(
-                          "inline-flex h-7 cursor-pointer items-center rounded-md px-2 text-xs font-medium text-[var(--oh-success)]",
-                          formControlTransitionClassName,
-                          "hover:bg-[color:rgba(165,231,94,0.12)]",
-                        )}
-                        onClick={() => openSetup(request)}
-                      >
-                        {t(I18nKey.INTEGRATIONS_HUB$ADD)}
-                      </button>
-                      <button
-                        type="button"
-                        data-testid={`user-request-dismiss-${request.id}`}
-                        className={cn(
-                          "inline-flex h-7 cursor-pointer items-center rounded-md px-2 text-xs font-medium text-[var(--oh-danger)]",
-                          formControlTransitionClassName,
-                          "hover:bg-[color:rgba(231,106,94,0.12)]",
-                        )}
-                        onClick={() => setPendingDismissId(request.id)}
-                      >
-                        {t(I18nKey.INTEGRATIONS_HUB$DISMISS)}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                        <button
+                          type="button"
+                          data-testid={`user-request-dismiss-${request.id}`}
+                          className={cn(
+                            "inline-flex h-7 cursor-pointer items-center rounded-md px-2 text-xs font-medium text-[var(--oh-danger)]",
+                            formControlTransitionClassName,
+                            "hover:bg-[color:rgba(231,106,94,0.12)]",
+                          )}
+                          onClick={() => setPendingDismissId(request.id)}
+                        >
+                          {t(I18nKey.INTEGRATIONS_HUB$DISMISS)}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </HorizontalScrollFade>
         </div>
       )}
 

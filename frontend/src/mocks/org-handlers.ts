@@ -6,6 +6,7 @@ import {
   OrganizationUserRole,
   UpdateOrganizationMemberParams,
 } from "#/types/org";
+import { isInstanceSuperAdmin } from "#/utils/org/permissions";
 
 /** Sample GitHub orgs for Git Conversation Routing in mock SaaS mode. */
 const MOCK_USER_GIT_ORGS = {
@@ -146,12 +147,18 @@ export const MOCK_TEAM_ORG_ALLHANDS = createMockOrganization(
   "All Hands AI",
   750,
 );
+/** Team org the current mock Super Admin does not belong to. */
+export const MOCK_TEAM_ORG_NORTHWIND = {
+  ...createMockOrganization("5", "Northwind Labs", 200),
+  contact_email: "it@northwind.example",
+};
 
 export const INITIAL_MOCK_ORGS: Organization[] = [
   MOCK_PERSONAL_ORG,
   MOCK_TEAM_ORG_ACME,
   MOCK_TEAM_ORG_BETA,
   MOCK_TEAM_ORG_ALLHANDS,
+  MOCK_TEAM_ORG_NORTHWIND,
 ];
 
 const INITIAL_MOCK_MEMBERS: Record<string, OrganizationMember[]> = {
@@ -285,6 +292,20 @@ const INITIAL_MOCK_MEMBERS: Record<string, OrganizationMember[]> = {
     },
     currentUserMembership("4", "admin"),
   ],
+  "5": [
+    {
+      org_id: "5",
+      user_id: "11",
+      email: "it@northwind.example",
+      role: "owner",
+      llm_api_key: "**********",
+      max_iterations: 20,
+      llm_model: "gpt-4",
+      llm_base_url: "https://api.openai.com",
+      agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
+      status: "active",
+    },
+  ],
 };
 
 export const ORGS_AND_MEMBERS: Record<string, OrganizationMember[]> = {
@@ -292,6 +313,7 @@ export const ORGS_AND_MEMBERS: Record<string, OrganizationMember[]> = {
   "2": INITIAL_MOCK_MEMBERS["2"].map((member) => ({ ...member })),
   "3": INITIAL_MOCK_MEMBERS["3"].map((member) => ({ ...member })),
   "4": INITIAL_MOCK_MEMBERS["4"].map((member) => ({ ...member })),
+  "5": INITIAL_MOCK_MEMBERS["5"].map((member) => ({ ...member })),
 };
 
 const orgs = new Map(INITIAL_MOCK_ORGS.map((org) => [org.id, org]));
@@ -459,24 +481,24 @@ export const ORG_HANDLERS = [
 
   http.get("/api/organizations/:orgId/me", ({ params }) => {
     const orgId = params.orgId?.toString();
-    if (!orgId || !ORGS_AND_MEMBERS[orgId]) {
+    if (!orgId || !orgs.has(orgId)) {
       return HttpResponse.json(
         { error: "Organization not found" },
         { status: 404 },
       );
     }
 
-    const membership = ORGS_AND_MEMBERS[orgId].find(
+    const membership = ORGS_AND_MEMBERS[orgId]?.find(
       (member) => member.user_id === MOCK_ME.user_id,
     );
-    if (!membership) {
+    if (!membership && !isInstanceSuperAdmin(MOCK_ME.permissions)) {
       return HttpResponse.json({ error: "Not a member" }, { status: 404 });
     }
 
     const me: OrganizationMember = {
       ...MOCK_ME,
       org_id: orgId,
-      role: membership.role,
+      role: membership?.role ?? "owner",
     };
     return HttpResponse.json(me);
   }),

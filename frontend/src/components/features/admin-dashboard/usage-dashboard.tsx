@@ -199,8 +199,8 @@ export function UsageDashboard() {
   return (
     <div className="space-y-6">
       <div className="space-y-6">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex min-w-0 gap-6">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <div className="flex flex-wrap gap-6">
             {TABS.map((tab) => (
               <button
                 key={tab}
@@ -214,14 +214,14 @@ export function UsageDashboard() {
               >
                 {tab.charAt(0).toUpperCase() + tab.slice(1)}
                 {typeof tabCounts[tab] === "number" && (
-                  <span className="inline-flex items-center justify-center rounded-full border border-[var(--oh-border)] bg-base-secondary px-2 py-0.5 text-xs text-[var(--oh-muted)]">
+                  <span className="inline-flex items-center justify-center rounded-full bg-surface-raised px-2 py-0.5 text-xs text-[var(--oh-muted)]">
                     {tabCounts[tab].toLocaleString()}
                   </span>
                 )}
               </button>
             ))}
           </div>
-          <div className="flex shrink-0 items-center gap-1 rounded-lg border border-border-subtle bg-base-secondary p-1">
+          <div className="ml-auto flex shrink-0 items-center gap-1 rounded-lg border border-border-subtle bg-base-secondary p-1">
             {TIME_WINDOWS.map((tw) => (
               <button
                 key={tw.value}

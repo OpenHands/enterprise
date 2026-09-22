@@ -12,6 +12,8 @@ import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { cn } from "#/utils/utils";
 import { OrgSelector } from "../org/org-selector";
 import { I18nKey } from "#/i18n/declaration";
+import { SUPER_ADMIN_ENTRY_ITEM } from "#/constants/super-admin-nav";
+import { isInstanceSuperAdmin } from "#/utils/org/permissions";
 import { useSettingsNavItems } from "#/hooks/use-settings-nav-items";
 import DocumentIcon from "#/icons/document.svg?react";
 import { ContextMenuListItem } from "../context-menu/context-menu-list-item";
@@ -59,6 +61,7 @@ export function UserContextMenu({
   const isMember = type === "member";
   const canCreateOrganization =
     me?.permissions?.includes("create_organization") === true;
+  const showSuperAdmin = isInstanceSuperAdmin(me?.permissions);
   const shouldShowOrganizationPreview =
     isSaas && !isEnterpriseSelfHosted && !canCreateOrganization;
   const shouldShowCreateOrganizationButton =
@@ -119,6 +122,13 @@ export function UserContextMenu({
                 <IoAddCircleOutline className="text-white" size={16} />
                 {t(I18nKey.ORG$CREATE_ORGANIZATION)}
               </ContextMenuListItem>
+            )}
+
+            {showSuperAdmin && (
+              <ContextMenuNavLink
+                item={SUPER_ADMIN_ENTRY_ITEM}
+                onClick={onClose}
+              />
             )}
 
             {/* Show Invite button at top if no ORG SETTINGS header exists */}

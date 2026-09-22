@@ -9,6 +9,7 @@ import {
   SecretListItemSkeleton,
 } from "#/components/features/settings/secrets-settings/secret-list-item";
 import { BrandButton } from "#/components/features/settings/brand-button";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
 import { I18nKey } from "#/i18n/declaration";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
@@ -18,8 +19,10 @@ import { Typography } from "#/ui/typography";
 import { cn } from "#/utils/utils";
 import {
   settingsListScrollContainerClassName,
+  settingsListScrollFadeFromClassName,
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
+  settingsListTableMinWidthStyle,
 } from "#/utils/settings-list-classes";
 
 export const clientLoader = createPermissionGuard("manage_secrets");
@@ -130,50 +133,64 @@ function SecretsSettingsScreen() {
       {view === "list" && !isLoadingSecrets && (
         <div
           ref={tableContainerRef}
-          className={settingsListScrollContainerClassName}
+          className={cn(
+            settingsListScrollContainerClassName,
+            settingsListScrollFadeFromClassName,
+          )}
           onScroll={handleScroll}
         >
-          <table className="w-full min-w-full table-fixed">
-            <thead className={settingsListTableHeadClassName}>
-              <tr>
-                <th
-                  className={cn(settingsListTableHeaderCellClassName, "w-1/4")}
-                >
-                  {t(I18nKey.SETTINGS$NAME)}
-                </th>
-                <th
-                  className={cn(settingsListTableHeaderCellClassName, "w-1/2")}
-                >
-                  {t(I18nKey.SECRETS$DESCRIPTION)}
-                </th>
-                <th
-                  className={cn(
-                    settingsListTableHeaderCellClassName,
-                    "w-1/4 text-right",
-                  )}
-                >
-                  {t(I18nKey.SETTINGS$ACTIONS)}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {secrets?.map((secret) => (
-                <SecretListItem
-                  key={secret.name}
-                  title={secret.name}
-                  description={secret.description}
-                  onEdit={() => {
-                    setView("edit-secret-form");
-                    setSelectedSecret(secret.name);
-                  }}
-                  onDelete={() => {
-                    setConfirmationModalIsVisible(true);
-                    setSelectedSecret(secret.name);
-                  }}
-                />
-              ))}
-            </tbody>
-          </table>
+          <HorizontalScrollFade>
+            <table
+              className="w-full table-fixed"
+              style={settingsListTableMinWidthStyle(3)}
+            >
+              <thead className={settingsListTableHeadClassName}>
+                <tr>
+                  <th
+                    className={cn(
+                      settingsListTableHeaderCellClassName,
+                      "w-1/4",
+                    )}
+                  >
+                    {t(I18nKey.SETTINGS$NAME)}
+                  </th>
+                  <th
+                    className={cn(
+                      settingsListTableHeaderCellClassName,
+                      "w-1/2",
+                    )}
+                  >
+                    {t(I18nKey.SECRETS$DESCRIPTION)}
+                  </th>
+                  <th
+                    className={cn(
+                      settingsListTableHeaderCellClassName,
+                      "w-1/4 text-right",
+                    )}
+                  >
+                    {t(I18nKey.SETTINGS$ACTIONS)}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {secrets?.map((secret) => (
+                  <SecretListItem
+                    key={secret.name}
+                    title={secret.name}
+                    description={secret.description}
+                    onEdit={() => {
+                      setView("edit-secret-form");
+                      setSelectedSecret(secret.name);
+                    }}
+                    onDelete={() => {
+                      setConfirmationModalIsVisible(true);
+                      setSelectedSecret(secret.name);
+                    }}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </HorizontalScrollFade>
 
           {/* Loading indicator for infinite scroll */}
           {isFetchingNextPage && (

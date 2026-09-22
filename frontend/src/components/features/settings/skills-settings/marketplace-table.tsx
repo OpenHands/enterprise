@@ -3,11 +3,13 @@ import { useTranslation } from "react-i18next";
 import { MarketplaceRegistration } from "#/types/settings";
 import { Toggle } from "#/components/shared/toggle/toggle";
 import { InfoTooltip } from "#/components/features/settings/info-tooltip";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 import {
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
+  settingsListTableMinWidthStyle,
 } from "#/utils/settings-list-classes";
 import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
@@ -65,8 +67,11 @@ export function MarketplaceTable({
 
   return (
     <div className="overflow-hidden rounded-xl border border-[var(--oh-border)] bg-base-secondary/20 table-box-shadow">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] table-fixed border-collapse text-sm">
+      <HorizontalScrollFade>
+        <table
+          className="w-full table-fixed border-collapse text-sm"
+          style={settingsListTableMinWidthStyle(7)}
+        >
           <colgroup>
             <col className="w-[17%]" />
             <col className="w-[21%]" />
@@ -204,7 +209,7 @@ export function MarketplaceTable({
             )}
           </tbody>
         </table>
-      </div>
+      </HorizontalScrollFade>
     </div>
   );
 }

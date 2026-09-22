@@ -15,6 +15,7 @@ import {
   formatHubTimestamp,
 } from "#/components/features/integrations-hub/hub-format";
 import { HubTruncatedText } from "#/components/features/integrations-hub/hub-truncated-text";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { IntegrationProviderIcon } from "#/components/features/settings/git-settings/integration-provider-icon";
 import { useIntegrationsHubStub } from "#/hooks/query/use-integrations-hub-stub";
 import { I18nKey } from "#/i18n/declaration";
@@ -24,8 +25,10 @@ import {
   settingsListContainerClassName,
   settingsListIconActionButtonClassName,
   settingsListRowHoverClassName,
+  settingsListScrollFadeFromClassName,
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
+  settingsListTableMinWidthStyle,
 } from "#/utils/settings-list-classes";
 import { cn } from "#/utils/utils";
 
@@ -228,239 +231,266 @@ export function AgentRequestsPage() {
       ) : (
         <div
           data-testid="approvals-list"
-          className={settingsListContainerClassName}
+          className={cn(
+            settingsListContainerClassName,
+            settingsListScrollFadeFromClassName,
+          )}
         >
-          <table className="w-full table-fixed border-collapse text-left">
-            <thead className={settingsListTableHeadClassName}>
-              <tr>
-                {showSelection ? (
+          <HorizontalScrollFade>
+            <table
+              className="w-full table-fixed border-collapse text-left"
+              style={settingsListTableMinWidthStyle(showSelection ? 8 : 7)}
+            >
+              <thead className={settingsListTableHeadClassName}>
+                <tr>
+                  {showSelection ? (
+                    <th
+                      className={cn(
+                        headerCellClassName,
+                        COLUMN_WIDTH.select,
+                        "pr-0",
+                      )}
+                    >
+                      <span className="sr-only">
+                        {t(I18nKey.INTEGRATIONS_HUB$COLUMN_ACTIONS)}
+                      </span>
+                    </th>
+                  ) : null}
                   <th
                     className={cn(
                       headerCellClassName,
-                      COLUMN_WIDTH.select,
-                      "pr-0",
-                    )}
-                  >
-                    <span className="sr-only">
-                      {t(I18nKey.INTEGRATIONS_HUB$COLUMN_ACTIONS)}
-                    </span>
-                  </th>
-                ) : null}
-                <th
-                  className={cn(
-                    headerCellClassName,
-                    COLUMN_WIDTH.tool,
-                    showSelection && "pl-2",
-                  )}
-                >
-                  {t(I18nKey.INTEGRATIONS_HUB$COLUMN_TOOL)}
-                </th>
-                <th className={cn(headerCellClassName, COLUMN_WIDTH.identity)}>
-                  {t(I18nKey.INTEGRATIONS_HUB$COLUMN_IDENTITY)}
-                </th>
-                <th className={cn(headerCellClassName, COLUMN_WIDTH.requested)}>
-                  {t(I18nKey.INTEGRATIONS_HUB$COLUMN_REQUESTED)}
-                </th>
-                <th className={cn(headerCellClassName, COLUMN_WIDTH.duration)}>
-                  {t(I18nKey.INTEGRATIONS_HUB$COLUMN_DURATION)}
-                </th>
-                {showDecisionColumns ? (
-                  <>
-                    <th
-                      className={cn(headerCellClassName, COLUMN_WIDTH.decided)}
-                    >
-                      {t(I18nKey.INTEGRATIONS_HUB$COLUMN_DECIDED_BY)}
-                    </th>
-                    <th
-                      className={cn(headerCellClassName, COLUMN_WIDTH.decided)}
-                    >
-                      {t(I18nKey.INTEGRATIONS_HUB$COLUMN_DECIDED_AT)}
-                    </th>
-                  </>
-                ) : null}
-                <th className={cn(headerCellClassName, COLUMN_WIDTH.scopes)}>
-                  {t(I18nKey.INTEGRATIONS_HUB$COLUMN_SCOPES)}
-                </th>
-                <th className={cn(headerCellClassName, COLUMN_WIDTH.actions)}>
-                  <span className="sr-only">
-                    {t(I18nKey.INTEGRATIONS_HUB$COLUMN_ACTIONS)}
-                  </span>
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--oh-border)]">
-              {visible.map((approval) => (
-                <tr
-                  key={approval.id}
-                  data-testid={`integrations-hub-approval-${approval.id}`}
-                  className={cn(
-                    "align-middle",
-                    formControlTransitionClassName,
-                    showSelection && settingsListRowHoverClassName,
-                    showSelection && "cursor-pointer",
-                    selected[approval.id] &&
-                      "bg-[var(--oh-interactive-selected)]",
-                  )}
-                  onClick={() => {
-                    if (!showSelection) {
-                      return;
-                    }
-                    setSelected((current) => ({
-                      ...current,
-                      [approval.id]: !current[approval.id],
-                    }));
-                  }}
-                >
-                  {showSelection ? (
-                    <td
-                      className={cn(
-                        tableCellClassName,
-                        COLUMN_WIDTH.select,
-                        "pr-0 align-middle",
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        className="m-0 block"
-                        aria-label={approval.toolName}
-                        checked={Boolean(selected[approval.id])}
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) =>
-                          setSelected((current) => ({
-                            ...current,
-                            [approval.id]: event.target.checked,
-                          }))
-                        }
-                      />
-                    </td>
-                  ) : null}
-                  <td
-                    className={cn(
-                      tableCellClassName,
                       COLUMN_WIDTH.tool,
                       showSelection && "pl-2",
                     )}
                   >
-                    <div className="flex min-w-0 items-center gap-2">
-                      <IntegrationProviderIcon
-                        provider={approval.integrationKey}
-                        size="sm"
-                      />
-                      <div className="min-w-0">
-                        <HubTruncatedText
-                          text={`${approval.integrationKey}.${approval.toolName}`}
-                          className="font-medium text-white"
-                        />
-                        {approval.justification ? (
-                          <HubTruncatedText
-                            text={approval.justification}
-                            className="mt-0.5 text-[var(--oh-text-secondary)]"
-                          />
-                        ) : null}
-                      </div>
-                    </div>
-                  </td>
-                  <td className={cn(tableCellClassName, COLUMN_WIDTH.identity)}>
-                    <HubTruncatedText
-                      text={`${approval.agentId} · ${approval.agentClass}`}
-                      className="text-white"
-                    />
-                  </td>
-                  <td
-                    className={cn(tableCellClassName, COLUMN_WIDTH.requested)}
+                    {t(I18nKey.INTEGRATIONS_HUB$COLUMN_TOOL)}
+                  </th>
+                  <th
+                    className={cn(headerCellClassName, COLUMN_WIDTH.identity)}
                   >
-                    <TimestampCell value={approval.createdAt} />
-                  </td>
-                  <td
-                    className={cn(
-                      tableCellClassName,
-                      COLUMN_WIDTH.duration,
-                      "text-white",
-                    )}
+                    {t(I18nKey.INTEGRATIONS_HUB$COLUMN_IDENTITY)}
+                  </th>
+                  <th
+                    className={cn(headerCellClassName, COLUMN_WIDTH.requested)}
                   >
-                    {formatHubDurationHours(approval.requestedMinutes)}
-                  </td>
+                    {t(I18nKey.INTEGRATIONS_HUB$COLUMN_REQUESTED)}
+                  </th>
+                  <th
+                    className={cn(headerCellClassName, COLUMN_WIDTH.duration)}
+                  >
+                    {t(I18nKey.INTEGRATIONS_HUB$COLUMN_DURATION)}
+                  </th>
                   {showDecisionColumns ? (
                     <>
+                      <th
+                        className={cn(
+                          headerCellClassName,
+                          COLUMN_WIDTH.decided,
+                        )}
+                      >
+                        {t(I18nKey.INTEGRATIONS_HUB$COLUMN_DECIDED_BY)}
+                      </th>
+                      <th
+                        className={cn(
+                          headerCellClassName,
+                          COLUMN_WIDTH.decided,
+                        )}
+                      >
+                        {t(I18nKey.INTEGRATIONS_HUB$COLUMN_DECIDED_AT)}
+                      </th>
+                    </>
+                  ) : null}
+                  <th className={cn(headerCellClassName, COLUMN_WIDTH.scopes)}>
+                    {t(I18nKey.INTEGRATIONS_HUB$COLUMN_SCOPES)}
+                  </th>
+                  <th className={cn(headerCellClassName, COLUMN_WIDTH.actions)}>
+                    <span className="sr-only">
+                      {t(I18nKey.INTEGRATIONS_HUB$COLUMN_ACTIONS)}
+                    </span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--oh-border)]">
+                {visible.map((approval) => (
+                  <tr
+                    key={approval.id}
+                    data-testid={`integrations-hub-approval-${approval.id}`}
+                    className={cn(
+                      "align-middle",
+                      formControlTransitionClassName,
+                      showSelection && settingsListRowHoverClassName,
+                      showSelection && "cursor-pointer",
+                      selected[approval.id] &&
+                        "bg-[var(--oh-interactive-selected)]",
+                    )}
+                    onClick={() => {
+                      if (!showSelection) {
+                        return;
+                      }
+                      setSelected((current) => ({
+                        ...current,
+                        [approval.id]: !current[approval.id],
+                      }));
+                    }}
+                  >
+                    {showSelection ? (
                       <td
                         className={cn(
                           tableCellClassName,
-                          COLUMN_WIDTH.decided,
-                          "text-white",
+                          COLUMN_WIDTH.select,
+                          "pr-0 align-middle",
                         )}
                       >
-                        {approval.decidedBy ?? "—"}
-                      </td>
-                      <td
-                        className={cn(tableCellClassName, COLUMN_WIDTH.decided)}
-                      >
-                        <TimestampCell value={approval.decidedAt} />
-                      </td>
-                    </>
-                  ) : null}
-                  <td
-                    className={cn(
-                      tableCellClassName,
-                      COLUMN_WIDTH.scopes,
-                      "text-white",
-                    )}
-                  >
-                    <HubTruncatedText
-                      text={
-                        approval.scopes.join(", ") ||
-                        t(I18nKey.INTEGRATIONS_HUB$DEFAULT_SCOPES)
-                      }
-                      className="text-white"
-                    />
-                  </td>
-                  <td className={cn(tableCellClassName, COLUMN_WIDTH.actions)}>
-                    <div className="flex items-center justify-end">
-                      {approval.conversationId ? (
-                        <ConversationIconLink
-                          approvalId={approval.id}
-                          conversationId={approval.conversationId}
+                        <input
+                          type="checkbox"
+                          className="m-0 block"
+                          aria-label={approval.toolName}
+                          checked={Boolean(selected[approval.id])}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) =>
+                            setSelected((current) => ({
+                              ...current,
+                              [approval.id]: event.target.checked,
+                            }))
+                          }
                         />
-                      ) : null}
-                      {showSelection ? (
-                        <div className="ml-3 flex items-center gap-1">
-                          <ActionIconTooltip
-                            label={t(I18nKey.INTEGRATIONS_HUB$APPROVE)}
-                          >
-                            <button
-                              type="button"
-                              aria-label={t(I18nKey.INTEGRATIONS_HUB$APPROVE)}
-                              className="inline-flex size-6 items-center justify-center rounded-full text-[var(--oh-success)] hover:bg-[color:rgba(165,231,94,0.12)]"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setApproveIds([approval.id]);
-                              }}
-                            >
-                              <Check size={14} aria-hidden />
-                            </button>
-                          </ActionIconTooltip>
-                          <ActionIconTooltip
-                            label={t(I18nKey.INTEGRATIONS_HUB$DENY)}
-                          >
-                            <button
-                              type="button"
-                              aria-label={t(I18nKey.INTEGRATIONS_HUB$DENY)}
-                              className="inline-flex size-6 items-center justify-center rounded-full text-[var(--oh-danger)] hover:bg-[color:rgba(231,106,94,0.12)]"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                decideApprovals([approval.id], "denied");
-                              }}
-                            >
-                              <X size={14} aria-hidden />
-                            </button>
-                          </ActionIconTooltip>
+                      </td>
+                    ) : null}
+                    <td
+                      className={cn(
+                        tableCellClassName,
+                        COLUMN_WIDTH.tool,
+                        showSelection && "pl-2",
+                      )}
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <IntegrationProviderIcon
+                          provider={approval.integrationKey}
+                          size="sm"
+                        />
+                        <div className="min-w-0">
+                          <HubTruncatedText
+                            text={`${approval.integrationKey}.${approval.toolName}`}
+                            className="font-medium text-white"
+                          />
+                          {approval.justification ? (
+                            <HubTruncatedText
+                              text={approval.justification}
+                              className="mt-0.5 text-[var(--oh-text-secondary)]"
+                            />
+                          ) : null}
                         </div>
-                      ) : null}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                      </div>
+                    </td>
+                    <td
+                      className={cn(tableCellClassName, COLUMN_WIDTH.identity)}
+                    >
+                      <HubTruncatedText
+                        text={`${approval.agentId} · ${approval.agentClass}`}
+                        className="text-white"
+                      />
+                    </td>
+                    <td
+                      className={cn(tableCellClassName, COLUMN_WIDTH.requested)}
+                    >
+                      <TimestampCell value={approval.createdAt} />
+                    </td>
+                    <td
+                      className={cn(
+                        tableCellClassName,
+                        COLUMN_WIDTH.duration,
+                        "text-white",
+                      )}
+                    >
+                      {formatHubDurationHours(approval.requestedMinutes)}
+                    </td>
+                    {showDecisionColumns ? (
+                      <>
+                        <td
+                          className={cn(
+                            tableCellClassName,
+                            COLUMN_WIDTH.decided,
+                            "text-white",
+                          )}
+                        >
+                          {approval.decidedBy ?? "—"}
+                        </td>
+                        <td
+                          className={cn(
+                            tableCellClassName,
+                            COLUMN_WIDTH.decided,
+                          )}
+                        >
+                          <TimestampCell value={approval.decidedAt} />
+                        </td>
+                      </>
+                    ) : null}
+                    <td
+                      className={cn(
+                        tableCellClassName,
+                        COLUMN_WIDTH.scopes,
+                        "text-white",
+                      )}
+                    >
+                      <HubTruncatedText
+                        text={
+                          approval.scopes.join(", ") ||
+                          t(I18nKey.INTEGRATIONS_HUB$DEFAULT_SCOPES)
+                        }
+                        className="text-white"
+                      />
+                    </td>
+                    <td
+                      className={cn(tableCellClassName, COLUMN_WIDTH.actions)}
+                    >
+                      <div className="flex items-center justify-end">
+                        {approval.conversationId ? (
+                          <ConversationIconLink
+                            approvalId={approval.id}
+                            conversationId={approval.conversationId}
+                          />
+                        ) : null}
+                        {showSelection ? (
+                          <div className="ml-3 flex items-center gap-1">
+                            <ActionIconTooltip
+                              label={t(I18nKey.INTEGRATIONS_HUB$APPROVE)}
+                            >
+                              <button
+                                type="button"
+                                aria-label={t(I18nKey.INTEGRATIONS_HUB$APPROVE)}
+                                className="inline-flex size-6 items-center justify-center rounded-full text-[var(--oh-success)] hover:bg-[color:rgba(165,231,94,0.12)]"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setApproveIds([approval.id]);
+                                }}
+                              >
+                                <Check size={14} aria-hidden />
+                              </button>
+                            </ActionIconTooltip>
+                            <ActionIconTooltip
+                              label={t(I18nKey.INTEGRATIONS_HUB$DENY)}
+                            >
+                              <button
+                                type="button"
+                                aria-label={t(I18nKey.INTEGRATIONS_HUB$DENY)}
+                                className="inline-flex size-6 items-center justify-center rounded-full text-[var(--oh-danger)] hover:bg-[color:rgba(231,106,94,0.12)]"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  decideApprovals([approval.id], "denied");
+                                }}
+                              >
+                                <X size={14} aria-hidden />
+                              </button>
+                            </ActionIconTooltip>
+                          </div>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </HorizontalScrollFade>
         </div>
       )}
 

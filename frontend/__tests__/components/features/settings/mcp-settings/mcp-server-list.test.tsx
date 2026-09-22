@@ -42,6 +42,10 @@ describe("MCPServerList", () => {
     const table = screen.getByRole("table");
     expect(table).toBeInTheDocument();
     expect(table).toHaveClass("w-full");
+    expect(table).toHaveClass("table-fixed");
+    expect(table).toHaveStyle({ minWidth: "27.5rem" });
+    expect(screen.getByTestId("table-scroll")).toBeInTheDocument();
+    expect(screen.getByTestId("table-scroll-fade-right")).toBeInTheDocument();
 
     // Check that server items are rendered
     const serverItems = screen.getAllByTestId("mcp-server-item");

@@ -185,3 +185,31 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
   return renderedItems;
 }
+
+/** Account-menu destinations that stay out of the settings left rail. */
+export function getSettingsUserMenuItems(
+  items: SettingsNavRenderedItem[],
+): SettingsNavItem[] {
+  return items.flatMap((item) =>
+    item.type === "item" && item.item.menuOnly ? [item.item] : [],
+  );
+}
+
+/** Drop menu-only rows and leftover dividers from the settings sidebar. */
+export function filterSettingsNavForSidebar(
+  items: SettingsNavRenderedItem[],
+): SettingsNavRenderedItem[] {
+  const withoutMenuOnly = items.filter(
+    (item) => item.type !== "item" || !item.item.menuOnly,
+  );
+
+  return withoutMenuOnly.filter((item, index, list) => {
+    if (item.type !== "divider") {
+      return true;
+    }
+    const nextVisible = list
+      .slice(index + 1)
+      .find((entry) => entry.type !== "divider");
+    return nextVisible?.type === "item" || nextVisible?.type === "header";
+  });
+}

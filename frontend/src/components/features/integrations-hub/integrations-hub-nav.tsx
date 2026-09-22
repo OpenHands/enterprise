@@ -58,16 +58,16 @@ const PERSONAL_ITEMS: SettingsNavItem[] = [
 
 const ADMIN_ITEMS: SettingsNavItem[] = [
   {
-    icon: <Target size={ICON} aria-hidden />,
-    to: INTEGRATIONS_HUB_PATHS.adminOverview,
-    text: I18nKey.INTEGRATIONS_HUB$NAV_ADMIN_OVERVIEW,
-    subtitle: I18nKey.INTEGRATIONS_HUB$PAGE_ADMIN_OVERVIEW_SUBLINE,
-  },
-  {
     icon: <Grid2x2 size={ICON} aria-hidden />,
     to: INTEGRATIONS_HUB_PATHS.adminCatalog,
     text: I18nKey.INTEGRATIONS_HUB$NAV_ADMIN_CATALOG,
     subtitle: I18nKey.INTEGRATIONS_HUB$PAGE_ADMIN_CATALOG_SUBLINE,
+  },
+  {
+    icon: <Target size={ICON} aria-hidden />,
+    to: INTEGRATIONS_HUB_PATHS.adminOverview,
+    text: I18nKey.INTEGRATIONS_HUB$NAV_ADMIN_OVERVIEW,
+    subtitle: I18nKey.INTEGRATIONS_HUB$PAGE_ADMIN_OVERVIEW_SUBLINE,
   },
   {
     icon: <Inbox size={ICON} aria-hidden />,
