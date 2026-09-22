@@ -479,13 +479,12 @@ async def test_run_budget_maintenance_skips_legacy_personal_org_settings(
 
 
 # These tests assert cycle-roll semantics that depend on today's date, so we pin
-# "now" with freeze_time. Without a frozen clock the assertions read datetime.now()
-# and only hold on some days of the month: the earlier
-# `== _current_cycle_start(now)` assertion silently passed on days the stored anchor
-# happened to be exactly one period behind and would have failed CI on other days.
-# The dates below spread across month/year boundaries, a leap day, and days early
-# and late in the month; several of them would fail if the roll ever regressed to
-# "jump to the current period" instead of "advance exactly one period".
+# "now" with freeze_time. A roll settles the anchor at the current period, so the
+# assertions compare against `_current_cycle_start(now)`; without a frozen clock they
+# would read datetime.now() and only hold on some days of the month. The dates below
+# spread across month/year boundaries, a leap day, and days early and late in the
+# month, so a stale anchor lands one *or* two periods back and a single roll must
+# still reach the current period in every case.
 _ROLL_SEMANTICS_DATES = [
     '2026-03-03',  # early in the month: anchor lands two periods back
     '2026-03-14',  # mid-month: anchor lands exactly one period back
@@ -545,12 +544,11 @@ async def test_roll_cycle_if_needed_updates_cycle(
                 )
 
             assert rolled is True
-            # A roll advances the anchor by exactly one reset period; it must not
-            # jump to the period containing "now". These only coincide when the
-            # anchor is already exactly one period behind, which is why the old
-            # `== _current_cycle_start(now)` assertion was calendar-dependent.
-            assert settings.cycle_start_at.replace(tzinfo=UTC) == _next_cycle_start(
-                past_cycle_start, reset_day
+            # A roll settles the anchor at the period containing "now" in a single
+            # step, so an org that is one or several periods behind lands on the
+            # current period and later runs are no-ops.
+            assert settings.cycle_start_at.replace(tzinfo=UTC) == _current_cycle_start(
+                now, reset_day
             )
             assert settings.cycle_start_spend == 42.5
             assert settings.user_cycle_start_spend == {'member': 8.0}
@@ -563,13 +561,15 @@ async def test_roll_cycle_if_needed_updates_cycle(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fake_today', _ROLL_SEMANTICS_DATES)
-async def test_roll_cycle_advances_one_period_when_many_periods_behind(
+async def test_roll_cycle_catches_up_to_the_current_period_in_one_run(
     async_session_maker, budget_org, fake_today
 ):
     # An org that has been behind for several periods (paused CronJob, outage) must
-    # catch up one period per run, not jump straight to the current period. A single
-    # roll therefore lands on the period right after the stale anchor regardless of
-    # how far behind it is -- and never on _current_cycle_start(now).
+    # catch up to the current period in a single roll. Advancing only one period per
+    # run would leave the anchor behind, so every later run would roll again and
+    # re-anchor the baseline to today's cumulative spend -- forgiving recent spend and
+    # renewing the cap each run. A single roll therefore lands on
+    # _current_cycle_start(now) no matter how far behind the stale anchor is.
     with freeze_time(fake_today):
         async with async_session_maker() as session:
             now = datetime.now(UTC)
@@ -595,12 +595,7 @@ async def test_roll_cycle_advances_one_period_when_many_periods_behind(
                 rolled = await service._roll_cycle_if_needed(settings, [], [], snapshot)
 
             assert rolled is True
-            assert settings.cycle_start_at.replace(tzinfo=UTC) == _next_cycle_start(
-                stale_cycle_start, reset_day
-            )
-            # The stale anchor is many periods back, so one roll must not reach the
-            # current period.
-            assert settings.cycle_start_at.replace(tzinfo=UTC) != _current_cycle_start(
+            assert settings.cycle_start_at.replace(tzinfo=UTC) == _current_cycle_start(
                 now, reset_day
             )
 
@@ -2542,15 +2537,15 @@ async def test_override_write_is_durable_when_litellm_is_unreachable(
 
 @pytest.mark.asyncio
 @freeze_time('2026-06-15')
-async def test_maintenance_advances_the_cycle_by_one_reset_period(
+async def test_maintenance_recovers_a_multi_period_gap_without_renewing_the_cap(
     async_session_maker, budget_org
 ):
     # When maintenance has not run for an org in months -- a paused CronJob, an
-    # outage, an org the scheduler only just started covering -- _roll_cycle_if_needed
-    # rolls once and sets cycle_start_at to _current_cycle_start(now), skipping every
-    # period in between, while cycle_start_spend is re-anchored to today's cumulative
-    # total. Everything spent in the months nobody rolled is never counted against any
-    # cap.
+    # outage, an org the scheduler only just started covering -- the first run settles
+    # the anchor at the current period and re-anchors cycle_start_spend once. A second
+    # run in the same period must be a no-op: if it rolled again it would re-anchor the
+    # baseline to the newer cumulative total, forgiving spend incurred since recovery
+    # and renewing the cap. This reproduces the regression from review PR #403.
     reset_day = 1
     stale_cycle_start = _current_cycle_start(
         datetime.now(UTC) - timedelta(days=100), reset_day
@@ -2581,7 +2576,22 @@ async def test_maintenance_advances_the_cycle_by_one_reset_period(
             ),
             patch.object(service, '_sync_litellm_budgets', AsyncMock()),
         ):
-            result = await service.run_budget_maintenance(budget_org.id)
+            first = await service.run_budget_maintenance(budget_org.id)
+
+        # The org spends another $1 after recovery; the cumulative total ticks up.
+        with (
+            patch.object(
+                service,
+                '_get_financial_snapshot',
+                AsyncMock(
+                    return_value=BudgetFinancialSnapshotResult(
+                        snapshot=_snapshot(team_spend=501.0), status='live'
+                    )
+                ),
+            ),
+            patch.object(service, '_sync_litellm_budgets', AsyncMock()),
+        ):
+            second = await service.run_budget_maintenance(budget_org.id)
 
         settings = (
             await session.execute(
@@ -2591,9 +2601,14 @@ async def test_maintenance_advances_the_cycle_by_one_reset_period(
             )
         ).scalar_one()
 
-    assert result['cycle_rolled'] is True
-    # A committed roll moves the cycle start forward by exactly one reset period.
-    assert settings.cycle_start_at == _next_cycle_start(stale_cycle_start, reset_day)
+    # The first run catches up to the current period in a single jump.
+    assert first['cycle_rolled'] is True
+    assert settings.cycle_start_at == _current_cycle_start(datetime.now(UTC), reset_day)
+    # The second run in the same period must not roll again or re-anchor the baseline,
+    # so the $1 spent since recovery is preserved rather than forgiven.
+    assert second['cycle_rolled'] is False
+    assert settings.cycle_start_spend == 500.0
+    assert second['current_spend'] == 1.0
 
 
 @pytest.mark.asyncio
@@ -3202,10 +3217,11 @@ async def test_roll_cycle_blocks_a_second_run_until_the_first_commits(
                 await asyncio.gather(second_roll, return_exceptions=True)
 
         # Losing the race must also refresh the loser's stale copy: alerts, the
-        # LiteLLM sync and the returned cycle all read this object afterwards.
-        assert second_settings.cycle_start_at.replace(tzinfo=UTC) == _next_cycle_start(
-            stale_cycle_start, reset_day
-        )
+        # LiteLLM sync and the returned cycle all read this object afterwards. The
+        # winner settled the anchor at the current period, so the loser sees that.
+        assert second_settings.cycle_start_at.replace(
+            tzinfo=UTC
+        ) == _current_cycle_start(datetime.now(UTC), reset_day)
         assert second_settings.cycle_start_spend == 42.5
         await second.commit()
 
@@ -3269,8 +3285,8 @@ async def test_roll_cycle_reads_only_this_orgs_anchor(async_session_maker, budge
         await session.commit()
 
     assert rolled is True
-    assert settings.cycle_start_at.replace(tzinfo=UTC) == _next_cycle_start(
-        due_cycle_start, reset_day
+    assert settings.cycle_start_at.replace(tzinfo=UTC) == _current_cycle_start(
+        datetime.now(UTC), reset_day
     )
 
 

@@ -952,9 +952,13 @@ class OrgBudgetService:
         if now < next_cycle:
             return False
 
-        # A roll advances the stored anchor by exactly one reset period, so a long
-        # gap is caught up one period per run instead of skipped in a single jump.
-        settings.cycle_start_at = next_cycle
+        # Settle the anchor at the current period in this single roll. Advancing only
+        # one period per run would leave the anchor behind after a multi-period gap, so
+        # every later maintenance run would roll again and re-anchor cycle_start_spend
+        # to the current cumulative LiteLLM total -- forgiving spend incurred since
+        # recovery and renewing the cap each time. Jumping straight to the current
+        # period rolls at most once per period, so subsequent runs are no-ops.
+        settings.cycle_start_at = _current_cycle_start(now, settings.reset_day)
         settings.cycle_start_spend = snapshot.team_spend
         settings.user_cycle_start_spend = {
             user_id: member.spend for user_id, member in snapshot.members.items()
