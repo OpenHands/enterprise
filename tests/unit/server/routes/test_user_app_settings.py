@@ -22,7 +22,7 @@ TEST_USER_ID = str(uuid.uuid4())
 
 
 @pytest.fixture
-def mock_app():
+def mock_app(app_db_session):
     """Create a test FastAPI app with user app settings routes and mocked auth."""
     app = FastAPI()
     app.include_router(user_app_settings_router)
@@ -36,7 +36,7 @@ def mock_app():
 
 
 @pytest.fixture
-def mock_app_unauthenticated():
+def mock_app_unauthenticated(app_db_session):
     """Create a test FastAPI app with no authenticated user."""
     app = FastAPI()
     app.include_router(user_app_settings_router)
