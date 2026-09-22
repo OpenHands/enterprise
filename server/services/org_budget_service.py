@@ -11,6 +11,7 @@ from uuid import UUID
 import httpx
 from fastapi import HTTPException, Request, status
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.services.injector import Injector, InjectorState
@@ -18,6 +19,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import RoleName
 from server.routes.org_models import SpendStatus
 from server.services.smtp_email_service import SMTPEmailService
+from storage.database import sqlstate
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
 from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
@@ -61,6 +63,9 @@ DEFAULT_THRESHOLDS = (
 
 LITELLM_FINANCIAL_READ_MAX_ATTEMPTS = 3
 LITELLM_FINANCIAL_READ_RETRY_DELAY_SECONDS = 0.1
+
+# Postgres SQLSTATE for unique_violation.
+_UNIQUE_VIOLATION = '23505'
 
 
 @dataclass
@@ -835,12 +840,30 @@ class OrgBudgetService:
             await self._hydrate_cycle_baselines(settings)
             return settings
 
-        return await self.store.create_settings(
-            org_id=org_id,
-            reset_day=1,
-            cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
-            thresholds=DEFAULT_THRESHOLDS,
-        )
+        # Insert inside a savepoint so a concurrent creator's unique violation does
+        # not poison the caller's transaction.
+        try:
+            async with self.db_session.begin_nested():
+                settings = await self.store.create_settings(
+                    org_id=org_id,
+                    reset_day=1,
+                    cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
+                    thresholds=DEFAULT_THRESHOLDS,
+                )
+        except IntegrityError as exc:
+            # Only a unique violation means the race was lost; create_settings also
+            # writes rows carrying an FK to org.id, and a missing org must keep its
+            # own error rather than be reported as a re-read that found nothing.
+            if sqlstate(exc) != _UNIQUE_VIOLATION:
+                raise
+            # Finding the winner's committed row depends on READ COMMITTED, where
+            # each statement takes a fresh snapshot. Under REPEATABLE READ this
+            # session's snapshot predates that commit and the re-read returns None.
+            settings = await self.store.get_settings(org_id)
+            if settings is None:
+                raise
+            await self._hydrate_cycle_baselines(settings)
+        return settings
 
     async def _hydrate_cycle_baselines(self, settings: OrgBudgetSettings) -> None:
         """Make the baseline table authoritative for the current cycle.
