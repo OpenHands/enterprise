@@ -12,6 +12,7 @@ import base62
 import httpx
 from e2b import (
     AsyncSandbox,
+    AuthenticationException,
     SandboxException,
     SandboxNotFoundException,
     SandboxQuery,
@@ -111,6 +112,21 @@ def _init_api_key(sandbox_spec: E2BSandboxSpecInfo) -> str | None:
     if sandbox_spec.init_api_key is None:
         return None
     return sandbox_spec.init_api_key.get_secret_value() or None
+
+
+# `AuthenticationException` is the one E2B error that does not inherit from
+# `SandboxException`, so it slips past every provider error handler unless it
+# is caught by name. It has to be caught at each call site, and reported as
+# itself: a rejected key must not be mistaken for a missing sandbox.
+E2B_AUTH_FAILURE = (
+    'E2B rejected the credentials. Check E2B_API_KEY, and E2B_API_URL on a '
+    'self hosted cluster - a key is only valid against the control plane that '
+    'issued it.'
+)
+
+
+def _auth_error(exc: AuthenticationException) -> SandboxError:
+    return SandboxError(f'{E2B_AUTH_FAILURE} ({exc})')
 
 
 # E2B rejects a create it has no room for. The failure is permanent - it is
@@ -230,6 +246,8 @@ class E2BSandboxService(SandboxService):
         """Get E2B's info for a sandbox, or None when the caller may not see it."""
         try:
             info = await AsyncSandbox.get_info(sandbox_id, **self._api_params)
+        except AuthenticationException as exc:
+            raise _auth_error(exc) from exc
         except SandboxNotFoundException:
             return None
         except SandboxException as exc:
@@ -308,6 +326,7 @@ class E2BSandboxService(SandboxService):
         e2b_sandbox_id: str,
         sandbox_spec: E2BSandboxSpecInfo,
         session_api_key: str,
+        with_vscode_url: bool = True,
     ) -> list[ExposedUrl]:
         exposed_urls = [
             ExposedUrl(
@@ -326,6 +345,8 @@ class E2BSandboxService(SandboxService):
                 port=WORKER_2_PORT,
             ),
         ]
+        if not with_vscode_url:
+            return exposed_urls
         vscode_url = await self._resolve_vscode_url(
             e2b_sandbox_id, sandbox_spec, session_api_key
         )
@@ -335,7 +356,9 @@ class E2BSandboxService(SandboxService):
             )
         return exposed_urls
 
-    async def _to_sandbox_info(self, info: E2BSandboxInfo) -> SandboxInfo:
+    async def _to_sandbox_info(
+        self, info: E2BSandboxInfo, with_vscode_url: bool = True
+    ) -> SandboxInfo:
         metadata = info.metadata or {}
         status = STATUS_MAPPING.get(info.state, SandboxStatus.ERROR)
         sandbox_spec_id = metadata.get(SANDBOX_SPEC_ID_METADATA_KEY, '')
@@ -346,7 +369,7 @@ class E2BSandboxService(SandboxService):
             session_api_key = self._derive_session_api_key(info.sandbox_id)
             sandbox_spec = await self._get_spec(sandbox_spec_id)
             exposed_urls = await self._exposed_urls(
-                info.sandbox_id, sandbox_spec, session_api_key
+                info.sandbox_id, sandbox_spec, session_api_key, with_vscode_url
             )
 
         return SandboxInfo(
@@ -373,6 +396,12 @@ class E2BSandboxService(SandboxService):
         Paused sandboxes are requested explicitly: E2B's default list shows
         running sandboxes only, and a paused sandbox is a conversation the user
         can still resume.
+
+        VSCode URLs are left out. Resolving one costs an HTTP call to the
+        sandbox itself, and the only caller that needs it - the frontend - goes
+        through ``batch_get_sandboxes``. ``pause_old_sandboxes`` and the
+        conversation-start lookup read nothing but id, status and created_at,
+        and they run on every conversation start.
         """
         query = SandboxQuery(
             metadata=await self._owned_metadata_filter(),
@@ -384,11 +413,18 @@ class E2BSandboxService(SandboxService):
         )
         try:
             items = await paginator.next_items()
-        except SandboxException:
-            _logger.exception('Error listing sandboxes', stack_info=True)
-            return SandboxPage(items=[], next_page_id=None)
-        sandboxes = [await self._to_sandbox_info(item) for item in items]
-        return SandboxPage(items=sandboxes, next_page_id=paginator.next_token)
+        except AuthenticationException as exc:
+            raise _auth_error(exc) from exc
+        except SandboxException as exc:
+            # An empty page reads as "this user has nothing running", which
+            # makes `pause_old_sandboxes` stop enforcing the cap and makes the
+            # conversation-start lookup provision another sandbox. A rate limit
+            # would turn into more load, so the failure is reported instead.
+            raise SandboxError(f'Could not list sandboxes: {exc}') from exc
+        sandboxes = await asyncio.gather(
+            *[self._to_sandbox_info(item, with_vscode_url=False) for item in items]
+        )
+        return SandboxPage(items=list(sandboxes), next_page_id=paginator.next_token)
 
     async def get_sandbox(self, sandbox_id: str) -> SandboxInfo | None:
         """Get a single sandbox."""
@@ -491,6 +527,8 @@ class E2BSandboxService(SandboxService):
                 lifecycle={'on_timeout': 'pause', 'auto_resume': True},
                 **self._api_params,
             )
+        except AuthenticationException as exc:
+            raise _auth_error(exc) from exc
         except SandboxException as exc:
             _logger.exception('Failed to create sandbox', stack_info=True)
             if PLACEMENT_FAILURE_MARKER in str(exc).lower():
@@ -684,6 +722,8 @@ class E2BSandboxService(SandboxService):
                     sandbox_id, timeout=self.timeout_seconds, **self._api_params
                 )
                 return True
+            except AuthenticationException as exc:
+                raise _auth_error(exc) from exc
             except SandboxNotFoundException:
                 return False
             except SandboxException as exc:
@@ -709,6 +749,8 @@ class E2BSandboxService(SandboxService):
             # A False result means the sandbox was already paused, which the
             # caller asked for either way.
             await AsyncSandbox.pause(sandbox_id, **self._api_params)
+        except AuthenticationException as exc:
+            raise _auth_error(exc) from exc
         except SandboxException:
             _logger.exception(f'Error pausing sandbox {sandbox_id}', stack_info=True)
             return False
@@ -727,6 +769,8 @@ class E2BSandboxService(SandboxService):
         try:
             # A False result means the sandbox was already gone.
             await AsyncSandbox.kill(sandbox_id, **self._api_params)
+        except AuthenticationException as exc:
+            raise _auth_error(exc) from exc
         except SandboxException as exc:
             _logger.exception(f'Error deleting sandbox {sandbox_id}', stack_info=True)
             raise SandboxDeleteRetryError(
@@ -758,16 +802,17 @@ class E2BSandboxServiceInjector(SandboxServiceInjector):
             'the E2B_API_URL env var, then to https://api.{domain}.'
         ),
     )
-    # 3600 is E2B's hard server-side ceiling, not a preference: anything above
-    # it - 3601 included - is rejected with `400: Timeout cannot be greater
-    # than 1 hours`. Configuring a longer lease is not available as a way to
-    # keep a long conversation alive.
+    # 3600 is a safe default rather than a limit. The ceiling is set by the
+    # plan - one hour on Hobby, 24 on Pro - and on a self hosted cluster by
+    # whatever the operator configured, which is where `400: Timeout cannot be
+    # greater than 1 hours` comes from. Raise it where the plan allows.
     timeout_seconds: int = Field(
         default=3600,
         description=(
             'Sandbox lifetime in seconds, measured from the last create or '
-            'resume. On expiry the sandbox is paused rather than killed. E2B '
-            'caps this at one hour.'
+            'resume. On expiry the sandbox is paused rather than killed. The '
+            'ceiling is set by the E2B plan, or by the operator on a self '
+            'hosted cluster.'
         ),
     )
     max_num_sandboxes: int = Field(

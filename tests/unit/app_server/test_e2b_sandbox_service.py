@@ -16,7 +16,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from e2b import SandboxException, SandboxNotFoundException, SandboxState
+from e2b import (
+    AuthenticationException,
+    SandboxException,
+    SandboxNotFoundException,
+    SandboxState,
+)
 from pydantic import SecretStr
 
 from openhands.agent_server.init_router import InitRequest
@@ -787,15 +792,35 @@ class TestSearchSandboxes:
         assert page.next_page_id == 'cursor-2'
 
     @pytest.mark.asyncio
-    async def test_list_failure_returns_an_empty_page(self, sdk):
+    async def test_list_failure_is_reported_rather_than_read_as_empty(self, sdk):
+        # An empty page would tell `pause_old_sandboxes` the cap is not
+        # reached and tell the conversation-start lookup to provision another
+        # sandbox, so a rate limit would produce more load rather than less.
         paginator = _paginator([])
         paginator.next_items.side_effect = SandboxException('boom')
         sdk.list.return_value = paginator
 
-        page = await _service().search_sandboxes()
+        with pytest.raises(SandboxError, match='Could not list sandboxes'):
+            await _service().search_sandboxes()
 
-        assert page.items == []
-        assert page.next_page_id is None
+    @pytest.mark.asyncio
+    async def test_no_vscode_call_per_sandbox(self, sdk):
+        agent_server = FakeAgentServer()
+        sdk.list.return_value = _paginator(
+            [_e2b_info(sandbox_id='sb-1'), _e2b_info(sandbox_id='sb-2')]
+        )
+
+        page = await _service(httpx_client=agent_server).search_sandboxes()
+
+        assert agent_server.vscode_requests == []
+        assert [item.id for item in page.items] == ['sb-1', 'sb-2']
+        for item in page.items:
+            assert item.exposed_urls is not None
+            assert {url.name for url in item.exposed_urls} == {
+                AGENT_SERVER,
+                WORKER_1,
+                WORKER_2,
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -955,3 +980,62 @@ class TestUserScoping:
 
         assert sandbox is not None
         assert sandbox.created_by_user_id == OWNER_ID
+
+
+# ---------------------------------------------------------------------------
+# Authentication failures
+# ---------------------------------------------------------------------------
+
+
+class TestAuthenticationFailures:
+    """A rejected API key must not be reported as a missing sandbox.
+
+    `AuthenticationException` is the one E2B error outside the
+    `SandboxException` hierarchy, so without an explicit handler it escapes
+    every call site untranslated.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_names_the_api_key(self, sdk):
+        sdk.get_info.side_effect = AuthenticationException('401 unauthorized')
+
+        with pytest.raises(SandboxError, match='E2B_API_KEY'):
+            await _service().get_sandbox(SANDBOX_ID)
+
+    @pytest.mark.asyncio
+    async def test_search_names_the_api_key(self, sdk):
+        paginator = _paginator([])
+        paginator.next_items.side_effect = AuthenticationException('401 unauthorized')
+        sdk.list.return_value = paginator
+
+        with pytest.raises(SandboxError, match='E2B_API_KEY'):
+            await _service().search_sandboxes()
+
+    @pytest.mark.asyncio
+    async def test_start_names_the_api_key(self, sdk):
+        sdk.create.side_effect = AuthenticationException('401 unauthorized')
+
+        with pytest.raises(SandboxError, match='E2B_API_KEY'):
+            await _service().start_sandbox()
+
+    @pytest.mark.asyncio
+    async def test_pause_names_the_api_key(self, sdk):
+        sdk.pause.side_effect = AuthenticationException('401 unauthorized')
+
+        with pytest.raises(SandboxError, match='E2B_API_KEY'):
+            await _service().pause_sandbox(SANDBOX_ID)
+
+    @pytest.mark.asyncio
+    async def test_resume_names_the_api_key(self, sdk):
+        sdk.get_info.return_value = _e2b_info(state=SandboxState.PAUSED)
+        sdk.connect.side_effect = AuthenticationException('401 unauthorized')
+
+        with pytest.raises(SandboxError, match='E2B_API_KEY'):
+            await _service().resume_sandbox(SANDBOX_ID)
+
+    @pytest.mark.asyncio
+    async def test_delete_names_the_api_key(self, sdk):
+        sdk.kill.side_effect = AuthenticationException('401 unauthorized')
+
+        with pytest.raises(SandboxError, match='E2B_API_KEY'):
+            await _service().delete_sandbox(SANDBOX_ID)
