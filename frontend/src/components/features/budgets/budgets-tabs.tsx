@@ -107,7 +107,6 @@ interface OrganizationBudgetTabProps {
   slackIntegrationEnabled: boolean;
   slackChannel: string;
   onSlackChannelChange: (value: string) => void;
-  onReset: () => void;
   onSave: () => void;
   isSaving: boolean;
   isMonthlyLimitValid: boolean;
@@ -143,7 +142,6 @@ export function OrganizationBudgetTab({
   slackIntegrationEnabled,
   slackChannel,
   onSlackChannelChange,
-  onReset,
   onSave,
   isSaving,
   isMonthlyLimitValid,
@@ -500,9 +498,6 @@ export function OrganizationBudgetTab({
           isDisabled={isSaving || !isMonthlyLimitValid}
         >
           Save changes
-        </BrandButton>
-        <BrandButton type="button" variant="secondary" onClick={onReset}>
-          Reset
         </BrandButton>
       </div>
     </div>
