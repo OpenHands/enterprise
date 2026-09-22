@@ -4,6 +4,7 @@ This module tests the filesystem-based implementation of EventService,
 focusing on search functionality.
 """
 
+import asyncio
 import tempfile
 import time
 from datetime import datetime
@@ -57,6 +58,32 @@ def create_token_event() -> TokenEvent:
 def create_pause_event() -> PauseEvent:
     """Helper to create a PauseEvent for testing."""
     return PauseEvent(source='user')
+
+
+async def _save_ordered_events(
+    service: FilesystemEventService, conversation_id, count: int
+) -> list[TokenEvent]:
+    """Save events with distinct, increasing timestamps."""
+    events = []
+    for _ in range(count):
+        event = create_token_event()
+        events.append(event)
+        await service.save_event(conversation_id, event)
+        await asyncio.sleep(0.01)
+    return events
+
+
+def _spy_load_sizes(service: FilesystemEventService, monkeypatch) -> list[int]:
+    """Record the number of paths passed to each _load_events_from_paths call."""
+    call_sizes: list[int] = []
+    original = service._load_events_from_paths
+
+    async def spy(paths: list[Path]) -> list[Event | None]:
+        call_sizes.append(len(paths))
+        return await original(paths)
+
+    monkeypatch.setattr(service, '_load_events_from_paths', spy)
+    return call_sizes
 
 
 class TestFilesystemEventServiceSearchEvents:
@@ -673,6 +700,23 @@ class TestEventIndex:
         assert count == 4
 
     @pytest.mark.asyncio
+    async def test_count_events_no_filter_excludes_index_files(
+        self, service: FilesystemEventService
+    ):
+        """index.json / index_stale.json next to the events are not counted."""
+        conversation_id = uuid4()
+        for _ in range(4):
+            await service.save_event(conversation_id, create_token_event())
+
+        # Build index.json, then stale it with one more save.
+        await service.search_events(conversation_id)
+        assert await service.count_events(conversation_id) == 4
+        await service.save_event(conversation_id, create_token_event())
+        conversation_path = await service.get_conversation_path(conversation_id)
+        assert (conversation_path / 'index_stale.json').exists()
+        assert await service.count_events(conversation_id) == 5
+
+    @pytest.mark.asyncio
     async def test_index_dedups_by_event_id(self, service: FilesystemEventService):
         """Re-saving the same event id does not duplicate it in the index."""
         conversation_id = uuid4()
@@ -754,15 +798,8 @@ class TestEventIndex:
         self, service: FilesystemEventService
     ):
         """iter_events_for_export yields all events in timestamp order via the index."""
-        import time
-
         conversation_id = uuid4()
-        events = []
-        for _ in range(3):
-            event = create_token_event()
-            events.append(event)
-            await service.save_event(conversation_id, event)
-            time.sleep(0.01)
+        events = await _save_ordered_events(service, conversation_id, 3)
 
         result = [
             event async for event in service.iter_events_for_export(conversation_id)
@@ -771,6 +808,94 @@ class TestEventIndex:
         assert [event.timestamp for event in result] == sorted(
             event.timestamp for event in result
         )
+
+    @pytest.mark.asyncio
+    async def test_iter_events_for_export_loads_events_in_batches(
+        self, service: FilesystemEventService, monkeypatch
+    ):
+        """Export loads events in export-sized chunks and keeps timestamp order."""
+        from openhands.app_server.event import event_service_base
+
+        monkeypatch.setattr(event_service_base, '_export_batch_size', lambda: 3)
+        conversation_id = uuid4()
+        events = await _save_ordered_events(service, conversation_id, 7)
+        # Build the index up front so only the export's own loads are recorded.
+        await service.search_events(conversation_id, limit=1)
+        call_sizes = _spy_load_sizes(service, monkeypatch)
+
+        result = [
+            event async for event in service.iter_events_for_export(conversation_id)
+        ]
+
+        assert call_sizes == [3, 3, 1]
+        assert [event.id for event in result] == [event.id for event in events]
+
+    @pytest.mark.asyncio
+    async def test_iter_events_for_export_prefetches_only_one_batch(
+        self, service: FilesystemEventService, monkeypatch
+    ):
+        """Batch n+2 is not loaded until batch n has been consumed."""
+        from openhands.app_server.event import event_service_base
+
+        monkeypatch.setattr(event_service_base, '_export_batch_size', lambda: 3)
+        conversation_id = uuid4()
+        events = await _save_ordered_events(service, conversation_id, 7)
+        await service.search_events(conversation_id, limit=1)
+        call_sizes = _spy_load_sizes(service, monkeypatch)
+
+        gen = service.iter_events_for_export(conversation_id)
+        first = await anext(gen)
+        assert first.id == events[0].id
+        # Let the prefetch of batch 2 start; batch 3 must not be requested yet.
+        await asyncio.sleep(0)
+        assert call_sizes == [3, 3]
+        # Consume the rest of batch 1 and the first event of batch 2.
+        for _ in range(3):
+            await anext(gen)
+        await asyncio.sleep(0)
+        assert call_sizes == [3, 3, 1]
+        await gen.aclose()
+
+    @pytest.mark.asyncio
+    async def test_iter_events_for_export_cancels_prefetch_on_close(
+        self, service: FilesystemEventService, monkeypatch
+    ):
+        """Closing the generator early does not leave a prefetch task running."""
+        from openhands.app_server.event import event_service_base
+
+        monkeypatch.setattr(event_service_base, '_export_batch_size', lambda: 2)
+        conversation_id = uuid4()
+        await _save_ordered_events(service, conversation_id, 6)
+        await service.search_events(conversation_id, limit=1)
+
+        gen = service.iter_events_for_export(conversation_id)
+        await anext(gen)
+        before = {t for t in asyncio.all_tasks() if not t.done()}
+        await gen.aclose()
+        await asyncio.sleep(0)
+        leaked = [t for t in before if not t.done() and t is not asyncio.current_task()]
+        assert leaked == []
+
+    @pytest.mark.asyncio
+    async def test_iter_events_for_export_skips_missing_events(
+        self, service: FilesystemEventService, monkeypatch
+    ):
+        """An event file removed after indexing is skipped, order is kept."""
+        from openhands.app_server.event import event_service_base
+
+        monkeypatch.setattr(event_service_base, '_export_batch_size', lambda: 2)
+        conversation_id = uuid4()
+        events = await _save_ordered_events(service, conversation_id, 5)
+        await service.search_events(conversation_id, limit=1)
+        conversation_path = await service.get_conversation_path(conversation_id)
+        (conversation_path / f'{events[2].id.replace("-", "")}.json').unlink()
+
+        result = [
+            event async for event in service.iter_events_for_export(conversation_id)
+        ]
+
+        expected = [e.id for i, e in enumerate(events) if i != 2]
+        assert [event.id for event in result] == expected
 
     @pytest.mark.asyncio
     async def test_rebuild_loads_events_in_batches(
