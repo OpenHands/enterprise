@@ -17,6 +17,7 @@ packages = [
   { include = "storage" },
   { include = "sync" },
   { include = "integrations" },
+  { include = "integrations_hub" },
 ]
 
 [tool.poetry.dependencies]
@@ -50,6 +51,10 @@ pandas = "2.3.3"
 numpy = "2.4.4"
 mcp = "1.27.0"
 pillow = "12.2.0"
+# Integrations Hub (in-process FastAPI under /api/integrations-hub)
+openhands-extensions = "0.10.0"
+psycopg = { extras = [ "binary" ], version = ">=3.2,<4" }
+cryptography = ">=43,<47"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "0.8.3"

@@ -38,6 +38,15 @@ vi.mock("#/hooks/query/use-config", () => ({
   }),
 }));
 
+vi.mock("#/hooks/use-integrations-hub-cutover", () => ({
+  useIntegrationsHubCutover: () => ({
+    isLoading: false,
+    isOpen: false,
+    items: [],
+    dismiss: vi.fn(),
+  }),
+}));
+
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,
@@ -142,9 +151,9 @@ describe("personal Integrations nav", () => {
       }),
     ).not.toBeInTheDocument();
 
-    expect(screen.getByTestId("dashboard-nav-trailing-count")).toHaveTextContent(
-      "4",
-    );
+    expect(
+      screen.getByTestId("dashboard-nav-trailing-count"),
+    ).toHaveTextContent("4");
   });
 
   it("lists stubbed agent requests on the personal tab", () => {
@@ -199,9 +208,9 @@ describe("Integrations Hub admin nav", () => {
       INTEGRATIONS_HUB_PATHS.adminUserRequests,
     ]);
 
-    expect(screen.getByTestId("dashboard-nav-trailing-count")).toHaveTextContent(
-      "3",
-    );
+    expect(
+      screen.getByTestId("dashboard-nav-trailing-count"),
+    ).toHaveTextContent("3");
   });
 
   it("collapses the administration rail into a dropdown on mobile", async () => {

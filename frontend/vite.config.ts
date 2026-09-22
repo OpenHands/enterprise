@@ -108,6 +108,10 @@ export default defineConfig(({ mode }) => {
     test: {
       environment: "jsdom",
       setupFiles: ["vitest.setup.ts"],
+      // Prefer Hub stub + MSW in unit tests; live Hub needs a real proxy.
+      env: {
+        VITE_MOCK_API: "true",
+      },
       exclude: [...configDefaults.exclude, "tests"],
       coverage: {
         reporter: ["text", "json", "html", "lcov", "text-summary"],

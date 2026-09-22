@@ -94,6 +94,13 @@ export function ConnectWizardModal({
                         type="button"
                         variant="primary"
                         className="shrink-0"
+                        testId="wizard-connect-account"
+                        onClick={() => {
+                          if (slug) {
+                            onCreate(slug);
+                            onClose();
+                          }
+                        }}
                       >
                         {t(I18nKey.INTEGRATIONS_HUB$CONNECT)}
                       </BrandButton>

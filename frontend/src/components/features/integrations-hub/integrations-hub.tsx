@@ -19,7 +19,7 @@ import {
   hubModalBodyClassName,
   hubModalFooterClassName,
 } from "#/components/features/integrations-hub/hub-modal";
-import { useIntegrationsHubStub } from "#/hooks/query/use-integrations-hub-stub";
+import { useIntegrationsHub } from "#/hooks/query/use-integrations-hub";
 import { I18nKey } from "#/i18n/declaration";
 import type { HubIntegration } from "#/types/integrations-hub";
 import {
@@ -93,7 +93,7 @@ function InstalledIntegrationsBody({
 
 export function IntegrationsHub() {
   const { t } = useTranslation();
-  const hub = useIntegrationsHubStub();
+  const hub = useIntegrationsHub();
   const [search, setSearch] = useState("");
   const [wizardSlug, setWizardSlug] = useState<string | null | undefined>();
   const [detailSlug, setDetailSlug] = useState<string | null>(null);

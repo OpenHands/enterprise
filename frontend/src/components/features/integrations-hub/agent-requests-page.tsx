@@ -17,7 +17,7 @@ import {
 import { HubTruncatedText } from "#/components/features/integrations-hub/hub-truncated-text";
 import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { IntegrationProviderIcon } from "#/components/features/settings/git-settings/integration-provider-icon";
-import { useIntegrationsHubStub } from "#/hooks/query/use-integrations-hub-stub";
+import { useIntegrationsHub } from "#/hooks/query/use-integrations-hub";
 import { I18nKey } from "#/i18n/declaration";
 import type { HubApprovalStatus } from "#/types/integrations-hub";
 import { formControlTransitionClassName } from "#/utils/form-control-classes";
@@ -106,7 +106,7 @@ function ConversationIconLink({
 
 export function AgentRequestsPage() {
   const { t } = useTranslation();
-  const { approvals, decideApprovals } = useIntegrationsHubStub();
+  const { approvals, decideApprovals } = useIntegrationsHub();
   const [filter, setFilter] = useState<HubApprovalStatus>("pending");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Record<string, boolean>>({});

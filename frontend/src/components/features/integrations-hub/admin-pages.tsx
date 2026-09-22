@@ -33,7 +33,7 @@ import { IntegrationsHubPageHeader } from "#/components/features/integrations-hu
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { IntegrationProviderIcon } from "#/components/features/settings/git-settings/integration-provider-icon";
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
-import { useIntegrationsHubStub } from "#/hooks/query/use-integrations-hub-stub";
+import { useIntegrationsHub } from "#/hooks/query/use-integrations-hub";
 import { I18nKey } from "#/i18n/declaration";
 import type {
   HubDuplicateGroup,
@@ -689,7 +689,7 @@ function CatalogSection({
 
 export function AdminOverviewPage() {
   const { t } = useTranslation();
-  const { overviewUsers, duplicateGroups } = useIntegrationsHubStub();
+  const { overviewUsers, duplicateGroups } = useIntegrationsHub();
   const [tab, setTab] = useState<"users" | "duplicates">("users");
   const [search, setSearch] = useState("");
   const [selectedUser, setSelectedUser] = useState<HubOverviewUser | null>(
@@ -820,7 +820,7 @@ export function AdminCatalogPage() {
     toggleEnabled,
     registerCustomMcp,
     updateToolAccess,
-  } = useIntegrationsHubStub();
+  } = useIntegrationsHub();
   const [search, setSearch] = useState("");
   const [view, setView] = useState<HubCatalogView>("card");
   const [customOpen, setCustomOpen] = useState(false);
@@ -937,7 +937,7 @@ export function AdminUserRequestsPage() {
     toggleEnabled,
     updateToolAccess,
     dismissUserRequest,
-  } = useIntegrationsHubStub();
+  } = useIntegrationsHub();
   const [setupRequestId, setSetupRequestId] = useState<string | null>(null);
   const [setupSeed, setSetupSeed] = useState<HubIntegration | null>(null);
   const [pendingDismissId, setPendingDismissId] = useState<string | null>(null);

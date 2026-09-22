@@ -19,6 +19,7 @@ from server.auth.constants import (  # noqa: E402
     AZURE_DEVOPS_CLIENT_ID,
     BITBUCKET_APP_CLIENT_ID,
     BITBUCKET_DATA_CENTER_HOST,
+    ENABLE_INTEGRATIONS_HUB,
     ENABLE_JIRA,
     ENABLE_JIRA_DC,
     GITHUB_APP_CLIENT_ID,
@@ -182,6 +183,10 @@ override_users_me_endpoint(base_app)
 base_app.include_router(invitation_router)  # Add routes for org invitation management
 base_app.include_router(invitation_accept_router)  # Add route for accepting invitations
 add_github_proxy_routes(base_app)
+if ENABLE_INTEGRATIONS_HUB:
+    from integrations_hub.mount import mount_integrations_hub  # noqa: E402
+
+    mount_integrations_hub(base_app)
 base_app.include_router(slack_router)
 if ENABLE_JIRA:
     base_app.include_router(jira_integration_router)

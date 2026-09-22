@@ -20,7 +20,7 @@ import { EditPermissionProfileModal } from "#/components/features/integrations-h
 import { PermissionProfileActionsMenu } from "#/components/features/integrations-hub/permission-profile-actions-menu";
 import { emptyPermissionProfileSnapshot } from "#/components/features/integrations-hub/permission-profile-utils";
 import { SaveProfileModal } from "#/components/features/integrations-hub/save-profile-modal";
-import { useIntegrationsHubStub } from "#/hooks/query/use-integrations-hub-stub";
+import { useIntegrationsHub } from "#/hooks/query/use-integrations-hub";
 import { I18nKey } from "#/i18n/declaration";
 import type {
   HubPermissionProfile,
@@ -246,7 +246,7 @@ export function AgentConnectionPage() {
     savePermissionProfileSnapshot,
     setDefaultPermissionProfile,
     deletePermissionProfile,
-  } = useIntegrationsHubStub();
+  } = useIntegrationsHub();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [saveOpen, setSaveOpen] = useState(false);
   const [createDraftName, setCreateDraftName] = useState<string | null>(null);

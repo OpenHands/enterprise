@@ -37,7 +37,7 @@ import type {
   IntegrationsHubViewModel,
 } from "#/types/integrations-hub";
 
-const IntegrationsHubStubContext =
+export const IntegrationsHubStubContext =
   createContext<IntegrationsHubViewModel | null>(null);
 
 function catalogItem(slug: string): HubIntegration | undefined {
@@ -45,12 +45,12 @@ function catalogItem(slug: string): HubIntegration | undefined {
 }
 
 /**
- * STUB: local Hub list for the frontend port.
- * Replace with TanStack Query against /api/integrations-hub.
+ * STUB: local Hub list for mock / VITE_MOCK_API.
+ * Live path uses TanStack Query against /api/integrations-hub.
  *
- * CUTOVER: The real Hub API must also surface which legacy Settings >
- * Integrations connections broke so the first-visit recovery modal
- * (see IntegrationsHubLayout) can list them and how to reconnect.
+ * Legacy cutover reconnect items are derived on the client from
+ * settings.provider_tokens_set (see useIntegrationsHubCutover) until
+ * the Hub API exposes an explicit legacy-connections payload.
  */
 function useIntegrationsHubStubState(): IntegrationsHubViewModel {
   const { isPersonalOrg } = useOrgTypeAndAccess();

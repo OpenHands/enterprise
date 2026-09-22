@@ -8,13 +8,15 @@ import { I18nKey } from "#/i18n/declaration";
 import { settingsListContainerClassName } from "#/utils/settings-list-classes";
 import { cn } from "#/utils/utils";
 
-const MCP_ENDPOINT = "https://example.openhands.dev/api/integrations-hub/mcp";
-const OPENAPI_SCHEMA =
-  "https://example.openhands.dev/api/integrations-hub/openapi.json";
-const USER_OPENAPI_SCHEMA =
-  "https://example.openhands.dev/api/integrations-hub/user/openapi.json";
-const ADMIN_OPENAPI_SCHEMA =
-  "https://example.openhands.dev/api/integrations-hub/admin/openapi.json";
+const HUB_API_ORIGIN =
+  typeof window !== "undefined"
+    ? `${window.location.origin}/api/integrations-hub`
+    : "/api/integrations-hub";
+
+const MCP_ENDPOINT = `${HUB_API_ORIGIN}/mcp`;
+const OPENAPI_SCHEMA = `${HUB_API_ORIGIN}/agent/openapi`;
+const USER_OPENAPI_SCHEMA = `${HUB_API_ORIGIN}/user/openapi`;
+const ADMIN_OPENAPI_SCHEMA = `${HUB_API_ORIGIN}/admin/openapi`;
 const MCP_TOOL = "integrations_hub.slack.post_message";
 const MCP_CONFIG = `{
   "mcpServers": {
