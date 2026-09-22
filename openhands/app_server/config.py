@@ -168,18 +168,11 @@ def resolve_provider_llm_base_url(
     return base_url
 
 
-def _get_default_lifespan() -> AppLifespanService | None:
-    # Check legacy parameters for saas mode. If we are in SAAS mode use
-    # SaasAppLifespanService to initialize PostHog analytics
-    if 'saas' in (os.getenv('OPENHANDS_CONFIG_CLS') or '').lower():
-        from server.app_lifespan.saas_app_lifespan_service import (
-            SaasAppLifespanService,
-        )
+def _get_default_lifespan() -> AppLifespanService:
+    # Imported lazily to match every other openhands/ -> server/ import.
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
 
-        return SaasAppLifespanService()
-    # Outside SaaS mode there is nothing to do on startup. Schema is owned by the
-    # enterprise alembic chain in migrations/, applied by `alembic upgrade head`.
-    return None
+    return SaasAppLifespanService()
 
 
 def _get_default_file_store() -> FileStore:
@@ -229,7 +222,7 @@ class AppServerConfig(OpenHandsModel):
         )
     )
     # Services
-    lifespan: AppLifespanService | None = Field(default_factory=_get_default_lifespan)
+    lifespan: AppLifespanService = Field(default_factory=_get_default_lifespan)
     app_mode: AppMode = AppMode.OPENHANDS
     web_client: WebClientConfigInjector = Field(
         default_factory=DefaultWebClientConfigInjector
@@ -518,7 +511,7 @@ def get_jwt_service(
     return injector.context(state, request)
 
 
-def get_app_lifespan_service() -> AppLifespanService | None:
+def get_app_lifespan_service() -> AppLifespanService:
     config = get_global_config()
     return config.lifespan
 
