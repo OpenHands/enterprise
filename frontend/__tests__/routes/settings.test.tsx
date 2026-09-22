@@ -489,6 +489,56 @@ describe("Settings Screen", () => {
         ).not.toBeInTheDocument();
       });
     });
+
+    const seedTeamOrgUser = (role: OrganizationMember["role"]) => {
+      mockQueryClient.clear();
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_TEAM_ORG_ACME],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
+      });
+      useSelectedOrganizationStore.setState({
+        organizationId: MOCK_TEAM_ORG_ACME.id,
+      });
+      vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+        items: [MOCK_TEAM_ORG_ACME],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
+      });
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role, org_id: MOCK_TEAM_ORG_ACME.id }),
+      );
+    };
+
+    it("should group User under an Account settings header for an admin in a team org", async () => {
+      // Arrange
+      seedTeamOrgUser("admin");
+
+      // Act
+      renderSettingsScreen("/settings/user");
+
+      // Assert
+      const navbar = await screen.findByTestId("settings-navbar");
+      await within(navbar).findByText("USER$ACCOUNT_SETTINGS");
+      const labelsInOrder = within(navbar)
+        .getAllByText(/^(USER\$ACCOUNT_SETTINGS|User)$/)
+        .map((element) => element.textContent);
+      expect(labelsInOrder).toEqual(["USER$ACCOUNT_SETTINGS", "User"]);
+    });
+
+    it("should not show the Account settings header to a member of a team org", async () => {
+      // Arrange
+      seedTeamOrgUser("member");
+
+      // Act
+      renderSettingsScreen("/settings/user");
+
+      // Assert
+      const navbar = await screen.findByTestId("settings-navbar");
+      await within(navbar).findByText("User");
+      expect(
+        within(navbar).queryByText("USER$ACCOUNT_SETTINGS"),
+      ).not.toBeInTheDocument();
+    });
   });
 
   describe("enable_billing feature flag", () => {
