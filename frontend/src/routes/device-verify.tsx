@@ -152,7 +152,7 @@ export default function DeviceVerify() {
               <button
                 type="button"
                 onClick={() => window.location.reload()}
-                className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
+                className="px-4 py-2 bg-primary text-[var(--oh-color-base)] rounded-md hover:bg-primary/90"
               >
                 {t(I18nKey.DEVICE$TRY_AGAIN)}
               </button>
@@ -273,7 +273,7 @@ export default function DeviceVerify() {
                 type="button"
                 onClick={() => processDeviceVerification(userCode)}
                 disabled={isSwitchingOrg || switchFailed}
-                className="flex-1 px-4 py-2 bg-primary text-[#0D0F11] rounded-md hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed"
+                className="flex-1 px-4 py-2 bg-primary text-[var(--oh-color-base)] rounded-md hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 {t(I18nKey.DEVICE$AUTHORIZE)}
               </button>
@@ -319,7 +319,7 @@ export default function DeviceVerify() {
             </div>
             <button
               type="submit"
-              className="w-full px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
+              className="w-full px-4 py-2 bg-primary text-[var(--oh-color-base)] rounded-md hover:bg-primary/90"
             >
               {t(I18nKey.DEVICE$CONTINUE)}
             </button>

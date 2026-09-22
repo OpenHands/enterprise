@@ -90,7 +90,7 @@ class BudgetTestAdapter:
         return await LiteLlmManager.get_team_members_financial_data(str(self.org_id))
 
     async def wait_for_spend(self, expected_team_spend: float) -> dict[str, Any]:
-        deadline = asyncio.get_running_loop().time() + 10
+        deadline = asyncio.get_running_loop().time() + 20
         while True:
             financial_data = await self.financial_data()
             if financial_data['team_spend'] == expected_team_spend:
@@ -346,7 +346,10 @@ class UpgradeBudgetAdapterFactory:
 
     async def create(self) -> UpgradeBudgetTestAdapter:
         session = self.session_maker()
-        org = Org(name=f'Upgrade regression {time.time_ns()}')
+        org = Org(
+            name=f'Upgrade regression {time.time_ns()}',
+            agent_settings={'llm': {'model': 'openhands/budget-test-model'}},
+        )
         role = Role(name=f'upgrade-member-{time.time_ns()}', rank=1)
         session.add_all([org, role])
         await session.flush()
@@ -363,6 +366,7 @@ class UpgradeBudgetAdapterFactory:
                     role_id=role.id,
                     _llm_api_key='placeholder',
                     status='active',
+                    managed_llm_key_ownership_version=0,
                 )
                 for uid in user_ids
             ]
@@ -411,7 +415,7 @@ class UpgradeBudgetAdapterFactory:
                 keycloak_user_id=str(user_ids[0]),
                 team_id=str(org.id),
                 key_alias=f'budget-upgrade-{user_ids[0]}',
-                metadata={'upgrade_regression': True},
+                metadata={'type': 'openhands'},
             )
             adapter.keys[user_ids[0]] = admin_key
 
@@ -444,9 +448,16 @@ class UpgradeBudgetAdapterFactory:
             session.add(settings)
             await session.commit()
 
-            # Apply the $300 override to member 0 via the service so the
-            # override row is created through the normal path.
-            await adapter.set_override(user_ids[0], self.USER_OVERRIDE)
+            # Preserve the unreconciled upgrade fixture until the test runs repair.
+            session.add(
+                OrgUserBudgetOverride(
+                    org_id=org.id,
+                    user_id=user_ids[0],
+                    monthly_limit=self.USER_OVERRIDE,
+                    is_disabled=False,
+                )
+            )
+            await session.commit()
         except Exception:
             await self._cleanup(scenario)
             self._scenarios.remove(scenario)

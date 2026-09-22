@@ -190,6 +190,15 @@ describe("Content", () => {
     expect(screen.queryByTestId("connect-git-button")).not.toBeInTheDocument();
   });
 
+  it("should render the add secret button beside the page title", async () => {
+    const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
+    searchSecretsSpy.mockResolvedValue(createMockSecretsPage([]));
+    renderSecretsSettings();
+
+    expect(await screen.findByTestId("add-secret-button")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-page-subtitle")).toBeInTheDocument();
+  });
+
   it("should render an empty table when there are no existing secrets", async () => {
     const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
     searchSecretsSpy.mockResolvedValue(createMockSecretsPage([]));
@@ -682,5 +691,220 @@ describe("Secret actions", () => {
 
     expect(nameInput).toHaveValue(MOCK_SECRETS[0].name);
     expect(valueInput).toHaveValue("my-custom-secret-value");
+  });
+});
+
+describe("Organization-scoped secrets", () => {
+  const createMockUser = (
+    overrides: Partial<OrganizationMember> = {},
+  ): OrganizationMember => ({
+    org_id: "org-1",
+    user_id: "user-1",
+    email: "test@example.com",
+    role: "member",
+    llm_api_key: "",
+    max_iterations: 100,
+    llm_model: "gpt-4",
+    llm_base_url: "",
+    status: "active",
+    ...overrides,
+  });
+
+  const renderSaasSecretsSettings = (role: OrganizationMember["role"]) => {
+    // @ts-expect-error - only return the config we need
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+      app_mode: "saas",
+    });
+    orgStore.useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+    vi.spyOn(organizationService, "getMe").mockResolvedValue(
+      createMockUser({ role }),
+    );
+
+    const RouterStub = createRoutesStub([
+      {
+        Component: () => <Outlet />,
+        path: "/settings",
+        children: [
+          {
+            Component: SecretsSettingsScreen,
+            path: "/settings/secrets",
+          },
+        ],
+      },
+    ]);
+
+    return render(<RouterStub initialEntries={["/settings/secrets"]} />, {
+      wrapper: ({ children }) => (
+        <QueryClientProvider
+          client={
+            new QueryClient({
+              defaultOptions: { queries: { retry: false } },
+            })
+          }
+        >
+          {children}
+        </QueryClientProvider>
+      ),
+    });
+  };
+
+  it("should show the share-with-org checkbox for admins", async () => {
+    const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
+    searchSecretsSpy.mockResolvedValue(createMockSecretsPage([]));
+    renderSaasSecretsSettings("admin");
+
+    const button = await screen.findByTestId("add-secret-button");
+    await userEvent.click(button);
+
+    expect(
+      await screen.findByTestId("share-with-org-checkbox"),
+    ).toBeInTheDocument();
+  });
+
+  it("should show the share-with-org checkbox for owners", async () => {
+    const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
+    searchSecretsSpy.mockResolvedValue(createMockSecretsPage([]));
+    renderSaasSecretsSettings("owner");
+
+    const button = await screen.findByTestId("add-secret-button");
+    await userEvent.click(button);
+
+    expect(
+      await screen.findByTestId("share-with-org-checkbox"),
+    ).toBeInTheDocument();
+  });
+
+  it("should NOT show the share-with-org checkbox for members", async () => {
+    const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
+    searchSecretsSpy.mockResolvedValue(createMockSecretsPage([]));
+    renderSaasSecretsSettings("member");
+
+    const button = await screen.findByTestId("add-secret-button");
+    await userEvent.click(button);
+
+    const form = await screen.findByTestId("add-secret-form");
+    expect(form).toBeInTheDocument();
+    expect(
+      within(form).queryByTestId("share-with-org-checkbox"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("should call createOrgSecret when the share checkbox is checked", async () => {
+    const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
+    searchSecretsSpy.mockResolvedValue(createMockSecretsPage([]));
+    const createOrgSecretSpy = vi
+      .spyOn(organizationService, "createOrgSecret")
+      .mockResolvedValue(true);
+    renderSaasSecretsSettings("admin");
+
+    const button = await screen.findByTestId("add-secret-button");
+    await userEvent.click(button);
+
+    const form = await screen.findByTestId("add-secret-form");
+    const nameInput = within(form).getByTestId("name-input");
+    const valueInput = within(form).getByTestId("value-input");
+    const submitButton = within(form).getByTestId("submit-button");
+    const shareCheckbox = within(form).getByTestId("share-with-org-checkbox");
+
+    await userEvent.type(nameInput, "Org_Secret");
+    await userEvent.type(valueInput, "org-secret-value");
+    await userEvent.click(shareCheckbox);
+    await userEvent.click(submitButton);
+
+    expect(createOrgSecretSpy).toHaveBeenCalledWith("org-1", {
+      name: "Org_Secret",
+      value: "org-secret-value",
+      description: undefined,
+    });
+  });
+
+  it("should display a Shared badge for org-scoped secrets", async () => {
+    const orgSecrets: CustomSecretWithoutValue[] = [
+      { name: "Org_Shared_Secret", description: "shared", scope: "organization" },
+      { name: "Personal_Secret", description: "mine", scope: "personal" },
+    ];
+    const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
+    searchSecretsSpy.mockResolvedValue(createMockSecretsPage(orgSecrets));
+    renderSaasSecretsSettings("member");
+
+    const items = await screen.findAllByTestId("secret-item");
+    expect(items).toHaveLength(2);
+    // Org-shared secret has a badge
+    expect(
+      within(items[0]).getByTestId("org-shared-badge"),
+    ).toBeInTheDocument();
+    // Personal secret does not
+    expect(
+      within(items[1]).queryByTestId("org-shared-badge"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("should hide edit/delete buttons for org-scoped secrets when user is a member", async () => {
+    const orgSecrets: CustomSecretWithoutValue[] = [
+      { name: "Org_Shared_Secret", description: "shared", scope: "organization" },
+      { name: "Personal_Secret", description: "mine", scope: "personal" },
+    ];
+    const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
+    searchSecretsSpy.mockResolvedValue(createMockSecretsPage(orgSecrets));
+    renderSaasSecretsSettings("member");
+
+    const items = await screen.findAllByTestId("secret-item");
+    // Org-shared secret: no edit/delete buttons (member lacks manage_org_secrets)
+    expect(
+      within(items[0]).queryByTestId("edit-secret-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(items[0]).queryByTestId("delete-secret-button"),
+    ).not.toBeInTheDocument();
+    // Personal secret: edit/delete buttons present
+    expect(
+      within(items[1]).getByTestId("edit-secret-button"),
+    ).toBeInTheDocument();
+    expect(
+      within(items[1]).getByTestId("delete-secret-button"),
+    ).toBeInTheDocument();
+  });
+
+  it("should show edit/delete buttons for org-scoped secrets when user is an admin", async () => {
+    const orgSecrets: CustomSecretWithoutValue[] = [
+      { name: "Org_Shared_Secret", description: "shared", scope: "organization" },
+    ];
+    const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
+    searchSecretsSpy.mockResolvedValue(createMockSecretsPage(orgSecrets));
+    renderSaasSecretsSettings("admin");
+
+    const items = await screen.findAllByTestId("secret-item");
+    // Wait for the me query to resolve and the component to re-render with
+    // the admin role (which grants manage_org_secrets).
+    expect(
+      await within(items[0]).findByTestId("edit-secret-button"),
+    ).toBeInTheDocument();
+    expect(
+      within(items[0]).getByTestId("delete-secret-button"),
+    ).toBeInTheDocument();
+  });
+
+  it("should call deleteOrgSecret when deleting an org-scoped secret as admin", async () => {
+    const orgSecrets: CustomSecretWithoutValue[] = [
+      { name: "Org_Shared_Secret", description: "shared", scope: "organization" },
+    ];
+    const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
+    searchSecretsSpy.mockResolvedValue(createMockSecretsPage(orgSecrets));
+    const deleteOrgSecretSpy = vi
+      .spyOn(organizationService, "deleteOrgSecret")
+      .mockResolvedValue(true);
+    renderSaasSecretsSettings("admin");
+
+    const items = await screen.findAllByTestId("secret-item");
+    const deleteButton =
+      await within(items[0]).findByTestId("delete-secret-button");
+    await userEvent.click(deleteButton);
+
+    const confirmationModal = screen.getByTestId("confirmation-modal");
+    const confirmButton =
+      within(confirmationModal).getByTestId("confirm-button");
+    await userEvent.click(confirmButton);
+
+    expect(deleteOrgSecretSpy).toHaveBeenCalledWith("org-1", "Org_Shared_Secret");
   });
 });

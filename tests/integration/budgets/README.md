@@ -1,207 +1,97 @@
-# Organization budget property probes
+# Organization budget integration tests
 
-This directory tests Enterprise organization-budget behavior against real services rather than mocked provider accounting.
+These tests run Enterprise services against migrated PostgreSQL, real LiteLLM
+with its own PostgreSQL, a deterministic HTTP provider, and a management-path
+fault proxy. Docker and the repository's Python dependencies are required.
+Each scenario gets an isolated Enterprise database, organization and native keys.
+No customer credentials or real provider charges are needed.
 
-## Harness
-
-The session-scoped harness starts:
-
-- a migrated Enterprise PostgreSQL database, cloned per test;
-- LiteLLM `v1.94.0` with its own PostgreSQL database;
-- a deterministic OpenAI-compatible provider;
-- a path-aware proxy between Enterprise management calls and LiteLLM.
-
-The provider always returns 10 prompt tokens and 5 completion tokens. The generated LiteLLM configuration prices those tokens at exactly `$1.00` per accepted request. This makes team spend, member spend, successful requests, and provider calls directly comparable.
-
-Enterprise creates a dedicated bootstrap LiteLLM team, sets `LITE_LLM_TEAM_ID` to that team for user provisioning, and removes it during teardown. Each scenario creates a real organization, two real members, real LiteLLM users, real team memberships, and real keys.
-
-The management proxy can fail selected LiteLLM paths while ordinary inference still goes directly to LiteLLM. This supports partial-write and failed-readback probes without mocking either Enterprise persistence or LiteLLM accounting.
-
-Docker must be available locally.
-
-## Why Quint and Hypothesis are both necessary
-
-`quint-specs/org-budget.qnt` is the finite abstract model. It explores policy transitions independently of Python control flow, HTTP behavior, database details, and LiteLLM implementation details. Its invariants define the intended contract: organization caps are absolute, overrides have precise semantics, successful synchronization means exact policy agreement, rejected requests have no accounting effects, and unverified policy fails closed.
-
-Quint is necessary because generated integration examples cannot exhaustively explore every abstract ordering. It catches contradictions and missing cases in the state model before those assumptions become test code.
-
-Hypothesis executes generated operation sequences against the real Enterprise service and LiteLLM. It checks that concrete database rows, management writes, readback values, inference responses, spend, and provider calls refine the abstract model. When implementation behavior diverges, Hypothesis minimizes the sequence to a small reproduction.
-
-Hypothesis is necessary because a valid abstract model cannot prove that migrations, serialization, management endpoints, asynchronous accounting, or LiteLLM admission actually implement that model.
-
-## Property-to-probe map
-
-| Intended property | Quint invariant | Real-service coverage | Current status |
-| --- | --- | --- | --- |
-| Organization cap is absolute | `P1_organizationCapIsAbsolute` | Sequential and cross-member concurrency probes | Explicit safety gates |
-| Default member cap applies | `P2_defaultUserCapApplies` | Generated request campaign | Explicit safety gate |
-| Positive override replaces the default | `P3_positiveOverrideReplacesDefault` | Healthy policy state machine | Passing |
-| Disabled override removes only the member cap | `P4_disabledOverrideRemovesOnlyMemberCap` | Disabled-override probe | Product-confirmed; known failing behavior |
-| Verified policy exactly matches all applied caps | `P5_verifiedMeansExactAgreement` | Healthy state machine and LiteLLM contracts | Passing |
-| Verification of an older policy version is invalid | `P6_staleVerificationIsInvalid` | No delayed/out-of-order concrete probe yet | Model only |
-| Unverified policy fails closed before provider invocation | `P7_unverifiedPolicyFailsClosed` | Team-write, member-write, and readback variants in the fail-closed probe | Known failing behavior; target of PR #359 |
-| Partial synchronization cannot report success | `P8_partialSynchronizationIsNotSuccess` | Partial member-write failure contract | Passing |
-| Retry restores exact policy agreement | `P9_successfulRetryRepairsDivergence` | Partial-sync retry contract and recovery probe | Basic retry passes; spend-preserving recovery is an explicit safety gate |
-| Rejection has no accounting side effects | `P10_rejectionHasNoAccountingSideEffects` | Sequential and concurrency probes | Explicit safety gates |
-| Every accepted request has exactly one provider call and charge | `P11_admissionHasExactlyOneCharge` | Deterministic accounting contract plus sequential and concurrency probes | Basic contract passes; generated/concurrent behavior is unstable |
-| Spend remains nonnegative and never moves backward | `P12_spendIsNonnegativeAndMonotonicByConstruction` | Accounting and recovery probes | Basic coverage; recovery is an explicit safety gate |
-| Member accounting is isolated | `P13_userAccountingIsIsolated` | Cross-member concurrency probe | Explicit safety gate |
-| Synchronization is idempotent | `P14_synchronizationIsIdempotent` | Generated maintenance and legacy-baseline second sync | Passing |
-| Rejected retries never reach the provider | `P15_rejectedRetriesRemainHarmless` | Same-member and cross-member boundary probes | Explicit safety gates |
-| Disabling the organization limit preserves independent member enforcement | Exact agreement after `disableOrganizationLimit` | Organization-limit disable contract | Passing |
-| Zero and negative limits are rejected | Positive-limit transition domain | Healthy state machine | Passing |
-| A missing known-member baseline recovers once without renewing allowance | Not modeled | Legacy-upgrade LiteLLM contract | Passing; added after validating PR #347 before and after |
-| Concurrent admission overshoot is bounded | Not modeled | Same-member and cross-member concurrency probes | Explicit safety gates |
-| Every user receives their own managed key after upgrade | Not modeled | Upgrade regression probe | xfail until PR #353 (OHE-3252) merges |
-| Stale caps and shared keys do not survive upgrade reconciliation | Not modeled | Upgrade regression probe | Baseline recovery and cap readback passing; key ownership and job-failure xfail until #353/#356 merge |
-
-“Passing” rows are included in normal `test_*.py` collection. Explicit safety gates use the `probe_*.py` prefix so known product gaps remain executable without hiding them behind `xfail`.
-
-## Campaigns
-
-### Abstract model
+## Commands
 
 ```bash
+uv sync --locked --all-groups
+# Ordinary contracts (does not establish release readiness):
+uv run pytest tests/integration/budgets/test_*.py -n 0
+# All contracts, including known failures; fails on skips/xfails:
+uv run python -m tests.integration.budgets.run_readiness
+# Inspect the complete list without claiming a validation result:
+uv run python -m tests.integration.budgets.run_readiness --collect-only
+```
+
+The full command discovers every `test_*.py` and `probe_*.py`, runs serially,
+clears inherited `PYTEST_ADDOPTS` filters, and writes `.pr/budget-readiness.xml`.
+A green ordinary suite is not a green readiness result. Once a product defect
+is fixed, its probe should move into ordinary test collection. Do not weaken
+assertions, add expected failures, or omit a probe to obtain release sign-off.
+The manual **Budget backend readiness** GitHub workflow runs the same full gate.
+
+`BUDGET_LITELLM_IMAGE` selects the exact candidate image. The compatibility
+default is `docker.litellm.ai/berriai/litellm:v1.94.0`; a result against that
+image is not a result against another deployed version.
+
+## Coverage
+
+| Contract | File | Boundary |
+| --- | --- | --- |
+| Management auth, exact cost, partial sync/retry, legacy baseline recovery | `test_litellm_contract.py` | Service + real LiteLLM |
+| Generated limit/override edits and idempotent maintenance | `test_org_budget_state_machine.py` | Service + real LiteLLM |
+| Disable org cap while preserving independent member enforcement | `test_disable_organization_limit.py` | Native behavior; API outcome tested separately |
+| Limit edits after spend, normal rollover and repeat maintenance | `test_budget_lifecycle.py` | Service + real spend; controlled clock |
+| Actual save status/readback and unchanged-day alert save | `probe_budget_api.py` | Real FastAPI routes with injected identity/session |
+| New-user provisioning and existing-user reprovisioning | `probe_membership.py` | Real `create_entries` + LiteLLM; Keycloak identity stubbed |
+| Delayed rollover worker cannot renew allowance twice | `probe_rollover.py` | Two DB sessions, controlled interleaving, real spend |
+| Failed Slack delivery remains retryable and then deduplicates | `probe_alert_delivery.py` | Real DB/service with simulated Slack transport |
+| Reject inference after write/readback failures | `probe_fail_closed.py` | Fault proxy + provider-call counts |
+| Recovery preserves spend and permits requests | `probe_recovery.py` | Fault proxy + real accounting |
+| Sequential accounting and disabled member overrides | `probe_sequential_accounting.py`, `probe_disabled_override.py` | Generated service/request sequences |
+| Concurrent same/cross-member admission, accounting, rejected retries | `probe_same_member_concurrency.py`, `probe_cross_member_concurrency.py` | Concurrent HTTP inference |
+| Legacy key ownership, baselines, cap readback, failure/retry, task failure status | `probe_upgrade_regression.py` | Real native management and DB task runner |
+| Unique provider IDs and readiness runner rejects incomplete results | `test_harness_contracts.py` | Harness regression tests |
+
+`probe_*.py` contracts express required behavior, including known defects.
+They are intentionally absent from pytest's ordinary collection, but never from
+the explicit readiness command. Consult the command's current JUnit output;
+this table does not label unexecuted or failing contracts as passing.
+
+The provisioning probe is not invitation acceptance or UI key refresh. The
+HTTP fixture bypasses authentication while retaining route validation,
+serialization and response status. The delayed-worker test controls a stale
+read interleaving; it does not rely on probabilistic thread timing. Browser,
+real-agent and release/deployment checks are tracked in
+[RELEASE_READINESS.md](RELEASE_READINESS.md) and
+[OHE-3322](https://linear.app/all-hands-ai/issue/OHE-3322).
+
+## Accounting and isolation
+
+The provider returns 10 prompt tokens and 5 completion tokens, priced at exactly
+$1 per accepted request. Completion IDs remain unique across scenario resets.
+LiteLLM's native batch writer runs at a shortened test interval
+(`proxy_batch_write_at: 1`, plus LiteLLM jitter); tests wait for observed spend
+rather than fabricating counters. Production accounting latency must be checked
+separately on the release candidate. Authentication caches remain enabled.
+
+The provider binds the host interface so Linux containers can reach it through
+`host.docker.internal`; the fault proxy stays on loopback. Use an isolated test
+host. Resources are torn down after the session. The legacy fixture deliberately
+starts unreconciled: writing its override must not synchronize away the missing
+baselines before the test runs. The ownership and task-status tests exercise
+current implementations instead of obsolete xfail placeholders.
+
+## Generated and abstract checks
+
+```bash
+BUDGET_STATE_MACHINE_EXAMPLES=30 BUDGET_STATE_MACHINE_STEPS=20 \
+  uv run pytest tests/integration/budgets/test_org_budget_state_machine.py -n 0
 npx --yes @informalsystems/quint@0.29.1 typecheck quint-specs/org-budget.qnt
 npx --yes @informalsystems/quint@0.29.1 run \
-  --invariant=allProperties \
-  --max-steps=25 \
-  --max-samples=10000 \
-  --backend=rust \
+  --invariant=allProperties --max-steps=25 --max-samples=10000 --backend=rust \
   quint-specs/org-budget.qnt
 ```
 
-### Management, accounting, synchronization, and recovery contracts
-
-```bash
-uv run pytest tests/integration/budgets/test_litellm_contract.py -n 0
-```
-
-The upgrade-recovery contract recreates the legacy migrated state where a member is already known to budget synchronization but has no persisted cycle baseline. It requires maintenance to anchor the missing baseline to live LiteLLM spend, replace the stale absolute cap, and reuse that baseline on later synchronization instead of renewing the allowance.
-
-### Healthy policy state machine
-
-```bash
-uv run pytest tests/integration/budgets/test_org_budget_state_machine.py -n 0
-```
-
-The passing campaign runs 8 examples with 10 generated policy transitions each. Increase exploration without editing the test:
-
-```bash
-BUDGET_STATE_MACHINE_EXAMPLES=30 \
-BUDGET_STATE_MACHINE_STEPS=20 \
-uv run pytest tests/integration/budgets/test_org_budget_state_machine.py -n 0
-```
-
-The generated rules cover organization and default-member limit changes, positive overrides, override deletion, invalid limits, and idempotent maintenance while the organization budget is enabled.
-
-### Sequential accounting safety probe
-
-```bash
-uv run pytest tests/integration/budgets/probe_sequential_accounting.py -n 0
-```
-
-This uses the same Hypothesis machine with request transitions enabled. It checks accepted and rejected responses, exact `$1.00` team/member accounting, and one provider call per accepted request. Repeated generated runs can currently expose a successful provider call whose spend remains unchanged, so this probe stays outside default collection while that nondeterminism is investigated.
-
-### Concurrency safety probes
-
-```bash
-uv run pytest tests/integration/budgets/probe_same_member_concurrency.py -n 0
-uv run pytest tests/integration/budgets/probe_cross_member_concurrency.py -n 0
-```
-
-These probes issue same-member and cross-member requests at an organization boundary. They verify deterministic accounting, provider-call correspondence, bounded request-boundary overshoot, organization-cap authority, and harmless rejected retries. They are outside default collection because concurrent successful completions can currently be observed without the corresponding spend update.
-
-### Passing backend campaign
-
-```bash
-uv run pytest tests/integration/budgets/test_*.py -n 0
-```
-
-Run these probes serially. They share session-scoped LiteLLM and deterministic-provider observations, while each test receives an isolated Enterprise database and organization.
-
-## Recovery safety gate
-
-`probe_recovery.py` verifies that successful reconciliation preserves existing spend and reopens admission:
-
-```bash
-uv run pytest tests/integration/budgets/probe_recovery.py -n 0
-```
-
-This probe remains outside default collection because the pre-recovery completion can currently succeed without the expected spend update.
-
-## Fail-closed safety gate
-
-`probe_fail_closed.py` contains the currently failing OHE-3268 safety contract. It is deliberately outside pytest's default `test_*.py` collection so healthy policy exploration can continue without hiding the known defect behind `xfail`.
-
-Run it explicitly when changing request admission or budget reconciliation:
-
-```bash
-uv run pytest tests/integration/budgets/probe_fail_closed.py -n 0
-```
-
-It injects team-write, member-write, and readback failures. Every case requires inference rejection before the provider is called. Once OHE-3268 is fixed, rename this file into default test collection and include it in the passing campaign.
-
-## Independent organization and member enforcement
-
-`test_disable_organization_limit.py` captures the product-confirmed transition where the organization limit is disabled while individual member budgets remain enforceable:
-
-```bash
-uv run pytest tests/integration/budgets/test_disable_organization_limit.py -n 0
-```
-
-The contract requires LiteLLM to remove the organization team cap, preserve each default member cap, accept a request below the member cap, and reject the next request before it reaches the provider. It is included in the passing backend campaign.
-
-## Disabled-override safety gate
-
-`probe_disabled_override.py` enables generated disabled-override transitions:
-
-```bash
-uv run pytest tests/integration/budgets/probe_disabled_override.py -n 0
-```
-
-The Quint contract treats a disabled member override as unlimited for that member while retaining the organization cap. The real-service probe currently observes the previous member cap after applying the override, so this transition remains outside the passing policy campaign.
-
-## Same-member concurrency safety gate
-
-`probe_same_member_concurrency.py` sends two and four simultaneous requests through one managed key:
-
-```bash
-uv run pytest tests/integration/budgets/probe_same_member_concurrency.py -n 0
-```
-
-It requires every successful provider call to produce exactly one team and member charge, allows at most one-request cost per concurrent request at the admission boundary, and requires later rejected retries to have no provider effect. The current LiteLLM-backed probe observes a successful completion and provider call without the corresponding spend update under same-member concurrency, so it remains outside the passing campaign.
-
-
-## Changing budget backend code
-
-Use this order:
-
-1. Run Quint after changing policy semantics or invariants.
-2. Run the focused contract file after changing LiteLLM management or accounting code.
-3. Run the healthy state machine after changing settings, overrides, synchronization, or maintenance.
-4. Run concurrency probes after changing caps or request-boundary behavior.
-5. Run the fail-closed safety gate after changing reconciliation or inference admission.
-6. Run the passing backend campaign and Python pre-commit checks before submitting the change.
-
-A Quint failure usually means the intended contract is inconsistent. A minimized Hypothesis failure means real behavior diverged from that contract. A deterministic provider-call mismatch means a rejected request reached the provider or an accepted request was not charged exactly once.
-
-## Upgrade regression probe (OHE-3257)
-
-`probe_upgrade_regression.py` recreates the production incident where a LiteLLM upgrade left 11 members with empty migration-149 baselines, a stale team cap below current spend, and an administrator key broadcast to 10 other rows:
-
-```bash
-uv run pytest tests/integration/budgets/probe_upgrade_regression.py -n 0
-```
-
-The fixture seeds the exact legacy-upgrade state: 11 members, empty `user_cycle_start_spend`, all members in `litellm_known_member_ids`, one correctly attributed key, the admin key copied to the other 10 rows, stale cap `$2.05264885`, org limit `$1,000`, and a `$300` user override. The deterministic provider charges `$1.00` per request, so the exact production spend (`$2.2908277`) is not reproducible; three requests produce `$3.00` spend, which is above the stale cap and exercises the same over-cap state.
-
-Five acceptance criteria:
-
-1. **Every user receives their own key** — `xfail` until PR #353 (OHE-3252) merges the `ManagedLlmKeyOwnershipProcessor`.
-2. **Baselines remain stable on later syncs** — passing; PR #347 (merged) recovers missing baselines from live spend.
-3. **Desired and actual caps match after readback** — passing; team cap = `cycle_start_spend + org_limit`, member cap = `baseline + override`.
-4. **Partial failures resume without renewing allowance** — passing; a faulted member update records `litellm_last_sync_status='error'`, retry converges, and spend does not move.
-5. **Unresolved reconciliation fails the process/job** — `xfail` until PR #356 (OHE-3254) merges the fail-closed propagation in `run_maintenance_tasks`.
-
-Once #353 and #356 merge, remove the two `@pytest.mark.xfail` decorators and include this probe in the passing backend campaign.
+The healthy generated campaign defaults to 8 examples of 10 transitions. Request
+and disabled-override transitions run in the explicit safety probes. Quint
+explores the abstract contract; it does not prove Python, API, cache or provider
+behavior. In particular, delayed/out-of-order policy-version verification is
+not fully covered by this concrete harness and remains a coordination-work
+follow-up in OHE-3259. Backend gate success must not be presented as complete
+customer release sign-off.

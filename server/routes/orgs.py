@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
@@ -36,6 +36,7 @@ from server.routes.org_models import (
     OrgBudgetSettingsResponse,
     OrgBudgetSettingsUpdate,
     OrgBudgetThresholdResponse,
+    OrgBudgetUserMutationResponse,
     OrgBudgetUserOverrideUpdate,
     OrgBudgetUserResponse,
     OrgConcurrentModificationError,
@@ -50,6 +51,8 @@ from server.routes.org_models import (
     OrgMemberPage,
     OrgMemberResponse,
     OrgMemberUpdate,
+    OrgMyBudgetResponse,
+    OrgMyUsageStats,
     OrgNameExistsError,
     OrgNotFoundError,
     OrgPage,
@@ -75,6 +78,7 @@ from server.services.org_conversation_service import (
 )
 from server.services.org_member_financial_service import OrgMemberFinancialService
 from server.services.org_member_service import OrgMemberService
+from storage.default_org_service import get_default_org_config
 from storage.org_git_claim_store import OrgGitClaimStore
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
@@ -86,6 +90,11 @@ org_router = APIRouter(
     tags=['Orgs'],
     dependencies=[REJECT_X_ORG_ID_PATH_MISMATCH],
 )
+
+
+def _hide_personal_workspaces() -> bool:
+    """Whether this deployment hides personal workspaces from org listings."""
+    return get_default_org_config().hide_personal_workspaces
 
 
 _org_budget_service_injector = OrgBudgetServiceInjector()
@@ -140,16 +149,27 @@ async def list_user_orgs(
         int,
         Query(title='The max number of results in the page', gt=0, le=100),
     ] = 100,
+    name: Annotated[
+        str | None,
+        Query(
+            title='Filter organizations by exact name',
+            min_length=1,
+            max_length=255,
+        ),
+    ] = None,
     user_id: str = Depends(get_user_id),
 ) -> OrgPage:
     """List organizations for the authenticated user.
 
     This endpoint returns a paginated list of all organizations that the
-    authenticated user is a member of.
+    authenticated user is a member of. When ``name`` is provided, only the
+    member organization with exactly that name is returned; a name the user
+    has no membership in yields an empty page.
 
     Args:
         page_id: Optional page ID (offset) for pagination
         limit: Maximum number of organizations to return (1-100, default 100)
+        name: Optional exact organization name filter
         user_id: Authenticated user ID (injected by dependency)
 
     Returns:
@@ -164,6 +184,7 @@ async def list_user_orgs(
             'user_id': user_id,
             'page_id': page_id,
             'limit': limit,
+            'org_name': name,
         },
     )
 
@@ -179,11 +200,28 @@ async def list_user_orgs(
             user_id=user_id,
             page_id=page_id,
             limit=limit,
+            name=name,
         )
+
+        # Personal workspaces are hidden in org-only installs
+        # (HIDE_PERSONAL_WORKSPACES). The org stays a real membership that can
+        # be addressed and switched to, so it is only marked invisible rather
+        # than dropped from the list — clients that honour the flag stop
+        # offering it, and callers that need the entry can still find it.
+        # Personal entries never count towards "this user has a team org".
+        hide_personal_workspaces = _hide_personal_workspaces()
+        has_visible_team_org = any(str(org.id) != user_id for org in orgs)
+        hide_personal = hide_personal_workspaces and has_visible_team_org
 
         # Convert Org entities to OrgResponse objects
         org_responses = [
-            OrgResponse.from_org(org, credits=None, user_id=user_id) for org in orgs
+            OrgResponse.from_org(
+                org,
+                credits=None,
+                user_id=user_id,
+                is_visible=not (hide_personal and str(org.id) == user_id),
+            )
+            for org in orgs
         ]
 
         logger.info(
@@ -1191,6 +1229,13 @@ def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
         litellm_last_sync_at=settings.litellm_last_sync_at,
         litellm_last_sync_status=settings.litellm_last_sync_status,
         litellm_last_sync_error=settings.litellm_last_sync_error,
+        reconciliation_state=state['reconciliation_state'],
+        reconciliation_error=state['reconciliation_error'],
+        desired_team_max_budget=state['desired_team_max_budget'],
+        applied_team_max_budget=state['applied_team_max_budget'],
+        budget_policy_matches=state['budget_policy_matches'],
+        applied_at=state['applied_at'],
+        applied_policy_observed_at=state['applied_policy_observed_at'],
         reset_day=settings.reset_day,
         slack_channel=settings.slack_channel,
         slack_team_id=settings.slack_team_id,
@@ -1248,6 +1293,31 @@ async def get_org_budget_settings(
     return _build_budget_response(state)
 
 
+@org_router.get(
+    '/{org_id}/budgets/me',
+    response_model=OrgMyBudgetResponse,
+)
+async def get_my_org_budget(
+    org_id: UUID,
+    include_spend: bool = Query(True),
+    user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
+    budget_service: OrgBudgetService = org_budget_service_dependency,
+) -> OrgMyBudgetResponse:
+    """Get the authenticated user's own budget for the current cycle.
+
+    The user is taken from the session only, so a caller can never read
+    another member's budget.
+    """
+    logger.info(
+        'Getting own org budget',
+        extra={'org_id': str(org_id), 'user_id': user_id},
+    )
+    budget = await budget_service.get_my_budget(
+        org_id, UUID(user_id), include_spend=include_spend
+    )
+    return OrgMyBudgetResponse(**budget)
+
+
 @org_router.patch(
     '/{org_id}/budgets',
     response_model=OrgBudgetSettingsResponse,
@@ -1255,6 +1325,7 @@ async def get_org_budget_settings(
 async def update_org_budget_settings(
     org_id: UUID,
     update: OrgBudgetSettingsUpdate,
+    response: Response,
     user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     users_page: int = Query(1, ge=1),
     users_per_page: int = Query(50, ge=1, le=1000),
@@ -1274,20 +1345,23 @@ async def update_org_budget_settings(
         users_search=users_search,
         users_status=users_status,
     )
+    if state['reconciliation_state'] in {'degraded', 'failed'}:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return _build_budget_response(state)
 
 
 @org_router.put(
     '/{org_id}/budgets/overrides/{user_id}',
-    response_model=OrgBudgetUserResponse,
+    response_model=OrgBudgetUserMutationResponse,
 )
 async def upsert_org_budget_override(
     org_id: UUID,
     user_id: str,
     update: OrgBudgetUserOverrideUpdate,
+    response: Response,
     current_user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     budget_service: OrgBudgetService = org_budget_service_dependency,
-) -> OrgBudgetUserResponse:
+) -> OrgBudgetUserMutationResponse:
     logger.info(
         'Updating org budget override',
         extra={
@@ -1308,7 +1382,9 @@ async def upsert_org_budget_override(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='User not found in organization',
         )
-    return OrgBudgetUserResponse(**user_row)
+    if user_row.get('reconciliation_state') in {'degraded', 'failed'}:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return OrgBudgetUserMutationResponse(**user_row)
 
 
 @org_router.delete(
@@ -1318,6 +1394,7 @@ async def upsert_org_budget_override(
 async def delete_org_budget_override(
     org_id: UUID,
     user_id: str,
+    response: Response,
     current_user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     budget_service: OrgBudgetService = org_budget_service_dependency,
 ) -> None:
@@ -1330,6 +1407,9 @@ async def delete_org_budget_override(
         },
     )
     await budget_service.delete_user_override(org_id, UUID(user_id))
+    reconciliation_state = await budget_service.get_reconciliation_state(org_id)
+    if reconciliation_state in {'degraded', 'failed'}:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return None
 
 
@@ -2224,6 +2304,64 @@ async def get_org_conversation_user_usage_stats(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to retrieve organization user usage stats',
+        )
+
+
+# Declared before '/{org_id}/conversations/{conversation_id}' so the literal
+# path is matched first.
+@org_router.get(
+    '/{org_id}/conversations/my-usage',
+    response_model=OrgMyUsageStats,
+)
+async def get_my_org_conversation_usage_stats(
+    org_id: UUID,
+    time_window: Annotated[
+        str,
+        Query(
+            title='Time window filter',
+            description='Options: 7d, 30d, 90d, ytd',
+        ),
+    ] = '30d',
+    user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
+    service: OrgConversationService = org_conversation_service_dependency,
+) -> OrgMyUsageStats:
+    """Get the authenticated user's own usage for their budget page.
+
+    The user is taken from the session only, so a caller can never read
+    another member's usage.
+
+    Args:
+        org_id: The organization ID
+        time_window: Time window filter (7d, 30d, 90d, ytd)
+
+    Returns:
+        OrgMyUsageStats: Daily spend, model breakdown and recent usage
+    """
+    now = datetime.now(timezone.utc)
+    if time_window == 'ytd':
+        start_of_year = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+        days = max(1, (now - start_of_year).days + 1)
+    elif time_window in {'7d', '30d', '90d'}:
+        days = int(time_window[:-1])
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Invalid time_window. Use 7d, 30d, 90d, or ytd.',
+        )
+
+    try:
+        return await service.get_my_usage_stats(
+            org_id=org_id, user_id=UUID(user_id), days=days
+        )
+    except Exception:
+        logger.exception(
+            'Unexpected error getting own usage stats',
+            extra={'user_id': user_id, 'org_id': str(org_id)},
+            stack_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to retrieve usage stats',
         )
 
 

@@ -1,0 +1,47 @@
+name: Budget backend readiness
+
+on:
+  workflow_dispatch:
+    inputs:
+      litellm_image:
+        description: Exact LiteLLM image for the candidate
+        required: true
+        default: docker.litellm.ai/berriai/litellm:v1.94.0
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.32'
+          enable-cache: true
+      - run: uv sync --locked --all-groups --python 3.13
+      - name: Record candidate
+        env:
+          BUDGET_LITELLM_IMAGE: ${{ inputs.litellm_image }}
+        run: |
+          mkdir -p .pr
+          git rev-parse HEAD > .pr/budget-candidate.txt
+          echo "$BUDGET_LITELLM_IMAGE" >> .pr/budget-candidate.txt
+      - name: Run all backend contracts
+        env:
+          BUDGET_LITELLM_IMAGE: ${{ inputs.litellm_image }}
+        run: uv run python -m tests.integration.budgets.run_readiness
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: budget-readiness
+          path: |
+            .pr/budget-readiness.xml
+            .pr/budget-candidate.txt
+          include-hidden-files: true

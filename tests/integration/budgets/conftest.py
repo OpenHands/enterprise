@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import time
 from collections.abc import AsyncIterator, Iterator
@@ -34,7 +35,9 @@ from tests.integration.budgets.services import (
     create_proxy_app,
 )
 
-LITELLM_IMAGE = 'docker.litellm.ai/berriai/litellm:v1.94.0'
+LITELLM_IMAGE = os.environ.get(
+    'BUDGET_LITELLM_IMAGE', 'docker.litellm.ai/berriai/litellm:v1.94.0'
+)
 MASTER_KEY = 'sk-budget-test-master-key'
 BOOTSTRAP_TEAM_ID = 'budget-test-bootstrap-team'
 
@@ -76,6 +79,7 @@ def _write_litellm_config(path: Path, provider_port: int) -> None:
 
 general_settings:
   master_key: {MASTER_KEY}
+  proxy_batch_write_at: 1
 
 litellm_settings:
   telemetry: false
@@ -131,7 +135,10 @@ def litellm_environment(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[LiteLlmEnvironment]:
     provider_state = ProviderState()
-    with LocalAppServer(create_provider_app(provider_state)) as provider_server:
+    # Linux containers reach the host gateway, not the host loopback interface.
+    with LocalAppServer(
+        create_provider_app(provider_state), host='0.0.0.0'
+    ) as provider_server:
         config_path = tmp_path_factory.mktemp('litellm') / 'config.yaml'
         _write_litellm_config(config_path, provider_server.port)
 
@@ -255,6 +262,43 @@ async def budget_adapter(
     budget_adapter_factory: BudgetAdapterFactory,
 ) -> BudgetTestAdapter:
     return await budget_adapter_factory.create()
+
+
+@pytest.fixture
+async def budget_http(
+    budget_adapter: BudgetTestAdapter,
+) -> AsyncIterator[httpx.AsyncClient]:
+    from fastapi import FastAPI
+    from fastapi.routing import APIRoute
+
+    from server.routes.orgs import _org_budget_service_injector, org_router
+
+    app = FastAPI()
+    app.include_router(org_router)
+
+    async def service():
+        yield budget_adapter.service
+        await budget_adapter.session.commit()
+
+    async def identity():
+        return str(budget_adapter.user_ids[0])
+
+    async def context():
+        return None
+
+    # Keep real route validation/serialization; authentication is out of scope.
+    app.dependency_overrides[_org_budget_service_injector.depends] = service
+    for route in app.routes:
+        if isinstance(route, APIRoute) and '/budgets' in route.path:
+            for dependency in route.dependant.dependencies:
+                if dependency.call and dependency.name == 'user_id':
+                    app.dependency_overrides[dependency.call] = identity
+                elif dependency.call and dependency.name is None:
+                    app.dependency_overrides[dependency.call] = context
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url='http://budget-test'
+    ) as client:
+        yield client
 
 
 @pytest.fixture

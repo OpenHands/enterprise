@@ -72,6 +72,10 @@ STATUS_MAPPING = {
     'starting': SandboxStatus.STARTING,
     'error': SandboxStatus.ERROR,
 }
+# Resume dispatch: an active runtime makes resume an idempotent no-op, and the
+# runtime API's /resume endpoint only accepts these two states.
+_ACTIVE_SANDBOX_STATUSES = frozenset({SandboxStatus.STARTING, SandboxStatus.RUNNING})
+_RESUMABLE_SANDBOX_STATUSES = frozenset({SandboxStatus.PAUSED, SandboxStatus.ERROR})
 AGENT_SERVER_PORT = 60000
 VSCODE_PORT = 60001
 WORKER_1_PORT = 12000
@@ -81,6 +85,17 @@ WORKER_2_PORT = 12001
 def _hash_session_api_key(session_api_key: str) -> str:
     """Hash a session API key using SHA-256."""
     return hashlib.sha256(session_api_key.encode()).hexdigest()
+
+
+def _runtime_api_error_detail(response: httpx.Response) -> str | None:
+    """Return the runtime API's ``detail`` string from an error response, if any."""
+    try:
+        data = response.json()
+    except ValueError:
+        return None
+    if isinstance(data, dict) and isinstance(data.get('detail'), str):
+        return data['detail']
+    return None
 
 
 class StoredRemoteSandbox(Base):
@@ -544,46 +559,154 @@ class RemoteSandboxService(SandboxService):
 
         return start_request
 
+    async def _get_runtime_for_resume(self, sandbox_id: str) -> dict[str, Any] | None:
+        """Fetch the runtime for a resume; None when the runtime API has no record.
+
+        Any other runtime API failure is an upstream error (502), never a 404.
+        """
+        try:
+            return await self._get_runtime(sandbox_id)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise SandboxError(
+                status_code=502,
+                detail=f'Runtime API lookup failed for sandbox {sandbox_id}',
+            ) from e
+        except httpx.HTTPError as e:
+            raise SandboxError(
+                status_code=502,
+                detail=f'Runtime API lookup failed for sandbox {sandbox_id}',
+            ) from e
+
+    async def _resolve_resume_conflict(
+        self, sandbox_id: str, response: httpx.Response
+    ) -> bool:
+        """Turn a runtime API 409 on /resume into the application outcome.
+
+        The runtime API refuses /resume unless the runtime is paused or in
+        error, and its 409 message reports the status it read BEFORE its
+        conditional update, so the loser of two concurrent resumes is told the
+        runtime "was paused". Re-check the live status once: an active runtime
+        means someone else already resumed it (idempotent success), a missing
+        one is a 404, and anything else is a genuine structured conflict.
+        """
+        upstream_detail = _runtime_api_error_detail(response)
+        runtime_data = await self._get_runtime_for_resume(sandbox_id)
+        if runtime_data is None:
+            return False
+        status = self._get_sandbox_status_from_runtime(runtime_data)
+        if status in _ACTIVE_SANDBOX_STATUSES:
+            _logger.info(
+                f'Sandbox {sandbox_id} was resumed concurrently ({status.value}); '
+                'treating resume as a no-op'
+            )
+            return True
+        if status == SandboxStatus.MISSING:
+            return False
+        runtime_status = str(runtime_data.get('status') or 'unknown').lower()
+        _logger.warning(
+            f'Sandbox {sandbox_id} cannot be resumed: runtime status is '
+            f'{runtime_status} ({upstream_detail})'
+        )
+        raise SandboxError(
+            status_code=409,
+            detail={
+                'code': 'runtime_not_resumable',
+                'current_status': runtime_status,
+                'message': upstream_detail
+                or (
+                    f'Sandbox {sandbox_id} cannot be resumed: runtime status is '
+                    f"'{runtime_status}'"
+                ),
+            },
+        )
+
     async def resume_sandbox(self, sandbox_id: str) -> bool:
-        """Resume a paused sandbox.
+        """Resume a paused sandbox, or no-op when its runtime is already active.
+
+        The runtime state is resolved BEFORE any side effect, so repeated
+        requests for an active runtime never trigger sandbox-limit cleanup or a
+        runtime API /resume call:
+
+        - no stored record, runtime 404, or runtime ``stopped``/unknown: return
+          False (the router answers 404: the sandbox is missing);
+        - runtime ``starting``/``running``: return True with no side effects;
+          the existing session key is neither returned nor rotated;
+        - runtime ``paused``/``error``: sandbox-limit cleanup, then /resume;
+        - runtime API 409: re-check once (``_resolve_resume_conflict``), then
+          True, False, or a structured 409 ``SandboxError``;
+        - runtime API lookup/resume failure: 502 ``SandboxError``.
 
         Security: When a sandbox is resumed, the runtime-api generates a new
         session_api_key and returns it. This invalidates any previously leaked
         keys and ensures that only the new key can be used to access secrets.
         """
-        # Enforce sandbox limits by cleaning up old sandboxes
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if not stored_sandbox:
+            return False
+
+        runtime_data = await self._get_runtime_for_resume(sandbox_id)
+        if runtime_data is None:
+            return False
+
+        status = self._get_sandbox_status_from_runtime(runtime_data)
+        if status in _ACTIVE_SANDBOX_STATUSES:
+            _logger.info(
+                f'Sandbox {sandbox_id} is already {status.value}; resume is a no-op'
+            )
+            return True
+        if status not in _RESUMABLE_SANDBOX_STATUSES:
+            # stopped / unknown: the runtime is gone, which is distinct from a
+            # state conflict.
+            return False
+
+        # Enforce sandbox limits only when a real paused-to-starting transition
+        # is about to happen (this fetches the runtime API's global /list).
         await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
 
         try:
-            stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-            if not stored_sandbox:
-                return False
-            runtime_data = await self._get_runtime(sandbox_id)
             response = await self._send_runtime_api_request(
                 'POST',
                 '/resume',
                 json={'runtime_id': runtime_data['runtime_id']},
             )
-            if response.status_code == 404:
-                return False
-            response.raise_for_status()
+        except httpx.HTTPError as e:
+            raise SandboxError(
+                status_code=502,
+                detail=f'Runtime API resume failed for sandbox {sandbox_id}',
+            ) from e
 
-            # Security: Update stored session_api_key with the new key returned
-            # by the runtime-api. The old key was invalidated on resume.
-            response_data = response.json()
-            new_session_api_key = response_data.get('session_api_key')
-            if new_session_api_key:
-                stored_sandbox.session_api_key_hash = _hash_session_api_key(
-                    new_session_api_key
-                )
-                _logger.info(
-                    f'Updated session_api_key_hash for sandbox {sandbox_id} after resume'
-                )
-
-            return True
-        except httpx.HTTPError:
-            _logger.exception(f'Error resuming sandbox {sandbox_id}', stack_info=True)
+        if response.status_code == 404:
             return False
+        if response.status_code == 409:
+            return await self._resolve_resume_conflict(sandbox_id, response)
+        if response.status_code >= 400:
+            _logger.warning(
+                f'Runtime API resume failed for sandbox {sandbox_id}: '
+                f'HTTP {response.status_code}'
+            )
+            raise SandboxError(
+                status_code=502,
+                detail=(
+                    f'Runtime API resume failed for sandbox {sandbox_id} '
+                    f'({response.status_code})'
+                ),
+            )
+
+        # Security: Update stored session_api_key with the new key returned
+        # by the runtime-api. The old key was invalidated on resume.
+        response_data = response.json()
+        new_session_api_key = response_data.get('session_api_key')
+        if new_session_api_key:
+            stored_sandbox.session_api_key_hash = _hash_session_api_key(
+                new_session_api_key
+            )
+            _logger.info(
+                f'Updated session_api_key_hash for sandbox {sandbox_id} after resume'
+            )
+
+        return True
 
     async def pause_sandbox(self, sandbox_id: str) -> bool:
         """Pause a running sandbox.
@@ -826,8 +949,8 @@ class RemoteSandboxService(SandboxService):
         Uses _get_user_running_sandboxes (runtime /list + DB cross-reference) so
         only sandboxes that are actually running are considered.
         """
-        if max_num_sandboxes <= 0:
-            raise ValueError('max_num_sandboxes must be greater than 0')
+        if max_num_sandboxes < 0:
+            raise ValueError('max_num_sandboxes must not be negative')
 
         running = await self._get_user_running_sandboxes()
 

@@ -6,6 +6,7 @@ import threading
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import uvicorn
@@ -19,11 +20,11 @@ def reserve_port() -> int:
 
 
 class LocalAppServer(AbstractContextManager['LocalAppServer']):
-    def __init__(self, app: FastAPI):
+    def __init__(self, app: FastAPI, host: str = '127.0.0.1'):
         self.port = reserve_port()
         self.base_url = f'http://127.0.0.1:{self.port}'
         self._server = uvicorn.Server(
-            uvicorn.Config(app, host='127.0.0.1', port=self.port, log_level='warning')
+            uvicorn.Config(app, host=host, port=self.port, log_level='warning')
         )
         self._thread = threading.Thread(target=self._server.run, daemon=True)
 
@@ -59,7 +60,7 @@ def create_provider_app(state: ProviderState) -> FastAPI:
     async def completion() -> dict[str, Any]:
         state.calls += 1
         return {
-            'id': f'budget-test-{state.calls}',
+            'id': f'budget-test-{uuid4()}',
             'object': 'chat.completion',
             'created': 0,
             'model': 'budget-test-model',

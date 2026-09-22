@@ -79,7 +79,7 @@ export function Budgets() {
         orgId: organizationId!,
         payload,
       }),
-    onSuccess: () =>
+    onSettled: () =>
       queryClient.invalidateQueries({
         queryKey: ["organizations", "budgets", organizationId],
       }),
@@ -95,7 +95,7 @@ export function Budgets() {
         userId: params.userId,
         payload: params.payload,
       }),
-    onSuccess: () =>
+    onSettled: () =>
       queryClient.invalidateQueries({
         queryKey: ["organizations", "budgets", organizationId],
       }),
@@ -107,7 +107,7 @@ export function Budgets() {
         orgId: organizationId!,
         userId,
       }),
-    onSuccess: () =>
+    onSettled: () =>
       queryClient.invalidateQueries({
         queryKey: ["organizations", "budgets", organizationId],
       }),
@@ -364,44 +364,33 @@ export function Budgets() {
 
   if (!organizationId) {
     return (
-      <div className="text-[#8C8C8C]">
+      <div className="text-muted">
         Select an organization to manage budgets.
       </div>
     );
   }
 
   if (isLoading) {
-    return <div className="text-[#8C8C8C]">Loading budgets...</div>;
+    return <div className="text-muted">Loading budgets...</div>;
   }
 
   return (
     <div className="space-y-8">
-      {/* Page Header */}
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-semibold text-white mb-1">
-            Budget settings
-          </h1>
-          <p className="text-[#8C8C8C]">
-            Control your AI spend at the organization and user level.
-          </p>
-        </div>
-        <div className="flex gap-6 border-b border-[#262626]">
-          {BUDGET_TABS.map((tab) => (
-            <button
-              key={tab.value}
-              type="button"
-              onClick={() => setActiveTab(tab.value)}
-              className={`flex items-center px-1 py-3 text-sm font-medium transition-colors border-b-2 ${
-                activeTab === tab.value
-                  ? "border-blue-500 text-white"
-                  : "border-transparent text-[#8C8C8C] hover:text-white"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+      <div className="flex gap-6">
+        {BUDGET_TABS.map((tab) => (
+          <button
+            key={tab.value}
+            type="button"
+            onClick={() => setActiveTab(tab.value)}
+            className={`flex items-center px-1 py-3 text-sm font-medium transition-colors border-b-2 ${
+              activeTab === tab.value
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted hover:text-foreground"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       {activeTab === "organization" && (
@@ -416,6 +405,10 @@ export function Budgets() {
           spendObservedAt={budgetData?.spend_observed_at ?? null}
           syncStatus={budgetData?.litellm_last_sync_status ?? null}
           syncError={budgetData?.litellm_last_sync_error ?? null}
+          reconciliationState={budgetData?.reconciliation_state ?? "pending"}
+          reconciliationError={budgetData?.reconciliation_error ?? null}
+          desiredTeamMaxBudget={budgetData?.desired_team_max_budget ?? null}
+          appliedTeamMaxBudget={budgetData?.applied_team_max_budget ?? null}
           unmappedSpend={budgetData?.unmapped_spend ?? null}
           unmappedMemberCount={budgetData?.unmapped_member_count ?? null}
           monthlyLimit={monthlyLimit}

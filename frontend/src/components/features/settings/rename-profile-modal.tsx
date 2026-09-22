@@ -58,10 +58,17 @@ export function RenameProfileModal({
   const footer = (
     <>
       <BrandButton
+        type="button"
+        variant="secondary"
+        onClick={onClose}
+        isDisabled={renameProfile.isPending}
+      >
+        {t(I18nKey.BUTTON$CANCEL)}
+      </BrandButton>
+      <BrandButton
         testId="rename-profile-submit"
         type="button"
         variant="primary"
-        className="grow"
         onClick={handleSubmit}
         isDisabled={renameProfile.isPending || !isValid}
       >
@@ -70,15 +77,6 @@ export function RenameProfileModal({
         ) : (
           t(I18nKey.BUTTON$RENAME)
         )}
-      </BrandButton>
-      <BrandButton
-        type="button"
-        variant="secondary"
-        className="grow"
-        onClick={onClose}
-        isDisabled={renameProfile.isPending}
-      >
-        {t(I18nKey.BUTTON$CANCEL)}
       </BrandButton>
     </>
   );
