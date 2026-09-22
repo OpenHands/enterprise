@@ -5,6 +5,7 @@ SHELL=/usr/bin/env bash
 BACKEND_HOST ?= "127.0.0.1"
 BACKEND_PORT ?= 3000
 BACKEND_HOST_PORT = "$(BACKEND_HOST):$(BACKEND_PORT)"
+BACKEND_START_TIMEOUT ?= 90
 FRONTEND_HOST ?= "127.0.0.1"
 FRONTEND_PORT ?= 3001
 DEFAULT_WORKSPACE_DIR = "./workspace"
@@ -21,6 +22,24 @@ PYTHON ?= $(shell for cmd in $(PYTHON_CANDIDATES); do \
 	fi; \
  done)
 KIND_CLUSTER_NAME = "local-hands"
+
+# Local development database. `make local-db` runs PostgreSQL in a container
+# using these values; `make run` / `make start-backend` connect with them.
+# Override any of them to point at a PostgreSQL server you manage yourself.
+DB_HOST ?= 127.0.0.1
+DB_PORT ?= 5432
+DB_NAME ?= openhands
+DB_USER ?= postgres
+DB_PASS ?= postgres
+LOCAL_DB_CONTAINER ?= openhands-postgres
+# A named volume, so deleting the container does not take the data with it.
+# `make reset-db` is the only thing that removes it.
+LOCAL_DB_VOLUME ?= openhands-postgres-data
+# Matches the image the test suite uses (tests/postgres_testdb.py).
+LOCAL_DB_IMAGE ?= postgres:16
+# Applied only to the targets that talk to the local database, so the SaaS
+# targets keep reading their own environment.
+LOCAL_DB_ENV = DB_HOST=$(DB_HOST) DB_PORT=$(DB_PORT) DB_NAME=$(DB_NAME) DB_USER=$(DB_USER) DB_PASS=$(DB_PASS)
 
 # ANSI color codes
 GREEN=$(shell tput -Txterm setaf 2)
@@ -225,8 +244,8 @@ kind:
 	@kubectl wait --for=condition=Available deployment/ubuntu-dev
 	@echo "$(YELLOW)Waiting for Nginx to be ready.$(RESET)"
 	@kubectl -n ingress-nginx wait --for=condition=Available deployment/ingress-nginx-controller
-	@echo "$(YELLOW)Running make run inside of mirrord.$(RESET)"
-	@mirrord exec --target deployment/ubuntu-dev -- make run
+	@echo "$(YELLOW)Running make run-saas inside of mirrord.$(RESET)"
+	@mirrord exec --target deployment/ubuntu-dev -- make run-saas
 
 test-frontend:
 	@echo "$(YELLOW)Running tests for frontend...$(RESET)"
@@ -263,10 +282,46 @@ prepare-local-frontend:
 	@$(MAKE) -s install-frontend-dependencies
 	@$(MAKE) -s build-agent-canvas
 
+# Start (or reuse) a local PostgreSQL container and migrate it to head. Run this
+# once before `make run`; migrations are never applied automatically on startup.
+local-db: check-docker
+	@echo "$(YELLOW)Starting local PostgreSQL ($(LOCAL_DB_CONTAINER))...$(RESET)"
+	@if [ -n "$$(docker ps -aq -f name=^$(LOCAL_DB_CONTAINER)$$)" ]; then \
+		docker start $(LOCAL_DB_CONTAINER) > /dev/null; \
+	else \
+		docker run -d --name $(LOCAL_DB_CONTAINER) \
+			-p $(DB_PORT):5432 \
+			-v $(LOCAL_DB_VOLUME):/var/lib/postgresql/data \
+			-e POSTGRES_USER=$(DB_USER) \
+			-e POSTGRES_PASSWORD=$(DB_PASS) \
+			-e POSTGRES_DB=$(DB_NAME) \
+			$(LOCAL_DB_IMAGE) > /dev/null; \
+	fi
+	@echo "$(YELLOW)Waiting for PostgreSQL to accept connections...$(RESET)"
+	@for i in $$(seq 1 60); do \
+		if docker exec $(LOCAL_DB_CONTAINER) pg_isready -U $(DB_USER) > /dev/null 2>&1; then break; fi; \
+		if [ $$i -eq 60 ]; then \
+			echo "$(RED)PostgreSQL did not become ready. Check: docker logs $(LOCAL_DB_CONTAINER)$(RESET)"; \
+			exit 1; \
+		fi; \
+		sleep 1; \
+	done
+	@echo "$(YELLOW)Applying migrations...$(RESET)"
+	@$(LOCAL_DB_ENV) uv run alembic upgrade head
+	@echo "$(GREEN)Local database ready on $(DB_HOST):$(DB_PORT).$(RESET)"
+
+# Throw the local database away and build a fresh one. The data lives in a named
+# volume, which `docker rm -v` leaves alone, so remove it by name.
+reset-db: check-docker
+	@echo "$(YELLOW)Removing local PostgreSQL ($(LOCAL_DB_CONTAINER)) and its data...$(RESET)"
+	@docker rm -f $(LOCAL_DB_CONTAINER) > /dev/null 2>&1 || true
+	@docker volume rm $(LOCAL_DB_VOLUME) > /dev/null 2>&1 || true
+	@$(MAKE) -s local-db
+
 # Start backend
 start-backend:
 	@echo "$(YELLOW)Starting backend...$(RESET)"
-	@uv run uvicorn openhands.server.listen:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) --reload --reload-exclude "./workspace"
+	@$(LOCAL_DB_ENV) uv run uvicorn openhands.server.listen:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) --reload --reload-exclude "./workspace"
 
 # Start the SaaS/enterprise backend (saas_server.py), which layers the enterprise
 # routes on top of the app server. Needs the SaaS env (Postgres, Keycloak, ...);
@@ -295,12 +350,10 @@ _run_setup:
 	fi
 	@mkdir -p logs
 	@echo "$(YELLOW)Starting backend server...$(RESET)"
-	@uv run uvicorn openhands.server.listen:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) &
-	@echo "$(YELLOW)Waiting for the backend to start...$(RESET)"
-	@until nc -z localhost $(BACKEND_PORT); do sleep 0.1; done
-	@echo "$(GREEN)Backend started successfully.$(RESET)"
+	@$(LOCAL_DB_ENV) uv run uvicorn openhands.server.listen:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) &
+	@$(MAKE) -s _wait_for_backend
 
-# Run the app (standard mode)
+# Run the app (needs `make local-db`, or DB_HOST pointed at your own PostgreSQL)
 run:
 	@echo "$(YELLOW)Running the app...$(RESET)"
 	@$(MAKE) -s prepare-local-frontend
@@ -320,24 +373,21 @@ _run_saas_setup:
 	@mkdir -p logs
 	@echo "$(YELLOW)Starting SaaS backend server...$(RESET)"
 	@uv run uvicorn saas_server:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) &
+	@$(MAKE) -s _wait_for_backend
+
+# Wait for the backgrounded backend to bind its port, giving up rather than
+# hanging forever when it exits during startup (non-callable).
+_wait_for_backend:
 	@echo "$(YELLOW)Waiting for the backend to start...$(RESET)"
-	@until nc -z localhost $(BACKEND_PORT); do sleep 0.1; done
-	@echo "$(GREEN)Backend started successfully.$(RESET)"
-
-# Run the app (in docker)
-docker-run: WORKSPACE_BASE ?= $(PWD)/workspace
-docker-run:
-	@if [ -f /.dockerenv ]; then \
-		echo "Running inside a Docker container. Exiting..."; \
-		exit 0; \
-	else \
-		echo "$(YELLOW)Running the app in Docker $(OPTIONS)...$(RESET)"; \
-		export WORKSPACE_BASE=${WORKSPACE_BASE}; \
-		export SANDBOX_USER_ID=$(shell id -u); \
-		export DATE=$(shell date +%Y%m%d%H%M%S); \
-		docker compose up $(OPTIONS); \
-	fi
-
+	@for i in $$(seq 1 $(BACKEND_START_TIMEOUT)); do \
+		if nc -z localhost $(BACKEND_PORT) 2>/dev/null; then \
+			echo "$(GREEN)Backend started successfully.$(RESET)"; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "$(RED)Backend did not bind port $(BACKEND_PORT) within $(BACKEND_START_TIMEOUT)s. See the output above for why it exited.$(RESET)"; \
+	exit 1
 
 # Setup config.toml
 setup-config:
@@ -373,9 +423,6 @@ setup-config-basic:
 	> config.toml
 	@echo "$(GREEN)config.toml created.$(RESET)"
 
-openhands-cloud-run:
-	@$(MAKE) run BACKEND_HOST="0.0.0.0" BACKEND_PORT="12000" FRONTEND_HOST="0.0.0.0" FRONTEND_PORT="12001"
-
 # Develop in container
 docker-dev:
 	@if [ -f /.dockerenv ]; then \
@@ -400,16 +447,18 @@ help:
 	@echo "  $(GREEN)lint$(RESET)                - Run linters on the project."
 	@echo "  $(GREEN)setup-config$(RESET)        - Setup the configuration for OpenHands by providing LLM API key,"
 	@echo "                        LLM Model name, and workspace directory."
+	@echo "  $(GREEN)local-db$(RESET)            - Start a local PostgreSQL container and migrate it to head."
+	@echo "  $(GREEN)reset-db$(RESET)            - Delete the local PostgreSQL container and its data, then recreate it."
 	@echo "  $(GREEN)start-backend$(RESET)       - Start the backend server for the OpenHands project."
 	@echo "  $(GREEN)start-frontend$(RESET)      - Start the frontend server for the OpenHands project."
 	@echo "  $(GREEN)start-saas-backend$(RESET)  - Start the SaaS/enterprise backend (saas_server.py)."
-	@echo "  $(GREEN)run-saas$(RESET)            - Run the SaaS app, starting the SaaS backend and the frontend server."
 	@echo "  $(GREEN)run$(RESET)                 - Run the OpenHands application, starting both backend and frontend servers."
+	@echo "                        Needs a database: run $(GREEN)make local-db$(RESET) first."
+	@echo "  $(GREEN)run-saas$(RESET)            - Run the SaaS app, starting the SaaS backend and the frontend server."
 	@echo "                        Backend Log file will be stored in the 'logs' directory."
 	@echo "  $(GREEN)docker-dev$(RESET)          - Build and run the OpenHands application in Docker."
-	@echo "  $(GREEN)docker-run$(RESET)          - Run the OpenHands application, starting both backend and frontend servers in Docker."
 	@echo "  $(GREEN)help$(RESET)                - Display this help message, providing information on available targets."
 
 # Phony targets
-.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend build-agent-canvas prepare-local-frontend start-backend start-saas-backend start-frontend _run_setup _run_saas_setup run run-saas run-wsl setup-config setup-config-prompts setup-config-basic openhands-cloud-run docker-dev docker-run clean help
+.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend build-agent-canvas prepare-local-frontend local-db reset-db start-backend start-saas-backend start-frontend _run_setup _run_saas_setup _wait_for_backend run run-saas setup-config setup-config-prompts setup-config-basic docker-dev clean help
 .PHONY: kind

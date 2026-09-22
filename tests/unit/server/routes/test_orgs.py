@@ -82,7 +82,7 @@ def grant_create_organization():
     ``require_permission(Permission.CREATE_ORGANIZATION)``, which is only
     granted via a super role. ``require_permission`` always looks up the
     org-scoped role first via ``get_user_org_role`` -- without a patch
-    that call hits ``OrgMemberStore`` against a bare in-memory SQLite DB
+    that call hits ``OrgMemberStore`` against the test database
     that has no ``org_member`` table. This fixture short-circuits the
     org-role lookup to ``None`` and stacks a ``superadmin`` patch over
     the conftest-level ``get_user_super_role -> None`` default so the
@@ -1231,6 +1231,153 @@ async def test_list_user_orgs_mixed_personal_and_team(mock_app_list):
 
 
 @pytest.mark.asyncio
+async def test_list_user_orgs_hides_personal_when_flag_enabled(mock_app_list):
+    """
+    GIVEN: HIDE_PERSONAL_WORKSPACES is on and the user has a team org
+    WHEN: GET /api/organizations is called
+    THEN: The personal org is marked is_visible=False and the team org True
+    """
+    user_id = mock_app_list.state.test_user_id
+    personal_org_id = uuid.UUID(user_id)
+
+    personal_org = Org(
+        id=personal_org_id,
+        name=f'user_{user_id}_org',
+        contact_name='John Doe',
+        contact_email='john@example.com',
+    )
+    team_org = Org(
+        id=uuid.uuid4(),
+        name='Team Organization',
+        contact_name='Jane Doe',
+        contact_email='jane@example.com',
+    )
+    mock_user = MagicMock()
+    mock_user.current_org_id = team_org.id
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.get_user_orgs_paginated',
+            AsyncMock(return_value=([personal_org, team_org], None)),
+        ),
+        patch(
+            'server.routes.orgs._hide_personal_workspaces',
+            return_value=True,
+        ),
+    ):
+        client = TestClient(mock_app_list)
+
+        response = client.get('/api/organizations')
+
+        assert response.status_code == status.HTTP_200_OK
+        items = {item['id']: item for item in response.json()['items']}
+
+        # Hidden orgs stay in the list so existing members can still address
+        # them; only the visibility marker changes.
+        assert len(items) == 2
+        assert items[str(personal_org_id)]['is_personal'] is True
+        assert items[str(personal_org_id)]['is_visible'] is False
+        assert items[str(team_org.id)]['is_visible'] is True
+
+
+@pytest.mark.asyncio
+async def test_list_user_orgs_personal_only_stays_visible(mock_app_list):
+    """
+    GIVEN: HIDE_PERSONAL_WORKSPACES is on but the personal workspace is the
+        user's only org (e.g. the default org has not been created yet)
+    WHEN: GET /api/organizations is called
+    THEN: The personal org is still visible, so the client is never left
+        with zero selectable workspaces
+    """
+    user_id = mock_app_list.state.test_user_id
+    personal_org_id = uuid.UUID(user_id)
+
+    personal_org = Org(
+        id=personal_org_id,
+        name=f'user_{user_id}_org',
+        contact_name='John Doe',
+        contact_email='john@example.com',
+    )
+    mock_user = MagicMock()
+    mock_user.current_org_id = personal_org_id
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.get_user_orgs_paginated',
+            AsyncMock(return_value=([personal_org], None)),
+        ),
+        patch(
+            'server.routes.orgs._hide_personal_workspaces',
+            return_value=True,
+        ),
+    ):
+        client = TestClient(mock_app_list)
+
+        response = client.get('/api/organizations')
+
+        assert response.status_code == status.HTTP_200_OK
+        items = response.json()['items']
+        assert len(items) == 1
+        assert items[0]['is_visible'] is True
+
+
+@pytest.mark.asyncio
+async def test_list_user_orgs_personal_visible_when_flag_disabled(mock_app_list):
+    """
+    GIVEN: HIDE_PERSONAL_WORKSPACES is off
+    WHEN: GET /api/organizations is called
+    THEN: Every org, including the personal one, is marked visible
+    """
+    user_id = mock_app_list.state.test_user_id
+    personal_org_id = uuid.UUID(user_id)
+
+    personal_org = Org(
+        id=personal_org_id,
+        name=f'user_{user_id}_org',
+        contact_name='John Doe',
+        contact_email='john@example.com',
+    )
+    team_org = Org(
+        id=uuid.uuid4(),
+        name='Team Organization',
+        contact_name='Jane Doe',
+        contact_email='jane@example.com',
+    )
+    mock_user = MagicMock()
+    mock_user.current_org_id = personal_org_id
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.get_user_orgs_paginated',
+            AsyncMock(return_value=([personal_org, team_org], None)),
+        ),
+        patch(
+            'server.routes.orgs._hide_personal_workspaces',
+            return_value=False,
+        ),
+    ):
+        client = TestClient(mock_app_list)
+
+        response = client.get('/api/organizations')
+
+        assert response.status_code == status.HTTP_200_OK
+        for item in response.json()['items']:
+            assert item['is_visible'] is True
+
+
+@pytest.mark.asyncio
 async def test_list_user_orgs_all_fields_present(mock_app_list):
     """
     GIVEN: Organization with all fields populated
@@ -1313,7 +1460,7 @@ async def test_list_user_orgs_all_fields_present(mock_app_list):
 
 
 @pytest.fixture
-def mock_app_with_get_user_id():
+def mock_app_with_get_user_id(app_db_session):
     """Create a test FastAPI app with organization routes and mocked get_user_id auth."""
     app = FastAPI()
     app.include_router(org_router)
