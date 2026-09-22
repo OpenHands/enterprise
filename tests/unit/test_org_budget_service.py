@@ -2247,9 +2247,6 @@ async def test_concurrent_maintenance_runs_roll_the_cycle_only_once(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='reproduces obs:invalid_reset_day_crashed_cycle_math — fails on current code'
-)
 async def test_maintenance_survives_a_stored_reset_day_the_month_lacks(
     async_session_maker, budget_org
 ):
@@ -2294,6 +2291,49 @@ async def test_maintenance_survives_a_stored_reset_day_the_month_lacks(
                 pytest.fail(f'cycle arithmetic crashed on a stored reset_day: {exc}')
 
     assert result['cycle_start_at'] is not None
+
+
+@pytest.mark.parametrize('reset_day', [-1, 0, 1, 15, 28, 29, 30, 31])
+def test_cycle_boundaries_stay_ordered_for_any_stored_reset_day(reset_day):
+    # reset_day is untrusted, so every value must yield a real date and a strictly
+    # increasing sequence of cycle starts: _roll_cycle_if_needed advances only while
+    # now >= next_cycle, and a boundary that repeats or moves backwards would either
+    # wedge that loop or re-baseline cycle_start_spend twice for one period.
+    cycle_start = _current_cycle_start(datetime(2026, 1, 15, tzinfo=UTC), reset_day)
+    assert cycle_start <= datetime(2026, 1, 15, tzinfo=UTC)
+
+    for _ in range(40):
+        next_cycle = _next_cycle_start(cycle_start, reset_day)
+        assert next_cycle > cycle_start
+        cycle_start = next_cycle
+
+
+@pytest.mark.parametrize(
+    ('now', 'reset_day', 'expected_start', 'expected_next'),
+    [
+        # 1 and 15 are the only values the PATCH endpoint allows: the clamp is a no-op.
+        (datetime(2026, 1, 15), 15, datetime(2026, 1, 15), datetime(2026, 2, 15)),
+        (datetime(2026, 1, 15), 1, datetime(2026, 1, 1), datetime(2026, 2, 1)),
+        # 31 clamps down to the last day a short month holds, and back up afterwards.
+        (datetime(2026, 2, 28), 31, datetime(2026, 2, 28), datetime(2026, 3, 31)),
+        (datetime(2026, 3, 15), 31, datetime(2026, 2, 28), datetime(2026, 3, 31)),
+        # 0 and below clamp up to the 1st.
+        (datetime(2026, 1, 15), 0, datetime(2026, 1, 1), datetime(2026, 2, 1)),
+    ],
+)
+def test_cycle_boundaries_land_on_the_day_the_month_holds(
+    now, reset_day, expected_start, expected_next
+):
+    # Ordering alone is satisfied by a great many wrong clamps, so pin the dates the
+    # boundaries actually land on: that the clamp reads the month's length rather than
+    # the weekday of its 1st, that the guard compares against the clamped day, that the
+    # previous-month branch clamps with its own month, and that a cycle pushed down to
+    # the 28th in February climbs back to the 31st in March instead of ratcheting.
+    cycle_start = _current_cycle_start(now.replace(tzinfo=UTC), reset_day)
+    assert cycle_start == expected_start.replace(tzinfo=UTC)
+    assert _next_cycle_start(cycle_start, reset_day) == expected_next.replace(
+        tzinfo=UTC
+    )
 
 
 @pytest.mark.asyncio
