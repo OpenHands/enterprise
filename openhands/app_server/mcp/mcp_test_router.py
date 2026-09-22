@@ -16,8 +16,8 @@ Differences from the sandbox endpoint, by design:
   /api/v1/settings`` applies — so a test exercises exactly the credentials a
   save would persist, without the browser ever seeing them. Restored values are
   scrubbed from the response text.
-- OAuth-authenticated servers are not probed: the browser-coordinated OAuth
-  flow only exists on a local agent-server.
+- OAuth-authenticated servers are not probed here; ``mcp_oauth_router`` runs
+  the browser-coordinated OAuth install flow for them.
 - The probe originates from the app-server pod, not from a sandbox, so network
   reachability can differ between the two.
 
@@ -242,25 +242,16 @@ def _scrub_secrets(response: MCPTestResponse, secrets: set[str]) -> MCPTestRespo
     return response
 
 
-@router.post(
-    '/test',
-    response_model=MCPTestResponse,
-    response_model_exclude_none=True,
-    summary='Test an MCP server configuration',
-    description=(
-        'Connect to a candidate remote MCP server and list its tools without '
-        'persisting any settings. Redacted secrets submitted for an already '
-        'stored server are restored from the saved configuration before the '
-        'connection is attempted. Returns 200 with `ok=false` for connection '
-        'and timeout failures; `stdio` servers and URLs that resolve to '
-        'loopback or link-local addresses are rejected with 422.'
-    ),
-)
-async def test_mcp_server(
-    body: MCPTestRequestBody,
-    settings: Settings | None = Depends(get_user_settings),
-) -> MCPTestResponse:
-    """Probe a single remote MCP server config and report whether it works."""
+async def prepare_probe_request(
+    body: MCPTestRequestBody, settings: Settings | None
+) -> MCPTestRequest:
+    """Turn a settings-page request into a validated, probe-safe request.
+
+    Shared by the connection test and the OAuth install routes: restores
+    redacted secrets from the stored server of the same name, validates the
+    result against the SDK model, and rejects ``stdio`` servers and targets
+    the SSRF guard refuses with 422.
+    """
     # Always run the restore pass: with no stored match the redaction marker
     # is dropped rather than sent upstream as a literal credential.
     restored = _preserve_redacted_mcp_secrets(
@@ -286,15 +277,38 @@ async def test_mcp_server(
             ),
         )
 
-    resolved_server = request.resolved_server
     loop = asyncio.get_running_loop()
     rejection = await loop.run_in_executor(
-        None, _check_probe_target, resolved_server.url or ''
+        None, _check_probe_target, request.resolved_server.url or ''
     )
     if rejection is not None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=rejection
         )
+    return request
+
+
+@router.post(
+    '/test',
+    response_model=MCPTestResponse,
+    response_model_exclude_none=True,
+    summary='Test an MCP server configuration',
+    description=(
+        'Connect to a candidate remote MCP server and list its tools without '
+        'persisting any settings. Redacted secrets submitted for an already '
+        'stored server are restored from the saved configuration before the '
+        'connection is attempted. Returns 200 with `ok=false` for connection '
+        'and timeout failures; `stdio` servers and URLs that resolve to '
+        'loopback or link-local addresses are rejected with 422.'
+    ),
+)
+async def test_mcp_server(
+    body: MCPTestRequestBody,
+    settings: Settings | None = Depends(get_user_settings),
+) -> MCPTestResponse:
+    """Probe a single remote MCP server config and report whether it works."""
+    request = await prepare_probe_request(body, settings)
+    resolved_server = request.resolved_server
 
     if resolved_server.oauth_auth is not None:
         return MCPTestFailure(
@@ -305,5 +319,6 @@ async def test_mcp_server(
             error_kind='unknown',
         )
 
+    loop = asyncio.get_running_loop()
     response = await loop.run_in_executor(None, _probe_mcp_server, request, None)
     return _scrub_secrets(response, _secret_values(resolved_server))

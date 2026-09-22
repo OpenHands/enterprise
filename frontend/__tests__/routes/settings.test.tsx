@@ -656,6 +656,80 @@ describe("Settings Screen", () => {
     });
   });
 
+  describe("Your Budget route access", () => {
+    beforeEach(() => {
+      mockQueryClient.clear();
+      useSelectedOrganizationStore.setState({ organizationId: null });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    const selectOrg = (
+      org: typeof MOCK_TEAM_ORG_ACME,
+      role: OrganizationMember["role"],
+    ) => {
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [org],
+        currentOrgId: org.id,
+      });
+      useSelectedOrganizationStore.setState({ organizationId: org.id });
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role, org_id: org.id }),
+      );
+    };
+
+    const openYourBudget = () => {
+      const request = new Request("http://localhost/settings/your-budget");
+      // @ts-expect-error - test only needs request and params, not full loader args
+      return clientLoader({ request, params: {} });
+    };
+
+    it.each(["member", "admin", "owner"] as const)(
+      "should let a %s open Your Budget in a team org",
+      async (role) => {
+        // Arrange
+        mockQueryClient.setQueryData(["web-client-config"], {
+          app_mode: "saas",
+        });
+        selectOrg(MOCK_TEAM_ORG_ACME, role);
+
+        // Act
+        const result = await openYourBudget();
+
+        // Assert
+        expect(result).not.toBeInstanceOf(Response);
+      },
+    );
+
+    it("should redirect away from Your Budget in a personal workspace", async () => {
+      // Arrange
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+      selectOrg(MOCK_PERSONAL_ORG, "owner");
+
+      // Act
+      const result = await openYourBudget();
+
+      // Assert
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).headers.get("Location")).toBe("/settings");
+    });
+
+    it("should redirect away from Your Budget in OSS mode", async () => {
+      // Arrange
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "oss" });
+      selectOrg(MOCK_TEAM_ORG_ACME, "member");
+
+      // Act
+      const result = await openYourBudget();
+
+      // Assert
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).headers.get("Location")).toBe("/settings");
+    });
+  });
+
   describe("hide page feature flags", () => {
     beforeEach(() => {
       // Set up as personal org admin so billing is accessible
