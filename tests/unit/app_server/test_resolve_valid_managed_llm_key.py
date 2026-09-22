@@ -76,6 +76,67 @@ async def test_rotates_when_current_key_is_stale():
 
 
 @pytest.mark.asyncio
+async def test_returns_new_key_even_if_old_key_deletion_fails():
+    """A cleanup failure must not become a refresh failure.
+
+    Deleting the stale key is best-effort: if ``delete_key`` raises (e.g. a
+    transient LiteLLM hiccup), the freshly-minted key must still be returned so
+    the sandbox 401->retry path succeeds instead of turning a *successful*
+    rotation into a 500.
+    """
+    store = _store()
+    rotation = ManagedLlmKeyRotation(
+        status=ManagedLlmKeyStatus.ROTATED,
+        old_key='old-key',
+        new_key='new-key',
+    )
+    with (
+        patch.object(
+            SaasSettingsStore,
+            'get_current_managed_llm_key',
+            new=AsyncMock(return_value='old-key'),
+        ),
+        patch.object(LiteLlmManager, 'verify_key', new=AsyncMock(return_value=False)),
+        patch.object(
+            SaasSettingsStore,
+            'rotate_managed_llm_key',
+            new=AsyncMock(return_value=rotation),
+        ),
+        patch.object(
+            LiteLlmManager,
+            'delete_key',
+            new=AsyncMock(side_effect=RuntimeError('boom')),
+        ),
+    ):
+        result = await store.resolve_valid_managed_llm_key()
+
+    assert result == 'new-key'
+
+
+@pytest.mark.asyncio
+async def test_verify_key_called_with_current_key_and_user_id():
+    """The verify step must check *this* user's key against *this* user's scope.
+
+    ``verify_key``'s arguments are part of the behaviour, so pin that the
+    current key and the store's user id are the exact values passed.
+    """
+    store = _store()
+    verify = AsyncMock(return_value=True)
+    with (
+        patch.object(
+            SaasSettingsStore,
+            'get_current_managed_llm_key',
+            new=AsyncMock(return_value='current-key'),
+        ),
+        patch.object(LiteLlmManager, 'verify_key', new=verify),
+    ):
+        result = await store.resolve_valid_managed_llm_key()
+
+    assert result == 'current-key'
+    verify.assert_awaited_once_with('current-key', 'test-user')
+
+
+@pytest.mark.asyncio
 async def test_returns_none_for_non_managed_config():
     """No current key and a non-managed rotation status yields ``None`` (the
     caller then surfaces the original auth error)."""

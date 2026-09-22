@@ -87,3 +87,23 @@ async def test_remote_init_environment_skips_refresh_without_web_url():
     assert LLM_API_KEY_REFRESH_URL_VARIABLE not in env
     assert LLM_API_KEY_REFRESH_HEADERS_VARIABLE not in env
     assert LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE not in env
+
+
+@pytest.mark.asyncio
+async def test_remote_init_environment_skips_base_urls_without_managed_url():
+    """The base-urls allow-list is gated on a configured managed proxy URL.
+
+    When ``LITE_LLM_API_URL`` is empty the URL/headers still go out (so the
+    caller can try), but the base-urls var must be *absent* rather than
+    present-and-empty -- an empty allow-list is a different contract than "no
+    allow-list" to the agent-server consumer.
+    """
+    stub = SimpleNamespace(web_url=WEB_URL)
+    with patch('server.constants.LITE_LLM_API_URL', ''):
+        env = await RemoteSandboxService._init_environment(stub, _spec(), 'sid')
+
+    assert (
+        env[LLM_API_KEY_REFRESH_URL_VARIABLE]
+        == f'{WEB_URL}/api/keys/llm/managed/current'
+    )
+    assert LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE not in env
