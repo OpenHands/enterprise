@@ -10,11 +10,13 @@ To set up the entire repo, including frontend and backend, run `make build`.
 You don't need to do this unless the user asks you to, or if you're trying to run the entire application.
 
 ## Running OpenHands with OpenHands:
-To run the full application to debug issues:
+To run the full application to debug issues (`make local-db` starts a PostgreSQL container and migrates it;
+the app never migrates on startup):
 ```bash
 export INSTALL_DOCKER=0
 export RUNTIME=local
-make build && make run FRONTEND_PORT=12000 FRONTEND_HOST=0.0.0.0 BACKEND_HOST=0.0.0.0 &> /tmp/openhands-log.txt &
+make build && make local-db
+make run FRONTEND_PORT=12000 FRONTEND_HOST=0.0.0.0 BACKEND_HOST=0.0.0.0 &> /tmp/openhands-log.txt &
 ```
 
 Local run troubleshooting notes:
@@ -103,7 +105,7 @@ When working on a PR that requires design documents, scripts meant for developme
 ## Repository Structure
 Backend:
 - Located in the `openhands` directory
-- The current V1 application server lives in `openhands/app_server/`. `make start-backend` still launches `openhands.server.listen:app`, which includes the V1 routes by default unless `ENABLE_V1=0`.
+- The current V1 application server lives in `openhands/app_server/`. `make start-backend` launches `openhands.server.listen:app`, which includes the V1 routes by default unless `ENABLE_V1=0`. It needs PostgreSQL; `make local-db` provides one.
 - For V1 web-app docs, LLM setup should point users to the Settings UI.
 - Testing:
   - All tests are in `tests/unit/test_*.py`
@@ -124,6 +126,8 @@ Frontend:
   - Our test framework is vitest
 - Building:
   - Build for production: `npm run build`
+  - The app ships a second SPA, Agent Canvas (`OpenHands/OpenHands`), at `/canvas`. In cloud this is a separate service behind an ingress rule; locally it is built into this app so `/` → `/canvas` works without ingress. `make build-agent-canvas` (or `npm run build:agent-canvas`) clones the pinned tag, builds it with `VITE_BASE_PATH=/canvas`, and stages it at `frontend/public/canvas`, which `npm run build` copies to `frontend/build/canvas`. The Vite dev server serves it via `frontend/vite-plugin-agent-canvas.ts`, and the backend mounts it at `/canvas` (`openhands/app_server/app.py`, `saas_server.py`) ahead of the `/` catch-all. This is temporary scaffolding: when the OSS frontend is retired, `/canvas` becomes the only surface.
+  - Canvas is deliberately NOT part of `make build`, because `make build` is a required CI step (`.github/workflows/py-tests.yml`) and cloning a second repository there would add a network dependency and a new failure mode to a job that currently works. Use `AGENT_CANVAS=1 make build` when you do want it in the build output. `make run` / `make run-saas` prepare it via `prepare-local-frontend`, and that step is fail-soft: /canvas is scaffolding over a still-working OSS frontend, so a canvas build failure must not block startup.
 - Environment Variables:
   - Set in `frontend/.env` or as environment variables
   - Available variables: VITE_BACKEND_HOST, VITE_USE_TLS, VITE_INSECURE_SKIP_VERIFY, VITE_FRONTEND_PORT
@@ -214,16 +218,52 @@ Each integration follows a consistent pattern with service classes, storage mode
 - Database changes require careful migration planning in `migrations/`
 - Always test changes against both the app server and the SaaS server
 
+**Detecting "cloud (app.all-hands.dev) vs self-hosted" — ALWAYS use `DEPLOYMENT_MODE`, never `app_mode`:**
+These two signals measure different axes and are NOT interchangeable. Mixing them up is a recurring bug source, so follow this rule exactly:
+
+- Use `from server.constants import DEPLOYMENT_MODE` and branch on `DEPLOYMENT_MODE == 'cloud'` (self-hosted is `== 'self_hosted'`).
+  - `'cloud'` == All-Hands-managed domains: `app.all-hands.dev`, `app.openhands.ai`, and any `*.all-hands.dev` / `*.openhands.ai` / `*.openhands.dev` (this includes staging/feature envs), unless overridden by `OH_DEPLOYMENT_MODE`. Defined in `server/constants.py` (`_get_deployment_mode`).
+  - `'self_hosted'` == self-hosted enterprise installs.
+- **Never** use `self.app_mode != 'saas'` (or `app_mode == AppMode.SAAS`) to distinguish cloud from self-hosted. `app_mode` (`openhands/app_server/config_api/config_models.py`, values `'oss'` / `'saas'`) only separates the pure OSS server (`OPENHANDS`) from the SaaS/enterprise server. Both `app.all-hands.dev` **and** self-hosted enterprise run the SaaS server, so `app_mode == 'saas'` is true for both — it cannot tell them apart.
+
+| Deployment                        | `app_mode` | `DEPLOYMENT_MODE` |
+|-----------------------------------|------------|--------------------|
+| `app.all-hands.dev` (cloud SaaS)  | `saas`     | `cloud`            |
+| Staging/feature envs              | `saas`     | `cloud`            |
+| Self-hosted enterprise            | `saas`     | `self_hosted`      |
+| Pure OSS                          | `oss`      | `self_hosted`      |
+
+- Correct: `if DEPLOYMENT_MODE == 'cloud':` to gate code that must run only on the managed cloud (e.g. `app.all-hands.dev`).
+- Wrong: `if self.app_mode != 'saas':` — this only excludes the OSS server; it will still run on self-hosted enterprise.
+- Need production-only (exclude even staging)? Combine with a host check on `server.constants.HOST` (e.g. `HOST == 'app.all-hands.dev'`); `DEPLOYMENT_MODE` alone treats staging as `cloud`.
+
+**The word "SaaS" is overloaded — disambiguate before coding:**
+In everyday language a user saying "SaaS" / "in SaaS" / "SaaS-only" / "this is a SaaS bug" almost always means **the hosted cloud product (`app.all-hands.dev`)**, i.e. `DEPLOYMENT_MODE == 'cloud'`. But in this codebase the enum value `AppMode.SAAS` is the SaaS *server class* and is true for **both** `app.all-hands.dev` and self-hosted enterprise. These are not the same thing. So:
+- Do NOT reach for `app_mode == 'saas'` / `self.app_mode != 'saas'` just because the request contains the word "saas".
+- When a request says "SaaS" and is gating/scoping behavior (e.g. "only run this on SaaS", "hide this on SaaS", "fix this in SaaS"), assume the user likely means **cloud (`app.all-hands.dev`) = `DEPLOYMENT_MODE == 'cloud'`** — and if it's genuinely ambiguous whether they mean cloud-only vs. (cloud + self-hosted enterprise), **ask the user to clarify** before implementing, rather than silently picking `app_mode`.
+- `app_mode == 'saas'` is the right signal only when the distinction is OSS-vs-not-OSS (pure OpenHands app server vs. the SaaS/enterprise server), never for cloud-vs-self-hosted.
+
 **Testing Best Practices:**
 
 **Database Testing:**
-- Use the `engine` / `session_maker` / `async_engine` / `async_session_maker` fixtures from `tests/unit/conftest.py`
-  for application unit tests. Each test gets its own PostgreSQL database, migrated to head, cloned from a template
-  (see `tests/postgres_testdb.py`); never hand-roll a SQLite engine
+- **Never use SQLite. Anywhere.** This is a PostgreSQL-only codebase: the migrations are PostgreSQL-only and so
+  are the tests. Do not introduce a `sqlite:///` or `sqlite+aiosqlite:///` URL, do not call
+  `Base.metadata.create_all`, do not build your own engine, and do not add a fallback that reaches for SQLite
+  when PostgreSQL is unreachable. If the database is not configured, fail loudly
+- **Always use the shared fixtures**: `engine` / `session_maker` / `async_engine` / `async_session_maker` from
+  `tests/unit/conftest.py`. Each test gets its own database, cloned from a template migrated to head with
+  `alembic upgrade head` (see `tests/postgres_testdb.py`). Cloning costs about 50ms, so a fresh database per test
+  is the norm -- do not reach for transaction rollback to isolate tests
+- Because the database is real, PostgreSQL semantics apply: foreign keys are enforced, `TIMESTAMP WITHOUT TIME
+  ZONE` columns reject tz-aware values, identity sequences start at 1, and UUID columns return `uuid.UUID`
+  objects. Create the rows a foreign key needs (`create_org` / `create_user` in `tests/unit/conftest.py`) instead
+  of inventing ids
+- Running any test needs a working docker daemon. The root `conftest.py` starts one container per run, shares it
+  across pytest-xdist workers, and removes it when the run ends
+- Do not mock the database in unit tests; use the fixtures. Mock only the services around it (LiteLLM, Keycloak,
+  git providers)
 - Do not add SQLite paths to Alembic migrations
-- Create module-specific `conftest.py` files with database fixtures
-- Mock external database connections in unit tests to avoid dependency on running services
-- Use real database connections only for integration tests
+- Create module-specific `conftest.py` files for fixtures beyond the shared ones
 
 **Import Patterns:**
 - The SaaS modules are top-level packages: `from storage.database import a_session_maker`, `from server.auth ...`
@@ -237,7 +277,7 @@ Each integration follows a consistent pattern with service classes, storage mode
 
 **Mocking Strategy:**
 - Use `AsyncMock` for async operations and `MagicMock` for complex objects
-- Mock all external dependencies (databases, APIs, file systems) in unit tests
+- Mock external dependencies (APIs, file systems) in unit tests; the database is the exception, see Database Testing above
 - Use `patch` with correct import paths (e.g., `server.routes.billing.logger`)
 - Test both success and failure scenarios with proper error handling
 
@@ -248,7 +288,7 @@ Each integration follows a consistent pattern with service classes, storage mode
 
 **Troubleshooting:**
 - If tests fail, ensure all dependencies are installed: `uv sync --all-groups`
-- For database issues, check migration status and run migrations if needed
+- If every database test fails, check that docker is running -- the test container cannot start without it
 - For frontend issues, ensure the frontend is built: `make build`
 - Check logs in the `logs/` directory for runtime issues
 - **If GitHub CI fails but local linting passes**: Always use `--show-diff-on-failure` flag to match CI behavior exactly

@@ -1074,6 +1074,51 @@ class SaasSettingsStore(SettingsStore):
                 return None
             return org_member.llm_api_key.get_secret_value()
 
+    async def clear_stale_org_level_llm_key_if_managed(self) -> bool:
+        """Heal orgs left in the broken state from #421/#425.
+
+        ``org._llm_api_key`` only ever holds a BYOR/org-custom key (managed keys
+        live per-member), so it must be ``None`` whenever the active default is
+        managed. A prior bug persisted a stale BYOR key there and never cleared
+        it on switch-back, shadowing the rotated member key at launch (#421).
+        PR #425 prevents *new* occurrences; this restores already-broken orgs.
+
+        Returns ``True`` when it cleared a stale key (caller should rotate the
+        member's managed key so the effective key flips off the stale value).
+        Legit BYOR-active orgs are never touched — the managed classifier is
+        false for them, so the field is left intact.
+        """
+        settings = await self.load()
+        if settings is None:
+            return False
+
+        llm = settings.agent_settings.llm
+        if managed_llm_key_config_from_model(llm.model, llm.base_url) is None:
+            return False
+
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User)
+                .options(joinedload(User.org_members))
+                .filter(User.id == uuid.UUID(self.user_id))
+            )
+            user = result.scalars().first()
+            if user is None:
+                return False
+
+            org_id = self._resolve_org_id(user)
+            org = await session.get(Org, org_id)
+            if org is None or not org._llm_api_key:
+                return False
+
+            logger.info(
+                'saas_settings_store:clear_stale_org_level_llm_key',
+                extra={'user_id': self.user_id, 'org_id': str(org_id)},
+            )
+            org._llm_api_key = None
+            await session.commit()
+            return True
+
     async def rotate_managed_llm_key(
         self, *, only_if_current: str | None = None
     ) -> ManagedLlmKeyRotation:
