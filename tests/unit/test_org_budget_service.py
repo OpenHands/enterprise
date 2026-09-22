@@ -2965,3 +2965,61 @@ async def test_settings_loader_prefers_baseline_rows_and_imports_json_only_keys(
     assert first_rows['a'][:2] == (5.0, 'live_rollover')
     assert first_rows['b'][:2] == (2.0, 'imported')
     assert second_rows == first_rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'users_search,expected',
+    [
+        ('%', set()),
+        ('_', {'bob_smith@example.com'}),
+        ('\\', {'dave\\ops@example.com'}),
+        ('alice', {'alice@example.com'}),
+    ],
+)
+async def test_budget_user_search_treats_metacharacters_literally(
+    async_session_maker, budget_org, users_search, expected
+):
+    """The budget page search box must narrow the roster, not widen it."""
+    emails = ['alice@example.com', 'bob_smith@example.com', 'dave\\ops@example.com']
+    async with async_session_maker() as session:
+        role = Role(name='member', rank=1)
+        session.add(role)
+        await session.flush()
+        for i, email in enumerate(emails):
+            user_id = uuid4()
+            session.add_all(
+                [
+                    User(id=user_id, current_org_id=budget_org.id, email=email),
+                    OrgMember(
+                        org_id=budget_org.id,
+                        user_id=user_id,
+                        role_id=role.id,
+                        llm_api_key=f'test-key-{i}',
+                        status='active',
+                    ),
+                ]
+            )
+        session.add(OrgBudgetSettings(org_id=budget_org.id, enabled=True))
+        await session.commit()
+
+    async with async_session_maker() as session:
+        settings = (
+            await session.execute(
+                select(OrgBudgetSettings).where(
+                    OrgBudgetSettings.org_id == budget_org.id
+                )
+            )
+        ).scalar_one()
+        rows, total = await OrgBudgetService(session)._build_user_budget_rows(
+            budget_org.id,
+            settings,
+            None,
+            users_page=1,
+            users_per_page=50,
+            users_search=users_search,
+            users_status=None,
+        )
+
+    assert {row['user_email'] for row in rows} == expected
+    assert total == len(expected)

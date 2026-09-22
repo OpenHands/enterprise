@@ -28,6 +28,7 @@ from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
 from storage.slack_team import SlackTeam
 from storage.user import User
+from utils.sql import escape_ilike
 
 # The Quint oracle client is vendored under quint-specs/, which the application
 # image does not ship. Without it the instrumentation below is a no-op, so the
@@ -390,10 +391,6 @@ def _budget_policy_comparison(
             snapshot.observed_at if snapshot is not None else None
         ),
     }
-
-
-def _escape_ilike(value: str) -> str:
-    return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 
 class OrgBudgetService:
@@ -1119,7 +1116,7 @@ class OrgBudgetService:
 
         search_value = (users_search or '').strip()
         if search_value:
-            escaped = _escape_ilike(search_value)
+            escaped = escape_ilike(search_value)
             pattern = f'%{escaped}%'
             query = query.where(
                 or_(
