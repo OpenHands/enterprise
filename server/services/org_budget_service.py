@@ -16,8 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.services.injector import Injector, InjectorState
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.app_server.web_client.default_web_client_config_injector import (
+    _get_slack_enabled,
+)
 from server.auth.authorization import RoleName
-from server.routes.org_models import SpendStatus
+from server.routes.org_models import OrgBudgetSettingsUpdate, SpendStatus
 from server.services.smtp_email_service import SMTPEmailService
 from storage.database import sqlstate
 from storage.lite_llm_manager import LiteLlmManager
@@ -485,6 +488,7 @@ class OrgBudgetService:
             snapshot_result,
         )
         return {
+            **await self._alert_availability(settings),
             'settings': settings,
             'thresholds': thresholds,
             'cycle': cycle,
@@ -636,6 +640,8 @@ class OrgBudgetService:
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
 
+        await self._validate_alert_settings(settings, update_data)
+
         fields_set = update_data.model_fields_set
         reset_day_changed = False
         previous_enabled = settings.enabled
@@ -759,6 +765,7 @@ class OrgBudgetService:
             snapshot_result,
         )
         return {
+            **await self._alert_availability(settings),
             'settings': settings,
             'thresholds': thresholds,
             'cycle': cycle,
@@ -1644,18 +1651,9 @@ class OrgBudgetService:
         current_spend: float,
         percentage: float,
     ) -> None:
-        if not SLACK_AVAILABLE:
-            logger.warning('Slack SDK not installed, skipping slack budget alert')
-            return
         if not settings.slack_channel:
             return
-        team_id = await self._resolve_slack_team_id(settings)
-        if not team_id:
-            return
-        result = await self.db_session.execute(
-            select(SlackTeam.bot_access_token).where(SlackTeam.team_id == team_id)
-        )
-        token = result.scalar_one_or_none()
+        token = await self._get_slack_bot_token(settings.slack_team_id)
         if not token:
             return
 
@@ -1674,12 +1672,63 @@ class OrgBudgetService:
         except Exception as e:
             logger.warning(
                 'Slack budget alert failed',
-                extra={'error': str(e), 'team_id': team_id},
+                extra={'error': str(e), 'team_id': settings.slack_team_id},
             )
 
-    async def _resolve_slack_team_id(self, settings: OrgBudgetSettings) -> str | None:
-        if settings.slack_team_id:
-            return settings.slack_team_id
+    async def _get_slack_bot_token(self, team_id: str | None) -> str | None:
+        if not SLACK_AVAILABLE or not _get_slack_enabled():
+            return None
+        team_id = await self._resolve_slack_team_id(team_id)
+        if not team_id:
+            return None
+        result = await self.db_session.execute(
+            select(SlackTeam.bot_access_token).where(SlackTeam.team_id == team_id)
+        )
+        return result.scalar_one_or_none() or None
+
+    async def _alert_availability(self, settings: OrgBudgetSettings) -> dict[str, bool]:
+        return {
+            'email_alerts_available': SMTPEmailService.is_configured(),
+            'slack_alerts_enabled': SLACK_AVAILABLE and _get_slack_enabled(),
+            'slack_alerts_available': bool(
+                await self._get_slack_bot_token(settings.slack_team_id)
+            ),
+        }
+
+    async def _validate_alert_settings(
+        self, settings: OrgBudgetSettings, update_data: OrgBudgetSettingsUpdate
+    ) -> None:
+        thresholds = update_data.thresholds
+        if thresholds is None:
+            return
+        if (
+            any(t.email_enabled for t in thresholds)
+            and not SMTPEmailService.is_configured()
+        ):
+            raise HTTPException(400, 'Email budget alerts require SMTP configuration.')
+        if not any(t.slack_enabled for t in thresholds):
+            return
+        fields = update_data.model_fields_set
+        team_id = (
+            update_data.slack_team_id
+            if 'slack_team_id' in fields
+            else settings.slack_team_id
+        )
+        channel = (
+            update_data.slack_channel
+            if 'slack_channel' in fields
+            else settings.slack_channel
+        )
+        if not await self._get_slack_bot_token(team_id):
+            raise HTTPException(
+                400, 'Slack budget alerts require a connected Slack integration.'
+            )
+        if not channel:
+            raise HTTPException(400, 'Select a Slack channel for budget alerts.')
+
+    async def _resolve_slack_team_id(self, team_id: str | None) -> str | None:
+        if team_id:
+            return team_id
         result = await self.db_session.execute(select(SlackTeam.team_id))
         team_ids = [row.team_id for row in result]
         if len(team_ids) == 1:

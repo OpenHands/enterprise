@@ -105,6 +105,7 @@ interface OrganizationBudgetTabProps {
   onToggleSlack: (index: number) => void;
   emailIntegrationEnabled: boolean;
   slackIntegrationEnabled: boolean;
+  slackConnected: boolean;
   slackChannel: string;
   onSlackChannelChange: (value: string) => void;
   onReset: () => void;
@@ -141,6 +142,7 @@ export function OrganizationBudgetTab({
   onToggleSlack,
   emailIntegrationEnabled,
   slackIntegrationEnabled,
+  slackConnected,
   slackChannel,
   onSlackChannelChange,
   onReset,
@@ -177,8 +179,9 @@ export function OrganizationBudgetTab({
             Organization monthly budget
           </h2>
           <p className="text-sm text-muted">
-            Track total spend across your org and get alerted before you hit
-            your cap.
+            {emailIntegrationEnabled || slackConnected
+              ? "Track total spend across your org and get alerted before you hit your cap."
+              : "Track total spend across your organization against its monthly cap."}
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
@@ -324,173 +327,168 @@ export function OrganizationBudgetTab({
         />
       </div>
 
-      <div>
-        <div className="flex items-center justify-between mb-3 gap-4">
+      {(emailIntegrationEnabled || slackIntegrationEnabled) && (
+        <>
           <div>
-            <h3 className="text-sm font-medium text-foreground mb-1">
-              Alert thresholds
-            </h3>
-            <p className="text-xs text-[var(--oh-muted)]">
-              Add one or more thresholds. Each can email admins, post to Slack,
-              or both.
-              {!emailIntegrationEnabled && (
-                <>
-                  {" "}
-                  Email alerts require RESEND_API_KEY or SMTP_* env vars set in
-                  the deployment environment and a restart.
-                </>
+            <div className="flex items-center justify-between mb-3 gap-4">
+              <div>
+                <h3 className="text-sm font-medium text-foreground mb-1">
+                  Alert thresholds
+                </h3>
+                <p className="text-xs text-[var(--oh-muted)]">
+                  Notify organization admins when spending reaches a threshold
+                  using the available channels below.
+                </p>
+              </div>
+              <BrandButton
+                type="button"
+                variant="secondary"
+                onClick={onAddThreshold}
+                isDisabled={!emailIntegrationEnabled && !slackConnected}
+                className="shrink-0 whitespace-nowrap"
+              >
+                + Add threshold
+              </BrandButton>
+            </div>
+
+            <div
+              className={cn(
+                settingsListContainerClassName,
+                settingsListDividerClassName,
               )}
-              {!slackIntegrationEnabled && (
-                <>
-                  {" "}
-                  Slack alerts require the Slack app to be configured in the
-                  deployment (SLACK_* env vars). After a restart, connect it in{" "}
+            >
+              {thresholds.map((threshold, index) => {
+                const thresholdAmount = monthlyLimitValue
+                  ? (monthlyLimitValue * threshold.percentage) / 100
+                  : null;
+                return (
+                  <div
+                    key={threshold.percentage}
+                    className={cn(
+                      settingsListRowClassName,
+                      "h-auto min-h-12 gap-4 py-3",
+                    )}
+                  >
+                    <div className="w-16 shrink-0">
+                      <span className="text-foreground font-medium">
+                        {threshold.percentage}%
+                      </span>
+                    </div>
+                    <div className="w-28 shrink-0">
+                      <span className="text-muted text-sm">
+                        {thresholdAmount !== null
+                          ? `Triggers at $${thresholdAmount.toLocaleString()}`
+                          : "Set a monthly limit to calculate"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      {emailIntegrationEnabled && (
+                        <button
+                          type="button"
+                          onClick={() => onToggleEmail(index)}
+                          aria-label="Email org admins"
+                          aria-pressed={threshold.email_enabled}
+                          title="Email org admins"
+                        >
+                          <PillBadge
+                            active={threshold.email_enabled}
+                            icon={<EmailIcon />}
+                            label="Email org admins"
+                          />
+                        </button>
+                      )}
+                      {slackIntegrationEnabled && (
+                        <button
+                          type="button"
+                          onClick={() => onToggleSlack(index)}
+                          aria-label="# Post to Slack"
+                          aria-pressed={
+                            slackConnected && threshold.slack_enabled
+                          }
+                          disabled={!slackConnected}
+                          className="disabled:cursor-not-allowed"
+                          title={
+                            slackConnected
+                              ? "Post to Slack"
+                              : "Connect Slack to enable alerts"
+                          }
+                        >
+                          <PillBadge
+                            active={slackConnected && threshold.slack_enabled}
+                            icon={<SlackIcon />}
+                            label="# Post to Slack"
+                            disabled={!slackConnected}
+                          />
+                        </button>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteThreshold(index)}
+                      disabled={!emailIntegrationEnabled && !slackConnected}
+                      aria-label={`Delete ${threshold.percentage}% threshold`}
+                      className={cn(
+                        settingsListIconActionButtonClassName,
+                        "disabled:cursor-not-allowed disabled:opacity-50",
+                      )}
+                    >
+                      <DeleteIcon width={16} height={16} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {slackIntegrationEnabled && (
+            <div>
+              <label
+                htmlFor="slack-channel"
+                className="mb-2 block text-sm text-white"
+              >
+                Slack channel
+              </label>
+              <div className={cn(formControlShellClassName, "w-full")}>
+                <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
+                  <HashIcon />
+                </span>
+                <input
+                  id="slack-channel"
+                  type="text"
+                  value={slackChannel}
+                  onChange={(event) => {
+                    if (!slackConnected) return;
+                    onSlackChannelChange(event.target.value);
+                  }}
+                  disabled={!slackConnected}
+                  placeholder={
+                    slackConnected
+                      ? "#budget-alerts"
+                      : "Connect Slack to set a channel"
+                  }
+                  className={cn(formControlInlineInputClassName, "text-white")}
+                />
+              </div>
+              {slackConnected ? (
+                <p className="text-xs text-[var(--oh-muted)] mt-2">
+                  Used by any threshold with &apos;Post to Slack&apos; enabled.
+                </p>
+              ) : (
+                <p className="text-xs text-muted mt-2">
                   <Link
                     to="/settings/integrations"
                     className="underline underline-offset-2"
                   >
-                    Settings → Integrations
-                  </Link>
-                  .
-                </>
+                    Connect Slack in Settings → Integrations
+                  </Link>{" "}
+                  to enable alerts. Ask your administrator to check the
+                  workspace configuration if Slack is already connected.
+                </p>
               )}
-            </p>
-          </div>
-          <BrandButton
-            type="button"
-            variant="secondary"
-            onClick={onAddThreshold}
-            className="shrink-0 whitespace-nowrap"
-          >
-            + Add threshold
-          </BrandButton>
-        </div>
-
-        <div
-          className={cn(
-            settingsListContainerClassName,
-            settingsListDividerClassName,
+            </div>
           )}
-        >
-          {thresholds.map((threshold, index) => {
-            const thresholdAmount = monthlyLimitValue
-              ? (monthlyLimitValue * threshold.percentage) / 100
-              : null;
-            return (
-              <div
-                key={threshold.percentage}
-                className={cn(
-                  settingsListRowClassName,
-                  "h-auto min-h-12 gap-4 py-3",
-                )}
-              >
-                <div className="w-16 shrink-0">
-                  <span className="text-foreground font-medium">
-                    {threshold.percentage}%
-                  </span>
-                </div>
-                <div className="w-28 shrink-0">
-                  <span className="text-muted text-sm">
-                    {thresholdAmount !== null
-                      ? `Triggers at $${thresholdAmount.toLocaleString()}`
-                      : "Set a monthly limit to calculate"}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 flex-1 min-w-0">
-                  <button
-                    type="button"
-                    onClick={() => onToggleEmail(index)}
-                    disabled={!emailIntegrationEnabled}
-                    className="flex items-center gap-1.5 disabled:cursor-not-allowed"
-                    title={
-                      emailIntegrationEnabled
-                        ? "Email org admins"
-                        : "Email alerts require RESEND_API_KEY or SMTP_* env vars in deployment (restart required)"
-                    }
-                  >
-                    <PillBadge
-                      active={
-                        emailIntegrationEnabled && threshold.email_enabled
-                      }
-                      icon={<EmailIcon />}
-                      label="Email org admins"
-                      disabled={!emailIntegrationEnabled}
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onToggleSlack(index)}
-                    disabled={!slackIntegrationEnabled}
-                    className="flex items-center gap-1.5 disabled:cursor-not-allowed"
-                    title={
-                      slackIntegrationEnabled
-                        ? "Post to Slack"
-                        : "Slack integration must be configured in deployment (restart required)"
-                    }
-                  >
-                    <PillBadge
-                      active={
-                        slackIntegrationEnabled && threshold.slack_enabled
-                      }
-                      icon={<SlackIcon />}
-                      label="# Post to Slack"
-                      disabled={!slackIntegrationEnabled}
-                    />
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onDeleteThreshold(index)}
-                  aria-label={`Delete ${threshold.percentage}% threshold`}
-                  className={settingsListIconActionButtonClassName}
-                >
-                  <DeleteIcon width={16} height={16} />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div>
-        <label
-          htmlFor="slack-channel"
-          className="mb-2 block text-sm text-white"
-        >
-          Slack channel
-        </label>
-        <div className={cn(formControlShellClassName, "w-full")}>
-          <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
-            <HashIcon />
-          </span>
-          <input
-            id="slack-channel"
-            type="text"
-            value={slackChannel}
-            onChange={(event) => {
-              if (!slackIntegrationEnabled) return;
-              onSlackChannelChange(event.target.value);
-            }}
-            disabled={!slackIntegrationEnabled}
-            placeholder={
-              slackIntegrationEnabled
-                ? "#budget-alerts"
-                : "Connect Slack to set a channel"
-            }
-            className={cn(formControlInlineInputClassName, "text-white")}
-          />
-        </div>
-        {slackIntegrationEnabled ? (
-          <p className="text-xs text-[var(--oh-muted)] mt-2">
-            Used by any threshold with &apos;Post to Slack&apos; enabled.
-          </p>
-        ) : (
-          <p className="text-xs text-muted mt-2">
-            Slack alerts are disabled. Please integrate Slack to select a
-            channel.
-          </p>
-        )}
-      </div>
+        </>
+      )}
 
       <div className="flex justify-start gap-3">
         <BrandButton

@@ -719,6 +719,9 @@ interface OrgBudgetUser {
 interface OrgBudgetSettings {
   enabled: boolean;
   monthly_limit: number | null;
+  email_alerts_available?: boolean;
+  slack_alerts_enabled?: boolean;
+  slack_alerts_available?: boolean;
   litellm_last_sync_at: string | null;
   litellm_last_sync_status: string | null;
   litellm_last_sync_error: string | null;

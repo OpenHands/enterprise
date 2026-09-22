@@ -1231,6 +1231,9 @@ def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
     )
 
     return OrgBudgetSettingsResponse(
+        email_alerts_available=state.get('email_alerts_available', False),
+        slack_alerts_enabled=state.get('slack_alerts_enabled', False),
+        slack_alerts_available=state.get('slack_alerts_available', False),
         enabled=settings.enabled,
         monthly_limit=settings.monthly_limit,
         litellm_last_sync_at=settings.litellm_last_sync_at,
