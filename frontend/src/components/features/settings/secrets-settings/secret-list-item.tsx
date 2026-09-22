@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { cn } from "#/utils/utils";
 import {
   settingsListIconActionButtonClassName,
@@ -31,6 +32,14 @@ export function SecretListItemSkeleton() {
 interface SecretListItemProps {
   title: string;
   description?: string;
+  /** Whether this secret is personal (owned by the current user) or
+   * shared across the organization. Organization-scoped secrets are
+   * usable by everyone but only editable/deletable by admins/owners. */
+  scope?: "personal" | "organization";
+  /** When false, the edit and delete action buttons are hidden. The
+   * parent component derives this from the secret's scope and the
+   * current user's permissions. */
+  canEdit?: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }
@@ -38,9 +47,14 @@ interface SecretListItemProps {
 export function SecretListItem({
   title,
   description,
+  scope = "personal",
+  canEdit = true,
   onEdit,
   onDelete,
 }: SecretListItemProps) {
+  const { t } = useTranslation();
+  const isOrgShared = scope === "organization";
+
   return (
     <tr data-testid="secret-item" className={settingsListTableRowClassName}>
       <td
@@ -50,7 +64,17 @@ export function SecretListItem({
         )}
         title={title}
       >
-        {title}
+        <div className="flex items-center gap-2">
+          <span className="truncate">{title}</span>
+          {isOrgShared && (
+            <span
+              data-testid="org-shared-badge"
+              className="shrink-0 rounded bg-[var(--oh-surface-raised)] px-1.5 py-0.5 text-xs text-muted"
+            >
+              {t("SECRETS$ORG_SHARED_BADGE")}
+            </span>
+          )}
+        </div>
       </td>
 
       <td
@@ -65,24 +89,28 @@ export function SecretListItem({
 
       <td className={settingsListTableCellClassName}>
         <div className="flex items-center justify-end gap-0.5">
-          <button
-            data-testid="edit-secret-button"
-            type="button"
-            onClick={onEdit}
-            aria-label={`Edit ${title}`}
-            className={settingsListIconActionButtonClassName}
-          >
-            <EditIcon width={16} height={16} />
-          </button>
-          <button
-            data-testid="delete-secret-button"
-            type="button"
-            onClick={onDelete}
-            aria-label={`Delete ${title}`}
-            className={settingsListIconActionButtonClassName}
-          >
-            <DeleteIcon width={16} height={16} />
-          </button>
+          {canEdit && (
+            <>
+              <button
+                data-testid="edit-secret-button"
+                type="button"
+                onClick={onEdit}
+                aria-label={`Edit ${title}`}
+                className={settingsListIconActionButtonClassName}
+              >
+                <EditIcon width={16} height={16} />
+              </button>
+              <button
+                data-testid="delete-secret-button"
+                type="button"
+                onClick={onDelete}
+                aria-label={`Delete ${title}`}
+                className={settingsListIconActionButtonClassName}
+              >
+                <DeleteIcon width={16} height={16} />
+              </button>
+            </>
+          )}
         </div>
       </td>
     </tr>

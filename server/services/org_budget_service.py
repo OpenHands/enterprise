@@ -1198,6 +1198,56 @@ class OrgBudgetService:
         )
         return user_row
 
+    async def get_my_budget(
+        self, org_id: UUID, user_id: UUID, include_spend: bool = True
+    ) -> dict:
+        """Read-only view of one member's own budget for the current cycle.
+
+        Unlike ``get_user_budget_row`` this never creates a settings row, so it
+        is safe to call for orgs that have not configured budgets.
+        ``include_spend=False`` answers only whether budgets are enabled,
+        without reading LiteLLM.
+        """
+        if await self._is_personal_org(org_id):
+            return {'enabled': False}
+        settings = await self.store.get_settings(org_id)
+        if settings is None or not settings.enabled:
+            return {'enabled': False}
+        if not include_spend:
+            return {'enabled': True}
+
+        await self._hydrate_cycle_baselines(settings)
+        override = await self._get_override(org_id, user_id)
+        snapshot_result = await self._get_financial_snapshot(
+            org_id, settings, allow_stale=True
+        )
+        snapshot = snapshot_result.snapshot
+        effective_limit, is_disabled, is_override = _effective_user_budget_limit(
+            override, settings.default_user_monthly_limit
+        )
+        user_id_str = str(user_id)
+        cycle = self._current_cycle(settings)
+        return {
+            'enabled': True,
+            'monthly_limit': effective_limit,
+            'is_disabled': is_disabled,
+            'is_override': is_override,
+            # The settings row is rewritten on every spend snapshot, so only an
+            # override carries a meaningful "set on" date.
+            'limit_updated_at': override.updated_at if override else None,
+            'current_spend': _litellm_member_cycle_spend(
+                settings,
+                user_id_str,
+                snapshot.members.get(user_id_str) if snapshot is not None else None,
+            ),
+            'cycle_start_at': cycle.start_at,
+            'cycle_end_at': cycle.end_at,
+            'spend_status': snapshot_result.status,
+            'spend_observed_at': (
+                snapshot.observed_at if snapshot is not None else None
+            ),
+        }
+
     async def _record_litellm_sync(
         self,
         settings: OrgBudgetSettings,
