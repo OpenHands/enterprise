@@ -146,8 +146,13 @@ class BitbucketDCMixinBase(BaseGitService, HTTPClient):
     async def verify_access(self) -> None:
         """Verify that the token and host are valid by making a lightweight API call.
         Raises an exception if the token is invalid or the host is unreachable.
+
+        Uses ``/projects`` rather than the global ``/repos`` listing: the
+        project listing is filtered to what the credential can view, so
+        project/repo-scoped HTTP access tokens get a 200, whereas the
+        cross-project ``/repos`` search returns 403 for them.
         """
-        url = f'{self.BASE_URL}/repos'
+        url = f'{self.BASE_URL}/projects'
         await self._make_request(url, {'limit': '1'})
 
     async def _fetch_paginated_data(
