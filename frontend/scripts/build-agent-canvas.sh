@@ -17,6 +17,11 @@
 #   AGENT_CANVAS_CACHE_DIR  where to keep the checkout (default: frontend/.cache/agent-canvas)
 set -euo pipefail
 
+# Never prompt for credentials: without this, an unreachable/private repo makes
+# `git clone` block on an interactive "Username for 'https://github.com'" prompt
+# instead of failing, which would hang `make run`.
+export GIT_TERMINAL_PROMPT=0
+
 CANVAS_REPO="${AGENT_CANVAS_REPO:-https://github.com/OpenHands/OpenHands.git}"
 CANVAS_REF="${AGENT_CANVAS_REF:-v1.21.0}"
 
