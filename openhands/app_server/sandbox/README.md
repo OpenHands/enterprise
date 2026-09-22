@@ -64,8 +64,8 @@ That failure is permanent rather than transient — the template builds and
 lists as `ready`, and then every sandbox fails — so size the template against
 the nodes you actually have.
 
-Ownership, spec identity and the session API key live in the app's own
-`v1_sandbox` table, shared with the docker backend. The E2B metadata
+Ownership, spec identity and the session API key live in the app's sandbox
+table (see `sandbox_store`), shared with the other backends. The E2B metadata
 (`oh_managed`, `oh_user_id`, `oh_spec_id`) tags managed sandboxes so that one
 with no row can be found. A row whose sandbox
 E2B no longer has reports `MISSING`, which is what archives the conversation —

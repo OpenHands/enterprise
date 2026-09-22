@@ -60,8 +60,8 @@ from openhands.app_server.user.user_context import UserContext
 
 _logger = logging.getLogger(__name__)
 
-# Ownership lives in the `v1_sandbox` table (see `sandbox_store`). These
-# metadata keys tag managed sandboxes so that one with no row can be found.
+# Ownership lives in the sandbox table (see `sandbox_store`). These metadata
+# keys tag managed sandboxes so that one with no row can be found.
 MANAGED_METADATA_KEY = 'oh_managed'
 SANDBOX_SPEC_ID_METADATA_KEY = 'oh_spec_id'
 CREATED_BY_USER_ID_METADATA_KEY = 'oh_user_id'
@@ -143,9 +143,9 @@ class E2BSandboxService(SandboxService):
     Sandboxes are created from an E2B template that boots the agent server in
     deferred-init mode, and ``start_sandbox`` completes the ``/api/init``
     handshake before returning. Ownership, spec identity and the session API
-    key live in the ``v1_sandbox`` table, the key encrypted at rest because
-    E2B offers nowhere to read it back from. The matching E2B metadata is
-    written too, as the tag a reconciler needs.
+    key live in the sandbox table (see ``sandbox_store``), the key encrypted
+    at rest because E2B offers nowhere to read it back from. The matching E2B
+    metadata is written too, as the tag a reconciler needs.
 
     E2B requires a publicly reachable ``OH_WEB_URL`` for agent server event
     callbacks. There is no polling fallback for this backend, so conversations
@@ -388,7 +388,7 @@ class E2BSandboxService(SandboxService):
     ) -> SandboxPage:
         """Search for sandboxes.
 
-        One query against `v1_sandbox` for the page, then one E2B list call
+        One query against the sandbox table for the page, then one E2B list call
         for the live state of everything on it. Paused sandboxes are asked for
         explicitly: E2B's default list shows running ones only, and a paused
         sandbox is a conversation the user can still resume.
@@ -771,13 +771,11 @@ class E2BSandboxService(SandboxService):
         return True
 
     async def delete_sandbox(self, sandbox_id: str) -> bool:
-        """Delete a sandbox.
+        """Delete a sandbox and its row.
 
-        The row is soft deleted rather than removed, and its key is cleared so
-        a leaked one stops resolving. Returns False only when there is no such
-        sandbox or the caller may not see it. A transient E2B failure raises
-        ``SandboxDeleteRetryError`` so a live sandbox is never reported as
-        gone.
+        Returns False only when there is no such sandbox or the caller may not
+        see it. A transient E2B failure raises ``SandboxDeleteRetryError`` and
+        keeps the row, so a live sandbox is never reported as gone.
         """
         stored_sandbox = await self._get_stored_sandbox(sandbox_id)
         if stored_sandbox is None:
@@ -788,17 +786,15 @@ class E2BSandboxService(SandboxService):
         except AuthenticationException as exc:
             raise _auth_error(exc) from exc
         except SandboxNotFoundException:
-            # E2B reaped it already. Retire the row rather than asking the
+            # E2B reaped it already. Remove the row rather than asking the
             # caller to retry a delete that has nothing left to delete.
-            _logger.info(f'Sandbox {sandbox_id} already gone at E2B; retiring row')
+            _logger.info(f'Sandbox {sandbox_id} already gone at E2B; removing row')
         except SandboxException as exc:
             _logger.exception(f'Error deleting sandbox {sandbox_id}', stack_info=True)
             raise SandboxDeleteRetryError(
                 f'Could not complete delete for sandbox {sandbox_id}: {exc}'
             ) from exc
-        stored_sandbox.deleted_at = utc_now()
-        stored_sandbox.session_api_key_hash = None
-        stored_sandbox.session_api_key = None
+        await self.db_session.delete(stored_sandbox)
         _vscode_urls.pop(sandbox_id, None)
         return True
 

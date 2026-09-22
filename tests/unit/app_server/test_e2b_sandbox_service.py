@@ -2,7 +2,7 @@
 
 The E2B SDK is mocked throughout; the agent server is replaced by a fake that
 records the requests the service makes to it. Focus areas:
-- `v1_sandbox` as the store for ownership, spec identity and the session key
+- the sandbox table as the store for ownership, spec identity and the session key
 - user scoping, including cross user isolation and the admin (no user id) case
 - the /api/init handshake start_sandbox completes before returning
 - lifecycle and status mapping onto the E2B SDK, including MISSING
@@ -185,7 +185,7 @@ def _stored(
     session_api_key: str | None = SESSION_API_KEY,
     created_at: datetime | None = None,
 ) -> StoredSandbox:
-    """The `v1_sandbox` row start_sandbox writes for an E2B sandbox."""
+    """The sandbox table row start_sandbox writes for an E2B sandbox."""
     return StoredSandbox(
         id=sandbox_id,
         backend=E2B_BACKEND,
@@ -197,6 +197,15 @@ def _stored(
         session_api_key=SecretStr(session_api_key) if session_api_key else None,
         created_at=created_at or CREATED_AT,
     )
+
+
+async def _row_exists(db_session, sandbox_id: str) -> bool:
+    """Whether the sandbox's row is still in the database."""
+    await db_session.flush()
+    result = await db_session.execute(
+        select(StoredSandbox.id).where(StoredSandbox.id == sandbox_id)
+    )
+    return result.scalar_one_or_none() is not None
 
 
 def _user_context(user_id: str | None) -> AsyncMock:
@@ -612,7 +621,7 @@ class TestSessionApiKeys:
 
         stored = (
             await db_session.execute(
-                text('SELECT session_api_key FROM v1_sandbox WHERE id = :id'),
+                text('SELECT session_api_key FROM v1_remote_sandbox WHERE id = :id'),
                 {'id': SANDBOX_ID},
             )
         ).scalar_one()
@@ -1083,11 +1092,12 @@ class TestLifecycle:
         assert sdk.connect.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_delete_kills_the_sandbox(self, sdk, db_session):
+    async def test_delete_kills_the_sandbox_and_removes_its_row(self, sdk, db_session):
         assert await _service(db_session).delete_sandbox(SANDBOX_ID) is True
 
         sdk.kill.assert_awaited_once()
         assert sdk.kill.await_args.args[0] == SANDBOX_ID
+        assert not await _row_exists(db_session, SANDBOX_ID)
 
     @pytest.mark.asyncio
     async def test_delete_without_a_row_returns_false(self, sdk, db_session):
@@ -1095,13 +1105,14 @@ class TestLifecycle:
         sdk.kill.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_delete_retires_a_row_e2b_has_already_reaped(self, sdk, db_session):
+    async def test_delete_removes_a_row_e2b_has_already_reaped(self, sdk, db_session):
         """Nothing left to kill is not a reason to ask for a retry."""
         sdk.kill.side_effect = SandboxNotFoundException('gone')
         service = _service(db_session)
 
         assert await service.delete_sandbox(SANDBOX_ID) is True
         assert await service.get_sandbox(SANDBOX_ID) is None
+        assert not await _row_exists(db_session, SANDBOX_ID)
 
     @pytest.mark.asyncio
     async def test_delete_of_an_already_dead_sandbox_succeeds(self, sdk, db_session):
@@ -1116,6 +1127,8 @@ class TestLifecycle:
 
         with pytest.raises(SandboxDeleteRetryError):
             await _service(db_session).delete_sandbox(SANDBOX_ID)
+
+        assert await _row_exists(db_session, SANDBOX_ID)
 
 
 # ---------------------------------------------------------------------------
