@@ -265,11 +265,26 @@ const ALL_INTEGRATIONS: Omit<HubIntegration, "connected" | "enabled">[] = [
 const ORG_APPROVED_SLUGS = new Set(["slack", "github", "linear"]);
 const INITIAL_CONNECTED_SLUGS = new Set(["slack"]);
 
+/** Legacy Settings providers added to Hub for cutover reconnect. */
+const ENTERPRISE_FIRST_PARTY_SLUGS = new Set([
+  "gitlab",
+  "azure_devops",
+  "forgejo",
+  "bitbucket_data_center",
+  "jira-dc",
+]);
+
 function withConnectionState(
   item: Omit<HubIntegration, "connected" | "enabled">,
 ): HubIntegration {
   const connected = INITIAL_CONNECTED_SLUGS.has(item.slug);
   return { ...item, connected, enabled: connected };
+}
+
+function enterpriseFirstPartyIntegrations(): HubIntegration[] {
+  return OFFICIAL_HUB_CATALOG.filter((item) =>
+    ENTERPRISE_FIRST_PARTY_SLUGS.has(item.slug),
+  ).map(withConnectionState);
 }
 
 export function mockRequestableCatalog(): HubIntegration[] {
@@ -284,7 +299,14 @@ export function mockIntegrationsForWorkspace(
   const source = isPersonalWorkspace
     ? ALL_INTEGRATIONS
     : ALL_INTEGRATIONS.filter((item) => ORG_APPROVED_SLUGS.has(item.slug));
-  return source.map(withConnectionState);
+  const base = source.map(withConnectionState);
+  const known = new Set(base.map((item) => item.slug));
+  return [
+    ...base,
+    ...enterpriseFirstPartyIntegrations().filter(
+      (item) => !known.has(item.slug),
+    ),
+  ];
 }
 
 export function mockCatalogIntegrations(): HubIntegration[] {

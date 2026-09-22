@@ -28,7 +28,7 @@ export const LEGACY_PROVIDER_HUB_SLUG: Record<
   github: "github",
   gitlab: "gitlab",
   bitbucket: "bitbucket",
-  bitbucket_data_center: "bitbucket",
+  bitbucket_data_center: "bitbucket_data_center",
   azure_devops: "azure_devops",
   forgejo: "forgejo",
 };

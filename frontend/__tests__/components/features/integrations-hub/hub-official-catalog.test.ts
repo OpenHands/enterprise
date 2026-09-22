@@ -5,11 +5,16 @@ import { mockCatalogIntegrations } from "#/components/features/integrations-hub/
 describe("official Hub catalog", () => {
   it("includes the full curated provider catalog", () => {
     const slugs = OFFICIAL_HUB_CATALOG.map((item) => item.slug);
-    expect(slugs).toHaveLength(75);
-    expect(new Set(slugs).size).toBe(75);
+    expect(slugs).toHaveLength(80);
+    expect(new Set(slugs).size).toBe(80);
     expect(slugs).toEqual(
       expect.arrayContaining([
         "github",
+        "gitlab",
+        "azure_devops",
+        "forgejo",
+        "bitbucket_data_center",
+        "jira-dc",
         "slack",
         "notion",
         "elevenlabs",
@@ -21,7 +26,7 @@ describe("official Hub catalog", () => {
 
   it("keeps detailed tools for registered stub connectors", () => {
     const catalog = mockCatalogIntegrations();
-    expect(catalog).toHaveLength(75);
+    expect(catalog).toHaveLength(80);
     const slack = catalog.find((item) => item.slug === "slack");
     expect(slack?.connected).toBe(true);
     expect(slack?.tools.length).toBeGreaterThan(0);

@@ -7,6 +7,7 @@ from openhands_extensions import (
     list_integration_catalog_models,
 )
 
+from .first_party_connectors import enterprise_first_party_connectors
 from .integration_catalog import first_connection_defaults
 from .models import ConnectionDefaults, ManagedConnector
 from .repository import repository
@@ -80,11 +81,18 @@ def _to_default_managed_connector(entry: IntegrationCatalogEntry) -> ManagedConn
 
 @lru_cache(maxsize=1)
 def default_managed_connectors() -> tuple[ManagedConnector, ...]:
-    return tuple(
+    extension_defaults = tuple(
         _to_default_managed_connector(entry)
         for entry in list_integration_catalog_models()
         if _is_default_managed_connector(entry)
     )
+    known = {connector.slug for connector in extension_defaults}
+    first_party = tuple(
+        connector
+        for connector in enterprise_first_party_connectors()
+        if connector.slug not in known
+    )
+    return extension_defaults + first_party
 
 
 def default_managed_connector(slug: str) -> ManagedConnector | None:

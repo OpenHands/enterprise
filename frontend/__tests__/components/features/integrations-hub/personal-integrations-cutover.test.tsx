@@ -97,8 +97,8 @@ describe("PersonalIntegrationsLayout cutover modal", () => {
       screen.getByTestId("integrations-hub-cutover-reconnect-github"),
     ).toBeInTheDocument();
     expect(
-      screen.queryByTestId("integrations-hub-cutover-reconnect-gitlab"),
-    ).not.toBeInTheDocument();
+      screen.getByTestId("integrations-hub-cutover-reconnect-gitlab"),
+    ).toBeInTheDocument();
   });
 
   it("dismisses the modal and persists that choice", async () => {

@@ -15,6 +15,7 @@ const mockUseIntegrationsHub = vi.hoisted(() =>
     integrations: [{ slug: "slack", connected: true }],
     catalogIntegrations: [
       { slug: "github" },
+      { slug: "gitlab" },
       { slug: "slack" },
       { slug: "bitbucket" },
     ],
@@ -47,7 +48,7 @@ describe("useIntegrationsHubCutover", () => {
       "gitlab",
     ]);
     expect(result.current.items[0]?.canReconnectInHub).toBe(true);
-    expect(result.current.items[1]?.canReconnectInHub).toBe(false);
+    expect(result.current.items[1]?.canReconnectInHub).toBe(true);
   });
 
   it("stays closed while settings are loading", () => {

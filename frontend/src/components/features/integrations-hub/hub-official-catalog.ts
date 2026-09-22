@@ -28,6 +28,101 @@ export const OFFICIAL_HUB_CATALOG: Array<
     },
   },
   {
+    slug: "gitlab",
+    name: "GitLab",
+    description:
+      "Repositories, merge requests, issues, and pipelines via the GitLab API.",
+    authStrategy: "oauth2",
+    toolCount: 0,
+    provider: "GitLab",
+    kind: "Engineering",
+    tools: [],
+    notes:
+      "Reconnects legacy Settings > Integrations GitLab tokens. Works with gitlab.com OAuth; self-managed hosts can use a personal access token.",
+    categories: ["Engineering", "Source control"],
+    docsUrl: "https://docs.gitlab.com/ee/api/oauth2.html",
+    logoUrl: "https://cdn.simpleicons.org/gitlab/FFFFFF",
+    connectorProvider: "http",
+    apiBaseUrl: "https://gitlab.com/api/v4",
+    oauthConfig: {
+      authorizationUrl: "https://gitlab.com/oauth/authorize",
+      tokenUrl: "https://gitlab.com/oauth/token",
+      scopes: ["read_user", "read_api", "read_repository"],
+    },
+  },
+  {
+    slug: "azure_devops",
+    name: "Azure DevOps",
+    description:
+      "Repos, pull requests, and work items in Azure DevOps organizations.",
+    authStrategy: "api_key",
+    toolCount: 0,
+    provider: "Azure DevOps",
+    kind: "Engineering",
+    tools: [],
+    notes:
+      "Reconnects legacy Settings > Integrations Azure DevOps PATs. Prefer a personal access token with Code and Work Items scopes.",
+    categories: ["Engineering", "Source control"],
+    docsUrl:
+      "https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/pats",
+    logoUrl: "https://cdn.simpleicons.org/azuredevops/FFFFFF",
+    connectorProvider: "http",
+    apiBaseUrl: "https://dev.azure.com",
+  },
+  {
+    slug: "forgejo",
+    name: "Forgejo",
+    description:
+      "Self-hosted Git forges compatible with the Forgejo / Gitea API.",
+    authStrategy: "api_key",
+    toolCount: 0,
+    provider: "Forgejo",
+    kind: "Engineering",
+    tools: [],
+    notes:
+      "Reconnects legacy Settings > Integrations Forgejo tokens. Point the connector at your Forgejo host and use an access token.",
+    categories: ["Engineering", "Source control"],
+    docsUrl: "https://forgejo.org/docs/latest/user/api-usage/",
+    logoUrl: "https://cdn.simpleicons.org/forgejo/FFFFFF",
+    connectorProvider: "http",
+  },
+  {
+    slug: "bitbucket_data_center",
+    name: "Bitbucket Data Center",
+    description:
+      "Self-managed Bitbucket Data Center repositories, PRs, and projects.",
+    authStrategy: "api_key",
+    toolCount: 0,
+    provider: "Bitbucket Data Center",
+    kind: "Engineering",
+    tools: [],
+    notes:
+      "Reconnects legacy Settings > Integrations Bitbucket Data Center credentials. Uses a personal access token against your DC host.",
+    categories: ["Engineering", "Source control"],
+    docsUrl:
+      "https://confluence.atlassian.com/bitbucketserver/personal-access-tokens-939515499.html",
+    logoUrl: "https://cdn.simpleicons.org/bitbucket/FFFFFF",
+    connectorProvider: "http",
+  },
+  {
+    slug: "jira-dc",
+    name: "Jira Data Center",
+    description:
+      "Self-managed Jira Data Center issues, projects, and workflows.",
+    authStrategy: "api_key",
+    toolCount: 0,
+    provider: "Jira Data Center",
+    kind: "Project management",
+    tools: [],
+    notes:
+      "Reconnects legacy Settings > Integrations Jira Data Center installs. Configure your DC base URL and an API token or PAT.",
+    categories: ["Project management", "Engineering"],
+    docsUrl:
+      "https://confluence.atlassian.com/adminjiraserver/using-personal-access-tokens-1026032368.html",
+    logoUrl: "https://cdn.simpleicons.org/jira/FFFFFF",
+    connectorProvider: "http",
+  },
+  {
     slug: "slack",
     name: "Slack",
     description:

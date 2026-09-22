@@ -11,7 +11,11 @@ describe("legacy-integrations-cutover", () => {
     const items = buildLegacyCutoverItems(
       ["github", "gitlab", "enterprise_sso"],
       hubConnectedSlugSet([]),
-      hubCatalogSlugSet([{ slug: "github" }, { slug: "bitbucket" }]),
+      hubCatalogSlugSet([
+        { slug: "github" },
+        { slug: "gitlab" },
+        { slug: "bitbucket" },
+      ]),
     );
 
     expect(items).toEqual([
@@ -23,7 +27,7 @@ describe("legacy-integrations-cutover", () => {
       {
         id: "gitlab",
         hubSlug: "gitlab",
-        canReconnectInHub: false,
+        canReconnectInHub: true,
       },
     ]);
   });
@@ -44,17 +48,17 @@ describe("legacy-integrations-cutover", () => {
     ]);
   });
 
-  it("dedupes providers and maps Bitbucket DC to the bitbucket Hub slug", () => {
+  it("dedupes providers and maps Bitbucket DC to its Hub slug", () => {
     const items = buildLegacyCutoverItems(
       ["bitbucket_data_center", "bitbucket_data_center"],
       new Set(),
-      new Set(["bitbucket"]),
+      new Set(["bitbucket_data_center"]),
     );
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       id: "bitbucket_data_center",
-      hubSlug: "bitbucket",
+      hubSlug: "bitbucket_data_center",
       canReconnectInHub: true,
     });
   });

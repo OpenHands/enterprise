@@ -85,10 +85,23 @@ npm run test -- __tests__/components/features/integrations-hub/ \
   __tests__/api/integrations-hub-adapters.test.ts
 ```
 
+## First-party catalog additions
+
+Enterprise supplements `openhands_extensions` with legacy Settings providers:
+
+- `gitlab` (OAuth + PAT)
+- `azure_devops` (PAT)
+- `forgejo` (access token)
+- `bitbucket_data_center` (PAT)
+- `jira-dc` (PAT)
+
+FE official catalog and Hub `default_managed_connectors()` both include these
+so cutover **Reconnect** can target them.
+
 ## Follow-ups (not in this PR)
 
 - In-process auth bridge (skip HTTP self-call to `/api/v1/users/me`)
 - Fold Hub Alembic into enterprise migrations if desired
-- Expand cutover detection beyond git `provider_tokens_set` (Slack/Jira/Linear)
-- Catalog gaps vs legacy Settings: GitLab, Azure DevOps, Forgejo, Bitbucket DC
+- Expand cutover detection beyond git `provider_tokens_set` (Slack/Jira Cloud)
+- Wire full tool discovery / OAuth client setup for first-party HTTP connectors
 - Archive standalone `integrations-hub` repo after cutover is proven
