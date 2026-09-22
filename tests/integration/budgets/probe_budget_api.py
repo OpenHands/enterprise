@@ -7,6 +7,7 @@ from tests.integration.budgets.adapter import BudgetTestAdapter
 
 
 @pytest.mark.asyncio
+@pytest.mark.budget_known_issue('OHE-3318')
 async def test_alert_only_form_save_preserves_spend(
     budget_adapter: BudgetTestAdapter, budget_http: httpx.AsyncClient
 ) -> None:
@@ -35,6 +36,7 @@ async def test_alert_only_form_save_preserves_spend(
 
 
 @pytest.mark.asyncio
+@pytest.mark.budget_known_issue('OHE-3319')
 async def test_disable_api_succeeds_and_retry_is_healthy(
     budget_adapter: BudgetTestAdapter, budget_http: httpx.AsyncClient
 ) -> None:

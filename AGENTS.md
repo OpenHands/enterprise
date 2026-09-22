@@ -10,11 +10,13 @@ To set up the entire repo, including frontend and backend, run `make build`.
 You don't need to do this unless the user asks you to, or if you're trying to run the entire application.
 
 ## Running OpenHands with OpenHands:
-To run the full application to debug issues:
+To run the full application to debug issues (`make local-db` starts a PostgreSQL container and migrates it;
+the app never migrates on startup):
 ```bash
 export INSTALL_DOCKER=0
 export RUNTIME=local
-make build && make run FRONTEND_PORT=12000 FRONTEND_HOST=0.0.0.0 BACKEND_HOST=0.0.0.0 &> /tmp/openhands-log.txt &
+make build && make local-db
+make run FRONTEND_PORT=12000 FRONTEND_HOST=0.0.0.0 BACKEND_HOST=0.0.0.0 &> /tmp/openhands-log.txt &
 ```
 
 Local run troubleshooting notes:
@@ -103,7 +105,7 @@ When working on a PR that requires design documents, scripts meant for developme
 ## Repository Structure
 Backend:
 - Located in the `openhands` directory
-- The current V1 application server lives in `openhands/app_server/`. `make start-backend` still launches `openhands.server.listen:app`, which includes the V1 routes by default unless `ENABLE_V1=0`.
+- The current V1 application server lives in `openhands/app_server/`. `make start-backend` launches `openhands.server.listen:app`, which includes the V1 routes by default unless `ENABLE_V1=0`. It needs PostgreSQL; `make local-db` provides one.
 - For V1 web-app docs, LLM setup should point users to the Settings UI.
 - Testing:
   - All tests are in `tests/unit/test_*.py`
@@ -242,13 +244,24 @@ In everyday language a user saying "SaaS" / "in SaaS" / "SaaS-only" / "this is a
 **Testing Best Practices:**
 
 **Database Testing:**
-- Use the `engine` / `session_maker` / `async_engine` / `async_session_maker` fixtures from `tests/unit/conftest.py`
-  for application unit tests. Each test gets its own PostgreSQL database, migrated to head, cloned from a template
-  (see `tests/postgres_testdb.py`); never hand-roll a SQLite engine
+- **Never use SQLite. Anywhere.** This is a PostgreSQL-only codebase: the migrations are PostgreSQL-only and so
+  are the tests. Do not introduce a `sqlite:///` or `sqlite+aiosqlite:///` URL, do not call
+  `Base.metadata.create_all`, do not build your own engine, and do not add a fallback that reaches for SQLite
+  when PostgreSQL is unreachable. If the database is not configured, fail loudly
+- **Always use the shared fixtures**: `engine` / `session_maker` / `async_engine` / `async_session_maker` from
+  `tests/unit/conftest.py`. Each test gets its own database, cloned from a template migrated to head with
+  `alembic upgrade head` (see `tests/postgres_testdb.py`). Cloning costs about 50ms, so a fresh database per test
+  is the norm -- do not reach for transaction rollback to isolate tests
+- Because the database is real, PostgreSQL semantics apply: foreign keys are enforced, `TIMESTAMP WITHOUT TIME
+  ZONE` columns reject tz-aware values, identity sequences start at 1, and UUID columns return `uuid.UUID`
+  objects. Create the rows a foreign key needs (`create_org` / `create_user` in `tests/unit/conftest.py`) instead
+  of inventing ids
+- Running any test needs a working docker daemon. The root `conftest.py` starts one container per run, shares it
+  across pytest-xdist workers, and removes it when the run ends
+- Do not mock the database in unit tests; use the fixtures. Mock only the services around it (LiteLLM, Keycloak,
+  git providers)
 - Do not add SQLite paths to Alembic migrations
-- Create module-specific `conftest.py` files with database fixtures
-- Mock external database connections in unit tests to avoid dependency on running services
-- Use real database connections only for integration tests
+- Create module-specific `conftest.py` files for fixtures beyond the shared ones
 
 **Import Patterns:**
 - The SaaS modules are top-level packages: `from storage.database import a_session_maker`, `from server.auth ...`
@@ -262,7 +275,7 @@ In everyday language a user saying "SaaS" / "in SaaS" / "SaaS-only" / "this is a
 
 **Mocking Strategy:**
 - Use `AsyncMock` for async operations and `MagicMock` for complex objects
-- Mock all external dependencies (databases, APIs, file systems) in unit tests
+- Mock external dependencies (APIs, file systems) in unit tests; the database is the exception, see Database Testing above
 - Use `patch` with correct import paths (e.g., `server.routes.billing.logger`)
 - Test both success and failure scenarios with proper error handling
 
@@ -273,7 +286,7 @@ In everyday language a user saying "SaaS" / "in SaaS" / "SaaS-only" / "this is a
 
 **Troubleshooting:**
 - If tests fail, ensure all dependencies are installed: `uv sync --all-groups`
-- For database issues, check migration status and run migrations if needed
+- If every database test fails, check that docker is running -- the test container cannot start without it
 - For frontend issues, ensure the frontend is built: `make build`
 - Check logs in the `logs/` directory for runtime issues
 - **If GitHub CI fails but local linting passes**: Always use `--show-diff-on-failure` flag to match CI behavior exactly

@@ -42,6 +42,6 @@ jobs:
         with:
           name: budget-readiness
           path: |
-            .pr/budget-readiness.xml
+            .pr/budget-all.xml
             .pr/budget-candidate.txt
           include-hidden-files: true

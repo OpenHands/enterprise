@@ -14,6 +14,7 @@ from tests.integration.budgets.adapter import BudgetTestAdapter
     ],
 )
 @pytest.mark.asyncio
+@pytest.mark.budget_known_issue('OHE-3268')
 async def test_unverified_budget_policy_fails_closed_before_provider(
     budget_adapter: BudgetTestAdapter,
     failure_path: str,

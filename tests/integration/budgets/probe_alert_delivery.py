@@ -12,6 +12,7 @@ from tests.integration.budgets.adapter import BudgetTestAdapter
 
 
 @pytest.mark.asyncio
+@pytest.mark.budget_known_issue('OHE-3321')
 async def test_failed_slack_delivery_retries_after_recovery(
     budget_adapter: BudgetTestAdapter,
 ) -> None:

@@ -12,7 +12,8 @@ failures together. Customer-specific 1finity rollout remains separate.
 - Fix confirmed defects with regression tests: allowance reset on unchanged-day
   saves (OHE-3318), failed disable/retry (OHE-3319), misleading default copy
   (OHE-3320), failed Slack delivery retries (OHE-3321), and unavailable Slack
-  setup controls (OHE-3204).
+  setup controls (OHE-3204), new-user default enforcement (OHE-3333), and
+  removal of disabled individual caps (OHE-3334).
 - Verify enforcement failure/recovery (OHE-3268 / PR359), and coordinated
   reconciliation/rollover (OHE-3259 / PR403). Review the final implementation
   chosen from overlapping PRs rather than assuming all branches must merge.
@@ -35,8 +36,10 @@ failures together. Customer-specific 1finity rollout remains separate.
 
 PR360 owns the reusable real-service harness, backend lifecycle/fault probes,
 HTTP budget response coverage and this explicit readiness command. Product
-fixes stay in focused PRs; they should promote repaired probes into ordinary
-collection. A separate E2E PR owns browser and actual-agent flows. Do not
+fixes stay in focused PRs. Both regression and informational known-issue groups
+run automatically on PRs and main; periodically remove a `budget_known_issue`
+marker after its test reliably passes on main. A separate E2E PR owns browser
+and actual-agent flows. Do not
 replace this harness with a second backend environment.
 
 ```bash
@@ -44,13 +47,13 @@ uv run python -m tests.integration.budgets.run_readiness
 ```
 
 This runs every `test_*.py` and `probe_*.py` serially and writes
-`.pr/budget-readiness.xml`. Any failure, skip or xfail prevents success.
+`.pr/budget-all.xml`. Any failure, skip or xfail prevents success.
 Collection alone is available with `--collect-only` and is not validation.
 Set `BUDGET_LITELLM_IMAGE` to the exact release image under evaluation; the
-compatibility default remains v1.94.0. Keep the normal acceptance command:
+compatibility default remains v1.94.0. The automatic regression command is:
 
 ```bash
-uv run pytest tests/integration/budgets/test_*.py -n 0
+uv run python -m tests.integration.budgets.run_readiness --suite regression
 ```
 
 The provider is deterministic real HTTP; Enterprise and LiteLLM have separate

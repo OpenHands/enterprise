@@ -66,7 +66,7 @@ To run the application with the actual backend:
 make build
 
 # Start the application
-make run
+make local-db && make run
 ```
 Or to run backend and frontend separately.
 
@@ -78,6 +78,8 @@ make start-backend
 make start-frontend or
 cd frontend && npm start -- --port 3001
 ```
+
+The backend needs PostgreSQL. `make local-db` starts one in a container and applies the migrations.
 
 Start frontend with Mock Service Worker (MSW), see testing for more info.
 ```sh

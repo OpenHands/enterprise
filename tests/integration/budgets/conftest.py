@@ -42,6 +42,21 @@ MASTER_KEY = 'sk-budget-test-master-key'
 BOOTSTRAP_TEAM_ID = 'budget-test-bootstrap-team'
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        'markers', 'budget_known_issue(issue): nonblocking regression linked to Linear'
+    )
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        marker = item.get_closest_marker('budget_known_issue')
+        if marker is not None:
+            if len(marker.args) != 1 or not str(marker.args[0]).startswith('OHE-'):
+                raise pytest.UsageError('budget_known_issue requires an OHE issue')
+            item.user_properties.append(('budget_issue', marker.args[0]))
+
+
 @dataclass(frozen=True)
 class LiteLlmEnvironment:
     direct_url: str

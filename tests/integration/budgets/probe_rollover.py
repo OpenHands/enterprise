@@ -13,6 +13,7 @@ from tests.integration.budgets.adapter import BudgetTestAdapter
 
 
 @pytest.mark.asyncio
+@pytest.mark.budget_known_issue('OHE-3259')
 async def test_delayed_rollover_worker_cannot_renew_allowance_twice(
     budget_adapter: BudgetTestAdapter,
     async_session_maker: async_sessionmaker[AsyncSession],

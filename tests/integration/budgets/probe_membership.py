@@ -16,7 +16,13 @@ from tests.integration.budgets.adapter import BudgetTestAdapter
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'existing_member', [False, True], ids=['new-user', 'key-refresh']
+    'existing_member',
+    [
+        pytest.param(
+            False, id='new-user', marks=pytest.mark.budget_known_issue('OHE-3333')
+        ),
+        pytest.param(True, id='key-refresh'),
+    ],
 )
 async def test_provisioning_preserves_member_policy_before_first_request(
     budget_adapter: BudgetTestAdapter,

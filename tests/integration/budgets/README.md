@@ -10,8 +10,10 @@ No customer credentials or real provider charges are needed.
 
 ```bash
 uv sync --locked --all-groups
-# Ordinary contracts (does not establish release readiness):
-uv run pytest tests/integration/budgets/test_*.py -n 0
+# Automatic regression group (fails CI on regressions):
+uv run python -m tests.integration.budgets.run_readiness --suite regression
+# Known issues (real pass/fail results; informational in PR CI):
+uv run python -m tests.integration.budgets.run_readiness --suite known-issues
 # All contracts, including known failures; fails on skips/xfails:
 uv run python -m tests.integration.budgets.run_readiness
 # Inspect the complete list without claiming a validation result:
@@ -19,11 +21,26 @@ uv run python -m tests.integration.budgets.run_readiness --collect-only
 ```
 
 The full command discovers every `test_*.py` and `probe_*.py`, runs serially,
-clears inherited `PYTEST_ADDOPTS` filters, and writes `.pr/budget-readiness.xml`.
-A green ordinary suite is not a green readiness result. Once a product defect
-is fixed, its probe should move into ordinary test collection. Do not weaken
-assertions, add expected failures, or omit a probe to obtain release sign-off.
-The manual **Budget backend readiness** GitHub workflow runs the same full gate.
+clears inherited `PYTEST_ADDOPTS` filters, and writes `.pr/budget-<suite>.xml`.
+The **Budget tests** workflow runs both groups on every PR and main push.
+Each job publishes a per-test summary and JUnit artifact. Known issues remain
+real failures (no xfail); only their CI test step allows failure. A passing
+known-issue test reports PASS, making teammates' fixes visible automatically.
+Setup failures still fail the job. The manual **Budget backend readiness**
+workflow runs all tests strictly, including known issues, skips and xfails.
+
+Tests marked `@pytest.mark.budget_known_issue('OHE-…')` are informational;
+all other tests, including passing probes and newly added tests, run in the
+regression group. A periodic follow-up removes a marker after the test reliably
+passes on main. Parametrized cases can carry individual markers. No filenames
+need to change and teammates need no special commands when fixing bugs.
+Do not weaken assertions or omit tests to obtain release sign-off.
+
+**Repository setting:** an administrator must require **Budget regressions**
+in the main-branch ruleset to enforce it at merge time. Do not require
+**Budget known issues (informational)**. The current repository rules require
+review but no status checks; adding a failing CI job alone does not enforce
+branch protection. The workflow also supports merge-queue checks.
 
 `BUDGET_LITELLM_IMAGE` selects the exact candidate image. The compatibility
 default is `docker.litellm.ai/berriai/litellm:v1.94.0`; a result against that
@@ -49,8 +66,9 @@ image is not a result against another deployed version.
 | Unique provider IDs and readiness runner rejects incomplete results | `test_harness_contracts.py` | Harness regression tests |
 
 `probe_*.py` contracts express required behavior, including known defects.
-They are intentionally absent from pytest's ordinary collection, but never from
-the explicit readiness command. Consult the command's current JUnit output;
+The runner explicitly collects these files in every group; markers determine
+which group runs each test. A raw default pytest invocation omits probe files,
+so use the runner commands above. Consult the command's current JUnit output;
 this table does not label unexecuted or failing contracts as passing.
 
 The provisioning probe is not invitation acceptance or UI key refresh. The
