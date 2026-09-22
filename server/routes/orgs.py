@@ -51,6 +51,8 @@ from server.routes.org_models import (
     OrgMemberPage,
     OrgMemberResponse,
     OrgMemberUpdate,
+    OrgMyBudgetResponse,
+    OrgMyUsageStats,
     OrgNameExistsError,
     OrgNotFoundError,
     OrgPage,
@@ -1269,6 +1271,31 @@ async def get_org_budget_settings(
     return _build_budget_response(state)
 
 
+@org_router.get(
+    '/{org_id}/budgets/me',
+    response_model=OrgMyBudgetResponse,
+)
+async def get_my_org_budget(
+    org_id: UUID,
+    include_spend: bool = Query(True),
+    user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
+    budget_service: OrgBudgetService = org_budget_service_dependency,
+) -> OrgMyBudgetResponse:
+    """Get the authenticated user's own budget for the current cycle.
+
+    The user is taken from the session only, so a caller can never read
+    another member's budget.
+    """
+    logger.info(
+        'Getting own org budget',
+        extra={'org_id': str(org_id), 'user_id': user_id},
+    )
+    budget = await budget_service.get_my_budget(
+        org_id, UUID(user_id), include_spend=include_spend
+    )
+    return OrgMyBudgetResponse(**budget)
+
+
 @org_router.patch(
     '/{org_id}/budgets',
     response_model=OrgBudgetSettingsResponse,
@@ -2255,6 +2282,64 @@ async def get_org_conversation_user_usage_stats(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to retrieve organization user usage stats',
+        )
+
+
+# Declared before '/{org_id}/conversations/{conversation_id}' so the literal
+# path is matched first.
+@org_router.get(
+    '/{org_id}/conversations/my-usage',
+    response_model=OrgMyUsageStats,
+)
+async def get_my_org_conversation_usage_stats(
+    org_id: UUID,
+    time_window: Annotated[
+        str,
+        Query(
+            title='Time window filter',
+            description='Options: 7d, 30d, 90d, ytd',
+        ),
+    ] = '30d',
+    user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
+    service: OrgConversationService = org_conversation_service_dependency,
+) -> OrgMyUsageStats:
+    """Get the authenticated user's own usage for their budget page.
+
+    The user is taken from the session only, so a caller can never read
+    another member's usage.
+
+    Args:
+        org_id: The organization ID
+        time_window: Time window filter (7d, 30d, 90d, ytd)
+
+    Returns:
+        OrgMyUsageStats: Daily spend, model breakdown and recent usage
+    """
+    now = datetime.now(timezone.utc)
+    if time_window == 'ytd':
+        start_of_year = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+        days = max(1, (now - start_of_year).days + 1)
+    elif time_window in {'7d', '30d', '90d'}:
+        days = int(time_window[:-1])
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Invalid time_window. Use 7d, 30d, 90d, or ytd.',
+        )
+
+    try:
+        return await service.get_my_usage_stats(
+            org_id=org_id, user_id=UUID(user_id), days=days
+        )
+    except Exception:
+        logger.exception(
+            'Unexpected error getting own usage stats',
+            extra={'user_id': user_id, 'org_id': str(org_id)},
+            stack_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to retrieve usage stats',
         )
 
 
