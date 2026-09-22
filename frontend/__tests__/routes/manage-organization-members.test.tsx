@@ -191,9 +191,8 @@ describe("Manage Organization Members Route", () => {
       new RegExp(`^${roleText}$`, "i"),
     );
     await userEvent.click(roleElement);
-    return within(memberElement).getByTestId(
-      "organization-member-role-context-menu",
-    );
+    // Menu is portaled outside the list row to avoid overflow clipping.
+    return screen.getByTestId("organization-member-role-context-menu");
   };
 
   // Helper function to change member role
@@ -214,11 +213,9 @@ describe("Manage Organization Members Route", () => {
   };
 
   // Helper function to verify dropdown is not visible
-  const expectDropdownNotVisible = (memberElement: HTMLElement) => {
+  const expectDropdownNotVisible = (_memberElement?: HTMLElement) => {
     expect(
-      within(memberElement).queryByTestId(
-        "organization-member-role-context-menu",
-      ),
+      screen.queryByTestId("organization-member-role-context-menu"),
     ).not.toBeInTheDocument();
   };
 
@@ -576,7 +573,7 @@ describe("Manage Organization Members Route", () => {
     const userCombobox = within(userRoleMember).getByText(/^Member$/i);
     await userEvent.click(userCombobox);
 
-    const dropdown = within(userRoleMember).getByTestId(
+    const dropdown = screen.getByTestId(
       "organization-member-role-context-menu",
     );
 
@@ -683,9 +680,7 @@ describe("Manage Organization Members Route", () => {
       // should not have a role combobox
       await userEvent.click(within(invitedMember).getByText(/^Member$/i));
       expect(
-        within(invitedMember).queryByTestId(
-          "organization-member-role-context-menu",
-        ),
+        screen.queryByTestId("organization-member-role-context-menu"),
       ).not.toBeInTheDocument();
     });
   });

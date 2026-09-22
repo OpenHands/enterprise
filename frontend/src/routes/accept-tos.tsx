@@ -27,7 +27,7 @@ export default function AcceptTOS() {
 
   return (
     <ModalBackdrop>
-      <div className="border border-tertiary p-8 rounded-lg max-w-md w-full flex flex-col gap-6 items-center bg-base-secondary">
+      <div className="border border-[var(--oh-border)] p-8 rounded-lg max-w-md w-full flex flex-col gap-6 items-center bg-base-secondary">
         <OpenHandsLogo width={68} height={46} />
 
         <div className="flex flex-col gap-2 w-full items-center text-center">

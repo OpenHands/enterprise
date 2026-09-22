@@ -975,6 +975,217 @@ async def test_get_budget_state_never_turns_malformed_data_into_zero(
     get_financial_data.assert_awaited_once()
 
 
+LITELLM_FINANCIAL_DATA = (
+    'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data'
+)
+
+
+def _enabled_budget_settings(org_id, **overrides) -> OrgBudgetSettings:
+    return OrgBudgetSettings(
+        **{
+            'org_id': org_id,
+            'enabled': True,
+            'reset_day': 1,
+            'default_user_monthly_limit': 50.0,
+            'cycle_start_at': datetime.now(UTC),
+            **overrides,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_my_budget_is_not_enabled_for_personal_org_without_creating_settings(
+    async_session_maker, personal_org
+):
+    # Arrange
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+
+        # Act
+        budget = await service.get_my_budget(personal_org.id, personal_org.id)
+
+        # Assert
+        result = await session.execute(
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == personal_org.id)
+        )
+    assert budget == {'enabled': False}
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_my_budget_is_not_enabled_for_unconfigured_org_without_creating_settings(
+    async_session_maker, budget_org
+):
+    # Arrange
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+
+        # Act
+        budget = await service.get_my_budget(budget_org.id, uuid4())
+
+        # Assert
+        result = await session.execute(
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == budget_org.id)
+        )
+    assert budget == {'enabled': False}
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_my_budget_is_not_enabled_when_admin_turned_budgets_off(
+    async_session_maker, budget_org
+):
+    # Arrange
+    async with async_session_maker() as session:
+        session.add(_enabled_budget_settings(budget_org.id, enabled=False))
+        await session.commit()
+
+        # Act
+        budget = await OrgBudgetService(session).get_my_budget(budget_org.id, uuid4())
+
+    # Assert
+    assert budget == {'enabled': False}
+
+
+@pytest.mark.asyncio
+async def test_my_budget_enabled_check_does_not_read_spend(
+    async_session_maker, budget_org
+):
+    # Arrange
+    async with async_session_maker() as session:
+        session.add(_enabled_budget_settings(budget_org.id))
+        await session.commit()
+
+        # Act
+        with patch(LITELLM_FINANCIAL_DATA, AsyncMock()) as get_financial_data:
+            budget = await OrgBudgetService(session).get_my_budget(
+                budget_org.id, uuid4(), include_spend=False
+            )
+
+    # Assert
+    assert budget == {'enabled': True}
+    get_financial_data.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_my_budget_reports_org_default_and_only_own_cycle_spend(
+    async_session_maker, budget_org
+):
+    # Arrange
+    user_id, teammate_id = uuid4(), uuid4()
+    financial_data = _financial_data(
+        team_spend=154.0,
+        members={
+            str(user_id): (55.0, None, True),
+            str(teammate_id): (99.0, None, True),
+        },
+    )
+    async with async_session_maker() as session:
+        session.add(
+            _enabled_budget_settings(
+                budget_org.id,
+                user_cycle_start_spend={str(user_id): 15.0, str(teammate_id): 1.0},
+            )
+        )
+        await session.commit()
+
+        # Act
+        with patch(LITELLM_FINANCIAL_DATA, AsyncMock(return_value=financial_data)):
+            budget = await OrgBudgetService(session).get_my_budget(
+                budget_org.id, user_id
+            )
+
+    # Assert
+    assert budget['monthly_limit'] == 50.0
+    assert budget['is_override'] is False
+    assert budget['limit_updated_at'] is None
+    assert budget['current_spend'] == 40.0
+    assert budget['spend_status'] == 'live'
+    assert budget['cycle_end_at'] > budget['cycle_start_at']
+
+
+@pytest.mark.asyncio
+async def test_my_budget_reports_admin_override_with_the_date_it_was_set(
+    async_session_maker, budget_org
+):
+    # Arrange
+    user_id = uuid4()
+    async with async_session_maker() as session:
+        session.add(User(id=user_id, current_org_id=budget_org.id))
+        await session.flush()
+        session.add_all(
+            [
+                _enabled_budget_settings(budget_org.id),
+                OrgUserBudgetOverride(
+                    org_id=budget_org.id, user_id=user_id, monthly_limit=500.0
+                ),
+            ]
+        )
+        await session.commit()
+
+        # Act
+        with patch(LITELLM_FINANCIAL_DATA, AsyncMock(return_value=_financial_data())):
+            budget = await OrgBudgetService(session).get_my_budget(
+                budget_org.id, user_id
+            )
+
+    # Assert
+    assert budget['monthly_limit'] == 500.0
+    assert budget['is_override'] is True
+    assert budget['limit_updated_at'] is not None
+
+
+@pytest.mark.asyncio
+async def test_my_budget_reports_no_limit_when_admin_exempted_the_user(
+    async_session_maker, budget_org
+):
+    # Arrange
+    user_id = uuid4()
+    async with async_session_maker() as session:
+        session.add(User(id=user_id, current_org_id=budget_org.id))
+        await session.flush()
+        session.add_all(
+            [
+                _enabled_budget_settings(budget_org.id),
+                OrgUserBudgetOverride(
+                    org_id=budget_org.id, user_id=user_id, is_disabled=True
+                ),
+            ]
+        )
+        await session.commit()
+
+        # Act
+        with patch(LITELLM_FINANCIAL_DATA, AsyncMock(return_value=_financial_data())):
+            budget = await OrgBudgetService(session).get_my_budget(
+                budget_org.id, user_id
+            )
+
+    # Assert
+    assert budget['monthly_limit'] is None
+    assert budget['is_disabled'] is True
+
+
+@pytest.mark.asyncio
+async def test_my_budget_reports_spend_unavailable_instead_of_failing(
+    async_session_maker, budget_org
+):
+    # Arrange
+    async with async_session_maker() as session:
+        session.add(_enabled_budget_settings(budget_org.id))
+        await session.commit()
+
+        # Act
+        with patch(LITELLM_FINANCIAL_DATA, AsyncMock(side_effect=ValueError('down'))):
+            budget = await OrgBudgetService(session).get_my_budget(
+                budget_org.id, uuid4()
+            )
+
+    # Assert
+    assert budget['monthly_limit'] == 50.0
+    assert budget['current_spend'] is None
+    assert budget['spend_status'] == 'unavailable'
+
+
 @pytest.mark.asyncio
 async def test_enabling_budget_requires_fresh_snapshot_and_preserves_baseline(
     async_session_maker, budget_org
@@ -2162,16 +2373,20 @@ async def test_user_budget_row_rejects_personal_org_without_creating_settings(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='reproduces obs:override_written_without_litellm_sync — fails on current code'
-)
-async def test_override_write_reports_failure_when_litellm_is_unreachable(
+async def test_override_write_is_durable_when_litellm_is_unreachable(
     async_session_maker, budget_org
 ):
-    # PUT /orgs/{org_id}/budgets/overrides/{user_id} writes the override row first and
-    # resyncs LiteLLM after. _sync_litellm_budgets records a 'error' row and returns
-    # None rather than raising when the spend read fails, so the endpoint answers 200
-    # with the new cap while the proxy still enforces the old one.
+    # When the post-write LiteLLM resync fails, upsert_user_override records the failure
+    # rather than raising: _sync_litellm_budgets writes an 'error' sync row and returns.
+    # This is deliberate. The override row must survive so the next run_budget_maintenance
+    # pass can converge it, and the reconciliation state must report the write as
+    # unapplied ('degraded') so the route can answer 503 while keeping the durable write.
+    #
+    # Raising here would roll the flushed override row back through the request-scoped
+    # session (DbSessionInjector commits on clean return, rolls back on any exception),
+    # discarding admin intent on a transient proxy timeout and leaving nothing for
+    # maintenance to converge to. This test pins the "accept the write, report it as
+    # unapplied" contract against that regression.
     user_id = uuid4()
     async with async_session_maker() as session:
         session.add_all(
@@ -2209,11 +2424,29 @@ async def test_override_write_reports_failure_when_litellm_is_unreachable(
                 AsyncMock(),
             ),
         ):
-            # A cap the proxy never received must not be reported as applied.
-            with pytest.raises(HTTPException):
-                await service.upsert_user_override(
-                    budget_org.id, user_id, monthly_limit=50.0, is_disabled=False
+            # The write is accepted despite the proxy being unreachable.
+            override = await service.upsert_user_override(
+                budget_org.id, user_id, monthly_limit=50.0, is_disabled=False
+            )
+
+        assert override.monthly_limit == 50.0
+
+        # The override row is durably persisted, not rolled back.
+        persisted = (
+            await session.execute(
+                select(OrgUserBudgetOverride).where(
+                    OrgUserBudgetOverride.org_id == budget_org.id,
+                    OrgUserBudgetOverride.user_id == user_id,
                 )
+            )
+        ).scalar_one_or_none()
+        assert persisted is not None
+        assert persisted.monthly_limit == 50.0
+
+        # The failed sync is recorded so the route reports the write as unapplied (503).
+        assert await service.get_reconciliation_state(budget_org.id) == 'degraded'
+        settings = await service._get_or_create_settings(budget_org.id)
+        assert settings.litellm_last_sync_status == 'error'
 
 
 @pytest.mark.asyncio

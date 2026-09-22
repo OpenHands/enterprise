@@ -17,7 +17,7 @@ export default [
     id: "routes/integrations-hub-cross-app-redirect",
   }),
   layout("routes/root-layout.tsx", [
-    index("routes/home.tsx"),
+    index("routes/root-landing.tsx"),
     route("accept-tos", "routes/accept-tos.tsx"),
     route("launch", "routes/launch.tsx"),
     route("settings", "routes/settings.tsx", [
@@ -40,6 +40,7 @@ export default [
       route("integrations", "routes/git-settings.tsx"),
       route("app", "routes/app-settings.tsx"),
       route("billing", "routes/billing.tsx"),
+      route("credits", "routes/credits.tsx"),
       route("secrets", "routes/secrets-settings.tsx"),
       route("api-keys", "routes/api-keys.tsx"),
       route("org-members", "routes/manage-organization-members.tsx"),
@@ -48,6 +49,7 @@ export default [
       route("admin-dashboard", "routes/admin-dashboard.tsx"),
       route("budgets", "routes/budgets.tsx"),
       route("quota", "routes/quota-settings.tsx"),
+      route("your-budget", "routes/your-budget.tsx"),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),
     route("oauth/device/verify", "routes/device-verify.tsx"),
