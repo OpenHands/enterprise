@@ -1711,9 +1711,10 @@ async def test_mcp_config_is_encrypted_at_rest(
 async def test_load_migrates_detached_legacy_mcp_config(
     async_session_maker, org_with_multiple_members_fixture
 ):
-    """A v5 settings row can load a separately stored v4 MCP fragment."""
+    """A current-schema settings row can load a separately stored v4 MCP fragment."""
     from sqlalchemy import select
 
+    from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
     from storage.org_member import OrgMember
 
     admin_user_id = org_with_multiple_members_fixture['admin_user_id']
@@ -1743,7 +1744,7 @@ async def test_load_migrates_detached_legacy_mcp_config(
         loaded = await store.load()
 
     assert loaded is not None
-    assert loaded.agent_settings.schema_version == 5
+    assert loaded.agent_settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     server = loaded.agent_settings.mcp_config['shttp']
     assert server.url == 'https://example.com/mcp'
     assert server.timeout == 60
