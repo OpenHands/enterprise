@@ -262,6 +262,13 @@ def _effective_user_budget_limit(
     return default_limit, False, False
 
 
+def _member_cap(baseline: float, effective_limit: float) -> float:
+    # LiteLLM compares cumulative spend against an absolute member cap, so a cap
+    # below the member's cycle baseline is already exceeded the moment it is
+    # written. Nothing rejects a non-positive allowance, so clamp it here.
+    return baseline + max(effective_limit, 0)
+
+
 def _budget_values_match(actual: float | None, expected: float | None) -> bool:
     if actual is None or expected is None:
         return actual is expected
@@ -341,7 +348,9 @@ def _budget_policy_comparison(
                 if baseline is None:
                     drift_errors.append(f'member_cycle_baseline_missing: {user_id}')
                     continue
-                expected_member_budgets[user_id] = baseline + effective_limit
+                expected_member_budgets[user_id] = _member_cap(
+                    baseline, effective_limit
+                )
             else:
                 expected_member_budgets[user_id] = None
 
@@ -1443,8 +1452,7 @@ class OrgBudgetService:
                 max_budget_in_team = None
                 clear_budget = True
             elif effective_limit is not None:
-                # LiteLLM compares cumulative spend against an absolute member cap.
-                max_budget_in_team = baseline + effective_limit
+                max_budget_in_team = _member_cap(baseline, effective_limit)
                 clear_budget = False
             else:
                 max_budget_in_team = None
