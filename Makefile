@@ -276,6 +276,13 @@ local-db: check-docker
 	@$(LOCAL_DB_ENV) uv run alembic upgrade head
 	@echo "$(GREEN)Local database ready on $(DB_HOST):$(DB_PORT).$(RESET)"
 
+# Throw the local database away and build a fresh one. `-v` also drops the
+# anonymous volume the postgres image creates, which is where the data lives.
+reset-db: check-docker
+	@echo "$(YELLOW)Removing local PostgreSQL ($(LOCAL_DB_CONTAINER)) and its data...$(RESET)"
+	@docker rm -f -v $(LOCAL_DB_CONTAINER) > /dev/null 2>&1 || true
+	@$(MAKE) -s local-db
+
 # Start backend
 start-backend:
 	@echo "$(YELLOW)Starting backend...$(RESET)"
@@ -404,6 +411,7 @@ help:
 	@echo "  $(GREEN)setup-config$(RESET)        - Setup the configuration for OpenHands by providing LLM API key,"
 	@echo "                        LLM Model name, and workspace directory."
 	@echo "  $(GREEN)local-db$(RESET)            - Start a local PostgreSQL container and migrate it to head."
+	@echo "  $(GREEN)reset-db$(RESET)            - Delete the local PostgreSQL container and its data, then recreate it."
 	@echo "  $(GREEN)start-backend$(RESET)       - Start the backend server for the OpenHands project."
 	@echo "  $(GREEN)start-frontend$(RESET)      - Start the frontend server for the OpenHands project."
 	@echo "  $(GREEN)start-saas-backend$(RESET)  - Start the SaaS/enterprise backend (saas_server.py)."
@@ -415,5 +423,5 @@ help:
 	@echo "  $(GREEN)help$(RESET)                - Display this help message, providing information on available targets."
 
 # Phony targets
-.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend local-db start-backend start-saas-backend start-frontend _run_setup _run_saas_setup _wait_for_backend run run-saas setup-config setup-config-prompts setup-config-basic docker-dev clean help
+.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend local-db reset-db start-backend start-saas-backend start-frontend _run_setup _run_saas_setup _wait_for_backend run run-saas setup-config setup-config-prompts setup-config-basic docker-dev clean help
 .PHONY: kind
