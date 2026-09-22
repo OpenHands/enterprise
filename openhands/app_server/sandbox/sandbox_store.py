@@ -1,0 +1,159 @@
+"""App-owned record of the sandboxes the docker and E2B backends create.
+
+Ownership is kept here rather than in provider labels or metadata because it
+drives an authorization decision: ``session_auth.validate_session_key`` reads
+``created_by_user_id`` off the sandbox, and ``sandbox_router`` uses it to pick
+whose secrets, provider tokens and unmasked ``llm_api_key`` to release.
+
+The backends also write provider labels. Those tag managed sandboxes so that
+one with no row can be found; they are not the ownership record.
+
+``RemoteSandboxService`` keeps its own ``v1_remote_sandbox`` table.
+"""
+
+import hashlib
+from dataclasses import dataclass
+from datetime import datetime
+
+from pydantic import SecretStr
+from sqlalchemy import Select, String, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Mapped, mapped_column
+
+from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.utils.sql_utils import Base, StoredSecretStr, UtcDateTime
+
+DOCKER_BACKEND = 'docker'
+E2B_BACKEND = 'e2b'
+
+
+def hash_session_api_key(session_api_key: str) -> str:
+    """Hash a session API key using SHA-256."""
+    return hashlib.sha256(session_api_key.encode()).hexdigest()
+
+
+class StoredSandbox(Base):
+    """A sandbox the app created, and who it belongs to.
+
+    ``backend`` keeps docker and E2B rows apart, so a deployment that switches
+    ``RUNTIME`` does not read one backend's rows through the other's provider.
+
+    Rows are soft deleted: ``delete_sandbox`` stamps ``deleted_at``, and every
+    read filters on ``deleted_at IS NULL``.
+
+    ``session_api_key`` is the key itself, encrypted at rest. Only E2B writes
+    it, because E2B has no way to read a key back and ``get_sandbox`` must
+    return it. Docker reads its key from the container's environment. The hash
+    serves the indexed lookup on the webhook path.
+    """
+
+    __tablename__ = 'v1_sandbox'
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    backend: Mapped[str] = mapped_column(String, index=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
+    sandbox_spec_id: Mapped[str] = mapped_column(String, index=True)
+    session_api_key_hash: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
+    session_api_key: Mapped[SecretStr | None] = mapped_column(
+        StoredSecretStr, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), index=True
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        UtcDateTime, nullable=True, index=True
+    )
+
+
+@dataclass
+class StoredSandboxPage:
+    """One page of stored sandboxes, newest first."""
+
+    items: list[StoredSandbox]
+    next_page_id: str | None
+
+
+async def secure_select(
+    user_context: UserContext, backend: str
+) -> Select[tuple[StoredSandbox]]:
+    """Select over the live sandboxes the caller may see.
+
+    A caller with a user id sees only their own rows. A caller without one
+    sees every row. ``session_auth.validate_session_key`` and
+    ``webhook_router.valid_sandbox`` run as ``ADMIN``, which has no user id,
+    because they look a sandbox up by its key before they know the owner.
+    Narrowing this case breaks authentication.
+    """
+    query = select(StoredSandbox).where(
+        StoredSandbox.backend == backend,
+        StoredSandbox.deleted_at.is_(None),
+    )
+    user_id = await user_context.get_user_id()
+    if user_id:
+        query = query.where(StoredSandbox.created_by_user_id == user_id)
+    return query
+
+
+async def get_stored_sandbox(
+    db_session: AsyncSession,
+    user_context: UserContext,
+    backend: str,
+    sandbox_id: str,
+) -> StoredSandbox | None:
+    """Get a sandbox by id, or None when the caller may not see it."""
+    stmt = await secure_select(user_context, backend)
+    stmt = stmt.where(StoredSandbox.id == sandbox_id)
+    result = await db_session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def get_stored_sandbox_by_session_api_key(
+    db_session: AsyncSession,
+    user_context: UserContext,
+    backend: str,
+    session_api_key: str,
+) -> StoredSandbox | None:
+    """Get a sandbox by session API key, on the hash index."""
+    stmt = await secure_select(user_context, backend)
+    stmt = stmt.where(
+        StoredSandbox.session_api_key_hash == hash_session_api_key(session_api_key)
+    )
+    result = await db_session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def search_stored_sandboxes(
+    db_session: AsyncSession,
+    user_context: UserContext,
+    backend: str,
+    page_id: str | None,
+    limit: int,
+) -> StoredSandboxPage:
+    """Page over the caller's sandboxes, newest first.
+
+    ``page_id`` is an offset, matching ``RemoteSandboxService``. One extra row
+    is read to decide whether there is a next page.
+    """
+    try:
+        offset = int(page_id) if page_id is not None else 0
+    except ValueError:
+        offset = 0
+
+    stmt = await secure_select(user_context, backend)
+    stmt = (
+        stmt.order_by(StoredSandbox.created_at.desc()).offset(offset).limit(limit + 1)
+    )
+    result = await db_session.execute(stmt)
+    rows = list(result.scalars().all())
+
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
+    return StoredSandboxPage(
+        items=rows,
+        next_page_id=str(offset + limit) if has_more else None,
+    )
