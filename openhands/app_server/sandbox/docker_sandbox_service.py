@@ -29,6 +29,8 @@ from openhands.app_server.sandbox.sandbox_models import (
 )
 from openhands.app_server.sandbox.sandbox_service import (
     LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE,
+    LLM_API_KEY_REFRESH_HEADERS_VALUE,
+    LLM_API_KEY_REFRESH_HEADERS_VARIABLE,
     LLM_API_KEY_REFRESH_URL_VARIABLE,
     SESSION_API_KEY_VARIABLE,
     WEBHOOK_CALLBACK_VARIABLE,
@@ -422,10 +424,13 @@ class DockerSandboxService(SandboxService):
             f'http://host.docker.internal:{self.host_port}/api/v1/webhooks'
         )
         # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and retry
-        # in place (#5189). The agent-server authenticates the call with its own
-        # session key (already set above), so only the URL + base_urls go here.
+        # in place (#5189). The agent-server GETs the refresh URL and authenticates
+        # with this sandbox's session key, passed as an X-Session-API-Key header.
         env_vars[LLM_API_KEY_REFRESH_URL_VARIABLE] = (
             f'http://host.docker.internal:{self.host_port}/api/keys/llm/managed/current'
+        )
+        env_vars[LLM_API_KEY_REFRESH_HEADERS_VARIABLE] = (
+            LLM_API_KEY_REFRESH_HEADERS_VALUE
         )
         from server.constants import LITE_LLM_API_URL
 

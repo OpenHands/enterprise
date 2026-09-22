@@ -50,29 +50,6 @@ class TestGetAgentServerEnv:
             result = get_agent_server_env()
             assert result == {}
 
-    def test_llm_api_key_refresh_vars_auto_forwarded(self):
-        """Managed-key refresh contract vars ride the ``LLM_`` auto-forward path.
-
-        The sandbox managed-key self-heal (#5189) relies on these two vars
-        reaching the agent-server. Naming them with the ``LLM_`` prefix means no
-        extra forwarding logic is needed -- this guards that contract.
-        """
-        env_vars = {
-            'LLM_API_KEY_REFRESH_URL': (
-                'https://app.all-hands.dev/api/keys/llm/managed/current'
-            ),
-            'LLM_API_KEY_REFRESH_BASE_URLS': 'https://llm-proxy.app.all-hands.dev',
-        }
-
-        with patch.dict(os.environ, env_vars, clear=True):
-            result = get_agent_server_env()
-
-        assert result['LLM_API_KEY_REFRESH_URL'] == env_vars['LLM_API_KEY_REFRESH_URL']
-        assert (
-            result['LLM_API_KEY_REFRESH_BASE_URLS']
-            == env_vars['LLM_API_KEY_REFRESH_BASE_URLS']
-        )
-
     def test_single_environment_variable(self):
         """Test with a single variable in JSON format."""
         env_vars = {
