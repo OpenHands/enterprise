@@ -76,6 +76,7 @@ from server.services.org_conversation_service import (
 )
 from server.services.org_member_financial_service import OrgMemberFinancialService
 from server.services.org_member_service import OrgMemberService
+from storage.default_org_service import get_default_org_config
 from storage.org_git_claim_store import OrgGitClaimStore
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
@@ -87,6 +88,11 @@ org_router = APIRouter(
     tags=['Orgs'],
     dependencies=[REJECT_X_ORG_ID_PATH_MISMATCH],
 )
+
+
+def _hide_personal_workspaces() -> bool:
+    """Whether this deployment hides personal workspaces from org listings."""
+    return get_default_org_config().hide_personal_workspaces
 
 
 _org_budget_service_injector = OrgBudgetServiceInjector()
@@ -182,9 +188,25 @@ async def list_user_orgs(
             limit=limit,
         )
 
+        # Personal workspaces are hidden in org-only installs
+        # (HIDE_PERSONAL_WORKSPACES). The org stays a real membership that can
+        # be addressed and switched to, so it is only marked invisible rather
+        # than dropped from the list — clients that honour the flag stop
+        # offering it, and callers that need the entry can still find it.
+        # Personal entries never count towards "this user has a team org".
+        hide_personal_workspaces = _hide_personal_workspaces()
+        has_visible_team_org = any(str(org.id) != user_id for org in orgs)
+        hide_personal = hide_personal_workspaces and has_visible_team_org
+
         # Convert Org entities to OrgResponse objects
         org_responses = [
-            OrgResponse.from_org(org, credits=None, user_id=user_id) for org in orgs
+            OrgResponse.from_org(
+                org,
+                credits=None,
+                user_id=user_id,
+                is_visible=not (hide_personal and str(org.id) == user_id),
+            )
+            for org in orgs
         ]
 
         logger.info(
