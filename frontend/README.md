@@ -66,18 +66,21 @@ To run the application with the actual backend:
 make build
 
 # Start the application
-make run
+make run-saas
 ```
 Or to run backend and frontend separately.
 
 ```sh
 # Start the backend from the root directory
-make start-backend
+make start-saas-backend
 
 # Serve the frontend
 make start-frontend or
 cd frontend && npm start -- --port 3001
 ```
+
+The backend is the SaaS/enterprise server, which needs the SaaS environment (Postgres, Keycloak, ...)
+described in [dev_config/local_saas/README.md](../dev_config/local_saas/README.md).
 
 Start frontend with Mock Service Worker (MSW), see testing for more info.
 ```sh

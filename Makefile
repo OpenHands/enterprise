@@ -219,8 +219,8 @@ kind:
 	@kubectl wait --for=condition=Available deployment/ubuntu-dev
 	@echo "$(YELLOW)Waiting for Nginx to be ready.$(RESET)"
 	@kubectl -n ingress-nginx wait --for=condition=Available deployment/ingress-nginx-controller
-	@echo "$(YELLOW)Running make run inside of mirrord.$(RESET)"
-	@mirrord exec --target deployment/ubuntu-dev -- make run
+	@echo "$(YELLOW)Running make run-saas inside of mirrord.$(RESET)"
+	@mirrord exec --target deployment/ubuntu-dev -- make run-saas
 
 test-frontend:
 	@echo "$(YELLOW)Running tests for frontend...$(RESET)"
@@ -232,11 +232,6 @@ test:
 build-frontend:
 	@echo "$(YELLOW)Building frontend...$(RESET)"
 	@cd frontend && npm run prepare && npm run build
-
-# Start backend
-start-backend:
-	@echo "$(YELLOW)Starting backend...$(RESET)"
-	@uv run uvicorn openhands.server.listen:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) --reload --reload-exclude "./workspace"
 
 # Start the SaaS/enterprise backend (saas_server.py), which layers the enterprise
 # routes on top of the app server. Needs the SaaS env (Postgres, Keycloak, ...);
@@ -257,26 +252,6 @@ start-frontend:
 	fi; \
 	VITE_BACKEND_HOST=$(BACKEND_HOST_PORT) VITE_FRONTEND_PORT=$(FRONTEND_PORT) npm run $$SCRIPT -- --port $(FRONTEND_PORT) --host $(BACKEND_HOST)
 
-# Common setup for running the app (non-callable)
-_run_setup:
-	@if [ "$(OS)" = "Windows_NT" ]; then \
-		echo "$(RED) Windows is not supported, use WSL instead!$(RESET)"; \
-		exit 1; \
-	fi
-	@mkdir -p logs
-	@echo "$(YELLOW)Starting backend server...$(RESET)"
-	@uv run uvicorn openhands.server.listen:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) &
-	@echo "$(YELLOW)Waiting for the backend to start...$(RESET)"
-	@until nc -z localhost $(BACKEND_PORT); do sleep 0.1; done
-	@echo "$(GREEN)Backend started successfully.$(RESET)"
-
-# Run the app (standard mode)
-run:
-	@echo "$(YELLOW)Running the app...$(RESET)"
-	@$(MAKE) -s _run_setup
-	@$(MAKE) -s start-frontend
-	@echo "$(GREEN)Application started successfully.$(RESET)"
-
 # Run the SaaS app (SaaS backend + frontend dev server)
 run-saas:
 	@echo "$(YELLOW)Running the SaaS app...$(RESET)"
@@ -291,21 +266,6 @@ _run_saas_setup:
 	@echo "$(YELLOW)Waiting for the backend to start...$(RESET)"
 	@until nc -z localhost $(BACKEND_PORT); do sleep 0.1; done
 	@echo "$(GREEN)Backend started successfully.$(RESET)"
-
-# Run the app (in docker)
-docker-run: WORKSPACE_BASE ?= $(PWD)/workspace
-docker-run:
-	@if [ -f /.dockerenv ]; then \
-		echo "Running inside a Docker container. Exiting..."; \
-		exit 0; \
-	else \
-		echo "$(YELLOW)Running the app in Docker $(OPTIONS)...$(RESET)"; \
-		export WORKSPACE_BASE=${WORKSPACE_BASE}; \
-		export SANDBOX_USER_ID=$(shell id -u); \
-		export DATE=$(shell date +%Y%m%d%H%M%S); \
-		docker compose up $(OPTIONS); \
-	fi
-
 
 # Setup config.toml
 setup-config:
@@ -341,9 +301,6 @@ setup-config-basic:
 	> config.toml
 	@echo "$(GREEN)config.toml created.$(RESET)"
 
-openhands-cloud-run:
-	@$(MAKE) run BACKEND_HOST="0.0.0.0" BACKEND_PORT="12000" FRONTEND_HOST="0.0.0.0" FRONTEND_PORT="12001"
-
 # Develop in container
 docker-dev:
 	@if [ -f /.dockerenv ]; then \
@@ -368,16 +325,13 @@ help:
 	@echo "  $(GREEN)lint$(RESET)                - Run linters on the project."
 	@echo "  $(GREEN)setup-config$(RESET)        - Setup the configuration for OpenHands by providing LLM API key,"
 	@echo "                        LLM Model name, and workspace directory."
-	@echo "  $(GREEN)start-backend$(RESET)       - Start the backend server for the OpenHands project."
 	@echo "  $(GREEN)start-frontend$(RESET)      - Start the frontend server for the OpenHands project."
 	@echo "  $(GREEN)start-saas-backend$(RESET)  - Start the SaaS/enterprise backend (saas_server.py)."
 	@echo "  $(GREEN)run-saas$(RESET)            - Run the SaaS app, starting the SaaS backend and the frontend server."
-	@echo "  $(GREEN)run$(RESET)                 - Run the OpenHands application, starting both backend and frontend servers."
 	@echo "                        Backend Log file will be stored in the 'logs' directory."
 	@echo "  $(GREEN)docker-dev$(RESET)          - Build and run the OpenHands application in Docker."
-	@echo "  $(GREEN)docker-run$(RESET)          - Run the OpenHands application, starting both backend and frontend servers in Docker."
 	@echo "  $(GREEN)help$(RESET)                - Display this help message, providing information on available targets."
 
 # Phony targets
-.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend start-backend start-saas-backend start-frontend _run_setup _run_saas_setup run run-saas run-wsl setup-config setup-config-prompts setup-config-basic openhands-cloud-run docker-dev docker-run clean help
+.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend start-saas-backend start-frontend _run_saas_setup run-saas setup-config setup-config-prompts setup-config-basic docker-dev clean help
 .PHONY: kind

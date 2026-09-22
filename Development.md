@@ -8,7 +8,7 @@ Otherwise, you can clone the OpenHands project directly.
 
 The Python backend is laid out exactly as it is deployed in the Docker image (`/app`):
 
-- `openhands/` — the OpenHands app server (`openhands.server.listen:app`, `openhands/app_server/`)
+- `openhands/` — the OpenHands app server (`openhands/app_server/`)
 - `server/`, `storage/`, `integrations/`, `sync/`, `analytics/`, `utils/` — the SaaS/enterprise modules that extend it
 - `saas_server.py` — the FastAPI app that Kubernetes runs (`uvicorn saas_server:app`); `run_maintenance_tasks.py`
   and `run_budget_maintenance.py` are CronJob entrypoints; `run_budget_preflight.py` is the upgrade preflight /
@@ -69,19 +69,18 @@ See [our documentation](https://docs.openhands.dev/openhands/usage/llms/llms) fo
 ### 4. Run the Application
 
 ```bash
-# Run both backend and frontend
-make run
+# Run the SaaS backend and the frontend
+make run-saas
 
 # Or run separately:
-make start-backend  # Backend only on port 3000
-make start-frontend # Frontend only on port 3001
+make start-saas-backend  # Backend only on port 3000
+make start-frontend      # Frontend only on port 3001
 ```
 
-These targets serve the current OpenHands V1 API by default. In the codebase, `make start-backend` runs `openhands.server.listen:app`, and that app includes the `openhands/app_server` V1 routes unless `ENABLE_V1=0`.
-
-To run the SaaS/enterprise server (`saas_server:app`, what Kubernetes deploys) use `make start-saas-backend` or
-`make run-saas`; it needs the SaaS environment (Postgres, Keycloak, ...) described in
-[dev_config/local_saas/README.md](./dev_config/local_saas/README.md).
+These targets run the SaaS/enterprise server (`saas_server:app`, what Kubernetes deploys), which serves the
+`openhands/app_server` V1 API unless `ENABLE_V1=0`. It needs the SaaS environment (Postgres, Keycloak, ...)
+described in [dev_config/local_saas/README.md](./dev_config/local_saas/README.md). There is no non-SaaS local
+run target.
 
 ---
 
@@ -143,12 +142,12 @@ See the [macOS section above](#3-configure-the-language-model) for guidance: con
 ### 4. Run the Application
 
 ```bash
-# Run both backend and frontend
-make run
+# Run the SaaS backend and the frontend
+make run-saas
 
 # Or run separately:
-make start-backend  # Backend only on port 3000
-make start-frontend # Frontend only on port 3001
+make start-saas-backend  # Backend only on port 3000
+make start-frontend      # Frontend only on port 3001
 ```
 
 ---
@@ -201,12 +200,12 @@ See the [macOS section above](#3-configure-the-language-model) for the current V
 ### 6. Run the Application
 
 ```bash
-# Run both backend and frontend
-make run
+# Run the SaaS backend and the frontend
+make run-saas
 
 # Or run separately:
-make start-backend  # Backend only on port 3000
-make start-frontend # Frontend only on port 3001
+make start-saas-backend  # Backend only on port 3000
+make start-frontend      # Frontend only on port 3001
 ```
 
 Access the frontend at `http://localhost:3001` from your Windows browser.
@@ -237,14 +236,6 @@ make docker-dev
 ```
 
 For more details, see the [dev container documentation](./containers/dev/README.md).
-
-### Alternative: Docker Run
-
-If you just want to run OpenHands without setting up a dev environment:
-
-```bash
-make docker-run
-```
 
 If you don't have `make` installed, run:
 
@@ -282,7 +273,7 @@ You can use OpenHands to develop and improve OpenHands itself!
 ```bash
 export INSTALL_DOCKER=0
 export RUNTIME=local
-make build && make run
+make build && make run-saas
 ```
 
 Access the interface at:
@@ -291,7 +282,7 @@ Access the interface at:
 
 For external access:
 ```bash
-make run FRONTEND_PORT=12000 FRONTEND_HOST=0.0.0.0 BACKEND_HOST=0.0.0.0
+make run-saas FRONTEND_PORT=12000 FRONTEND_HOST=0.0.0.0 BACKEND_HOST=0.0.0.0
 ```
 
 ---
@@ -303,7 +294,7 @@ If you encounter issues with the Language Model, enable debug logging:
 ```bash
 export DEBUG=1
 # Restart the backend
-make start-backend
+make start-saas-backend
 ```
 
 Logs will be saved to `logs/llm/CURRENT_DATE/` for troubleshooting.
