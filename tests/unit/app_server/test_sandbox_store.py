@@ -1,6 +1,6 @@
-"""Tests for the sandbox record the docker and E2B backends share.
+"""Tests for the sandbox record every backend shares.
 
-The scoping helper here is what both backends read ownership through, and
+The scoping helper here is what every backend reads ownership through, and
 ``session_auth.validate_session_key`` and ``webhook_router.valid_sandbox``
 depend on its admin case, so the cases below are the authentication contract
 rather than incidental query behaviour.
@@ -20,6 +20,7 @@ from sqlalchemy import select, text
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
     E2B_BACKEND,
+    REMOTE_BACKEND,
     StoredSandbox,
     get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
@@ -52,7 +53,6 @@ def _stored(
     backend: str = DOCKER_BACKEND,
     session_api_key: str | None = None,
     created_at: datetime | None = None,
-    deleted_at: datetime | None = None,
 ) -> StoredSandbox:
     return StoredSandbox(
         id=sandbox_id,
@@ -63,7 +63,6 @@ def _stored(
             hash_session_api_key(session_api_key) if session_api_key else None
         ),
         created_at=created_at or CREATED_AT,
-        deleted_at=deleted_at,
     )
 
 
@@ -145,33 +144,38 @@ class TestScoping:
 
         assert {row.id for row in page.items} == {'sb-1', 'sb-2'}
 
-    async def test_a_deleted_row_is_invisible(self, db_session, store):
-        await store(_stored('sb-1', deleted_at=CREATED_AT))
-
-        assert (
-            await get_stored_sandbox(
-                db_session, _user_context(OWNER_ID), DOCKER_BACKEND, 'sb-1'
-            )
-        ) is None
-        page = await search_stored_sandboxes(
-            db_session, _user_context(OWNER_ID), DOCKER_BACKEND, None, 100
-        )
-        assert page.items == []
-
     async def test_backends_do_not_see_each_other(self, db_session, store):
-        """A deployment that switches RUNTIME must not mix the two records."""
-        await store(_stored('sb-1', backend=E2B_BACKEND))
+        """A deployment that switches RUNTIME must not mix the backends' rows."""
+        await store(
+            _stored('sb-remote', backend=REMOTE_BACKEND),
+            _stored('sb-docker', backend=DOCKER_BACKEND),
+            _stored('sb-e2b', backend=E2B_BACKEND),
+        )
 
-        assert (
-            await get_stored_sandbox(
-                db_session, _user_context(OWNER_ID), DOCKER_BACKEND, 'sb-1'
+        for backend, sandbox_id in [
+            (REMOTE_BACKEND, 'sb-remote'),
+            (DOCKER_BACKEND, 'sb-docker'),
+            (E2B_BACKEND, 'sb-e2b'),
+        ]:
+            page = await search_stored_sandboxes(
+                db_session, _user_context(None), backend, None, 100
             )
-        ) is None
-        assert (
-            await get_stored_sandbox(
-                db_session, _user_context(OWNER_ID), E2B_BACKEND, 'sb-1'
+            assert [row.id for row in page.items] == [sandbox_id]
+
+    async def test_a_row_written_without_a_backend_is_remote(self, db_session):
+        await db_session.execute(
+            text(
+                'INSERT INTO v1_remote_sandbox (id, sandbox_spec_id) '
+                "VALUES ('sb-1', 'spec-1')"
             )
-        ) is not None
+        )
+
+        found = await get_stored_sandbox(
+            db_session, _user_context(None), REMOTE_BACKEND, 'sb-1'
+        )
+
+        assert found is not None
+        assert found.backend == REMOTE_BACKEND
 
 
 class TestSessionApiKeyLookup:
@@ -222,7 +226,9 @@ class TestStoredSessionApiKey:
             await store(self._with_key('sb-1', 'the-key'))
             stored = (
                 await db_session.execute(
-                    text("SELECT session_api_key FROM v1_sandbox WHERE id = 'sb-1'")
+                    text(
+                        "SELECT session_api_key FROM v1_remote_sandbox WHERE id = 'sb-1'"
+                    )
                 )
             ).scalar_one()
             row = await _reload(db_session, 'sb-1')

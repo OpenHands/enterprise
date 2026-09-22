@@ -1,14 +1,9 @@
-"""App-owned record of the sandboxes the docker and E2B backends create.
+"""App-owned record of the sandboxes every backend creates.
 
-Ownership is kept here rather than in provider labels or metadata because it
-drives an authorization decision: ``session_auth.validate_session_key`` reads
-``created_by_user_id`` off the sandbox, and ``sandbox_router`` uses it to pick
-whose secrets, provider tokens and unmasked ``llm_api_key`` to release.
-
-The backends also write provider labels. Those tag managed sandboxes so that
-one with no row can be found; they are not the ownership record.
-
-``RemoteSandboxService`` keeps its own ``v1_remote_sandbox`` table.
+Ownership lives here because it drives an authorization decision:
+``session_auth.validate_session_key`` reads ``created_by_user_id`` off the
+sandbox, and ``sandbox_router`` uses it to pick whose secrets, provider tokens
+and unmasked ``llm_api_key`` to release.
 """
 
 import hashlib
@@ -23,6 +18,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.sql_utils import Base, StoredSecretStr, UtcDateTime
 
+REMOTE_BACKEND = 'remote'
 DOCKER_BACKEND = 'docker'
 E2B_BACKEND = 'e2b'
 
@@ -35,22 +31,23 @@ def hash_session_api_key(session_api_key: str) -> str:
 class StoredSandbox(Base):
     """A sandbox the app created, and who it belongs to.
 
-    ``backend`` keeps docker and E2B rows apart, so a deployment that switches
-    ``RUNTIME`` does not read one backend's rows through the other's provider.
+    Every backend shares this table. It keeps the name ``v1_remote_sandbox``
+    because renaming a live table breaks app servers still running the
+    previous release during a deploy.
 
-    Rows are soft deleted: ``delete_sandbox`` stamps ``deleted_at``, and every
-    read filters on ``deleted_at IS NULL``.
+    ``backend`` keeps each backend's rows apart, so a deployment that switches
+    ``RUNTIME`` does not read one backend's rows through another's provider.
+    Rows written without one are the remote backend's.
 
-    ``session_api_key`` is the key itself, encrypted at rest. Only E2B writes
-    it, because E2B has no way to read a key back and ``get_sandbox`` must
-    return it. Docker reads its key from the container's environment. The hash
-    serves the indexed lookup on the webhook path.
+    ``session_api_key`` is the key itself, encrypted at rest, for backends
+    that cannot read a key back from the provider. The hash serves the indexed
+    lookup on the webhook path.
     """
 
-    __tablename__ = 'v1_sandbox'
+    __tablename__ = 'v1_remote_sandbox'
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    backend: Mapped[str] = mapped_column(String, index=True)
+    backend: Mapped[str] = mapped_column(String, server_default=REMOTE_BACKEND)
     created_by_user_id: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
     )
@@ -63,9 +60,6 @@ class StoredSandbox(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         UtcDateTime, server_default=func.now(), index=True
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        UtcDateTime, nullable=True, index=True
     )
 
 
@@ -80,7 +74,7 @@ class StoredSandboxPage:
 async def secure_select(
     user_context: UserContext, backend: str
 ) -> Select[tuple[StoredSandbox]]:
-    """Select over the live sandboxes the caller may see.
+    """Select over one backend's sandboxes that the caller may see.
 
     A caller with a user id sees only their own rows. A caller without one
     sees every row. ``session_auth.validate_session_key`` and
@@ -88,10 +82,7 @@ async def secure_select(
     because they look a sandbox up by its key before they know the owner.
     Narrowing this case breaks authentication.
     """
-    query = select(StoredSandbox).where(
-        StoredSandbox.backend == backend,
-        StoredSandbox.deleted_at.is_(None),
-    )
+    query = select(StoredSandbox).where(StoredSandbox.backend == backend)
     user_id = await user_context.get_user_id()
     if user_id:
         query = query.where(StoredSandbox.created_by_user_id == user_id)
@@ -135,8 +126,8 @@ async def search_stored_sandboxes(
 ) -> StoredSandboxPage:
     """Page over the caller's sandboxes, newest first.
 
-    ``page_id`` is an offset, matching ``RemoteSandboxService``. One extra row
-    is read to decide whether there is a next page.
+    ``page_id`` is an offset. One extra row is read to decide whether there is
+    a next page.
     """
     try:
         offset = int(page_id) if page_id is not None else 0
