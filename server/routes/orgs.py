@@ -1161,10 +1161,17 @@ async def get_org_members_financial(
     Returns:
         OrgMemberFinancialPage: Paginated response with member financial data
             - items: List of members with user_id, email, lifetime_spend,
-                     current_budget, and max_budget
+                     current_budget, and max_budget. lifetime_spend and
+                     current_budget are null when LiteLLM reported no spend for
+                     that member, either because the read failed or because the
+                     member was absent from it - a spend that was never observed
+                     is not reported as zero.
             - current_page: Current page number (1-indexed)
             - per_page: Items per page
             - next_page_id: Offset for next page, or None if no more pages
+            - spend_status: 'live' if the spend read succeeded, 'unavailable' if
+                            it failed. Individual rows can still be null under
+                            'live' when the read omitted that member.
 
     Raises:
         HTTPException: 401 if user is not authenticated
