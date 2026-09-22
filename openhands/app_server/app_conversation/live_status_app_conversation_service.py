@@ -1478,6 +1478,67 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             settings_store = await SaasSettingsStore.get_instance(
                 user.id, effective_org_id=org_id
             )
+            # Heal orgs left broken by #421: a stale org-level BYOR key shadows
+            # the member's managed key. PR #425 prevents new occurrences; this
+            # restores already-broken users on their next load. Clearing the
+            # stale field flips the effective key off the dummy, then we
+            # force-rotate a fresh managed key so the returned LLM carries it
+            # (otherwise the existing verify path would skip on key mismatch).
+            # Gate to the All-Hands-managed cloud: ``app_mode == 'saas'`` is also
+            # true on self-hosted OHE, where clearing an org-level key breaks a
+            # legitimately managed enterprise org. ``DEPLOYMENT_MODE`` is the axis
+            # that actually separates cloud from self-hosted.
+            from server.constants import DEPLOYMENT_MODE
+
+            if (
+                DEPLOYMENT_MODE == 'cloud'
+                and await settings_store.clear_stale_org_level_llm_key_if_managed()
+            ):
+                _logger.info(
+                    'managed_llm_key_refresh:cleared_stale_org_level_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                    },
+                )
+                # Clearing the stale org-level shadow is the heal; we still need
+                # the returned LLM to carry a valid managed key on *this* request.
+                # Prefer a freshly rotated key, but if rotation yields none
+                # (MISSING_MEMBER / already-current / LiteLLM transient) fall back
+                # to re-resolving the effective key off the now-healed DB. Without
+                # this re-resolve we'd drop through to the mismatch bail below and
+                # return the original stale llm — healing the DB but not the
+                # in-flight request, so the 401 would persist until the next load.
+                rotation = await settings_store.rotate_managed_llm_key()
+                healed_key: str | None = (
+                    rotation.new_key
+                    if rotation.status == ManagedLlmKeyStatus.ROTATED
+                    and rotation.new_key
+                    else await settings_store.get_current_managed_llm_key()
+                )
+                if healed_key:
+                    _logger.info(
+                        'managed_llm_key_refresh:healed_after_clear',
+                        extra={
+                            'user_id': user.id,
+                            'org_id': str(org_id),
+                            'model': llm.model,
+                            'rotation_status': getattr(rotation, 'status', None),
+                            'openhands_type': getattr(rotation, 'openhands_type', None),
+                        },
+                    )
+                    self.user_context.invalidate_user_info_cache()
+                    return llm.model_copy(update={'api_key': SecretStr(healed_key)})
+                _logger.warning(
+                    'managed_llm_key_refresh:cleared_without_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                        'rotation_status': getattr(rotation, 'status', None),
+                    },
+                )
             managed_key = await settings_store.get_current_managed_llm_key()
             if managed_key is None:
                 _logger.debug(
