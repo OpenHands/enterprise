@@ -49,6 +49,7 @@ export default [
       route("admin-dashboard", "routes/admin-dashboard.tsx"),
       route("budgets", "routes/budgets.tsx"),
       route("quota", "routes/quota-settings.tsx"),
+      route("your-budget", "routes/your-budget.tsx"),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),
     route("oauth/device/verify", "routes/device-verify.tsx"),

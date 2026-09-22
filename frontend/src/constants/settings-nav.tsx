@@ -5,6 +5,7 @@ import {
   DollarSign,
   Shield,
   Users,
+  Wallet,
 } from "lucide-react";
 import CreditCardIcon from "#/icons/credit-card.svg?react";
 import KeyIcon from "#/icons/key.svg?react";
@@ -191,6 +192,16 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "user",
   },
 ];
+
+// Kept out of SAAS_NAV_ITEMS: it is only shown in a team org that has budgets
+// enabled, which `useSettingsNavItems` decides at runtime.
+export const YOUR_BUDGET_NAV_ITEM: SettingsNavItem = {
+  icon: <Wallet className="size-4" strokeWidth={2} aria-hidden />,
+  to: "/settings/your-budget",
+  text: "SETTINGS$NAV_YOUR_BUDGET",
+  subtitle: "SETTINGS$PAGE_YOUR_BUDGET_SUBLINE",
+  section: "user",
+};
 
 export const OSS_NAV_ITEMS: SettingsNavItem[] = [
   {

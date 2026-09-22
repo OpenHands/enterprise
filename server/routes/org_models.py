@@ -827,6 +827,21 @@ class OrgBudgetUserMutationResponse(OrgBudgetUserResponse):
     applied_at: datetime | None = None
 
 
+class OrgMyBudgetResponse(BaseModel):
+    """The authenticated member's own budget for the current cycle."""
+
+    enabled: bool
+    monthly_limit: float | None = None
+    is_disabled: bool = False
+    is_override: bool = False
+    limit_updated_at: datetime | None = None
+    current_spend: float | None = None
+    cycle_start_at: datetime | None = None
+    cycle_end_at: datetime | None = None
+    spend_status: Literal['live', 'stale', 'unavailable'] | None = None
+    spend_observed_at: datetime | None = None
+
+
 class OrgBudgetSettingsResponse(BaseModel):
     enabled: bool
     monthly_limit: float | None = None
@@ -1074,3 +1089,29 @@ class OrgUsageStats(BaseModel):
 
     # Agent breakdown
     agent_usage: list[AgentUsageData] = Field(default_factory=list)
+
+
+class DailySpendData(BaseModel):
+    """Spend for a single day."""
+
+    date: str  # ISO date string (YYYY-MM-DD)
+    cost: float = 0.0
+
+
+class MyRecentUsageItem(BaseModel):
+    """A recent conversation and what it has cost so far."""
+
+    conversation_id: str
+    title: str | None = None
+    updated_at: datetime | None = None
+    accumulated_cost: float = 0.0
+
+
+class OrgMyUsageStats(BaseModel):
+    """The authenticated member's own usage for a time window."""
+
+    total_spend: float = 0.0
+    previous_period_spend: float = 0.0
+    daily_spend: list[DailySpendData] = Field(default_factory=list)
+    model_usage: list[ModelUsageData] = Field(default_factory=list)
+    recent_usage: list[MyRecentUsageItem] = Field(default_factory=list)
