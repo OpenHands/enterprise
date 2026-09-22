@@ -2,15 +2,14 @@
 
 The E2B SDK is mocked throughout; the agent server is replaced by a fake that
 records the requests the service makes to it. Focus areas:
-- sandbox metadata as the store for ownership and spec identity
+- `v1_sandbox` as the store for ownership, spec identity and the session key
 - user scoping, including cross user isolation and the admin (no user id) case
-- session API keys derived from the sandbox id rather than stored
 - the /api/init handshake start_sandbox completes before returning
-- lifecycle and status mapping onto the E2B SDK
+- lifecycle and status mapping onto the E2B SDK, including MISSING
 - exposed URL construction and VSCode URL resolution
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,6 +22,7 @@ from e2b import (
     SandboxState,
 )
 from pydantic import SecretStr
+from sqlalchemy import select, text
 
 from openhands.agent_server.init_router import InitRequest
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
@@ -46,8 +46,11 @@ from openhands.app_server.sandbox.sandbox_models import (
     WORKER_2,
     SandboxStatus,
 )
-from openhands.app_server.services.jwt_service import JwtService
-from openhands.app_server.utils.encryption_key import EncryptionKey
+from openhands.app_server.sandbox.sandbox_store import (
+    E2B_BACKEND,
+    StoredSandbox,
+    hash_session_api_key,
+)
 
 DOMAIN = 'e2b.example.com'
 TEMPLATE = 'openhands-agent-server'
@@ -61,6 +64,7 @@ VSCODE_URL = (
     f'https://8001-{SANDBOX_ID}.{DOMAIN}/?tkn=deadbeef&folder=/workspace/project'
 )
 CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
+SESSION_API_KEY = 'the-session-key'
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +94,20 @@ def _e2b_info(
 
 
 def _paginator(items: list, next_token: str | None = None) -> MagicMock:
+    """Stand in for e2b's paginator, including when it says it is done.
+
+    ``has_next`` starts True and goes False once the single page has been
+    handed out, which is the contract the SDK documents and the one the
+    service's drain loop terminates on.
+    """
     paginator = MagicMock()
-    paginator.next_items = AsyncMock(return_value=items)
+    paginator.has_next = True
+
+    async def _next_items():
+        paginator.has_next = False
+        return items
+
+    paginator.next_items = AsyncMock(side_effect=_next_items)
     paginator.next_token = next_token
     return paginator
 
@@ -162,17 +178,24 @@ class FakeAgentServer:
         return _response(self.init_post_status, {'state': 'ready'})
 
 
-def _jwt_service(*secrets: str) -> JwtService:
-    """JwtService whose newest (default) key is the last secret given."""
-    return JwtService(
-        keys=[
-            EncryptionKey(
-                id=f'key-{index}',
-                key=SecretStr(secret),
-                created_at=datetime(2020 + index, 1, 1, tzinfo=UTC),
-            )
-            for index, secret in enumerate(secrets)
-        ]
+def _stored(
+    sandbox_id: str = SANDBOX_ID,
+    created_by_user_id: str | None = OWNER_ID,
+    sandbox_spec_id: str = TEMPLATE,
+    session_api_key: str | None = SESSION_API_KEY,
+    created_at: datetime | None = None,
+) -> StoredSandbox:
+    """The `v1_sandbox` row start_sandbox writes for an E2B sandbox."""
+    return StoredSandbox(
+        id=sandbox_id,
+        backend=E2B_BACKEND,
+        created_by_user_id=created_by_user_id,
+        sandbox_spec_id=sandbox_spec_id,
+        session_api_key_hash=(
+            hash_session_api_key(session_api_key) if session_api_key else None
+        ),
+        session_api_key=SecretStr(session_api_key) if session_api_key else None,
+        created_at=created_at or CREATED_AT,
     )
 
 
@@ -184,9 +207,9 @@ def _user_context(user_id: str | None) -> AsyncMock:
 
 
 def _service(
+    db_session,
     user_id: str | None = OWNER_ID,
     httpx_client=None,
-    jwt_service: JwtService | None = None,
     web_url: str | None = WEB_URL,
     permitted_cors_origins: list[str] | None = None,
     init_api_key: str | None = INIT_API_KEY,
@@ -203,7 +226,7 @@ def _service(
         sandbox_spec_service=PresetSandboxSpecService(specs=[spec]),
         user_context=_user_context(user_id),
         httpx_client=httpx_client or FakeAgentServer(),
-        jwt_service=jwt_service or _jwt_service('the-secret'),
+        db_session=db_session,
         api_key='e2b-api-key',
         domain=DOMAIN,
         timeout_seconds=3600,
@@ -226,6 +249,31 @@ def clear_vscode_cache():
 
 
 @pytest.fixture
+async def db_session(async_session_maker):
+    """A session on this test's own postgres database."""
+    async with async_session_maker() as session:
+        yield session
+
+
+@pytest.fixture
+def service(db_session):
+    """Service acting for the sandbox owner."""
+    return _service(db_session)
+
+
+@pytest.fixture
+def store(db_session):
+    """Add the rows standing for the sandboxes a test sets up."""
+
+    async def _store(*sandboxes: StoredSandbox) -> None:
+        for sandbox in sandboxes:
+            db_session.add(sandbox)
+        await db_session.flush()
+
+    return _store
+
+
+@pytest.fixture
 def sdk():
     mock = _mock_sdk()
     with patch.object(e2b_sandbox_service, 'AsyncSandbox', mock):
@@ -239,8 +287,8 @@ def sdk():
 
 class TestStartSandbox:
     @pytest.mark.asyncio
-    async def test_metadata_records_owner_and_spec(self, sdk):
-        sandbox = await _service().start_sandbox()
+    async def test_metadata_records_owner_and_spec(self, sdk, db_session):
+        sandbox = await _service(db_session).start_sandbox()
 
         assert sdk.create.await_args.kwargs['metadata'] == {
             MANAGED_METADATA_KEY: 'true',
@@ -254,8 +302,8 @@ class TestStartSandbox:
         assert sandbox.session_api_key
 
     @pytest.mark.asyncio
-    async def test_metadata_omits_owner_for_admin(self, sdk):
-        sandbox = await _service(user_id=None).start_sandbox()
+    async def test_metadata_omits_owner_for_admin(self, sdk, db_session):
+        sandbox = await _service(db_session, user_id=None).start_sandbox()
 
         assert (
             CREATED_BY_USER_ID_METADATA_KEY
@@ -264,8 +312,8 @@ class TestStartSandbox:
         assert sandbox.created_by_user_id is None
 
     @pytest.mark.asyncio
-    async def test_created_with_pause_on_timeout(self, sdk):
-        await _service().start_sandbox()
+    async def test_created_with_pause_on_timeout(self, sdk, db_session):
+        await _service(db_session).start_sandbox()
 
         kwargs = sdk.create.await_args.kwargs
         assert kwargs['template'] == TEMPLATE
@@ -273,8 +321,8 @@ class TestStartSandbox:
         assert kwargs['lifecycle'] == {'on_timeout': 'pause', 'auto_resume': True}
 
     @pytest.mark.asyncio
-    async def test_connection_options_passed_explicitly(self, sdk):
-        await _service().start_sandbox()
+    async def test_connection_options_passed_explicitly(self, sdk, db_session):
+        await _service(db_session).start_sandbox()
 
         kwargs = sdk.create.await_args.kwargs
         assert kwargs['api_key'] == 'e2b-api-key'
@@ -282,23 +330,25 @@ class TestStartSandbox:
         assert kwargs['api_url'] == 'https://api.e2b.example.com'
 
     @pytest.mark.asyncio
-    async def test_sandbox_id_hint_is_ignored(self, sdk):
+    async def test_sandbox_id_hint_is_ignored(self, sdk, db_session):
         """E2B assigns the id; SandboxInfo.id is the E2B sandbox id."""
-        sandbox = await _service().start_sandbox(sandbox_id='caller-chosen-id')
+        sandbox = await _service(db_session).start_sandbox(
+            sandbox_id='caller-chosen-id'
+        )
 
         assert sandbox.id == SANDBOX_ID
 
     @pytest.mark.asyncio
-    async def test_create_failure_raises_sandbox_error(self, sdk):
+    async def test_create_failure_raises_sandbox_error(self, sdk, db_session):
         sdk.create.side_effect = SandboxException('boom')
 
         with pytest.raises(SandboxError) as raised:
-            await _service().start_sandbox()
+            await _service(db_session).start_sandbox()
 
         assert 'Failed to start sandbox' in str(raised.value.detail)
 
     @pytest.mark.asyncio
-    async def test_a_placement_failure_names_the_template_size(self, sdk):
+    async def test_a_placement_failure_names_the_template_size(self, sdk, db_session):
         """A template too big for any node fails permanently, not transiently."""
         sdk.create.side_effect = SandboxException(
             '500: Failed to place sandbox: sandbox creation failed on 1 '
@@ -306,7 +356,7 @@ class TestStartSandbox:
         )
 
         with pytest.raises(SandboxError) as raised:
-            await _service().start_sandbox()
+            await _service(db_session).start_sandbox()
 
         detail = str(raised.value.detail)
         assert 'could not place a sandbox' in detail
@@ -318,10 +368,10 @@ class TestStartSandbox:
 
 class TestInitHandshake:
     @pytest.mark.asyncio
-    async def test_init_body_is_accepted_by_the_agent_server(self, sdk):
+    async def test_init_body_is_accepted_by_the_agent_server(self, sdk, db_session):
         agent_server = FakeAgentServer()
 
-        sandbox = await _service(httpx_client=agent_server).start_sandbox()
+        sandbox = await _service(db_session, httpx_client=agent_server).start_sandbox()
 
         body = agent_server.init_post_bodies[0]
         # extra='forbid' on the real model: validating proves the body carries
@@ -346,11 +396,12 @@ class TestInitHandshake:
         assert agent_server.init_post_headers[0] == {'X-Init-API-Key': INIT_API_KEY}
 
     @pytest.mark.asyncio
-    async def test_secret_key_is_rotated_per_sandbox(self, sdk):
+    async def test_secret_key_is_rotated_per_sandbox(self, sdk, db_session):
         agent_server = FakeAgentServer()
-        service = _service(httpx_client=agent_server)
+        service = _service(db_session, httpx_client=agent_server)
 
         await service.start_sandbox()
+        sdk.create.return_value = SimpleNamespace(sandbox_id='iother456')
         await service.start_sandbox()
 
         first, second = (body['secret_key'] for body in agent_server.init_post_bodies)
@@ -359,13 +410,16 @@ class TestInitHandshake:
 
     @pytest.mark.asyncio
     async def test_env_carries_worker_ports_and_agent_server_env(
-        self, sdk, monkeypatch
+        self,
+        sdk,
+        monkeypatch,
+        db_session,
     ):
         monkeypatch.setenv('LLM_API_KEY', 'sk-secret')
         monkeypatch.setenv('LLM_TIMEOUT', '3600')
         agent_server = FakeAgentServer()
 
-        await _service(httpx_client=agent_server).start_sandbox()
+        await _service(db_session, httpx_client=agent_server).start_sandbox()
 
         env = agent_server.init_post_bodies[0]['env']
         assert env[WORKER_1] == str(WORKER_1_PORT)
@@ -374,10 +428,11 @@ class TestInitHandshake:
         assert env['LLM_TIMEOUT'] == '3600'
 
     @pytest.mark.asyncio
-    async def test_cors_origins_include_permitted_origins(self, sdk):
+    async def test_cors_origins_include_permitted_origins(self, sdk, db_session):
         agent_server = FakeAgentServer()
 
         await _service(
+            db_session,
             httpx_client=agent_server,
             permitted_cors_origins=['https://other.example.com', WEB_URL],
         ).start_sandbox()
@@ -388,12 +443,12 @@ class TestInitHandshake:
         ]
 
     @pytest.mark.asyncio
-    async def test_no_webhook_without_a_public_web_url(self, sdk):
+    async def test_no_webhook_without_a_public_web_url(self, sdk, db_session):
         agent_server = FakeAgentServer()
 
         with patch.object(e2b_sandbox_service._logger, 'warning') as warning:
             await _service(
-                httpx_client=agent_server, web_url='http://localhost:3000'
+                db_session, httpx_client=agent_server, web_url='http://localhost:3000'
             ).start_sandbox()
 
         assert 'webhooks' not in agent_server.init_post_bodies[0]
@@ -402,13 +457,16 @@ class TestInitHandshake:
     @pytest.mark.asyncio
     @pytest.mark.parametrize('init_api_key', [None, ''])
     async def test_a_missing_init_key_fails_before_creating_a_sandbox(
-        self, sdk, init_api_key
+        self,
+        sdk,
+        init_api_key,
+        db_session,
     ):
         agent_server = FakeAgentServer()
 
         with pytest.raises(SandboxError) as raised:
             await _service(
-                httpx_client=agent_server, init_api_key=init_api_key
+                db_session, httpx_client=agent_server, init_api_key=init_api_key
             ).start_sandbox()
 
         sdk.create.assert_not_awaited()
@@ -418,11 +476,11 @@ class TestInitHandshake:
         assert 'OH_SECRET_KEY' in str(raised.value.detail)
 
     @pytest.mark.asyncio
-    async def test_a_rejected_init_key_says_so(self, sdk):
+    async def test_a_rejected_init_key_says_so(self, sdk, db_session):
         agent_server = FakeAgentServer(init_post_status=401)
 
         with pytest.raises(SandboxError) as raised:
-            await _service(httpx_client=agent_server).start_sandbox()
+            await _service(db_session, httpx_client=agent_server).start_sandbox()
 
         detail = str(raised.value.detail)
         assert 'init API key' in detail
@@ -430,16 +488,16 @@ class TestInitHandshake:
         assert INIT_API_KEY not in detail
 
     @pytest.mark.asyncio
-    async def test_other_init_failures_keep_the_generic_message(self, sdk):
+    async def test_other_init_failures_keep_the_generic_message(self, sdk, db_session):
         agent_server = FakeAgentServer(init_post_status=500)
 
         with pytest.raises(SandboxError) as raised:
-            await _service(httpx_client=agent_server).start_sandbox()
+            await _service(db_session, httpx_client=agent_server).start_sandbox()
 
         assert 'Failed to initialize sandbox' in str(raised.value.detail)
 
     @pytest.mark.asyncio
-    async def test_waits_for_dormant_through_edge_errors(self, sdk):
+    async def test_waits_for_dormant_through_edge_errors(self, sdk, db_session):
         agent_server = FakeAgentServer(
             init_get_responses=[
                 _response(
@@ -450,20 +508,22 @@ class TestInitHandshake:
             ]
         )
 
-        await _service(httpx_client=agent_server).start_sandbox()
+        await _service(db_session, httpx_client=agent_server).start_sandbox()
 
         assert agent_server.init_get_count == 3
         assert len(agent_server.init_post_bodies) == 1
 
     @pytest.mark.asyncio
-    async def test_kills_the_sandbox_when_init_never_becomes_dormant(self, sdk):
+    async def test_kills_the_sandbox_when_init_never_becomes_dormant(
+        self, sdk, db_session
+    ):
         agent_server = FakeAgentServer(
             init_get_responses=[_response(502, {'message': 'nope'})]
         )
 
         with pytest.raises(SandboxError):
             await _service(
-                httpx_client=agent_server, init_timeout_seconds=0
+                db_session, httpx_client=agent_server, init_timeout_seconds=0
             ).start_sandbox()
 
         sdk.kill.assert_awaited_once()
@@ -471,24 +531,24 @@ class TestInitHandshake:
         assert not agent_server.init_post_bodies
 
     @pytest.mark.asyncio
-    async def test_kills_the_sandbox_when_init_is_rejected(self, sdk):
+    async def test_kills_the_sandbox_when_init_is_rejected(self, sdk, db_session):
         agent_server = FakeAgentServer(init_post_status=403)
 
         with pytest.raises(SandboxError):
-            await _service(httpx_client=agent_server).start_sandbox()
+            await _service(db_session, httpx_client=agent_server).start_sandbox()
 
         sdk.kill.assert_awaited_once()
         # Init is never retried: a replay cannot be told apart from a bad key.
         assert len(agent_server.init_post_bodies) == 1
 
     @pytest.mark.asyncio
-    async def test_kills_the_sandbox_when_already_initialized(self, sdk):
+    async def test_kills_the_sandbox_when_already_initialized(self, sdk, db_session):
         agent_server = FakeAgentServer(
             init_get_responses=[_response(200, {'state': 'ready'})]
         )
 
         with pytest.raises(SandboxError):
-            await _service(httpx_client=agent_server).start_sandbox()
+            await _service(db_session, httpx_client=agent_server).start_sandbox()
 
         sdk.kill.assert_awaited_once()
 
@@ -499,9 +559,15 @@ class TestInitHandshake:
 
 
 class TestSessionApiKeys:
+    """The key is minted per sandbox and kept on the row, encrypted.
+
+    It used to be derived from the app server's encryption key, which meant
+    adding a key rotated every live sandbox's key out from under it.
+    """
+
     @pytest.mark.asyncio
-    async def test_round_trip(self, sdk):
-        service = _service()
+    async def test_round_trip(self, sdk, db_session):
+        service = _service(db_session)
         sandbox = await service.start_sandbox()
         assert sandbox.session_api_key
 
@@ -511,15 +577,49 @@ class TestSessionApiKeys:
         assert found.id == SANDBOX_ID
 
     @pytest.mark.asyncio
-    async def test_key_carries_the_sandbox_id(self, sdk):
-        sandbox = await _service().start_sandbox()
+    async def test_key_is_not_derived_from_the_sandbox_id(self, sdk, db_session):
+        """A key that carries its own sandbox id hands out a free oracle."""
+        sandbox = await _service(db_session).start_sandbox()
 
         assert sandbox.session_api_key
-        assert sandbox.session_api_key.split('.')[0] == SANDBOX_ID
+        assert SANDBOX_ID not in sandbox.session_api_key
 
     @pytest.mark.asyncio
-    async def test_tampered_key_is_rejected_without_a_lookup(self, sdk):
-        service = _service()
+    async def test_each_sandbox_gets_its_own_key(self, sdk, db_session):
+        service = _service(db_session)
+        first = await service.start_sandbox()
+
+        sdk.create.return_value = SimpleNamespace(sandbox_id='iother456')
+        sdk.get_info.return_value = _e2b_info(sandbox_id='iother456')
+        second = await service.start_sandbox()
+
+        assert first.session_api_key != second.session_api_key
+
+    @pytest.mark.asyncio
+    async def test_the_key_is_stored_encrypted(self, sdk, db_session):
+        """The column holds ciphertext; the ORM hands back the key."""
+        sandbox = await _service(db_session).start_sandbox()
+        assert sandbox.session_api_key
+
+        row = (
+            await db_session.execute(
+                select(StoredSandbox).where(StoredSandbox.id == SANDBOX_ID)
+            )
+        ).scalar_one()
+        assert row.session_api_key is not None
+        assert row.session_api_key.get_secret_value() == sandbox.session_api_key
+
+        stored = (
+            await db_session.execute(
+                text('SELECT session_api_key FROM v1_sandbox WHERE id = :id'),
+                {'id': SANDBOX_ID},
+            )
+        ).scalar_one()
+        assert stored != sandbox.session_api_key
+
+    @pytest.mark.asyncio
+    async def test_a_wrong_key_is_rejected_without_an_e2b_call(self, sdk, db_session):
+        service = _service(db_session)
         sandbox = await service.start_sandbox()
         assert sandbox.session_api_key
         sdk.get_info.reset_mock()
@@ -532,52 +632,20 @@ class TestSessionApiKeys:
         sdk.get_info.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_key_for_another_sandbox_id_is_rejected(self, sdk):
-        service = _service()
-        sandbox = await service.start_sandbox()
-        assert sandbox.session_api_key
-        _, _, digest = sandbox.session_api_key.partition('.')
-
-        assert await service.get_sandbox_by_session_api_key(f'iother.{digest}') is None
-
-    @pytest.mark.asyncio
-    async def test_malformed_key_is_rejected(self, sdk):
-        service = _service()
+    async def test_malformed_key_is_rejected(self, sdk, db_session):
+        service = _service(db_session)
 
         assert await service.get_sandbox_by_session_api_key('no-separator') is None
         assert await service.get_sandbox_by_session_api_key('') is None
         assert await service.get_sandbox_by_session_api_key('.digest') is None
 
     @pytest.mark.asyncio
-    async def test_derived_with_the_default_key_and_verified_against_all(self, sdk):
-        """A key issued before a rotation still resolves afterwards."""
-        before = _service(jwt_service=_jwt_service('old-secret'))
-        sandbox = await before.start_sandbox()
-        assert sandbox.session_api_key
-
-        after = _service(jwt_service=_jwt_service('old-secret', 'new-secret'))
-        assert (
-            await after.get_sandbox_by_session_api_key(sandbox.session_api_key)
-        ) is not None
-        # New sandboxes are issued keys from the new default.
-        assert (await after.start_sandbox()).session_api_key != sandbox.session_api_key
-
-    @pytest.mark.asyncio
-    async def test_unrelated_key_is_rejected(self, sdk):
-        stranger = _service(jwt_service=_jwt_service('some-other-secret'))
-        sandbox = await stranger.start_sandbox()
-        assert sandbox.session_api_key
-
-        service = _service(jwt_service=_jwt_service('the-secret'))
-        assert (
-            await service.get_sandbox_by_session_api_key(sandbox.session_api_key)
-        ) is None
-
-    @pytest.mark.asyncio
-    async def test_record_lookup_returns_owner(self, sdk):
-        service = _service()
+    async def test_record_lookup_makes_no_e2b_call(self, sdk, db_session):
+        """The webhook path used to spend one E2B call per delivery."""
+        service = _service(db_session)
         sandbox = await service.start_sandbox()
         assert sandbox.session_api_key
+        sdk.get_info.reset_mock()
 
         record = await service.get_sandbox_record_by_session_api_key(
             sandbox.session_api_key
@@ -586,11 +654,12 @@ class TestSessionApiKeys:
         assert record is not None
         assert record.id == SANDBOX_ID
         assert record.created_by_user_id == OWNER_ID
+        sdk.get_info.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_key_survives_pause_and_resume(self, sdk):
+    async def test_key_survives_pause_and_resume(self, sdk, db_session):
         """Same id, same host, process restored from the snapshot."""
-        service = _service()
+        service = _service(db_session)
         sandbox = await service.start_sandbox()
         assert sandbox.session_api_key
 
@@ -603,6 +672,21 @@ class TestSessionApiKeys:
         assert resumed is not None
         assert resumed.session_api_key == sandbox.session_api_key
 
+    @pytest.mark.asyncio
+    async def test_delete_revokes_the_key(self, sdk, db_session):
+        service = _service(db_session)
+        sandbox = await service.start_sandbox()
+        assert sandbox.session_api_key
+
+        assert await service.delete_sandbox(SANDBOX_ID) is True
+
+        assert (
+            await service.get_sandbox_by_session_api_key(sandbox.session_api_key)
+        ) is None
+        assert (
+            await service.get_sandbox_record_by_session_api_key(sandbox.session_api_key)
+        ) is None
+
 
 # ---------------------------------------------------------------------------
 # Reads
@@ -610,6 +694,11 @@ class TestSessionApiKeys:
 
 
 class TestGetSandbox:
+    @pytest.fixture(autouse=True)
+    async def existing_sandbox(self, store):
+        """The row start_sandbox would have written for SANDBOX_ID."""
+        await store(_stored())
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         'state,expected',
@@ -618,48 +707,69 @@ class TestGetSandbox:
             (SandboxState.PAUSED, SandboxStatus.PAUSED),
         ],
     )
-    async def test_status_mapping(self, sdk, state, expected):
+    async def test_status_mapping(self, sdk, state, expected, db_session):
         sdk.get_info.return_value = _e2b_info(state=state)
 
-        sandbox = await _service().get_sandbox(SANDBOX_ID)
+        sandbox = await _service(db_session).get_sandbox(SANDBOX_ID)
 
         assert sandbox is not None
         assert sandbox.status == expected
         assert sandbox.created_at == CREATED_AT
 
     @pytest.mark.asyncio
-    async def test_paused_sandbox_exposes_no_urls_or_key(self, sdk):
+    async def test_paused_sandbox_exposes_no_urls_or_key(self, sdk, db_session):
         sdk.get_info.return_value = _e2b_info(state=SandboxState.PAUSED)
 
-        sandbox = await _service().get_sandbox(SANDBOX_ID)
+        sandbox = await _service(db_session).get_sandbox(SANDBOX_ID)
 
         assert sandbox is not None
         assert sandbox.session_api_key is None
         assert sandbox.exposed_urls is None
 
     @pytest.mark.asyncio
-    async def test_missing_sandbox_returns_none(self, sdk):
+    async def test_a_sandbox_e2b_has_reaped_is_missing(self, sdk, db_session):
+        """E2B's SandboxState has no reaped state, so the row supplies it."""
         sdk.get_info.side_effect = SandboxNotFoundException('Sandbox not found')
 
-        assert await _service().get_sandbox(SANDBOX_ID) is None
+        sandbox = await _service(db_session).get_sandbox(SANDBOX_ID)
+
+        assert sandbox is not None
+        assert sandbox.status == SandboxStatus.MISSING
+        assert sandbox.created_by_user_id == OWNER_ID
+        assert sandbox.session_api_key is None
+        assert sandbox.exposed_urls is None
 
     @pytest.mark.asyncio
-    async def test_malformed_id_returns_none(self, sdk):
+    async def test_malformed_id_returns_none(self, sdk, db_session):
         sdk.get_info.side_effect = SandboxException('400: Invalid sandbox ID')
 
-        assert await _service().get_sandbox('not-an-id') is None
+        assert await _service(db_session).get_sandbox('not-an-id') is None
 
     @pytest.mark.asyncio
-    async def test_unmanaged_sandbox_is_invisible(self, sdk):
-        sdk.get_info.return_value = _e2b_info(managed=False)
+    async def test_a_deleted_sandbox_is_invisible(self, sdk, db_session, store):
+        await store(_stored(sandbox_id='igone', session_api_key=None))
+        service = _service(db_session)
+        assert await service.delete_sandbox('igone') is True
 
-        assert await _service(user_id=None).get_sandbox(SANDBOX_ID) is None
+        assert await service.get_sandbox('igone') is None
+
+    @pytest.mark.asyncio
+    async def test_a_sandbox_with_no_row_is_invisible(self, sdk, db_session):
+        """A sandbox the app has no record of is not the app's to hand out."""
+        sdk.get_info.return_value = _e2b_info(sandbox_id='iunknown', managed=False)
+
+        assert await _service(db_session, user_id=None).get_sandbox('iunknown') is None
 
 
 class TestExposedUrls:
+    @pytest.fixture(autouse=True)
+    async def existing_sandbox(self, store):
+        """The row start_sandbox would have written for SANDBOX_ID."""
+        await store(_stored())
+
     @pytest.mark.asyncio
-    async def test_urls_are_built_from_id_and_domain(self, sdk):
-        sandbox = await _service().get_sandbox(SANDBOX_ID)
+    async def test_urls_are_built_from_id_and_domain(self, sdk, db_session):
+        sandbox = await _service(db_session).get_sandbox(SANDBOX_ID)
 
         assert sandbox is not None
         assert sandbox.exposed_urls is not None
@@ -675,10 +785,12 @@ class TestExposedUrls:
         )
 
     @pytest.mark.asyncio
-    async def test_vscode_url_comes_from_the_agent_server(self, sdk):
+    async def test_vscode_url_comes_from_the_agent_server(self, sdk, db_session):
         agent_server = FakeAgentServer()
 
-        sandbox = await _service(httpx_client=agent_server).get_sandbox(SANDBOX_ID)
+        sandbox = await _service(db_session, httpx_client=agent_server).get_sandbox(
+            SANDBOX_ID
+        )
 
         assert sandbox is not None
         assert sandbox.exposed_urls is not None
@@ -694,9 +806,9 @@ class TestExposedUrls:
         }
 
     @pytest.mark.asyncio
-    async def test_vscode_url_is_cached(self, sdk):
+    async def test_vscode_url_is_cached(self, sdk, db_session):
         agent_server = FakeAgentServer()
-        service = _service(httpx_client=agent_server)
+        service = _service(db_session, httpx_client=agent_server)
 
         await service.get_sandbox(SANDBOX_ID)
         await service.get_sandbox(SANDBOX_ID)
@@ -705,20 +817,24 @@ class TestExposedUrls:
         assert len(agent_server.vscode_requests) == 1
 
     @pytest.mark.asyncio
-    async def test_vscode_url_is_populated_by_start_and_reused(self, sdk):
+    async def test_vscode_url_is_populated_by_start_and_reused(self, sdk, db_session):
         agent_server = FakeAgentServer()
-        service = _service(httpx_client=agent_server)
+        service = _service(db_session, httpx_client=agent_server)
+        sdk.create.return_value = SimpleNamespace(sandbox_id='ifresh')
+        sdk.get_info.return_value = _e2b_info(sandbox_id='ifresh')
 
         await service.start_sandbox()
-        await service.get_sandbox(SANDBOX_ID)
+        await service.get_sandbox('ifresh')
 
         assert len(agent_server.vscode_requests) == 1
 
     @pytest.mark.asyncio
-    async def test_vscode_failure_omits_the_url(self, sdk):
+    async def test_vscode_failure_omits_the_url(self, sdk, db_session):
         agent_server = FakeAgentServer(vscode_url=None)
 
-        sandbox = await _service(httpx_client=agent_server).get_sandbox(SANDBOX_ID)
+        sandbox = await _service(db_session, httpx_client=agent_server).get_sandbox(
+            SANDBOX_ID
+        )
 
         assert sandbox is not None
         assert sandbox.exposed_urls is not None
@@ -743,9 +859,9 @@ class TestExposedUrls:
         assert 'sbx-5' in e2b_sandbox_service._vscode_urls
 
     @pytest.mark.asyncio
-    async def test_delete_evicts_the_cached_url(self, sdk):
+    async def test_delete_evicts_the_cached_url(self, sdk, db_session):
         agent_server = FakeAgentServer()
-        service = _service(httpx_client=agent_server)
+        service = _service(db_session, httpx_client=agent_server)
         await service.get_sandbox(SANDBOX_ID)
 
         await service.delete_sandbox(SANDBOX_ID)
@@ -754,63 +870,111 @@ class TestExposedUrls:
 
 
 class TestSearchSandboxes:
+    """One DB query for the page, one E2B call for the live state on it."""
+
     @pytest.mark.asyncio
-    async def test_filters_on_owner_metadata(self, sdk):
+    async def test_returns_the_callers_sandboxes(self, sdk, db_session, store):
+        await store(_stored())
         sdk.list.return_value = _paginator([_e2b_info()])
 
-        page = await _service().search_sandboxes()
+        page = await _service(db_session).search_sandboxes()
 
-        query = sdk.list.call_args.kwargs['query']
-        assert query.metadata == {
-            MANAGED_METADATA_KEY: 'true',
-            CREATED_BY_USER_ID_METADATA_KEY: OWNER_ID,
-        }
-        assert set(query.state) == {SandboxState.RUNNING, SandboxState.PAUSED}
         assert [item.id for item in page.items] == [SANDBOX_ID]
         assert page.items[0].created_by_user_id == OWNER_ID
         assert page.items[0].sandbox_spec_id == TEMPLATE
+        assert page.items[0].status == SandboxStatus.RUNNING
 
     @pytest.mark.asyncio
-    async def test_admin_sees_every_managed_sandbox(self, sdk):
+    async def test_another_users_sandbox_is_not_returned(self, sdk, db_session, store):
+        await store(_stored(created_by_user_id=OTHER_USER_ID))
         sdk.list.return_value = _paginator([_e2b_info(user_id=OTHER_USER_ID)])
 
-        page = await _service(user_id=None).search_sandboxes()
+        page = await _service(db_session).search_sandboxes()
 
-        assert sdk.list.call_args.kwargs['query'].metadata == {
-            MANAGED_METADATA_KEY: 'true'
-        }
+        assert page.items == []
+
+    @pytest.mark.asyncio
+    async def test_admin_sees_every_managed_sandbox(self, sdk, db_session, store):
+        await store(_stored(created_by_user_id=OTHER_USER_ID))
+        sdk.list.return_value = _paginator([_e2b_info(user_id=OTHER_USER_ID)])
+
+        page = await _service(db_session, user_id=None).search_sandboxes()
+
         assert [item.id for item in page.items] == [SANDBOX_ID]
 
     @pytest.mark.asyncio
-    async def test_pagination_maps_the_next_token(self, sdk):
-        sdk.list.return_value = _paginator([_e2b_info()], next_token='cursor-2')
+    async def test_asks_e2b_only_for_managed_sandboxes(self, sdk, db_session, store):
+        """Ownership is settled by the query; E2B supplies live state only."""
+        await store(_stored())
+        sdk.list.return_value = _paginator([_e2b_info()])
 
-        page = await _service().search_sandboxes(page_id='cursor-1', limit=25)
+        await _service(db_session).search_sandboxes()
 
-        assert sdk.list.call_args.kwargs['next_token'] == 'cursor-1'
-        assert sdk.list.call_args.kwargs['limit'] == 25
-        assert page.next_page_id == 'cursor-2'
+        query = sdk.list.call_args.kwargs['query']
+        assert query.metadata == {MANAGED_METADATA_KEY: 'true'}
+        assert set(query.state) == {SandboxState.RUNNING, SandboxState.PAUSED}
+        assert sdk.list.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_list_failure_is_reported_rather_than_read_as_empty(self, sdk):
+    async def test_a_row_e2b_does_not_know_about_is_missing(
+        self, sdk, db_session, store
+    ):
+        await store(_stored())
+        sdk.list.return_value = _paginator([])
+
+        page = await _service(db_session).search_sandboxes()
+
+        assert [item.status for item in page.items] == [SandboxStatus.MISSING]
+
+    @pytest.mark.asyncio
+    async def test_pages_on_an_offset(self, sdk, db_session, store):
+        await store(
+            *[
+                _stored(
+                    sandbox_id=f'sb-{index}',
+                    created_at=CREATED_AT + timedelta(days=index),
+                )
+                for index in range(3)
+            ]
+        )
+        sdk.list.side_effect = lambda **kwargs: _paginator([])
+        service = _service(db_session)
+
+        first = await service.search_sandboxes(limit=2)
+        assert [item.id for item in first.items] == ['sb-2', 'sb-1']
+        assert first.next_page_id == '2'
+
+        second = await service.search_sandboxes(page_id=first.next_page_id, limit=2)
+        assert [item.id for item in second.items] == ['sb-0']
+        assert second.next_page_id is None
+
+    @pytest.mark.asyncio
+    async def test_list_failure_is_reported_rather_than_read_as_empty(
+        self, sdk, db_session, store
+    ):
         # An empty page would tell `pause_old_sandboxes` the cap is not
         # reached and tell the conversation-start lookup to provision another
         # sandbox, so a rate limit would produce more load rather than less.
+        await store(_stored())
         paginator = _paginator([])
         paginator.next_items.side_effect = SandboxException('boom')
         sdk.list.return_value = paginator
 
         with pytest.raises(SandboxError, match='Could not list sandboxes'):
-            await _service().search_sandboxes()
+            await _service(db_session).search_sandboxes()
 
     @pytest.mark.asyncio
-    async def test_no_vscode_call_per_sandbox(self, sdk):
+    async def test_no_vscode_call_per_sandbox(self, sdk, db_session, store):
+        await store(
+            _stored(sandbox_id='sb-1', created_at=CREATED_AT),
+            _stored(sandbox_id='sb-2', created_at=CREATED_AT - timedelta(days=1)),
+        )
         agent_server = FakeAgentServer()
         sdk.list.return_value = _paginator(
             [_e2b_info(sandbox_id='sb-1'), _e2b_info(sandbox_id='sb-2')]
         )
 
-        page = await _service(httpx_client=agent_server).search_sandboxes()
+        page = await _service(db_session, httpx_client=agent_server).search_sandboxes()
 
         assert agent_server.vscode_requests == []
         assert [item.id for item in page.items] == ['sb-1', 'sb-2']
@@ -829,46 +993,55 @@ class TestSearchSandboxes:
 
 
 class TestLifecycle:
+    @pytest.fixture(autouse=True)
+    async def existing_sandbox(self, store):
+        """The row start_sandbox would have written for SANDBOX_ID."""
+        await store(_stored())
+
     @pytest.mark.asyncio
-    async def test_pause_uses_the_sdk(self, sdk):
-        assert await _service().pause_sandbox(SANDBOX_ID) is True
+    async def test_pause_uses_the_sdk(self, sdk, db_session):
+        assert await _service(db_session).pause_sandbox(SANDBOX_ID) is True
 
         sdk.pause.assert_awaited_once()
         assert sdk.pause.await_args.args[0] == SANDBOX_ID
 
     @pytest.mark.asyncio
-    async def test_pause_of_a_paused_sandbox_is_a_no_op(self, sdk):
+    async def test_pause_of_a_paused_sandbox_is_a_no_op(self, sdk, db_session):
         sdk.get_info.return_value = _e2b_info(state=SandboxState.PAUSED)
 
-        assert await _service().pause_sandbox(SANDBOX_ID) is True
+        assert await _service(db_session).pause_sandbox(SANDBOX_ID) is True
 
         sdk.pause.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_pause_of_a_missing_sandbox_returns_false(self, sdk):
+    async def test_pause_of_a_missing_sandbox_returns_false(self, sdk, db_session):
         sdk.get_info.side_effect = SandboxNotFoundException('gone')
 
-        assert await _service().pause_sandbox(SANDBOX_ID) is False
+        assert await _service(db_session).pause_sandbox(SANDBOX_ID) is False
 
     @pytest.mark.asyncio
-    async def test_resume_connects_with_a_fresh_timeout(self, sdk):
+    async def test_resume_connects_with_a_fresh_timeout(self, sdk, db_session):
         sdk.get_info.return_value = _e2b_info(state=SandboxState.PAUSED)
 
-        assert await _service().resume_sandbox(SANDBOX_ID) is True
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is True
 
         sdk.connect.assert_awaited_once()
         assert sdk.connect.await_args.args[0] == SANDBOX_ID
         assert sdk.connect.await_args.kwargs['timeout'] == 3600
 
     @pytest.mark.asyncio
-    async def test_resume_of_a_missing_sandbox_returns_false(self, sdk):
-        sdk.get_info.side_effect = SandboxNotFoundException('gone')
-
-        assert await _service().resume_sandbox(SANDBOX_ID) is False
+    async def test_resume_without_a_row_returns_false(self, sdk, db_session):
+        assert await _service(db_session).resume_sandbox('iunknown') is False
         sdk.connect.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_resume_retries_while_the_snapshot_settles(self, sdk):
+    async def test_resume_of_a_sandbox_e2b_lost_returns_false(self, sdk, db_session):
+        sdk.connect.side_effect = SandboxNotFoundException('gone')
+
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is False
+
+    @pytest.mark.asyncio
+    async def test_resume_retries_while_the_snapshot_settles(self, sdk, db_session):
         """A sandbox reports paused before its snapshot can be placed."""
         sdk.get_info.return_value = _e2b_info(state=SandboxState.PAUSED)
         sdk.connect.side_effect = [
@@ -876,55 +1049,65 @@ class TestLifecycle:
             None,
         ]
 
-        assert await _service().resume_sandbox(SANDBOX_ID) is True
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is True
 
         assert sdk.connect.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_resume_gives_up_after_the_retry_budget(self, sdk):
+    async def test_resume_gives_up_after_the_retry_budget(self, sdk, db_session):
         sdk.get_info.return_value = _e2b_info(state=SandboxState.PAUSED)
         sdk.connect.side_effect = SandboxException('500: Failed to place sandbox')
 
-        assert await _service(resume_retries=3).resume_sandbox(SANDBOX_ID) is False
+        assert (
+            await _service(db_session, resume_retries=3).resume_sandbox(SANDBOX_ID)
+            is False
+        )
 
         assert sdk.connect.await_count == 3
 
     @pytest.mark.asyncio
-    async def test_resume_does_not_retry_a_vanished_sandbox(self, sdk):
+    async def test_resume_does_not_retry_a_vanished_sandbox(self, sdk, db_session):
         sdk.get_info.return_value = _e2b_info(state=SandboxState.PAUSED)
         sdk.connect.side_effect = SandboxNotFoundException('Paused sandbox not found')
 
-        assert await _service().resume_sandbox(SANDBOX_ID) is False
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is False
 
         assert sdk.connect.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_delete_kills_the_sandbox(self, sdk):
-        assert await _service().delete_sandbox(SANDBOX_ID) is True
+    async def test_delete_kills_the_sandbox(self, sdk, db_session):
+        assert await _service(db_session).delete_sandbox(SANDBOX_ID) is True
 
         sdk.kill.assert_awaited_once()
         assert sdk.kill.await_args.args[0] == SANDBOX_ID
 
     @pytest.mark.asyncio
-    async def test_delete_of_a_missing_sandbox_returns_false(self, sdk):
-        sdk.get_info.side_effect = SandboxNotFoundException('gone')
-
-        assert await _service().delete_sandbox(SANDBOX_ID) is False
+    async def test_delete_without_a_row_returns_false(self, sdk, db_session):
+        assert await _service(db_session).delete_sandbox('iunknown') is False
         sdk.kill.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_delete_of_an_already_dead_sandbox_succeeds(self, sdk):
+    async def test_delete_retires_a_row_e2b_has_already_reaped(self, sdk, db_session):
+        """Nothing left to kill is not a reason to ask for a retry."""
+        sdk.kill.side_effect = SandboxNotFoundException('gone')
+        service = _service(db_session)
+
+        assert await service.delete_sandbox(SANDBOX_ID) is True
+        assert await service.get_sandbox(SANDBOX_ID) is None
+
+    @pytest.mark.asyncio
+    async def test_delete_of_an_already_dead_sandbox_succeeds(self, sdk, db_session):
         """kill() reports False when there was nothing to kill; not an error."""
         sdk.kill.return_value = False
 
-        assert await _service().delete_sandbox(SANDBOX_ID) is True
+        assert await _service(db_session).delete_sandbox(SANDBOX_ID) is True
 
     @pytest.mark.asyncio
-    async def test_delete_failure_is_retryable(self, sdk):
+    async def test_delete_failure_is_retryable(self, sdk, db_session):
         sdk.kill.side_effect = SandboxException('service unavailable')
 
         with pytest.raises(SandboxDeleteRetryError):
-            await _service().delete_sandbox(SANDBOX_ID)
+            await _service(db_session).delete_sandbox(SANDBOX_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -933,10 +1116,16 @@ class TestLifecycle:
 
 
 class TestUserScoping:
+    """Ownership comes off the row, so E2B metadata cannot be used to spoof it."""
+
+    @pytest.fixture(autouse=True)
+    async def owners_sandbox(self, store):
+        await store(_stored(created_by_user_id=OWNER_ID))
+
     @pytest.fixture
-    def intruder(self, sdk) -> E2BSandboxService:
+    def intruder(self, sdk, db_session) -> E2BSandboxService:
         sdk.get_info.return_value = _e2b_info(user_id=OWNER_ID)
-        return _service(user_id=OTHER_USER_ID)
+        return _service(db_session, user_id=OTHER_USER_ID)
 
     @pytest.mark.asyncio
     async def test_cannot_get(self, intruder):
@@ -958,9 +1147,14 @@ class TestUserScoping:
         sdk.kill.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_cannot_resolve_a_leaked_session_key(self, intruder, sdk):
-        owner = _service(user_id=OWNER_ID)
-        sandbox = await owner.start_sandbox()
+    async def test_cannot_search(self, intruder):
+        assert (await intruder.search_sandboxes()).items == []
+
+    @pytest.mark.asyncio
+    async def test_cannot_resolve_a_leaked_session_key(self, intruder, db_session):
+        owner = _service(db_session, user_id=OWNER_ID)
+        sandbox = await owner.get_sandbox(SANDBOX_ID)
+        assert sandbox is not None
         assert sandbox.session_api_key
 
         assert (
@@ -973,10 +1167,20 @@ class TestUserScoping:
         ) is None
 
     @pytest.mark.asyncio
-    async def test_admin_can_get(self, sdk):
+    async def test_admin_can_get(self, sdk, db_session):
         sdk.get_info.return_value = _e2b_info(user_id=OWNER_ID)
 
-        sandbox = await _service(user_id=None).get_sandbox(SANDBOX_ID)
+        sandbox = await _service(db_session, user_id=None).get_sandbox(SANDBOX_ID)
+
+        assert sandbox is not None
+        assert sandbox.created_by_user_id == OWNER_ID
+
+    @pytest.mark.asyncio
+    async def test_e2b_metadata_cannot_override_the_row(self, sdk, db_session):
+        """A sandbox whose metadata claims another owner still reads as its own."""
+        sdk.get_info.return_value = _e2b_info(user_id=OTHER_USER_ID)
+
+        sandbox = await _service(db_session, user_id=OWNER_ID).get_sandbox(SANDBOX_ID)
 
         assert sandbox is not None
         assert sandbox.created_by_user_id == OWNER_ID
@@ -995,47 +1199,52 @@ class TestAuthenticationFailures:
     every call site untranslated.
     """
 
+    @pytest.fixture(autouse=True)
+    async def existing_sandbox(self, store):
+        """The row start_sandbox would have written for SANDBOX_ID."""
+        await store(_stored())
+
     @pytest.mark.asyncio
-    async def test_get_names_the_api_key(self, sdk):
+    async def test_get_names_the_api_key(self, sdk, db_session):
         sdk.get_info.side_effect = AuthenticationException('401 unauthorized')
 
         with pytest.raises(SandboxError, match='E2B_API_KEY'):
-            await _service().get_sandbox(SANDBOX_ID)
+            await _service(db_session).get_sandbox(SANDBOX_ID)
 
     @pytest.mark.asyncio
-    async def test_search_names_the_api_key(self, sdk):
+    async def test_search_names_the_api_key(self, sdk, db_session):
         paginator = _paginator([])
         paginator.next_items.side_effect = AuthenticationException('401 unauthorized')
         sdk.list.return_value = paginator
 
         with pytest.raises(SandboxError, match='E2B_API_KEY'):
-            await _service().search_sandboxes()
+            await _service(db_session).search_sandboxes()
 
     @pytest.mark.asyncio
-    async def test_start_names_the_api_key(self, sdk):
+    async def test_start_names_the_api_key(self, sdk, db_session):
         sdk.create.side_effect = AuthenticationException('401 unauthorized')
 
         with pytest.raises(SandboxError, match='E2B_API_KEY'):
-            await _service().start_sandbox()
+            await _service(db_session).start_sandbox()
 
     @pytest.mark.asyncio
-    async def test_pause_names_the_api_key(self, sdk):
+    async def test_pause_names_the_api_key(self, sdk, db_session):
         sdk.pause.side_effect = AuthenticationException('401 unauthorized')
 
         with pytest.raises(SandboxError, match='E2B_API_KEY'):
-            await _service().pause_sandbox(SANDBOX_ID)
+            await _service(db_session).pause_sandbox(SANDBOX_ID)
 
     @pytest.mark.asyncio
-    async def test_resume_names_the_api_key(self, sdk):
+    async def test_resume_names_the_api_key(self, sdk, db_session):
         sdk.get_info.return_value = _e2b_info(state=SandboxState.PAUSED)
         sdk.connect.side_effect = AuthenticationException('401 unauthorized')
 
         with pytest.raises(SandboxError, match='E2B_API_KEY'):
-            await _service().resume_sandbox(SANDBOX_ID)
+            await _service(db_session).resume_sandbox(SANDBOX_ID)
 
     @pytest.mark.asyncio
-    async def test_delete_names_the_api_key(self, sdk):
+    async def test_delete_names_the_api_key(self, sdk, db_session):
         sdk.kill.side_effect = AuthenticationException('401 unauthorized')
 
         with pytest.raises(SandboxError, match='E2B_API_KEY'):
-            await _service().delete_sandbox(SANDBOX_ID)
+            await _service(db_session).delete_sandbox(SANDBOX_ID)

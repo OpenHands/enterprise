@@ -58,7 +58,12 @@ class StoredSecretStr(TypeDecorator):
             return token
         return None
 
-    def process_result_param(self, value, dialect):
+    # SQLAlchemy calls `process_result_value` on the way out, so this is the
+    # hook that has to carry the decryption. The other decorators in this
+    # module name it `process_result_param`, which SQLAlchemy never calls -
+    # their values come back as whatever the driver returned. Those have
+    # users and are left alone here.
+    def process_result_value(self, value, dialect):
         if value is not None:
             from openhands.app_server.config import get_global_config
 

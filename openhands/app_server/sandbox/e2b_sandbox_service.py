@@ -1,6 +1,4 @@
 import asyncio
-import hashlib
-import hmac
 import logging
 import os
 import time
@@ -20,7 +18,8 @@ from e2b import (
 )
 from e2b import SandboxInfo as E2BSandboxInfo
 from fastapi import Request
-from pydantic import Field
+from pydantic import Field, SecretStr
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
@@ -48,16 +47,23 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
     get_agent_server_env,
     resolve_sandbox_spec,
 )
+from openhands.app_server.sandbox.sandbox_store import (
+    E2B_BACKEND,
+    StoredSandbox,
+    get_stored_sandbox,
+    get_stored_sandbox_by_session_api_key,
+    hash_session_api_key,
+    search_stored_sandboxes,
+)
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.user.user_context import UserContext
 
 _logger = logging.getLogger(__name__)
 
-# E2B sandbox metadata is the store for sandbox identity - these keys carry it.
-# Metadata filtering is applied server side and multiple keys are AND-ed, so a
-# metadata query is the equivalent of the `WHERE` clause other backends run
-# against their own database.
+# Sandbox identity lives in the `v1_sandbox` table (see `sandbox_store`).
+# These metadata keys are the reconciliation tag: E2B metadata is fixed at
+# create and vanishes with the sandbox, so it can only be what a later reaper
+# reads to find a sandbox the app has no row for.
 MANAGED_METADATA_KEY = 'oh_managed'
 SANDBOX_SPEC_ID_METADATA_KEY = 'oh_spec_id'
 CREATED_BY_USER_ID_METADATA_KEY = 'oh_user_id'
@@ -87,17 +93,6 @@ def _cache_vscode_url(e2b_sandbox_id: str, url: str) -> None:
     while len(_vscode_urls) >= VSCODE_URL_CACHE_SIZE:
         _vscode_urls.pop(next(iter(_vscode_urls)))
     _vscode_urls[e2b_sandbox_id] = url
-
-
-def _derive_session_api_key(secret: str, e2b_sandbox_id: str) -> str:
-    """Derive the session API key for a sandbox from an encryption key.
-
-    The key is a pure function of the sandbox id, so it is recoverable after an
-    app server restart with nothing persisted, and a key presented by a client
-    identifies its own sandbox without a scan.
-    """
-    digest = hmac.new(secret.encode(), e2b_sandbox_id.encode(), hashlib.sha256).digest()
-    return f'{e2b_sandbox_id}.{base62.encodebytes(digest)}'
 
 
 def _as_e2b_spec(sandbox_spec: SandboxSpecInfo) -> E2BSandboxSpecInfo:
@@ -149,9 +144,9 @@ class E2BSandboxService(SandboxService):
 
     Sandboxes are created from an E2B template that boots the agent server in
     deferred-init mode, and ``start_sandbox`` completes the ``/api/init``
-    handshake before returning. There is no local database: E2B sandbox
-    metadata carries ownership and spec identity, and the session API key is
-    derived from the sandbox id rather than stored.
+    handshake before returning. Ownership, spec identity and the hash of the
+    session API key live in the ``v1_sandbox`` table; the matching E2B
+    metadata is written too, as the tag a reconciler needs.
 
     E2B requires a publicly reachable ``OH_WEB_URL`` for agent server event
     callbacks. There is no polling fallback for this backend, so conversations
@@ -161,7 +156,7 @@ class E2BSandboxService(SandboxService):
     sandbox_spec_service: SandboxSpecService
     user_context: UserContext
     httpx_client: httpx.AsyncClient
-    jwt_service: JwtService
+    db_session: AsyncSession
     api_key: str
     domain: str
     timeout_seconds: int
@@ -188,75 +183,55 @@ class E2BSandboxService(SandboxService):
         return params
 
     # ------------------------------------------------------------------
-    # Session API keys
-    # ------------------------------------------------------------------
-
-    def _derive_session_api_key(self, e2b_sandbox_id: str) -> str:
-        """Derive this sandbox's session API key with the default encryption key."""
-        secret = self.jwt_service.get_key(
-            self.jwt_service.default_key_id
-        ).key.get_secret_value()
-        return _derive_session_api_key(secret, e2b_sandbox_id)
-
-    def _sandbox_id_from_session_api_key(self, session_api_key: str) -> str | None:
-        """Recover the sandbox id a session API key was derived for.
-
-        The key is verified against every known encryption key, not just the
-        default, so rotating the default does not orphan live sandboxes.
-        Returns None when the key is malformed or does not verify.
-        """
-        e2b_sandbox_id, separator, _ = session_api_key.rpartition('.')
-        if not separator or not e2b_sandbox_id:
-            return None
-        for key_id in self.jwt_service.key_ids:
-            secret = self.jwt_service.get_key(key_id).key.get_secret_value()
-            expected = _derive_session_api_key(secret, e2b_sandbox_id)
-            if hmac.compare_digest(expected, session_api_key):
-                return e2b_sandbox_id
-        return None
-
-    # ------------------------------------------------------------------
     # Ownership
     # ------------------------------------------------------------------
 
-    async def _owned_metadata_filter(self) -> dict[str, str]:
-        """Metadata filter narrowing a lookup to what the caller may see.
+    async def _get_stored_sandbox(self, sandbox_id: str) -> StoredSandbox | None:
+        """Get a sandbox row, or None when the caller may not see it."""
+        return await get_stored_sandbox(
+            self.db_session, self.user_context, E2B_BACKEND, sandbox_id
+        )
 
-        A caller with a user id sees only their own sandboxes. A caller without
-        one (OSS single user mode, and the admin contexts used by webhook and
-        session key auth) sees every managed sandbox.
-        """
-        metadata = {MANAGED_METADATA_KEY: 'true'}
-        user_id = await self.user_context.get_user_id()
-        if user_id:
-            metadata[CREATED_BY_USER_ID_METADATA_KEY] = user_id
-        return metadata
-
-    async def _is_owned(self, info: E2BSandboxInfo) -> bool:
-        """Whether the caller may see this sandbox."""
-        metadata = info.metadata or {}
-        if metadata.get(MANAGED_METADATA_KEY) != 'true':
-            return False
-        user_id = await self.user_context.get_user_id()
-        if user_id and metadata.get(CREATED_BY_USER_ID_METADATA_KEY) != user_id:
-            return False
-        return True
-
-    async def _get_owned_info(self, sandbox_id: str) -> E2BSandboxInfo | None:
-        """Get E2B's info for a sandbox, or None when the caller may not see it."""
+    async def _get_info(self, e2b_sandbox_id: str) -> E2BSandboxInfo | None:
+        """Get E2B's info for a sandbox, or None when E2B has no such one."""
         try:
-            info = await AsyncSandbox.get_info(sandbox_id, **self._api_params)
+            return await AsyncSandbox.get_info(e2b_sandbox_id, **self._api_params)
         except AuthenticationException as exc:
             raise _auth_error(exc) from exc
         except SandboxNotFoundException:
             return None
         except SandboxException as exc:
             # A malformed id is rejected by the API with 400 Invalid sandbox ID.
-            _logger.debug(f'Sandbox lookup failed for {sandbox_id}: {exc}')
+            _logger.debug(f'Sandbox lookup failed for {e2b_sandbox_id}: {exc}')
             return None
-        if not await self._is_owned(info):
-            return None
-        return info
+
+    async def _live_infos(self, wanted_ids: set[str]) -> dict[str, E2BSandboxInfo]:
+        """Live E2B state for the sandboxes on a page, indexed by id.
+
+        One list call covers a page in every realistic case; the loop is there
+        because E2B pages its own results and a sandbox missing from the answer
+        is reported MISSING. It stops as soon as every wanted id is accounted
+        for.
+        """
+        paginator = AsyncSandbox.list(
+            query=SandboxQuery(
+                metadata={MANAGED_METADATA_KEY: 'true'},
+                state=[SandboxState.RUNNING, SandboxState.PAUSED],
+            ),
+            **self._api_params,
+        )
+        found: dict[str, E2BSandboxInfo] = {}
+        while wanted_ids - found.keys() and paginator.has_next:
+            try:
+                items = await paginator.next_items()
+            except AuthenticationException as exc:
+                raise _auth_error(exc) from exc
+            except SandboxException as exc:
+                raise SandboxError(f'Could not list sandboxes: {exc}') from exc
+            for item in items:
+                if item.sandbox_id in wanted_ids:
+                    found[item.sandbox_id] = item
+        return found
 
     # ------------------------------------------------------------------
     # Info mapping
@@ -357,34 +332,53 @@ class E2BSandboxService(SandboxService):
         return exposed_urls
 
     async def _to_sandbox_info(
-        self, info: E2BSandboxInfo, with_vscode_url: bool = True
+        self,
+        stored_sandbox: StoredSandbox,
+        info: E2BSandboxInfo | None,
+        session_api_key: str | None = None,
+        with_vscode_url: bool = True,
     ) -> SandboxInfo:
-        metadata = info.metadata or {}
-        status = STATUS_MAPPING.get(info.state, SandboxStatus.ERROR)
-        sandbox_spec_id = metadata.get(SANDBOX_SPEC_ID_METADATA_KEY, '')
+        """Build a SandboxInfo from the stored row plus its live E2B state.
 
-        session_api_key = None
+        A row E2B no longer knows about is MISSING. That distinction did not
+        exist before: E2B's ``SandboxState`` has only ``running`` and
+        ``paused``, so a reaped sandbox was indistinguishable from a bad id.
+        MISSING is what drives the archived-conversation UI.
+        """
+        status = (
+            SandboxStatus.MISSING
+            if info is None
+            else STATUS_MAPPING.get(info.state, SandboxStatus.ERROR)
+        )
+
         exposed_urls = None
-        if status == SandboxStatus.RUNNING:
-            session_api_key = self._derive_session_api_key(info.sandbox_id)
-            sandbox_spec = await self._get_spec(sandbox_spec_id)
+        if status == SandboxStatus.RUNNING and session_api_key:
+            sandbox_spec = await self._get_spec(stored_sandbox.sandbox_spec_id)
             exposed_urls = await self._exposed_urls(
-                info.sandbox_id, sandbox_spec, session_api_key, with_vscode_url
+                stored_sandbox.id, sandbox_spec, session_api_key, with_vscode_url
             )
+        else:
+            session_api_key = None
 
         return SandboxInfo(
-            id=info.sandbox_id,
-            created_by_user_id=metadata.get(CREATED_BY_USER_ID_METADATA_KEY),
-            sandbox_spec_id=sandbox_spec_id,
+            id=stored_sandbox.id,
+            created_by_user_id=stored_sandbox.created_by_user_id,
+            sandbox_spec_id=stored_sandbox.sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
             exposed_urls=exposed_urls,
-            created_at=info.started_at,
+            created_at=stored_sandbox.created_at,
         )
 
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _raw_key(stored_sandbox: StoredSandbox) -> str | None:
+        """The session API key on a row, decrypted."""
+        key = stored_sandbox.session_api_key
+        return key.get_secret_value() if key else None
 
     async def search_sandboxes(
         self,
@@ -393,9 +387,10 @@ class E2BSandboxService(SandboxService):
     ) -> SandboxPage:
         """Search for sandboxes.
 
-        Paused sandboxes are requested explicitly: E2B's default list shows
-        running sandboxes only, and a paused sandbox is a conversation the user
-        can still resume.
+        One query against `v1_sandbox` for the page, then one E2B list call
+        for the live state of everything on it. Paused sandboxes are asked for
+        explicitly: E2B's default list shows running ones only, and a paused
+        sandbox is a conversation the user can still resume.
 
         VSCode URLs are left out. Resolving one costs an HTTP call to the
         sandbox itself, and the only caller that needs it - the frontend - goes
@@ -403,69 +398,66 @@ class E2BSandboxService(SandboxService):
         conversation-start lookup read nothing but id, status and created_at,
         and they run on every conversation start.
         """
-        query = SandboxQuery(
-            metadata=await self._owned_metadata_filter(),
-            state=[SandboxState.RUNNING, SandboxState.PAUSED],
+        page = await search_stored_sandboxes(
+            self.db_session, self.user_context, E2B_BACKEND, page_id, limit
         )
-        # `list()` is not a coroutine - it returns a paginator synchronously.
-        paginator = AsyncSandbox.list(
-            query=query, limit=limit, next_token=page_id, **self._api_params
-        )
-        try:
-            items = await paginator.next_items()
-        except AuthenticationException as exc:
-            raise _auth_error(exc) from exc
-        except SandboxException as exc:
-            # An empty page reads as "this user has nothing running", which
-            # makes `pause_old_sandboxes` stop enforcing the cap and makes the
-            # conversation-start lookup provision another sandbox. A rate limit
-            # would turn into more load, so the failure is reported instead.
-            raise SandboxError(f'Could not list sandboxes: {exc}') from exc
+        infos = await self._live_infos({row.id for row in page.items})
         sandboxes = await asyncio.gather(
-            *[self._to_sandbox_info(item, with_vscode_url=False) for item in items]
+            *[
+                self._to_sandbox_info(
+                    stored_sandbox,
+                    infos.get(stored_sandbox.id),
+                    self._raw_key(stored_sandbox),
+                    with_vscode_url=False,
+                )
+                for stored_sandbox in page.items
+            ]
         )
-        return SandboxPage(items=list(sandboxes), next_page_id=paginator.next_token)
+        return SandboxPage(items=list(sandboxes), next_page_id=page.next_page_id)
 
     async def get_sandbox(self, sandbox_id: str) -> SandboxInfo | None:
         """Get a single sandbox."""
-        info = await self._get_owned_info(sandbox_id)
-        if info is None:
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if stored_sandbox is None:
             return None
-        return await self._to_sandbox_info(info)
+        return await self._to_sandbox_info(
+            stored_sandbox,
+            await self._get_info(sandbox_id),
+            self._raw_key(stored_sandbox),
+        )
 
     async def get_sandbox_by_session_api_key(
         self, session_api_key: str
     ) -> SandboxInfo | None:
-        """Get a single sandbox by session API key.
-
-        The key carries the sandbox id it was derived for, so this is a direct
-        lookup rather than a scan.
-        """
-        e2b_sandbox_id = self._sandbox_id_from_session_api_key(session_api_key)
-        if e2b_sandbox_id is None:
+        """Get a single sandbox by session API key, on the hash index."""
+        stored_sandbox = await get_stored_sandbox_by_session_api_key(
+            self.db_session, self.user_context, E2B_BACKEND, session_api_key
+        )
+        if stored_sandbox is None:
             return None
-        return await self.get_sandbox(e2b_sandbox_id)
+        return await self._to_sandbox_info(
+            stored_sandbox,
+            await self._get_info(stored_sandbox.id),
+            self._raw_key(stored_sandbox),
+        )
 
     async def get_sandbox_record_by_session_api_key(
         self, session_api_key: str
     ) -> SandboxRecord | None:
         """Get sandbox identity by session API key.
 
-        Unlike backends with their own database this still costs one E2B call,
-        because ownership lives in sandbox metadata - but it skips the VSCode
-        URL resolution that ``get_sandbox_by_session_api_key`` performs.
+        An indexed lookup with no E2B call. This is the webhook path: agent
+        events buffer five per POST, so a 500 event conversation used to spend
+        about 100 E2B calls on authentication alone.
         """
-        e2b_sandbox_id = self._sandbox_id_from_session_api_key(session_api_key)
-        if e2b_sandbox_id is None:
-            return None
-        info = await self._get_owned_info(e2b_sandbox_id)
-        if info is None:
+        stored_sandbox = await get_stored_sandbox_by_session_api_key(
+            self.db_session, self.user_context, E2B_BACKEND, session_api_key
+        )
+        if stored_sandbox is None:
             return None
         return SandboxRecord(
-            id=info.sandbox_id,
-            created_by_user_id=(info.metadata or {}).get(
-                CREATED_BY_USER_ID_METADATA_KEY
-            ),
+            id=stored_sandbox.id,
+            created_by_user_id=stored_sandbox.created_by_user_id,
         )
 
     # ------------------------------------------------------------------
@@ -543,7 +535,25 @@ class E2BSandboxService(SandboxService):
             raise SandboxError('Failed to start sandbox') from exc
 
         e2b_sandbox_id = sandbox.sandbox_id
-        session_api_key = self._derive_session_api_key(e2b_sandbox_id)
+
+        # Everywhere else the row goes in before the provider object exists.
+        # Here it cannot: E2B assigns the id. That leaves a moment where a
+        # sandbox is running with no record of it, which is exactly what the
+        # `oh_managed` / `oh_user_id` metadata written above is for - it is
+        # the tag a reconciler needs to find it again.
+        session_api_key = base62.encodebytes(os.urandom(32))
+        stored_sandbox = StoredSandbox(
+            id=e2b_sandbox_id,
+            backend=E2B_BACKEND,
+            created_by_user_id=user_id,
+            sandbox_spec_id=sandbox_spec.id,
+            session_api_key_hash=hash_session_api_key(session_api_key),
+            session_api_key=SecretStr(session_api_key),
+            created_at=utc_now(),
+        )
+        self.db_session.add(stored_sandbox)
+        await self.db_session.flush()
+
         try:
             await self._initialize_agent_server(
                 e2b_sandbox_id, sandbox_spec, session_api_key
@@ -566,7 +576,7 @@ class E2BSandboxService(SandboxService):
             status=SandboxStatus.RUNNING,
             session_api_key=session_api_key,
             exposed_urls=exposed_urls,
-            created_at=utc_now(),
+            created_at=stored_sandbox.created_at,
         )
 
     async def _kill_quietly(self, e2b_sandbox_id: str) -> None:
@@ -700,8 +710,9 @@ class E2BSandboxService(SandboxService):
         """Resume a paused sandbox.
 
         The session API key is unchanged across pause and resume: the sandbox
-        keeps its id and host, and the agent server process is restored from the
-        memory snapshot, so there is nothing to re-derive or invalidate.
+        keeps its id and host, and the agent server process is restored from
+        the memory snapshot holding the key it was claimed with, so there is
+        nothing to re-issue.
 
         A sandbox reports ``paused`` before its memory snapshot is placeable, so
         a resume that closely follows a pause is rejected for a second or so.
@@ -711,8 +722,8 @@ class E2BSandboxService(SandboxService):
         # Enforce sandbox limits by cleaning up old sandboxes
         await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
 
-        info = await self._get_owned_info(sandbox_id)
-        if info is None:
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if stored_sandbox is None:
             return False
         for attempt in range(1, self.resume_retries + 1):
             try:
@@ -739,8 +750,15 @@ class E2BSandboxService(SandboxService):
         return False
 
     async def pause_sandbox(self, sandbox_id: str) -> bool:
-        """Pause a running sandbox."""
-        info = await self._get_owned_info(sandbox_id)
+        """Pause a running sandbox.
+
+        The stored key survives the pause, for the same reason
+        ``resume_sandbox`` does not re-issue one.
+        """
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if stored_sandbox is None:
+            return False
+        info = await self._get_info(sandbox_id)
         if info is None:
             return False
         if info.state == SandboxState.PAUSED:
@@ -759,23 +777,32 @@ class E2BSandboxService(SandboxService):
     async def delete_sandbox(self, sandbox_id: str) -> bool:
         """Delete a sandbox.
 
-        Returns False only when the sandbox does not exist or the caller may not
-        see it. A transient E2B failure raises ``SandboxDeleteRetryError`` so a
-        live sandbox is never reported as gone.
+        The row is soft deleted rather than removed, and its key is cleared so
+        a leaked one stops resolving. Returns False only when there is no such
+        sandbox or the caller may not see it. A transient E2B failure raises
+        ``SandboxDeleteRetryError`` so a live sandbox is never reported as
+        gone.
         """
-        info = await self._get_owned_info(sandbox_id)
-        if info is None:
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if stored_sandbox is None:
             return False
         try:
             # A False result means the sandbox was already gone.
             await AsyncSandbox.kill(sandbox_id, **self._api_params)
         except AuthenticationException as exc:
             raise _auth_error(exc) from exc
+        except SandboxNotFoundException:
+            # E2B reaped it already. Retire the row rather than asking the
+            # caller to retry a delete that has nothing left to delete.
+            _logger.info(f'Sandbox {sandbox_id} already gone at E2B; retiring row')
         except SandboxException as exc:
             _logger.exception(f'Error deleting sandbox {sandbox_id}', stack_info=True)
             raise SandboxDeleteRetryError(
                 f'Could not complete delete for sandbox {sandbox_id}: {exc}'
             ) from exc
+        stored_sandbox.deleted_at = utc_now()
+        stored_sandbox.session_api_key_hash = None
+        stored_sandbox.session_api_key = None
         _vscode_urls.pop(sandbox_id, None)
         return True
 
@@ -848,9 +875,9 @@ class E2BSandboxServiceInjector(SandboxServiceInjector):
     ) -> AsyncGenerator[SandboxService, None]:
         # Define inline to prevent circular lookup
         from openhands.app_server.config import (
+            get_db_session,
             get_global_config,
             get_httpx_client,
-            get_jwt_service,
             get_sandbox_spec_service,
             get_user_context,
         )
@@ -860,13 +887,13 @@ class E2BSandboxServiceInjector(SandboxServiceInjector):
             get_user_context(state, request) as user_context,
             get_httpx_client(state, request) as httpx_client,
             get_sandbox_spec_service(state, request) as sandbox_spec_service,
-            get_jwt_service(state, request) as jwt_service,
+            get_db_session(state, request) as db_session,
         ):
             yield E2BSandboxService(
                 sandbox_spec_service=sandbox_spec_service,
                 user_context=user_context,
                 httpx_client=httpx_client,
-                jwt_service=jwt_service,
+                db_session=db_session,
                 api_key=self.api_key,
                 domain=self.domain,
                 api_url=self.api_url,

@@ -12,6 +12,7 @@ import httpx
 from docker.errors import APIError, NotFound
 from fastapi import Request
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxError
@@ -37,6 +38,14 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     resolve_sandbox_spec,
 )
+from openhands.app_server.sandbox.sandbox_store import (
+    DOCKER_BACKEND,
+    StoredSandbox,
+    get_stored_sandbox,
+    get_stored_sandbox_by_session_api_key,
+    hash_session_api_key,
+    search_stored_sandboxes,
+)
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.docker_utils import (
@@ -46,7 +55,9 @@ from openhands.app_server.utils.docker_utils import (
 _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
 
-# The Docker daemon is the store for sandbox identity - these labels carry it.
+# Sandbox identity lives in the `v1_sandbox` table (see `sandbox_store`).
+# These labels are the reconciliation tag: they are what a later reaper needs
+# to find a container the app has no row for.
 MANAGED_LABEL = 'openhands.managed'
 SANDBOX_SPEC_ID_LABEL = 'openhands.sandbox_spec_id'
 CREATED_BY_USER_ID_LABEL = 'openhands.created_by_user_id'
@@ -106,6 +117,7 @@ class DockerSandboxService(SandboxService):
     httpx_client: httpx.AsyncClient
     max_num_sandboxes: int
     user_context: UserContext
+    db_session: AsyncSession
     web_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
     extra_hosts: dict[str, str] = field(default_factory=dict)
@@ -114,39 +126,39 @@ class DockerSandboxService(SandboxService):
     use_host_network: bool = False
     kvm_enabled: bool = False
 
-    async def _owned_label_filters(self) -> list[str]:
-        """Docker label filters narrowing a lookup to what the caller may see.
-
-        A caller with a user id sees only their own sandboxes. A caller without
-        one (OSS single user mode, and the admin contexts used by webhook and
-        session key auth) sees every managed sandbox.
-        """
-        filters = [f'{MANAGED_LABEL}=true']
-        user_id = await self.user_context.get_user_id()
-        if user_id:
-            filters.append(f'{CREATED_BY_USER_ID_LABEL}={user_id}')
-        return filters
-
-    async def _list_owned_containers(self) -> list:
-        """List the containers visible to the caller."""
-        return self.docker_client.containers.list(
-            all=True, filters={'label': await self._owned_label_filters()}
+    async def _get_stored_sandbox(self, sandbox_id: str) -> StoredSandbox | None:
+        """Get a sandbox row, or None when the caller may not see it."""
+        return await get_stored_sandbox(
+            self.db_session, self.user_context, DOCKER_BACKEND, sandbox_id
         )
 
-    async def _get_owned_container(self, sandbox_id: str):
-        """Get a container by id, or None when the caller may not see it."""
-        try:
-            container = self.docker_client.containers.get(sandbox_id)
-        except (NotFound, APIError):
-            return None
+    def _managed_containers_by_name(self) -> dict[str, object]:
+        """Every managed container on the host, indexed by name.
 
-        labels = container.labels or {}
-        if labels.get(MANAGED_LABEL) != 'true':
+        One daemon call for a whole page. Ownership has already been decided
+        by the query against `v1_sandbox`, so this only supplies live status.
+        """
+        containers = self.docker_client.containers.list(
+            all=True, filters={'label': f'{MANAGED_LABEL}=true'}
+        )
+        # The name is the sandbox id, so an unnamed container cannot be
+        # matched to a row and is left for a reconciler to deal with.
+        return {container.name: container for container in containers if container.name}
+
+    def _get_container(self, sandbox_id: str):
+        """Get a container by name, or None when the daemon has no such one.
+
+        ``NotFound`` is an answer - the container is gone, and the row it
+        belongs to reports MISSING. A daemon that failed to answer is not, so
+        it is raised rather than turned into MISSING, which would archive
+        every live conversation for the length of the outage.
+        """
+        try:
+            return self.docker_client.containers.get(sandbox_id)
+        except NotFound:
             return None
-        user_id = await self.user_context.get_user_id()
-        if user_id and labels.get(CREATED_BY_USER_ID_LABEL) != user_id:
-            return None
-        return container
+        except APIError as exc:
+            raise SandboxError(f'Could not read container {sandbox_id}: {exc}') from exc
 
     def _find_unused_port(self) -> int:
         """Find an unused port on the host machine."""
@@ -182,17 +194,28 @@ class DockerSandboxService(SandboxService):
                 result[env_var] = None
         return result
 
-    async def _container_to_sandbox_info(self, container) -> SandboxInfo:
-        """Convert Docker container to SandboxInfo."""
-        # Convert Docker status to runtime status
-        status = self._docker_status_to_sandbox_status(container.status)
+    async def _to_sandbox_info(
+        self, stored_sandbox: StoredSandbox, container
+    ) -> SandboxInfo:
+        """Build a SandboxInfo from the stored row plus its live container.
 
-        # Parse creation time
-        created_str = container.attrs.get('Created', '')
-        try:
-            created_at = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
-        except (ValueError, AttributeError):
-            created_at = utc_now()
+        Identity comes from the row. The container supplies status, the
+        session API key (only its hash is stored) and the port mappings. A row
+        with no container is MISSING — the container was removed outside the
+        app, and the conversation is archived.
+        """
+        if container is None:
+            return SandboxInfo(
+                id=stored_sandbox.id,
+                created_by_user_id=stored_sandbox.created_by_user_id,
+                sandbox_spec_id=stored_sandbox.sandbox_spec_id,
+                status=SandboxStatus.MISSING,
+                session_api_key=None,
+                exposed_urls=None,
+                created_at=stored_sandbox.created_at,
+            )
+
+        status = self._docker_status_to_sandbox_status(container.status)
 
         # Get URL and session key for running containers
         exposed_urls = None
@@ -259,20 +282,20 @@ class DockerSandboxService(SandboxService):
                                     )
                                 )
 
-        labels = container.labels or {}
-
         return SandboxInfo(
-            id=container.name,
-            created_by_user_id=labels.get(CREATED_BY_USER_ID_LABEL),
-            sandbox_spec_id=labels.get(SANDBOX_SPEC_ID_LABEL, ''),
+            id=stored_sandbox.id,
+            created_by_user_id=stored_sandbox.created_by_user_id,
+            sandbox_spec_id=stored_sandbox.sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
             exposed_urls=exposed_urls,
-            created_at=created_at,
+            created_at=stored_sandbox.created_at,
         )
 
-    async def _container_to_checked_sandbox_info(self, container) -> SandboxInfo:
-        sandbox_info = await self._container_to_sandbox_info(container)
+    async def _to_checked_sandbox_info(
+        self, stored_sandbox: StoredSandbox, container
+    ) -> SandboxInfo:
+        sandbox_info = await self._to_sandbox_info(stored_sandbox, container)
         if self.health_check_path is not None and sandbox_info.exposed_urls:
             app_server_url = next(
                 exposed_url.url
@@ -321,87 +344,77 @@ class DockerSandboxService(SandboxService):
         page_id: str | None = None,
         limit: int = 100,
     ) -> SandboxPage:
-        """Search for sandboxes."""
+        """Search for sandboxes.
+
+        One query against `v1_sandbox` for the page, then one daemon call for
+        the live status of everything on it.
+        """
+        page = await search_stored_sandboxes(
+            self.db_session, self.user_context, DOCKER_BACKEND, page_id, limit
+        )
         try:
-            sandboxes = [
-                await self._container_to_checked_sandbox_info(container)
-                for container in await self._list_owned_containers()
-            ]
+            containers_by_name = self._managed_containers_by_name()
+        except APIError as exc:
+            # Not an empty page and not a page of MISSING: the first hides the
+            # sandbox limit from `pause_old_sandboxes`, the second archives
+            # every live conversation for the length of the outage.
+            raise SandboxError(f'Could not list containers: {exc}') from exc
 
-            # Sort by creation time (newest first)
-            sandboxes.sort(key=lambda x: x.created_at, reverse=True)
-
-            # Apply pagination
-            start_idx = 0
-            if page_id:
-                try:
-                    start_idx = int(page_id)
-                except ValueError:
-                    start_idx = 0
-
-            end_idx = start_idx + limit
-            paginated_containers = sandboxes[start_idx:end_idx]
-
-            # Determine next page ID
-            next_page_id = None
-            if end_idx < len(sandboxes):
-                next_page_id = str(end_idx)
-
-            return SandboxPage(items=paginated_containers, next_page_id=next_page_id)
-
-        except APIError:
-            return SandboxPage(items=[], next_page_id=None)
+        items = [
+            await self._to_checked_sandbox_info(
+                stored_sandbox, containers_by_name.get(stored_sandbox.id)
+            )
+            for stored_sandbox in page.items
+        ]
+        return SandboxPage(items=items, next_page_id=page.next_page_id)
 
     async def get_sandbox(self, sandbox_id: str) -> SandboxInfo | None:
         """Get a single sandbox info."""
-        try:
-            container = await self._get_owned_container(sandbox_id)
-            if container is None:
-                return None
-            return await self._container_to_checked_sandbox_info(container)
-        except (NotFound, APIError):
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if stored_sandbox is None:
             return None
+        return await self._to_checked_sandbox_info(
+            stored_sandbox, self._get_container(sandbox_id)
+        )
 
-    async def _find_owned_container_by_session_api_key(self, session_api_key: str):
-        """Find the caller's container holding the given session API key."""
-        for container in await self._list_owned_containers():
-            env_vars = self._get_container_env_vars(container)
-            if env_vars.get(SESSION_API_KEY_VARIABLE) == session_api_key:
-                return container
-        return None
+    async def _get_stored_sandbox_by_session_api_key(
+        self, session_api_key: str
+    ) -> StoredSandbox | None:
+        """Find the caller's sandbox holding the given session API key."""
+        return await get_stored_sandbox_by_session_api_key(
+            self.db_session, self.user_context, DOCKER_BACKEND, session_api_key
+        )
 
     async def get_sandbox_by_session_api_key(
         self, session_api_key: str
     ) -> SandboxInfo | None:
         """Get a single sandbox by session API key."""
-        try:
-            container = await self._find_owned_container_by_session_api_key(
-                session_api_key
-            )
-            if container is None:
-                return None
-            return await self._container_to_checked_sandbox_info(container)
-        except (NotFound, APIError):
+        stored_sandbox = await self._get_stored_sandbox_by_session_api_key(
+            session_api_key
+        )
+        if stored_sandbox is None:
             return None
+        return await self._to_checked_sandbox_info(
+            stored_sandbox, self._get_container(stored_sandbox.id)
+        )
 
     async def get_sandbox_record_by_session_api_key(
         self, session_api_key: str
     ) -> SandboxRecord | None:
-        """Get persisted sandbox identity by session API key."""
-        try:
-            container = await self._find_owned_container_by_session_api_key(
-                session_api_key
-            )
-            if container is None:
-                return None
-            return SandboxRecord(
-                id=container.name,
-                created_by_user_id=(container.labels or {}).get(
-                    CREATED_BY_USER_ID_LABEL
-                ),
-            )
-        except (NotFound, APIError):
+        """Get persisted sandbox identity by session API key.
+
+        An indexed lookup on the key hash, with no daemon call. This runs on
+        the webhook path, which used to scan every container's environment.
+        """
+        stored_sandbox = await self._get_stored_sandbox_by_session_api_key(
+            session_api_key
+        )
+        if stored_sandbox is None:
             return None
+        return SandboxRecord(
+            id=stored_sandbox.id,
+            created_by_user_id=stored_sandbox.created_by_user_id,
+        )
 
     async def start_sandbox(
         self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
@@ -474,7 +487,8 @@ class DockerSandboxService(SandboxService):
                 port_mappings[exposed_port.container_port] = host_port
                 env_vars[exposed_port.name] = str(exposed_port.container_port)
 
-        # Prepare labels - these carry sandbox identity and ownership
+        # Labels are the reconciliation tag, not the record: they are how a
+        # later reaper finds a container whose row was rolled back.
         labels = {
             MANAGED_LABEL: 'true',
             SANDBOX_SPEC_ID_LABEL: sandbox_spec.id,
@@ -482,6 +496,20 @@ class DockerSandboxService(SandboxService):
         user_id = await self.user_context.get_user_id()
         if user_id:
             labels[CREATED_BY_USER_ID_LABEL] = user_id
+
+        # The id is ours, so the record goes in before the container exists.
+        # The flush keeps that ordering real inside the transaction, which the
+        # request commits on its way out.
+        stored_sandbox = StoredSandbox(
+            id=container_name,
+            backend=DOCKER_BACKEND,
+            created_by_user_id=user_id,
+            sandbox_spec_id=sandbox_spec.id,
+            session_api_key_hash=hash_session_api_key(session_api_key),
+            created_at=utc_now(),
+        )
+        self.db_session.add(stored_sandbox)
+        await self.db_session.flush()
 
         # Prepare volumes
         volumes = {
@@ -534,61 +562,89 @@ class DockerSandboxService(SandboxService):
                 devices=devices,
             )
 
-            return await self._container_to_sandbox_info(container)
+            return await self._to_sandbox_info(stored_sandbox, container)
 
         except APIError as e:
             raise SandboxError('Failed to start container') from e
 
     async def resume_sandbox(self, sandbox_id: str) -> bool:
-        """Resume a paused sandbox."""
+        """Resume a paused sandbox.
+
+        The session API key is unchanged. Docker bakes it into the container
+        environment at create, so rotating it means replacing the container
+        and losing the workspace with it.
+        """
         # Enforce sandbox limits by cleaning up old sandboxes
         await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
 
-        try:
-            container = await self._get_owned_container(sandbox_id)
-            if container is None:
-                return False
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if stored_sandbox is None:
+            return False
+        container = self._get_container(sandbox_id)
+        if container is None:
+            return False
 
+        try:
             if container.status == 'paused':
                 container.unpause()
             elif container.status == 'exited':
                 container.start()
-
             return True
         except (NotFound, APIError):
             return False
 
     async def pause_sandbox(self, sandbox_id: str) -> bool:
-        """Pause a running sandbox."""
-        try:
-            container = await self._get_owned_container(sandbox_id)
-            if container is None:
-                return False
+        """Pause a running sandbox.
 
+        The stored key hash is kept, for the same reason `resume_sandbox`
+        cannot rotate it.
+        """
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if stored_sandbox is None:
+            return False
+        container = self._get_container(sandbox_id)
+        if container is None:
+            return False
+
+        try:
             if container.status == 'running':
                 container.pause()
-
             return True
         except (NotFound, APIError):
             return False
 
     async def delete_sandbox(self, sandbox_id: str) -> bool:
-        """Delete a sandbox."""
-        try:
-            container = await self._get_owned_container(sandbox_id)
-            if container is None:
+        """Delete a sandbox.
+
+        The row is soft deleted rather than removed, and its key hash is
+        cleared so a leaked key stops resolving. A container the daemon has
+        already lost still retires its row, so the record cannot outlive what
+        it describes.
+        """
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if stored_sandbox is None:
+            return False
+
+        container = self._get_container(sandbox_id)
+        if container is not None:
+            try:
+                # Stop the container if it's running
+                if container.status in ['running', 'paused']:
+                    container.stop(timeout=10)
+
+                # Remove the container
+                container.remove()
+            except NotFound:
+                pass
+            except APIError:
+                _logger.exception(
+                    f'Error deleting container {sandbox_id}', stack_info=True
+                )
                 return False
 
-            # Stop the container if it's running
-            if container.status in ['running', 'paused']:
-                container.stop(timeout=10)
-
-            # Remove the container
-            container.remove()
-
-            return True
-        except (NotFound, APIError):
-            return False
+        stored_sandbox.deleted_at = utc_now()
+        stored_sandbox.session_api_key_hash = None
+        return True
 
 
 class DockerSandboxServiceInjector(SandboxServiceInjector):
@@ -698,6 +754,7 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
     ) -> AsyncGenerator[SandboxService, None]:
         # Define inline to prevent circular lookup
         from openhands.app_server.config import (
+            get_db_session,
             get_global_config,
             get_httpx_client,
             get_sandbox_spec_service,
@@ -712,6 +769,7 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
             get_user_context(state, request) as user_context,
             get_httpx_client(state) as httpx_client,
             get_sandbox_spec_service(state) as sandbox_spec_service,
+            get_db_session(state, request) as db_session,
         ):
             yield DockerSandboxService(
                 sandbox_spec_service=sandbox_spec_service,
@@ -724,6 +782,7 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
                 httpx_client=httpx_client,
                 max_num_sandboxes=self.max_num_sandboxes,
                 user_context=user_context,
+                db_session=db_session,
                 web_url=web_url,
                 permitted_cors_origins=config.permitted_cors_origins,
                 extra_hosts=self.extra_hosts,

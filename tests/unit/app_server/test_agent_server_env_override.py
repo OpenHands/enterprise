@@ -12,9 +12,10 @@ The functionality includes:
 """
 
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.sandbox.docker_sandbox_service import (
     MANAGED_LABEL,
@@ -689,6 +690,19 @@ class TestEnvironmentOverrideIntegration:
             assert 'VAR2' not in spec_2.initial_env
 
 
+def _empty_db_session() -> AsyncMock:
+    """A session that reports no stored sandboxes.
+
+    These tests exercise what reaches ``containers.run``; the sandbox record
+    only has to be quiet enough for ``pause_old_sandboxes`` to get through.
+    """
+    db_session = AsyncMock(spec=AsyncSession)
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    db_session.execute.return_value = result
+    return db_session
+
+
 class TestDockerSandboxServiceEnvIntegration:
     """Integration tests for environment variable propagation to Docker sandbox containers.
 
@@ -815,6 +829,9 @@ class TestDockerSandboxServiceEnvIntegration:
             service = DockerSandboxService(
                 sandbox_spec_service=mock_spec_service,
                 user_context=_user_context(),
+                # These cover env propagation into `containers.run`, so the
+                # sandbox record is incidental and stays mocked.
+                db_session=_empty_db_session(),
                 container_name_prefix='oh-test-',
                 host_port=3000,
                 container_url_pattern='http://localhost:{port}',
@@ -901,6 +918,9 @@ class TestDockerSandboxServiceEnvIntegration:
             service = DockerSandboxService(
                 sandbox_spec_service=mock_spec_service,
                 user_context=_user_context(),
+                # These cover env propagation into `containers.run`, so the
+                # sandbox record is incidental and stays mocked.
+                db_session=_empty_db_session(),
                 container_name_prefix='oh-test-',
                 host_port=3000,
                 container_url_pattern='http://localhost:{port}',
@@ -978,6 +998,9 @@ class TestDockerSandboxServiceEnvIntegration:
             service = DockerSandboxService(
                 sandbox_spec_service=mock_spec_service,
                 user_context=_user_context(),
+                # These cover env propagation into `containers.run`, so the
+                # sandbox record is incidental and stays mocked.
+                db_session=_empty_db_session(),
                 container_name_prefix='oh-test-',
                 host_port=3000,
                 container_url_pattern='http://localhost:{port}',

@@ -1,16 +1,16 @@
 """Tests for DockerSandboxService.
 
 This module tests the Docker sandbox service implementation, focusing on:
-- Container lifecycle management (start, pause, resume, delete)
-- Container search and retrieval with filtering and pagination
-- Data transformation from Docker containers to SandboxInfo objects
-- Health checking and URL generation
-- Error handling for Docker API failures
-- Edge cases with malformed container data
+- `v1_sandbox` as the store for ownership and spec identity
+- user scoping, including cross user isolation and the admin (no user id) case
+- container lifecycle management (start, pause, resume, delete)
+- search and retrieval with pagination off the table
+- health checking and URL generation
+- error handling for Docker API failures
 """
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -37,8 +37,14 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxPage,
     SandboxStatus,
 )
+from openhands.app_server.sandbox.sandbox_store import (
+    DOCKER_BACKEND,
+    StoredSandbox,
+    hash_session_api_key,
+)
 
 OWNER_ID = 'user123'
+CREATED_AT = datetime(2024, 1, 15, 10, 30, tzinfo=timezone.utc)
 
 
 def _labels(
@@ -49,6 +55,26 @@ def _labels(
     if created_by_user_id:
         labels[CREATED_BY_USER_ID_LABEL] = created_by_user_id
     return labels
+
+
+def _stored(
+    sandbox_id: str,
+    created_by_user_id: str | None = None,
+    sandbox_spec_id: str = 'spec456',
+    session_api_key: str | None = None,
+    created_at: datetime | None = None,
+) -> StoredSandbox:
+    """The `v1_sandbox` row start_sandbox writes for a container."""
+    return StoredSandbox(
+        id=sandbox_id,
+        backend=DOCKER_BACKEND,
+        created_by_user_id=created_by_user_id,
+        sandbox_spec_id=sandbox_spec_id,
+        session_api_key_hash=(
+            hash_session_api_key(session_api_key) if session_api_key else None
+        ),
+        created_at=created_at or CREATED_AT,
+    )
 
 
 def _user_context(
@@ -68,9 +94,29 @@ def mock_user_context():
 
 
 @pytest.fixture
+async def db_session(async_session_maker):
+    """A session on this test's own postgres database."""
+    async with async_session_maker() as session:
+        yield session
+
+
+@pytest.fixture
+def store(db_session):
+    """Add the rows standing for the containers a test sets up."""
+
+    async def _store(*sandboxes: StoredSandbox) -> None:
+        for sandbox in sandboxes:
+            db_session.add(sandbox)
+        await db_session.flush()
+
+    return _store
+
+
+@pytest.fixture
 def mock_docker_client():
     """Mock Docker client for testing."""
     mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
     return mock_client
 
 
@@ -100,12 +146,17 @@ def mock_httpx_client():
 
 @pytest.fixture
 def service(
-    mock_sandbox_spec_service, mock_httpx_client, mock_docker_client, mock_user_context
+    mock_sandbox_spec_service,
+    mock_httpx_client,
+    mock_docker_client,
+    mock_user_context,
+    db_session,
 ):
     """Create DockerSandboxService instance for testing."""
     return DockerSandboxService(
         sandbox_spec_service=mock_sandbox_spec_service,
         user_context=mock_user_context,
+        db_session=db_session,
         container_name_prefix='oh-test-',
         host_port=3000,
         container_url_pattern='http://localhost:{port}',
@@ -182,10 +233,14 @@ class TestDockerSandboxService:
     """Test cases for DockerSandboxService."""
 
     async def test_search_sandboxes_success(
-        self, service, mock_running_container, mock_paused_container
+        self, service, store, mock_running_container, mock_paused_container
     ):
         """Test successful search for sandboxes."""
         # Setup
+        await store(
+            _stored('oh-test-abc123', session_api_key='session_key_123'),
+            _stored('oh-test-def456'),
+        )
         service.docker_client.containers.list.return_value = [
             mock_running_container,
             mock_paused_container,
@@ -218,9 +273,19 @@ class TestDockerSandboxService:
         assert paused_sandbox.session_api_key is None
         assert paused_sandbox.exposed_urls is None
 
-    async def test_search_sandboxes_pagination(self, service):
+    async def test_search_sandboxes_pagination(self, service, store):
         """Test pagination functionality."""
         # Setup - create multiple containers
+        await store(
+            *[
+                _stored(
+                    f'oh-test-container{i}',
+                    session_api_key=f'session_key_{i}',
+                    created_at=CREATED_AT + timedelta(days=i),
+                )
+                for i in range(5)
+            ]
+        )
         containers = []
         for i in range(5):
             container = MagicMock()
@@ -257,10 +322,11 @@ class TestDockerSandboxService:
         assert result.next_page_id is None
 
     async def test_search_sandboxes_invalid_page_id(
-        self, service, mock_running_container
+        self, service, store, mock_running_container
     ):
         """Test handling of invalid page ID."""
         # Setup
+        await store(_stored('oh-test-abc123'))
         service.docker_client.containers.list.return_value = [mock_running_container]
         service.httpx_client.get.return_value.raise_for_status.return_value = None
 
@@ -270,59 +336,31 @@ class TestDockerSandboxService:
         # Verify - should start from beginning
         assert len(result.items) == 1
 
-    async def test_search_sandboxes_docker_api_error(self, service):
-        """Test handling of Docker API errors."""
+    async def test_search_sandboxes_docker_api_error(self, service, store):
+        """Test that a daemon failure is reported, not read as an empty host.
+
+        An empty page hides the sandbox limit from `pause_old_sandboxes`, and
+        a page of MISSING archives every live conversation for the length of
+        the outage.
+        """
         # Setup
+        await store(_stored('oh-test-abc123'))
         service.docker_client.containers.list.side_effect = APIError(
             'Docker daemon error'
         )
 
-        # Execute
-        result = await service.search_sandboxes()
+        # Execute / Verify
+        with pytest.raises(SandboxError, match='Could not list containers'):
+            await service.search_sandboxes()
 
-        # Verify
-        assert isinstance(result, SandboxPage)
-        assert len(result.items) == 0
-        assert result.next_page_id is None
+    async def test_get_sandbox_reads_spec_id_from_the_row(self, service, store):
+        """Test that the spec id comes from the row, not the container.
 
-    async def test_search_sandboxes_reads_spec_id_for_tagless_image(
-        self, service, mock_running_container
-    ):
-        """Test that the spec id comes from the label, not the image tags.
-
-        When an image is rebuilt under the same tag, the old container's image
-        loses its tags, so container.image.tags is empty. The label still holds
-        the spec the sandbox was started from.
+        When an image is rebuilt under the same tag the old container's image
+        loses its tags, so nothing on the container names the spec the sandbox
+        was started from. The row does.
         """
-        tagless_container = MagicMock()
-        tagless_container.name = 'oh-test-tagless'
-        tagless_container.status = 'paused'
-        tagless_container.image.tags = []
-        tagless_container.image.id = 'sha256:abc123def456'
-        tagless_container.labels = _labels('locally-built:dev')
-        tagless_container.attrs = {
-            'Created': '2024-01-15T10:30:00.000000000Z',
-            'Config': {'Env': []},
-            'NetworkSettings': {'Ports': {}},
-        }
-
-        service.docker_client.containers.list.return_value = [
-            mock_running_container,
-            tagless_container,
-        ]
-        service.httpx_client.get.return_value.raise_for_status.return_value = None
-
-        # Execute
-        result = await service.search_sandboxes()
-
-        # Verify - both containers are returned, spec ids come from labels
-        assert isinstance(result, SandboxPage)
-        assert len(result.items) == 2
-        tagless = next(s for s in result.items if s.id == 'oh-test-tagless')
-        assert tagless.sandbox_spec_id == 'locally-built:dev'
-
-    async def test_get_sandbox_reads_spec_id_for_tagless_image(self, service):
-        """Test that get_sandbox reads the spec id from the label."""
+        await store(_stored('oh-test-tagless', sandbox_spec_id='locally-built:dev'))
         tagless_container = MagicMock()
         tagless_container.name = 'oh-test-tagless'
         tagless_container.status = 'paused'
@@ -343,9 +381,10 @@ class TestDockerSandboxService:
         assert result is not None
         assert result.sandbox_spec_id == 'locally-built:dev'
 
-    async def test_search_sandboxes_filters_on_managed_label(self, service):
-        """Test that search asks Docker for managed containers only."""
+    async def test_search_sandboxes_makes_one_daemon_call(self, service, store):
+        """Test that search asks the daemon once, for managed containers."""
         # Setup
+        await store(_stored('oh-test-abc123'), _stored('oh-test-def456'))
         service.docker_client.containers.list.return_value = []
 
         # Execute
@@ -353,11 +392,24 @@ class TestDockerSandboxService:
 
         # Verify
         service.docker_client.containers.list.assert_called_once_with(
-            all=True, filters={'label': [f'{MANAGED_LABEL}=true']}
+            all=True, filters={'label': f'{MANAGED_LABEL}=true'}
         )
 
-    async def test_get_sandbox_skips_unmanaged_container(self, service):
-        """Test that a container without the managed marker is invisible."""
+    async def test_search_sandboxes_reports_a_rowless_container_nowhere(
+        self, service, mock_running_container
+    ):
+        """Test that a container with no row is invisible."""
+        # Setup
+        service.docker_client.containers.list.return_value = [mock_running_container]
+
+        # Execute
+        result = await service.search_sandboxes()
+
+        # Verify
+        assert result.items == []
+
+    async def test_get_sandbox_skips_container_without_a_row(self, service):
+        """Test that a container the app has no record of is invisible."""
         # Setup
         unmanaged_container = MagicMock()
         unmanaged_container.name = 'oh-test-unmanaged'
@@ -371,9 +423,26 @@ class TestDockerSandboxService:
         # Verify
         assert result is None
 
-    async def test_get_sandbox_success(self, service, mock_running_container):
+    async def test_get_sandbox_without_a_container_is_missing(self, service, store):
+        """Test that a row whose container is gone reports MISSING."""
+        # Setup
+        await store(_stored('oh-test-reaped', created_by_user_id=OWNER_ID))
+        service.docker_client.containers.get.side_effect = NotFound('gone')
+
+        # Execute
+        result = await service.get_sandbox('oh-test-reaped')
+
+        # Verify
+        assert result is not None
+        assert result.status == SandboxStatus.MISSING
+        assert result.created_by_user_id == OWNER_ID
+        assert result.session_api_key is None
+        assert result.exposed_urls is None
+
+    async def test_get_sandbox_success(self, service, store, mock_running_container):
         """Test successful retrieval of specific sandbox."""
         # Setup
+        await store(_stored('oh-test-abc123', session_api_key='session_key_123'))
         service.docker_client.containers.get.return_value = mock_running_container
         service.httpx_client.get.return_value.raise_for_status.return_value = None
 
@@ -390,7 +459,7 @@ class TestDockerSandboxService:
 
     async def test_get_sandbox_not_found(self, service):
         """Test handling when sandbox is not found."""
-        # Setup
+        # Setup - no row for this id
         service.docker_client.containers.get.side_effect = NotFound(
             'Container not found'
         )
@@ -401,11 +470,13 @@ class TestDockerSandboxService:
         # Verify
         assert result is None
 
-    async def test_get_sandbox_wrong_owner(self, service, mock_running_container):
+    async def test_get_sandbox_wrong_owner(
+        self, service, store, mock_running_container
+    ):
         """Test handling when the sandbox belongs to another user."""
         # Setup
+        await store(_stored('oh-test-abc123', created_by_user_id='user-b'))
         service.user_context.get_user_id.return_value = 'user-a'
-        mock_running_container.labels = _labels('spec456', 'user-b')
         service.docker_client.containers.get.return_value = mock_running_container
 
         # Execute
@@ -414,18 +485,17 @@ class TestDockerSandboxService:
         # Verify
         assert result is None
 
-    async def test_get_sandbox_api_error(self, service):
-        """Test handling of Docker API errors during get."""
+    async def test_get_sandbox_api_error(self, service, store):
+        """Test that a daemon failure is reported rather than read as MISSING."""
         # Setup
+        await store(_stored('oh-test-abc123'))
         service.docker_client.containers.get.side_effect = APIError(
             'Docker daemon error'
         )
 
-        # Execute
-        result = await service.get_sandbox('oh-test-abc123')
-
-        # Verify
-        assert result is None
+        # Execute / Verify
+        with pytest.raises(SandboxError, match='Could not read container'):
+            await service.get_sandbox('oh-test-abc123')
 
     @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
     @patch('os.urandom')
@@ -587,6 +657,7 @@ class TestDockerSandboxService:
         mock_user_context,
         mock_httpx_client,
         mock_docker_client,
+        db_session,
     ):
         """Test that extra_hosts are passed to container creation."""
         # Setup
@@ -610,6 +681,7 @@ class TestDockerSandboxService:
         service_with_extra_hosts = DockerSandboxService(
             sandbox_spec_service=mock_sandbox_spec_service,
             user_context=mock_user_context,
+            db_session=db_session,
             container_name_prefix='oh-test-',
             host_port=3000,
             container_url_pattern='http://localhost:{port}',
@@ -658,6 +730,7 @@ class TestDockerSandboxService:
         mock_user_context,
         mock_httpx_client,
         mock_docker_client,
+        db_session,
     ):
         """Test that extra_hosts is None when not configured."""
         # Setup
@@ -681,6 +754,7 @@ class TestDockerSandboxService:
         service_without_extra_hosts = DockerSandboxService(
             sandbox_spec_service=mock_sandbox_spec_service,
             user_context=mock_user_context,
+            db_session=db_session,
             container_name_prefix='oh-test-',
             host_port=3000,
             container_url_pattern='http://localhost:{port}',
@@ -723,6 +797,7 @@ class TestDockerSandboxService:
         mock_user_context,
         mock_httpx_client,
         mock_docker_client,
+        db_session,
     ):
         """Test that CORS origins are set when web_url is configured."""
         # Setup
@@ -746,6 +821,7 @@ class TestDockerSandboxService:
         service_with_cors = DockerSandboxService(
             sandbox_spec_service=mock_sandbox_spec_service,
             user_context=mock_user_context,
+            db_session=db_session,
             container_name_prefix='oh-test-',
             host_port=3000,
             container_url_pattern='http://192.168.1.100:{port}',
@@ -786,6 +862,7 @@ class TestDockerSandboxService:
         mock_user_context,
         mock_httpx_client,
         mock_docker_client,
+        db_session,
     ):
         """Test that CORS origins are not set when web_url is None."""
         # Setup
@@ -809,6 +886,7 @@ class TestDockerSandboxService:
         service_without_cors = DockerSandboxService(
             sandbox_spec_service=mock_sandbox_spec_service,
             user_context=mock_user_context,
+            db_session=db_session,
             container_name_prefix='oh-test-',
             host_port=3000,
             container_url_pattern='http://localhost:{port}',
@@ -838,9 +916,10 @@ class TestDockerSandboxService:
         env_vars = call_args[1]['environment']
         assert 'OH_ALLOW_CORS_ORIGINS_0' not in env_vars
 
-    async def test_resume_sandbox_from_paused(self, service):
+    async def test_resume_sandbox_from_paused(self, service, store):
         """Test resuming a paused sandbox."""
         # Setup
+        await store(_stored('oh-test-abc123'))
         mock_container = MagicMock()
         mock_container.status = 'paused'
         mock_container.labels = _labels()
@@ -859,9 +938,10 @@ class TestDockerSandboxService:
         # Verify cleanup was called with the correct limit
         mock_cleanup.assert_called_once_with(2)
 
-    async def test_resume_sandbox_from_exited(self, service):
+    async def test_resume_sandbox_from_exited(self, service, store):
         """Test resuming an exited sandbox."""
         # Setup
+        await store(_stored('oh-test-abc123'))
         mock_container = MagicMock()
         mock_container.status = 'exited'
         mock_container.labels = _labels()
@@ -881,7 +961,7 @@ class TestDockerSandboxService:
         mock_cleanup.assert_called_once_with(2)
 
     async def test_resume_sandbox_unmanaged_container(self, service):
-        """Test resuming a container that this service does not manage."""
+        """Test resuming a container that this service has no record of."""
         # Setup
         mock_container = MagicMock()
         mock_container.status = 'paused'
@@ -918,9 +998,10 @@ class TestDockerSandboxService:
         # Verify cleanup was still called
         mock_cleanup.assert_called_once_with(2)
 
-    async def test_pause_sandbox_success(self, service):
+    async def test_pause_sandbox_success(self, service, store):
         """Test pausing a running sandbox."""
         # Setup
+        await store(_stored('oh-test-abc123'))
         mock_container = MagicMock()
         mock_container.status = 'running'
         mock_container.labels = _labels()
@@ -933,9 +1014,10 @@ class TestDockerSandboxService:
         assert result is True
         mock_container.pause.assert_called_once()
 
-    async def test_pause_sandbox_not_running(self, service):
+    async def test_pause_sandbox_not_running(self, service, store):
         """Test pausing a non-running sandbox."""
         # Setup
+        await store(_stored('oh-test-abc123'))
         mock_container = MagicMock()
         mock_container.status = 'paused'
         mock_container.labels = _labels()
@@ -948,9 +1030,11 @@ class TestDockerSandboxService:
         assert result is True
         mock_container.pause.assert_not_called()
 
-    async def test_delete_sandbox_success(self, service):
+    async def test_delete_sandbox_success(self, service, store):
         """Test successful sandbox deletion."""
         # Setup
+        stored_sandbox = _stored('oh-test-abc123', session_api_key='session_key_123')
+        await store(stored_sandbox)
         mock_container = MagicMock()
         mock_container.status = 'running'
         mock_container.labels = _labels()
@@ -963,10 +1047,48 @@ class TestDockerSandboxService:
         assert result is True
         mock_container.stop.assert_called_once_with(timeout=10)
         mock_container.remove.assert_called_once()
+        assert stored_sandbox.deleted_at is not None
+        assert stored_sandbox.session_api_key_hash is None
 
-    async def test_delete_sandbox_already_stopped(self, service):
+    async def test_delete_sandbox_hides_the_sandbox_afterwards(self, service, store):
+        """Test that a deleted sandbox drops out of every read path."""
+        # Setup
+        await store(_stored('oh-test-abc123', session_api_key='session_key_123'))
+        mock_container = MagicMock()
+        mock_container.status = 'running'
+        mock_container.labels = _labels()
+        service.docker_client.containers.get.return_value = mock_container
+
+        # Execute
+        assert await service.delete_sandbox('oh-test-abc123') is True
+
+        # Verify
+        assert await service.get_sandbox('oh-test-abc123') is None
+        assert (await service.search_sandboxes()).items == []
+        assert (
+            await service.get_sandbox_record_by_session_api_key('session_key_123')
+        ) is None
+
+    async def test_delete_sandbox_retires_a_row_whose_container_is_gone(
+        self, service, store
+    ):
+        """Test that a row outliving its container is still retired."""
+        # Setup
+        stored_sandbox = _stored('oh-test-abc123')
+        await store(stored_sandbox)
+        service.docker_client.containers.get.side_effect = NotFound('gone')
+
+        # Execute
+        result = await service.delete_sandbox('oh-test-abc123')
+
+        # Verify
+        assert result is True
+        assert stored_sandbox.deleted_at is not None
+
+    async def test_delete_sandbox_already_stopped(self, service, store):
         """Test sandbox deletion when the container has already exited."""
         # Setup
+        await store(_stored('oh-test-abc123'))
         mock_container = MagicMock()
         mock_container.status = 'exited'
         mock_container.labels = _labels()
@@ -1044,12 +1166,12 @@ class TestDockerSandboxService:
             'VAR3': 'value=with=equals',
         }
 
-    async def test_container_to_sandbox_info_running(
-        self, service, mock_running_container
-    ):
-        """Test conversion of running container to SandboxInfo."""
+    async def test_to_sandbox_info_running(self, service, mock_running_container):
+        """Test conversion of a row plus its running container."""
         # Execute
-        result = await service._container_to_sandbox_info(mock_running_container)
+        result = await service._to_sandbox_info(
+            _stored('oh-test-abc123'), mock_running_container
+        )
 
         # Verify
         assert result is not None
@@ -1070,36 +1192,42 @@ class TestDockerSandboxService:
             == 'http://localhost:12346/?tkn=session_key_123&folder=/workspace'
         )
 
-    async def test_container_to_sandbox_info_invalid_created_time(self, service):
-        """Test conversion with invalid creation timestamp."""
-        # Setup
-        container = MagicMock()
-        container.name = 'oh-test-abc123'
-        container.status = 'running'
-        container.labels = _labels('spec456')
-        container.attrs = {
-            'Created': 'invalid-timestamp',
-            'Config': {
-                'Env': [
-                    'OH_SESSION_API_KEYS_0=test_session_key',
-                    'OTHER_VAR=test_value',
-                ]
-            },
-            'NetworkSettings': {'Ports': {}},
-        }
+    async def test_to_sandbox_info_without_a_container_is_missing(self, service):
+        """Test conversion of a row whose container is gone."""
+        # Execute
+        result = await service._to_sandbox_info(
+            _stored('oh-test-abc123', created_by_user_id=OWNER_ID), None
+        )
+
+        # Verify
+        assert result.id == 'oh-test-abc123'
+        assert result.created_by_user_id == OWNER_ID
+        assert result.status == SandboxStatus.MISSING
+        assert result.created_at == CREATED_AT
+        assert result.session_api_key is None
+        assert result.exposed_urls is None
+
+    async def test_to_sandbox_info_takes_created_at_from_the_row(
+        self, service, mock_running_container
+    ):
+        """Test that the creation time is the row's, not the container's."""
+        # Setup - the container's own timestamp is unparseable
+        mock_running_container.attrs['Created'] = 'invalid-timestamp'
+        created_at = datetime(2023, 6, 1, tzinfo=timezone.utc)
 
         # Execute
-        result = await service._container_to_sandbox_info(container)
+        result = await service._to_sandbox_info(
+            _stored('oh-test-abc123', created_at=created_at), mock_running_container
+        )
 
-        # Verify - should use current time as fallback
-        assert result is not None
-        assert isinstance(result.created_at, datetime)
+        # Verify
+        assert result.created_at == created_at
 
     @patch(
         'openhands.app_server.utils.docker_utils.is_running_in_docker',
         return_value=True,
     )
-    async def test_container_to_checked_sandbox_info_health_check_success(
+    async def test_to_checked_sandbox_info_health_check_success(
         self, mock_is_docker, service, mock_running_container
     ):
         """Test health check success when running in Docker."""
@@ -1107,8 +1235,8 @@ class TestDockerSandboxService:
         service.httpx_client.get.return_value.raise_for_status.return_value = None
 
         # Execute
-        result = await service._container_to_checked_sandbox_info(
-            mock_running_container
+        result = await service._to_checked_sandbox_info(
+            _stored('oh-test-abc123'), mock_running_container
         )
 
         # Verify
@@ -1126,7 +1254,7 @@ class TestDockerSandboxService:
         'openhands.app_server.utils.docker_utils.is_running_in_docker',
         return_value=False,
     )
-    async def test_container_to_checked_sandbox_info_health_check_success_not_in_docker(
+    async def test_to_checked_sandbox_info_health_check_success_not_in_docker(
         self, mock_is_docker, service, mock_running_container
     ):
         """Test health check success when not running in Docker."""
@@ -1134,8 +1262,8 @@ class TestDockerSandboxService:
         service.httpx_client.get.return_value.raise_for_status.return_value = None
 
         # Execute
-        result = await service._container_to_checked_sandbox_info(
-            mock_running_container
+        result = await service._to_checked_sandbox_info(
+            _stored('oh-test-abc123'), mock_running_container
         )
 
         # Verify
@@ -1149,7 +1277,7 @@ class TestDockerSandboxService:
             'http://localhost:12345/health'
         )
 
-    async def test_container_to_checked_sandbox_info_health_check_failure(
+    async def test_to_checked_sandbox_info_health_check_failure(
         self, service, mock_running_container
     ):
         """Test health check failure."""
@@ -1157,8 +1285,8 @@ class TestDockerSandboxService:
         service.httpx_client.get.side_effect = httpx.HTTPError('Health check failed')
 
         # Execute
-        result = await service._container_to_checked_sandbox_info(
-            mock_running_container
+        result = await service._to_checked_sandbox_info(
+            _stored('oh-test-abc123'), mock_running_container
         )
 
         # Verify
@@ -1167,7 +1295,7 @@ class TestDockerSandboxService:
         assert result.exposed_urls is None
         assert result.session_api_key is None
 
-    async def test_container_to_checked_sandbox_info_no_health_check(
+    async def test_to_checked_sandbox_info_no_health_check(
         self, service, mock_running_container
     ):
         """Test when health check is disabled."""
@@ -1175,8 +1303,8 @@ class TestDockerSandboxService:
         service.health_check_path = None
 
         # Execute
-        result = await service._container_to_checked_sandbox_info(
-            mock_running_container
+        result = await service._to_checked_sandbox_info(
+            _stored('oh-test-abc123'), mock_running_container
         )
 
         # Verify
@@ -1184,12 +1312,14 @@ class TestDockerSandboxService:
         assert result.status == SandboxStatus.RUNNING
         service.httpx_client.get.assert_not_called()
 
-    async def test_container_to_checked_sandbox_info_no_exposed_urls(
+    async def test_to_checked_sandbox_info_no_exposed_urls(
         self, service, mock_paused_container
     ):
         """Test health check when no exposed URLs."""
         # Execute
-        result = await service._container_to_checked_sandbox_info(mock_paused_container)
+        result = await service._to_checked_sandbox_info(
+            _stored('oh-test-def456'), mock_paused_container
+        )
 
         # Verify
         assert result is not None
@@ -1198,7 +1328,7 @@ class TestDockerSandboxService:
 
 
 class TestDockerSandboxServiceOwnership:
-    """Test cases for ownership carried on container labels."""
+    """Test cases for ownership held in `v1_sandbox`."""
 
     @pytest.fixture
     def user_a_service(self, service):
@@ -1207,8 +1337,9 @@ class TestDockerSandboxServiceOwnership:
         return service
 
     @pytest.fixture
-    def user_b_container(self):
-        """A running container owned by user-b."""
+    async def user_b_container(self, store):
+        """A running container owned by user-b, and its row."""
+        await store(_stored('oh-test-userb', created_by_user_id='user-b'))
         container = MagicMock()
         container.name = 'oh-test-userb'
         container.status = 'running'
@@ -1239,13 +1370,66 @@ class TestDockerSandboxServiceOwnership:
             # Execute
             await service.start_sandbox()
 
-        # Verify
+        # Verify - the labels are still written, as the reconciliation tag
         labels = service.docker_client.containers.run.call_args[1]['labels']
         assert labels == {
             MANAGED_LABEL: 'true',
             SANDBOX_SPEC_ID_LABEL: 'test-image:latest',
             CREATED_BY_USER_ID_LABEL: OWNER_ID,
         }
+
+    @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
+    @patch('os.urandom')
+    async def test_start_sandbox_writes_the_row_before_the_container(
+        self,
+        mock_urandom,
+        mock_encodebytes,
+        service,
+        db_session,
+        mock_running_container,
+    ):
+        """Test that the record exists by the time the container is created."""
+        # Setup
+        mock_urandom.side_effect = [b'container_id', b'session_key']
+        mock_encodebytes.side_effect = ['test_container_id', 'test_session_key']
+        service.user_context.get_user_id.return_value = OWNER_ID
+
+        rows_at_create = []
+
+        def _run(**kwargs):
+            # Read the identity map rather than the database: this callback is
+            # synchronous, so it cannot await IO of its own.
+            rows_at_create.append(
+                [
+                    row
+                    for row in db_session.sync_session.identity_map.values()
+                    if isinstance(row, StoredSandbox)
+                ]
+            )
+            return mock_running_container
+
+        service.docker_client.containers.run.side_effect = _run
+
+        with (
+            patch.object(service, '_find_unused_port', side_effect=[12345, 12346]),
+            patch.object(service, 'pause_old_sandboxes', return_value=[]),
+        ):
+            # Execute
+            sandbox = await service.start_sandbox()
+
+        # Verify
+        assert sandbox.id == 'oh-test-test_container_id'
+        # The row was flushed - it is in the identity map, not still pending.
+        assert not db_session.sync_session.new
+        (stored_sandbox,) = rows_at_create[0]
+        assert stored_sandbox.id == 'oh-test-test_container_id'
+        assert stored_sandbox.backend == DOCKER_BACKEND
+        assert stored_sandbox.created_by_user_id == OWNER_ID
+        assert stored_sandbox.sandbox_spec_id == 'test-image:latest'
+        assert stored_sandbox.session_api_key_hash == hash_session_api_key(
+            'test_session_key'
+        )
+        assert stored_sandbox.deleted_at is None
 
     @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
     @patch('os.urandom')
@@ -1329,24 +1513,50 @@ class TestDockerSandboxServiceOwnership:
             'explicit-spec'
         )
 
-    async def test_search_sandboxes_filters_by_owner(self, user_a_service):
-        """Test that search asks Docker for the caller's containers only."""
-        # Setup
-        user_a_service.docker_client.containers.list.return_value = []
+    async def test_search_sandboxes_filters_by_owner(
+        self, user_a_service, store, user_b_container, mock_running_container
+    ):
+        """Test that search returns the caller's sandboxes only."""
+        # Setup - both containers are on the host; only one row is user-a's
+        await store(_stored('oh-test-abc123', created_by_user_id='user-a'))
+        user_a_service.docker_client.containers.list.return_value = [
+            mock_running_container,
+            user_b_container,
+        ]
+        user_a_service.httpx_client.get.return_value.raise_for_status.return_value = (
+            None
+        )
 
         # Execute
-        await user_a_service.search_sandboxes()
+        result = await user_a_service.search_sandboxes()
 
         # Verify
-        user_a_service.docker_client.containers.list.assert_called_once_with(
-            all=True,
-            filters={
-                'label': [
-                    f'{MANAGED_LABEL}=true',
-                    f'{CREATED_BY_USER_ID_LABEL}=user-a',
-                ]
-            },
+        assert [item.id for item in result.items] == ['oh-test-abc123']
+
+    async def test_start_sandbox_writes_the_owner_to_the_row(
+        self, user_a_service, store, mock_running_container
+    ):
+        """Test that the row start_sandbox writes carries the caller."""
+        # Setup
+        user_a_service.docker_client.containers.run.return_value = (
+            mock_running_container
         )
+
+        with (
+            patch.object(user_a_service, '_find_unused_port', side_effect=[1, 2]),
+            patch.object(user_a_service, 'pause_old_sandboxes', return_value=[]),
+        ):
+            # Execute
+            sandbox = await user_a_service.start_sandbox()
+
+        # Verify - the sandbox reads back through the table, not the labels
+        assert sandbox.created_by_user_id == 'user-a'
+        user_a_service.docker_client.containers.get.return_value = (
+            mock_running_container
+        )
+        read_back = await user_a_service.get_sandbox(sandbox.id)
+        assert read_back is not None
+        assert read_back.created_by_user_id == 'user-a'
 
     async def test_get_sandbox_hides_other_users_sandbox(
         self, user_a_service, user_b_container
@@ -1406,22 +1616,52 @@ class TestDockerSandboxServiceOwnership:
         user_b_container.remove.assert_not_called()
 
     async def test_session_api_key_lookup_hides_other_users_sandbox(
-        self, user_a_service
+        self, user_a_service, store
     ):
         """Test that session key lookups are scoped to the caller."""
-        # Setup - Docker returns nothing for user-a's label filter
-        user_a_service.docker_client.containers.list.return_value = []
+        # Setup - the key belongs to user-b
+        await store(
+            _stored(
+                'oh-test-userb',
+                created_by_user_id='user-b',
+                session_api_key='user-b-key',
+            )
+        )
 
         # Execute / Verify
-        assert await user_a_service.get_sandbox_by_session_api_key('key') is None
-        assert await user_a_service.get_sandbox_record_by_session_api_key('key') is None
+        assert (
+            await user_a_service.get_sandbox_by_session_api_key('user-b-key')
+        ) is None
+        assert (
+            await user_a_service.get_sandbox_record_by_session_api_key('user-b-key')
+        ) is None
+
+    async def test_session_api_key_record_makes_no_daemon_call(self, service, store):
+        """Test that the webhook auth path never reaches the daemon."""
+        # Setup
+        await store(
+            _stored(
+                'oh-test-abc123',
+                created_by_user_id='user-a',
+                session_api_key='session_key_123',
+            )
+        )
+
+        # Execute
+        record = await service.get_sandbox_record_by_session_api_key('session_key_123')
+
+        # Verify
+        assert record is not None
+        assert record.id == 'oh-test-abc123'
+        service.docker_client.containers.list.assert_not_called()
+        service.docker_client.containers.get.assert_not_called()
 
     async def test_admin_sees_all_managed_sandboxes(
-        self, service, mock_running_container, user_b_container
+        self, service, store, mock_running_container, user_b_container
     ):
         """Test that a caller with no user id sees every managed sandbox."""
         # Setup
-        mock_running_container.labels = _labels('spec456', 'user-a')
+        await store(_stored('oh-test-abc123', created_by_user_id='user-a'))
         service.docker_client.containers.list.return_value = [
             mock_running_container,
             user_b_container,
@@ -1431,10 +1671,7 @@ class TestDockerSandboxServiceOwnership:
         # Execute
         result = await service.search_sandboxes()
 
-        # Verify - the managed marker is the only filter applied
-        service.docker_client.containers.list.assert_called_once_with(
-            all=True, filters={'label': [f'{MANAGED_LABEL}=true']}
-        )
+        # Verify - no owner narrowing is applied
         assert {s.id for s in result.items} == {'oh-test-abc123', 'oh-test-userb'}
         assert {s.created_by_user_id for s in result.items} == {'user-a', 'user-b'}
 
@@ -1451,13 +1688,16 @@ class TestDockerSandboxServiceOwnership:
         assert result is not None
         assert result.created_by_user_id == 'user-b'
 
-    async def test_session_api_key_record_reports_owner(
-        self, service, mock_running_container
-    ):
-        """Test that the session key record carries the owner from the label."""
+    async def test_session_api_key_record_reports_owner(self, service, store):
+        """Test that the session key record carries the owner from the row."""
         # Setup
-        mock_running_container.labels = _labels('spec456', 'user-a')
-        service.docker_client.containers.list.return_value = [mock_running_container]
+        await store(
+            _stored(
+                'oh-test-abc123',
+                created_by_user_id='user-a',
+                session_api_key='session_key_123',
+            )
+        )
 
         # Execute
         record = await service.get_sandbox_record_by_session_api_key('session_key_123')
@@ -1819,11 +2059,13 @@ class TestDockerSandboxServiceHostNetwork:
         mock_httpx_client,
         mock_docker_client,
         mock_user_context,
+        db_session,
     ):
         """Create DockerSandboxService instance with host network enabled."""
         return DockerSandboxService(
             sandbox_spec_service=mock_sandbox_spec_service,
             user_context=mock_user_context,
+            db_session=db_session,
             container_name_prefix='oh-test-',
             host_port=3000,
             container_url_pattern='http://localhost:{port}',
@@ -1948,12 +2190,12 @@ class TestDockerSandboxServiceHostNetwork:
         assert env_vars[AGENT_SERVER] == '8000'
         assert env_vars[VSCODE] == '8001'
 
-    async def test_container_to_sandbox_info_host_network(
+    async def test_to_sandbox_info_host_network(
         self, service_with_host_network, mock_host_network_container
     ):
         """Test conversion of host network container to SandboxInfo."""
-        result = await service_with_host_network._container_to_sandbox_info(
-            mock_host_network_container
+        result = await service_with_host_network._to_sandbox_info(
+            _stored('oh-test-abc123'), mock_host_network_container
         )
 
         assert result is not None
@@ -1985,6 +2227,7 @@ class TestDockerSandboxServiceHostNetwork:
         mock_user_context,
         mock_httpx_client,
         mock_docker_client,
+        db_session,
     ):
         """Test that warning is logged when use_host_network=True and max_num_sandboxes > 1."""
         mock_urandom.side_effect = [b'container_id', b'session_key']
@@ -2009,6 +2252,7 @@ class TestDockerSandboxServiceHostNetwork:
         service = DockerSandboxService(
             sandbox_spec_service=mock_sandbox_spec_service,
             user_context=mock_user_context,
+            db_session=db_session,
             container_name_prefix='oh-test-',
             host_port=3000,
             container_url_pattern='http://localhost:{port}',
@@ -2048,6 +2292,7 @@ class TestDockerSandboxServiceHostNetwork:
         mock_user_context,
         mock_httpx_client,
         mock_docker_client,
+        db_session,
     ):
         """Test that no warning is logged when use_host_network=True and max_num_sandboxes=1."""
         mock_urandom.side_effect = [b'container_id', b'session_key']
@@ -2072,6 +2317,7 @@ class TestDockerSandboxServiceHostNetwork:
         service = DockerSandboxService(
             sandbox_spec_service=mock_sandbox_spec_service,
             user_context=mock_user_context,
+            db_session=db_session,
             container_name_prefix='oh-test-',
             host_port=3000,
             container_url_pattern='http://localhost:{port}',
@@ -2095,7 +2341,7 @@ class TestDockerSandboxServiceHostNetwork:
         mock_logger.warning.assert_not_called()
 
     @patch('openhands.app_server.sandbox.docker_sandbox_service.utc_now')
-    async def test_container_to_checked_sandbox_info_uses_container_started_at(
+    async def test_to_checked_sandbox_info_uses_container_started_at(
         self, mock_utc_now, service
     ):
         """Test that health check uses container's StartedAt for grace period calculation instead of sandbox created_at.
@@ -2138,14 +2384,14 @@ class TestDockerSandboxServiceHostNetwork:
             },
         }
 
-        # Create a sandbox_info with old created_at (simulates old sandbox record)
-        sandbox_info = await service._container_to_sandbox_info(container)
-        sandbox_info.created_at = sandbox_created_long_ago
+        # The row was written 5 days ago, so only the container's own start
+        # time keeps this inside the grace period.
+        stored_sandbox = _stored('oh-test-abc123', created_at=sandbox_created_long_ago)
 
         # Health check fails but container was started recently (within 15s grace period)
         service.httpx_client.get.side_effect = httpx.HTTPError('Health check failed')
 
-        result = await service._container_to_checked_sandbox_info(container)
+        result = await service._to_checked_sandbox_info(stored_sandbox, container)
 
         # Verify - should be STARTING because container started within grace period
         assert result is not None

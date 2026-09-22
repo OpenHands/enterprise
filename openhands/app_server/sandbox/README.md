@@ -15,6 +15,9 @@ Since agents can do things that may harm your system, they are typically run ins
 - **ProcessSandboxService**: Local process-based sandbox implementation
 - **SandboxSpecService**: Manages sandbox specifications and templates
 - **SandboxRouter**: FastAPI router for sandbox endpoints
+- **sandbox_store**: The `v1_sandbox` table recording who owns each docker and
+  E2B sandbox, and the ownership-scoping helper both backends read through.
+  `RemoteSandboxService` keeps its own `v1_remote_sandbox` table.
 
 ## Features
 
@@ -61,10 +64,12 @@ That failure is permanent rather than transient — the template builds and
 lists as `ready`, and then every sandbox fails — so size the template against
 the nodes you actually have.
 
-The backend keeps no state of its own. Ownership and spec identity live in E2B
-sandbox metadata (`oh_managed`, `oh_user_id`, `oh_spec_id`), and each sandbox's
-session API key is derived from its id with the app server's encryption key, so
-both survive an app server restart with nothing persisted.
+Ownership, spec identity and the session API key live in the app's own
+`v1_sandbox` table, shared with the docker backend. The E2B metadata
+(`oh_managed`, `oh_user_id`, `oh_spec_id`) is still written, as the tag a
+reconciler needs to find a sandbox the app has no row for. A row whose sandbox
+E2B no longer has reports `MISSING`, which is what archives the conversation —
+E2B's own `SandboxState` has no state for a reaped sandbox.
 
 ### Known limitations
 

@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import logging
 import os
 from dataclasses import dataclass
@@ -53,6 +52,9 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     resolve_sandbox_spec,
 )
+from openhands.app_server.sandbox.sandbox_store import (
+    hash_session_api_key as _hash_session_api_key,
+)
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.settings.settings_models import grouped_workspace_dir
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
@@ -76,11 +78,6 @@ AGENT_SERVER_PORT = 60000
 VSCODE_PORT = 60001
 WORKER_1_PORT = 12000
 WORKER_2_PORT = 12001
-
-
-def _hash_session_api_key(session_api_key: str) -> str:
-    """Hash a session API key using SHA-256."""
-    return hashlib.sha256(session_api_key.encode()).hexdigest()
 
 
 class StoredRemoteSandbox(Base):
