@@ -53,6 +53,14 @@ before creating anything; with the wrong value the agent server answers `POST
 /api/init` with a 401. Pass `--init-api-key` to rebuild a template without
 rotating its key.
 
+The template is built with 2 vCPU and 2048 MB, which is what this image has
+been exercised at. `--cpu-count` and `--memory-mb` change that, but a cluster
+node has to be able to fit the result: E2B rejects a `create()` it cannot
+place, with `Failed to place sandbox: sandbox creation failed on N node(s)`.
+That failure is permanent rather than transient — the template builds and
+lists as `ready`, and then every sandbox fails — so size the template against
+the nodes you actually have.
+
 The backend keeps no state of its own. Ownership and spec identity live in E2B
 sandbox metadata (`oh_managed`, `oh_user_id`, `oh_spec_id`), and each sandbox's
 session API key is derived from its id with the app server's encryption key, so

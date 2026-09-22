@@ -80,7 +80,11 @@ async def main() -> int:
         help='OH_SECRET_KEY baked into the template. Generated when omitted.',
     )
     parser.add_argument('--cpu-count', type=int, default=2)
-    parser.add_argument('--memory-mb', type=int, default=4096)
+    # 2048 is the size this template has been exercised at end to end. Raising
+    # it is only useful if the cluster's nodes can still fit the sandbox: E2B
+    # rejects a create it cannot place, and that failure is permanent, not
+    # transient.
+    parser.add_argument('--memory-mb', type=int, default=2048)
     args = parser.parse_args()
 
     image = args.image or default_image()

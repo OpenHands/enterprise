@@ -113,6 +113,11 @@ def _init_api_key(sandbox_spec: E2BSandboxSpecInfo) -> str | None:
     return sandbox_spec.init_api_key.get_secret_value() or None
 
 
+# E2B rejects a create it has no room for. The failure is permanent - it is
+# the template's footprint against the nodes' capacity, not a busy moment - so
+# it is reported rather than retried.
+PLACEMENT_FAILURE_MARKER = 'failed to place sandbox'
+
 MISSING_INIT_API_KEY = (
     'has no init API key. The E2B template boots its agent server with a '
     'static OH_SECRET_KEY, and the app server must be configured with the '
@@ -488,6 +493,15 @@ class E2BSandboxService(SandboxService):
             )
         except SandboxException as exc:
             _logger.exception('Failed to create sandbox', stack_info=True)
+            if PLACEMENT_FAILURE_MARKER in str(exc).lower():
+                raise SandboxError(
+                    f'The E2B cluster could not place a sandbox for template '
+                    f'{sandbox_spec.id!r}: no node had room for the CPU and '
+                    'memory the template was built with. Compare the '
+                    "template's size against the capacity of the cluster "
+                    'nodes, and rebuild it smaller if needed '
+                    '(scripts/e2b/build_template.py --cpu-count / --memory-mb).'
+                ) from exc
             raise SandboxError('Failed to start sandbox') from exc
 
         e2b_sandbox_id = sandbox.sandbox_id

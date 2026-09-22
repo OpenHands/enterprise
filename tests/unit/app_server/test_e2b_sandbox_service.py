@@ -287,8 +287,28 @@ class TestStartSandbox:
     async def test_create_failure_raises_sandbox_error(self, sdk):
         sdk.create.side_effect = SandboxException('boom')
 
-        with pytest.raises(SandboxError):
+        with pytest.raises(SandboxError) as raised:
             await _service().start_sandbox()
+
+        assert 'Failed to start sandbox' in str(raised.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_a_placement_failure_names_the_template_size(self, sdk):
+        """A template too big for any node fails permanently, not transiently."""
+        sdk.create.side_effect = SandboxException(
+            '500: Failed to place sandbox: sandbox creation failed on 1 '
+            'node(s), please retry; if the problem persists, contact us'
+        )
+
+        with pytest.raises(SandboxError) as raised:
+            await _service().start_sandbox()
+
+        detail = str(raised.value.detail)
+        assert 'could not place a sandbox' in detail
+        assert TEMPLATE in detail
+        assert 'memory' in detail
+        # Retrying does not recover a template that does not fit.
+        assert sdk.create.await_count == 1
 
 
 class TestInitHandshake:
