@@ -28,6 +28,8 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
+    LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE,
+    LLM_API_KEY_REFRESH_URL_VARIABLE,
     SESSION_API_KEY_VARIABLE,
     WEBHOOK_CALLBACK_VARIABLE,
     SandboxService,
@@ -419,6 +421,16 @@ class DockerSandboxService(SandboxService):
         env_vars[WEBHOOK_CALLBACK_VARIABLE] = (
             f'http://host.docker.internal:{self.host_port}/api/v1/webhooks'
         )
+        # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and retry
+        # in place (#5189). The agent-server authenticates the call with its own
+        # session key (already set above), so only the URL + base_urls go here.
+        env_vars[LLM_API_KEY_REFRESH_URL_VARIABLE] = (
+            f'http://host.docker.internal:{self.host_port}/api/keys/llm/managed/current'
+        )
+        from server.constants import LITE_LLM_API_URL
+
+        if LITE_LLM_API_URL:
+            env_vars[LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE] = LITE_LLM_API_URL
 
         # Set CORS origins for remote browser access when web_url is configured.
         # This allows the agent-server container to accept requests from the

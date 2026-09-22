@@ -26,6 +26,15 @@ SESSION_API_KEY_VARIABLE = 'OH_SESSION_API_KEYS_0'
 WEBHOOK_CALLBACK_VARIABLE = 'OH_WEBHOOKS_0_BASE_URL'
 ALLOW_CORS_ORIGINS_VARIABLE = 'OH_ALLOW_CORS_ORIGINS_0'
 
+# Tell the in-sandbox agent-server where to re-resolve a managed LiteLLM proxy
+# key on a 401, and which base_urls that key applies to (#5189). Both are
+# LLM_-prefixed so they also ride the auto-forward path (AUTO_FORWARD_PREFIXES).
+# The agent-server authenticates the refresh call with its own session key
+# (SESSION_API_KEY_VARIABLE); the control plane never injects that credential
+# here, so the URL/base_urls stay non-secret.
+LLM_API_KEY_REFRESH_URL_VARIABLE = 'LLM_API_KEY_REFRESH_URL'
+LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE = 'LLM_API_KEY_REFRESH_BASE_URLS'
+
 # Known start-failure classes we translate into short, user-safe messages. Raw
 # runtime status_detail (k8s pod/scheduling text) can leak internal registry
 # hosts, secret/configmap names, node taints/labels, cluster size, etc., so it

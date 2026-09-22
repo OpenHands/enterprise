@@ -39,6 +39,8 @@ from openhands.app_server.sandbox.sandbox_models import (
 )
 from openhands.app_server.sandbox.sandbox_service import (
     ALLOW_CORS_ORIGINS_VARIABLE,
+    LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE,
+    LLM_API_KEY_REFRESH_URL_VARIABLE,
     WEBHOOK_CALLBACK_VARIABLE,
     SandboxService,
     SandboxServiceInjector,
@@ -317,6 +319,16 @@ class RemoteSandboxService(SandboxService):
             # We specify CORS settings only if there is a public facing url - otherwise
             # we are probably in local development and the only url in use is localhost
             environment[ALLOW_CORS_ORIGINS_VARIABLE] = self.web_url
+            # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and
+            # retry in place (#5189). Only the URL + managed base_urls are set;
+            # the agent-server authenticates the call with its own session key.
+            environment[LLM_API_KEY_REFRESH_URL_VARIABLE] = (
+                f'{self.web_url}/api/keys/llm/managed/current'
+            )
+            from server.constants import LITE_LLM_API_URL
+
+            if LITE_LLM_API_URL:
+                environment[LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE] = LITE_LLM_API_URL
 
         # Add worker port environment variables so the agent knows which ports to use
         # for web applications. These match the ports exposed via the WORKER_1 and
