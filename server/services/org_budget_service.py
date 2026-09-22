@@ -1200,6 +1200,7 @@ class OrgBudgetService:
         return rows[offset : offset + users_per_page], total
 
     async def get_user_budget_row(self, org_id: UUID, user_id: UUID) -> dict | None:
+        await self._reject_personal_org(org_id, 'get_user_budget_row')
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         snapshot_result = await self._get_financial_snapshot(
