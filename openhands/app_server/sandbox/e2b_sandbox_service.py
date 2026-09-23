@@ -53,9 +53,11 @@ from openhands.app_server.sandbox.sandbox_store import (
     get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
+    require_user_id,
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
+from openhands.app_server.user.specifiy_user_context import ADMIN
 from openhands.app_server.user.user_context import UserContext
 
 _logger = logging.getLogger(__name__)
@@ -209,13 +211,15 @@ class E2BSandboxService(SandboxService):
 
         The rows have already decided ownership. The owner filter only narrows
         the list, so a row E2B no longer has costs a scan of the caller's
-        sandboxes rather than of every sandbox in the team. The loop stops once
+        sandboxes rather than of every sandbox in the team. ``ADMIN`` reads
+        across users, so it lists without the filter. The loop stops once
         every wanted id is found.
         """
         metadata = {MANAGED_METADATA_KEY: 'true'}
-        user_id = await self.user_context.get_user_id()
-        if user_id:
-            metadata[CREATED_BY_USER_ID_METADATA_KEY] = user_id
+        if self.user_context != ADMIN:
+            metadata[CREATED_BY_USER_ID_METADATA_KEY] = await require_user_id(
+                self.user_context
+            )
         paginator = AsyncSandbox.list(
             query=SandboxQuery(
                 metadata=metadata,
@@ -479,6 +483,10 @@ class E2BSandboxService(SandboxService):
         a caller waiting on readiness would otherwise be handed a server that
         rejects every ``/api`` call with a 503.
         """
+        # Every sandbox has an owner. Check before pause_old_sandboxes, which
+        # would reach every user's sandboxes as ADMIN.
+        user_id = await require_user_id(self.user_context)
+
         # Enforce sandbox limits by cleaning up old sandboxes
         await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
 
@@ -500,13 +508,11 @@ class E2BSandboxService(SandboxService):
                 f'Sandbox spec {sandbox_spec.id!r} {MISSING_INIT_API_KEY}'
             )
 
-        user_id = await self.user_context.get_user_id()
         metadata = {
             MANAGED_METADATA_KEY: 'true',
             SANDBOX_SPEC_ID_METADATA_KEY: sandbox_spec.id,
+            CREATED_BY_USER_ID_METADATA_KEY: user_id,
         }
-        if user_id:
-            metadata[CREATED_BY_USER_ID_METADATA_KEY] = user_id
 
         try:
             sandbox = await AsyncSandbox.create(

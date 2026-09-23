@@ -25,7 +25,11 @@ from pydantic import SecretStr
 from sqlalchemy import select, text
 
 from openhands.agent_server.init_router import InitRequest
-from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
+from openhands.app_server.errors import (
+    AuthError,
+    SandboxDeleteRetryError,
+    SandboxError,
+)
 from openhands.app_server.sandbox import e2b_sandbox_service
 from openhands.app_server.sandbox.e2b_sandbox_service import (
     CREATED_BY_USER_ID_METADATA_KEY,
@@ -51,6 +55,8 @@ from openhands.app_server.sandbox.sandbox_store import (
     StoredSandbox,
     hash_session_api_key,
 )
+from openhands.app_server.user.specifiy_user_context import ADMIN
+from openhands.app_server.user.user_context import UserContext
 
 DOMAIN = 'e2b.example.com'
 TEMPLATE = 'openhands-agent-server'
@@ -218,6 +224,7 @@ def _user_context(user_id: str | None) -> AsyncMock:
 def _service(
     db_session,
     user_id: str | None = OWNER_ID,
+    user_context: UserContext | None = None,
     httpx_client=None,
     web_url: str | None = WEB_URL,
     permitted_cors_origins: list[str] | None = None,
@@ -233,7 +240,7 @@ def _service(
     )
     return E2BSandboxService(
         sandbox_spec_service=PresetSandboxSpecService(specs=[spec]),
-        user_context=_user_context(user_id),
+        user_context=user_context or _user_context(user_id),
         httpx_client=httpx_client or FakeAgentServer(),
         db_session=db_session,
         api_key='e2b-api-key',
@@ -309,6 +316,21 @@ class TestStartSandbox:
         assert sandbox.sandbox_spec_id == TEMPLATE
         assert sandbox.status == SandboxStatus.RUNNING
         assert sandbox.session_api_key
+
+    @pytest.mark.asyncio
+    async def test_needs_an_owner(self, sdk, db_session):
+        """ADMIN has no user id, so it must not start a sandbox or pause any."""
+        service = _service(db_session, user_context=ADMIN)
+
+        with (
+            patch.object(service, 'pause_old_sandboxes') as pause,
+            pytest.raises(AuthError),
+        ):
+            await service.start_sandbox()
+
+        pause.assert_not_called()
+        sdk.create.assert_not_called()
+        assert (await db_session.execute(select(StoredSandbox))).first() is None
 
     @pytest.mark.asyncio
     async def test_created_with_pause_on_timeout(self, sdk, db_session):
@@ -768,7 +790,10 @@ class TestGetSandbox:
         """A sandbox the app has no record of is not the app's to hand out."""
         sdk.get_info.return_value = _e2b_info(sandbox_id='iunknown', managed=False)
 
-        assert await _service(db_session, user_id=None).get_sandbox('iunknown') is None
+        assert (
+            await _service(db_session, user_context=ADMIN).get_sandbox('iunknown')
+            is None
+        )
 
 
 class TestExposedUrls:
@@ -908,7 +933,7 @@ class TestSearchSandboxes:
         await store(_stored(created_by_user_id=OTHER_USER_ID))
         sdk.list.return_value = _paginator([_e2b_info(user_id=OTHER_USER_ID)])
 
-        page = await _service(db_session, user_id=None).search_sandboxes()
+        page = await _service(db_session, user_context=ADMIN).search_sandboxes()
 
         assert [item.id for item in page.items] == [SANDBOX_ID]
         query = sdk.list.call_args.kwargs['query']
@@ -1191,7 +1216,7 @@ class TestUserScoping:
     async def test_admin_can_get(self, sdk, db_session):
         sdk.get_info.return_value = _e2b_info(user_id=OWNER_ID)
 
-        sandbox = await _service(db_session, user_id=None).get_sandbox(SANDBOX_ID)
+        sandbox = await _service(db_session, user_context=ADMIN).get_sandbox(SANDBOX_ID)
 
         assert sandbox is not None
         assert sandbox.created_by_user_id == OWNER_ID
