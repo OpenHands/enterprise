@@ -459,15 +459,11 @@ export function YourBudget() {
       </p>
     );
   } else if (!isLoading && budget) {
-    content = budget.enabled ? (
+    content = (
       <>
         <BudgetSummary budget={budget} />
         <UsageBreakdown timeWindow={timeWindow} />
       </>
-    ) : (
-      <p className="text-sm text-muted" data-testid="your-budget-not-enabled">
-        {t(I18nKey.SETTINGS$YOUR_BUDGET_NOT_ENABLED)}
-      </p>
     );
   }
 
@@ -485,7 +481,7 @@ export function YourBudget() {
             })}
           </p>
         </header>
-        {budget?.enabled && (
+        {budget && (
           <div
             className="inline-flex shrink-0 rounded-lg border border-border-subtle bg-base-secondary p-0.5"
             data-testid="your-budget-period-selector"

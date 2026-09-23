@@ -193,8 +193,8 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
   },
 ];
 
-// Kept out of SAAS_NAV_ITEMS: it is only shown in a team org that has budgets
-// enabled, which `useSettingsNavItems` decides at runtime.
+// Kept out of SAAS_NAV_ITEMS: it is only shown in a SaaS team org, which
+// `useSettingsNavItems` decides at runtime.
 export const YOUR_BUDGET_NAV_ITEM: SettingsNavItem = {
   icon: <Wallet className="size-4" strokeWidth={2} aria-hidden />,
   to: "/settings/your-budget",
