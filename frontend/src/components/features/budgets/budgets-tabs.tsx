@@ -524,15 +524,15 @@ export function DefaultBudgetsTab({
   onSave,
   isSaving,
 }: DefaultBudgetsTabProps) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-medium text-foreground mb-1">
-          Default budget for new users
+          {t(I18nKey.SETTINGS$BUDGETS_DEFAULT_FOR_USERS)}
         </h2>
         <p className="text-sm text-muted">
-          Applied automatically when a user joins your organization. Existing
-          users keep their current budgets.
+          {t(I18nKey.SETTINGS$BUDGETS_DEFAULT_FOR_USERS_DESCRIPTION)}
         </p>
       </div>
 
@@ -568,7 +568,9 @@ export function DefaultBudgetsTab({
       <div>
         <div className="block text-sm text-white mb-2">Preview</div>
         <p className="text-sm text-muted">
-          {`New users get up to $${defaultAmountLabel} per month before requiring an increase.`}
+          {t(I18nKey.SETTINGS$BUDGETS_DEFAULT_PREVIEW, {
+            amount: `$${defaultAmountLabel}`,
+          })}
         </p>
       </div>
 
