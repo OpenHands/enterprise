@@ -4026,6 +4026,45 @@ class TestGetTeamMembersFinancialData:
                     )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('other_member', [False, True])
+    async def test_unkeyed_exception_is_limited_to_provisioned_member(
+        self, mock_http_client, other_member
+    ):
+        response = MagicMock(is_success=True, status_code=200)
+        roles = [{'user_id': 'pending', 'role': 'user'}]
+        if other_member:
+            roles.append({'user_id': 'other', 'role': 'user'})
+        response.json.return_value = {
+            'team_info': {
+                'team_id': 'test-team',
+                'max_budget': 5,
+                'spend': 0,
+                'members_with_roles': roles,
+            },
+            'team_memberships': [],
+            'keys': [],
+        }
+        mock_http_client.get.return_value = response
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+        ):
+            if other_member:
+                with pytest.raises(ValueError, match='no validated key spend'):
+                    await LiteLlmManager._get_team_members_financial_data(
+                        mock_http_client, 'test-team', unkeyed_member_id='pending'
+                    )
+            else:
+                result = await LiteLlmManager._get_team_members_financial_data(
+                    mock_http_client, 'test-team', unkeyed_member_id='pending'
+                )
+                assert result['members']['pending'] == {
+                    'spend': 0,
+                    'max_budget': 5,
+                    'uses_shared_budget': True,
+                }
+
+    @pytest.mark.asyncio
     async def test_returns_empty_dict_when_litellm_not_configured(
         self, mock_http_client
     ):

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import httpx
 import pytest
+from sqlalchemy import delete
 
 from openhands.app_server.settings.settings_models import Settings
 from server.services.org_invitation_service import OrgInvitationService
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
+from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
+from storage.org_budget_store import OrgBudgetStore
 from storage.org_invitation_store import OrgInvitationStore
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
@@ -22,6 +26,7 @@ def provisioning_services(async_session_maker, monkeypatch):
     monkeypatch.delenv('LOCAL_DEPLOYMENT', raising=False)
     for module in (
         'storage.database',
+        'storage.org_budget_provisioning',
         'storage.org_store',
         'storage.org_member_store',
         'storage.org_invitation_store',
@@ -37,7 +42,15 @@ def provisioning_services(async_session_maker, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'mode', ['new-user', 'invited-user', 'key-refresh', 'override-key-refresh']
+    'mode',
+    [
+        'new-user',
+        'invited-user',
+        'key-refresh',
+        'override-key-refresh',
+        'override-new-user',
+        'disabled-new-user',
+    ],
 )
 async def test_provisioning_preserves_member_policy_before_first_request(
     budget_adapter: BudgetTestAdapter,
@@ -54,6 +67,15 @@ async def test_provisioning_preserves_member_policy_before_first_request(
     if existing_member:
         assert (await adapter.send_request(user_id)).status_code == 200
         await adapter.wait_for_spend(1)
+    if mode in {'override-new-user', 'disabled-new-user'}:
+        adapter.session.add(User(id=user_id, current_org_id=adapter.org_id))
+        await adapter.session.commit()
+        await adapter.set_default_user_limit(3)
+        await adapter.set_override(
+            user_id,
+            None if mode == 'disabled-new-user' else 1,
+            disabled=mode == 'disabled-new-user',
+        )
     if mode == 'invited-user':
         email = f'{user_id}@example.invalid'
         adapter.session.add(Org(id=user_id, name='Invitee personal workspace'))
@@ -96,18 +118,24 @@ async def test_provisioning_preserves_member_policy_before_first_request(
     old_key = adapter.keys.get(user_id)
     adapter.keys[user_id] = new_key
     try:
-        if mode == 'new-user':
+        if mode in {'new-user', 'override-new-user', 'disabled-new-user'}:
             owner = await adapter.session.get(
                 OrgMember, (adapter.org_id, adapter.user_ids[0])
             )
             assert owner is not None
-            adapter.session.add(User(id=user_id, current_org_id=adapter.org_id))
-            await adapter.session.commit()
+            if mode == 'new-user':
+                adapter.session.add(User(id=user_id, current_org_id=adapter.org_id))
+                await adapter.session.commit()
             await OrgMemberStore.add_user_to_org(
                 adapter.org_id, user_id, owner.role_id, new_key, status='active'
             )
         native = await adapter.financial_data()
         member = native['members'][str(user_id)]
+        if mode == 'disabled-new-user':
+            assert member['uses_shared_budget'] is True
+            assert member['max_budget'] == 5
+            assert (await adapter.send_request(user_id)).status_code == 200
+            return
         assert member['max_budget'] == 1
         response = await adapter.send_request(user_id)
         if existing_member:
@@ -209,3 +237,74 @@ async def test_new_member_without_default_shares_only_the_organization_cap(
     finally:
         await LiteLlmManager.delete_key(key)
         await LiteLlmManager.delete_user(user_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('keep_app_member', [True, False])
+async def test_recreated_native_member_does_not_receive_old_cycle_baseline(
+    budget_adapter: BudgetTestAdapter,
+    provisioning_services,
+    configured_litellm_manager,
+    keep_app_member: bool,
+) -> None:
+    adapter = budget_adapter
+    await adapter.configure_budget(5, 1)
+    user_id = adapter.user_ids[0]
+    store = OrgBudgetStore(adapter.session)
+    settings = await store.get_settings(adapter.org_id)
+    assert settings is not None
+    settings.user_cycle_start_spend = {
+        **settings.user_cycle_start_spend,
+        str(user_id): 7,
+    }
+    await store.record_cycle_baselines(
+        adapter.org_id,
+        settings.cycle_start_at,
+        {str(user_id): 7},
+        source=OrgBudgetCycleBaseline.SOURCE_MEMBER_ADDED,
+        observed_at=datetime.now(UTC),
+        replace=True,
+    )
+    if not keep_app_member:
+        await adapter.session.execute(
+            delete(OrgMember).where(
+                OrgMember.org_id == adapter.org_id, OrgMember.user_id == user_id
+            )
+        )
+    await adapter.session.commit()
+    async with httpx.AsyncClient(
+        headers={'x-goog-api-key': configured_litellm_manager.master_key}
+    ) as client:
+        await LiteLlmManager._remove_user_from_team(
+            client, str(user_id), str(adapter.org_id)
+        )
+    old_key = adapter.keys[user_id]
+    new_key = None
+    try:
+        provisioned = await LiteLlmManager.create_entries(
+            str(adapter.org_id), str(user_id), Settings(), create_user=False
+        )
+        assert provisioned is not None and provisioned.agent_settings.llm.api_key
+        new_key = provisioned.agent_settings.llm.api_key.get_secret_value()
+        adapter.keys[user_id] = new_key
+        assert (await adapter.financial_data())['members'][str(user_id)][
+            'max_budget'
+        ] == 1
+        await adapter.session.refresh(settings)
+        assert settings.user_cycle_start_spend[str(user_id)] == 0
+        assert (
+            await store.get_cycle_baselines(adapter.org_id, settings.cycle_start_at)
+        )[str(user_id)] == 0
+        assert (await adapter.send_request(user_id)).status_code == 200
+        await adapter.wait_for_spend(1)
+        assert (await adapter.send_request(user_id)).status_code == 429
+        if keep_app_member:
+            await adapter.run_maintenance()
+            assert (await adapter.financial_data())['members'][str(user_id)][
+                'max_budget'
+            ] == 1
+            assert (await adapter.send_request(user_id)).status_code == 429
+    finally:
+        adapter.keys[user_id] = old_key
+        if new_key:
+            await LiteLlmManager.delete_key(new_key)

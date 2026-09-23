@@ -471,7 +471,8 @@ class LiteLlmManager:
                         )
                         return None
 
-                    from server.services.org_budget_provisioning import (
+                    # Provisioning uses this manager; defer to avoid a circular import.
+                    from storage.org_budget_provisioning import (
                         provision_budget_member,
                     )
 
@@ -2106,6 +2107,8 @@ class LiteLlmManager:
     async def _get_team_members_financial_data(
         client: httpx.AsyncClient,
         team_id: str,
+        *,
+        unkeyed_member_id: str | None = None,
     ) -> dict:
         """
         Get financial data for all members in a team.
@@ -2225,6 +2228,10 @@ class LiteLlmManager:
                 key_count_by_user[user_id] = key_count_by_user.get(user_id, 0) + 1
 
             missing_key_spend = role_only_member_ids - key_count_by_user.keys()
+            if unkeyed_member_id is not None and unkeyed_member_id in missing_key_spend:
+                # Provisioning reads back a new roster member before issuing its first key.
+                role_only_spend[unkeyed_member_id] = 0.0
+                missing_key_spend.remove(unkeyed_member_id)
             if missing_key_spend:
                 raise ValueError(
                     'LiteLLM role-only members have no validated key spend: '

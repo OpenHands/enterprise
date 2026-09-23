@@ -26,6 +26,7 @@ from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_store import OrgBudgetStore
 from storage.org_budget_threshold import OrgBudgetThreshold
+from storage.org_budget_utils import budget_values_match as _budget_values_match
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
@@ -272,12 +273,6 @@ def _member_cap(baseline: float, effective_limit: float) -> float:
     # below the member's cycle baseline is already exceeded the moment it is
     # written. Nothing rejects a non-positive allowance, so clamp it here.
     return baseline + max(effective_limit, 0)
-
-
-def _budget_values_match(actual: float | None, expected: float | None) -> bool:
-    if actual is None or expected is None:
-        return actual is expected
-    return abs(actual - expected) <= 1e-6
 
 
 def _budget_sync_readback_errors(
