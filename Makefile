@@ -423,6 +423,57 @@ setup-config-basic:
 	> config.toml
 	@echo "$(GREEN)config.toml created.$(RESET)"
 
+# Overlay a local `software-agent-sdk` checkout on top of the resolved
+# `.venv`, so enterprise runs against your local SDK changes instead of the
+# pinned PyPI releases. Mirrors Agent Canvas's `OH_AGENT_SERVER_LOCAL_PATH`
+# (see `scripts/dev-safe.mjs::buildAgentServerCommand` in `OpenHands/OpenHands`),
+# so the same env var swaps the SDK across both dev stacks.
+#
+# `uv pip install --no-deps -e` replaces just the three package distributions
+# without re-resolving deps — the lockfile is not touched and the next
+# `make build` / `uv sync` restores the PyPI pins. This deliberately assumes
+# the local checkout's declared deps match the pinned versions; add any new
+# deps to `pyproject.toml` first if that stops being true.
+overlay-local-sdk: check-uv
+	@if [ -z "$(OH_AGENT_SERVER_LOCAL_PATH)" ]; then \
+		echo "$(RED)OH_AGENT_SERVER_LOCAL_PATH is not set.$(RESET)"; \
+		echo "$(RED)Usage: make overlay-local-sdk OH_AGENT_SERVER_LOCAL_PATH=/absolute/path/to/software-agent-sdk$(RESET)"; \
+		exit 1; \
+	fi
+	@case "$(OH_AGENT_SERVER_LOCAL_PATH)" in /*) : ;; *) \
+		echo "$(RED)OH_AGENT_SERVER_LOCAL_PATH must be an absolute path, got: $(OH_AGENT_SERVER_LOCAL_PATH)$(RESET)"; \
+		exit 1 ;; \
+	esac
+	@if [ ! -d "$(OH_AGENT_SERVER_LOCAL_PATH)" ]; then \
+		echo "$(RED)OH_AGENT_SERVER_LOCAL_PATH does not exist: $(OH_AGENT_SERVER_LOCAL_PATH)$(RESET)"; \
+		exit 1; \
+	fi
+	@for subdir in openhands-agent-server openhands-sdk openhands-tools; do \
+		if [ ! -f "$(OH_AGENT_SERVER_LOCAL_PATH)/$$subdir/pyproject.toml" ]; then \
+			echo "$(RED)OH_AGENT_SERVER_LOCAL_PATH is missing expected package '$$subdir' (no pyproject.toml at $(OH_AGENT_SERVER_LOCAL_PATH)/$$subdir).$(RESET)"; \
+			exit 1; \
+		fi; \
+	done
+	@if [ ! -x .venv/bin/python ]; then \
+		echo "$(RED).venv not found. Run \`make build\` first.$(RESET)"; \
+		exit 1; \
+	fi
+	@echo "$(YELLOW)Overlaying local SDK from $(OH_AGENT_SERVER_LOCAL_PATH) onto .venv...$(RESET)"
+	@uv pip install --no-deps \
+		-e "$(OH_AGENT_SERVER_LOCAL_PATH)/openhands-sdk" \
+		-e "$(OH_AGENT_SERVER_LOCAL_PATH)/openhands-tools" \
+		-e "$(OH_AGENT_SERVER_LOCAL_PATH)/openhands-agent-server"
+	@echo "$(GREEN)Local SDK overlay installed. Resolved locations:$(RESET)"
+	@OPENHANDS_SUPPRESS_BANNER=1 .venv/bin/python -c "import openhands.sdk, openhands.tools, openhands.agent_server; print('  openhands.sdk         ->', openhands.sdk.__file__); print('  openhands.tools       ->', openhands.tools.__file__); print('  openhands.agent_server ->', openhands.agent_server.__file__)"
+	@echo "$(YELLOW)Run \`make reset-sdk-overlay\` (or any \`uv sync\` / \`make build\`) to restore the pinned PyPI versions.$(RESET)"
+
+# Restore the pinned PyPI versions by re-syncing from `uv.lock`. This is the
+# inverse of `overlay-local-sdk`; a plain `uv sync` does the same thing.
+reset-sdk-overlay: check-uv
+	@echo "$(YELLOW)Restoring pinned SDK versions from uv.lock...$(RESET)"
+	@uv sync --python $(PYTHON) --all-groups
+	@echo "$(GREEN)SDK overlay removed.$(RESET)"
+
 # Develop in container
 docker-dev:
 	@if [ -f /.dockerenv ]; then \
@@ -457,8 +508,11 @@ help:
 	@echo "  $(GREEN)run-saas$(RESET)            - Run the SaaS app, starting the SaaS backend and the frontend server."
 	@echo "                        Backend Log file will be stored in the 'logs' directory."
 	@echo "  $(GREEN)docker-dev$(RESET)          - Build and run the OpenHands application in Docker."
+	@echo "  $(GREEN)overlay-local-sdk$(RESET)   - Overlay a local software-agent-sdk checkout on top of .venv."
+	@echo "                        Set OH_AGENT_SERVER_LOCAL_PATH=/absolute/path/to/software-agent-sdk."
+	@echo "  $(GREEN)reset-sdk-overlay$(RESET)   - Restore the pinned SDK versions from uv.lock (undoes overlay-local-sdk)."
 	@echo "  $(GREEN)help$(RESET)                - Display this help message, providing information on available targets."
 
 # Phony targets
-.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend build-agent-canvas prepare-local-frontend local-db reset-db start-backend start-saas-backend start-frontend _run_setup _run_saas_setup _wait_for_backend run run-saas setup-config setup-config-prompts setup-config-basic docker-dev clean help
+.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend build-agent-canvas prepare-local-frontend local-db reset-db start-backend start-saas-backend start-frontend _run_setup _run_saas_setup _wait_for_backend run run-saas setup-config setup-config-prompts setup-config-basic docker-dev overlay-local-sdk reset-sdk-overlay clean help
 .PHONY: kind
