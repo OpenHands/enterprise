@@ -413,6 +413,10 @@ async def test_budget_operations_reject_personal_org_without_creating_settings(
         delete_error,
     ):
         assert error.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert (
+            error.value.detail
+            == 'Organization budgets are not available for personal workspaces'
+        )
     assert result.scalar_one_or_none() is None
 
 
