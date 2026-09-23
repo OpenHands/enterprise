@@ -102,8 +102,9 @@ def test_upgrade_seeds_deepseek_default_on_saas(monkeypatch, fake_op):
         'my-feature-branch.staging.all-hands.dev',
     ],
 )
-def test_is_saas_web_host_accepts_managed_deployments(web_host):
-    assert migration_158._is_saas_web_host(web_host)
+def test_is_saas_accepts_managed_deployments(monkeypatch, web_host):
+    monkeypatch.setenv('WEB_HOST', web_host)
+    assert migration_158._is_saas()
 
 
 @pytest.mark.parametrize(
@@ -118,5 +119,6 @@ def test_is_saas_web_host_accepts_managed_deployments(web_host):
         'staging.all-hands.dev.attacker.com',
     ],
 )
-def test_is_saas_web_host_rejects_other_deployments(web_host):
-    assert not migration_158._is_saas_web_host(web_host)
+def test_is_saas_rejects_other_deployments(monkeypatch, web_host):
+    monkeypatch.setenv('WEB_HOST', web_host)
+    assert not migration_158._is_saas()
