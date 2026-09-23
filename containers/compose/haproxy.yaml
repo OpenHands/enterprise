@@ -1,0 +1,15 @@
+services:
+  proxy:
+    image: haproxy@sha256:52c5921e1619f39cbd5b25e1b4b5847667917f39745056cf004d9c263fbf11b9
+    restart: unless-stopped
+    cpus: 1
+    mem_limit: 256m
+    command: [haproxy, -W, -db, -f, /usr/local/etc/haproxy/haproxy.cfg]
+    ports:
+      - "127.0.0.1:${HTTPS_PORT:-8443}:8443"
+    volumes:
+      - ./haproxy:/usr/local/etc/haproxy:ro
+      - ${TLS_CERT_DIR:?Set TLS_CERT_DIR}:/certs:ro
+    networks:
+      default:
+        ipv4_address: ${PROXY_IPV4_ADDRESS:-172.30.44.10}
