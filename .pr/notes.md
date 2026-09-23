@@ -118,6 +118,29 @@ Local mock SaaS (`VITE_MOCK_SAAS=true`) turns the flag on automatically.
 Access still requires an instance Super Admin permission (`create_organization`,
 `provision_user`, or `manage_super_admins`).
 
+### Live APIs (this branch)
+
+| Surface | API |
+| --- | --- |
+| Orgs directory | `GET/PATCH/DELETE /api/admin/organizations` |
+| Users directory | `GET/PATCH/DELETE /api/admin/users` |
+| Super admins | `GET/POST/DELETE /api/admin/super-admins` |
+| Provision user | `POST /api/organizations/provision-user` + `X-Org-Id` |
+| Dashboard usage | Per-org `.../conversations/usage-stats` + `user-usage` |
+| Open org | `POST /api/organizations/{id}/switch` (super admin allowed without membership) |
+
+- **Org suspend/resume:** `org.status` (`active`/`suspended`); members blocked via `require_permission`
+- **Usage block (org-piped):** `assert_org_usable_for_product` at
+  `SaasUserAuth.get_effective_org_id` (agents/API keys/settings) and
+  `resolve_org_for_repo` (resolvers/webhooks). Suspended org or inactive
+  membership → 403 / abort conversation start. **Instance Super Admins**
+  bypass the effective-org gate (and suspended-org permission denial) so
+  they can Open Org / administer suspended orgs; resolvers still refuse
+  webhook starts. Admin `/api/admin/*` is also not blocked.
+- **User suspend/resume:** sets all `org_member.status` to `inactive`/`active`
+- **User remove:** drops team-org memberships (keeps personal workspace); 409 if last owner
+- Instance email toggle is read-only (from `email_enabled` config)
+
 ## Follow-ups (not in this PR)
 
 - In-process auth bridge (skip HTTP self-call to `/api/v1/users/me`)

@@ -48,7 +48,12 @@ const MOCK_ME: Omit<OrganizationMember, "role" | "org_id"> = {
   llm_base_url: "https://api.openai.com",
   agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
   status: "active",
-  permissions: ["create_organization"],
+  permissions: [
+    "create_organization",
+    "manage_super_admins",
+    "provision_user",
+    "delete_organization",
+  ],
 };
 
 const currentUserMembership = (

@@ -56,6 +56,7 @@ from server.routes.org_profiles import router as org_profiles_router  # noqa: E4
 from server.routes.orgs import org_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
+from server.routes.instance_admin import instance_admin_router  # noqa: E402
 from server.routes.super_admins import super_admin_router  # noqa: E402
 from server.routes.user_app_settings import user_app_settings_router  # noqa: E402
 from server.routes.user_provisioning import (  # noqa: E402
@@ -159,6 +160,9 @@ base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(
     super_admin_router
 )  # Add routes for instance-level super-admin management
+base_app.include_router(
+    instance_admin_router
+)  # Add routes for Super Admin org/user directory
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value

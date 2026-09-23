@@ -5,8 +5,9 @@ export interface SuperAdminOrgRow {
   name: string;
   members: number;
   status: SuperAdminOrgStatus;
-  createdAt: string;
+  createdAt?: string;
   contactEmail: string;
+  isPersonal?: boolean;
 }
 
 export type SuperAdminOrgRole = "owner" | "admin" | "member";
@@ -22,51 +23,17 @@ export interface SuperAdminUserRow {
   name: string;
   email: string;
   memberships: SuperAdminMembership[];
-  status: "active" | "invited" | "suspended" | "removed";
+  status: "active" | "invited" | "inactive" | "suspended" | "removed";
 }
 
 export interface SuperAdminAdminRow {
   id: string;
   name: string;
   email: string;
-  grantedAt: string;
+  grantedAt?: string;
 }
 
-export const SUPER_ADMIN_ORGS: SuperAdminOrgRow[] = [
-  {
-    id: "2",
-    name: "Acme Corp",
-    members: 24,
-    status: "active",
-    createdAt: "Jan 12, 2026",
-    contactEmail: "me@acme.org",
-  },
-  {
-    id: "4",
-    name: "All Hands AI",
-    members: 18,
-    status: "active",
-    createdAt: "Feb 3, 2026",
-    contactEmail: "ops@all-hands.dev",
-  },
-  {
-    id: "3",
-    name: "Beta LLC",
-    members: 7,
-    status: "active",
-    createdAt: "Mar 21, 2026",
-    contactEmail: "admin@beta.llc",
-  },
-  {
-    id: "5",
-    name: "Northwind Labs",
-    members: 3,
-    status: "suspended",
-    createdAt: "Apr 8, 2026",
-    contactEmail: "it@northwind.example",
-  },
-];
-
+/** Sample rows used only by unit tests for membership rendering. */
 export const SUPER_ADMIN_USERS: SuperAdminUserRow[] = [
   {
     id: "u-1",
@@ -106,32 +73,3 @@ export const SUPER_ADMIN_USERS: SuperAdminUserRow[] = [
     status: "invited",
   },
 ];
-
-export const SUPER_ADMIN_ADMINS: SuperAdminAdminRow[] = [
-  {
-    id: "u-1",
-    name: "openhands",
-    email: "me@acme.org",
-    grantedAt: "Jan 2, 2026",
-  },
-  {
-    id: "u-5",
-    name: "Riley Chen",
-    email: "riley@all-hands.dev",
-    grantedAt: "May 14, 2026",
-  },
-];
-
-export const SUPER_ADMIN_USAGE = {
-  conversationsThisMonth: 1482,
-  activeUsersThisMonth: 96,
-  tokensThisMonth: "42.8M",
-  spendThisMonth: "$12,410",
-};
-
-export const SUPER_ADMIN_STATS = {
-  organizations: SUPER_ADMIN_ORGS.length,
-  users: SUPER_ADMIN_USERS.length,
-  superAdmins: SUPER_ADMIN_ADMINS.length,
-  conversations: SUPER_ADMIN_USAGE.conversationsThisMonth,
-};

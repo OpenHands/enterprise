@@ -322,7 +322,9 @@ export function SuperAdminStatusLabel({ status }: { status: string }) {
     <span
       className={cn(
         "capitalize",
-        (status === "suspended" || status === "removed") &&
+        (status === "suspended" ||
+          status === "removed" ||
+          status === "inactive") &&
           "text-[var(--oh-muted)]",
       )}
     >

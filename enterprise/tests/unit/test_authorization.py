@@ -498,11 +498,20 @@ def _no_super_role():
     care about the super-role fallback. Individual tests can still
     re-patch ``server.auth.authorization.get_user_super_role`` inside
     their own ``with patch(...)`` block to override this default.
+
+    Also stubs org lookup as active so suspension checks do not hit a
+    real database in unit tests.
     """
-    with patch(
-        'server.auth.authorization.get_user_super_role',
-        AsyncMock(return_value=None),
-    ) as mocked:
+    with (
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            AsyncMock(return_value=None),
+        ) as mocked,
+        patch(
+            'storage.org_store.OrgStore.get_org_by_id',
+            AsyncMock(return_value=MagicMock(status='active')),
+        ),
+    ):
         yield mocked
 
 
@@ -1473,6 +1482,9 @@ class TestSuperRolePermissions:
                 Permission.CREATE_ORGANIZATION,
                 Permission.PROVISION_USER,
                 Permission.MANAGE_SUPER_ADMINS,
+                Permission.DELETE_ORGANIZATION,
+                Permission.VIEW_ORG_CONVERSATIONS,
+                Permission.VIEW_ORG_SETTINGS,
             ]
         )
         assert SUPER_ROLE_PERMISSIONS[RoleName.MEMBER] == frozenset()
@@ -1644,6 +1656,14 @@ def _mock_role(name: str) -> MagicMock:
 class TestRequirePermissionSuperRoleFallback:
     """Tests covering the super-role fallback in ``require_permission``."""
 
+    @pytest.fixture(autouse=True)
+    def _active_org(self):
+        with patch(
+            'storage.org_store.OrgStore.get_org_by_id',
+            AsyncMock(return_value=MagicMock(status='active')),
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_super_role_does_not_grant_unlisted_permission(self):
         """
@@ -1762,18 +1782,38 @@ class TestRequirePermissionSuperRoleFallback:
             assert 'not a member' in exc_info.value.detail.lower()
 
     @pytest.mark.asyncio
-    async def test_org_role_short_circuits_super_role_lookup(self):
-        """
-        GIVEN: an admin in the org who also has a super role
-        WHEN: require_permission(VIEW_LLM_SETTINGS) runs (admin has it)
-        THEN: ``get_user_super_role`` is not called -- the org role
-              already grants access
-        """
+    async def test_instance_super_admin_can_access_suspended_org(self):
+        """Instance Super Admins may use owner-level perms on suspended orgs."""
         user_id = str(uuid4())
         org_id = uuid4()
         mock_request = _create_mock_request()
 
-        super_role_mock = AsyncMock(return_value=_mock_role('owner'))
+        with (
+            patch(
+                'server.auth.authorization.get_user_org_role',
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                'server.auth.authorization.get_user_super_role',
+                AsyncMock(return_value=_mock_role('admin')),
+            ),
+            patch(
+                'storage.org_store.OrgStore.get_org_by_id',
+                AsyncMock(return_value=MagicMock(status='suspended')),
+            ),
+        ):
+            permission_checker = require_permission(Permission.VIEW_LLM_SETTINGS)
+            result = await permission_checker(
+                request=mock_request, org_id=org_id, user_id=user_id
+            )
+            assert result == user_id
+
+    @pytest.mark.asyncio
+    async def test_member_blocked_from_suspended_org(self):
+        """Regular members cannot use suspended orgs."""
+        user_id = str(uuid4())
+        org_id = uuid4()
+        mock_request = _create_mock_request()
 
         with (
             patch(
@@ -1782,7 +1822,41 @@ class TestRequirePermissionSuperRoleFallback:
             ),
             patch(
                 'server.auth.authorization.get_user_super_role',
-                super_role_mock,
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                'storage.org_store.OrgStore.get_org_by_id',
+                AsyncMock(return_value=MagicMock(status='suspended')),
+            ),
+        ):
+            permission_checker = require_permission(Permission.VIEW_LLM_SETTINGS)
+            with pytest.raises(HTTPException) as exc_info:
+                await permission_checker(
+                    request=mock_request, org_id=org_id, user_id=user_id
+                )
+            assert exc_info.value.status_code == 403
+            assert 'suspended' in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_org_role_short_circuits_before_super_role_permission_check(self):
+        """
+        GIVEN: an admin in the org who also has a super role
+        WHEN: require_permission(VIEW_LLM_SETTINGS) runs (admin has it)
+        THEN: access is granted via the org role (super role may be
+              looked up for suspension bypass, but is not required)
+        """
+        user_id = str(uuid4())
+        org_id = uuid4()
+        mock_request = _create_mock_request()
+
+        with (
+            patch(
+                'server.auth.authorization.get_user_org_role',
+                AsyncMock(return_value=_mock_role('admin')),
+            ),
+            patch(
+                'server.auth.authorization.get_user_super_role',
+                AsyncMock(return_value=_mock_role('owner')),
             ),
         ):
             permission_checker = require_permission(Permission.VIEW_LLM_SETTINGS)
@@ -1790,7 +1864,6 @@ class TestRequirePermissionSuperRoleFallback:
                 request=mock_request, org_id=org_id, user_id=user_id
             )
             assert result == user_id
-            super_role_mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_implicit_org_route_super_role_grants_explicit_permission_for_non_member(

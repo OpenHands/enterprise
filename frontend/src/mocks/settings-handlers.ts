@@ -75,6 +75,7 @@ export const createMockWebClientConfig = (
     forgejo: "codeberg.org",
   },
   slack_enabled: false,
+  email_enabled: false,
   ...overrides,
 });
 
@@ -649,6 +650,7 @@ export const SETTINGS_HANDLERS = [
         forgejo: "codeberg.org",
       },
       slack_enabled: mockSaas,
+      email_enabled: mockSaas,
     };
 
     return HttpResponse.json(config);

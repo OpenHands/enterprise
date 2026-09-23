@@ -141,6 +141,13 @@ class OrgStore:
         )
 
     @staticmethod
+    async def set_org_status(org_id: UUID, status: str) -> Org | None:
+        """Set organization lifecycle status (``active`` or ``suspended``)."""
+        if status not in ('active', 'suspended'):
+            raise ValueError(f'Invalid organization status: {status!r}')
+        return await OrgStore._update_org_kwargs(org_id, {'status': status})
+
+    @staticmethod
     async def get_orgs_by_ids(org_ids: list[UUID]) -> list[Org]:
         """Get multiple organizations by IDs in a single query.
 
