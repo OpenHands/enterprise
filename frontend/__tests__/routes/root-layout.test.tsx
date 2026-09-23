@@ -383,6 +383,25 @@ describe("MainApp", () => {
         { timeout: 2000 },
       );
     });
+
+    it("should preserve root query parameters in returnTo when redirecting to login", async () => {
+      renderWithLoginStub(RouterStubWithDeviceVerify, [
+        "/?oh_ph_handoff=encoded-handoff",
+      ]);
+
+      await waitFor(
+        () => {
+          expect(screen.getByTestId("login-page")).toBeInTheDocument();
+          const returnToElement = screen.getByTestId("return-to-param");
+          expect(returnToElement).toBeInTheDocument();
+          expect(returnToElement.textContent).toBe(
+            "/?oh_ph_handoff=encoded-handoff",
+          );
+        },
+        { timeout: 2000 },
+      );
+    });
+
   });
 
   describe("Re-authentication with stored login method", () => {

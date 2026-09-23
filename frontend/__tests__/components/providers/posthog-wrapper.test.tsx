@@ -193,6 +193,42 @@ describe("PostHogWrapper", () => {
     expect(window.location.hash).toBe("");
   });
 
+  it("should initialize PostHog from query handoff and remove only handoff params", async () => {
+    const encoded = encodeHandoff({
+      v: 1,
+      exp: Date.now() + 60_000,
+      nonce: "enterprise-query",
+      distinct_id: "docs-anon-id",
+      session_id: "docs-session-id",
+      attribution: { cta_surface: "docs_link" },
+    });
+    window.history.replaceState(
+      null,
+      "",
+      `/?keep=1&oh_ph_handoff=${encoded}#section=top`,
+    );
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child");
+
+    const props = mockPostHogProvider.mock.calls[0][0];
+    expect(props.options.bootstrap).toEqual({
+      distinctID: "docs-anon-id",
+      sessionID: "docs-session-id",
+    });
+
+    const register = vi.fn();
+    props.options.loaded({ register });
+    expect(register).toHaveBeenCalledWith({ cta_surface: "docs_link" });
+    expect(window.location.search).toBe("?keep=1");
+    expect(window.location.hash).toBe("#section=top");
+  });
+
   it("should initialize PostHog with health monitoring config (web vitals, error tracking, network timing)", async () => {
     render(
       <PostHogWrapper>
