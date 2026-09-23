@@ -637,7 +637,6 @@ class OrgBudgetService:
         overrides = await self._get_overrides(org_id)
 
         fields_set = update_data.model_fields_set
-        reset_day_changed = False
         previous_enabled = settings.enabled
         baseline_snapshot: LiteLlmFinancialSnapshot | None = None
 
@@ -646,8 +645,9 @@ class OrgBudgetService:
         if 'monthly_limit' in fields_set:
             settings.monthly_limit = update_data.monthly_limit
         if 'reset_day' in fields_set:
+            # A new reset day moves the end of the current cycle. The cycle's
+            # baseline, and the spend already counted against it, are kept.
             settings.reset_day = update_data.reset_day
-            reset_day_changed = True
         if 'default_user_monthly_limit' in fields_set:
             settings.default_user_monthly_limit = update_data.default_user_monthly_limit
         if 'slack_channel' in fields_set:
@@ -669,7 +669,7 @@ class OrgBudgetService:
                 detail='monthly_limit is required when budgets are enabled',
             )
 
-        if reset_day_changed or (not previous_enabled and settings.enabled):
+        if not previous_enabled and settings.enabled:
             snapshot_result = await self._get_financial_snapshot(
                 org_id,
                 settings,
