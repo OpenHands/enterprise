@@ -17,7 +17,6 @@ import {
   PillBadge,
   SpendMeter,
   StatusPill,
-  Toggle,
   UserProgressBar,
 } from "./budgets-components";
 import { cn } from "#/utils/utils";
@@ -75,8 +74,6 @@ const STATUS_FILTER_ITEMS = [
 ];
 
 interface OrganizationBudgetTabProps {
-  orgBudgetEnabled: boolean;
-  onToggleOrgBudget: (value: boolean) => void;
   currentSpend: number | null;
   monthlyLimitValue: number | null;
   cycleLabel: string;
@@ -94,6 +91,7 @@ interface OrganizationBudgetTabProps {
   reconciliationError: string | null;
   desiredTeamMaxBudget: number | null;
   appliedTeamMaxBudget: number | null;
+  cycleStartSpend: number | null;
   unmappedSpend: number | null;
   unmappedMemberCount: number | null;
   monthlyLimit: string;
@@ -115,8 +113,6 @@ interface OrganizationBudgetTabProps {
 }
 
 export function OrganizationBudgetTab({
-  orgBudgetEnabled,
-  onToggleOrgBudget,
   currentSpend,
   monthlyLimitValue,
   cycleLabel,
@@ -129,6 +125,7 @@ export function OrganizationBudgetTab({
   reconciliationError,
   desiredTeamMaxBudget,
   appliedTeamMaxBudget,
+  cycleStartSpend,
   unmappedSpend,
   unmappedMemberCount,
   monthlyLimit,
@@ -182,16 +179,6 @@ export function OrganizationBudgetTab({
             your cap.
           </p>
         </div>
-        <div className="flex items-center gap-3 shrink-0">
-          <span className="text-sm text-muted">
-            {t(I18nKey.SETTINGS$BUDGETS_ENABLE_MONTHLY_BUDGET)}
-          </span>
-          <Toggle
-            enabled={orgBudgetEnabled}
-            onChange={onToggleOrgBudget}
-            label={t(I18nKey.SETTINGS$BUDGETS_ENABLE_MONTHLY_BUDGET)}
-          />
-        </div>
       </div>
 
       <div className="rounded-lg border border-border-subtle bg-base-secondary p-6">
@@ -236,6 +223,19 @@ export function OrganizationBudgetTab({
           )}
           {reconciliationError ? ` ${reconciliationError}` : ""}
         </div>
+        {desiredTeamMaxBudget !== null && (
+          <p className="mb-4 text-xs text-[var(--oh-muted)]">
+            {cycleStartSpend !== null && cycleStartSpend > 0
+              ? t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND, {
+                  cap: `$${desiredTeamMaxBudget.toLocaleString()}`,
+                  priorSpend: `$${cycleStartSpend.toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}`,
+                })
+              : t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER)}
+          </p>
+        )}
         {syncStatus === "error" && !reconciliationError && (
           <div
             role="alert"

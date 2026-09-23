@@ -646,8 +646,8 @@ class OrgBudgetService:
         if 'monthly_limit' in fields_set:
             settings.monthly_limit = update_data.monthly_limit
         if 'reset_day' in fields_set:
+            reset_day_changed = update_data.reset_day != settings.reset_day
             settings.reset_day = update_data.reset_day
-            reset_day_changed = True
         if 'default_user_monthly_limit' in fields_set:
             settings.default_user_monthly_limit = update_data.default_user_monthly_limit
         if 'slack_channel' in fields_set:
