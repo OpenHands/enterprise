@@ -151,7 +151,7 @@ export function OrganizationBudgetTab({
   isSaving,
   isMonthlyLimitValid,
 }: OrganizationBudgetTabProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const observedAtLabel = spendObservedAt
     ? new Date(spendObservedAt).toLocaleString()
     : null;
@@ -337,7 +337,7 @@ export function OrganizationBudgetTab({
       <div className="space-y-1 text-sm text-muted" aria-live="polite">
         <p>
           {t("SETTINGS$BUDGETS_NEXT_RESET", {
-            date: nextReset.toLocaleDateString("en-US", {
+            date: nextReset.toLocaleDateString(i18n.language, {
               year: "numeric",
               month: "long",
               day: "numeric",

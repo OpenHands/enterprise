@@ -24,7 +24,8 @@ vi.mock("react-i18next", async () => {
       t: (key: string, params?: Record<string, string>) => {
         const translations: Record<string, string> = {
           SETTINGS$BUDGETS_NEXT_RESET: `Next reset: ${params?.date} at 00:00 UTC.`,
-          SETTINGS$BUDGETS_RESET_DAY_CHANGE_HELPER: "Saving keeps current organization and individual spending.",
+          SETTINGS$BUDGETS_RESET_DAY_CHANGE_HELPER:
+            "Saving keeps current organization and individual spending.",
           SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND: `The ${params?.cap} team cap includes the ${params?.priorSpend} already recorded before this cycle started.`,
           SETTINGS$BUDGETS_TEAM_CAP_HELPER:
             "The team cap includes any spend already recorded before this cycle started.",
@@ -136,18 +137,30 @@ describe("Budgets", () => {
   it("previews the selected reset date and preserves the saved date on reload", async () => {
     const user = userEvent.setup();
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
-      ...budgetResponse, reset_day: 15, cycle_end_at: "2099-10-15T00:00:00Z",
+      ...budgetResponse,
+      reset_day: 15,
+      cycle_end_at: "2099-10-15T00:00:00Z",
     });
     await renderBudgets();
-    expect(screen.getByText("Next reset: October 15, 2099 at 00:00 UTC.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Next reset: October 15, 2099 at 00:00 UTC."),
+    ).toBeInTheDocument();
     await user.click(screen.getByTestId("org-billing-cycle"));
     await user.click(screen.getByRole("option", { name: "1st of each month" }));
-    expect(screen.getByText("Saving keeps current organization and individual spending.")).toBeInTheDocument();
-    expect(screen.queryByText("Next reset: October 15, 2099 at 00:00 UTC.")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Saving keeps current organization and individual spending.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Next reset: October 15, 2099 at 00:00 UTC."),
+    ).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Save changes" }));
-    expect(organizationService.updateBudgetSettings).toHaveBeenCalledWith(expect.objectContaining({
-      payload: expect.objectContaining({reset_day: 1}),
-    }));
+    expect(organizationService.updateBudgetSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ reset_day: 1 }),
+      }),
+    );
   });
 
   it.each([
@@ -211,8 +224,8 @@ describe("Budgets", () => {
     await waitFor(() =>
       expect(organizationService.updateBudgetSettings).toHaveBeenCalled(),
     );
-    const [{ payload }] =
-      vi.mocked(organizationService.updateBudgetSettings).mock.calls[0];
+    const [{ payload }] = vi.mocked(organizationService.updateBudgetSettings)
+      .mock.calls[0];
     expect(payload).not.toHaveProperty("thresholds");
     expect(payload).not.toHaveProperty("slack_channel");
   });
@@ -225,13 +238,20 @@ describe("Budgets", () => {
         ...budgetResponse,
         email_alerts_available: unavailable !== "email",
         slack_workspace_connected: unavailable !== "slack",
-        thresholds: [{ id: 1, percentage: 75, email_enabled: true, slack_enabled: true }],
+        thresholds: [
+          { id: 1, percentage: 75, email_enabled: true, slack_enabled: true },
+        ],
       });
       await renderBudgets();
       await user.click(screen.getByRole("button", { name: "Save changes" }));
-      await waitFor(() => expect(organizationService.updateBudgetSettings).toHaveBeenCalled());
-      const [{ payload }] = vi.mocked(organizationService.updateBudgetSettings).mock.calls[0];
-      expect(payload.thresholds).toEqual([{ percentage: 75, email_enabled: true, slack_enabled: true }]);
+      await waitFor(() =>
+        expect(organizationService.updateBudgetSettings).toHaveBeenCalled(),
+      );
+      const [{ payload }] = vi.mocked(organizationService.updateBudgetSettings)
+        .mock.calls[0];
+      expect(payload.thresholds).toEqual([
+        { percentage: 75, email_enabled: true, slack_enabled: true },
+      ]);
     },
   );
 
