@@ -34,6 +34,13 @@ OUT_DIR="$FRONTEND_DIR/public/canvas"
 # is built with).
 CANVAS_BASE_PATH="${AGENT_CANVAS_BASE_PATH:-/canvas}"
 
+# Lock the Canvas SPA to a specific cloud host so it skips first-run
+# onboarding and uses cookie auth instead of session API keys.
+# Set AGENT_CANVAS_LOCK_TO_CLOUD to the origin the browser will visit,
+# including scheme and port, e.g. "http://localhost:3030".
+# When set, VITE_LOCK_TO_CLOUD is passed to the Canvas build.
+CANVAS_LOCK_TO_CLOUD="${AGENT_CANVAS_LOCK_TO_CLOUD:-}"
+
 echo "Building Agent Canvas ($CANVAS_REF) -> $OUT_DIR"
 
 # The Canvas build is large and immutable per ref, so a full re-run is only
@@ -58,7 +65,20 @@ echo "Installing Agent Canvas dependencies"
 (cd "$CACHE_DIR" && npm ci --no-audit --no-fund)
 
 echo "Compiling Agent Canvas with VITE_BASE_PATH=$CANVAS_BASE_PATH"
-(cd "$CACHE_DIR" && VITE_BASE_PATH="$CANVAS_BASE_PATH" npm run build)
+
+# Build the Canvas SPA. VITE_BASE_PATH is always set.
+# VITE_LOCK_TO_CLOUD is set when AGENT_CANVAS_LOCK_TO_CLOUD is provided.
+#
+# VITE_BACKEND_BASE_URL and VITE_BACKEND_HOST are explicitly unset: if they
+# are present in the shell environment (e.g. from frontend/.env), Vite bakes
+# them into the bundle and Canvas uses that host instead of window.location.origin,
+# which breaks cookie auth in locked-cloud mode.
+BUILD_ENV="VITE_BASE_PATH=$CANVAS_BASE_PATH"
+if [ -n "$CANVAS_LOCK_TO_CLOUD" ]; then
+  BUILD_ENV="$BUILD_ENV VITE_LOCK_TO_CLOUD=$CANVAS_LOCK_TO_CLOUD"
+  echo "  VITE_LOCK_TO_CLOUD=$CANVAS_LOCK_TO_CLOUD"
+fi
+(cd "$CACHE_DIR" && env -u VITE_BACKEND_BASE_URL -u VITE_BACKEND_HOST $BUILD_ENV npm run build)
 
 if [ ! -f "$CACHE_DIR/build/index.html" ]; then
   echo "error: Agent Canvas build did not produce build/index.html" >&2

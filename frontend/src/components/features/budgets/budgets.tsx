@@ -3,7 +3,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
-import { useConfig } from "#/hooks/query/use-config";
 import { useDebounce } from "#/hooks/use-debounce";
 import { BUDGET_TABS, BudgetTab, USERS_PER_PAGE } from "./budgets-constants";
 import {
@@ -12,16 +11,13 @@ import {
   UserOverridesTab,
 } from "./budgets-tabs";
 import type { BudgetThreshold, BudgetUserRow } from "./budgets-tabs";
+import { nextBudgetResetDate } from "./budget-reset-date";
 
 export function Budgets() {
   const { organizationId } = useSelectedOrganizationId();
   const queryClient = useQueryClient();
 
-  const { data: config } = useConfig();
-  const slackIntegrationEnabled = Boolean(config?.slack_enabled);
   const [usersPage, setUsersPage] = useState(1);
-
-  const emailIntegrationEnabled = Boolean(config?.email_enabled);
 
   const [activeTab, setActiveTab] = useState<BudgetTab>("organization");
 
@@ -50,6 +46,12 @@ export function Budgets() {
       }),
     enabled: !!organizationId,
   });
+
+  const emailIntegrationEnabled = Boolean(budgetData?.email_alerts_available);
+  const slackIntegrationEnabled = Boolean(
+    budgetData?.slack_integration_configured,
+  );
+  const slackConnected = Boolean(budgetData?.slack_workspace_connected);
 
   useEffect(() => {
     setUsersPage(1);
@@ -115,6 +117,20 @@ export function Budgets() {
 
   const [monthlyLimit, setMonthlyLimit] = useState("");
   const [billingCycle, setBillingCycle] = useState("1st");
+  const [calendarNow, setCalendarNow] = useState(() => new Date());
+  useEffect(() => {
+    const now = new Date();
+    const midnight = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + 1,
+    );
+    const timer = setTimeout(
+      () => setCalendarNow(new Date()),
+      midnight - now.getTime(),
+    );
+    return () => clearTimeout(timer);
+  }, [calendarNow]);
   const [slackChannel, setSlackChannel] = useState("");
   const [thresholds, setThresholds] = useState<BudgetThreshold[]>([]);
   const [defaultAmount, setDefaultAmount] = useState("");
@@ -169,6 +185,14 @@ export function Budgets() {
       })
     : "this cycle";
   const defaultUserLimit = budgetData?.default_user_monthly_limit ?? null;
+  const selectedResetDay = billingCycle === "15th" ? 15 : 1;
+  const resetDayChanged = selectedResetDay !== budgetData?.reset_day;
+  const nextReset = nextBudgetResetDate(
+    selectedResetDay,
+    budgetData?.enabled ? budgetData.reset_day : 0,
+    budgetData?.cycle_end_at,
+    calendarNow,
+  );
 
   const usersTotal = budgetData?.users_total ?? 0;
   const usersPerPage = budgetData?.users_per_page ?? USERS_PER_PAGE;
@@ -193,18 +217,16 @@ export function Budgets() {
       enabled: true,
       monthly_limit: monthlyLimitValue,
       reset_day: billingCycle === "15th" ? 15 : 1,
-      slack_channel: slackIntegrationEnabled
-        ? slackChannel.trim() || null
-        : null,
-      thresholds: thresholds.map((threshold) => ({
-        percentage: threshold.percentage,
-        email_enabled: emailIntegrationEnabled
-          ? threshold.email_enabled
-          : false,
-        slack_enabled: slackIntegrationEnabled
-          ? threshold.slack_enabled
-          : false,
-      })),
+      ...(slackConnected ? { slack_channel: slackChannel.trim() || null } : {}),
+      ...(emailIntegrationEnabled || slackConnected
+        ? {
+            thresholds: thresholds.map((threshold) => ({
+              percentage: threshold.percentage,
+              email_enabled: threshold.email_enabled,
+              slack_enabled: threshold.slack_enabled,
+            })),
+          }
+        : {}),
     });
   };
 
@@ -224,7 +246,11 @@ export function Budgets() {
     setThresholds((prev) =>
       [
         ...prev,
-        { percentage: next, email_enabled: true, slack_enabled: false },
+        {
+          percentage: next,
+          email_enabled: emailIntegrationEnabled,
+          slack_enabled: !emailIntegrationEnabled && slackConnected,
+        },
       ].sort((a, b) => a.percentage - b.percentage),
     );
   };
@@ -243,7 +269,7 @@ export function Budgets() {
   };
 
   const handleToggleSlack = (index: number) => {
-    if (!slackIntegrationEnabled) return;
+    if (!slackConnected) return;
     setThresholds(
       thresholds.map((t, i) =>
         i === index ? { ...t, slack_enabled: !t.slack_enabled } : t,
@@ -400,6 +426,8 @@ export function Budgets() {
           onMonthlyLimitChange={setMonthlyLimit}
           billingCycle={billingCycle}
           onBillingCycleChange={setBillingCycle}
+          nextReset={nextReset}
+          resetDayChanged={resetDayChanged && Boolean(budgetData?.enabled)}
           thresholds={thresholds}
           onAddThreshold={handleAddThreshold}
           onDeleteThreshold={handleDeleteThreshold}
@@ -407,6 +435,7 @@ export function Budgets() {
           onToggleSlack={handleToggleSlack}
           emailIntegrationEnabled={emailIntegrationEnabled}
           slackIntegrationEnabled={slackIntegrationEnabled}
+          slackConnected={slackConnected}
           slackChannel={slackChannel}
           onSlackChannelChange={setSlackChannel}
           onSave={handleSaveOrgBudget}

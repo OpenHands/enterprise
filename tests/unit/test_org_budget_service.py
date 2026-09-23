@@ -2782,8 +2782,9 @@ async def test_non_positive_org_default_limit_caps_members_at_their_baseline(
 
 @pytest.mark.asyncio
 async def test_threshold_alerts_once_per_cycle_across_a_settings_edit(
-    async_session_maker, budget_org
+    async_session_maker, budget_org, monkeypatch
 ):
+    monkeypatch.setenv('SMTP_HOST', 'smtp.example.invalid')
     # _maybe_send_alerts dedupes on threshold.last_triggered_cycle_start, which lives
     # on the threshold row. An admin who edits the thresholds -- here just turning
     # Slack on for the 80% alert -- must not re-arm alerts inside the live cycle and
@@ -2827,6 +2828,11 @@ async def test_threshold_alerts_once_per_cycle_across_a_settings_edit(
                 service, '_sync_litellm_budgets', AsyncMock(return_value=snapshot)
             ),
             patch.object(service, '_send_alerts', AsyncMock()) as send_alerts,
+            patch.object(
+                service,
+                '_get_slack_bot_token',
+                AsyncMock(return_value='test-only-token'),
+            ),
         ):
             # 85 of a 100 cap crosses the 80% threshold: the admins are paged.
             await service.run_budget_maintenance(budget_org.id)
@@ -2836,11 +2842,12 @@ async def test_threshold_alerts_once_per_cycle_across_a_settings_edit(
             await service.update_budget_settings(
                 budget_org.id,
                 OrgBudgetSettingsUpdate(
+                    slack_channel='#budget-alerts',
                     thresholds=[
                         OrgBudgetThresholdUpdate(
                             percentage=80, email_enabled=True, slack_enabled=True
                         )
-                    ]
+                    ],
                 ),
             )
             await session.commit()
@@ -2854,8 +2861,9 @@ async def test_threshold_alerts_once_per_cycle_across_a_settings_edit(
 
 @pytest.mark.asyncio
 async def test_threshold_added_mid_cycle_alerts_once_for_spend_already_past_it(
-    async_session_maker, budget_org
+    async_session_maker, budget_org, monkeypatch
 ):
+    monkeypatch.setenv('SMTP_HOST', 'smtp.example.invalid')
     # Adding a threshold below the current spend pages the admins for it right away,
     # once -- without re-arming the thresholds that already fired this cycle.
     cycle_start = datetime.now(UTC)
@@ -3033,22 +3041,25 @@ async def test_enabling_budget_replaces_the_cycle_baseline_rows(
 
 @pytest.mark.asyncio
 @freeze_time('2026-09-10')
+@pytest.mark.parametrize(
+    'old_day,new_day,cycle_start,expected_end',
+    [
+        (1, 15, datetime(2026, 9, 1, tzinfo=UTC), datetime(2026, 9, 15, tzinfo=UTC)),
+        (15, 1, datetime(2026, 8, 15, tzinfo=UTC), datetime(2026, 10, 1, tzinfo=UTC)),
+    ],
+)
 async def test_reset_day_change_keeps_counted_spend_and_moves_the_cycle_end(
-    async_session_maker, budget_org
+    async_session_maker, budget_org, old_day, new_day, cycle_start, expected_end
 ):
-    # OHE-3330: a mid-cycle reset-day edit is a policy change, not a new cycle. The
-    # anchor, the counted spend, the member baselines, the baseline rows and the
-    # alert latch all stay; only the end of the current cycle moves to the new day,
-    # so the LiteLLM cap is rewritten unchanged instead of refilled.
+    # Date edits preserve organization/member baselines and alert latches.
     user_id = str(uuid4())
-    cycle_start = datetime(2026, 9, 1, tzinfo=UTC)
     async with async_session_maker() as session:
         session.add_all(
             [
                 OrgBudgetSettings(
                     org_id=budget_org.id,
                     enabled=True,
-                    reset_day=1,
+                    reset_day=old_day,
                     monthly_limit=100.0,
                     cycle_start_at=cycle_start,
                     cycle_start_spend=40.0,
@@ -3091,7 +3102,7 @@ async def test_reset_day_change_keeps_counted_spend_and_moves_the_cycle_end(
             ) as update_team,
         ):
             result = await OrgBudgetService(session).update_budget_settings(
-                budget_org.id, OrgBudgetSettingsUpdate(reset_day=15)
+                budget_org.id, OrgBudgetSettingsUpdate(reset_day=new_day)
             )
         await session.commit()
 
@@ -3105,10 +3116,11 @@ async def test_reset_day_change_keeps_counted_spend_and_moves_the_cycle_end(
             )
         ).scalar_one()
 
-    assert settings.reset_day == 15
+    assert settings.reset_day == new_day
     assert result['current_spend'] == 30.0
     assert result['cycle'].start_at.replace(tzinfo=UTC) == cycle_start
-    assert result['cycle'].end_at == datetime(2026, 10, 15, tzinfo=UTC)
+    assert result['cycle'].end_at == expected_end
+    assert settings.next_reset_at == expected_end
     assert settings.cycle_start_spend == 40.0
     assert settings.user_cycle_start_spend == {user_id: 4.0}
     assert rows[user_id][:2] == (4.0, 'live_rollover')
@@ -3162,12 +3174,10 @@ async def test_reset_day_change_does_not_need_fresh_litellm_spend(
 
 @pytest.mark.asyncio
 @freeze_time('2026-09-10')
-async def test_reset_day_change_past_boundary_rolls_on_next_maintenance(
+async def test_reset_day_change_does_not_roll_at_the_old_boundary(
     async_session_maker, budget_org
 ):
-    # Switching 15 -> 1 on Sep 10 puts the new boundary (Sep 1) in the past. The
-    # edit itself still keeps the counted spend; maintenance, the one place cycles
-    # roll, starts the new cycle on its next run.
+    # The selected day already passed this month: wait until next month.
     cycle_start = datetime(2026, 8, 15, tzinfo=UTC)
     async with async_session_maker() as session:
         session.add(
@@ -3208,13 +3218,11 @@ async def test_reset_day_change_past_boundary_rolls_on_next_maintenance(
 
     assert edited['current_spend'] == 20.0
     assert edited['cycle'].start_at.replace(tzinfo=UTC) == cycle_start
-    assert edited['cycle'].end_at == datetime(2026, 9, 1, tzinfo=UTC)
-    assert rolled['cycle_rolled'] is True
-    assert rolled['cycle_start_at'].replace(tzinfo=UTC) == datetime(
-        2026, 9, 1, tzinfo=UTC
-    )
-    assert rolled['current_spend'] == 0.0
-    assert settings.cycle_start_spend == 30.0
+    assert edited['cycle'].end_at == datetime(2026, 10, 1, tzinfo=UTC)
+    assert rolled['cycle_rolled'] is False
+    assert rolled['cycle_start_at'] == cycle_start
+    assert rolled['current_spend'] == 20.0
+    assert settings.cycle_start_spend == 10.0
 
 
 @pytest.mark.asyncio
@@ -3544,11 +3552,11 @@ def _patch_stale_first_read(service: OrgBudgetService):
     real_get_settings = service.store.get_settings
     already_read = []
 
-    async def _stale_then_real(org_id):
+    async def _stale_then_real(org_id, **kwargs):
         if not already_read:
             already_read.append(org_id)
             return None
-        return await real_get_settings(org_id)
+        return await real_get_settings(org_id, **kwargs)
 
     return patch.object(
         service.store, 'get_settings', AsyncMock(side_effect=_stale_then_real)

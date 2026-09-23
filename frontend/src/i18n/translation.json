@@ -30836,5 +30836,7 @@
     "de": "LiteLLM setzt Obergrenzen gegen die kumulierten Ausgaben durch. Die Team-Obergrenze enthält daher alle Ausgaben, die bereits vor Beginn dieses Zyklus erfasst waren. Die Ausgaben und der Prozentsatz unten zählen nur diesen Zyklus.",
     "uk": "LiteLLM застосовує ліміти до сукупних витрат, тому ліміт команди включає будь-які витрати, зафіксовані до початку цього циклу. Витрати й відсоток нижче враховують лише цей цикл.",
     "ca": "LiteLLM aplica els límits sobre la despesa acumulada, de manera que el límit de l'equip inclou qualsevol despesa ja registrada abans que comencés aquest cicle. La despesa i el percentatge de sota només compten aquest cicle."
-  }
+  },
+  "SETTINGS$BUDGETS_NEXT_RESET": "Next reset: {{date}} at 00:00 UTC.",
+  "SETTINGS$BUDGETS_RESET_DAY_CHANGE_HELPER": "Saving keeps current organization and individual spending. The full allowance renews on this date; this transition may make the current budget period shorter or longer."
 }

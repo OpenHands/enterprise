@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
 
-from server.services.org_budget_service import _next_cycle_start
 from storage.org_budget_settings import OrgBudgetSettings
 from tests.integration.budgets.adapter import BudgetTestAdapter
 
@@ -77,27 +76,70 @@ async def test_month_rollover_renews_once(budget_adapter: BudgetTestAdapter) -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'old_day,new_day,expected_end', [(1, 15, '2026-09-15'), (15, 1, '2026-10-01')]
+)
 async def test_reset_day_edits_keep_existing_spend(
-    budget_adapter: BudgetTestAdapter,
+    budget_adapter: BudgetTestAdapter, old_day, new_day, expected_end
 ) -> None:
     adapter = budget_adapter
-    await adapter.configure_budget(5, 3)
-    assert (await adapter.send_request(adapter.user_ids[0])).status_code == 200
-    await adapter.wait_for_spend(1)
-    before = await adapter.budget_state()
-    native_before = await adapter.financial_data()
-    member = str(adapter.user_ids[0])
+    boundary = datetime.fromisoformat(expected_end).replace(tzinfo=UTC)
+    clock = datetime(2026, 9, 10, tzinfo=UTC)
 
-    after = await adapter.update_settings(reset_day=15)
+    class BudgetClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock
 
-    assert after['current_spend'] == 1
-    assert after['cycle'].start_at == before['cycle'].start_at
-    assert after['cycle'].end_at == _next_cycle_start(before['cycle'].start_at, 15)
-    native = await adapter.financial_data()
-    assert native['team_max_budget'] == native_before['team_max_budget'] == 5
-    assert (
-        native['members'][member]['max_budget']
-        == native_before['members'][member]['max_budget']
-    )
-    assert (await adapter.run_maintenance())['cycle_rolled'] is False
-    assert (await adapter.budget_state())['current_spend'] == 1
+    with patch('server.services.org_budget_service.datetime', BudgetClock):
+        await adapter.update_settings(
+            enabled=True,
+            monthly_limit=1,
+            default_user_monthly_limit=1,
+            reset_day=old_day,
+        )
+        assert (await adapter.send_request(adapter.user_ids[0])).status_code == 200
+        await adapter.wait_for_spend(1)
+        before = await adapter.budget_state()
+        native_before = await adapter.financial_data()
+        member = str(adapter.user_ids[0])
+        after = await adapter.update_settings(reset_day=new_day)
+        assert after['current_spend'] == 1
+        assert after['cycle'].start_at == before['cycle'].start_at
+        assert after['cycle'].end_at == boundary
+        native = await adapter.financial_data()
+        assert native['team_max_budget'] == native_before['team_max_budget'] == 1
+        assert (
+            native['members'][member]['max_budget']
+            == native_before['members'][member]['max_budget']
+        )
+        assert not (await adapter.run_maintenance())['cycle_rolled']
+        assert (await adapter.budget_state())['current_spend'] == 1
+
+        clock = boundary - timedelta(seconds=1)
+        assert not (await adapter.run_maintenance())['cycle_rolled']
+        calls = await adapter.provider_calls()
+        assert (await adapter.send_request(adapter.user_ids[0])).status_code in {
+            401,
+            403,
+            429,
+        }
+        assert await adapter.provider_calls() == calls
+
+        clock = boundary
+        assert (await adapter.update_settings(reset_day=new_day))[
+            'cycle'
+        ].end_at == boundary
+        assert (await adapter.run_maintenance())['cycle_rolled']
+        assert (await adapter.budget_state())['current_spend'] == 0
+        assert (await adapter.send_request(adapter.user_ids[0])).status_code == 200
+        await adapter.wait_for_spend(2)
+        assert not (await adapter.run_maintenance())['cycle_rolled']
+        assert (await adapter.budget_state())['current_spend'] == 1
+        calls = await adapter.provider_calls()
+        assert (await adapter.send_request(adapter.user_ids[0])).status_code in {
+            401,
+            403,
+            429,
+        }
+        assert await adapter.provider_calls() == calls
