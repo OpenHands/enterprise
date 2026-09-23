@@ -37,10 +37,15 @@
 //
 // The known behaviours are MIRRORED, not fixed: a roll re-anchors to
 // _current_cycle_start(now) and so can skip more than one reset period at once;
-// OrgBudgetStore.replace_thresholds drops the rows that carry
-// last_triggered_cycle_start, re-arming every alert inside the live cycle; and
-// get_user_budget_row never calls _reject_personal_org, so it creates budget
-// settings for a personal workspace that every other entry point refuses.
+// and OrgBudgetStore.replace_thresholds drops the rows that carry
+// last_triggered_cycle_start, re-arming every alert inside the live cycle.
+//
+// Read paths (get_budget_state, get_user_budget_row, get_reconciliation_state)
+// go through _get_settings_for_read, which returns the persisted row or transient
+// defaults and never inserts. A read therefore cannot create a settings row -- for
+// a personal workspace or any org -- so the guard is no longer load-bearing on
+// those paths; only the write paths (update_budget_settings, the override writes
+// and run_budget_maintenance) create the row.
 module org_budgets {
   import basicSpells.* from "./spells/basicSpells"
 
@@ -1004,30 +1009,32 @@ module org_budgets {
 
   /// The read half of get_budget_state / get_user_budget_row: a stale-tolerant
   /// snapshot handed straight to the caller alongside its status label.
+  /// _get_settings_for_read: the read computes over the persisted row or transient
+  /// defaults and never inserts, so an org with no settings row keeps state.settings
+  /// None and its threshold rows untouched. The cached snapshot is only kept when a
+  /// row already exists; on a defaults read the store flush inserts nothing, so it is
+  /// discarded rather than written back.
   pure def do_present(st0: State, term: Option[Term], cache_override: Option[bool]): State = {
     val sg0 = settings_or_default(st0)
     val sg = match cache_override {
       | None => sg0
       | Some(present) => cache_for(sg0, st0.now, present)
     }
-    val created = st0.settings == None
-    val st = { ...st0,
-      settings: Some(sg),
-      thresholds: if (created) DEFAULT_THRESHOLDS else st0.thresholds,
-      settings_created: st0.settings_created or created }
+    val existed = st0.settings != None
     if (not(valid_date(next_cycle_start(sg.cycle_start_at, sg.reset_day))))
       { ...st0, date_crash: true }
     else {
-      val r = get_financial_snapshot(st, sg, true, false)
-      val st1 = note_read({ ...st, settings: Some(r.settings) }, r)
+      val r = get_financial_snapshot(st0, sg, true, false)
+      val st1 = note_read(
+        { ...st0, settings: if (existed) Some(r.settings) else st0.settings }, r)
       { ...st1,
-        last_presented: Some(presented_of(r, st.now)),
+        last_presented: Some(presented_of(r, st0.now)),
         last_search: match term
           { | None => st1.last_search
-            | Some(t) => Some({ hits: t.hits, rows: ilike_rows(t).intersect(st.org_members) }) },
+            | Some(t) => Some({ hits: t.hits, rows: ilike_rows(t).intersect(st0.org_members) }) },
         unmapped_reported: st1.unmapped_reported or
           (match r.snap
-            { | None => false | Some(sn) => unmapped_count(sn, st.org_members) > 0 }) }
+            { | None => false | Some(sn) => unmapped_count(sn, st0.org_members) > 0 }) }
     }
   }
 
@@ -1627,7 +1634,9 @@ module org_budgets {
 
   // ---------------------------------------------------------------- observations
 
-  /// A budget settings row was created on demand by a read or a maintenance run.
+  /// A budget settings row was created on demand by a write path -- a settings
+  /// update, an override write or a maintenance run. Reads go through
+  /// _get_settings_for_read and never set this.
   val settings_created_on_demand: bool = s.settings_created
 
   /// A maintenance run rolled the cycle to a new period.
@@ -1706,8 +1715,10 @@ module org_budgets {
       | Some(t) => t.rows != USERS and t.rows.subseteq(t.hits) and t.hits != USERS
     }
 
-  /// get_user_budget_row created budget settings for a personal workspace that every
-  /// other entry point refuses.
+  /// Historically get_user_budget_row created budget settings for a personal
+  /// workspace that every other entry point refuses. The #413 guard and the
+  /// _get_settings_for_read split have both closed that path, so this witness is
+  /// now unreachable; it is kept as a regression tripwire.
   val personal_org_settings_created_by_user_row_read: bool = s.personal_settings_created
 
   /// A delete hit no override row and returned early, leaving LiteLLM unsynced.

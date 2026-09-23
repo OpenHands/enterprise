@@ -2411,12 +2411,10 @@ def test_cycle_boundaries_land_on_the_day_the_month_holds(
 async def test_user_budget_row_rejects_personal_org_without_creating_settings(
     async_session_maker, personal_org
 ):
-    # get_user_budget_row is the one budget entry point that never calls
-    # _reject_personal_org: it goes straight to _get_or_create_settings, so reading a
-    # user row for a personal workspace writes the very settings row migration 148
-    # exists to delete. Its only route reaches it after upsert_user_override has
-    # already rejected personal orgs, so today this is a missing guard rather than a
-    # live leak -- nothing stops the next caller from reaching it unguarded.
+    # get_user_budget_row guards with _reject_personal_org (added by #413) and now
+    # reads through _get_settings_for_read, which never inserts. Either alone keeps
+    # the settings row migration 148 exists to delete from ever being written for a
+    # personal workspace; pin both so a future refactor cannot reintroduce the leak.
     async with async_session_maker() as session:
         service = OrgBudgetService(session)
         with patch.object(
@@ -2436,6 +2434,63 @@ async def test_user_budget_row_rejects_personal_org_without_creating_settings(
         )
 
     assert row_error.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_get_reconciliation_state_does_not_create_settings_for_personal_org(
+    async_session_maker, personal_org
+):
+    # get_reconciliation_state is the one read entry point with no _reject_personal_org
+    # guard: its only route reaches it after delete_user_override has already rejected
+    # personal orgs, so today this is a missing guard rather than a live leak. Reading
+    # through _get_settings_for_read means an unguarded read still cannot write the
+    # settings row a personal workspace must not have -- pin the remaining case here.
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        state = await service.get_reconciliation_state(personal_org.id)
+
+        result = await session.execute(
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == personal_org.id)
+        )
+
+    assert state == 'inactive'
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_reads_do_not_create_settings_for_unconfigured_org(
+    async_session_maker, budget_org
+):
+    # The root cause the split addresses: a read must never write a settings row, for
+    # any org, not just a personal workspace. An org that has not configured budgets
+    # has no settings row; reading its state or a user row must leave it that way so
+    # the row is only ever created by a genuine write (update/override/maintenance).
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        with patch.object(
+            service,
+            '_get_financial_snapshot',
+            AsyncMock(
+                return_value=BudgetFinancialSnapshotResult(
+                    snapshot=_snapshot(), status='live'
+                )
+            ),
+        ):
+            state = await service.get_budget_state(budget_org.id)
+            reconciliation = await service.get_reconciliation_state(budget_org.id)
+            row = await service.get_user_budget_row(budget_org.id, uuid4())
+
+        result = await session.execute(
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == budget_org.id)
+        )
+
+    # The reads still answer with defaults for an org that has no settings row.
+    assert state['settings'].enabled is False
+    assert state['thresholds'] == []
+    assert reconciliation == 'inactive'
+    assert row is None
+    # ...and none of them created the row.
     assert result.scalar_one_or_none() is None
 
 
