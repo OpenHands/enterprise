@@ -113,7 +113,6 @@ export function Budgets() {
       }),
   });
 
-  const [orgBudgetEnabled, setOrgBudgetEnabled] = useState(false);
   const [monthlyLimit, setMonthlyLimit] = useState("");
   const [billingCycle, setBillingCycle] = useState("1st");
   const [slackChannel, setSlackChannel] = useState("");
@@ -125,7 +124,6 @@ export function Budgets() {
 
   useEffect(() => {
     if (!budgetData) return;
-    setOrgBudgetEnabled(budgetData.enabled);
     setMonthlyLimit(
       budgetData.monthly_limit ? budgetData.monthly_limit.toString() : "",
     );
@@ -147,8 +145,7 @@ export function Budgets() {
 
   const monthlyLimitValue = monthlyLimit ? Number(monthlyLimit) : null;
   const isMonthlyLimitValid =
-    !orgBudgetEnabled ||
-    (typeof monthlyLimitValue === "number" && monthlyLimitValue > 0);
+    typeof monthlyLimitValue === "number" && monthlyLimitValue > 0;
 
   const currentSpend = budgetData?.current_spend ?? null;
   const percentage = budgetData?.current_spend_percentage ?? null;
@@ -182,7 +179,7 @@ export function Budgets() {
   const handleSaveOrgBudget = () => {
     if (!organizationId || !isMonthlyLimitValid) return;
     updateBudgets.mutate({
-      enabled: orgBudgetEnabled,
+      enabled: true,
       monthly_limit: monthlyLimitValue,
       reset_day: billingCycle === "15th" ? 15 : 1,
       slack_channel: slackIntegrationEnabled
@@ -373,8 +370,6 @@ export function Budgets() {
 
       {activeTab === "organization" && (
         <OrganizationBudgetTab
-          orgBudgetEnabled={orgBudgetEnabled}
-          onToggleOrgBudget={setOrgBudgetEnabled}
           currentSpend={currentSpend}
           monthlyLimitValue={monthlyLimitValue}
           cycleLabel={cycleLabel}
