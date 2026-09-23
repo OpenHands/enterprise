@@ -164,11 +164,6 @@ to `Running` and repeats the handshake on the new pod with the stored key.
 The agent server's secret key is the session key, so the secrets it persisted
 on the volume still decrypt.
 
-The VSCode link carries the session API key as VSCode's connection token. The
-pool's agent server has to switch VSCode to that key on `POST /api/init`, which
-needs [software-agent-sdk#5282](https://github.com/OpenHands/software-agent-sdk/pull/5282).
-With an older image, the link answers 403.
-
 ### Known limitations
 
 - A pod that restarts on its own, after a crash or an eviction, boots dormant.
