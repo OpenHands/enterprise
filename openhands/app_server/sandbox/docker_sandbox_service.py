@@ -44,6 +44,7 @@ from openhands.app_server.sandbox.sandbox_store import (
     get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
+    require_user_id,
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
@@ -421,6 +422,10 @@ class DockerSandboxService(SandboxService):
         self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
     ) -> SandboxInfo:
         """Start a new sandbox."""
+        # Every sandbox has an owner. Check before pause_old_sandboxes, which
+        # would reach every user's sandboxes as ADMIN.
+        user_id = await require_user_id(self.user_context)
+
         # Warn about port collision risk when using host network mode with multiple sandboxes
         if self.use_host_network and self.max_num_sandboxes > 1:
             _logger.warning(
@@ -493,10 +498,8 @@ class DockerSandboxService(SandboxService):
         labels = {
             MANAGED_LABEL: 'true',
             SANDBOX_SPEC_ID_LABEL: sandbox_spec.id,
+            CREATED_BY_USER_ID_LABEL: user_id,
         }
-        user_id = await self.user_context.get_user_id()
-        if user_id:
-            labels[CREATED_BY_USER_ID_LABEL] = user_id
 
         # The id is ours, so the row is written before the container exists.
         stored_sandbox = StoredSandbox(

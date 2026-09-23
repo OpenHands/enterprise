@@ -18,7 +18,11 @@ import pytest
 from docker.errors import APIError, DockerException, NotFound
 from sqlalchemy import select
 
-from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
+from openhands.app_server.errors import (
+    AuthError,
+    SandboxDeleteRetryError,
+    SandboxError,
+)
 from openhands.app_server.sandbox import docker_sandbox_spec_service
 from openhands.app_server.sandbox.docker_sandbox_service import (
     CREATED_BY_USER_ID_LABEL,
@@ -43,6 +47,7 @@ from openhands.app_server.sandbox.sandbox_store import (
     StoredSandbox,
     hash_session_api_key,
 )
+from openhands.app_server.user.specifiy_user_context import ADMIN
 
 OWNER_ID = 'user123'
 CREATED_AT = datetime(2024, 1, 15, 10, 30, tzinfo=timezone.utc)
@@ -1367,8 +1372,8 @@ class TestDockerSandboxServiceOwnership:
 
     @pytest.fixture
     def admin_service(self, service):
-        """Service acting as ADMIN, which has no user id."""
-        service.user_context.get_user_id.return_value = None
+        """Service acting as ADMIN."""
+        service.user_context = ADMIN
         return service
 
     @pytest.fixture
@@ -1385,6 +1390,18 @@ class TestDockerSandboxServiceOwnership:
             'NetworkSettings': {'Ports': {}},
         }
         return container
+
+    async def test_start_sandbox_needs_an_owner(self, admin_service, db_session):
+        """ADMIN has no user id, so it must not start a sandbox or pause any."""
+        with (
+            patch.object(admin_service, 'pause_old_sandboxes') as pause,
+            pytest.raises(AuthError),
+        ):
+            await admin_service.start_sandbox()
+
+        pause.assert_not_called()
+        admin_service.docker_client.containers.run.assert_not_called()
+        assert (await db_session.execute(select(StoredSandbox))).first() is None
 
     @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
     @patch('os.urandom')
