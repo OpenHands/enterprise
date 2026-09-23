@@ -47,8 +47,8 @@ The common stack intentionally publishes no ports. Add a candidate overlay for
 the single public HTTPS origin. Use the same project name, environment file and
 base file for every candidate. Keep the supplied certificate directory outside
 version control. Only trust forwarded headers from the proxy's private address
-(`PROXY_TRUSTED_IPS`); refresh that value if its address changes, or reserve an
-address in a deployment-specific network. Do not expose app/database ports.
+(`PROXY_IPV4_ADDRESS`), reserved by each overlay. Change both it and
+`COMPOSE_SUBNET` if the default subnet overlaps an existing network. Do not expose app/database ports.
 
 Each PostgreSQL database has a distinct service and volume. One-shot migrations
 must finish successfully before the corresponding app starts. Enterprise starts
