@@ -229,6 +229,7 @@ class OrgResponse(BaseModel):
     credits: float | None = None
     credits_available: bool = False
     is_personal: bool = False
+    is_visible: bool = True
 
     @classmethod
     def from_org(
@@ -236,6 +237,7 @@ class OrgResponse(BaseModel):
         org: Org,
         credits: OrgCreditsResult | float | None = None,
         user_id: str | None = None,
+        is_visible: bool = True,
     ) -> 'OrgResponse':
         """Create an OrgResponse from an Org entity."""
         if isinstance(credits, OrgCreditsResult):
@@ -270,6 +272,7 @@ class OrgResponse(BaseModel):
             credits=credit_balance,
             credits_available=credits_available,
             is_personal=str(org.id) == user_id if user_id else False,
+            is_visible=is_visible,
         )
 
 
@@ -767,13 +770,18 @@ class GitOrgAlreadyClaimedError(Exception):
         )
 
 
+# How a spend figure was obtained: read from LiteLLM now, served from an earlier
+# cached read, or not obtained at all. Shared by every response that reports spend.
+SpendStatus = Literal['live', 'stale', 'unavailable']
+
+
 class OrgMemberFinancialResponse(BaseModel):
     """Financial data for a single organization member."""
 
     user_id: str
     email: str | None
-    lifetime_spend: float  # Total amount spent (from LiteLLM)
-    current_budget: float  # Remaining budget (max_budget - spend)
+    lifetime_spend: float | None  # Total amount spent (None = never observed)
+    current_budget: float | None  # Remaining budget (None = spend never observed)
     max_budget: float | None  # Total allocated budget (None = unlimited)
 
 
@@ -784,6 +792,9 @@ class OrgMemberFinancialPage(BaseModel):
     current_page: int = 1
     per_page: int = 10
     next_page_id: str | None = None
+    # Describes the spend read behind this page. A row can still carry a null
+    # lifetime_spend under 'live' when the read simply had no entry for that member.
+    spend_status: SpendStatus
 
 
 class OrgBudgetThresholdResponse(BaseModel):
@@ -824,6 +835,21 @@ class OrgBudgetUserMutationResponse(OrgBudgetUserResponse):
     applied_at: datetime | None = None
 
 
+class OrgMyBudgetResponse(BaseModel):
+    """The authenticated member's own budget for the current cycle."""
+
+    enabled: bool
+    monthly_limit: float | None = None
+    is_disabled: bool = False
+    is_override: bool = False
+    limit_updated_at: datetime | None = None
+    current_spend: float | None = None
+    cycle_start_at: datetime | None = None
+    cycle_end_at: datetime | None = None
+    spend_status: Literal['live', 'stale', 'unavailable'] | None = None
+    spend_observed_at: datetime | None = None
+
+
 class OrgBudgetSettingsResponse(BaseModel):
     enabled: bool
     monthly_limit: float | None = None
@@ -846,7 +872,7 @@ class OrgBudgetSettingsResponse(BaseModel):
     default_user_monthly_limit: float | None = None
     cycle_start_at: datetime
     cycle_end_at: datetime
-    spend_status: Literal['live', 'stale', 'unavailable']
+    spend_status: SpendStatus
     spend_observed_at: datetime | None = None
     current_spend: float | None = None
     current_spend_percentage: float | None = None
@@ -1071,3 +1097,29 @@ class OrgUsageStats(BaseModel):
 
     # Agent breakdown
     agent_usage: list[AgentUsageData] = Field(default_factory=list)
+
+
+class DailySpendData(BaseModel):
+    """Spend for a single day."""
+
+    date: str  # ISO date string (YYYY-MM-DD)
+    cost: float = 0.0
+
+
+class MyRecentUsageItem(BaseModel):
+    """A recent conversation and what it has cost so far."""
+
+    conversation_id: str
+    title: str | None = None
+    updated_at: datetime | None = None
+    accumulated_cost: float = 0.0
+
+
+class OrgMyUsageStats(BaseModel):
+    """The authenticated member's own usage for a time window."""
+
+    total_spend: float = 0.0
+    previous_period_spend: float = 0.0
+    daily_spend: list[DailySpendData] = Field(default_factory=list)
+    model_usage: list[ModelUsageData] = Field(default_factory=list)
+    recent_usage: list[MyRecentUsageItem] = Field(default_factory=list)

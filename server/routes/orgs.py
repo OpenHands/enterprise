@@ -51,6 +51,8 @@ from server.routes.org_models import (
     OrgMemberPage,
     OrgMemberResponse,
     OrgMemberUpdate,
+    OrgMyBudgetResponse,
+    OrgMyUsageStats,
     OrgNameExistsError,
     OrgNotFoundError,
     OrgPage,
@@ -76,6 +78,7 @@ from server.services.org_conversation_service import (
 )
 from server.services.org_member_financial_service import OrgMemberFinancialService
 from server.services.org_member_service import OrgMemberService
+from storage.default_org_service import get_default_org_config
 from storage.org_git_claim_store import OrgGitClaimStore
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
@@ -87,6 +90,11 @@ org_router = APIRouter(
     tags=['Orgs'],
     dependencies=[REJECT_X_ORG_ID_PATH_MISMATCH],
 )
+
+
+def _hide_personal_workspaces() -> bool:
+    """Whether this deployment hides personal workspaces from org listings."""
+    return get_default_org_config().hide_personal_workspaces
 
 
 _org_budget_service_injector = OrgBudgetServiceInjector()
@@ -141,16 +149,27 @@ async def list_user_orgs(
         int,
         Query(title='The max number of results in the page', gt=0, le=100),
     ] = 100,
+    name: Annotated[
+        str | None,
+        Query(
+            title='Filter organizations by exact name',
+            min_length=1,
+            max_length=255,
+        ),
+    ] = None,
     user_id: str = Depends(get_user_id),
 ) -> OrgPage:
     """List organizations for the authenticated user.
 
     This endpoint returns a paginated list of all organizations that the
-    authenticated user is a member of.
+    authenticated user is a member of. When ``name`` is provided, only the
+    member organization with exactly that name is returned; a name the user
+    has no membership in yields an empty page.
 
     Args:
         page_id: Optional page ID (offset) for pagination
         limit: Maximum number of organizations to return (1-100, default 100)
+        name: Optional exact organization name filter
         user_id: Authenticated user ID (injected by dependency)
 
     Returns:
@@ -165,6 +184,7 @@ async def list_user_orgs(
             'user_id': user_id,
             'page_id': page_id,
             'limit': limit,
+            'org_name': name,
         },
     )
 
@@ -180,11 +200,28 @@ async def list_user_orgs(
             user_id=user_id,
             page_id=page_id,
             limit=limit,
+            name=name,
         )
+
+        # Personal workspaces are hidden in org-only installs
+        # (HIDE_PERSONAL_WORKSPACES). The org stays a real membership that can
+        # be addressed and switched to, so it is only marked invisible rather
+        # than dropped from the list — clients that honour the flag stop
+        # offering it, and callers that need the entry can still find it.
+        # Personal entries never count towards "this user has a team org".
+        hide_personal_workspaces = _hide_personal_workspaces()
+        has_visible_team_org = any(str(org.id) != user_id for org in orgs)
+        hide_personal = hide_personal_workspaces and has_visible_team_org
 
         # Convert Org entities to OrgResponse objects
         org_responses = [
-            OrgResponse.from_org(org, credits=None, user_id=user_id) for org in orgs
+            OrgResponse.from_org(
+                org,
+                credits=None,
+                user_id=user_id,
+                is_visible=not (hide_personal and str(org.id) == user_id),
+            )
+            for org in orgs
         ]
 
         logger.info(
@@ -1124,10 +1161,17 @@ async def get_org_members_financial(
     Returns:
         OrgMemberFinancialPage: Paginated response with member financial data
             - items: List of members with user_id, email, lifetime_spend,
-                     current_budget, and max_budget
+                     current_budget, and max_budget. lifetime_spend and
+                     current_budget are null when LiteLLM reported no spend for
+                     that member, either because the read failed or because the
+                     member was absent from it - a spend that was never observed
+                     is not reported as zero.
             - current_page: Current page number (1-indexed)
             - per_page: Items per page
             - next_page_id: Offset for next page, or None if no more pages
+            - spend_status: 'live' if the spend read succeeded, 'unavailable' if
+                            it failed. Individual rows can still be null under
+                            'live' when the read omitted that member.
 
     Raises:
         HTTPException: 401 if user is not authenticated
@@ -1254,6 +1298,31 @@ async def get_org_budget_settings(
         users_status=users_status,
     )
     return _build_budget_response(state)
+
+
+@org_router.get(
+    '/{org_id}/budgets/me',
+    response_model=OrgMyBudgetResponse,
+)
+async def get_my_org_budget(
+    org_id: UUID,
+    include_spend: bool = Query(True),
+    user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
+    budget_service: OrgBudgetService = org_budget_service_dependency,
+) -> OrgMyBudgetResponse:
+    """Get the authenticated user's own budget for the current cycle.
+
+    The user is taken from the session only, so a caller can never read
+    another member's budget.
+    """
+    logger.info(
+        'Getting own org budget',
+        extra={'org_id': str(org_id), 'user_id': user_id},
+    )
+    budget = await budget_service.get_my_budget(
+        org_id, UUID(user_id), include_spend=include_spend
+    )
+    return OrgMyBudgetResponse(**budget)
 
 
 @org_router.patch(
@@ -2242,6 +2311,64 @@ async def get_org_conversation_user_usage_stats(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to retrieve organization user usage stats',
+        )
+
+
+# Declared before '/{org_id}/conversations/{conversation_id}' so the literal
+# path is matched first.
+@org_router.get(
+    '/{org_id}/conversations/my-usage',
+    response_model=OrgMyUsageStats,
+)
+async def get_my_org_conversation_usage_stats(
+    org_id: UUID,
+    time_window: Annotated[
+        str,
+        Query(
+            title='Time window filter',
+            description='Options: 7d, 30d, 90d, ytd',
+        ),
+    ] = '30d',
+    user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
+    service: OrgConversationService = org_conversation_service_dependency,
+) -> OrgMyUsageStats:
+    """Get the authenticated user's own usage for their budget page.
+
+    The user is taken from the session only, so a caller can never read
+    another member's usage.
+
+    Args:
+        org_id: The organization ID
+        time_window: Time window filter (7d, 30d, 90d, ytd)
+
+    Returns:
+        OrgMyUsageStats: Daily spend, model breakdown and recent usage
+    """
+    now = datetime.now(timezone.utc)
+    if time_window == 'ytd':
+        start_of_year = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+        days = max(1, (now - start_of_year).days + 1)
+    elif time_window in {'7d', '30d', '90d'}:
+        days = int(time_window[:-1])
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Invalid time_window. Use 7d, 30d, 90d, or ytd.',
+        )
+
+    try:
+        return await service.get_my_usage_stats(
+            org_id=org_id, user_id=UUID(user_id), days=days
+        )
+    except Exception:
+        logger.exception(
+            'Unexpected error getting own usage stats',
+            extra={'user_id': user_id, 'org_id': str(org_id)},
+            stack_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to retrieve usage stats',
         )
 
 

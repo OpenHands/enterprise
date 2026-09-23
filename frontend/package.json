@@ -1,6 +1,6 @@
 {
   "name": "openhands-frontend",
-  "version": "1.62.0",
+  "version": "1.63.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -52,6 +52,7 @@
     "dev:mock": "npm run make-i18n && cross-env VITE_MOCK_API=true VITE_MOCK_SAAS=false react-router dev",
     "dev:mock:saas": "npm run make-i18n && cross-env VITE_MOCK_API=true VITE_MOCK_SAAS=true react-router dev",
     "build": "npm run make-i18n && cross-env NODE_OPTIONS=--max-old-space-size=4096 react-router build",
+    "build:agent-canvas": "bash scripts/build-agent-canvas.sh",
     "start": "npx sirv-cli build/ --single",
     "test": "vitest run",
     "test:e2e": "playwright test",
