@@ -1,0 +1,26 @@
+services:
+  proxy:
+    image: caddy@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a2a2fe9d355e
+    restart: unless-stopped
+    cpus: 1
+    mem_limit: 256m
+    environment:
+      # Local internal CA by default; set to a public domain for Let's Encrypt.
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    ports:
+      # ACME HTTP-01 challenge + HTTP->HTTPS redirect (hosted mode needs 80).
+      - "${HTTP_PORT:-80}:80"
+      # HTTPS (and TLS-ALPN-01 challenge).
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./caddy-autotls:/etc/caddy:ro
+      # Persist issued certificates and the ACME account across restarts.
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      default:
+        ipv4_address: ${PROXY_IPV4_ADDRESS:-172.30.44.10}
+
+volumes:
+  caddy-data:
+  caddy-config:
