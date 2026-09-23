@@ -76,24 +76,6 @@ STATUS_MAPPING = {
     SandboxState.PAUSED: SandboxStatus.PAUSED,
 }
 
-# VSCode connection URLs are fetched from the agent server rather than built
-# locally (see `_resolve_vscode_url`), so they are cached for the life of the
-# process to keep `get_sandbox` off the network. A miss - after an app server
-# restart, or an eviction - costs one lazy re-fetch.
-VSCODE_URL_CACHE_SIZE = 1024
-_vscode_urls: dict[str, str] = {}
-
-
-def _cache_vscode_url(e2b_sandbox_id: str, url: str) -> None:
-    """Cache a VSCode URL, dropping the oldest entry when the cache is full.
-
-    Sandboxes reaped by E2B are never deleted through this service, so the
-    cache needs a bound of its own.
-    """
-    while len(_vscode_urls) >= VSCODE_URL_CACHE_SIZE:
-        _vscode_urls.pop(next(iter(_vscode_urls)))
-    _vscode_urls[e2b_sandbox_id] = url
-
 
 def _as_e2b_spec(sandbox_spec: SandboxSpecInfo) -> E2BSandboxSpecInfo:
     """Narrow a spec to the E2B shape, filling defaults for a plain spec."""
@@ -263,54 +245,19 @@ class E2BSandboxService(SandboxService):
         """
         return f'https://{port}-{e2b_sandbox_id}.{self.domain}'
 
-    async def _resolve_vscode_url(
+    def _exposed_urls(
         self,
         e2b_sandbox_id: str,
         sandbox_spec: E2BSandboxSpecInfo,
         session_api_key: str,
-    ) -> str | None:
-        """The VSCode connection URL, from the cache or the agent server.
-
-        The URL cannot be built locally: under deferred init the VSCode service
-        captures its connection token at boot, while ``session_api_keys`` is
-        still empty, so the token is unrelated to the session API key. Returns
-        None when the agent server cannot be reached - a sandbox without a
-        VSCode URL is still perfectly usable.
-        """
-        cached = _vscode_urls.get(e2b_sandbox_id)
-        if cached:
-            return cached
-        agent_server_url = self._host_url(
-            e2b_sandbox_id, sandbox_spec.agent_server_port
-        )
-        try:
-            response = await self.httpx_client.get(
-                f'{agent_server_url}/api/vscode/url',
-                params={
-                    'base_url': self._host_url(
-                        e2b_sandbox_id, sandbox_spec.vscode_port
-                    ),
-                    'workspace_dir': sandbox_spec.working_dir,
-                },
-                headers={'X-Session-API-Key': session_api_key},
-            )
-            response.raise_for_status()
-            url = response.json().get('url')
-        except Exception as exc:
-            _logger.info(f'No VSCode URL for sandbox {e2b_sandbox_id}: {exc}')
-            return None
-        if url:
-            _cache_vscode_url(e2b_sandbox_id, url)
-        return url
-
-    async def _exposed_urls(
-        self,
-        e2b_sandbox_id: str,
-        sandbox_spec: E2BSandboxSpecInfo,
-        session_api_key: str,
-        with_vscode_url: bool = True,
     ) -> list[ExposedUrl]:
-        exposed_urls = [
+        # The agent server gives VSCode the session API key as its connection
+        # token on POST /api/init.
+        vscode_url = (
+            f'{self._host_url(e2b_sandbox_id, sandbox_spec.vscode_port)}'
+            f'/?tkn={session_api_key}&folder={sandbox_spec.working_dir}'
+        )
+        return [
             ExposedUrl(
                 name=AGENT_SERVER,
                 url=self._host_url(e2b_sandbox_id, sandbox_spec.agent_server_port),
@@ -326,24 +273,14 @@ class E2BSandboxService(SandboxService):
                 url=self._host_url(e2b_sandbox_id, WORKER_2_PORT),
                 port=WORKER_2_PORT,
             ),
+            ExposedUrl(name=VSCODE, url=vscode_url, port=sandbox_spec.vscode_port),
         ]
-        if not with_vscode_url:
-            return exposed_urls
-        vscode_url = await self._resolve_vscode_url(
-            e2b_sandbox_id, sandbox_spec, session_api_key
-        )
-        if vscode_url:
-            exposed_urls.append(
-                ExposedUrl(name=VSCODE, url=vscode_url, port=sandbox_spec.vscode_port)
-            )
-        return exposed_urls
 
     async def _to_sandbox_info(
         self,
         stored_sandbox: StoredSandbox,
         info: E2BSandboxInfo | None,
         session_api_key: str | None = None,
-        with_vscode_url: bool = True,
     ) -> SandboxInfo:
         """Build a SandboxInfo from the stored row plus its live E2B state.
 
@@ -359,8 +296,8 @@ class E2BSandboxService(SandboxService):
         exposed_urls = None
         if status == SandboxStatus.RUNNING and session_api_key:
             sandbox_spec = await self._get_spec(stored_sandbox.sandbox_spec_id)
-            exposed_urls = await self._exposed_urls(
-                stored_sandbox.id, sandbox_spec, session_api_key, with_vscode_url
+            exposed_urls = self._exposed_urls(
+                stored_sandbox.id, sandbox_spec, session_api_key
             )
         else:
             session_api_key = None
@@ -396,12 +333,6 @@ class E2BSandboxService(SandboxService):
         for the live state of everything on it. Paused sandboxes are asked for
         explicitly: E2B's default list shows running ones only, and a paused
         sandbox is a conversation the user can still resume.
-
-        VSCode URLs are left out. Resolving one costs an HTTP call to the
-        sandbox itself, and the only caller that needs it - the frontend - goes
-        through ``batch_get_sandboxes``. ``pause_old_sandboxes`` and the
-        conversation-start lookup read nothing but id, status and created_at,
-        and they run on every conversation start.
         """
         page = await search_stored_sandboxes(
             self.db_session, self.user_context, E2B_BACKEND, page_id, limit
@@ -413,7 +344,6 @@ class E2BSandboxService(SandboxService):
                     stored_sandbox,
                     infos.get(stored_sandbox.id),
                     self._raw_key(stored_sandbox),
-                    with_vscode_url=False,
                 )
                 for stored_sandbox in page.items
             ]
@@ -567,9 +497,7 @@ class E2BSandboxService(SandboxService):
             await self._kill_quietly(e2b_sandbox_id)
             raise
 
-        exposed_urls = await self._exposed_urls(
-            e2b_sandbox_id, sandbox_spec, session_api_key
-        )
+        exposed_urls = self._exposed_urls(e2b_sandbox_id, sandbox_spec, session_api_key)
         return SandboxInfo(
             id=e2b_sandbox_id,
             created_by_user_id=user_id,
@@ -801,7 +729,6 @@ class E2BSandboxService(SandboxService):
                 f'Could not complete delete for sandbox {sandbox_id}: {exc}'
             ) from exc
         await self.db_session.delete(stored_sandbox)
-        _vscode_urls.pop(sandbox_id, None)
         return True
 
 

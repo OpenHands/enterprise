@@ -6,7 +6,7 @@ records the requests the service makes to it. Focus areas:
 - user scoping, including cross user isolation and the admin (no user id) case
 - the /api/init handshake start_sandbox completes before returning
 - lifecycle and status mapping onto the E2B SDK, including MISSING
-- exposed URL construction and VSCode URL resolution
+- exposed URL construction, the VSCode URL included
 """
 
 from datetime import UTC, datetime, timedelta
@@ -66,11 +66,12 @@ OTHER_USER_ID = 'user-2'
 SANDBOX_ID = 'ixyz123'
 WEB_URL = 'https://app.example.com'
 AGENT_SERVER_URL = f'https://8000-{SANDBOX_ID}.{DOMAIN}'
+SESSION_API_KEY = 'the-session-key'
 VSCODE_URL = (
-    f'https://8001-{SANDBOX_ID}.{DOMAIN}/?tkn=deadbeef&folder=/workspace/project'
+    f'https://8001-{SANDBOX_ID}.{DOMAIN}/?tkn={SESSION_API_KEY}'
+    '&folder=/workspace/project'
 )
 CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
-SESSION_API_KEY = 'the-session-key'
 
 
 # ---------------------------------------------------------------------------
@@ -149,14 +150,11 @@ class FakeAgentServer:
         self,
         init_get_responses: list | None = None,
         init_post_status: int = 200,
-        vscode_url: str | None = VSCODE_URL,
     ):
         self.init_get_responses = init_get_responses or []
         self.init_post_status = init_post_status
-        self.vscode_url = vscode_url
         self.init_post_bodies: list[dict] = []
         self.init_post_headers: list[dict] = []
-        self.vscode_requests: list[dict] = []
         self.init_get_count = 0
 
     async def get(self, url: str, **kwargs):
@@ -168,13 +166,6 @@ class FakeAgentServer:
                     raise result
                 return result
             return _response(200, {'state': 'dormant', 'error': None})
-        if url.endswith('/api/vscode/url'):
-            self.vscode_requests.append(
-                {'url': url, 'params': kwargs.get('params'), **kwargs}
-            )
-            if self.vscode_url is None:
-                raise httpx.ConnectError('no route to sandbox')
-            return _response(200, {'url': self.vscode_url})
         raise AssertionError(f'unexpected GET {url}')
 
     async def post(self, url: str, **kwargs):
@@ -255,13 +246,6 @@ def _service(
         web_url=web_url,
         permitted_cors_origins=permitted_cors_origins or [],
     )
-
-
-@pytest.fixture(autouse=True)
-def clear_vscode_cache():
-    e2b_sandbox_service._vscode_urls.clear()
-    yield
-    e2b_sandbox_service._vscode_urls.clear()
 
 
 @pytest.fixture
@@ -820,10 +804,10 @@ class TestExposedUrls:
         )
 
     @pytest.mark.asyncio
-    async def test_vscode_url_comes_from_the_agent_server(self, sdk, db_session):
-        agent_server = FakeAgentServer()
+    async def test_vscode_url_carries_the_session_key(self, sdk, db_session):
+        httpx_client = AsyncMock()
 
-        sandbox = await _service(db_session, httpx_client=agent_server).get_sandbox(
+        sandbox = await _service(db_session, httpx_client=httpx_client).get_sandbox(
             SANDBOX_ID
         )
 
@@ -832,76 +816,20 @@ class TestExposedUrls:
         vscode = next(u for u in sandbox.exposed_urls if u.name == VSCODE)
         assert vscode.url == VSCODE_URL
         assert vscode.port == 8001
-        assert agent_server.vscode_requests[0]['params'] == {
-            'base_url': f'https://8001-{SANDBOX_ID}.{DOMAIN}',
-            'workspace_dir': '/workspace/project',
-        }
-        assert agent_server.vscode_requests[0]['headers'] == {
-            'X-Session-API-Key': sandbox.session_api_key
-        }
+        httpx_client.get.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_vscode_url_is_cached(self, sdk, db_session):
-        agent_server = FakeAgentServer()
-        service = _service(db_session, httpx_client=agent_server)
-
-        await service.get_sandbox(SANDBOX_ID)
-        await service.get_sandbox(SANDBOX_ID)
-        await service.get_sandbox(SANDBOX_ID)
-
-        assert len(agent_server.vscode_requests) == 1
-
-    @pytest.mark.asyncio
-    async def test_vscode_url_is_populated_by_start_and_reused(self, sdk, db_session):
-        agent_server = FakeAgentServer()
-        service = _service(db_session, httpx_client=agent_server)
+    async def test_start_builds_the_vscode_url_from_the_new_key(self, sdk, db_session):
         sdk.create.return_value = SimpleNamespace(sandbox_id='ifresh')
-        sdk.get_info.return_value = _e2b_info(sandbox_id='ifresh')
 
-        await service.start_sandbox()
-        await service.get_sandbox('ifresh')
+        sandbox = await _service(db_session).start_sandbox()
 
-        assert len(agent_server.vscode_requests) == 1
-
-    @pytest.mark.asyncio
-    async def test_vscode_failure_omits_the_url(self, sdk, db_session):
-        agent_server = FakeAgentServer(vscode_url=None)
-
-        sandbox = await _service(db_session, httpx_client=agent_server).get_sandbox(
-            SANDBOX_ID
-        )
-
-        assert sandbox is not None
         assert sandbox.exposed_urls is not None
-        assert all(url.name != VSCODE for url in sandbox.exposed_urls)
-        assert {url.name for url in sandbox.exposed_urls} == {
-            AGENT_SERVER,
-            WORKER_1,
-            WORKER_2,
-        }
-
-    @pytest.mark.asyncio
-    async def test_cache_is_bounded(self, sdk):
-        for index in range(e2b_sandbox_service.VSCODE_URL_CACHE_SIZE + 5):
-            e2b_sandbox_service._cache_vscode_url(f'sbx-{index}', 'https://vscode')
-
-        assert (
-            len(e2b_sandbox_service._vscode_urls)
-            == e2b_sandbox_service.VSCODE_URL_CACHE_SIZE
+        vscode = next(u for u in sandbox.exposed_urls if u.name == VSCODE)
+        assert vscode.url == (
+            f'https://8001-ifresh.{DOMAIN}/?tkn={sandbox.session_api_key}'
+            '&folder=/workspace/project'
         )
-        assert 'sbx-0' not in e2b_sandbox_service._vscode_urls
-        assert 'sbx-4' not in e2b_sandbox_service._vscode_urls
-        assert 'sbx-5' in e2b_sandbox_service._vscode_urls
-
-    @pytest.mark.asyncio
-    async def test_delete_evicts_the_cached_url(self, sdk, db_session):
-        agent_server = FakeAgentServer()
-        service = _service(db_session, httpx_client=agent_server)
-        await service.get_sandbox(SANDBOX_ID)
-
-        await service.delete_sandbox(SANDBOX_ID)
-
-        assert SANDBOX_ID not in e2b_sandbox_service._vscode_urls
 
 
 class TestSearchSandboxes:
@@ -1006,19 +934,19 @@ class TestSearchSandboxes:
             await _service(db_session).search_sandboxes()
 
     @pytest.mark.asyncio
-    async def test_no_vscode_call_per_sandbox(self, sdk, db_session, store):
+    async def test_urls_need_no_call_to_the_sandboxes(self, sdk, db_session, store):
         await store(
             _stored(sandbox_id='sb-1', created_at=CREATED_AT),
             _stored(sandbox_id='sb-2', created_at=CREATED_AT - timedelta(days=1)),
         )
-        agent_server = FakeAgentServer()
+        httpx_client = AsyncMock()
         sdk.list.return_value = _paginator(
             [_e2b_info(sandbox_id='sb-1'), _e2b_info(sandbox_id='sb-2')]
         )
 
-        page = await _service(db_session, httpx_client=agent_server).search_sandboxes()
+        page = await _service(db_session, httpx_client=httpx_client).search_sandboxes()
 
-        assert agent_server.vscode_requests == []
+        httpx_client.get.assert_not_called()
         assert [item.id for item in page.items] == ['sb-1', 'sb-2']
         for item in page.items:
             assert item.exposed_urls is not None
@@ -1026,6 +954,7 @@ class TestSearchSandboxes:
                 AGENT_SERVER,
                 WORKER_1,
                 WORKER_2,
+                VSCODE,
             }
 
 
