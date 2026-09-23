@@ -4,7 +4,8 @@ One public HTTPS origin, two independent FastAPI transport fixtures, and the sam
 pytest assertions against Caddy OSS, nginx OSS, and HAProxy Community. This lives
 in Enterprise because that repository owns the installation boundary. Automation
 needs no changes, checkout, database, authentication provider, or application
-startup. No Pact broker or Docker Compose installation is involved.
+startup. No Pact broker or full product installation is involved. The original
+transport suite uses Docker directly; the lifecycle suite uses Docker Compose.
 
 ## Run
 
@@ -14,7 +15,7 @@ local Docker daemon running:
 ```sh
 uv run --no-sync python -m pytest tests/integration/proxy \
   --confcutdir=tests/integration/proxy -q \
-  --junitxml=proxy-results.xml
+  -o junit_family=xunit1 --junitxml=proxy-results.xml
 ```
 
 `--confcutdir` is required: Enterprise's root conftest starts PostgreSQL even for
@@ -84,3 +85,49 @@ The original file is restored in `finally`. This is a targeted check of four
 known configuration regressions, not an exhaustive mutation score or application
 code coverage measurement. SIGKILL during this script requires restoring the
 one edited config manually.
+
+
+## Compose lifecycle comparison
+
+`test_compose.py` uses `compose.yaml` plus a generated candidate override. Every
+case starts a fresh project with the proxy first, Enterprise second, and no
+automation service. The runner supplies image/config/certificate paths; it does
+not ask for production credentials. Run just these cases with:
+
+```sh
+uv run --no-sync python -m pytest tests/integration/proxy/test_compose.py \
+  --confcutdir=tests/integration/proxy -q -o junit_family=xunit1 \
+  --junitxml=compose-results.xml
+```
+
+Five lifecycle cases per candidate verify:
+
+1. Startup with automation absent, later discovery, private backend ports and a
+   loopback-only public proxy port.
+2. Actual automation removal/recreation on a **different** IP, with the previous
+   address deliberately occupied. Recovery must occur within ten seconds of the
+   Compose start command, with no proxy restart.
+3. Invalid configuration rejected by the vendor validator while the running
+   configuration serves requests, followed by restoring/reloading valid config.
+4. Supplied-certificate rotation: a new TLS connection verifies the replacement
+   certificate while an established WebSocket continues to exchange messages.
+5. Compose down/up with configuration and supplied certificate preserved.
+
+JUnit records cached-image startup and replacement timings. These are small
+local samples including Docker/Compose overhead, not performance rankings or
+fresh-machine installation measurements. A reload can finish asynchronously;
+the suite waits for a new response header on a new connection. Existing HTTP
+connections can continue using an old worker during graceful reload.
+
+Certificate generation happens only in the harness. It rotates a disposable
+leaf certificate signed by a stable test CA, using atomic file replacement.
+The probe requires five consecutive new-certificate observations within five
+seconds after reload. TLS verification is never disabled. This does not test public ACME, private-CA
+issuance, customer trust distribution or certificate-expiry monitoring.
+
+For supplied certificates all candidates need one proxy service, routing config,
+and certificate/key material (HAProxy reads a combined PEM). The Compose scaffold
+is otherwise shared; this experiment does not establish a customer usability
+winner. Human installation handoff, real application flows, customer-ingress
+mode, offline distribution and sustained resource saturation remain separate
+checks. These files are not a production Enterprise Compose installer.

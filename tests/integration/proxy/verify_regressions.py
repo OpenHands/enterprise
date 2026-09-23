@@ -57,7 +57,7 @@ def main():
                         sys.executable,
                         '-m',
                         'pytest',
-                        str(HERE),
+                        str(HERE / 'test_proxy.py'),
                         f'--confcutdir={HERE}',
                         '-q',
                         '--tb=short',

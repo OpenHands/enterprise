@@ -1,0 +1,19 @@
+# Test installation only. All paths and image selections are supplied by pytest.
+services:
+  enterprise:
+    image: ${FIXTURE_IMAGE:?fixture image required}
+    pull_policy: never
+    environment:
+      FIXTURE_ROLE: enterprise
+  automation:
+    image: ${FIXTURE_IMAGE:?fixture image required}
+    pull_policy: never
+    environment:
+      FIXTURE_ROLE: automation
+  proxy:
+    image: ${PROXY_IMAGE:?proxy image required}
+    ports:
+      - "127.0.0.1::8443"
+    volumes:
+      - ${PROXY_CERT_DIR:?certificate directory required}:/certs:ro
+      - ${PROXY_CONFIG_DIR:?config directory required}:${PROXY_CONFIG_TARGET:?mount target required}:ro

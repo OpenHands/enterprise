@@ -14,7 +14,7 @@ import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 HERE = Path(__file__).parent
 CANDIDATES = {
@@ -40,13 +40,63 @@ CANDIDATES = {
 
 
 def certificate(directory):
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'proxy.test')])
+    # Keep a stable test CA across leaf rotations, as normal certificate renewal
+    # does. Its private key stays outside the directory mounted into the proxy.
+    ca_path = directory.parent / 'test-ca.pem'
+    ca_key_path = directory.parent / 'test-ca-key.pem'
     now = datetime.now(UTC)
+    if not ca_path.exists():
+        ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        ca_subject = x509.Name(
+            [x509.NameAttribute(NameOID.COMMON_NAME, 'Proxy Test CA')]
+        )
+        ca = (
+            x509.CertificateBuilder()
+            .subject_name(ca_subject)
+            .issuer_name(ca_subject)
+            .public_key(ca_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=1))
+            .not_valid_after(now + timedelta(days=1))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=True,
+                    content_commitment=False,
+                    key_encipherment=False,
+                    data_encipherment=False,
+                    key_agreement=False,
+                    key_cert_sign=True,
+                    crl_sign=True,
+                    encipher_only=False,
+                    decipher_only=False,
+                ),
+                critical=True,
+            )
+            .add_extension(
+                x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()),
+                critical=False,
+            )
+            .sign(ca_key, hashes.SHA256())
+        )
+        ca_path.write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+        ca_key_path.write_bytes(
+            ca_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+        ca_key_path.chmod(0o600)
+    ca = x509.load_pem_x509_certificate(ca_path.read_bytes())
+    ca_key = serialization.load_pem_private_key(ca_key_path.read_bytes(), password=None)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     cert = (
         x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(subject)
+        .subject_name(
+            x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'proxy.test')])
+        )
+        .issuer_name(ca.subject)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - timedelta(minutes=1))
@@ -57,8 +107,18 @@ def certificate(directory):
             ),
             critical=False,
         )
-        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-        .sign(key, hashes.SHA256())
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False
+        )
+        .sign(ca_key, hashes.SHA256())
     )
     pem = cert.public_bytes(serialization.Encoding.PEM)
     private = key.private_bytes(
@@ -66,12 +126,17 @@ def certificate(directory):
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     )
-    (directory / 'cert.pem').write_bytes(pem)
-    (directory / 'key.pem').write_bytes(private)
-    (directory / 'bundle.pem').write_bytes(pem + private)
-    # Disposable test keys must be readable by each image's unprivileged worker.
-    # The containing pytest temporary directory is private to the local user.
-    return ssl.create_default_context(cafile=str(directory / 'cert.pem'))
+    # Atomic replacement also changes inode: nginx can inherit unchanged SSL
+    # objects across reloads when both file inode and modification time match.
+    for name, data in [
+        ('cert.pem', pem),
+        ('key.pem', private),
+        ('bundle.pem', pem + private),
+    ]:
+        temporary = directory / (name + '.new')
+        temporary.write_bytes(data)
+        temporary.replace(directory / name)
+    return ssl.create_default_context(cafile=str(ca_path))
 
 
 class Proxy:
@@ -115,6 +180,14 @@ class Proxy:
             f'{self.candidate} failed readiness: {self.container.logs(tail=20).decode()}'
         )
 
+    def validate(self):
+        commands = {
+            'caddy': ['caddy', 'validate', '--config', '/etc/caddy/Caddyfile'],
+            'nginx': ['nginx', '-t'],
+            'haproxy': ['haproxy', '-c', '-f', '/usr/local/etc/haproxy/haproxy.cfg'],
+        }
+        return self.container.exec_run(commands[self.candidate])
+
     def reload(self):
         generation = uuid.uuid4().hex
         self.config.write_text(
@@ -137,10 +210,17 @@ class Proxy:
             assert result.exit_code == 0, result.output.decode()
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            with httpx.Client(verify=self.tls, trust_env=False, timeout=2) as client:
-                response = client.get(self.client.base_url.join('/echo'))
-            if response.headers.get('x-proxy-generation') == self.generation:
-                return
+            try:
+                with httpx.Client(
+                    verify=self.tls, trust_env=False, timeout=2
+                ) as client:
+                    response = client.get(self.client.base_url.join('/echo'))
+                if response.headers.get('x-proxy-generation') == self.generation:
+                    return
+            except httpx.ConnectError:
+                # Rotation is asynchronous: keep verifying TLS while waiting for
+                # the new worker/certificate, never disable verification.
+                pass
             time.sleep(0.1)
         pytest.fail('Reload did not activate the new response header')
 
@@ -217,3 +297,75 @@ def proxy(request, docker_client, fixture_image, tmp_path_factory):
         for container in reversed(containers):
             container.remove(force=True, v=True)
         network.remove()
+
+
+@pytest.fixture(params=list(CANDIDATES))
+def compose_proxy(request, docker_client, fixture_image, tmp_path, record_property):
+    """A fresh project per test; start proxy before either upstream exists."""
+    import json
+    import os
+    import subprocess
+
+    name = f'oh-compose-test-{uuid.uuid4().hex[:12]}'
+    certs = tmp_path / 'certs'
+    certs.mkdir()
+    tls = certificate(certs)
+    config = tmp_path / 'config'
+    config.mkdir()
+    image, filename, target, command = CANDIDATES[request.param]
+    shutil.copy(HERE / 'configs' / filename, config / filename)
+    override = tmp_path / 'override.json'
+    override.write_text(json.dumps({'services': {'proxy': {'command': command}}}))
+    environment = os.environ | {
+        'FIXTURE_IMAGE': fixture_image,
+        'PROXY_IMAGE': image,
+        'PROXY_CERT_DIR': str(certs),
+        'PROXY_CONFIG_DIR': str(config),
+        'PROXY_CONFIG_TARGET': target,
+    }
+
+    def compose(*args):
+        return subprocess.run(
+            [
+                'docker',
+                'compose',
+                '--project-name',
+                name,
+                '-f',
+                str(HERE / 'compose.yaml'),
+                '-f',
+                str(override),
+                *args,
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        ).stdout
+
+    def service(role):
+        return docker_client.containers.get(compose('ps', '-q', role).strip())
+
+    rig = None
+    started = time.monotonic()
+    try:
+        compose('config', '--quiet')
+        compose('up', '-d', '--no-deps', 'proxy')
+        compose('up', '-d', 'enterprise')
+        rig = Proxy(request.param, service('proxy'), None, tls, config / filename)
+        rig.compose = compose
+        rig.service = service
+        rig.network = docker_client.networks.get(f'{name}_default')
+        rig.rotate_certificate = lambda: certificate(certs)
+        rig.wait_ready(automation=False)
+        record_property(
+            'startup_seconds_cached_images', round(time.monotonic() - started, 3)
+        )
+        yield rig
+    finally:
+        if rig:
+            rig.client.close()
+        if rig:
+            record_property('proxy_log_tail', rig.container.logs(tail=12).decode())
+        compose('down', '--volumes', '--remove-orphans')
