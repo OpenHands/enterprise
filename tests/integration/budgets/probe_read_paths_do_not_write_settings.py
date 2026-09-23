@@ -48,8 +48,7 @@ async def test_read_paths_do_not_create_settings_row(
     await adapter.session.commit()
 
     assert await _settings_row_count(adapter) == 0, (
-        'read paths must not persist an OrgBudgetSettings row for an '
-        'unconfigured org'
+        'read paths must not persist an OrgBudgetSettings row for an unconfigured org'
     )
 
     # A write path still materialises the row and its default thresholds.
