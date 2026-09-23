@@ -55,11 +55,6 @@ the app server has to present the same value to claim a sandbox. Without it
 server answers `POST /api/init` with a 401. Pass `--init-api-key` to rebuild a
 template without rotating its key.
 
-The VSCode link carries the session API key as VSCode's connection token. The
-template's agent server has to switch VSCode to that key on `POST /api/init`,
-which needs [software-agent-sdk#5282](https://github.com/OpenHands/software-agent-sdk/pull/5282).
-With an older image, the link answers 403.
-
 The template is built with 2 vCPU and 2048 MB, which is what this image has
 been exercised at. `--cpu-count` and `--memory-mb` change that, but a cluster
 node has to be able to fit the result: E2B rejects a `create()` it cannot
