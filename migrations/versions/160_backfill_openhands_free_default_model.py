@@ -29,14 +29,11 @@ SAAS_WEB_HOSTS = frozenset(
 SAAS_PREVIEW_HOST = re.compile(r'[a-z0-9][a-z0-9-]*\.staging\.all-hands\.dev')
 
 
-def _is_saas() -> bool:
-    # Unlike server.constants.WEB_HOST, an unset value must not read as SaaS.
-    host = os.environ.get('WEB_HOST', '').strip()
-    return host in SAAS_WEB_HOSTS or bool(SAAS_PREVIEW_HOST.fullmatch(host))
-
-
 def upgrade() -> None:
-    if not _is_saas():
+    # Only the managed deployments run this backfill. Unlike
+    # server.constants.WEB_HOST, an unset value must not read as SaaS.
+    web_host = os.environ.get('WEB_HOST', '').strip()
+    if web_host not in SAAS_WEB_HOSTS and not SAAS_PREVIEW_HOST.fullmatch(web_host):
         return
 
     for model_name in _FREE_MODELS:

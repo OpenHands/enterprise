@@ -42,43 +42,6 @@ def fake_op(monkeypatch):
     return op
 
 
-def test_upgrade_adds_columns_and_index_on_self_hosted(monkeypatch, fake_op):
-    """Columns and the default-enforcing index ship to every deployment.
-
-    The DDL (add_column / create_index) is issued through ``op``, not
-    ``op.execute``, so the seed gate does not affect it. Assert the gate's
-    early return leaves only the DDL path and no seed SQL.
-    """
-    monkeypatch.setenv('WEB_HOST', 'openhands.example.com')
-
-    migration_158.upgrade()
-
-    rendered = '\n'.join(fake_op.statements)
-    # No managed-deployment seed statements run on self-hosted.
-    assert 'INSERT INTO verified_models' not in rendered
-    assert 'is_default = true' not in rendered
-
-
-def test_upgrade_skips_deepseek_seed_when_web_host_is_unset(monkeypatch, fake_op):
-    monkeypatch.delenv('WEB_HOST', raising=False)
-
-    migration_158.upgrade()
-
-    rendered = '\n'.join(fake_op.statements)
-    assert 'INSERT INTO verified_models' not in rendered
-
-
-def test_upgrade_skips_deepseek_seed_when_web_host_is_self_hosted(
-    monkeypatch, fake_op
-):
-    monkeypatch.setenv('WEB_HOST', 'openhands.example.com')
-
-    migration_158.upgrade()
-
-    rendered = '\n'.join(fake_op.statements)
-    assert 'INSERT INTO verified_models' not in rendered
-
-
 def test_upgrade_seeds_deepseek_default_on_saas(monkeypatch, fake_op):
     monkeypatch.setenv('WEB_HOST', 'app.all-hands.dev')
 
@@ -87,7 +50,6 @@ def test_upgrade_seeds_deepseek_default_on_saas(monkeypatch, fake_op):
     rendered = '\n'.join(fake_op.statements)
     # Two seed statements: the free-model insert and the default upsert.
     assert rendered.count('INSERT INTO verified_models') == 2
-    # The default seed forces is_default=true (unconditional on SaaS).
     assert 'is_default = true' in rendered
     assert 'is_free = true' in rendered
 
@@ -102,9 +64,10 @@ def test_upgrade_seeds_deepseek_default_on_saas(monkeypatch, fake_op):
         'my-feature-branch.staging.all-hands.dev',
     ],
 )
-def test_is_saas_accepts_managed_deployments(monkeypatch, web_host):
+def test_upgrade_seeds_on_managed_deployments(monkeypatch, fake_op, web_host):
     monkeypatch.setenv('WEB_HOST', web_host)
-    assert migration_158._is_saas()
+    migration_158.upgrade()
+    assert any('INSERT INTO verified_models' in s for s in fake_op.statements)
 
 
 @pytest.mark.parametrize(
@@ -119,6 +82,7 @@ def test_is_saas_accepts_managed_deployments(monkeypatch, web_host):
         'staging.all-hands.dev.attacker.com',
     ],
 )
-def test_is_saas_rejects_other_deployments(monkeypatch, web_host):
+def test_upgrade_skips_seed_on_other_deployments(monkeypatch, fake_op, web_host):
     monkeypatch.setenv('WEB_HOST', web_host)
-    assert not migration_158._is_saas()
+    migration_158.upgrade()
+    assert not any('INSERT INTO verified_models' in s for s in fake_op.statements)
