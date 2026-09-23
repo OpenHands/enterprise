@@ -1,5 +1,6 @@
 /* eslint-disable i18next/no-literal-string */
 import React from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
   EmailIcon,
@@ -11,6 +12,7 @@ import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
 import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
+import { I18nKey } from "#/i18n/declaration";
 import {
   PillBadge,
   SpendMeter,
@@ -146,6 +148,7 @@ export function OrganizationBudgetTab({
   isSaving,
   isMonthlyLimitValid,
 }: OrganizationBudgetTabProps) {
+  const { t } = useTranslation();
   const observedAtLabel = spendObservedAt
     ? new Date(spendObservedAt).toLocaleString()
     : null;
@@ -180,11 +183,13 @@ export function OrganizationBudgetTab({
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
-          <span className="text-sm text-muted">Enable budget</span>
+          <span className="text-sm text-muted">
+            {t(I18nKey.SETTINGS$BUDGETS_ENABLE_MONTHLY_BUDGET)}
+          </span>
           <Toggle
             enabled={orgBudgetEnabled}
             onChange={onToggleOrgBudget}
-            label="Enable organization budget"
+            label={t(I18nKey.SETTINGS$BUDGETS_ENABLE_MONTHLY_BUDGET)}
           />
         </div>
       </div>
@@ -519,15 +524,15 @@ export function DefaultBudgetsTab({
   onSave,
   isSaving,
 }: DefaultBudgetsTabProps) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-medium text-foreground mb-1">
-          Default budget for new users
+          {t(I18nKey.SETTINGS$BUDGETS_DEFAULT_FOR_USERS)}
         </h2>
         <p className="text-sm text-muted">
-          Applied automatically when a user joins your organization. Existing
-          users keep their current budgets.
+          {t(I18nKey.SETTINGS$BUDGETS_DEFAULT_FOR_USERS_DESCRIPTION)}
         </p>
       </div>
 
@@ -563,7 +568,9 @@ export function DefaultBudgetsTab({
       <div>
         <div className="block text-sm text-white mb-2">Preview</div>
         <p className="text-sm text-muted">
-          {`New users get up to $${defaultAmountLabel} per month before requiring an increase.`}
+          {t(I18nKey.SETTINGS$BUDGETS_DEFAULT_PREVIEW, {
+            amount: `$${defaultAmountLabel}`,
+          })}
         </p>
       </div>
 

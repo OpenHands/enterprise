@@ -325,4 +325,39 @@ describe("Budgets", () => {
       expect(organizationService.getBudgetSettings).toHaveBeenCalledTimes(2);
     });
   });
+
+  it("labels the organization toggle as the monthly budget control", async () => {
+    await renderBudgets();
+
+    expect(
+      screen.getByRole("switch", {
+        name: "SETTINGS$BUDGETS_ENABLE_MONTHLY_BUDGET",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("describes the default budget as applying to users without an override", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+
+    await user.click(
+      screen.getByRole("button", { name: "Default budget for users" }),
+    );
+
+    expect(
+      screen.getByRole("heading", {
+        name: "SETTINGS$BUDGETS_DEFAULT_FOR_USERS",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("SETTINGS$BUDGETS_DEFAULT_FOR_USERS_DESCRIPTION"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("SETTINGS$BUDGETS_DEFAULT_PREVIEW"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/new users/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/keep their current budgets/i),
+    ).not.toBeInTheDocument();
+  });
 });
