@@ -25,10 +25,6 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    if bind.dialect.name != 'postgresql':
-        raise RuntimeError(f'Unsupported database dialect: {bind.dialect.name}')
-
     op.add_column(
         'v1_remote_sandbox',
         sa.Column('backend', sa.String(), nullable=False, server_default='remote'),
