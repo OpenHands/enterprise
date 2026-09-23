@@ -50,7 +50,9 @@ This runs every `test_*.py` and `probe_*.py` serially and writes
 `.pr/budget-all.xml`. Any failure, skip or xfail prevents success.
 Collection alone is available with `--collect-only` and is not validation.
 Set `BUDGET_LITELLM_IMAGE` to the exact release image under evaluation; the
-compatibility default remains v1.94.0. The automatic regression command is:
+default matches the Cloud chart’s digest-pinned 1.100.1 image and authorization
+cache TTL 0. Set `BUDGET_AUTH_CACHE_TTL` explicitly when testing a different
+deployment configuration. The automatic regression command is:
 
 ```bash
 uv run python -m tests.integration.budgets.run_readiness --suite regression
