@@ -109,7 +109,13 @@ export function SecretForm({
     const name = formData.get("secret-name")?.toString();
     const value = formData.get("secret-value")?.toString().trim();
     const description = formData.get("secret-description")?.toString();
-    const isShared =
+    // The "share with organization" checkbox only governs the CREATE flow —
+    // it decides whether a NEW secret is personal or org-shared. On edit the
+    // scope is fixed: toggling the box must not reroute an org-shared secret
+    // to the personal endpoint (which would 404 or spawn a duplicate, OHE-3342).
+    // Routing an edit by the checkbox would also let an admin accidentally
+    // convert scope, which is a delete-and-recreate operation, not an update.
+    const isSharedFromCheckbox =
       formData.get("secret-shared")?.toString() === "on" ||
       formData.get("secret-shared") === "on";
 
@@ -130,13 +136,19 @@ export function SecretForm({
           return;
         }
 
-        handleCreateSecret(name, value, description || undefined, isShared);
+        handleCreateSecret(
+          name,
+          value,
+          description || undefined,
+          isSharedFromCheckbox,
+        );
       } else if (mode === "edit" && selectedSecret) {
+        // Route the update by the secret's ORIGINAL scope, not the checkbox.
         handleEditSecret(
           selectedSecret,
           name,
           description || undefined,
-          isShared,
+          selectedSecretIsShared,
         );
       }
     }
@@ -196,7 +208,7 @@ export function SecretForm({
         />
       </label>
 
-      {canShareWithOrg && (
+      {canShareWithOrg && mode === "add" && (
         <div
           data-testid="share-with-org-label"
           className="flex items-start gap-2.5 w-full max-w-[680px]"

@@ -40,69 +40,111 @@ class SaasSecretsStore(SecretsStore):
     # the right rows to be read/written.
     effective_org_id: UUID | None = None
 
-    async def load(self) -> Secrets | None:
-        if not self.user_id:
-            return None
+    async def _effective_org_id(self) -> UUID | None:
+        """Resolve the org this store is scoped to.
+
+        Falls back to the user's ``current_org_id`` when no effective org was
+        set on the instance (background/non-request callers).
+        """
+        if self.effective_org_id is not None:
+            return self.effective_org_id
         user = await UserStore.get_user_by_id(self.user_id)
-        org_id = self.effective_org_id or (user.current_org_id if user else None)
+        return user.current_org_id if user else None
+
+    async def _fetch_personal_rows(self) -> list[StoredCustomSecrets]:
+        """Fetch this user's personal secret rows (``is_org_shared=False``).
+
+        Org-shared rows are excluded. No name dedup is applied — the stored
+        name is returned verbatim. Used by the write path (``load_personal`` /
+        ``store``) which must only ever touch the user's own personal rows.
+        """
+        if not self.user_id:
+            return []
+        org_id = await self._effective_org_id()
 
         async with a_session_maker() as session:
-            # Fetch the user's personal secrets (is_org_shared=False)
-            personal_query = select(StoredCustomSecrets).filter(
+            query = select(StoredCustomSecrets).filter(
                 StoredCustomSecrets.keycloak_user_id == self.user_id,
                 StoredCustomSecrets.is_org_shared.is_(False),
             )
             if org_id is not None:
-                personal_query = personal_query.filter(
-                    StoredCustomSecrets.org_id == org_id
-                )
-            personal_result = await session.execute(personal_query)
-            personal_secrets = personal_result.scalars().all()
+                query = query.filter(StoredCustomSecrets.org_id == org_id)
+            result = await session.execute(query)
+            return list(result.scalars().all())
 
-            # Fetch org-shared secrets (is_org_shared=True) for this org.
-            # Available to all members; the value is decrypted and surfaced
-            # to the runtime but never exposed via the listing API.
-            shared_secrets: list[StoredCustomSecrets] = []
-            if org_id is not None:
+    async def load_personal(self) -> Secrets:
+        """Load only the user's personal secrets (no org-shared merge).
+
+        The V1 custom-secrets write endpoints (create/update/delete) use this
+        instead of ``load()``: ``load()`` merges org-shared secrets into the
+        returned ``custom_secrets`` dict, and ``store()`` would then re-insert
+        those merged rows as spurious personal duplicates (OHE-3342). The
+        write path must only ever see the user's own personal rows.
+        """
+        personal_secrets = await self._fetch_personal_rows()
+        if not personal_secrets:
+            return Secrets()
+        kwargs: dict[str, dict[str, str | None]] = {}
+        for secret in personal_secrets:
+            kwargs[secret.secret_name] = {
+                'secret': secret.secret_value,
+                'description': secret.description,
+            }
+        self._decrypt_kwargs(kwargs)
+        return Secrets(custom_secrets=kwargs)  # type: ignore[arg-type]
+
+    async def load(self) -> Secrets | None:
+        if not self.user_id:
+            return None
+        org_id = await self._effective_org_id()
+
+        personal_secrets = await self._fetch_personal_rows()
+
+        # Fetch org-shared secrets (is_org_shared=True) for this org.
+        # Available to all members; the value is decrypted and surfaced
+        # to the runtime but never exposed via the listing API.
+        shared_secrets: list[StoredCustomSecrets] = []
+        if org_id is not None:
+            async with a_session_maker() as session:
                 shared_query = select(StoredCustomSecrets).filter(
                     StoredCustomSecrets.org_id == org_id,
                     StoredCustomSecrets.is_org_shared.is_(True),
                 )
                 shared_result = await session.execute(shared_query)
-                shared_secrets = shared_result.scalars().all()
+                shared_secrets = list(shared_result.scalars().all())
 
-            all_secrets = list(personal_secrets) + list(shared_secrets)
+        all_secrets = list(personal_secrets) + list(shared_secrets)
 
-            if not all_secrets:
-                return Secrets()
+        if not all_secrets:
+            return Secrets()
 
-            # Merge personal + shared, applying suffix dedup on name
-            # collisions. Personal secrets keep the bare name; org-shared
-            # secrets that collide get ``_2``, ``_3``, … appended.
-            kwargs: dict[str, dict[str, str | None]] = {}
-            taken_names: set[str] = set()
+        # Merge personal + shared, applying suffix dedup on name
+        # collisions. Personal secrets keep the bare name; org-shared
+        # secrets that collide get ``_2``, ``_3``, … appended.
+        kwargs: dict[str, dict[str, str | None]] = {}
+        taken_names: set[str] = set()
 
-            # Personal first — they win the bare name.
-            for secret in personal_secrets:
-                effective_name = _resolve_unique_name(secret.secret_name, taken_names)
-                kwargs[effective_name] = {
-                    'secret': secret.secret_value,
-                    'description': secret.description,
-                }
-                taken_names.add(effective_name)
+        # Personal first — they win the bare name.
+        for secret in personal_secrets:
+            effective_name = _resolve_unique_name(secret.secret_name, taken_names)
+            kwargs[effective_name] = {
+                'secret': secret.secret_value,
+                'description': secret.description,
+            }
+            taken_names.add(effective_name)
 
-            # Shared next — suffixed on collision.
-            for secret in shared_secrets:
-                effective_name = _resolve_unique_name(secret.secret_name, taken_names)
-                kwargs[effective_name] = {
-                    'secret': secret.secret_value,
-                    'description': secret.description,
-                }
-                taken_names.add(effective_name)
+        # Shared next — suffixed on collision.
+        for secret in shared_secrets:
+            effective_name = _resolve_unique_name(secret.secret_name, taken_names)
+            kwargs[effective_name] = {
+                'secret': secret.secret_value,
+                'description': secret.description,
+            }
+            taken_names.add(effective_name)
 
-            self._decrypt_kwargs(kwargs)
+        self._decrypt_kwargs(kwargs)
 
-            return Secrets(custom_secrets=kwargs)  # type: ignore[arg-type]
+        return Secrets(custom_secrets=kwargs)  # type: ignore[arg-type]
 
     async def list_personal(
         self,
