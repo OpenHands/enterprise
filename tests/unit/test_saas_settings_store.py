@@ -539,6 +539,46 @@ async def test_ensure_api_key_handles_none_wrapped_fallback_key():
     )
 
 
+@pytest.mark.asyncio
+async def test_ensure_api_key_skips_when_litellm_disabled():
+    """With ENABLE_LITELLM off, _ensure_api_key must not call LiteLlmManager
+    at all -- an openhands/* model (virtually every existing user's
+    default) would otherwise unconditionally try to mint a key and raise
+    ``ValueError`` out of ``LiteLlmManager.generate_key``, surfacing to the
+    user as an opaque 500 (enterprise#474; reproduced live against a fleet
+    VM running with the flag off).
+    """
+    store = SaasSettingsStore('test-user-id-123')
+    item = _make_settings(model='openhands/gpt-4')
+
+    with (
+        patch(
+            'storage.saas_settings_store.is_litellm_enabled',
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.verify_existing_key',
+            new_callable=AsyncMock,
+        ) as mock_verify_existing,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
+            new_callable=AsyncMock,
+        ) as mock_delete,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.generate_key',
+            new_callable=AsyncMock,
+        ) as mock_generate,
+    ):
+        await store._ensure_api_key(item, 'org-123', openhands_type=True)
+
+    mock_verify_existing.assert_not_awaited()
+    mock_delete.assert_not_awaited()
+    mock_generate.assert_not_awaited()
+    # No key was minted, and the (empty) item api_key is left untouched.
+    assert _secret_value(item, 'llm.api_key') is None
+
+
 @pytest.fixture
 def org_with_multiple_members_fixture(session_maker):
     """Set up an organization with multiple members for testing LLM settings propagation."""

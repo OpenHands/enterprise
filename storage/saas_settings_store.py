@@ -42,7 +42,11 @@ from storage.agent_profile_resolution import (
     load_llm_profiles,
 )
 from storage.database import a_session_maker
-from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
+from storage.lite_llm_manager import (
+    LiteLlmManager,
+    get_openhands_cloud_key_alias,
+    is_litellm_enabled,
+)
 from storage.mcp_config import (
     coerce_persisted_mcp_config,
     serialize_mcp_config,
@@ -961,6 +965,24 @@ class SaasSettingsStore(SettingsStore):
         First checks if an existing key exists for the user and verifies it
         is valid in LiteLLM. If valid, reuses it. Otherwise, generates a new key.
         """
+        if not await is_litellm_enabled():
+            # LiteLLM is disabled deployment-wide: there is no gateway to
+            # generate, verify, or rotate a key against. A managed
+            # (openhands/* or LiteLLM-proxy) model is virtually every
+            # existing member's default, so without this guard *any*
+            # settings save would otherwise unconditionally try to mint a
+            # key and raise ``ValueError`` out of
+            # ``LiteLlmManager.generate_key`` -- caught by
+            # ``store_settings``'s generic exception handler as an opaque
+            # 500. Leave the existing key field untouched (whatever it
+            # already decrypted to, including an empty key) rather than
+            # attempting any LiteLLM call.
+            logger.info(
+                'saas_settings_store:ensure_api_key:skipped_litellm_disabled',
+                extra={'user_id': self.user_id, 'org_id': org_id},
+            )
+            return
+
         # A ``SecretStr`` can wrap a Python ``None`` (e.g. a pre-existing
         # member row created before an LLM key was ever assigned, such as a
         # user provisioned while ENABLE_LITELLM was off). ``bool()``/``len()``
