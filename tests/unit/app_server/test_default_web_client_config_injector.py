@@ -430,6 +430,36 @@ class TestGetFeatureFlags:
 
         assert config.feature_flags.enable_integrations_hub is True
 
+    def test_enable_super_admin_false_by_default(self):
+        """When ENABLE_SUPER_ADMIN is unset, the Super Admin flag is False."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_feature_flags()
+            assert result.enable_super_admin is False
+
+    def test_enable_super_admin_true_when_env_var_true(self):
+        """When ENABLE_SUPER_ADMIN is 'true', the Super Admin flag is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_SUPER_ADMIN': 'true'}):
+            result = _get_feature_flags()
+            assert result.enable_super_admin is True
+
+    def test_enable_super_admin_true_when_env_var_one(self):
+        """When ENABLE_SUPER_ADMIN is '1', the Super Admin flag is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_SUPER_ADMIN': '1'}):
+            result = _get_feature_flags()
+            assert result.enable_super_admin is True
+
 
 class TestGetJiraDcServiceAccountConfig:
     """Test cases for Jira DC service-account web-client config helpers."""

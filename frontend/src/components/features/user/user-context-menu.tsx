@@ -7,13 +7,14 @@ import {
 } from "react-icons/io5";
 import { useLogout } from "#/hooks/mutation/use-logout";
 import { useMe } from "#/hooks/query/use-me";
+import { useConfig } from "#/hooks/query/use-config";
 import { OrganizationUserRole } from "#/types/org";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { cn } from "#/utils/utils";
 import { OrgSelector } from "../org/org-selector";
 import { I18nKey } from "#/i18n/declaration";
 import { SUPER_ADMIN_ENTRY_ITEM } from "#/constants/super-admin-nav";
-import { isInstanceSuperAdmin } from "#/utils/org/permissions";
+import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
 import { useSettingsNavItems } from "#/hooks/use-settings-nav-items";
 import DocumentIcon from "#/icons/document.svg?react";
 import { ContextMenuListItem } from "../context-menu/context-menu-list-item";
@@ -49,6 +50,7 @@ export function UserContextMenu({
   const { t } = useTranslation();
   const { mutate: logout } = useLogout();
   const { data: me } = useMe();
+  const { data: config } = useConfig();
   const { isPersonalOrg } = useOrgTypeAndAccess();
   const settingsNavItems = useSettingsNavItems();
   const shouldHideSelector = useShouldHideOrgSelector();
@@ -61,7 +63,10 @@ export function UserContextMenu({
   const isMember = type === "member";
   const canCreateOrganization =
     me?.permissions?.includes("create_organization") === true;
-  const showSuperAdmin = isInstanceSuperAdmin(me?.permissions);
+  const showSuperAdmin = canAccessSuperAdminDashboard(
+    config?.feature_flags,
+    me?.permissions,
+  );
   const shouldShowOrganizationPreview =
     isSaas && !isEnterpriseSelfHosted && !canCreateOrganization;
   const shouldShowCreateOrganizationButton =

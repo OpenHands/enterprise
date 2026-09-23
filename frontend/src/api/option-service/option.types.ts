@@ -51,6 +51,10 @@ export interface WebClientFeatureFlags {
    *  ENABLE_INTEGRATIONS_HUB is set. First-visit reconnect modal:
    *  PersonalIntegrationsLayout / IntegrationsHubCutoverModal. */
   enable_integrations_hub?: boolean;
+  /** When true, show Super Admin entry points and allow /super-admin/*
+   *  for instance Super Admins. Defaults to false until ENABLE_SUPER_ADMIN
+   *  is set. */
+  enable_super_admin?: boolean;
 }
 
 export interface ACPModelOption {

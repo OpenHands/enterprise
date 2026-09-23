@@ -106,6 +106,18 @@ go straight to the real next step (GitHub App install, GitLab/Azure OAuth,
 Slack **Install**, webhook managers, Jira/Linear configure modals)—not a
 wrapper modal that re-shows Connect/Configure.
 
+## Super Admin dashboard (`feat/super-admin-dashboard`)
+
+Instance Super Admin UI (`/super-admin/*`) is gated by **`ENABLE_SUPER_ADMIN`**
+(`true`/`1`). When unset/false:
+
+- Account menu / Settings user menu hide the Super Admin entry
+- `/super-admin` redirects to Settings
+
+Local mock SaaS (`VITE_MOCK_SAAS=true`) turns the flag on automatically.
+Access still requires an instance Super Admin permission (`create_organization`,
+`provision_user`, or `manage_super_admins`).
+
 ## Follow-ups (not in this PR)
 
 - In-process auth bridge (skip HTTP self-call to `/api/v1/users/me`)

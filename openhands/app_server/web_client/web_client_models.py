@@ -52,6 +52,11 @@ class WebClientFeatureFlags(BaseModel):
     # modal that lists what broke and how to reconnect each one in
     # Integrations Hub. See frontend IntegrationsHubLayout.
     enable_integrations_hub: bool = False
+    # When false, the web client hides Super Admin entry points and redirects
+    # /super-admin/* to Settings. Defaults to False so the unfinished
+    # Super Admin dashboard stays off in production. Set
+    # ENABLE_SUPER_ADMIN=true (or 1) to show it for instance Super Admins.
+    enable_super_admin: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')

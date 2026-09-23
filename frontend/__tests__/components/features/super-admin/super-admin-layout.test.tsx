@@ -20,8 +20,19 @@ const mockMe = vi.hoisted(() => ({
   isPending: false,
 }));
 
+const mockConfig = vi.hoisted(() => ({
+  data: { feature_flags: { enable_super_admin: true } } as {
+    feature_flags?: { enable_super_admin?: boolean };
+  } | null,
+  isLoading: false,
+}));
+
 vi.mock("#/hooks/query/use-me", () => ({
   useMe: () => mockMe,
+}));
+
+vi.mock("#/hooks/query/use-config", () => ({
+  useConfig: () => mockConfig,
 }));
 
 vi.mock("#/hooks/query/use-git-user", () => ({
@@ -83,6 +94,8 @@ describe("SuperAdminLayout", () => {
     mockMe.data = { permissions: ["create_organization"] };
     mockMe.isLoading = false;
     mockMe.isPending = false;
+    mockConfig.data = { feature_flags: { enable_super_admin: true } };
+    mockConfig.isLoading = false;
     resetSuperAdminSetupState();
   });
 
@@ -147,5 +160,13 @@ describe("SuperAdminLayout", () => {
 
     expect(screen.getByTestId("settings-fallback")).toBeInTheDocument();
     expect(screen.queryByTestId("super-admin-screen")).not.toBeInTheDocument();
+  });
+
+  it("redirects when the Super Admin feature flag is off", () => {
+    mockConfig.data = { feature_flags: { enable_super_admin: false } };
+    renderSuperAdmin();
+
+    expect(screen.getByTestId("settings-fallback")).toBeInTheDocument();
+    expect(screen.queryByTestId("super-admin-dashboard")).not.toBeInTheDocument();
   });
 });

@@ -187,7 +187,8 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     Reads ENABLE_BILLING, HIDE_LLM_SETTINGS, ENABLE_JIRA, ENABLE_JIRA_DC,
     ENABLE_LINEAR, HIDE_USERS_PAGE, HIDE_BILLING_PAGE, HIDE_INTEGRATIONS_PAGE,
     HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING,
-    ENABLE_AGENT_CANVAS_BANNER, and ENABLE_INTEGRATIONS_HUB from environment.
+    ENABLE_AGENT_CANVAS_BANNER, ENABLE_INTEGRATIONS_HUB, and ENABLE_SUPER_ADMIN
+    from environment.
 
     OH_ALLOW_USER_LLM_CONFIGURATION and ENABLE_ACP are the exceptions: they
     default to 'true' when unset. OH_ALLOW_USER_LLM_CONFIGURATION keeps the
@@ -215,6 +216,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
         enable_integrations_hub=_env_flag_enabled('ENABLE_INTEGRATIONS_HUB'),
+        enable_super_admin=_env_flag_enabled('ENABLE_SUPER_ADMIN'),
     )
 
 

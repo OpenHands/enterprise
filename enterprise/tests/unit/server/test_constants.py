@@ -297,6 +297,75 @@ class TestEnableIntegrationsHubInConfig:
             assert constants_module.ENABLE_INTEGRATIONS_HUB is False
 
 
+class TestEnableSuperAdminInConfig:
+    """Tests for enable_super_admin flag in SaaSServerConfig and get_config().
+
+    The switch is driven by ``ENABLE_SUPER_ADMIN`` and must accept both
+    ``'true'`` and ``'1'`` (see AGENTS.md "Environment Variable Enable Toggles").
+    """
+
+    def test_enable_super_admin_true_in_feature_flags(self):
+        """Test that ENABLE_SUPER_ADMIN: True is included in FEATURE_FLAGS."""
+        from server.config import SaaSServerConfig
+
+        saas_config = SaaSServerConfig()
+        saas_config.enable_super_admin = True
+        config = saas_config.get_config()
+
+        assert 'FEATURE_FLAGS' in config
+        assert 'ENABLE_SUPER_ADMIN' in config['FEATURE_FLAGS']
+        assert config['FEATURE_FLAGS']['ENABLE_SUPER_ADMIN'] is True
+
+    def test_enable_super_admin_false_in_feature_flags(self):
+        """Test that ENABLE_SUPER_ADMIN: False is included in FEATURE_FLAGS."""
+        from server.config import SaaSServerConfig
+
+        saas_config = SaaSServerConfig()
+        saas_config.enable_super_admin = False
+        config = saas_config.get_config()
+
+        assert 'FEATURE_FLAGS' in config
+        assert 'ENABLE_SUPER_ADMIN' in config['FEATURE_FLAGS']
+        assert config['FEATURE_FLAGS']['ENABLE_SUPER_ADMIN'] is False
+
+    @pytest.mark.parametrize(
+        'env_value,expected',
+        [
+            ('true', True),
+            ('True', True),
+            ('TRUE', True),
+            ('1', True),
+            ('false', False),
+            ('False', False),
+            ('0', False),
+            ('', False),
+        ],
+    )
+    def test_enable_super_admin_truthy_parsing(
+        self, env_value: str, expected: bool
+    ) -> None:
+        with patch.dict('os.environ', {'ENABLE_SUPER_ADMIN': env_value}):
+            import importlib
+
+            import server.auth.constants as constants_module
+
+            importlib.reload(constants_module)
+            assert constants_module.ENABLE_SUPER_ADMIN is expected
+
+    def test_enable_super_admin_defaults_to_false(self):
+        """Test that ENABLE_SUPER_ADMIN defaults to False when unset."""
+        import importlib
+
+        import server.auth.constants as constants_module
+
+        with patch.dict('os.environ', {}, clear=True):
+            import os
+
+            os.environ.pop('ENABLE_SUPER_ADMIN', None)
+            importlib.reload(constants_module)
+            assert constants_module.ENABLE_SUPER_ADMIN is False
+
+
 class TestUserProvisioningEnabled:
     """Tests for the USER_PROVISIONING_ENABLED feature switch.
 
