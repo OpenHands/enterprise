@@ -15,6 +15,8 @@ from sqlalchemy import Select, String, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
+from openhands.app_server.errors import AuthError
+from openhands.app_server.user.specifiy_user_context import ADMIN
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.sql_utils import Base, StoredSecretStr, UtcDateTime
 
@@ -71,22 +73,28 @@ class StoredSandboxPage:
     next_page_id: str | None
 
 
+async def require_user_id(user_context: UserContext) -> str:
+    """Return the caller's user id, or raise ``AuthError`` when there is none."""
+    user_id = await user_context.get_user_id()
+    if not user_id:
+        raise AuthError('User authentication required')
+    return user_id
+
+
 async def secure_select(
     user_context: UserContext, backend: str
 ) -> Select[tuple[StoredSandbox]]:
     """Select over one backend's sandboxes that the caller may see.
 
-    A caller with a user id sees only their own rows. A caller without one
-    sees every row. ``session_auth.validate_session_key`` and
-    ``webhook_router.valid_sandbox`` run as ``ADMIN``, which has no user id,
-    because they look a sandbox up by its key before they know the owner.
-    Narrowing this case breaks authentication.
+    A user sees only their own rows. ``ADMIN`` sees every row, because session
+    key auth, webhooks and the integration callbacks read sandboxes across
+    users. Any other caller without a user id is refused.
     """
     query = select(StoredSandbox).where(StoredSandbox.backend == backend)
-    user_id = await user_context.get_user_id()
-    if user_id:
-        query = query.where(StoredSandbox.created_by_user_id == user_id)
-    return query
+    if user_context == ADMIN:
+        return query
+    user_id = await require_user_id(user_context)
+    return query.where(StoredSandbox.created_by_user_id == user_id)
 
 
 async def get_stored_sandbox(

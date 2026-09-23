@@ -1,9 +1,8 @@
 """Tests for the sandbox record every backend shares.
 
-The scoping helper here is what every backend reads ownership through, and
-``session_auth.validate_session_key`` and ``webhook_router.valid_sandbox``
-depend on its admin case, so the cases below are the authentication contract
-rather than incidental query behaviour.
+The scoping helper here is what every backend reads ownership through. Session
+key auth and webhooks read through its ``ADMIN`` case, so the cases below are
+the authentication contract rather than incidental query behaviour.
 """
 
 import hashlib
@@ -17,6 +16,7 @@ import pytest
 from pydantic import SecretStr
 from sqlalchemy import select, text
 
+from openhands.app_server.errors import AuthError
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
     E2B_BACKEND,
@@ -28,6 +28,7 @@ from openhands.app_server.sandbox.sandbox_store import (
     search_stored_sandboxes,
 )
 from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.user.specifiy_user_context import ADMIN
 from openhands.app_server.utils.encryption_key import EncryptionKey
 
 OWNER_ID = 'user-a'
@@ -131,18 +132,33 @@ class TestScoping:
 
         assert found is None
 
-    async def test_caller_without_a_user_id_sees_every_row(self, db_session, store):
-        """The admin case webhook and session key auth run under."""
+    async def test_admin_sees_every_row(self, db_session, store):
         await store(
             _stored('sb-1', created_by_user_id=OWNER_ID),
             _stored('sb-2', created_by_user_id=OTHER_USER_ID),
         )
 
         page = await search_stored_sandboxes(
-            db_session, _user_context(None), DOCKER_BACKEND, None, 100
+            db_session, ADMIN, DOCKER_BACKEND, None, 100
         )
 
         assert {row.id for row in page.items} == {'sb-1', 'sb-2'}
+
+    async def test_a_caller_without_a_user_id_is_refused(self, db_session, store):
+        """Only ADMIN reads across users. A missing user id is not ADMIN."""
+        await store(_stored('sb-1', session_api_key='the-key'))
+        user_context = _user_context(None)
+
+        with pytest.raises(AuthError):
+            await get_stored_sandbox(db_session, user_context, DOCKER_BACKEND, 'sb-1')
+        with pytest.raises(AuthError):
+            await get_stored_sandbox_by_session_api_key(
+                db_session, user_context, DOCKER_BACKEND, 'the-key'
+            )
+        with pytest.raises(AuthError):
+            await search_stored_sandboxes(
+                db_session, user_context, DOCKER_BACKEND, None, 100
+            )
 
     async def test_backends_do_not_see_each_other(self, db_session, store):
         """A deployment that switches RUNTIME must not mix the backends' rows."""
@@ -157,9 +173,7 @@ class TestScoping:
             (DOCKER_BACKEND, 'sb-docker'),
             (E2B_BACKEND, 'sb-e2b'),
         ]:
-            page = await search_stored_sandboxes(
-                db_session, _user_context(None), backend, None, 100
-            )
+            page = await search_stored_sandboxes(db_session, ADMIN, backend, None, 100)
             assert [row.id for row in page.items] == [sandbox_id]
 
     async def test_a_row_written_without_a_backend_is_remote(self, db_session):
@@ -170,9 +184,7 @@ class TestScoping:
             )
         )
 
-        found = await get_stored_sandbox(
-            db_session, _user_context(None), REMOTE_BACKEND, 'sb-1'
-        )
+        found = await get_stored_sandbox(db_session, ADMIN, REMOTE_BACKEND, 'sb-1')
 
         assert found is not None
         assert found.backend == REMOTE_BACKEND
@@ -197,6 +209,19 @@ class TestSessionApiKeyLookup:
         )
 
         assert found is None
+
+    async def test_admin_finds_any_users_key(self, db_session, store):
+        """Session key auth looks the key up before it knows the owner."""
+        await store(
+            _stored('sb-1', created_by_user_id=OTHER_USER_ID, session_api_key='the-key')
+        )
+
+        found = await get_stored_sandbox_by_session_api_key(
+            db_session, ADMIN, DOCKER_BACKEND, 'the-key'
+        )
+
+        assert found is not None
+        assert found.id == 'sb-1'
 
     async def test_a_leaked_key_stays_scoped_to_its_owner(self, db_session, store):
         await store(

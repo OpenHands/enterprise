@@ -49,6 +49,7 @@ from openhands.app_server.sandbox.sandbox_store import (
     StoredSandbox,
 )
 from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
+from openhands.app_server.user.specifiy_user_context import ADMIN
 from openhands.app_server.user.user_context import UserContext
 
 
@@ -1586,7 +1587,7 @@ class TestUserSecurity:
 
     @pytest.mark.asyncio
     async def test_reads_only_remote_rows(self, db_service):
-        """The table is shared, so another backend's row must stay invisible."""
+        """The table is shared, so even ADMIN must not see another backend's row."""
         db_service.db_session.add_all(
             [
                 self._row('sb-remote', REMOTE_BACKEND, 'test-user-123', 'remote-key'),
@@ -1594,7 +1595,7 @@ class TestUserSecurity:
             ]
         )
         await db_service.db_session.flush()
-        db_service.user_context.get_user_id.return_value = None
+        db_service.user_context = ADMIN
 
         remote = await db_service.get_sandbox_record_by_session_api_key('remote-key')
         docker = await db_service.get_sandbox_record_by_session_api_key('docker-key')
