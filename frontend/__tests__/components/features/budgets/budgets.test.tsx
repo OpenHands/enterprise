@@ -34,15 +34,6 @@ vi.mock("react-i18next", async () => {
   };
 });
 
-vi.mock("#/hooks/query/use-config", () => ({
-  useConfig: () => ({
-    data: {
-      slack_enabled: true,
-      email_enabled: true,
-    },
-  }),
-}));
-
 vi.mock("#/context/use-selected-organization", () => ({
   useSelectedOrganizationId: () => ({
     organizationId: "org-123",
@@ -55,6 +46,9 @@ vi.mock("#/hooks/use-debounce", () => ({
 }));
 
 const budgetResponse = {
+  email_alerts_available: true,
+  slack_integration_configured: true,
+  slack_workspace_connected: true,
   enabled: true,
   monthly_limit: 1000,
   litellm_last_sync_at: "2024-01-15T12:00:00Z",
@@ -135,6 +129,113 @@ describe("Budgets", () => {
       budgetResponse.users[0],
     );
     vi.mocked(organizationService.deleteBudgetOverride).mockResolvedValue();
+  });
+
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "shows available alert channels (email=%s, Slack=%s)",
+    async (email, slack) => {
+      vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+        ...budgetResponse,
+        email_alerts_available: email,
+        slack_integration_configured: slack,
+        slack_workspace_connected: slack,
+      });
+      await renderBudgets();
+      expect(Boolean(screen.queryByText("Alert thresholds"))).toBe(
+        email || slack,
+      );
+      expect(
+        Boolean(screen.queryByRole("button", { name: "Email org admins" })),
+      ).toBe(email);
+      expect(
+        Boolean(screen.queryByRole("button", { name: "# Post to Slack" })),
+      ).toBe(slack);
+      expect(Boolean(screen.queryByLabelText("Slack channel"))).toBe(slack);
+    },
+  );
+
+  it("requires connecting Slack before enabling alerts", async () => {
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      email_alerts_available: false,
+      slack_workspace_connected: false,
+    });
+    await renderBudgets();
+    expect(
+      screen.getByRole("button", { name: "# Post to Slack" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /Add threshold/ }),
+    ).toBeDisabled();
+    expect(screen.getByLabelText("Delete 75% threshold")).toBeDisabled();
+    expect(screen.getByRole("link", { name: /Connect Slack/ })).toHaveAttribute(
+      "href",
+      "/settings/integrations",
+    );
+  });
+
+  it("preserves hidden alert settings when saving the monthly limit", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      email_alerts_available: false,
+      slack_integration_configured: false,
+      slack_workspace_connected: false,
+    });
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(organizationService.updateBudgetSettings).toHaveBeenCalled(),
+    );
+    const [{ payload }] =
+      vi.mocked(organizationService.updateBudgetSettings).mock.calls[0];
+    expect(payload).not.toHaveProperty("thresholds");
+    expect(payload).not.toHaveProperty("slack_channel");
+  });
+
+  it.each(["email", "slack"])(
+    "preserves stored %s flags while that channel is unavailable",
+    async (unavailable) => {
+      const user = userEvent.setup();
+      vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+        ...budgetResponse,
+        email_alerts_available: unavailable !== "email",
+        slack_workspace_connected: unavailable !== "slack",
+        thresholds: [{ id: 1, percentage: 75, email_enabled: true, slack_enabled: true }],
+      });
+      await renderBudgets();
+      await user.click(screen.getByRole("button", { name: "Save changes" }));
+      await waitFor(() => expect(organizationService.updateBudgetSettings).toHaveBeenCalled());
+      const [{ payload }] = vi.mocked(organizationService.updateBudgetSettings).mock.calls[0];
+      expect(payload.thresholds).toEqual([{ percentage: 75, email_enabled: true, slack_enabled: true }]);
+    },
+  );
+
+  it("defaults a new threshold to Slack when only Slack is available", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      email_alerts_available: false,
+    });
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: /Add threshold/ }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(organizationService.updateBudgetSettings).toHaveBeenCalled(),
+    );
+    expect(
+      vi.mocked(organizationService.updateBudgetSettings).mock.calls[0][0]
+        .payload.thresholds,
+    ).toContainEqual({
+      percentage: 50,
+      email_enabled: false,
+      slack_enabled: true,
+    });
   });
 
   it("adds and removes thresholds, then saves updated settings", async () => {
@@ -251,9 +352,7 @@ describe("Budgets", () => {
 
     await renderBudgets();
 
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Degraded",
-    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Degraded");
     expect(screen.getByRole("alert")).toHaveTextContent(
       "member cycle baseline is unavailable",
     );

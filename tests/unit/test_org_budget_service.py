@@ -2782,8 +2782,9 @@ async def test_non_positive_org_default_limit_caps_members_at_their_baseline(
 
 @pytest.mark.asyncio
 async def test_threshold_alerts_once_per_cycle_across_a_settings_edit(
-    async_session_maker, budget_org
+    async_session_maker, budget_org, monkeypatch
 ):
+    monkeypatch.setenv('SMTP_HOST', 'smtp.example.invalid')
     # _maybe_send_alerts dedupes on threshold.last_triggered_cycle_start, which lives
     # on the threshold row. An admin who edits the thresholds -- here just turning
     # Slack on for the 80% alert -- must not re-arm alerts inside the live cycle and
@@ -2827,6 +2828,11 @@ async def test_threshold_alerts_once_per_cycle_across_a_settings_edit(
                 service, '_sync_litellm_budgets', AsyncMock(return_value=snapshot)
             ),
             patch.object(service, '_send_alerts', AsyncMock()) as send_alerts,
+            patch.object(
+                service,
+                '_get_slack_bot_token',
+                AsyncMock(return_value='test-only-token'),
+            ),
         ):
             # 85 of a 100 cap crosses the 80% threshold: the admins are paged.
             await service.run_budget_maintenance(budget_org.id)
@@ -2836,11 +2842,12 @@ async def test_threshold_alerts_once_per_cycle_across_a_settings_edit(
             await service.update_budget_settings(
                 budget_org.id,
                 OrgBudgetSettingsUpdate(
+                    slack_channel='#budget-alerts',
                     thresholds=[
                         OrgBudgetThresholdUpdate(
                             percentage=80, email_enabled=True, slack_enabled=True
                         )
-                    ]
+                    ],
                 ),
             )
             await session.commit()
@@ -2854,8 +2861,9 @@ async def test_threshold_alerts_once_per_cycle_across_a_settings_edit(
 
 @pytest.mark.asyncio
 async def test_threshold_added_mid_cycle_alerts_once_for_spend_already_past_it(
-    async_session_maker, budget_org
+    async_session_maker, budget_org, monkeypatch
 ):
+    monkeypatch.setenv('SMTP_HOST', 'smtp.example.invalid')
     # Adding a threshold below the current spend pages the admins for it right away,
     # once -- without re-arming the thresholds that already fired this cycle.
     cycle_start = datetime.now(UTC)

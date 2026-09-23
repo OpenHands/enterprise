@@ -6,7 +6,7 @@ on:
       litellm_image:
         description: Exact LiteLLM image for the candidate
         required: true
-        default: docker.litellm.ai/berriai/litellm:v1.94.0
+        default: ghcr.io/berriai/litellm-database:1.100.1@sha256:fc44cf7f72786e636dc4dc1032b4e431818abfec9d54b8e04284fdea7ef03e2a
         type: string
 
 permissions:
