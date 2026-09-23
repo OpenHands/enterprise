@@ -48,13 +48,12 @@ uv run scripts/e2b/build_template.py
 
 The script generates an init key, bakes it into the template as
 `OH_SECRET_KEY`, and prints it at the end as `E2B_INIT_API_KEY=...`. **That
-value must be given to the app server**, either as `E2B_INIT_API_KEY` or as
-`OH_SANDBOX_SPEC_SPECS_0_INIT_API_KEY`. The two are one key seen from two
-sides: the template boots its agent server holding it, and the app server has
-to present the same value to claim a sandbox. Without it `start_sandbox` fails
-before creating anything; with the wrong value the agent server answers `POST
-/api/init` with a 401. Pass `--init-api-key` to rebuild a template without
-rotating its key.
+value must be given to the app server** as `E2B_INIT_API_KEY`. The two are one
+key seen from two sides: the template boots its agent server holding it, and
+the app server has to present the same value to claim a sandbox. Without it
+`start_sandbox` fails before creating anything; with the wrong value the agent
+server answers `POST /api/init` with a 401. Pass `--init-api-key` to rebuild a
+template without rotating its key.
 
 The template is built with 2 vCPU and 2048 MB, which is what this image has
 been exercised at. `--cpu-count` and `--memory-mb` change that, but a cluster
