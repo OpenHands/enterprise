@@ -152,6 +152,17 @@ export function Budgets() {
 
   const currentSpend = budgetData?.current_spend ?? null;
   const percentage = budgetData?.current_spend_percentage ?? null;
+  // LiteLLM caps cumulative spend, so the desired team cap is
+  // cycle_start_spend + monthly_limit (see _desired_team_budget). Recover the
+  // baseline for the helper text; the API does not expose it directly.
+  const cycleStartSpend =
+    budgetData?.desired_team_max_budget != null &&
+    budgetData.monthly_limit != null
+      ? Math.max(
+          budgetData.desired_team_max_budget - budgetData.monthly_limit,
+          0,
+        )
+      : null;
   const cycleLabel = budgetData?.cycle_start_at
     ? new Date(budgetData.cycle_start_at).toLocaleDateString("en-US", {
         month: "long",
@@ -387,6 +398,7 @@ export function Budgets() {
           reconciliationError={budgetData?.reconciliation_error ?? null}
           desiredTeamMaxBudget={budgetData?.desired_team_max_budget ?? null}
           appliedTeamMaxBudget={budgetData?.applied_team_max_budget ?? null}
+          cycleStartSpend={cycleStartSpend}
           unmappedSpend={budgetData?.unmapped_spend ?? null}
           unmappedMemberCount={budgetData?.unmapped_member_count ?? null}
           monthlyLimit={monthlyLimit}

@@ -30751,5 +30751,39 @@
     "de": "Ihr Budget kann derzeit nicht geladen werden.",
     "uk": "Зараз не вдається завантажити ваш бюджет.",
     "ca": "No es pot carregar el teu pressupost ara mateix."
+  },
+  "SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND": {
+    "en": "LiteLLM enforces caps against cumulative spend, so the {{cap}} team cap includes the {{priorSpend}} already recorded before this cycle started. The spend and percentage below count only this cycle.",
+    "ja": "LiteLLM は累積支出に対して上限を適用するため、チーム上限 {{cap}} には、このサイクル開始前に既に記録されていた {{priorSpend}} が含まれています。下記の支出と割合は、このサイクル分のみを集計しています。",
+    "zh-CN": "LiteLLM 按累计支出执行上限,因此 {{cap}} 的团队上限包含了本周期开始前已记录的 {{priorSpend}}。下方的支出和百分比仅统计本周期。",
+    "zh-TW": "LiteLLM 依累計支出執行上限,因此 {{cap}} 的團隊上限包含了本週期開始前已記錄的 {{priorSpend}}。下方的支出與百分比僅計算本週期。",
+    "ko-KR": "LiteLLM은 누적 지출을 기준으로 한도를 적용하므로 팀 한도 {{cap}}에는 이 주기가 시작되기 전에 이미 기록된 {{priorSpend}}이(가) 포함되어 있습니다. 아래의 지출과 비율은 이 주기만 집계합니다.",
+    "no": "LiteLLM håndhever tak mot samlet forbruk, så teamtaket på {{cap}} inkluderer {{priorSpend}} som allerede var registrert før denne syklusen startet. Forbruket og prosentandelen nedenfor teller bare denne syklusen.",
+    "it": "LiteLLM applica i limiti alla spesa cumulativa, quindi il limite del team di {{cap}} include i {{priorSpend}} già registrati prima dell'inizio di questo ciclo. La spesa e la percentuale qui sotto conteggiano solo questo ciclo.",
+    "pt": "O LiteLLM aplica os limites sobre o gasto acumulado, por isso o limite da equipe de {{cap}} inclui os {{priorSpend}} já registrados antes do início deste ciclo. O gasto e a porcentagem abaixo contam apenas este ciclo.",
+    "es": "LiteLLM aplica los límites sobre el gasto acumulado, por lo que el límite del equipo de {{cap}} incluye los {{priorSpend}} ya registrados antes de que empezara este ciclo. El gasto y el porcentaje de abajo solo cuentan este ciclo.",
+    "ar": "يطبّق LiteLLM الحدود على الإنفاق التراكمي، لذا يتضمن حد الفريق {{cap}} مبلغ {{priorSpend}} الذي سُجّل قبل بداية هذه الدورة. الإنفاق والنسبة المئوية أدناه يحسبان هذه الدورة فقط.",
+    "fr": "LiteLLM applique les plafonds sur les dépenses cumulées : le plafond d'équipe de {{cap}} inclut donc les {{priorSpend}} déjà enregistrés avant le début de ce cycle. Les dépenses et le pourcentage ci-dessous ne comptent que ce cycle.",
+    "tr": "LiteLLM üst sınırları kümülatif harcamaya göre uygular; bu nedenle {{cap}} tutarındaki ekip üst sınırı, bu dönem başlamadan önce kaydedilmiş {{priorSpend}} tutarını içerir. Aşağıdaki harcama ve yüzde yalnızca bu dönemi kapsar.",
+    "de": "LiteLLM setzt Obergrenzen gegen die kumulierten Ausgaben durch. Die Team-Obergrenze von {{cap}} enthält daher die {{priorSpend}}, die bereits vor Beginn dieses Zyklus erfasst waren. Die Ausgaben und der Prozentsatz unten zählen nur diesen Zyklus.",
+    "uk": "LiteLLM застосовує ліміти до сукупних витрат, тому ліміт команди {{cap}} включає {{priorSpend}}, які вже були зафіксовані до початку цього циклу. Витрати й відсоток нижче враховують лише цей цикл.",
+    "ca": "LiteLLM aplica els límits sobre la despesa acumulada, de manera que el límit de l'equip de {{cap}} inclou els {{priorSpend}} ja registrats abans que comencés aquest cicle. La despesa i el percentatge de sota només compten aquest cicle."
+  },
+  "SETTINGS$BUDGETS_TEAM_CAP_HELPER": {
+    "en": "LiteLLM enforces caps against cumulative spend, so the team cap includes any spend already recorded before this cycle started. The spend and percentage below count only this cycle.",
+    "ja": "LiteLLM は累積支出に対して上限を適用するため、チーム上限には、このサイクル開始前に既に記録されていた支出が含まれます。下記の支出と割合は、このサイクル分のみを集計しています。",
+    "zh-CN": "LiteLLM 按累计支出执行上限,因此团队上限包含本周期开始前已记录的任何支出。下方的支出和百分比仅统计本周期。",
+    "zh-TW": "LiteLLM 依累計支出執行上限,因此團隊上限包含本週期開始前已記錄的任何支出。下方的支出與百分比僅計算本週期。",
+    "ko-KR": "LiteLLM은 누적 지출을 기준으로 한도를 적용하므로 팀 한도에는 이 주기가 시작되기 전에 이미 기록된 지출이 포함됩니다. 아래의 지출과 비율은 이 주기만 집계합니다.",
+    "no": "LiteLLM håndhever tak mot samlet forbruk, så teamtaket inkluderer eventuelt forbruk som allerede var registrert før denne syklusen startet. Forbruket og prosentandelen nedenfor teller bare denne syklusen.",
+    "it": "LiteLLM applica i limiti alla spesa cumulativa, quindi il limite del team include l'eventuale spesa già registrata prima dell'inizio di questo ciclo. La spesa e la percentuale qui sotto conteggiano solo questo ciclo.",
+    "pt": "O LiteLLM aplica os limites sobre o gasto acumulado, por isso o limite da equipe inclui qualquer gasto já registrado antes do início deste ciclo. O gasto e a porcentagem abaixo contam apenas este ciclo.",
+    "es": "LiteLLM aplica los límites sobre el gasto acumulado, por lo que el límite del equipo incluye cualquier gasto ya registrado antes de que empezara este ciclo. El gasto y el porcentaje de abajo solo cuentan este ciclo.",
+    "ar": "يطبّق LiteLLM الحدود على الإنفاق التراكمي، لذا يتضمن حد الفريق أي إنفاق سُجّل قبل بداية هذه الدورة. الإنفاق والنسبة المئوية أدناه يحسبان هذه الدورة فقط.",
+    "fr": "LiteLLM applique les plafonds sur les dépenses cumulées : le plafond d'équipe inclut donc toute dépense déjà enregistrée avant le début de ce cycle. Les dépenses et le pourcentage ci-dessous ne comptent que ce cycle.",
+    "tr": "LiteLLM üst sınırları kümülatif harcamaya göre uygular; bu nedenle ekip üst sınırı, bu dönem başlamadan önce kaydedilmiş harcamaları içerir. Aşağıdaki harcama ve yüzde yalnızca bu dönemi kapsar.",
+    "de": "LiteLLM setzt Obergrenzen gegen die kumulierten Ausgaben durch. Die Team-Obergrenze enthält daher alle Ausgaben, die bereits vor Beginn dieses Zyklus erfasst waren. Die Ausgaben und der Prozentsatz unten zählen nur diesen Zyklus.",
+    "uk": "LiteLLM застосовує ліміти до сукупних витрат, тому ліміт команди включає будь-які витрати, зафіксовані до початку цього циклу. Витрати й відсоток нижче враховують лише цей цикл.",
+    "ca": "LiteLLM aplica els límits sobre la despesa acumulada, de manera que el límit de l'equip inclou qualsevol despesa ja registrada abans que comencés aquest cicle. La despesa i el percentatge de sota només compten aquest cicle."
   }
 }

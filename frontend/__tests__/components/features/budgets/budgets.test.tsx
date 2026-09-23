@@ -15,6 +15,25 @@ vi.mock("#/api/organization-service/organization-service.api", () => ({
   },
 }));
 
+vi.mock("react-i18next", async () => {
+  const actual =
+    await vi.importActual<typeof import("react-i18next")>("react-i18next");
+  return {
+    ...actual,
+    useTranslation: () => ({
+      t: (key: string, params?: Record<string, string>) => {
+        const translations: Record<string, string> = {
+          SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND: `The ${params?.cap} team cap includes the ${params?.priorSpend} already recorded before this cycle started.`,
+          SETTINGS$BUDGETS_TEAM_CAP_HELPER:
+            "The team cap includes any spend already recorded before this cycle started.",
+        };
+        return translations[key] || key;
+      },
+      i18n: { language: "en", exists: () => false },
+    }),
+  };
+});
+
 vi.mock("#/hooks/query/use-config", () => ({
   useConfig: () => ({
     data: {
@@ -239,6 +258,51 @@ describe("Budgets", () => {
       "member cycle baseline is unavailable",
     );
     expect(screen.getByText("$200.00")).toBeInTheDocument();
+  });
+
+  it("explains a team cap that includes spend recorded before the cycle started", async () => {
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      desired_team_max_budget: 1770,
+      applied_team_max_budget: 1770,
+    });
+
+    await renderBudgets();
+
+    expect(
+      screen.getByText(
+        "The $1,770 team cap includes the $770.00 already recorded before this cycle started.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("explains the team cap without an amount when it equals the monthly limit", async () => {
+    await renderBudgets();
+
+    expect(
+      screen.getByText(
+        "The team cap includes any spend already recorded before this cycle started.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/team cap includes the \$/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("omits the team cap explanation when no organization budget is enforced", async () => {
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      enabled: false,
+      reconciliation_state: "inactive",
+      desired_team_max_budget: null,
+      applied_team_max_budget: null,
+    });
+
+    await renderBudgets();
+
+    expect(
+      screen.queryByText(/already recorded before this cycle started/),
+    ).not.toBeInTheDocument();
   });
 
   it("refetches budget state after a failed settings write", async () => {
