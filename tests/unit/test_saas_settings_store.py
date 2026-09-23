@@ -497,6 +497,48 @@ async def test_ensure_api_key_generates_new_key_when_verification_fails():
         )
 
 
+@pytest.mark.asyncio
+async def test_ensure_api_key_handles_none_wrapped_fallback_key():
+    """A ``SecretStr`` wrapping a Python ``None`` (a member row created with
+    ``llm_api_key=None`` -- e.g. a user provisioned while ENABLE_LITELLM was
+    off, before the ``OrgMember.llm_api_key`` setter normalized None to '')
+    must not crash ``_ensure_api_key``: it must be treated exactly like "no
+    key" and a fresh managed key generated, not raise ``TypeError`` from
+    pydantic's ``SecretStr.__len__``/``__bool__`` on a bare ``bool()`` check
+    (regression: enterprise#474 -- 'Something went wrong storing settings').
+    """
+    from storage.lite_llm_manager import get_openhands_cloud_key_alias
+
+    store = SaasSettingsStore('test-user-id-123')
+    new_key = 'sk-new-key'
+    item = _make_settings(model='openhands/gpt-4')
+    expected_alias = get_openhands_cloud_key_alias('test-user-id-123', 'org-123')
+
+    with (
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
+            new_callable=AsyncMock,
+        ) as mock_delete,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.generate_key',
+            new_callable=AsyncMock,
+            return_value=new_key,
+        ) as mock_generate,
+    ):
+        await store._ensure_api_key(
+            item,
+            'org-123',
+            openhands_type=True,
+            fallback_api_key=SecretStr(None),  # type: ignore[arg-type]
+        )
+
+    assert _secret_value(item, 'llm.api_key') == new_key
+    mock_delete.assert_awaited_once_with(key_alias=expected_alias)
+    mock_generate.assert_awaited_once_with(
+        'test-user-id-123', 'org-123', expected_alias, {'type': 'openhands'}
+    )
+
+
 @pytest.fixture
 def org_with_multiple_members_fixture(session_maker):
     """Set up an organization with multiple members for testing LLM settings propagation."""

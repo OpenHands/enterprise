@@ -10,7 +10,11 @@ from pydantic import SecretStr
 from sqlalchemy import select, text
 from sqlalchemy.orm import joinedload
 
-from openhands.app_server.settings.llm_profiles import LLMProfiles, resolve_profile_llm
+from openhands.app_server.settings.llm_profiles import (
+    LLMProfiles,
+    has_real_api_key,
+    resolve_profile_llm,
+)
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
@@ -957,17 +961,31 @@ class SaasSettingsStore(SettingsStore):
         First checks if an existing key exists for the user and verifies it
         is valid in LiteLLM. If valid, reuses it. Otherwise, generates a new key.
         """
-        llm_api_key = item.agent_settings.llm.api_key or fallback_api_key
+        # A ``SecretStr`` can wrap a Python ``None`` (e.g. a pre-existing
+        # member row created before an LLM key was ever assigned, such as a
+        # user provisioned while ENABLE_LITELLM was off). ``bool()``/``len()``
+        # on that value raises inside pydantic rather than reporting "empty",
+        # so route both the settings value and the fallback through
+        # ``has_real_api_key`` -- the same "is this actually set" check
+        # ``llm_api_key_is_set``/``llm_profiles`` already use -- instead of a
+        # bare truthiness check.
+        item_api_key = (
+            item.agent_settings.llm.api_key
+            if has_real_api_key(item.agent_settings.llm.api_key)
+            else None
+        )
+        llm_api_key = item_api_key or (
+            fallback_api_key if has_real_api_key(fallback_api_key) else None
+        )
         logger.info(
             'saas_settings_store:ensure_api_key:evaluate',
             extra={
                 'user_id': self.user_id,
                 'org_id': org_id,
                 'openhands_type': openhands_type,
-                'has_api_key': bool(llm_api_key),
-                'used_fallback_api_key': bool(
-                    fallback_api_key and not item.agent_settings.llm.api_key
-                ),
+                'has_api_key': llm_api_key is not None,
+                'used_fallback_api_key': item_api_key is None
+                and llm_api_key is not None,
             },
         )
 
