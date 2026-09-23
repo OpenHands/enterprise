@@ -220,6 +220,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
         enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),
+        enable_litellm=os.getenv('ENABLE_LITELLM', 'true') == 'true',
     )
 
 
@@ -331,14 +332,17 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         from openhands.app_server.config import get_global_config
 
         config = get_global_config()
-        # enable_billing is a registered default flag (ENABLE_BILLING): the
-        # database overlay wins, the env var baked into self.feature_flags at
-        # init is the fallback.
+        # enable_billing and enable_litellm are registered default flags
+        # (ENABLE_BILLING / ENABLE_LITELLM): the database overlay wins, the
+        # env var baked into self.feature_flags at init is the fallback.
         feature_flags = self.feature_flags.model_copy(
             update={
                 'enable_billing': await _resolve_flag(
                     'ENABLE_BILLING', self.feature_flags.enable_billing
-                )
+                ),
+                'enable_litellm': await _resolve_flag(
+                    'ENABLE_LITELLM', self.feature_flags.enable_litellm
+                ),
             }
         )
         result = WebClientConfig(

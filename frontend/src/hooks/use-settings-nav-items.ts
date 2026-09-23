@@ -10,6 +10,7 @@ import { OrganizationUserRole } from "#/types/org";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
 import {
   ADMIN_ONLY_SETTINGS_PATHS,
+  isLiteLlmOnlyNavItem,
   isSettingsPageHidden,
 } from "#/utils/settings-utils";
 import { useMe } from "./query/use-me";
@@ -87,6 +88,12 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
   // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));
+
+  // Budgets/"Your budget" stay reachable (they render a "please enable
+  // LiteLLM" placeholder) but are removed from the nav when disabled.
+  if (featureFlags?.enable_litellm === false) {
+    items = items.filter((item) => !isLiteLlmOnlyNavItem(item.to));
+  }
 
   // The quota page is only useful when a daily limit is configured.
   if (isSaasMode && quota?.daily_limit === null) {
