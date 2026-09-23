@@ -8,6 +8,7 @@ import os
 import ssl
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 
 import docker
 import httpx
@@ -55,7 +56,7 @@ def test_enterprise_remains_ready_when_automation_is_unavailable(
     client, fault, record_property
 ):
     project = os.environ['REAL_STACK_PROJECT']
-    with docker.from_env() as engine:
+    with closing(docker.from_env()) as engine:
         containers = engine.containers.list(
             filters={
                 'label': [
