@@ -3040,6 +3040,192 @@ async def test_enabling_budget_replaces_the_cycle_baseline_rows(
 
 
 @pytest.mark.asyncio
+@freeze_time('2026-09-10')
+@pytest.mark.parametrize(
+    'old_day,new_day,cycle_start,expected_end',
+    [
+        (1, 15, datetime(2026, 9, 1, tzinfo=UTC), datetime(2026, 9, 15, tzinfo=UTC)),
+        (15, 1, datetime(2026, 8, 15, tzinfo=UTC), datetime(2026, 10, 1, tzinfo=UTC)),
+    ],
+)
+async def test_reset_day_change_keeps_counted_spend_and_moves_the_cycle_end(
+    async_session_maker, budget_org, old_day, new_day, cycle_start, expected_end
+):
+    # Date edits preserve organization/member baselines and alert latches.
+    user_id = str(uuid4())
+    async with async_session_maker() as session:
+        session.add_all(
+            [
+                OrgBudgetSettings(
+                    org_id=budget_org.id,
+                    enabled=True,
+                    reset_day=old_day,
+                    monthly_limit=100.0,
+                    cycle_start_at=cycle_start,
+                    cycle_start_spend=40.0,
+                    user_cycle_start_spend={user_id: 4.0},
+                ),
+                OrgBudgetThreshold(
+                    org_id=budget_org.id,
+                    percentage=80,
+                    email_enabled=True,
+                    slack_enabled=False,
+                    last_triggered_at=cycle_start,
+                    last_triggered_cycle_start=cycle_start,
+                ),
+            ]
+        )
+        await session.commit()
+        await OrgBudgetStore(session).record_cycle_baselines(
+            budget_org.id,
+            cycle_start,
+            {user_id: 4.0},
+            source=OrgBudgetCycleBaseline.SOURCE_LIVE_ROLLOVER,
+            observed_at=cycle_start,
+        )
+        await session.commit()
+
+        with (
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+                AsyncMock(
+                    return_value=_financial_data(
+                        team_spend=70.0,
+                        team_max_budget=140.0,
+                        members={user_id: (9.0, 104.0, False)},
+                    )
+                ),
+            ),
+            patch(
+                'server.services.org_budget_service.LiteLlmManager.update_team',
+                AsyncMock(),
+            ) as update_team,
+        ):
+            result = await OrgBudgetService(session).update_budget_settings(
+                budget_org.id, OrgBudgetSettingsUpdate(reset_day=new_day)
+            )
+        await session.commit()
+
+        settings = result['settings']
+        rows = await _baseline_rows(session, budget_org.id, cycle_start)
+        threshold = (
+            await session.execute(
+                select(OrgBudgetThreshold).where(
+                    OrgBudgetThreshold.org_id == budget_org.id
+                )
+            )
+        ).scalar_one()
+
+    assert settings.reset_day == new_day
+    assert result['current_spend'] == 30.0
+    assert result['cycle'].start_at.replace(tzinfo=UTC) == cycle_start
+    assert result['cycle'].end_at == expected_end
+    assert settings.next_reset_at == expected_end
+    assert settings.cycle_start_spend == 40.0
+    assert settings.user_cycle_start_spend == {user_id: 4.0}
+    assert rows[user_id][:2] == (4.0, 'live_rollover')
+    assert threshold.last_triggered_cycle_start.replace(tzinfo=UTC) == cycle_start
+    update_team.assert_awaited_once_with(
+        str(budget_org.id), team_alias=None, max_budget=140.0
+    )
+    assert result['reconciliation_state'] == 'healthy'
+
+
+@pytest.mark.asyncio
+async def test_reset_day_change_does_not_need_fresh_litellm_spend(
+    async_session_maker, budget_org
+):
+    # A reset-day edit takes no new baseline, so unlike enabling a budget it does
+    # not need a fresh LiteLLM read: it saves like a monthly-limit edit, and a
+    # LiteLLM outage surfaces through reconciliation rather than a 503 before the
+    # save.
+    cycle_start = datetime(2026, 9, 1, tzinfo=UTC)
+    async with async_session_maker() as session:
+        session.add(
+            OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=True,
+                reset_day=1,
+                monthly_limit=100.0,
+                cycle_start_at=cycle_start,
+                cycle_start_spend=77.0,
+            )
+        )
+        await session.commit()
+
+        with patch(
+            'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+            AsyncMock(side_effect=TimeoutError('timed out')),
+        ):
+            result = await OrgBudgetService(session).update_budget_settings(
+                budget_org.id, OrgBudgetSettingsUpdate(reset_day=15)
+            )
+        await session.commit()
+        settings = await session.scalar(
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == budget_org.id)
+        )
+
+    assert settings is not None
+    assert settings.reset_day == 15
+    assert settings.cycle_start_at.replace(tzinfo=UTC) == cycle_start
+    assert settings.cycle_start_spend == 77.0
+    assert result['reconciliation_state'] == 'failed'
+
+
+@pytest.mark.asyncio
+@freeze_time('2026-09-10')
+async def test_reset_day_change_does_not_roll_at_the_old_boundary(
+    async_session_maker, budget_org
+):
+    # The selected day already passed this month: wait until next month.
+    cycle_start = datetime(2026, 8, 15, tzinfo=UTC)
+    async with async_session_maker() as session:
+        session.add(
+            OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=True,
+                reset_day=15,
+                monthly_limit=100.0,
+                cycle_start_at=cycle_start,
+                cycle_start_spend=10.0,
+            )
+        )
+        await session.commit()
+
+        service = OrgBudgetService(session)
+        snapshot = _snapshot(team_spend=30.0)
+        with (
+            patch.object(
+                service,
+                '_get_financial_snapshot',
+                AsyncMock(
+                    return_value=BudgetFinancialSnapshotResult(
+                        snapshot=snapshot, status='live'
+                    )
+                ),
+            ),
+            patch.object(
+                service, '_sync_litellm_budgets', AsyncMock(return_value=snapshot)
+            ),
+        ):
+            edited = await service.update_budget_settings(
+                budget_org.id, OrgBudgetSettingsUpdate(reset_day=1)
+            )
+            await session.commit()
+            rolled = await service.run_budget_maintenance(budget_org.id)
+            await session.commit()
+        settings = edited['settings']
+
+    assert edited['current_spend'] == 20.0
+    assert edited['cycle'].start_at.replace(tzinfo=UTC) == cycle_start
+    assert edited['cycle'].end_at == datetime(2026, 10, 1, tzinfo=UTC)
+    assert rolled['cycle_rolled'] is False
+    assert rolled['cycle_start_at'] == cycle_start
+    assert rolled['current_spend'] == 20.0
+    assert settings.cycle_start_spend == 10.0
+
+
+@pytest.mark.asyncio
 async def test_sync_records_recovered_and_added_baseline_rows(
     async_session_maker, budget_org
 ):
@@ -3366,11 +3552,11 @@ def _patch_stale_first_read(service: OrgBudgetService):
     real_get_settings = service.store.get_settings
     already_read = []
 
-    async def _stale_then_real(org_id):
+    async def _stale_then_real(org_id, **kwargs):
         if not already_read:
             already_read.append(org_id)
             return None
-        return await real_get_settings(org_id)
+        return await real_get_settings(org_id, **kwargs)
 
     return patch.object(
         service.store, 'get_settings', AsyncMock(side_effect=_stale_then_real)

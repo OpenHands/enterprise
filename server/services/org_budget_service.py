@@ -518,7 +518,7 @@ class OrgBudgetService:
                 'skipped': 'personal_org',
             }
 
-        settings = await self._get_or_create_settings(org_id)
+        settings = await self._get_or_create_settings(org_id, for_update=True)
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
         cycle = self._current_cycle(settings)
@@ -552,7 +552,7 @@ class OrgBudgetService:
             }
 
         snapshot = snapshot_result.snapshot
-        next_cycle = _next_cycle_start(settings.cycle_start_at, settings.reset_day)
+        next_cycle = self._current_cycle(settings).end_at
         if datetime.now(UTC) >= next_cycle:
             repair_result = await self._repair_missing_members_for_cycle(
                 org_id, settings, overrides, snapshot
@@ -587,8 +587,7 @@ class OrgBudgetService:
         cycle_rolled = await self._roll_cycle_if_needed(
             settings, thresholds, overrides, snapshot
         )
-        if cycle_rolled:
-            cycle = self._current_cycle(settings)
+        cycle = self._current_cycle(settings)
 
         current_spend = _litellm_cycle_spend(settings, snapshot)
         assert current_spend is not None
@@ -629,14 +628,13 @@ class OrgBudgetService:
         users_status: str | None = None,
     ):
         await self._reject_personal_org(org_id, 'update_budget_settings')
-        settings = await self._get_or_create_settings(org_id)
+        settings = await self._get_or_create_settings(org_id, for_update=True)
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
 
         await self._validate_alert_settings(settings, update_data, thresholds)
 
         fields_set = update_data.model_fields_set
-        reset_day_changed = False
         previous_enabled = settings.enabled
         baseline_snapshot: LiteLlmFinancialSnapshot | None = None
 
@@ -644,9 +642,13 @@ class OrgBudgetService:
             settings.enabled = update_data.enabled
         if 'monthly_limit' in fields_set:
             settings.monthly_limit = update_data.monthly_limit
-        if 'reset_day' in fields_set:
-            reset_day_changed = update_data.reset_day != settings.reset_day
+        if 'reset_day' in fields_set and update_data.reset_day != settings.reset_day:
             settings.reset_day = update_data.reset_day
+            # Keep spend until the next future occurrence, even across maintenance.
+            settings.next_reset_at = _next_cycle_start(
+                _current_cycle_start(datetime.now(UTC), settings.reset_day),
+                settings.reset_day,
+            )
         if 'default_user_monthly_limit' in fields_set:
             settings.default_user_monthly_limit = update_data.default_user_monthly_limit
         if 'slack_channel' in fields_set:
@@ -668,7 +670,7 @@ class OrgBudgetService:
                 detail='monthly_limit is required when budgets are enabled',
             )
 
-        if reset_day_changed or (not previous_enabled and settings.enabled):
+        if not previous_enabled and settings.enabled:
             snapshot_result = await self._get_financial_snapshot(
                 org_id,
                 settings,
@@ -689,6 +691,7 @@ class OrgBudgetService:
             settings.cycle_start_at = _current_cycle_start(
                 datetime.now(UTC), settings.reset_day
             )
+            settings.next_reset_at = None
             settings.cycle_start_spend = baseline_snapshot.team_spend
             settings.user_cycle_start_spend = {
                 user_id: member.spend
@@ -834,8 +837,10 @@ class OrgBudgetService:
             return 'pending'
         return 'healthy' if settings.enabled else 'inactive'
 
-    async def _get_or_create_settings(self, org_id: UUID) -> OrgBudgetSettings:
-        settings = await self.store.get_settings(org_id)
+    async def _get_or_create_settings(
+        self, org_id: UUID, *, for_update: bool = False
+    ) -> OrgBudgetSettings:
+        settings = await self.store.get_settings(org_id, for_update=for_update)
         if settings:
             await self._hydrate_cycle_baselines(settings)
             return settings
@@ -859,7 +864,7 @@ class OrgBudgetService:
             # Finding the winner's committed row depends on READ COMMITTED, where
             # each statement takes a fresh snapshot. Under REPEATABLE READ this
             # session's snapshot predates that commit and the re-read returns None.
-            settings = await self.store.get_settings(org_id)
+            settings = await self.store.get_settings(org_id, for_update=for_update)
             if settings is None:
                 raise
             await self._hydrate_cycle_baselines(settings)
@@ -923,7 +928,9 @@ class OrgBudgetService:
 
     def _current_cycle(self, settings: OrgBudgetSettings) -> BudgetCycle:
         start_at = settings.cycle_start_at
-        end_at = _next_cycle_start(start_at, settings.reset_day)
+        end_at = settings.next_reset_at or _next_cycle_start(
+            start_at, settings.reset_day
+        )
         return BudgetCycle(start_at=start_at, end_at=end_at)
 
     async def _roll_cycle_if_needed(
@@ -948,7 +955,7 @@ class OrgBudgetService:
             await self.store.refresh(settings)
             return False
 
-        next_cycle = _next_cycle_start(settings.cycle_start_at, settings.reset_day)
+        next_cycle = self._current_cycle(settings).end_at
         if now < next_cycle:
             return False
 
@@ -959,6 +966,7 @@ class OrgBudgetService:
         # recovery and renewing the cap each time. Jumping straight to the current
         # period rolls at most once per period, so subsequent runs are no-ops.
         settings.cycle_start_at = _current_cycle_start(now, settings.reset_day)
+        settings.next_reset_at = None
         settings.cycle_start_spend = snapshot.team_spend
         settings.user_cycle_start_spend = {
             user_id: member.spend for user_id, member in snapshot.members.items()
