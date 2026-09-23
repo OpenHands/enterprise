@@ -219,8 +219,6 @@ from your `.env` file automatically. Set breakpoints in your code and press F5.
 
 Available debugger targets:
 - **SaaS Server (port 3030)** -- the SaaS/enterprise server (primary)
-- **SaaS Server (port 3031, clustering)** -- second instance for cluster testing
-- **OSS Server (port 3000)** -- the pure OSS app server
 - **Unit Tests (all)** -- runs the full `./tests/unit` suite
 - **Unit Tests (single file)** -- runs the test file currently open in the editor
 - **Frontend Tests (npm test)** -- runs the frontend vitest suite
@@ -245,9 +243,3 @@ localStorage.removeItem("openhands-onboarded");
 ```
 
 Then hard-refresh (Cmd+Shift+R).
-
-#### Clustered debugging (two servers)
-
-The `launch.json` also includes **"SaaS Server (port 3031, clustering)"** for
-testing clustered functionality. Both configurations load the same `.env` file.
-Run only port 3030 unless you specifically need clustering tests.
