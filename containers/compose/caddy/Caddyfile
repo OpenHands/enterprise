@@ -1,0 +1,23 @@
+{
+  admin localhost:2019
+  auto_https off
+}
+:8443 {
+  tls /certs/cert.pem /certs/key.pem
+  @automation path /api/automation /api/automation/*
+  handle @automation {
+    reverse_proxy automation:8000 {
+      unhealthy_request_count 16
+      stream_close_delay 1m
+      transport http {
+        dial_timeout 2s
+        response_header_timeout 15s
+      }
+    }
+  }
+  handle {
+    reverse_proxy enterprise:3000 {
+      stream_close_delay 1m
+    }
+  }
+}

@@ -1,0 +1,14 @@
+services:
+  proxy:
+    image: caddy@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a2a2fe9d355e
+    restart: unless-stopped
+    cpus: 1
+    mem_limit: 256m
+    ports:
+      - "127.0.0.1:${HTTPS_PORT:-8443}:8443"
+    volumes:
+      - ./caddy:/etc/caddy:ro
+      - ${TLS_CERT_DIR:?Set TLS_CERT_DIR}:/certs:ro
+    networks:
+      default:
+        ipv4_address: ${PROXY_IPV4_ADDRESS:-172.30.44.10}
