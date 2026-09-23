@@ -1,0 +1,171 @@
+# Common real-application stack. Add exactly one proxy overlay.
+# Authentication and execution configuration are required for a complete install;
+# readiness alone does not establish that either workflow works.
+x-enterprise: &enterprise
+  image: ${ENTERPRISE_IMAGE:-ghcr.io/openhands/enterprise-server@sha256:c93b608644b2ea5926009aef2448b39bfee7c864e4d533d0296555241d2a65d2}
+  cpus: 2
+  mem_limit: 2g
+  environment: &enterprise-env
+    NO_SETUP: "true"
+    OH_DEPLOYMENT_MODE: self_hosted
+    # This image validates a nonempty key even though self_hosted disables telemetry.
+    POSTHOG_CLIENT_KEY: disabled-self-hosted
+    DB_HOST: enterprise-db
+    DB_NAME: enterprise
+    DB_USER: enterprise
+    DB_PASS: ${ENTERPRISE_DB_PASSWORD:?Set ENTERPRISE_DB_PASSWORD}
+    DB_SSL_MODE: disable
+    REDIS_HOST: redis
+    WEB_HOST: ${PUBLIC_HOST:-localhost:8443}
+    PERMITTED_CORS_ORIGINS: https://${PUBLIC_HOST:-localhost:8443}
+    OH_PERSISTENCE_DIR: /data
+    FILE_STORE_PATH: /data
+    AUTOMATION_SERVICE_URL: http://automation:8000/api/automation
+    AUTOMATIONS_SERVICE_KEY: ${AUTOMATIONS_SERVICE_KEY:-}
+    AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-}
+    KEYCLOAK_SERVER_URL: ${KEYCLOAK_SERVER_URL:-}
+    KEYCLOAK_SERVER_URL_EXT: ${KEYCLOAK_SERVER_URL_EXT:-}
+    KEYCLOAK_REALM_NAME: ${KEYCLOAK_REALM_NAME:-}
+    KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-}
+    KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
+    KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-}
+    AUTH_URL: ${KEYCLOAK_SERVER_URL_EXT:-}
+    ENABLE_ENTERPRISE_SSO: "true"
+    ENABLE_BILLING: "false"
+    REQUIRE_PAYMENT: "false"
+    FORWARDED_ALLOW_IPS: ${PROXY_TRUSTED_IPS:-127.0.0.1}
+    DD_TRACE_ENABLED: "false"
+  volumes:
+    - enterprise-data:/data
+x-automation: &automation
+  image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation@sha256:b26a5b1badf75e4dcc5cc73e61d69735095e6c7ce4bc2ad14467471e6cccc861}
+  # The pinned published image has no ARM64 manifest. Functional tests on ARM
+  # use emulation and must not be reported as native performance measurements.
+  platform: ${AUTOMATION_PLATFORM:-linux/amd64}
+  cpus: 1
+  mem_limit: 1g
+  environment:
+    AUTOMATION_DB_HOST: automation-db
+    AUTOMATION_DB_NAME: automation
+    AUTOMATION_DB_USER: automation
+    AUTOMATION_DB_PASS: ${AUTOMATION_DB_PASSWORD:?Set AUTOMATION_DB_PASSWORD}
+    AUTOMATION_DB_SSL_MODE: disable
+    AUTOMATION_OPENHANDS_API_BASE_URL: http://enterprise:3000
+    AUTOMATION_BASE_URL: https://${PUBLIC_HOST:-localhost:8443}
+    AUTOMATION_SERVICE_KEY: ${AUTOMATIONS_SERVICE_KEY:-}
+    AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-}
+    AUTOMATION_KV_SECRET: ${AUTOMATION_KV_SECRET:-}
+    FILE_STORE: local
+    LOCAL_STORAGE_PATH: /data/storage
+    AUTOMATION_WORKSPACE_BASE: /data/workspace
+    FORWARDED_ALLOW_IPS: ${PROXY_TRUSTED_IPS:-127.0.0.1}
+    DD_TRACE_ENABLED: "false"
+    DD_INSTRUMENTATION_TELEMETRY_ENABLED: "false"
+  volumes:
+    - automation-data:/data
+services:
+  storage-init:
+    image: alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    user: "0:0"
+    cpus: 0.25
+    mem_limit: 64m
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    command: [sh, -c, 'chown 42420 /enterprise /automation']
+    volumes:
+      - enterprise-data:/enterprise
+      - automation-data:/automation
+  enterprise-db:
+    image: postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+    cpus: 1
+    mem_limit: 512m
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: enterprise
+      POSTGRES_USER: enterprise
+      POSTGRES_PASSWORD: ${ENTERPRISE_DB_PASSWORD:?Set ENTERPRISE_DB_PASSWORD}
+    volumes:
+      - enterprise-db:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U enterprise -d enterprise']
+      interval: 3s
+      timeout: 2s
+      retries: 30
+  automation-db:
+    image: postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+    cpus: 0.5
+    mem_limit: 512m
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: automation
+      POSTGRES_USER: automation
+      POSTGRES_PASSWORD: ${AUTOMATION_DB_PASSWORD:?Set AUTOMATION_DB_PASSWORD}
+    volumes:
+      - automation-db:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U automation -d automation']
+      interval: 3s
+      timeout: 2s
+      retries: 30
+  redis:
+    image: redis@sha256:c6eabf748fc7a61dbb5a705c78bcf3d6377b1127a97d0ce965c11c44ba46896f
+    cpus: 0.5
+    mem_limit: 256m
+    restart: unless-stopped
+    command: [redis-server, --maxmemory, 192mb, --maxmemory-policy, noeviction]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+  enterprise-migrate:
+    <<: *enterprise
+    command: [alembic, upgrade, head]
+    depends_on:
+      enterprise-db:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+  automation-migrate:
+    <<: *automation
+    command: [alembic, upgrade, head]
+    depends_on:
+      automation-db:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+  enterprise:
+    <<: *enterprise
+    restart: unless-stopped
+    command: [uvicorn, 'saas_server:app', --host, 0.0.0.0, --port, '3000', --proxy-headers]
+    depends_on:
+      enterprise-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 30s
+  automation:
+    <<: *automation
+    restart: unless-stopped
+    command: [uvicorn, 'openhands.automation.app:app', --host, 0.0.0.0, --port, '8000', --proxy-headers]
+    depends_on:
+      automation-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 30s
+volumes:
+  enterprise-data:
+  automation-data:
+  enterprise-db:
+  automation-db:
