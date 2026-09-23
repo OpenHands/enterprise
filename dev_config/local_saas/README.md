@@ -176,10 +176,13 @@ cp .env.template .env
 
 Edit `.env` and fill in the real values for secrets only:
 - `KEYCLOAK_CLIENT_SECRET`, `KEYCLOAK_ADMIN_PASSWORD` -- from staging Keycloak
-- `LITE_LLM_API_KEY` -- your LLM proxy API key
+- `LITE_LLM_API_KEY`, `LITE_LLM_TEAM_ID` -- LLM proxy credentials
 - `SANDBOX_API_KEY` -- staging remote runtime API key
+- `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` -- GitHub App
+- `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET` -- Stripe billing
+- `POSTHOG_CLIENT_KEY` -- PostHog analytics
+- `TAVILY_API_KEY` -- MCP search engine
 - `DB_PASS` -- local PostgreSQL password (default: `postgres`)
-- GitHub App credentials (optional -- only if testing GitHub integration)
 
 All non-sensitive config (hostnames, ports, paths, feature flags) is baked
 into `.vscode/launch.json` inline via the `env` block, which overrides values
