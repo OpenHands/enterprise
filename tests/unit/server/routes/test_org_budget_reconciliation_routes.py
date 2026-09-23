@@ -32,6 +32,9 @@ def _budget_state(reconciliation_state: str) -> dict:
     )
     return {
         'settings': settings,
+        'email_alerts_available': False,
+        'slack_integration_configured': False,
+        'slack_workspace_connected': False,
         'thresholds': [],
         'cycle': SimpleNamespace(start_at=now, end_at=now + timedelta(days=30)),
         'current_spend': 2.29,

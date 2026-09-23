@@ -47,8 +47,10 @@ export function Budgets() {
   });
 
   const emailIntegrationEnabled = Boolean(budgetData?.email_alerts_available);
-  const slackIntegrationEnabled = Boolean(budgetData?.slack_alerts_enabled);
-  const slackConnected = Boolean(budgetData?.slack_alerts_available);
+  const slackIntegrationEnabled = Boolean(
+    budgetData?.slack_integration_configured,
+  );
+  const slackConnected = Boolean(budgetData?.slack_workspace_connected);
 
   useEffect(() => {
     setUsersPage(1);
@@ -197,8 +199,8 @@ export function Budgets() {
         ? {
             thresholds: thresholds.map((threshold) => ({
               percentage: threshold.percentage,
-              email_enabled: emailIntegrationEnabled && threshold.email_enabled,
-              slack_enabled: slackConnected && threshold.slack_enabled,
+              email_enabled: threshold.email_enabled,
+              slack_enabled: threshold.slack_enabled,
             })),
           }
         : {}),

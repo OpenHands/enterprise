@@ -47,8 +47,8 @@ vi.mock("#/hooks/use-debounce", () => ({
 
 const budgetResponse = {
   email_alerts_available: true,
-  slack_alerts_enabled: true,
-  slack_alerts_available: true,
+  slack_integration_configured: true,
+  slack_workspace_connected: true,
   enabled: true,
   monthly_limit: 1000,
   litellm_last_sync_at: "2024-01-15T12:00:00Z",
@@ -142,8 +142,8 @@ describe("Budgets", () => {
       vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
         ...budgetResponse,
         email_alerts_available: email,
-        slack_alerts_enabled: slack,
-        slack_alerts_available: slack,
+        slack_integration_configured: slack,
+        slack_workspace_connected: slack,
       });
       await renderBudgets();
       expect(Boolean(screen.queryByText("Alert thresholds"))).toBe(
@@ -163,7 +163,7 @@ describe("Budgets", () => {
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
       ...budgetResponse,
       email_alerts_available: false,
-      slack_alerts_available: false,
+      slack_workspace_connected: false,
     });
     await renderBudgets();
     expect(
@@ -184,19 +184,37 @@ describe("Budgets", () => {
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
       ...budgetResponse,
       email_alerts_available: false,
-      slack_alerts_enabled: false,
-      slack_alerts_available: false,
+      slack_integration_configured: false,
+      slack_workspace_connected: false,
     });
     await renderBudgets();
     await user.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() =>
       expect(organizationService.updateBudgetSettings).toHaveBeenCalled(),
     );
-    const payload = vi.mocked(organizationService.updateBudgetSettings).mock
-      .calls[0][0].payload;
+    const [{ payload }] =
+      vi.mocked(organizationService.updateBudgetSettings).mock.calls[0];
     expect(payload).not.toHaveProperty("thresholds");
     expect(payload).not.toHaveProperty("slack_channel");
   });
+
+  it.each(["email", "slack"])(
+    "preserves stored %s flags while that channel is unavailable",
+    async (unavailable) => {
+      const user = userEvent.setup();
+      vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+        ...budgetResponse,
+        email_alerts_available: unavailable !== "email",
+        slack_workspace_connected: unavailable !== "slack",
+        thresholds: [{ id: 1, percentage: 75, email_enabled: true, slack_enabled: true }],
+      });
+      await renderBudgets();
+      await user.click(screen.getByRole("button", { name: "Save changes" }));
+      await waitFor(() => expect(organizationService.updateBudgetSettings).toHaveBeenCalled());
+      const [{ payload }] = vi.mocked(organizationService.updateBudgetSettings).mock.calls[0];
+      expect(payload.thresholds).toEqual([{ percentage: 75, email_enabled: true, slack_enabled: true }]);
+    },
+  );
 
   it("defaults a new threshold to Slack when only Slack is available", async () => {
     const user = userEvent.setup();
