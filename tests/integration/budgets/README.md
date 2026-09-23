@@ -43,8 +43,20 @@ review but no status checks; adding a failing CI job alone does not enforce
 branch protection. The workflow also supports merge-queue checks.
 
 `BUDGET_LITELLM_IMAGE` selects the exact candidate image. The compatibility
-default is `docker.litellm.ai/berriai/litellm:v1.94.0`; a result against that
-image is not a result against another deployed version.
+default matches the Cloud chart's pinned LiteLLM 1.100.1 image.
+`BUDGET_AUTH_CACHE_TTL` defaults to `0`, matching the chart's admission-cache
+setting. Both the native version and this configuration are required for
+immediate same-key recovery after removing an individual limit. Set the image
+and TTL explicitly when reproducing an older deployment; a passing default run
+does not certify that older deployment.
+
+Admission quarantine also requires that configuration: if `/team/update` fails,
+Enterprise falls back to `/team/block`, whose native implementation does not
+invalidate warm authorization caches. The fault probes verify denial before the
+provider, unrelated-organization isolation, unchanged spend, and recovery on the
+same key after reconciliation. Both block endpoints failing remains an explicit
+OHE-3268 known-issue probe; a management API fallback cannot enforce quarantine
+when neither endpoint is reachable.
 
 ## Coverage
 
@@ -86,7 +98,8 @@ $1 per accepted request. Completion IDs remain unique across scenario resets.
 LiteLLM's native batch writer runs at a shortened test interval
 (`proxy_batch_write_at: 1`, plus LiteLLM jitter); tests wait for observed spend
 rather than fabricating counters. Production accounting latency must be checked
-separately on the release candidate. Authentication caches remain enabled.
+separately on the release candidate. Authorization caching is disabled to match the deployment contract; LLM response
+caching is unaffected.
 
 The provider binds the host interface so Linux containers can reach it through
 `host.docker.internal`; the fault proxy stays on loopback. Use an isolated test

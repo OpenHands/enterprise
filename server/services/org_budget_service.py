@@ -16,8 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.services.injector import Injector, InjectorState
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.app_server.utils.slack_config import is_slack_configured
 from server.auth.authorization import RoleName
-from server.routes.org_models import SpendStatus
+from server.routes.org_models import OrgBudgetSettingsUpdate, SpendStatus
 from server.services.smtp_email_service import SMTPEmailService
 from storage.database import sqlstate
 from storage.lite_llm_manager import LiteLlmManager
@@ -26,6 +27,7 @@ from storage.org_budget_cycle_baseline import OrgBudgetCycleBaseline
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_store import OrgBudgetStore
 from storage.org_budget_threshold import OrgBudgetThreshold
+from storage.org_budget_utils import budget_values_match as _budget_values_match
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
@@ -274,12 +276,6 @@ def _member_cap(baseline: float, effective_limit: float) -> float:
     return baseline + max(effective_limit, 0)
 
 
-def _budget_values_match(actual: float | None, expected: float | None) -> bool:
-    if actual is None or expected is None:
-        return actual is expected
-    return abs(actual - expected) <= 1e-6
-
-
 def _budget_sync_readback_errors(
     snapshot: LiteLlmFinancialSnapshot,
     expected_team_budget: float | None,
@@ -485,6 +481,7 @@ class OrgBudgetService:
             snapshot_result,
         )
         return {
+            **await self._alert_availability(settings),
             'settings': settings,
             'thresholds': thresholds,
             'cycle': cycle,
@@ -667,6 +664,8 @@ class OrgBudgetService:
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
 
+        await self._validate_alert_settings(settings, update_data, thresholds)
+
         fields_set = update_data.model_fields_set
         reset_day_changed = False
         previous_enabled = settings.enabled
@@ -677,8 +676,8 @@ class OrgBudgetService:
         if 'monthly_limit' in fields_set:
             settings.monthly_limit = update_data.monthly_limit
         if 'reset_day' in fields_set:
+            reset_day_changed = update_data.reset_day != settings.reset_day
             settings.reset_day = update_data.reset_day
-            reset_day_changed = True
         if 'default_user_monthly_limit' in fields_set:
             settings.default_user_monthly_limit = update_data.default_user_monthly_limit
         if 'slack_channel' in fields_set:
@@ -790,6 +789,7 @@ class OrgBudgetService:
             snapshot_result,
         )
         return {
+            **await self._alert_availability(settings),
             'settings': settings,
             'thresholds': thresholds,
             'cycle': cycle,
@@ -965,12 +965,31 @@ class OrgBudgetService:
         snapshot: LiteLlmFinancialSnapshot,
     ) -> bool:
         now = datetime.now(UTC)
+        org_id = settings.org_id
+        # Lock the row and re-read the anchor. If another run rolled while we were
+        # reading LiteLLM, its snapshot anchors the new cycle -- not our stale one.
+        locked_start = (
+            await self.db_session.execute(
+                select(OrgBudgetSettings.cycle_start_at)
+                .where(OrgBudgetSettings.org_id == org_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_start is not None and locked_start != settings.cycle_start_at:
+            await self.store.refresh(settings)
+            return False
+
         next_cycle = _next_cycle_start(settings.cycle_start_at, settings.reset_day)
         if now < next_cycle:
             return False
 
+        # Settle the anchor at the current period in this single roll. Advancing only
+        # one period per run would leave the anchor behind after a multi-period gap, so
+        # every later maintenance run would roll again and re-anchor cycle_start_spend
+        # to the current cumulative LiteLLM total -- forgiving spend incurred since
+        # recovery and renewing the cap each time. Jumping straight to the current
+        # period rolls at most once per period, so subsequent runs are no-ops.
         settings.cycle_start_at = _current_cycle_start(now, settings.reset_day)
-        org_id = settings.org_id
         settings.cycle_start_spend = snapshot.team_spend
         settings.user_cycle_start_spend = {
             user_id: member.spend for user_id, member in snapshot.members.items()
@@ -1216,6 +1235,7 @@ class OrgBudgetService:
         return rows[offset : offset + users_per_page], total
 
     async def get_user_budget_row(self, org_id: UUID, user_id: UUID) -> dict | None:
+        await self._reject_personal_org(org_id, 'get_user_budget_row')
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         snapshot_result = await self._get_financial_snapshot(
@@ -1346,6 +1366,17 @@ class OrgBudgetService:
                 'org_budget_litellm_admission_block_failed',
                 extra={'org_id': team_id, 'error': str(error)},
             )
+            try:
+                await LiteLlmManager.block_team(team_id)
+            except Exception as fallback_error:
+                error_message = (
+                    f'admission_fallback_failed: {fallback_error}; {error_message}'
+                )
+                logger.error(
+                    'org_budget_litellm_admission_fallback_failed',
+                    extra={'org_id': team_id, 'error': str(fallback_error)},
+                )
+            # Quarantine is not a verified policy; leave reconciliation retryable.
             await self._record_litellm_sync(settings, 'error', error_message[:500])
             return False
 
@@ -1753,18 +1784,10 @@ class OrgBudgetService:
         current_spend: float,
         percentage: float,
     ) -> None:
-        if not SLACK_AVAILABLE:
-            logger.warning('Slack SDK not installed, skipping slack budget alert')
-            return
         if not settings.slack_channel:
             return
-        team_id = await self._resolve_slack_team_id(settings)
-        if not team_id:
-            return
-        result = await self.db_session.execute(
-            select(SlackTeam.bot_access_token).where(SlackTeam.team_id == team_id)
-        )
-        token = result.scalar_one_or_none()
+        team_id = await self._resolve_slack_team_id(settings.slack_team_id)
+        token = await self._get_slack_bot_token(team_id) if team_id else None
         if not token:
             return
 
@@ -1786,9 +1809,81 @@ class OrgBudgetService:
                 extra={'error': str(e), 'team_id': team_id},
             )
 
-    async def _resolve_slack_team_id(self, settings: OrgBudgetSettings) -> str | None:
-        if settings.slack_team_id:
-            return settings.slack_team_id
+    async def _get_slack_bot_token(self, team_id: str | None) -> str | None:
+        if not SLACK_AVAILABLE or not is_slack_configured():
+            return None
+        team_id = await self._resolve_slack_team_id(team_id)
+        if not team_id:
+            return None
+        result = await self.db_session.execute(
+            select(SlackTeam.bot_access_token).where(SlackTeam.team_id == team_id)
+        )
+        return result.scalar_one_or_none() or None
+
+    async def _alert_availability(self, settings: OrgBudgetSettings) -> dict[str, bool]:
+        return {
+            'email_alerts_available': SMTPEmailService.is_configured(),
+            'slack_integration_configured': SLACK_AVAILABLE and is_slack_configured(),
+            'slack_workspace_connected': bool(
+                await self._get_slack_bot_token(settings.slack_team_id)
+            ),
+        }
+
+    async def _validate_alert_settings(
+        self,
+        settings: OrgBudgetSettings,
+        update_data: OrgBudgetSettingsUpdate,
+        existing: list[OrgBudgetThreshold],
+    ) -> None:
+        thresholds = update_data.thresholds
+        if thresholds is None:
+            return
+        previous = {threshold.percentage: threshold for threshold in existing}
+
+        def activates(channel: str) -> bool:
+            return any(
+                getattr(threshold, channel)
+                and not getattr(previous.get(threshold.percentage), channel, False)
+                for threshold in thresholds
+            )
+
+        def reject(detail: str) -> None:
+            quint_oracle.log(
+                'update_budget_settings',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+                outcome='rejected',
+            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+        if activates('email_enabled') and not SMTPEmailService.is_configured():
+            reject('Email budget alerts require SMTP configuration.')
+        if not any(threshold.slack_enabled for threshold in thresholds):
+            return
+        fields = update_data.model_fields_set
+        team_id = (
+            update_data.slack_team_id
+            if 'slack_team_id' in fields
+            else settings.slack_team_id
+        )
+        channel = (
+            update_data.slack_channel
+            if 'slack_channel' in fields
+            else settings.slack_channel
+        )
+        destination_changed = (
+            team_id != settings.slack_team_id or channel != settings.slack_channel
+        )
+        if not activates('slack_enabled') and not destination_changed:
+            return
+        if not await self._get_slack_bot_token(team_id):
+            reject('Slack budget alerts require a connected Slack integration.')
+        if not channel:
+            reject('Select a Slack channel for budget alerts.')
+
+    async def _resolve_slack_team_id(self, team_id: str | None) -> str | None:
+        if team_id:
+            return team_id
         result = await self.db_session.execute(select(SlackTeam.team_id))
         team_ids = [row.team_id for row in result]
         if len(team_ids) == 1:

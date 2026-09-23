@@ -1,25 +1,6 @@
 /* eslint-disable i18next/no-literal-string */
 import React from "react";
-import { ToggleSwitch } from "#/ui/toggle-switch";
 import { cn } from "#/utils/utils";
-
-export function Toggle({
-  enabled,
-  onChange,
-  label,
-}: {
-  enabled: boolean;
-  onChange: (value: boolean) => void;
-  label: string;
-}) {
-  return (
-    <ToggleSwitch
-      enabled={enabled}
-      label={label}
-      onToggle={() => onChange(!enabled)}
-    />
-  );
-}
 
 export function PillBadge({
   active,
