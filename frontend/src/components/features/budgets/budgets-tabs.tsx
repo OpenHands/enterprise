@@ -1,5 +1,6 @@
 /* eslint-disable i18next/no-literal-string */
 import React from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
   EmailIcon,
@@ -11,11 +12,11 @@ import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
 import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
+import { I18nKey } from "#/i18n/declaration";
 import {
   PillBadge,
   SpendMeter,
   StatusPill,
-  Toggle,
   UserProgressBar,
 } from "./budgets-components";
 import { cn } from "#/utils/utils";
@@ -73,8 +74,6 @@ const STATUS_FILTER_ITEMS = [
 ];
 
 interface OrganizationBudgetTabProps {
-  orgBudgetEnabled: boolean;
-  onToggleOrgBudget: (value: boolean) => void;
   currentSpend: number | null;
   monthlyLimitValue: number | null;
   cycleLabel: string;
@@ -92,6 +91,7 @@ interface OrganizationBudgetTabProps {
   reconciliationError: string | null;
   desiredTeamMaxBudget: number | null;
   appliedTeamMaxBudget: number | null;
+  cycleStartSpend: number | null;
   unmappedSpend: number | null;
   unmappedMemberCount: number | null;
   monthlyLimit: string;
@@ -108,15 +108,12 @@ interface OrganizationBudgetTabProps {
   slackConnected: boolean;
   slackChannel: string;
   onSlackChannelChange: (value: string) => void;
-  onReset: () => void;
   onSave: () => void;
   isSaving: boolean;
   isMonthlyLimitValid: boolean;
 }
 
 export function OrganizationBudgetTab({
-  orgBudgetEnabled,
-  onToggleOrgBudget,
   currentSpend,
   monthlyLimitValue,
   cycleLabel,
@@ -129,6 +126,7 @@ export function OrganizationBudgetTab({
   reconciliationError,
   desiredTeamMaxBudget,
   appliedTeamMaxBudget,
+  cycleStartSpend,
   unmappedSpend,
   unmappedMemberCount,
   monthlyLimit,
@@ -145,11 +143,11 @@ export function OrganizationBudgetTab({
   slackConnected,
   slackChannel,
   onSlackChannelChange,
-  onReset,
   onSave,
   isSaving,
   isMonthlyLimitValid,
 }: OrganizationBudgetTabProps) {
+  const { t } = useTranslation();
   const observedAtLabel = spendObservedAt
     ? new Date(spendObservedAt).toLocaleString()
     : null;
@@ -183,14 +181,6 @@ export function OrganizationBudgetTab({
               ? "Track total spend across your org and get alerted before you hit your cap."
               : "Track total spend across your organization against its monthly cap."}
           </p>
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          <span className="text-sm text-muted">Enable budget</span>
-          <Toggle
-            enabled={orgBudgetEnabled}
-            onChange={onToggleOrgBudget}
-            label="Enable organization budget"
-          />
         </div>
       </div>
 
@@ -236,6 +226,19 @@ export function OrganizationBudgetTab({
           )}
           {reconciliationError ? ` ${reconciliationError}` : ""}
         </div>
+        {desiredTeamMaxBudget !== null && (
+          <p className="mb-4 text-xs text-[var(--oh-muted)]">
+            {cycleStartSpend !== null && cycleStartSpend > 0
+              ? t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND, {
+                  cap: `$${desiredTeamMaxBudget.toLocaleString()}`,
+                  priorSpend: `$${cycleStartSpend.toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}`,
+                })
+              : t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER)}
+          </p>
+        )}
         {syncStatus === "error" && !reconciliationError && (
           <div
             role="alert"
@@ -499,9 +502,6 @@ export function OrganizationBudgetTab({
         >
           Save changes
         </BrandButton>
-        <BrandButton type="button" variant="secondary" onClick={onReset}>
-          Reset
-        </BrandButton>
       </div>
     </div>
   );
@@ -522,15 +522,15 @@ export function DefaultBudgetsTab({
   onSave,
   isSaving,
 }: DefaultBudgetsTabProps) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-medium text-foreground mb-1">
-          Default budget for new users
+          {t(I18nKey.SETTINGS$BUDGETS_DEFAULT_FOR_USERS)}
         </h2>
         <p className="text-sm text-muted">
-          Applied automatically when a user joins your organization. Existing
-          users keep their current budgets.
+          {t(I18nKey.SETTINGS$BUDGETS_DEFAULT_FOR_USERS_DESCRIPTION)}
         </p>
       </div>
 
@@ -566,7 +566,9 @@ export function DefaultBudgetsTab({
       <div>
         <div className="block text-sm text-white mb-2">Preview</div>
         <p className="text-sm text-muted">
-          {`New users get up to $${defaultAmountLabel} per month before requiring an increase.`}
+          {t(I18nKey.SETTINGS$BUDGETS_DEFAULT_PREVIEW, {
+            amount: `$${defaultAmountLabel}`,
+          })}
         </p>
       </div>
 

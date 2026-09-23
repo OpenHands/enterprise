@@ -15,6 +15,25 @@ vi.mock("#/api/organization-service/organization-service.api", () => ({
   },
 }));
 
+vi.mock("react-i18next", async () => {
+  const actual =
+    await vi.importActual<typeof import("react-i18next")>("react-i18next");
+  return {
+    ...actual,
+    useTranslation: () => ({
+      t: (key: string, params?: Record<string, string>) => {
+        const translations: Record<string, string> = {
+          SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND: `The ${params?.cap} team cap includes the ${params?.priorSpend} already recorded before this cycle started.`,
+          SETTINGS$BUDGETS_TEAM_CAP_HELPER:
+            "The team cap includes any spend already recorded before this cycle started.",
+        };
+        return translations[key] || key;
+      },
+      i18n: { language: "en", exists: () => false },
+    }),
+  };
+});
+
 vi.mock("#/context/use-selected-organization", () => ({
   useSelectedOrganizationId: () => ({
     organizationId: "org-123",
@@ -322,6 +341,51 @@ describe("Budgets", () => {
     expect(screen.getByText("$200.00")).toBeInTheDocument();
   });
 
+  it("explains a team cap that includes spend recorded before the cycle started", async () => {
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      desired_team_max_budget: 1770,
+      applied_team_max_budget: 1770,
+    });
+
+    await renderBudgets();
+
+    expect(
+      screen.getByText(
+        "The $1,770 team cap includes the $770.00 already recorded before this cycle started.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("explains the team cap without an amount when it equals the monthly limit", async () => {
+    await renderBudgets();
+
+    expect(
+      screen.getByText(
+        "The team cap includes any spend already recorded before this cycle started.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/team cap includes the \$/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("omits the team cap explanation when no organization budget is enforced", async () => {
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      enabled: false,
+      reconciliation_state: "inactive",
+      desired_team_max_budget: null,
+      applied_team_max_budget: null,
+    });
+
+    await renderBudgets();
+
+    expect(
+      screen.queryByText(/already recorded before this cycle started/),
+    ).not.toBeInTheDocument();
+  });
+
   it("refetches budget state after a failed settings write", async () => {
     const user = userEvent.setup();
     vi.mocked(organizationService.getBudgetSettings)
@@ -405,5 +469,82 @@ describe("Budgets", () => {
     await waitFor(() => {
       expect(organizationService.getBudgetSettings).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("does not offer a toggle to disable the organization budget", async () => {
+    await renderBudgets();
+
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(screen.queryByText("Enable budget")).not.toBeInTheDocument();
+  });
+
+  it("saves the organization budget as enabled even when it is currently inactive", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      enabled: false,
+      reconciliation_state: "inactive",
+      desired_team_max_budget: null,
+      applied_team_max_budget: null,
+    });
+
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      expect(organizationService.updateBudgetSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            enabled: true,
+            monthly_limit: 1000,
+          }),
+        }),
+      );
+    });
+  });
+
+  it("disables saving the organization budget until a monthly limit is entered", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      enabled: false,
+      monthly_limit: null,
+      reconciliation_state: "inactive",
+      desired_team_max_budget: null,
+      applied_team_max_budget: null,
+    });
+
+    await renderBudgets();
+
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Monthly limit"), "500");
+
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+  });
+
+  it("describes the default budget as applying to users without an override", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+
+    await user.click(
+      screen.getByRole("button", { name: "Default budget for users" }),
+    );
+
+    expect(
+      screen.getByRole("heading", {
+        name: "SETTINGS$BUDGETS_DEFAULT_FOR_USERS",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("SETTINGS$BUDGETS_DEFAULT_FOR_USERS_DESCRIPTION"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("SETTINGS$BUDGETS_DEFAULT_PREVIEW"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/new users/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/keep their current budgets/i),
+    ).not.toBeInTheDocument();
   });
 });

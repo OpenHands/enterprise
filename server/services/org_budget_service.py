@@ -652,8 +652,8 @@ class OrgBudgetService:
         if 'monthly_limit' in fields_set:
             settings.monthly_limit = update_data.monthly_limit
         if 'reset_day' in fields_set:
+            reset_day_changed = update_data.reset_day != settings.reset_day
             settings.reset_day = update_data.reset_day
-            reset_day_changed = True
         if 'default_user_monthly_limit' in fields_set:
             settings.default_user_monthly_limit = update_data.default_user_monthly_limit
         if 'slack_channel' in fields_set:
@@ -941,12 +941,31 @@ class OrgBudgetService:
         snapshot: LiteLlmFinancialSnapshot,
     ) -> bool:
         now = datetime.now(UTC)
+        org_id = settings.org_id
+        # Lock the row and re-read the anchor. If another run rolled while we were
+        # reading LiteLLM, its snapshot anchors the new cycle -- not our stale one.
+        locked_start = (
+            await self.db_session.execute(
+                select(OrgBudgetSettings.cycle_start_at)
+                .where(OrgBudgetSettings.org_id == org_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_start is not None and locked_start != settings.cycle_start_at:
+            await self.store.refresh(settings)
+            return False
+
         next_cycle = _next_cycle_start(settings.cycle_start_at, settings.reset_day)
         if now < next_cycle:
             return False
 
+        # Settle the anchor at the current period in this single roll. Advancing only
+        # one period per run would leave the anchor behind after a multi-period gap, so
+        # every later maintenance run would roll again and re-anchor cycle_start_spend
+        # to the current cumulative LiteLLM total -- forgiving spend incurred since
+        # recovery and renewing the cap each time. Jumping straight to the current
+        # period rolls at most once per period, so subsequent runs are no-ops.
         settings.cycle_start_at = _current_cycle_start(now, settings.reset_day)
-        org_id = settings.org_id
         settings.cycle_start_spend = snapshot.team_spend
         settings.user_cycle_start_spend = {
             user_id: member.spend for user_id, member in snapshot.members.items()
@@ -1192,6 +1211,7 @@ class OrgBudgetService:
         return rows[offset : offset + users_per_page], total
 
     async def get_user_budget_row(self, org_id: UUID, user_id: UUID) -> dict | None:
+        await self._reject_personal_org(org_id, 'get_user_budget_row')
         settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
         snapshot_result = await self._get_financial_snapshot(

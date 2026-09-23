@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -7,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException, status
+from freezegun import freeze_time
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -476,59 +478,126 @@ async def test_run_budget_maintenance_skips_legacy_personal_org_settings(
     sync_mock.assert_not_awaited()
 
 
+# These tests assert cycle-roll semantics that depend on today's date, so we pin
+# "now" with freeze_time. A roll settles the anchor at the current period, so the
+# assertions compare against `_current_cycle_start(now)`; without a frozen clock they
+# would read datetime.now() and only hold on some days of the month. The dates below
+# spread across month/year boundaries, a leap day, and days early and late in the
+# month, so a stale anchor lands one *or* two periods back and a single roll must
+# still reach the current period in every case.
+_ROLL_SEMANTICS_DATES = [
+    '2026-03-03',  # early in the month: anchor lands two periods back
+    '2026-03-14',  # mid-month: anchor lands exactly one period back
+    '2026-02-05',  # short month
+    '2028-02-29',  # leap day
+    '2026-01-05',  # just after a year boundary
+    '2026-12-31',  # just before a year boundary
+]
+
+
 @pytest.mark.asyncio
-async def test_roll_cycle_if_needed_updates_cycle(async_session_maker, budget_org):
-    async with async_session_maker() as session:
-        now = datetime.now(UTC)
-        reset_day = 1
-        past_cycle_start = _current_cycle_start(now - timedelta(days=40), reset_day)
-        settings = OrgBudgetSettings(
-            org_id=budget_org.id,
-            enabled=True,
-            reset_day=reset_day,
-            monthly_limit=250.0,
-            default_user_monthly_limit=None,
-            slack_channel=None,
-            slack_team_id=None,
-            cycle_start_at=past_cycle_start,
-            cycle_start_spend=10.0,
-            user_cycle_start_spend={'existing-user': 4.0},
-        )
-        threshold = OrgBudgetThreshold(
-            org_id=budget_org.id,
-            percentage=80,
-            email_enabled=True,
-            slack_enabled=False,
-            last_triggered_at=now,
-            last_triggered_cycle_start=past_cycle_start,
-        )
-        session.add(settings)
-        session.add(threshold)
-        await session.commit()
+@pytest.mark.parametrize('fake_today', _ROLL_SEMANTICS_DATES)
+async def test_roll_cycle_if_needed_updates_cycle(
+    async_session_maker, budget_org, fake_today
+):
+    with freeze_time(fake_today):
+        async with async_session_maker() as session:
+            now = datetime.now(UTC)
+            reset_day = 1
+            past_cycle_start = _current_cycle_start(now - timedelta(days=40), reset_day)
+            settings = OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=True,
+                reset_day=reset_day,
+                monthly_limit=250.0,
+                default_user_monthly_limit=None,
+                slack_channel=None,
+                slack_team_id=None,
+                cycle_start_at=past_cycle_start,
+                cycle_start_spend=10.0,
+                user_cycle_start_spend={'existing-user': 4.0},
+            )
+            threshold = OrgBudgetThreshold(
+                org_id=budget_org.id,
+                percentage=80,
+                email_enabled=True,
+                slack_enabled=False,
+                last_triggered_at=now,
+                last_triggered_cycle_start=past_cycle_start,
+            )
+            session.add(settings)
+            session.add(threshold)
+            await session.commit()
 
-        service = OrgBudgetService(session)
-        overrides: list[OrgUserBudgetOverride] = []
-        snapshot = _snapshot(
-            team_spend=42.5,
-            members={'member': (8.0, None, True)},
-        )
-
-        with patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock:
-            rolled = await service._roll_cycle_if_needed(
-                settings, [threshold], overrides, snapshot
+            service = OrgBudgetService(session)
+            overrides: list[OrgUserBudgetOverride] = []
+            snapshot = _snapshot(
+                team_spend=42.5,
+                members={'member': (8.0, None, True)},
             )
 
-        assert rolled is True
-        assert settings.cycle_start_at.replace(tzinfo=UTC) == _current_cycle_start(
-            now, reset_day
-        )
-        assert settings.cycle_start_spend == 42.5
-        assert settings.user_cycle_start_spend == {'member': 8.0}
-        assert threshold.last_triggered_at is None
-        assert threshold.last_triggered_cycle_start is None
-        sync_mock.assert_awaited_once_with(
-            settings.org_id, settings, overrides, snapshot=snapshot
-        )
+            with patch.object(
+                service, '_sync_litellm_budgets', AsyncMock()
+            ) as sync_mock:
+                rolled = await service._roll_cycle_if_needed(
+                    settings, [threshold], overrides, snapshot
+                )
+
+            assert rolled is True
+            # A roll settles the anchor at the period containing "now" in a single
+            # step, so an org that is one or several periods behind lands on the
+            # current period and later runs are no-ops.
+            assert settings.cycle_start_at.replace(tzinfo=UTC) == _current_cycle_start(
+                now, reset_day
+            )
+            assert settings.cycle_start_spend == 42.5
+            assert settings.user_cycle_start_spend == {'member': 8.0}
+            assert threshold.last_triggered_at is None
+            assert threshold.last_triggered_cycle_start is None
+            sync_mock.assert_awaited_once_with(
+                settings.org_id, settings, overrides, snapshot=snapshot
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fake_today', _ROLL_SEMANTICS_DATES)
+async def test_roll_cycle_catches_up_to_the_current_period_in_one_run(
+    async_session_maker, budget_org, fake_today
+):
+    # An org that has been behind for several periods (paused CronJob, outage) must
+    # catch up to the current period in a single roll. Advancing only one period per
+    # run would leave the anchor behind, so every later run would roll again and
+    # re-anchor the baseline to today's cumulative spend -- forgiving recent spend and
+    # renewing the cap each run. A single roll therefore lands on
+    # _current_cycle_start(now) no matter how far behind the stale anchor is.
+    with freeze_time(fake_today):
+        async with async_session_maker() as session:
+            now = datetime.now(UTC)
+            reset_day = 1
+            stale_cycle_start = _current_cycle_start(
+                now - timedelta(days=200), reset_day
+            )
+            settings = OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=True,
+                reset_day=reset_day,
+                monthly_limit=250.0,
+                cycle_start_at=stale_cycle_start,
+                cycle_start_spend=0.0,
+            )
+            session.add(settings)
+            await session.commit()
+
+            service = OrgBudgetService(session)
+            snapshot = _snapshot(team_spend=42.5)
+
+            with patch.object(service, '_sync_litellm_budgets', AsyncMock()):
+                rolled = await service._roll_cycle_if_needed(settings, [], [], snapshot)
+
+            assert rolled is True
+            assert settings.cycle_start_at.replace(tzinfo=UTC) == _current_cycle_start(
+                now, reset_day
+            )
 
 
 @pytest.mark.asyncio
@@ -2163,9 +2232,7 @@ async def test_send_alerts_emails_and_slack(async_session_maker, budget_org):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='reproduces obs:concurrent_roll_reanchored_cycle — fails on current code'
-)
+@freeze_time('2026-06-15')
 async def test_concurrent_maintenance_runs_roll_the_cycle_only_once(
     async_session_maker, budget_org
 ):
@@ -2324,6 +2391,7 @@ def test_cycle_boundaries_stay_ordered_for_any_stored_reset_day(reset_day):
         (datetime(2026, 1, 15), 0, datetime(2026, 1, 1), datetime(2026, 2, 1)),
     ],
 )
+@freeze_time('2026-06-15')
 def test_cycle_boundaries_land_on_the_day_the_month_holds(
     now, reset_day, expected_start, expected_next
 ):
@@ -2340,10 +2408,6 @@ def test_cycle_boundaries_land_on_the_day_the_month_holds(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='reproduces obs:personal_org_settings_created_by_user_row_read '
-    '— fails on current code'
-)
 async def test_user_budget_row_rejects_personal_org_without_creating_settings(
     async_session_maker, personal_org
 ):
@@ -2373,6 +2437,25 @@ async def test_user_budget_row_rejects_personal_org_without_creating_settings(
 
     assert row_error.value.status_code == status.HTTP_400_BAD_REQUEST
     assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_user_budget_row_rejection_is_recorded_by_quint_oracle(
+    async_session_maker, personal_org
+):
+    # The guard passes its entry-point label to _reject_personal_org so the Quint
+    # oracle records which operation rejected the personal workspace. That label is
+    # the signal the Quint model keys on, and the sibling guards pass theirs too;
+    # pin it here so a future refactor can't silently drop it.
+    oracle = MagicMock()
+    oracle.In = lambda value, domain: value
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        with patch('server.services.org_budget_service.quint_oracle', oracle):
+            with pytest.raises(HTTPException):
+                await service.get_user_budget_row(personal_org.id, personal_org.id)
+    oracle.log.assert_called_once()
+    assert oracle.log.call_args.args[0] == 'get_user_budget_row'
 
 
 @pytest.mark.asyncio
@@ -2453,18 +2536,16 @@ async def test_override_write_is_durable_when_litellm_is_unreachable(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='pins cycle_advances_by_one_reset_period — fails on current code'
-)
-async def test_maintenance_advances_the_cycle_by_one_reset_period(
+@freeze_time('2026-06-15')
+async def test_maintenance_recovers_a_multi_period_gap_without_renewing_the_cap(
     async_session_maker, budget_org
 ):
     # When maintenance has not run for an org in months -- a paused CronJob, an
-    # outage, an org the scheduler only just started covering -- _roll_cycle_if_needed
-    # rolls once and sets cycle_start_at to _current_cycle_start(now), skipping every
-    # period in between, while cycle_start_spend is re-anchored to today's cumulative
-    # total. Everything spent in the months nobody rolled is never counted against any
-    # cap.
+    # outage, an org the scheduler only just started covering -- the first run settles
+    # the anchor at the current period and re-anchors cycle_start_spend once. A second
+    # run in the same period must be a no-op: if it rolled again it would re-anchor the
+    # baseline to the newer cumulative total, forgiving spend incurred since recovery
+    # and renewing the cap. This reproduces the regression from review PR #403.
     reset_day = 1
     stale_cycle_start = _current_cycle_start(
         datetime.now(UTC) - timedelta(days=100), reset_day
@@ -2495,7 +2576,22 @@ async def test_maintenance_advances_the_cycle_by_one_reset_period(
             ),
             patch.object(service, '_sync_litellm_budgets', AsyncMock()),
         ):
-            result = await service.run_budget_maintenance(budget_org.id)
+            first = await service.run_budget_maintenance(budget_org.id)
+
+        # The org spends another $1 after recovery; the cumulative total ticks up.
+        with (
+            patch.object(
+                service,
+                '_get_financial_snapshot',
+                AsyncMock(
+                    return_value=BudgetFinancialSnapshotResult(
+                        snapshot=_snapshot(team_spend=501.0), status='live'
+                    )
+                ),
+            ),
+            patch.object(service, '_sync_litellm_budgets', AsyncMock()),
+        ):
+            second = await service.run_budget_maintenance(budget_org.id)
 
         settings = (
             await session.execute(
@@ -2505,9 +2601,14 @@ async def test_maintenance_advances_the_cycle_by_one_reset_period(
             )
         ).scalar_one()
 
-    assert result['cycle_rolled'] is True
-    # A committed roll moves the cycle start forward by exactly one reset period.
-    assert settings.cycle_start_at == _next_cycle_start(stale_cycle_start, reset_day)
+    # The first run catches up to the current period in a single jump.
+    assert first['cycle_rolled'] is True
+    assert settings.cycle_start_at == _current_cycle_start(datetime.now(UTC), reset_day)
+    # The second run in the same period must not roll again or re-anchor the baseline,
+    # so the $1 spent since recovery is preserved rather than forgiven.
+    assert second['cycle_rolled'] is False
+    assert settings.cycle_start_spend == 500.0
+    assert second['current_spend'] == 1.0
 
 
 @pytest.mark.asyncio
@@ -3067,6 +3168,134 @@ async def test_settings_loader_prefers_baseline_rows_and_imports_json_only_keys(
     assert first_rows['a'][:2] == (5.0, 'live_rollover')
     assert first_rows['b'][:2] == (2.0, 'imported')
     assert second_rows == first_rows
+
+
+@pytest.mark.asyncio
+# real_asyncio so the event loop's own timers still advance under the frozen clock;
+# this test waits on one to prove the second run is blocked.
+@freeze_time('2026-06-15', real_asyncio=True)
+async def test_roll_cycle_blocks_a_second_run_until_the_first_commits(
+    async_session_maker, budget_org
+):
+    reset_day = 1
+    stale_cycle_start = _current_cycle_start(
+        datetime.now(UTC) - timedelta(days=40), reset_day
+    )
+    async with async_session_maker() as setup:
+        setup.add(
+            OrgBudgetSettings(
+                org_id=budget_org.id,
+                enabled=True,
+                reset_day=reset_day,
+                monthly_limit=250.0,
+                cycle_start_at=stale_cycle_start,
+                cycle_start_spend=10.0,
+            )
+        )
+        await setup.commit()
+
+    async with async_session_maker() as first, async_session_maker() as second:
+        first_service = OrgBudgetService(first)
+        second_service = OrgBudgetService(second)
+        first_settings = await first_service.store.get_settings(budget_org.id)
+        second_settings = await second_service.store.get_settings(budget_org.id)
+
+        with patch.object(first_service, '_sync_litellm_budgets', AsyncMock()):
+            assert await first_service._roll_cycle_if_needed(
+                first_settings, [], [], _snapshot(team_spend=42.5)
+            )
+
+        with patch.object(second_service, '_sync_litellm_budgets', AsyncMock()):
+            second_roll = asyncio.create_task(
+                second_service._roll_cycle_if_needed(
+                    second_settings, [], [], _snapshot(team_spend=90.0)
+                )
+            )
+            try:
+                done, _ = await asyncio.wait({second_roll}, timeout=1.0)
+                assert not done, (
+                    'second run read the anchor while the first held the lock'
+                )
+
+                await first.commit()
+                assert await asyncio.wait_for(second_roll, timeout=10) is False
+            finally:
+                # A failed assertion must not leave a task using a closing session.
+                second_roll.cancel()
+                await asyncio.gather(second_roll, return_exceptions=True)
+
+        # Losing the race must also refresh the loser's stale copy: alerts, the
+        # LiteLLM sync and the returned cycle all read this object afterwards. The
+        # winner settled the anchor at the current period, so the loser sees that.
+        assert second_settings.cycle_start_at.replace(
+            tzinfo=UTC
+        ) == _current_cycle_start(datetime.now(UTC), reset_day)
+        assert second_settings.cycle_start_spend == 42.5
+        await second.commit()
+
+    async with async_session_maker() as check:
+        settings = (
+            await check.execute(
+                select(OrgBudgetSettings).where(
+                    OrgBudgetSettings.org_id == budget_org.id
+                )
+            )
+        ).scalar_one()
+    assert settings.cycle_start_spend == 42.5
+
+
+@pytest.mark.asyncio
+@freeze_time('2026-06-15')
+async def test_roll_cycle_reads_only_this_orgs_anchor(async_session_maker, budget_org):
+    reset_day = 1
+    due_cycle_start = _current_cycle_start(
+        datetime.now(UTC) - timedelta(days=40), reset_day
+    )
+    other_org_id = uuid4()
+    async with async_session_maker() as setup:
+        setup.add(
+            Org(
+                id=other_org_id,
+                name=f'test-org-{other_org_id}',
+                org_version=ORG_SETTINGS_VERSION,
+            )
+        )
+        await setup.flush()
+        setup.add_all(
+            [
+                OrgBudgetSettings(
+                    org_id=other_org_id,
+                    enabled=True,
+                    reset_day=reset_day,
+                    monthly_limit=250.0,
+                    cycle_start_at=_current_cycle_start(datetime.now(UTC), reset_day),
+                    cycle_start_spend=7.0,
+                ),
+                OrgBudgetSettings(
+                    org_id=budget_org.id,
+                    enabled=True,
+                    reset_day=reset_day,
+                    monthly_limit=250.0,
+                    cycle_start_at=due_cycle_start,
+                    cycle_start_spend=10.0,
+                ),
+            ]
+        )
+        await setup.commit()
+
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        settings = await service.store.get_settings(budget_org.id)
+        with patch.object(service, '_sync_litellm_budgets', AsyncMock()):
+            rolled = await service._roll_cycle_if_needed(
+                settings, [], [], _snapshot(team_spend=42.5)
+            )
+        await session.commit()
+
+    assert rolled is True
+    assert settings.cycle_start_at.replace(tzinfo=UTC) == _current_cycle_start(
+        datetime.now(UTC), reset_day
+    )
 
 
 @pytest.mark.asyncio
