@@ -166,9 +166,15 @@ class HealthyBudgetStateMachine(RuleBasedStateMachine):
         )
         assert financial_data['team_max_budget'] == expected_team_cap
         for user, user_id in enumerate(self.adapter.user_ids):
-            assert financial_data['members'][str(user_id)]['max_budget'] == (
-                self._expected_member_cap(user)
-            )
+            member = financial_data['members'][str(user_id)]
+            member_cap = self._expected_member_cap(user)
+            if member_cap is None:
+                # Native readback reports the shared org cap when no member cap exists.
+                assert member['uses_shared_budget'] is True
+                assert member['max_budget'] == expected_team_cap
+            else:
+                assert member['uses_shared_budget'] is False
+                assert member['max_budget'] == member_cap
 
     def teardown(self) -> None:
         self.runner.run(self.factory.close())
