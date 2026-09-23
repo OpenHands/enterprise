@@ -1,25 +1,33 @@
 """Tests for K8sAgentSandboxService.
 
-The agent-sandbox API is replaced by an in-memory fake that plays the
+The agent-sandbox client is replaced by an in-memory fake that plays the
 controller; the agent server by a fake that records the requests the service
-makes to it. Focus areas:
+makes to it. The client itself runs against the real SDK, with the SDK's
+Kubernetes calls mocked. Focus areas:
 - claims on the warm pool, and the sandbox table as the store for ownership
 - user scoping, including cross user isolation and the admin (no user id) case
 - the /api/init handshake, on start and again on resume
 - status mapping from the claim's Ready condition, including MISSING
 - VSCode URLs under the router path
-- the Kubernetes API error mapping
+- the SDK calls, and the Kubernetes API error mapping
 """
 
 import copy
+import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import httpx
 import pytest
-import urllib3
-from kubernetes import client as k8s_client
-from kubernetes.client.exceptions import ApiException
+from k8s_agent_sandbox import AsyncSandboxClient
+from k8s_agent_sandbox.exceptions import (
+    SandboxClaimFailedError,
+    SandboxWarmPoolNotFoundError,
+)
+from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
+from kubernetes_asyncio.client import ApiException
+from kubernetes_asyncio.config import ConfigException
 from pydantic import SecretStr
 from sqlalchemy import select
 
@@ -33,8 +41,6 @@ from openhands.app_server.sandbox import k8s_agent_sandbox_service
 from openhands.app_server.sandbox.k8s_agent_sandbox_service import (
     MANAGED_LABEL,
     OWNER_LABEL,
-    SANDBOX_SPEC_ID_ANNOTATION,
-    USER_ID_ANNOTATION,
     WORKER_1_PORT,
     WORKER_2_PORT,
     AgentSandboxClient,
@@ -69,11 +75,12 @@ ROUTER_URL = 'https://app.example.com/sandbox-router'
 WEB_URL = 'https://app.example.com'
 OWNER_ID = 'user-1'
 OTHER_USER_ID = 'user-2'
-CLAIM_NAME = 'oh-claimed'
+CLAIM_NAME = 'sandbox-claim-1a2b3c4d'
 SANDBOX_NAME = 'openhands-agent-server-abcde'
 AGENT_SERVER_URL = f'{ROUTER_URL}/{NAMESPACE}/{SANDBOX_NAME}/8000'
 CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 SESSION_API_KEY = 'the-session-key'
+CLAIM_TIMEOUT = 5
 
 
 def _vscode_url(session_api_key: str) -> str:
@@ -95,108 +102,85 @@ BOOTING = {'type': 'Ready', 'status': 'False', 'reason': 'DependenciesNotReady'}
 # ---------------------------------------------------------------------------
 
 
-def _matches(labels: dict, selector: str) -> bool:
-    wanted = dict(term.split('=', 1) for term in selector.split(','))
-    return all(labels.get(key) == value for key, value in wanted.items())
-
-
 class FakeAgentSandbox:
     """AgentSandboxClient stand in that plays the agent-sandbox controller.
 
-    A new claim adopts a ready warm sandbox at once, unless ``new_claim_status``
-    says what the controller reports instead.
+    A claim adopts a ready warm sandbox at once, unless ``claim_error`` says
+    why the SDK gave up instead.
     """
 
     namespace = NAMESPACE
 
-    def __init__(self, new_claim_status: dict | None = None):
+    def __init__(self):
         self.claims: dict[str, dict] = {}
-        self.sandboxes: dict[str, dict] = {}
-        self.new_claim_status = new_claim_status
-        self.created: list[dict] = []
+        self.sandboxes: set[str] = set()
+        self.claimed: list[dict] = []
+        self.reads: list[str] = []
         self.deleted: list[str] = []
         self.modes: list[tuple[str, str]] = []
-        self.selectors: list[str] = []
+        self.waits: list[tuple[str, int]] = []
+        self.claim_error: Exception | None = None
         self.delete_error: Exception | None = None
+        self.wait_error: Exception | None = None
 
     def add_claim(
         self,
         name: str = CLAIM_NAME,
-        owner: str = OWNER_ID,
         ready: dict | None = READY,
         sandbox_name: str | None = SANDBOX_NAME,
     ) -> dict:
         status: dict = {'conditions': [ready] if ready else []}
         if sandbox_name:
             status['sandbox'] = {'name': sandbox_name}
-            self.sandboxes[sandbox_name] = {
-                'metadata': {'name': sandbox_name, 'generation': 1},
-                'spec': {'operatingMode': 'Running'},
-                'status': {
-                    'conditions': [{**(ready or BOOTING), 'observedGeneration': 1}]
-                },
-            }
+            self.sandboxes.add(sandbox_name)
         claim = {
-            'metadata': {
-                'name': name,
-                'labels': {
-                    MANAGED_LABEL: 'true',
-                    OWNER_LABEL: owner_label_value(owner),
-                },
-            },
+            'metadata': {'name': name},
             'spec': {'warmPoolRef': {'name': POOL}},
             'status': status,
         }
         self.claims[name] = claim
         return claim
 
-    async def create_claim(self, body: dict) -> dict:
-        self.created.append(copy.deepcopy(body))
-        name = body['metadata']['name']
-        claim = copy.deepcopy(body)
-        if self.new_claim_status is None:
-            self.add_claim(name, body['metadata']['annotations'][USER_ID_ANNOTATION])
-            claim['status'] = self.claims[name]['status']
-        else:
-            claim['status'] = copy.deepcopy(self.new_claim_status)
-        self.claims[name] = claim
-        return copy.deepcopy(claim)
+    def _set_ready(self, sandbox_name: str, ready: dict) -> None:
+        for claim in self.claims.values():
+            if claim['status'].get('sandbox', {}).get('name') == sandbox_name:
+                claim['status']['conditions'] = [ready]
+
+    async def claim(
+        self, warm_pool: str, labels: dict[str, str], timeout: int
+    ) -> tuple[str, str]:
+        name = f'sandbox-claim-{uuid.uuid4().hex[:8]}'
+        self.claimed.append(
+            {'name': name, 'warm_pool': warm_pool, 'labels': labels, 'timeout': timeout}
+        )
+        if self.claim_error:
+            raise self.claim_error
+        self.add_claim(name)
+        return name, SANDBOX_NAME
 
     async def get_claim(self, name: str) -> dict | None:
+        self.reads.append(name)
         return copy.deepcopy(self.claims.get(name))
 
-    async def list_claims(self, label_selector: str) -> list[dict]:
-        self.selectors.append(label_selector)
-        return [
-            copy.deepcopy(claim)
-            for claim in self.claims.values()
-            if _matches(claim['metadata'].get('labels', {}), label_selector)
-        ]
-
-    async def delete_claim(self, name: str) -> bool:
+    async def delete_claim(self, name: str) -> None:
         if self.delete_error:
             raise self.delete_error
         self.deleted.append(name)
-        return self.claims.pop(name, None) is not None
+        self.claims.pop(name, None)
 
-    async def get_sandbox(self, name: str) -> dict | None:
-        return copy.deepcopy(self.sandboxes.get(name))
+    async def wait_for_sandbox(self, name: str, timeout: int) -> None:
+        self.waits.append((name, timeout))
+        if self.wait_error:
+            raise self.wait_error
+        self._set_ready(name, READY)
 
-    async def set_operating_mode(self, name: str, mode: str) -> dict | None:
-        """Apply the mode, then do what the controller does once the pod settles."""
-        sandbox = self.sandboxes.get(name)
-        if sandbox is None:
-            return None
+    async def set_operating_mode(self, name: str, mode: str) -> bool:
+        """Apply the mode. A resumed sandbox is ready once it is waited for."""
+        if name not in self.sandboxes:
+            return False
         self.modes.append((name, mode))
-        sandbox['spec']['operatingMode'] = mode
-        sandbox['metadata']['generation'] += 1
-        ready = SUSPENDED if mode == 'Suspended' else READY
-        generation = sandbox['metadata']['generation']
-        sandbox['status']['conditions'] = [{**ready, 'observedGeneration': generation}]
-        for claim in self.claims.values():
-            if claim['status'].get('sandbox', {}).get('name') == name:
-                claim['status']['conditions'] = [ready]
-        return copy.deepcopy(sandbox)
+        self._set_ready(name, SUSPENDED if mode == 'Suspended' else BOOTING)
+        return True
 
 
 def _response(status_code: int = 200, payload: dict | None = None) -> MagicMock:
@@ -290,7 +274,6 @@ def _service(
     router_url: str = ROUTER_URL,
     web_url: str | None = WEB_URL,
     webhook_base_url: str | None = None,
-    claim_timeout_seconds: int = 5,
 ) -> K8sAgentSandboxService:
     spec = K8sAgentSandboxSpecInfo(
         id=POOL,
@@ -306,7 +289,7 @@ def _service(
         k8s=k8s,  # type: ignore[arg-type]
         router_url=router_url,
         max_num_sandboxes=10,
-        claim_timeout_seconds=claim_timeout_seconds,
+        claim_timeout_seconds=CLAIM_TIMEOUT,
         init_timeout_seconds=5,
         poll_interval=0,
         web_url=web_url,
@@ -346,31 +329,29 @@ class TestStartSandbox:
     async def test_claims_from_the_pool_and_tags_the_claim(self, k8s, db_session):
         sandbox = await _service(db_session, k8s).start_sandbox()
 
-        body = k8s.created[0]
-        assert body['spec'] == {'warmPoolRef': {'name': POOL}}
-        assert body['metadata']['labels'] == {
-            MANAGED_LABEL: 'true',
-            OWNER_LABEL: owner_label_value(OWNER_ID),
-        }
-        assert body['metadata']['annotations'] == {
-            USER_ID_ANNOTATION: OWNER_ID,
-            SANDBOX_SPEC_ID_ANNOTATION: POOL,
-        }
-        assert sandbox.id == body['metadata']['name']
+        assert k8s.claimed == [
+            {
+                'name': sandbox.id,
+                'warm_pool': POOL,
+                'labels': {
+                    MANAGED_LABEL: 'true',
+                    OWNER_LABEL: owner_label_value(OWNER_ID),
+                },
+                'timeout': CLAIM_TIMEOUT,
+            }
+        ]
         assert sandbox.status == SandboxStatus.RUNNING
         assert sandbox.created_by_user_id == OWNER_ID
         assert sandbox.sandbox_spec_id == POOL
         assert sandbox.session_api_key
 
     @pytest.mark.asyncio
-    async def test_claim_name_is_a_dns_label(self, k8s, db_session):
+    async def test_sandbox_id_is_the_claim_name(self, k8s, db_session):
         sandbox = await _service(db_session, k8s).start_sandbox(
-            sandbox_id='Not_A-Label'
+            sandbox_id='requested-id'
         )
 
-        assert sandbox.id.startswith('oh-')
-        assert len(sandbox.id) <= 63
-        assert sandbox.id == sandbox.id.lower()
+        assert sandbox.id == k8s.claimed[0]['name']
 
     @pytest.mark.asyncio
     async def test_writes_the_row(self, k8s, db_session):
@@ -407,60 +388,31 @@ class TestStartSandbox:
             await service.start_sandbox()
 
         pause.assert_not_called()
-        assert k8s.created == []
+        assert k8s.claimed == []
 
     @pytest.mark.asyncio
     async def test_needs_an_init_key_before_claiming(self, k8s, db_session):
         with pytest.raises(SandboxError, match='AGENT_SANDBOX_INIT_API_KEY'):
             await _service(db_session, k8s, init_api_key=None).start_sandbox()
 
-        assert k8s.created == []
+        assert k8s.claimed == []
 
     @pytest.mark.asyncio
     async def test_needs_a_router_url(self, k8s, db_session):
         with pytest.raises(SandboxError, match='AGENT_SANDBOX_ROUTER_URL'):
             await _service(db_session, k8s, router_url='').start_sandbox()
 
-        assert k8s.created == []
+        assert k8s.claimed == []
 
     @pytest.mark.asyncio
-    async def test_missing_warm_pool_names_the_pool(self, db_session):
-        k8s = FakeAgentSandbox(
-            new_claim_status={
-                'conditions': [
-                    {'type': 'Ready', 'status': 'False', 'reason': 'WarmPoolNotFound'}
-                ]
-            }
-        )
+    async def test_failed_claim_writes_no_row(self, k8s, db_session):
+        k8s.claim_error = SandboxError('Could not claim a sandbox: ClaimExpired')
 
-        with pytest.raises(SandboxError, match=f"SandboxWarmPool '{POOL}'"):
+        with pytest.raises(SandboxError, match='ClaimExpired'):
             await _service(db_session, k8s).start_sandbox()
 
-        assert k8s.claims == {}
-
-    @pytest.mark.asyncio
-    async def test_failed_claim_is_deleted(self, db_session):
-        failed = {
-            'type': 'Ready',
-            'status': 'False',
-            'reason': 'EnvVarsInjectionRejected',
-            'message': 'claims may not set env',
-        }
-        k8s = FakeAgentSandbox(new_claim_status={'conditions': [failed]})
-
-        with pytest.raises(SandboxError, match='EnvVarsInjectionRejected'):
-            await _service(db_session, k8s).start_sandbox()
-
-        assert k8s.claims == {}
-
-    @pytest.mark.asyncio
-    async def test_claim_that_never_gets_ready_times_out(self, db_session):
-        k8s = FakeAgentSandbox(new_claim_status={'conditions': [BOOTING]})
-
-        with pytest.raises(SandboxError, match='DependenciesNotReady'):
-            await _service(db_session, k8s, claim_timeout_seconds=0).start_sandbox()
-
-        assert k8s.claims == {}
+        result = await db_session.execute(select(StoredSandbox.id))
+        assert result.scalars().all() == []
 
     @pytest.mark.asyncio
     async def test_rejected_init_key_deletes_the_claim(self, k8s, db_session):
@@ -469,6 +421,7 @@ class TestStartSandbox:
         with pytest.raises(SandboxError, match='rejected the init API key'):
             await _service(db_session, k8s, httpx_client=agent_server).start_sandbox()
 
+        assert k8s.deleted == [k8s.claimed[0]['name']]
         assert k8s.claims == {}
 
     @pytest.mark.asyncio
@@ -632,6 +585,7 @@ class TestStatus:
 
         sandbox = await _service(db_session, k8s).get_sandbox(CLAIM_NAME)
 
+        assert sandbox.status == SandboxStatus.ERROR
         assert sandbox.status_detail == 'SandboxExpired: expired'
 
     @pytest.mark.asyncio
@@ -666,41 +620,39 @@ class TestUserScoping:
         assert await service.pause_sandbox(CLAIM_NAME) is False
         assert await service.resume_sandbox(CLAIM_NAME) is False
         assert await service.delete_sandbox(CLAIM_NAME) is False
+        assert k8s.reads == []
         assert k8s.modes == []
         assert k8s.deleted == []
 
     @pytest.mark.asyncio
-    async def test_search_lists_only_the_callers_claims(self, k8s, db_session, store):
+    async def test_search_reads_only_the_callers_claims(self, k8s, db_session, store):
         await store(_stored(), _stored('oh-other', created_by_user_id=OTHER_USER_ID))
         k8s.add_claim()
-        k8s.add_claim('oh-other', owner=OTHER_USER_ID, sandbox_name='other-sandbox')
+        k8s.add_claim('oh-other', sandbox_name='other-sandbox')
 
         page = await _service(db_session, k8s).search_sandboxes()
 
         assert [sandbox.id for sandbox in page.items] == [CLAIM_NAME]
         assert page.items[0].status == SandboxStatus.RUNNING
-        assert k8s.selectors == [
-            f'{MANAGED_LABEL}=true,{OWNER_LABEL}={owner_label_value(OWNER_ID)}'
-        ]
+        assert k8s.reads == [CLAIM_NAME]
 
     @pytest.mark.asyncio
-    async def test_admin_lists_every_owner(self, k8s, db_session, store):
+    async def test_admin_sees_every_owner(self, k8s, db_session, store):
         await store(_stored(), _stored('oh-other', created_by_user_id=OTHER_USER_ID))
         k8s.add_claim()
-        k8s.add_claim('oh-other', owner=OTHER_USER_ID, sandbox_name='other-sandbox')
+        k8s.add_claim('oh-other', sandbox_name='other-sandbox')
 
         page = await _service(db_session, k8s, user_context=ADMIN).search_sandboxes()
 
         assert {sandbox.id for sandbox in page.items} == {CLAIM_NAME, 'oh-other'}
         assert {sandbox.status for sandbox in page.items} == {SandboxStatus.RUNNING}
-        assert k8s.selectors == [f'{MANAGED_LABEL}=true']
 
     @pytest.mark.asyncio
     async def test_search_without_rows_skips_the_api(self, k8s, db_session):
         page = await _service(db_session, k8s).search_sandboxes()
 
         assert page.items == []
-        assert k8s.selectors == []
+        assert k8s.reads == []
 
     @pytest.mark.asyncio
     async def test_session_key_lookup(self, k8s, db_session, store):
@@ -709,6 +661,7 @@ class TestUserScoping:
         service = _service(db_session, k8s, user_context=ADMIN)
 
         record = await service.get_sandbox_record_by_session_api_key(SESSION_API_KEY)
+        assert k8s.reads == []
         sandbox = await service.get_sandbox_by_session_api_key(SESSION_API_KEY)
 
         assert record.id == CLAIM_NAME
@@ -792,6 +745,7 @@ class TestPauseResume:
         assert await service.resume_sandbox(CLAIM_NAME) is True
 
         assert k8s.modes == [(SANDBOX_NAME, 'Running')]
+        assert k8s.waits == [(SANDBOX_NAME, CLAIM_TIMEOUT)]
         body = agent_server.init_post_bodies[0]
         assert body['session_api_keys'] == [SESSION_API_KEY]
         assert body['secret_key'] == SESSION_API_KEY
@@ -800,24 +754,19 @@ class TestPauseResume:
         assert sandbox.session_api_key == SESSION_API_KEY
 
     @pytest.mark.asyncio
-    async def test_resume_waits_for_the_new_generation(self, k8s, db_session, store):
-        """A Ready condition from before the resume must not pass."""
+    async def test_resume_waits_for_the_new_pod(self, k8s, db_session, store):
         await store(_stored())
         k8s.add_claim(ready=SUSPENDED)
-        stale = {
-            'metadata': {'generation': 3},
-            'status': {'conditions': [{**READY, 'observedGeneration': 2}]},
-        }
-        fresh = {
-            'metadata': {'generation': 3},
-            'status': {'conditions': [{**READY, 'observedGeneration': 3}]},
-        }
-        k8s.set_operating_mode = AsyncMock(return_value={'metadata': {'generation': 3}})
-        k8s.get_sandbox = AsyncMock(side_effect=[stale, stale, fresh])
+        k8s.wait_error = SandboxError('Could not wait for Sandbox: timed out')
+        agent_server = FakeAgentServer()
 
-        assert await _service(db_session, k8s).resume_sandbox(CLAIM_NAME) is True
+        with pytest.raises(SandboxError, match='timed out'):
+            await _service(db_session, k8s, httpx_client=agent_server).resume_sandbox(
+                CLAIM_NAME
+            )
 
-        assert k8s.get_sandbox.await_count == 3
+        assert agent_server.init_get_urls == []
+        assert agent_server.init_post_bodies == []
 
     @pytest.mark.asyncio
     async def test_resume_leaves_an_initialized_server_alone(
@@ -856,6 +805,15 @@ class TestPauseResume:
 
         assert await _service(db_session, k8s).resume_sandbox(CLAIM_NAME) is False
 
+    @pytest.mark.asyncio
+    async def test_resume_of_a_deleted_sandbox(self, k8s, db_session, store):
+        await store(_stored())
+        k8s.add_claim(ready=SUSPENDED)
+        k8s.sandboxes.clear()
+
+        assert await _service(db_session, k8s).resume_sandbox(CLAIM_NAME) is False
+        assert k8s.waits == []
+
 
 class TestDelete:
     @pytest.mark.asyncio
@@ -891,68 +849,172 @@ class TestDelete:
 
 
 # ---------------------------------------------------------------------------
-# Kubernetes API client
+# The agent-sandbox client, on the real SDK with its Kubernetes calls mocked
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def api():
-    client = AgentSandboxClient(k8s_client.ApiClient(), NAMESPACE)
-    client._api = MagicMock()
-    return client
+def helper():
+    """The SDK's Kubernetes helper: every call it makes to the API server."""
+    helper = MagicMock()
+    helper.create_sandbox_claim = AsyncMock(
+        return_value={'metadata': {'resourceVersion': '7'}}
+    )
+    helper.wait_for_claim_ready = AsyncMock(return_value=SANDBOX_NAME)
+    helper.delete_sandbox_claim = AsyncMock()
+    helper.get_sandbox_claim = AsyncMock(return_value=None)
+    helper.get_sandbox = AsyncMock(return_value={'metadata': {'name': SANDBOX_NAME}})
+    helper.wait_for_sandbox_ready = AsyncMock(return_value=None)
+    helper.custom_objects_api.patch_namespaced_custom_object = AsyncMock()
+    helper.close = AsyncMock()
+    return helper
+
+
+@pytest.fixture
+async def api(helper):
+    sdk = AsyncSandboxClient(
+        connection_config=SandboxInClusterConnectionConfig(), cleanup=False
+    )
+    sdk.k8s_helper = helper
+    client = AgentSandboxClient(NAMESPACE, sdk=sdk)
+    yield client
+    await client.close()
 
 
 class TestAgentSandboxClient:
     @pytest.mark.asyncio
-    async def test_missing_object_reads_as_none(self, api):
-        api._api.get_namespaced_custom_object.side_effect = ApiException(status=404)
+    async def test_claim_waits_for_a_warm_sandbox(self, api, helper):
+        labels = {MANAGED_LABEL: 'true'}
 
-        assert await api.get_claim('gone') is None
-        assert await api.get_sandbox('gone') is None
+        claim_name, sandbox_name = await api.claim(POOL, labels, timeout=9)
+
+        assert sandbox_name == SANDBOX_NAME
+        create = helper.create_sandbox_claim.call_args
+        assert create.args == (claim_name, POOL, NAMESPACE)
+        assert create.kwargs['labels'] == labels
+        # Either one would cold-start a pod instead of adopting a warm one.
+        assert create.kwargs['env'] is None
+        assert create.kwargs['volume_claim_templates'] is None
+        helper.wait_for_claim_ready.assert_awaited_once_with(
+            claim_name, NAMESPACE, 9, resource_version='7'
+        )
 
     @pytest.mark.asyncio
-    async def test_delete_of_a_missing_claim_is_false(self, api):
-        api._api.delete_namespaced_custom_object.side_effect = ApiException(status=404)
+    async def test_missing_warm_pool_names_the_pool(self, api, helper):
+        helper.wait_for_claim_ready.side_effect = SandboxWarmPoolNotFoundError(
+            'SandboxWarmPool requested does not exist'
+        )
 
-        assert await api.delete_claim('gone') is False
+        with pytest.raises(SandboxError, match=f"SandboxWarmPool '{POOL}'"):
+            await api.claim(POOL, {}, timeout=9)
+
+        helper.delete_sandbox_claim.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_forbidden_names_the_permissions(self, api):
-        api._api.create_namespaced_custom_object.side_effect = ApiException(
+    async def test_failed_claim_is_reported_and_deleted(self, api, helper):
+        helper.wait_for_claim_ready.side_effect = SandboxClaimFailedError(
+            'failed with terminal reason EnvVarsInjectionRejected: no env'
+        )
+
+        with pytest.raises(SandboxError, match='EnvVarsInjectionRejected'):
+            await api.claim(POOL, {}, timeout=9)
+
+        helper.delete_sandbox_claim.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_claim_that_never_gets_ready_times_out(self, api, helper):
+        helper.wait_for_claim_ready.side_effect = TimeoutError(
+            'Could not resolve claim readiness within 9 seconds.'
+        )
+
+        with pytest.raises(SandboxError, match='within 9 seconds'):
+            await api.claim(POOL, {}, timeout=9)
+
+        helper.delete_sandbox_claim.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_forbidden_names_the_permissions(self, api, helper):
+        helper.create_sandbox_claim.side_effect = ApiException(
             status=403, reason='Forbidden'
         )
 
-        with pytest.raises(SandboxError, match='create, get, list and delete'):
-            await api.create_claim({})
+        with pytest.raises(SandboxError, match='create, get, watch and delete'):
+            await api.claim(POOL, {}, timeout=9)
 
     @pytest.mark.asyncio
-    async def test_missing_crd_names_the_install(self, api):
-        api._api.list_namespaced_custom_object.side_effect = ApiException(status=404)
+    async def test_missing_crd_names_the_install(self, api, helper):
+        helper.create_sandbox_claim.side_effect = ApiException(status=404)
 
         with pytest.raises(SandboxError, match='agent-sandbox is installed'):
-            await api.list_claims(f'{MANAGED_LABEL}=true')
+            await api.claim(POOL, {}, timeout=9)
 
     @pytest.mark.asyncio
-    async def test_unreachable_api(self, api):
-        api._api.get_namespaced_custom_object.side_effect = (
-            urllib3.exceptions.MaxRetryError(None, '/', 'connection refused')
+    async def test_unreachable_api(self, api, helper):
+        helper.get_sandbox_claim.side_effect = aiohttp.ClientConnectionError(
+            'connection refused'
         )
 
         with pytest.raises(SandboxError, match='unreachable'):
-            await api.get_claim('any')
+            await api.get_claim(CLAIM_NAME)
 
     @pytest.mark.asyncio
-    async def test_operating_mode_is_a_merge_patch_on_the_sandbox(self, api):
-        api._api.patch_namespaced_custom_object.return_value = {'metadata': {}}
-
-        await api.set_operating_mode(SANDBOX_NAME, 'Suspended')
-
-        args = api._api.patch_namespaced_custom_object.call_args.args
-        assert args == (
-            'agents.x-k8s.io',
-            'v1beta1',
-            NAMESPACE,
-            'sandboxes',
-            SANDBOX_NAME,
-            {'spec': {'operatingMode': 'Suspended'}},
+    async def test_no_credentials(self, api, helper):
+        helper.get_sandbox_claim.side_effect = ConfigException(
+            'Invalid kube-config file. No configuration found.'
         )
+
+        with pytest.raises(SandboxError, match='No Kubernetes credentials'):
+            await api.get_claim(CLAIM_NAME)
+
+    @pytest.mark.asyncio
+    async def test_reads_and_deletes_claims_in_the_namespace(self, api, helper):
+        assert await api.get_claim(CLAIM_NAME) is None
+        await api.delete_claim(CLAIM_NAME)
+
+        helper.get_sandbox_claim.assert_awaited_once_with(CLAIM_NAME, NAMESPACE)
+        helper.delete_sandbox_claim.assert_awaited_once_with(CLAIM_NAME, NAMESPACE)
+
+    @pytest.mark.asyncio
+    async def test_waits_for_a_sandbox(self, api, helper):
+        await api.wait_for_sandbox(SANDBOX_NAME, 9)
+
+        helper.wait_for_sandbox_ready.assert_awaited_once_with(
+            SANDBOX_NAME, NAMESPACE, 9
+        )
+
+    @pytest.mark.asyncio
+    async def test_operating_mode_is_a_merge_patch_on_the_sandbox(self, api, helper):
+        assert await api.set_operating_mode(SANDBOX_NAME, 'Suspended') is True
+
+        patch_call = helper.custom_objects_api.patch_namespaced_custom_object
+        patch_call.assert_awaited_once_with(
+            group='agents.x-k8s.io',
+            version='v1beta1',
+            namespace=NAMESPACE,
+            plural='sandboxes',
+            name=SANDBOX_NAME,
+            body={'spec': {'operatingMode': 'Suspended'}},
+            _content_type='application/merge-patch+json',
+        )
+
+    @pytest.mark.asyncio
+    async def test_operating_mode_of_a_missing_sandbox(self, api, helper):
+        helper.get_sandbox.return_value = None
+
+        assert await api.set_operating_mode(SANDBOX_NAME, 'Running') is False
+        helper.custom_objects_api.patch_namespaced_custom_object.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_close_leaves_the_sandboxes_running(self, api, helper):
+        await api.claim(POOL, {}, timeout=9)
+
+        await api.close()
+
+        helper.delete_sandbox_claim.assert_not_awaited()
+        helper.close.assert_awaited()
+
+    def test_the_sdk_never_deletes_on_exit(self):
+        with patch('atexit.register') as register:
+            AgentSandboxClient(NAMESPACE)
+
+        register.assert_not_called()

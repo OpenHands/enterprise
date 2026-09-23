@@ -1,5 +1,6 @@
-# What the app needs: claim and release sandboxes, and suspend or resume the
-# sandbox a claim holds. Nothing else.
+# What the app needs, and nothing else: claim and release sandboxes, and
+# suspend or resume the sandbox a claim holds. The agent-sandbox SDK waits on
+# claims and sandboxes with a watch.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -8,10 +9,10 @@ metadata:
 rules:
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
-    verbs: ["create", "get", "list", "delete"]
+    verbs: ["create", "get", "watch", "delete"]
   - apiGroups: ["agents.x-k8s.io"]
     resources: ["sandboxes"]
-    verbs: ["get", "patch"]
+    verbs: ["get", "watch", "patch"]
 ---
 # Replace the subject with the ServiceAccount the app's pods run as. An app
 # outside the cluster needs a kubeconfig for a ServiceAccount bound here.

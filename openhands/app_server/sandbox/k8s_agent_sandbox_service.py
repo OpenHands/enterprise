@@ -3,19 +3,28 @@ import hashlib
 import logging
 import os
 import time
-import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from posixpath import dirname
-from typing import Any, AsyncGenerator, Callable
+from typing import Any, AsyncGenerator
 
+import aiohttp
 import base62
 import httpx
-import urllib3
 from fastapi import Request
-from kubernetes import client as k8s_client
-from kubernetes import config as k8s_config
-from kubernetes.client.exceptions import ApiException
-from kubernetes.config.config_exception import ConfigException
+from k8s_agent_sandbox import AsyncSandboxClient
+from k8s_agent_sandbox.constants import (
+    SANDBOX_API_GROUP,
+    SANDBOX_API_VERSION,
+    SANDBOX_PLURAL_NAME,
+    TERMINAL_CLAIM_READY_REASONS,
+)
+from k8s_agent_sandbox.exceptions import SandboxError as AgentSandboxError
+from k8s_agent_sandbox.exceptions import SandboxWarmPoolNotFoundError
+from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
+from kubernetes_asyncio.client import ApiException
+from kubernetes_asyncio.config import ConfigException
 from pydantic import Field, SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,22 +64,15 @@ from openhands.app_server.sandbox.sandbox_store import (
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.user.specifiy_user_context import ADMIN
 from openhands.app_server.user.user_context import UserContext
 
 _logger = logging.getLogger(__name__)
-
-CLAIM_GROUP = 'extensions.agents.x-k8s.io'
-SANDBOX_GROUP = 'agents.x-k8s.io'
-API_VERSION = 'v1beta1'
 
 # Ownership lives in the sandbox table (see `sandbox_store`). These tag the
 # claims the app makes, so that one with no row can be found. The owner label
 # is a hash because a label value cannot hold every user id.
 MANAGED_LABEL = 'openhands.dev/managed'
 OWNER_LABEL = 'openhands.dev/owner'
-USER_ID_ANNOTATION = 'openhands.dev/user-id'
-SANDBOX_SPEC_ID_ANNOTATION = 'openhands.dev/sandbox-spec-id'
 
 WORKER_1_PORT = 8011
 WORKER_2_PORT = 8012
@@ -80,19 +82,12 @@ WORKER_2_PORT = 8012
 SUSPENDED_REASON = 'SandboxSuspended'
 # Ready reasons that do not clear on their own. Any other not-ready reason is
 # a claim still being served: adoption, a cold start, a booting pod.
-FAILED_REASONS = frozenset(
-    {
-        'TemplateNotFound',
-        'WarmPoolNotFound',
-        'InvalidMetadata',
-        'EnvVarsInjectionRejected',
-        'VolumeClaimTemplatesError',
-        'ClaimExpired',
-        'SandboxExpired',
-        'PodFailed',
-        'PodSucceeded',
-    }
-)
+FAILED_REASONS = TERMINAL_CLAIM_READY_REASONS | {
+    'TemplateNotFound',
+    'WarmPoolNotFound',
+    'PodFailed',
+    'PodSucceeded',
+}
 
 MISSING_INIT_API_KEY = (
     "has no init API key. The pool's SandboxTemplate boots the agent server "
@@ -158,36 +153,40 @@ def _init_api_key(sandbox_spec: K8sAgentSandboxSpecInfo) -> str | None:
 
 
 class AgentSandboxClient:
-    """The agent-sandbox API calls this backend makes, in one namespace.
+    """The agent-sandbox calls this backend makes, in one namespace.
 
-    The kubernetes client is synchronous, so each call runs in a worker thread.
-    A 404 on a named object reads as "gone" and returns None. Every other
-    failure raises ``SandboxError``.
+    They go through agent-sandbox's Python SDK. A claim or sandbox that is gone
+    reads as None. Every failure raises ``SandboxError``.
     """
 
-    def __init__(self, api_client: k8s_client.ApiClient, namespace: str):
-        self._api = k8s_client.CustomObjectsApi(api_client)
+    def __init__(self, namespace: str, sdk: AsyncSandboxClient | None = None):
         self.namespace = namespace
+        # With cleanup on, the SDK deletes the sandboxes it created when the
+        # process exits. The connection config is for the SDK's own runtime
+        # API, which the agent server does not serve, so it goes unused.
+        self._sdk = sdk or AsyncSandboxClient(
+            connection_config=SandboxInClusterConnectionConfig(), cleanup=False
+        )
 
-    async def _call(
-        self,
-        action: str,
-        method: Callable[..., Any],
-        *args: Any,
-        missing_ok: bool = False,
-        **kwargs: Any,
-    ) -> Any:
+    async def close(self) -> None:
+        """Close the SDK's connections, and leave its sandboxes running.
+
+        The SDK client's ``async with`` would delete them instead.
+        """
+        await self._sdk.close()
+
+    @contextmanager
+    def _reported(self, action: str) -> Iterator[None]:
+        """Raise a failed call as a ``SandboxError`` that says what to fix."""
         try:
-            return await asyncio.to_thread(method, *args, **kwargs)
+            yield
         except ApiException as exc:
-            if missing_ok and exc.status == 404:
-                return None
             if exc.status in (401, 403):
                 raise SandboxError(
                     f'Kubernetes refused to {action} in namespace '
                     f'{self.namespace!r} ({exc.status} {exc.reason}). The app '
-                    'needs create, get, list and delete on sandboxclaims, and '
-                    'get and patch on sandboxes, in that namespace.'
+                    'needs create, get, watch and delete on sandboxclaims, and '
+                    'get, watch and patch on sandboxes, in that namespace.'
                 ) from exc
             if exc.status == 404:
                 raise SandboxError(
@@ -198,128 +197,83 @@ class AgentSandboxClient:
             raise SandboxError(
                 f'Could not {action}: {exc.status} {exc.reason}'
             ) from exc
-        except urllib3.exceptions.HTTPError as exc:
+        except ConfigException as exc:
+            raise SandboxError(
+                'No Kubernetes credentials: the app is not running in a pod and no '
+                f'kubeconfig could be loaded ({exc})'
+            ) from exc
+        except aiohttp.ClientError as exc:
             raise SandboxError(
                 f'Could not {action}: the Kubernetes API is unreachable ({exc})'
             ) from exc
+        except (AgentSandboxError, TimeoutError) as exc:
+            raise SandboxError(f'Could not {action}: {exc}') from exc
 
-    async def create_claim(self, body: dict) -> dict:
-        return await self._call(
-            'create a SandboxClaim',
-            self._api.create_namespaced_custom_object,
-            CLAIM_GROUP,
-            API_VERSION,
-            self.namespace,
-            'sandboxclaims',
-            body,
-        )
+    async def claim(
+        self, warm_pool: str, labels: dict[str, str], timeout: int
+    ) -> tuple[str, str]:
+        """Claim a ready sandbox from a warm pool.
+
+        Returns the claim's name and its sandbox's. The SDK waits for the
+        claim's Ready condition, and deletes a claim that fails or times out.
+        """
+        with self._reported(f'claim a sandbox from warm pool {warm_pool!r}'):
+            try:
+                sandbox = await self._sdk.create_sandbox(
+                    warmpool=warm_pool,
+                    namespace=self.namespace,
+                    sandbox_ready_timeout=timeout,
+                    labels=labels,
+                )
+            except SandboxWarmPoolNotFoundError as exc:
+                raise SandboxError(
+                    f'SandboxWarmPool {warm_pool!r} does not exist in namespace '
+                    f'{self.namespace!r}. The operator creates it ahead of time, '
+                    'and AGENT_SANDBOX_WARM_POOL names it.'
+                ) from exc
+        return sandbox.claim_name, sandbox.sandbox_id
 
     async def get_claim(self, name: str) -> dict | None:
-        return await self._call(
-            'read a SandboxClaim',
-            self._api.get_namespaced_custom_object,
-            CLAIM_GROUP,
-            API_VERSION,
-            self.namespace,
-            'sandboxclaims',
-            name,
-            missing_ok=True,
-        )
+        with self._reported('read a SandboxClaim'):
+            return await self._sdk.k8s_helper.get_sandbox_claim(name, self.namespace)
 
-    async def list_claims(self, label_selector: str) -> list[dict]:
-        result = await self._call(
-            'list SandboxClaims',
-            self._api.list_namespaced_custom_object,
-            CLAIM_GROUP,
-            API_VERSION,
-            self.namespace,
-            'sandboxclaims',
-            label_selector=label_selector,
-        )
-        return result.get('items') or []
-
-    async def delete_claim(self, name: str) -> bool:
+    async def delete_claim(self, name: str) -> None:
         """Delete a claim, and with it its Sandbox, pod and volumes.
 
-        Returns False when the claim was already gone.
+        A claim that is already gone is not an error.
         """
-        result = await self._call(
-            'delete a SandboxClaim',
-            self._api.delete_namespaced_custom_object,
-            CLAIM_GROUP,
-            API_VERSION,
-            self.namespace,
-            'sandboxclaims',
-            name,
-            missing_ok=True,
-        )
-        return result is not None
+        with self._reported('delete a SandboxClaim'):
+            await self._sdk.k8s_helper.delete_sandbox_claim(name, self.namespace)
 
-    async def get_sandbox(self, name: str) -> dict | None:
-        return await self._call(
-            'read a Sandbox',
-            self._api.get_namespaced_custom_object,
-            SANDBOX_GROUP,
-            API_VERSION,
-            self.namespace,
-            'sandboxes',
-            name,
-            missing_ok=True,
-        )
+    async def wait_for_sandbox(self, name: str, timeout: int) -> None:
+        """Wait for a Sandbox's Ready condition."""
+        with self._reported(f'wait for Sandbox {name}'):
+            await self._sdk.k8s_helper.wait_for_sandbox_ready(
+                name, self.namespace, timeout
+            )
 
-    async def set_operating_mode(self, name: str, mode: str) -> dict | None:
-        """Set a Sandbox's operatingMode (Running or Suspended)."""
-        return await self._call(
-            'update a Sandbox',
-            self._api.patch_namespaced_custom_object,
-            SANDBOX_GROUP,
-            API_VERSION,
-            self.namespace,
-            'sandboxes',
-            name,
-            {'spec': {'operatingMode': mode}},
-            missing_ok=True,
-        )
+    async def set_operating_mode(self, name: str, mode: str) -> bool:
+        """Set a Sandbox's operatingMode (Running or Suspended).
 
-
-def _load_api_client(kube_context: str | None) -> k8s_client.ApiClient:
-    """The pod's ServiceAccount when running in the cluster, else a kubeconfig.
-
-    The kubeconfig is ``KUBECONFIG`` or ``~/.kube/config``. Naming a context
-    skips the in-cluster credentials.
-    """
-    configuration = k8s_client.Configuration()
-    if kube_context is None:
-        try:
-            k8s_config.load_incluster_config(client_configuration=configuration)
-            return k8s_client.ApiClient(configuration)
-        except ConfigException:
-            pass
-    try:
-        k8s_config.load_kube_config(
-            context=kube_context,
-            client_configuration=configuration,
-            persist_config=False,
-        )
-    except ConfigException as exc:
-        raise SandboxError(
-            'No Kubernetes credentials: the app is not running in a pod and no '
-            f'kubeconfig could be loaded ({exc})'
-        ) from exc
-    return k8s_client.ApiClient(configuration)
-
-
-_clients: dict[tuple[str, str | None], AgentSandboxClient] = {}
-
-
-def get_agent_sandbox_client(
-    namespace: str, kube_context: str | None
-) -> AgentSandboxClient:
-    """One client per namespace and context, for the life of the process."""
-    key = (namespace, kube_context)
-    if key not in _clients:
-        _clients[key] = AgentSandboxClient(_load_api_client(kube_context), namespace)
-    return _clients[key]
+        Returns False when the Sandbox is gone. The SDK has no suspend or
+        resume, so this patches the Sandbox with the SDK's Kubernetes client, as
+        the SDK's GKE snapshot extension does.
+        """
+        helper = self._sdk.k8s_helper
+        with self._reported('update a Sandbox'):
+            # Reading it first also loads the client the patch goes through.
+            if await helper.get_sandbox(name, self.namespace) is None:
+                return False
+            await helper.custom_objects_api.patch_namespaced_custom_object(
+                group=SANDBOX_API_GROUP,
+                version=SANDBOX_API_VERSION,
+                namespace=self.namespace,
+                plural=SANDBOX_PLURAL_NAME,
+                name=name,
+                body={'spec': {'operatingMode': mode}},
+                _content_type='application/merge-patch+json',
+            )
+        return True
 
 
 @dataclass
@@ -328,9 +282,10 @@ class K8sAgentSandboxService(SandboxService):
 
     The operator creates a SandboxTemplate and a SandboxWarmPool ahead of time.
     The pool keeps agent server pods booted in deferred-init mode, and
-    ``start_sandbox`` claims one with a SandboxClaim, then completes the
-    ``/api/init`` handshake before returning. The pod booted before any user
-    existed, so everything per user reaches it through that handshake.
+    ``start_sandbox`` claims one through agent-sandbox's Python SDK, then
+    completes the ``/api/init`` handshake before returning. The pod booted
+    before any user existed, so everything per user reaches it through that
+    handshake.
 
     The claim's name is the sandbox id. Ownership, spec identity and the
     session API key live in the sandbox table (see ``sandbox_store``). Pause
@@ -366,25 +321,6 @@ class K8sAgentSandboxService(SandboxService):
         return await get_stored_sandbox(
             self.db_session, self.user_context, K8S_AGENT_SANDBOX_BACKEND, sandbox_id
         )
-
-    async def _live_claims(self, wanted_ids: set[str]) -> dict[str, dict]:
-        """The claims behind a page of rows, indexed by name.
-
-        The rows have already decided ownership. The owner label only narrows
-        the list. ``ADMIN`` reads across users, so it lists without it.
-        """
-        if not wanted_ids:
-            return {}
-        selector = f'{MANAGED_LABEL}=true'
-        if self.user_context != ADMIN:
-            user_id = await require_user_id(self.user_context)
-            selector += f',{OWNER_LABEL}={owner_label_value(user_id)}'
-        claims = await self.k8s.list_claims(selector)
-        return {
-            claim['metadata']['name']: claim
-            for claim in claims
-            if claim['metadata']['name'] in wanted_ids
-        }
 
     # ------------------------------------------------------------------
     # Info mapping
@@ -496,7 +432,7 @@ class K8sAgentSandboxService(SandboxService):
         page_id: str | None = None,
         limit: int = 100,
     ) -> SandboxPage:
-        """Search for sandboxes: one query for the page, one list call for its claims."""
+        """Search for sandboxes: one query for the page, then each row's claim."""
         page = await search_stored_sandboxes(
             self.db_session,
             self.user_context,
@@ -504,10 +440,12 @@ class K8sAgentSandboxService(SandboxService):
             page_id,
             limit,
         )
-        claims = await self._live_claims({row.id for row in page.items})
+        claims = await asyncio.gather(
+            *(self.k8s.get_claim(stored_sandbox.id) for stored_sandbox in page.items)
+        )
         sandboxes = [
-            await self._to_sandbox_info(stored_sandbox, claims.get(stored_sandbox.id))
-            for stored_sandbox in page.items
+            await self._to_sandbox_info(stored_sandbox, claim)
+            for stored_sandbox, claim in zip(page.items, claims, strict=True)
         ]
         return SandboxPage(items=sandboxes, next_page_id=page.next_page_id)
 
@@ -561,35 +499,13 @@ class K8sAgentSandboxService(SandboxService):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def _claim_body(self, claim_name: str, warm_pool: str, user_id: str) -> dict:
-        """A claim on the pool. It sets no env and no volumes: either one
-        makes the controller cold-start a new pod instead of adopting a warm one.
-        """
-        return {
-            'apiVersion': f'{CLAIM_GROUP}/{API_VERSION}',
-            'kind': 'SandboxClaim',
-            'metadata': {
-                'name': claim_name,
-                'namespace': self.k8s.namespace,
-                'labels': {
-                    MANAGED_LABEL: 'true',
-                    OWNER_LABEL: owner_label_value(user_id),
-                },
-                'annotations': {
-                    USER_ID_ANNOTATION: user_id,
-                    SANDBOX_SPEC_ID_ANNOTATION: warm_pool,
-                },
-            },
-            'spec': {'warmPoolRef': {'name': warm_pool}},
-        }
-
     async def start_sandbox(
         self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
     ) -> SandboxInfo:
         """Claim a warm sandbox and initialize its agent server.
 
-        ``sandbox_id`` is ignored. The id is the claim's name, which has to be
-        a DNS label, so the service picks it.
+        ``sandbox_id`` is ignored. The id is the claim's name, which the SDK
+        picks.
 
         The ``/api/init`` handshake completes before this returns. A warm
         pod's ``/alive``, ``/health`` and ``/ready`` answer 200 while its agent
@@ -621,9 +537,10 @@ class K8sAgentSandboxService(SandboxService):
                 f'Sandbox spec {sandbox_spec.id!r} {MISSING_INIT_API_KEY}'
             )
 
-        claim_name = f'oh-{uuid.uuid4().hex}'
-        await self.k8s.create_claim(
-            self._claim_body(claim_name, sandbox_spec.id, user_id)
+        claim_name, sandbox_name = await self.k8s.claim(
+            sandbox_spec.id,
+            labels={MANAGED_LABEL: 'true', OWNER_LABEL: owner_label_value(user_id)},
+            timeout=self.claim_timeout_seconds,
         )
 
         session_api_key = base62.encodebytes(os.urandom(32))
@@ -639,7 +556,6 @@ class K8sAgentSandboxService(SandboxService):
         try:
             self.db_session.add(stored_sandbox)
             await self.db_session.flush()
-            sandbox_name = await self._wait_for_claim(claim_name)
             await self._initialize_agent_server(
                 sandbox_name, sandbox_spec, session_api_key
             )
@@ -669,67 +585,6 @@ class K8sAgentSandboxService(SandboxService):
             _logger.warning(
                 f'Could not delete SandboxClaim {claim_name} after a failed start'
             )
-
-    async def _wait_for_claim(self, claim_name: str) -> str:
-        """Poll a new claim until it holds a ready sandbox, and return its name.
-
-        Adopting a warm sandbox is near instant. With the pool empty, the
-        controller cold-starts one from the template, which can take minutes
-        when the node has to pull the image.
-        """
-        deadline = time.monotonic() + self.claim_timeout_seconds
-        while True:
-            claim = await self.k8s.get_claim(claim_name)
-            if claim is None:
-                raise SandboxError(
-                    f'SandboxClaim {claim_name} was deleted while starting'
-                )
-            ready = _condition(claim)
-            sandbox_name = _sandbox_name(claim)
-            if ready.get('status') == 'True' and sandbox_name:
-                return sandbox_name
-            if ready.get('reason') == 'WarmPoolNotFound':
-                raise SandboxError(
-                    f'SandboxWarmPool {claim["spec"]["warmPoolRef"]["name"]!r} does '
-                    f'not exist in namespace {self.k8s.namespace!r}. The operator '
-                    'creates it ahead of time, and AGENT_SANDBOX_WARM_POOL names it.'
-                )
-            if ready.get('reason') in FAILED_REASONS:
-                raise SandboxError(
-                    f'SandboxClaim {claim_name} failed: {_describe(ready)}'
-                )
-            if time.monotonic() >= deadline:
-                last = f' Last state: {_describe(ready)}.' if ready else ''
-                raise SandboxError(
-                    f'SandboxClaim {claim_name} did not get a ready sandbox within '
-                    f'{self.claim_timeout_seconds}s.{last}'
-                )
-            await asyncio.sleep(self.poll_interval)
-
-    async def _wait_for_sandbox_ready(self, sandbox_name: str, generation: int) -> None:
-        """Poll a resumed Sandbox until its new pod is ready.
-
-        The Ready condition must have seen the resume (``observedGeneration``),
-        or a pod still shutting down from the pause would pass.
-        """
-        deadline = time.monotonic() + self.claim_timeout_seconds
-        while True:
-            sandbox = await self.k8s.get_sandbox(sandbox_name)
-            if sandbox is None:
-                raise SandboxError(f'Sandbox {sandbox_name} was deleted while resuming')
-            ready = _condition(sandbox)
-            if (
-                ready.get('status') == 'True'
-                and ready.get('observedGeneration', 0) >= generation
-            ):
-                return
-            if time.monotonic() >= deadline:
-                raise SandboxError(
-                    f'Sandbox {sandbox_name} was not ready within '
-                    f'{self.claim_timeout_seconds}s of resuming. Last state: '
-                    f'{_describe(ready)}.'
-                )
-            await asyncio.sleep(self.poll_interval)
 
     async def _initialize_agent_server(
         self,
@@ -888,12 +743,11 @@ class K8sAgentSandboxService(SandboxService):
         session_api_key = self._raw_key(stored_sandbox)
         if sandbox_name is None or session_api_key is None:
             return False
-        sandbox = await self.k8s.set_operating_mode(sandbox_name, 'Running')
-        if sandbox is None:
+        if not await self.k8s.set_operating_mode(sandbox_name, 'Running'):
             return False
-        await self._wait_for_sandbox_ready(
-            sandbox_name, sandbox['metadata']['generation']
-        )
+        # The claim reports the suspension only once the Sandbox is not ready,
+        # so this wait cannot pass on the pod from before the pause.
+        await self.k8s.wait_for_sandbox(sandbox_name, self.claim_timeout_seconds)
         await self._initialize_agent_server(
             sandbox_name,
             await self._get_spec(stored_sandbox.sandbox_spec_id),
@@ -919,7 +773,7 @@ class K8sAgentSandboxService(SandboxService):
             raise SandboxError(
                 f'Sandbox {sandbox_id} has no pod yet, so there is nothing to pause'
             )
-        return await self.k8s.set_operating_mode(sandbox_name, 'Suspended') is not None
+        return await self.k8s.set_operating_mode(sandbox_name, 'Suspended')
 
     async def delete_sandbox(self, sandbox_id: str) -> bool:
         """Delete a sandbox and its row.
@@ -933,8 +787,7 @@ class K8sAgentSandboxService(SandboxService):
         if stored_sandbox is None:
             return False
         try:
-            if not await self.k8s.delete_claim(sandbox_id):
-                _logger.info(f'SandboxClaim {sandbox_id} already gone; removing row')
+            await self.k8s.delete_claim(sandbox_id)
         except SandboxError as exc:
             _logger.exception(f'Error deleting sandbox {sandbox_id}', stack_info=True)
             raise SandboxDeleteRetryError(
@@ -961,14 +814,6 @@ class K8sAgentSandboxServiceInjector(SandboxServiceInjector):
             'example https://openhands.example.com/sandbox-router. Browsers and '
             'the app reach a sandbox at {router_url}/{namespace}/{sandbox}/{port}. '
             'Defaults to the AGENT_SANDBOX_ROUTER_URL env var.'
-        ),
-    )
-    kube_context: str | None = Field(
-        default_factory=lambda: os.getenv('AGENT_SANDBOX_KUBE_CONTEXT') or None,
-        description=(
-            'Kubeconfig context to use. Unset, the app uses its pod ServiceAccount '
-            'when running in the cluster, and the current kubeconfig context '
-            'otherwise. Defaults to the AGENT_SANDBOX_KUBE_CONTEXT env var.'
         ),
     )
     webhook_base_url: str | None = Field(
@@ -999,7 +844,7 @@ class K8sAgentSandboxServiceInjector(SandboxServiceInjector):
     )
     poll_interval: float = Field(
         default=1.0,
-        description='Seconds between polls of a claim, a sandbox or an agent server',
+        description='Seconds between polls of a starting agent server',
     )
 
     async def inject(
@@ -1015,25 +860,30 @@ class K8sAgentSandboxServiceInjector(SandboxServiceInjector):
         )
 
         config = get_global_config()
-        k8s = get_agent_sandbox_client(self.namespace, self.kube_context)
-        async with (
-            get_user_context(state, request) as user_context,
-            get_httpx_client(state, request) as httpx_client,
-            get_sandbox_spec_service(state, request) as sandbox_spec_service,
-            get_db_session(state, request) as db_session,
-        ):
-            yield K8sAgentSandboxService(
-                sandbox_spec_service=sandbox_spec_service,
-                user_context=user_context,
-                httpx_client=httpx_client,
-                db_session=db_session,
-                k8s=k8s,
-                router_url=self.router_url,
-                max_num_sandboxes=self.max_num_sandboxes,
-                claim_timeout_seconds=self.claim_timeout_seconds,
-                init_timeout_seconds=self.init_timeout_seconds,
-                poll_interval=self.poll_interval,
-                web_url=config.web_url,
-                webhook_base_url=self.webhook_base_url,
-                permitted_cors_origins=config.permitted_cors_origins,
-            )
+        # One per request: the SDK client holds on to every sandbox it creates
+        # until it is closed.
+        k8s = AgentSandboxClient(self.namespace)
+        try:
+            async with (
+                get_user_context(state, request) as user_context,
+                get_httpx_client(state, request) as httpx_client,
+                get_sandbox_spec_service(state, request) as sandbox_spec_service,
+                get_db_session(state, request) as db_session,
+            ):
+                yield K8sAgentSandboxService(
+                    sandbox_spec_service=sandbox_spec_service,
+                    user_context=user_context,
+                    httpx_client=httpx_client,
+                    db_session=db_session,
+                    k8s=k8s,
+                    router_url=self.router_url,
+                    max_num_sandboxes=self.max_num_sandboxes,
+                    claim_timeout_seconds=self.claim_timeout_seconds,
+                    init_timeout_seconds=self.init_timeout_seconds,
+                    poll_interval=self.poll_interval,
+                    web_url=config.web_url,
+                    webhook_base_url=self.webhook_base_url,
+                    permitted_cors_origins=config.permitted_cors_origins,
+                )
+        finally:
+            await k8s.close()

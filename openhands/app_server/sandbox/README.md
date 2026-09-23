@@ -98,8 +98,9 @@ that is the one signal that tracks actual activity.
 
 `K8sAgentSandboxService` claims each sandbox from a
 [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
-warm pool (v1.0 or later, with the extensions). Select it with
-`RUNTIME=k8s-agent-sandbox`, which also selects `K8sAgentSandboxSpecService`.
+warm pool (v1.0 or later, with the extensions), through agent-sandbox's Python
+SDK (`k8s-agent-sandbox`). Select it with `RUNTIME=k8s-agent-sandbox`, which
+also selects `K8sAgentSandboxSpecService`.
 
 | Variable | Purpose |
 | --- | --- |
@@ -108,7 +109,9 @@ warm pool (v1.0 or later, with the extensions). Select it with
 | `AGENT_SANDBOX_INIT_API_KEY` | **Required.** The `OH_SECRET_KEY` in the pool's `SandboxTemplate`, sent as `X-Init-API-Key` on `POST /api/init` |
 | `AGENT_SANDBOX_ROUTER_URL` | **Required.** Public URL of the agent-sandbox router's path prefix, for example `https://openhands.example.com/sandbox-router` |
 | `AGENT_SANDBOX_WEBHOOK_BASE_URL` | The app URL pods post events to, when it is not `OH_WEB_URL` |
-| `AGENT_SANDBOX_KUBE_CONTEXT` | Kubeconfig context. Unset, the app uses its pod's ServiceAccount in the cluster, and the current context outside it |
+
+In the cluster, the app uses its pod's ServiceAccount. Outside it, the app
+uses the current context of `KUBECONFIG` (or `~/.kube/config`).
 
 The operator creates everything up front, and the app only creates and deletes
 `SandboxClaim`s. `scripts/k8s_agent_sandbox/` has example manifests for all of
@@ -146,8 +149,8 @@ set up:
 - An Ingress that serves the router on the app's own host at
   `/sandbox-router`, keeping the path. On the app's origin, the browser needs
   no CORS to reach the agent server.
-- A Role for the app: `create`, `get`, `list` and `delete` on
-  `sandboxclaims`, and `get` and `patch` on `sandboxes`.
+- A Role for the app: `create`, `get`, `watch` and `delete` on
+  `sandboxclaims`, and `get`, `watch` and `patch` on `sandboxes`.
 - A network policy on the template that admits the router on ports 8000
   (agent server), 8001 (VSCode), 8011 and 8012 (workers). agent-sandbox's
   default policy also blocks cluster DNS and every private address. The
@@ -160,7 +163,8 @@ before any user existed, so everything per user reaches it that way. The claim
 name is the sandbox id. Ownership and the session API key live in the sandbox
 table. `pause_sandbox` sets the Sandbox's `operatingMode` to `Suspended`, which
 deletes the pod and keeps its volume and Service. `resume_sandbox` sets it back
-to `Running` and repeats the handshake on the new pod with the stored key.
+to `Running` and repeats the handshake on the new pod with the stored key. The
+SDK has no suspend or resume, so those two patch the Sandbox directly.
 The agent server's secret key is the session key, so the secrets it persisted
 on the volume still decrypt.
 
