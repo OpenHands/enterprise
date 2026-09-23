@@ -3,15 +3,13 @@ import json
 import uuid
 import warnings
 from datetime import datetime, timedelta, timezone
-from types import MappingProxyType
-from typing import Annotated, Optional, cast
+from typing import Optional, cast
 from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse, urlunparse
 from uuid import UUID as parse_uuid
 
 from fastapi import (
     APIRouter,
     BackgroundTasks,
-    Header,
     HTTPException,
     Request,
     Response,
@@ -23,12 +21,7 @@ from pydantic import BaseModel, SecretStr
 from sqlalchemy import select
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
-from openhands.app_server.integrations.provider import (
-    PROVIDER_TOKEN_TYPE,
-    ProviderHandler,
-    ProviderToken,
-)
-from openhands.app_server.integrations.service_types import ProviderType, TokenResponse
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_access_token
 from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -64,7 +57,6 @@ from server.services.org_invitation_service import (
     OrgInvitationService,
     UserAlreadyMemberError,
 )
-from server.utils.conversation_utils import get_session_api_key, get_user_id
 from server.utils.rate_limit_utils import (
     RATE_LIMIT_AUTH_VERIFY_EMAIL_IP_SECONDS,
     RATE_LIMIT_AUTH_VERIFY_EMAIL_USER_SECONDS,
@@ -96,18 +88,6 @@ async def _get_keycloak_tokens_or_unavailable(
             detail='Authentication service temporarily unavailable',
             headers={'Retry-After': '1'},
         ) from exc
-
-
-def create_provider_tokens_object(
-    providers_set: list[ProviderType],
-) -> PROVIDER_TOKEN_TYPE:
-    """Create provider tokens object for the given providers."""
-    provider_information: dict[ProviderType, ProviderToken] = {}
-
-    for provider in providers_set:
-        provider_information[provider] = ProviderToken(token=None, user_id=None)
-
-    return MappingProxyType(provider_information)
 
 
 def set_response_cookie(
@@ -1328,31 +1308,3 @@ async def logout(request: Request):
         # We still want to clear the cookie and return success
 
     return response
-
-
-@api_router.get('/refresh-tokens', response_model=TokenResponse)
-async def refresh_tokens(
-    request: Request,
-    provider: ProviderType,
-    sid: str,
-    x_session_api_key: Annotated[str | None, Header(alias='X-Session-API-Key')],
-) -> TokenResponse:
-    """Return the latest token for a given provider."""
-    user_id = get_user_id(sid)
-    session_api_key = await get_session_api_key(sid)
-    if session_api_key != x_session_api_key:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Forbidden')
-
-    logger.info(f'Refreshing token for conversation {sid}')
-    provider_handler = ProviderHandler(
-        create_provider_tokens_object([provider]), external_auth_id=user_id
-    )
-    service = provider_handler.get_service(provider)
-    token = await service.get_latest_token()
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No token found for provider '{provider}'",
-        )
-
-    return TokenResponse(token=token.get_secret_value())

@@ -1,0 +1,147 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "SaaS Server (port 3030)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "saas_server:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "3030"
+            ],
+            "env": {
+                "LOG_JSON": "1",
+                "LOG_JSON_FOR_CONSOLE": "1",
+                "DEBUG": "1",
+                "FILE_STORE": "local",
+                "FILE_STORE_PATH": "${env:HOME}/.openhands-state",
+                "REDIS_HOST": "localhost",
+                "REDIS_PORT": "6379",
+                "OPENHANDS": "${workspaceFolder}",
+                "FRONTEND_DIRECTORY": "${workspaceFolder}/frontend/build",
+                "WEB_HOST": "localhost",
+                "OPENHANDS_CONFIG_CLS": "server.config.SaaSServerConfig",
+                "OPENHANDS_GITHUB_SERVICE_CLS": "integrations.github.github_service.SaaSGitHubService",
+                "OPENHANDS_GITLAB_SERVICE_CLS": "integrations.gitlab.gitlab_service.SaaSGitLabService",
+                "OPENHANDS_BITBUCKET_SERVICE_CLS": "integrations.bitbucket.bitbucket_service.SaaSBitBucketService",
+                "DB_HOST": "localhost",
+                "RUNTIME": "remote",
+                "SANDBOX_REMOTE_RUNTIME_API_URL": "https://runtime.staging.all-hands.dev",
+                "ENABLE_BILLING": "false",
+                "LITE_LLM_API_URL": "https://llm-proxy.staging.all-hands.dev",
+                "LITE_LLM_MODEL": "claude-3-7-sonnet-20250219",
+                "KEYCLOAK_REALM_NAME": "allhands",
+                "KEYCLOAK_SERVER_URL": "https://auth.staging.all-hands.dev",
+                "KEYCLOAK_SERVER_URL_EXT": "https://auth.staging.all-hands.dev",
+                "KEYCLOAK_PROVIDER_NAME": "github",
+                "KEYCLOAK_CLIENT_ID": "allhands",
+                "ADD_DEBUGGING_ROUTES": "1",
+                "PERMITTED_CORS_ORIGINS": "http://localhost:3030",
+                "OPENHANDS_MCP_CONFIG_CLS": "server.mcp.mcp_config.SaaSOpenHandsMCPConfig",
+                "SANDBOX_KEEP_RUNTIME_ALIVE": "true",
+                "ENABLE_MCP_SEARCH_ENGINE": "true",
+                "SLACK_WEBHOOKS_ENABLED": "true",
+                "ENABLE_BYOR_EXPORT": "true",
+                "OH_APP_MODE": "saas",
+                "OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_BILLING": "true",
+                "OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_JIRA": "true",
+                "OH_WEB_CLIENT_PROVIDERS_CONFIGURED": "[\"github\",\"gitlab\",\"bitbucket\"]",
+                "OH_WEB_CLIENT_GITHUB_APP_SLUG": "openhands-staging",
+                "OH_APP_CONVERSATION_INFO_KIND": "server.utils.saas_app_conversation_info_injector.SaasAppConversationInfoServiceInjector",
+                "OH_USER_AUTHORIZER_PREVENT_DUPLICATES": "false",
+                "OH_SANDBOX_SPEC_KIND": "openhands.app_server.sandbox.dynamic_remote_sandbox_spec_service.DynamicRemoteSandboxSpecServiceInjector",
+                "OH_SANDBOX_SPEC_DEFAULT_SPEC_NAME": "v1_current",
+                "USER_PROVISIONING_ENABLED": "1",
+                "OH_SANDBOX_MAX_NUM_SANDBOXES": "5"
+            },
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Unit Tests (all)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "./tests/unit"
+            ],
+            "env": {
+                "DEBUG": "1",
+                "DB_HOST": "127.0.0.1",
+                "DB_PORT": "5432",
+                "DB_NAME": "openhands",
+                "DB_USER": "postgres"
+            },
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Unit Tests (single file)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "${file}"
+            ],
+            "env": {
+                "DEBUG": "1",
+                "DB_HOST": "127.0.0.1",
+                "DB_PORT": "5432",
+                "DB_NAME": "openhands",
+                "DB_USER": "postgres"
+            },
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Frontend Tests (npm test)",
+            "command": "npm test",
+            "request": "launch",
+            "type": "node-terminal",
+            "cwd": "${workspaceFolder}/frontend",
+            "sourceMaps": true
+        },
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "Legacy OpenHands OSS",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "openhands.server.listen:app",
+                "--reload",
+                "--reload-include",
+                "openhands",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "3000"
+            ],
+            "env": {
+                "PERMITTED_CORS_ORIGINS": "http://localhost:3001",
+                "INIT_GIT_IN_EMPTY_WORKSPACE": "1",
+                "ENABLE_MCP_SEARCH_ENGINE": "true",
+                "OH_WEB_CLIENT_KIND": "DefaultWebClientConfigInjector"
+            },
+            "justMyCode": false
+        }
+    ]
+}

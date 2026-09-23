@@ -437,4 +437,4 @@ async def test_verify_access_makes_request():
 
     mock_req.assert_called_once()
     call_url = mock_req.call_args[0][0]
-    assert call_url.endswith('/repos')
+    assert call_url.endswith('/projects')

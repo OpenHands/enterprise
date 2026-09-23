@@ -215,6 +215,40 @@ describe("PostHogWrapper", () => {
     );
   });
 
+  it("should stamp deployment_kind on every PostHog event", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "saas",
+        posthog_client_key: "configured-posthog-key",
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          deployment_mode: "cloud",
+        },
+      }),
+    );
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child");
+
+    const [{ options }] = mockPostHogProvider.mock.calls[0];
+    const event = options.before_send({
+      event: "test_event",
+      properties: { custom: "value" },
+    });
+
+    expect(event.properties).toEqual(
+      expect.objectContaining({
+        custom: "value",
+        deployment_kind: "remote",
+      }),
+    );
+  });
+
   it("should initialize without bootstrap when neither hash nor sessionStorage has IDs", async () => {
     render(
       <PostHogWrapper>
