@@ -38,6 +38,7 @@ from openhands.app_server.app_conversation.app_conversation_service import (
 )
 from openhands.app_server.app_conversation.live_status_app_conversation_service import (
     LiveStatusAppConversationService,
+    LiveStatusAppConversationServiceInjector,
     _exception_detail,
     _resolve_title_llm_profile,
     effective_disabled_skills,
@@ -2890,6 +2891,7 @@ class TestLiveStatusAppConversationService:
             return_value={'id': str(mock_event2.id), 'type': 'observation'}
         )
 
+        self.service.export_max_events = 10000
         self.mock_event_service.count_events = AsyncMock(return_value=2)
         self.mock_event_service.iter_events_for_export = Mock(
             return_value=_async_iter([mock_event1, mock_event2])
@@ -3016,6 +3018,7 @@ class TestLiveStatusAppConversationService:
             return_value=mock_conversation_info
         )
 
+        self.service.export_max_events = 10000
         self.mock_event_service.count_events = AsyncMock(return_value=0)
         self.mock_event_service.iter_events_for_export = Mock(
             return_value=_async_iter([])
@@ -3210,6 +3213,7 @@ class TestLiveStatusAppConversationService:
         mock_event.model_dump = Mock(return_value={'id': str(mock_event.id)})
 
         self.service.export_lock_required = False
+        self.service.export_max_events = 10000
         self.mock_app_conversation_info_service.get_app_conversation_info = AsyncMock(
             return_value=mock_conversation_info
         )
@@ -3247,6 +3251,121 @@ class TestLiveStatusAppConversationService:
             await self.service.export_conversation(conversation_id)
 
         self.mock_event_service.iter_events_for_export.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_export_conversation_streams_all_events_when_limit_disabled(self):
+        """With no cap, every event reaches the zip in order and nothing is counted."""
+        conversation_id = uuid4()
+        mock_conversation_info = Mock(spec=AppConversationInfo)
+        mock_conversation_info.id = conversation_id
+        mock_conversation_info.model_dump_json = Mock(return_value='{}')
+
+        mock_events = []
+        for i in range(500):
+            mock_event = Mock(spec=Event)
+            mock_event.id = uuid4()
+            mock_event.model_dump = Mock(
+                return_value={'id': str(mock_event.id), 'i': i}
+            )
+            mock_events.append(mock_event)
+
+        assert self.service.export_max_events == 0
+        self.mock_app_conversation_info_service.get_app_conversation_info = AsyncMock(
+            return_value=mock_conversation_info
+        )
+        self.mock_event_service.count_events = AsyncMock(return_value=50_000)
+        self.mock_event_service.iter_events_for_export = Mock(
+            return_value=_async_iter(mock_events)
+        )
+
+        result = await self.service.export_conversation(conversation_id)
+
+        with zipfile.ZipFile(io.BytesIO(result), 'r') as zipf:
+            assert zipf.testzip() is None
+            event_files = [f for f in zipf.namelist() if f.startswith('event_')]
+            assert len(event_files) == 500
+            assert [f.split('_', 2)[2][:-5] for f in event_files] == [
+                str(e.id) for e in mock_events
+            ]
+            assert json.loads(zipf.read(event_files[-1]))['i'] == 499
+        self.mock_event_service.count_events.assert_not_awaited()
+
+    def test_export_limit_disabled_by_default(self):
+        """Service and injector agree: no cap unless explicitly configured."""
+        assert self.service.export_max_events == 0
+        assert LiveStatusAppConversationServiceInjector().export_max_events == 0
+
+    def test_injector_rejects_negative_export_limit(self):
+        with pytest.raises(ValidationError):
+            LiveStatusAppConversationServiceInjector(export_max_events=-1)
+
+    @pytest.mark.asyncio
+    async def test_open_conversation_export_streams_filesystem_events(
+        self, tmp_path, monkeypatch
+    ):
+        """End to end over a real filesystem backend: ordered, complete, guard exact."""
+        from openhands.app_server.event import event_service_base
+        from openhands.app_server.event.filesystem_event_service import (
+            FilesystemEventService,
+        )
+        from openhands.sdk.event import TokenEvent
+
+        monkeypatch.setattr(event_service_base, '_export_batch_size', lambda: 3)
+        conversation_id = uuid4()
+        event_service = FilesystemEventService(
+            prefix=tmp_path,
+            user_id='user',
+            app_conversation_info_service=None,
+            app_conversation_info_load_tasks={},
+        )
+        events = []
+        for i in range(7):
+            event = TokenEvent(
+                source='agent',
+                prompt_token_ids=[i],
+                response_token_ids=[i],
+                timestamp=f'2026-09-01T00:00:{i:02d}',
+            )
+            events.append(event)
+            await event_service.save_event(conversation_id, event)
+        # Materialise index.json so the directory holds 7 events + 1 index file.
+        await event_service.search_events(conversation_id, limit=1)
+
+        mock_conversation_info = Mock(spec=AppConversationInfo)
+        mock_conversation_info.id = conversation_id
+        mock_conversation_info.model_dump_json = Mock(return_value='{}')
+        self.mock_app_conversation_info_service.get_app_conversation_info = AsyncMock(
+            return_value=mock_conversation_info
+        )
+        self.service.event_service = event_service
+        self.service.export_lock_required = False
+        no_redis = patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.try_acquire_redis_lock',
+            new=AsyncMock(side_effect=RedisLockUnavailable()),
+        )
+
+        with no_redis:
+            stream = await self.service.open_conversation_export(conversation_id)
+            result = b''.join([chunk async for chunk in stream])
+
+        with zipfile.ZipFile(io.BytesIO(result), 'r') as zipf:
+            assert zipf.testzip() is None
+            names = zipf.namelist()
+            assert names[0] == 'meta.json'
+            assert names[1:] == [
+                f'event_{i:06d}_{event.id}.json' for i, event in enumerate(events)
+            ]
+            assert json.loads(zipf.read(names[-1]))['prompt_token_ids'] == [6]
+
+        # A cap equal to the event count admits the export: index.json is not
+        # counted as an event.
+        self.service.export_max_events = 7
+        with no_redis:
+            stream = await self.service.open_conversation_export(conversation_id)
+            assert b''.join([chunk async for chunk in stream])
+        self.service.export_max_events = 6
+        with no_redis, pytest.raises(ConversationExportTooLarge):
+            await self.service.open_conversation_export(conversation_id)
 
     def _arrange_start_app_conversation(
         self,

@@ -55,6 +55,24 @@ def _index_rebuild_batch_size() -> int:
         return 200
 
 
+def _export_batch_size() -> int:
+    """Number of events to load per batch during a trajectory export.
+
+    Bounds export memory independently of the index rebuild: at most one batch
+    of fully loaded Event objects is alive at once, regardless of conversation
+    size.
+    """
+    try:
+        return max(1, int(os.getenv('EVENT_EXPORT_BATCH_SIZE', '200')))
+    except ValueError:
+        return 200
+
+
+def _event_paths(paths: list[Path]) -> list[Path]:
+    """Drop the index files that live next to the events."""
+    return [p for p in paths if p.name not in (INDEX_FILENAME, INDEX_STALE_FILENAME)]
+
+
 @dataclass
 class EventServiceBase(EventService, ABC):
     """Event Service for getting events - the only check on permissions for events is
@@ -243,13 +261,7 @@ class EventServiceBase(EventService, ABC):
         # Scan all event files to find ids missing from the seed.
         paths = await loop.run_in_executor(None, self._search_paths, conversation_path)
         known_ids = set(seeded.keys())
-        # Index files are not events; exclude them by filename.
-        missing_paths = [
-            p
-            for p in paths
-            if p.name not in (INDEX_FILENAME, INDEX_STALE_FILENAME)
-            and p.stem not in known_ids
-        ]
+        missing_paths = [p for p in _event_paths(paths) if p.stem not in known_ids]
 
         # Load missing events in batches so we never hold all event objects in
         # memory at once. Each batch is loaded, converted to index entries
@@ -328,25 +340,35 @@ class EventServiceBase(EventService, ABC):
     async def iter_events_for_export(
         self, conversation_id: UUID
     ) -> AsyncGenerator[Event, None]:
-        """Iterate all events once in timestamp order for trajectory export."""
+        """Iterate all events once in timestamp order for trajectory export.
+
+        Events are loaded one batch of EVENT_EXPORT_BATCH_SIZE at a time, so
+        memory is bounded by the batch rather than the conversation. Each batch
+        waits for its slowest read before the next starts; prefetching the next
+        batch measured only a few percent faster under the GIL, so this stays
+        simple.
+        """
         conversation_path = await self.get_conversation_path(conversation_id)
         index = await self._get_or_rebuild_index(conversation_path)
         entries = self._sort_index(index, EventSortOrder.TIMESTAMP)
-        paths = [
-            self._event_id_to_path(conversation_path, entry[0]) for entry in entries
-        ]
-        loaded = await self._load_events_from_paths(paths)
-        by_id = {
-            event.id.replace('-', '')
-            if isinstance(event.id, str)
-            else event.id.hex: event
-            for event in loaded
-            if event is not None
-        }  # type: ignore[union-attr]
-        for entry in entries:
-            event = by_id.get(entry[0])
-            if event is not None:
-                yield event
+        batch_size = _export_batch_size()
+        for i in range(0, len(entries), batch_size):
+            batch = entries[i : i + batch_size]
+            paths = [
+                self._event_id_to_path(conversation_path, entry[0]) for entry in batch
+            ]
+            loaded = await self._load_events_from_paths(paths)
+            by_id = {
+                event.id.replace('-', '')
+                if isinstance(event.id, str)
+                else event.id.hex: event
+                for event in loaded
+                if event is not None
+            }  # type: ignore[union-attr]
+            for entry in batch:
+                event = by_id.get(entry[0])
+                if event is not None:
+                    yield event
 
     async def count_events(
         self,
@@ -377,7 +399,7 @@ class EventServiceBase(EventService, ABC):
         """Count all event files in the conversation directory without filtering."""
         loop = asyncio.get_running_loop()
         paths = await loop.run_in_executor(None, self._search_paths, conversation_path)
-        return len(paths)
+        return len(_event_paths(paths))
 
     async def save_event(self, conversation_id: UUID, event: Event):
         if isinstance(event.id, str):
