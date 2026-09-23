@@ -128,7 +128,9 @@ Access still requires an instance Super Admin permission (`create_organization`,
 | Provision user | `POST /api/organizations/provision-user` + `X-Org-Id` |
 - Dashboard usage: Per-org `usage-stats` + `user-usage` + `conversations`
   (conversations capped at 100/org, all-orgs fan-out capped at 12)
-- Conversation **Stop** calls `POST .../conversations/{id}/stop`
+- FE Super Admin access requires ``manage_super_admins`` (not
+  ``provision_user``, which org owners/admins also hold)
+- Provision user shows one-time password + API key after success
 | Open org | `POST /api/organizations/{id}/switch` (super admin allowed without membership) |
 
 - **Org suspend/resume:** `org.status` (`active`/`suspended`); members blocked via `require_permission`
