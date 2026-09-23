@@ -1,5 +1,6 @@
 /* eslint-disable i18next/no-literal-string */
 import React from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
   EmailIcon,
@@ -11,6 +12,7 @@ import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
 import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
+import { I18nKey } from "#/i18n/declaration";
 import {
   PillBadge,
   SpendMeter,
@@ -89,6 +91,7 @@ interface OrganizationBudgetTabProps {
   reconciliationError: string | null;
   desiredTeamMaxBudget: number | null;
   appliedTeamMaxBudget: number | null;
+  cycleStartSpend: number | null;
   unmappedSpend: number | null;
   unmappedMemberCount: number | null;
   monthlyLimit: string;
@@ -122,6 +125,7 @@ export function OrganizationBudgetTab({
   reconciliationError,
   desiredTeamMaxBudget,
   appliedTeamMaxBudget,
+  cycleStartSpend,
   unmappedSpend,
   unmappedMemberCount,
   monthlyLimit,
@@ -141,6 +145,7 @@ export function OrganizationBudgetTab({
   isSaving,
   isMonthlyLimitValid,
 }: OrganizationBudgetTabProps) {
+  const { t } = useTranslation();
   const observedAtLabel = spendObservedAt
     ? new Date(spendObservedAt).toLocaleString()
     : null;
@@ -218,6 +223,19 @@ export function OrganizationBudgetTab({
           )}
           {reconciliationError ? ` ${reconciliationError}` : ""}
         </div>
+        {desiredTeamMaxBudget !== null && (
+          <p className="mb-4 text-xs text-[var(--oh-muted)]">
+            {cycleStartSpend !== null && cycleStartSpend > 0
+              ? t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND, {
+                  cap: `$${desiredTeamMaxBudget.toLocaleString()}`,
+                  priorSpend: `$${cycleStartSpend.toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}`,
+                })
+              : t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER)}
+          </p>
+        )}
         {syncStatus === "error" && !reconciliationError && (
           <div
             role="alert"
