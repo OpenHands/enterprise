@@ -7,7 +7,7 @@ makes to it. Focus areas:
 - user scoping, including cross user isolation and the admin (no user id) case
 - the /api/init handshake, on start and again on resume
 - status mapping from the claim's Ready condition, including MISSING
-- VSCode URLs under the router path, and their cache
+- VSCode URLs under the router path
 - the Kubernetes API error mapping
 """
 
@@ -72,14 +72,18 @@ OTHER_USER_ID = 'user-2'
 CLAIM_NAME = 'oh-claimed'
 SANDBOX_NAME = 'openhands-agent-server-abcde'
 AGENT_SERVER_URL = f'{ROUTER_URL}/{NAMESPACE}/{SANDBOX_NAME}/8000'
-# What the template sets as OH_VSCODE_BASE_PATH for this sandbox.
-VSCODE_BASE_PATH = f'/sandbox-router/{NAMESPACE}/{SANDBOX_NAME}/8001'
-VSCODE_URL = (
-    f'{ROUTER_URL}/{NAMESPACE}/{SANDBOX_NAME}/8001/?tkn=vscode-token'
-    '&folder=/workspace/project'
-)
 CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 SESSION_API_KEY = 'the-session-key'
+
+
+def _vscode_url(session_api_key: str) -> str:
+    return (
+        f'{ROUTER_URL}/{NAMESPACE}/{SANDBOX_NAME}/8001/?tkn={session_api_key}'
+        '&folder=/workspace/project'
+    )
+
+
+VSCODE_URL = _vscode_url(SESSION_API_KEY)
 
 READY = {'type': 'Ready', 'status': 'True', 'reason': 'DependenciesReady'}
 SUSPENDED = {'type': 'Ready', 'status': 'False', 'reason': 'SandboxSuspended'}
@@ -208,45 +212,23 @@ def _response(status_code: int = 200, payload: dict | None = None) -> MagicMock:
 
 
 class FakeAgentServer:
-    """httpx.AsyncClient stand in that answers the agent server's routes.
-
-    ``/api/vscode/url`` builds its answer the way the agent server does:
-    ``base_url``, then the VSCode base path the pod booted with, then the token.
-    ``vscode_base_path=None`` is a pod whose template sets no base path.
-    """
+    """httpx.AsyncClient stand in that answers the agent server's routes."""
 
     def __init__(
         self,
         init_get_responses: list | None = None,
         init_state: str = 'dormant',
         init_post_status: int = 200,
-        vscode_base_path: str | None = VSCODE_BASE_PATH,
-        vscode_reachable: bool = True,
     ):
         self.init_get_responses = init_get_responses or []
         self.init_state = init_state
         self.init_post_status = init_post_status
-        self.vscode_base_path = vscode_base_path
-        self.vscode_reachable = vscode_reachable
         self.init_get_urls: list[str] = []
         self.init_post_urls: list[str] = []
         self.init_post_bodies: list[dict] = []
         self.init_post_headers: list[dict] = []
-        self.vscode_requests: list[dict] = []
 
     async def get(self, url: str, **kwargs):
-        if url.endswith('/api/vscode/url'):
-            self.vscode_requests.append({'url': url, **kwargs})
-            if not self.vscode_reachable:
-                raise httpx.ConnectError('no route to sandbox')
-            params = kwargs['params']
-            base = params['base_url'].rstrip('/')
-            if self.vscode_base_path:
-                base = f'{base}/{self.vscode_base_path.strip("/")}'
-            return _response(
-                200,
-                {'url': f'{base}/?tkn=vscode-token&folder={params["workspace_dir"]}'},
-            )
         assert url.endswith('/api/init'), f'unexpected GET {url}'
         self.init_get_urls.append(url)
         if self.init_get_responses:
@@ -344,13 +326,6 @@ def k8s():
     return FakeAgentSandbox()
 
 
-@pytest.fixture(autouse=True)
-def clear_vscode_cache():
-    k8s_agent_sandbox_service._vscode_urls.clear()
-    yield
-    k8s_agent_sandbox_service._vscode_urls.clear()
-
-
 @pytest.fixture
 def store(db_session):
     async def _store(*sandboxes: StoredSandbox) -> None:
@@ -417,7 +392,7 @@ class TestStartSandbox:
             AGENT_SERVER: AGENT_SERVER_URL,
             WORKER_1: f'{ROUTER_URL}/{NAMESPACE}/{SANDBOX_NAME}/{WORKER_1_PORT}',
             WORKER_2: f'{ROUTER_URL}/{NAMESPACE}/{SANDBOX_NAME}/{WORKER_2_PORT}',
-            VSCODE: VSCODE_URL,
+            VSCODE: _vscode_url(sandbox.session_api_key),
         }
 
     @pytest.mark.asyncio
@@ -744,104 +719,35 @@ class TestUserScoping:
 
 class TestVSCodeUrl:
     @pytest.mark.asyncio
-    async def test_asks_the_agent_server_with_the_router_origin(
+    async def test_built_from_the_router_path_and_the_session_key(
         self, k8s, db_session, store
     ):
         await store(_stored())
         k8s.add_claim()
-        agent_server = FakeAgentServer()
+        httpx_client = AsyncMock()
 
         sandbox = await _service(
-            db_session, k8s, httpx_client=agent_server
+            db_session, k8s, httpx_client=httpx_client
         ).get_sandbox(CLAIM_NAME)
 
         urls = {url.name: url for url in sandbox.exposed_urls}
         assert urls[VSCODE].url == VSCODE_URL
         assert urls[VSCODE].port == 8001
-        request = agent_server.vscode_requests[0]
-        assert request['url'] == f'{AGENT_SERVER_URL}/api/vscode/url'
-        # The agent server adds the base path, so the router's path is not
-        # sent twice.
-        assert request['params'] == {
-            'base_url': 'https://app.example.com',
-            'workspace_dir': '/workspace/project',
-        }
-        assert request['headers'] == {'X-Session-API-Key': SESSION_API_KEY}
+        httpx_client.get.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_cached_until_the_pod_changes(self, k8s, db_session, store):
-        """A resume boots a new pod, with a new token, and moves the ready time."""
-        await store(_stored())
-        claim = k8s.add_claim(
-            ready={**READY, 'lastTransitionTime': '2026-01-01T00:00:00Z'}
-        )
-        agent_server = FakeAgentServer()
-        service = _service(db_session, k8s, httpx_client=agent_server)
-
-        await service.get_sandbox(CLAIM_NAME)
-        await service.get_sandbox(CLAIM_NAME)
-        assert len(agent_server.vscode_requests) == 1
-
-        claim['status']['conditions'] = [
-            {**READY, 'lastTransitionTime': '2026-01-01T01:00:00Z'}
-        ]
-        await service.get_sandbox(CLAIM_NAME)
-        assert len(agent_server.vscode_requests) == 2
-
-    @pytest.mark.asyncio
-    async def test_template_without_the_base_path_gets_no_link(
-        self, k8s, db_session, store
-    ):
-        """Its URL would be the router's origin, which is the app, not VSCode."""
+    async def test_search_includes_it(self, k8s, db_session, store):
         await store(_stored())
         k8s.add_claim()
-        agent_server = FakeAgentServer(vscode_base_path=None)
-
-        with patch.object(k8s_agent_sandbox_service._logger, 'warning') as warning:
-            sandbox = await _service(
-                db_session, k8s, httpx_client=agent_server
-            ).get_sandbox(CLAIM_NAME)
-
-        assert VSCODE not in {url.name for url in sandbox.exposed_urls}
-        assert 'OH_VSCODE_BASE_PATH' in warning.call_args.args[0]
-
-    @pytest.mark.asyncio
-    async def test_unreachable_agent_server_gets_no_link(self, k8s, db_session, store):
-        await store(_stored())
-        k8s.add_claim()
-        agent_server = FakeAgentServer(vscode_reachable=False)
-
-        sandbox = await _service(
-            db_session, k8s, httpx_client=agent_server
-        ).get_sandbox(CLAIM_NAME)
-
-        assert sandbox.status == SandboxStatus.RUNNING
-        assert VSCODE not in {url.name for url in sandbox.exposed_urls}
-
-    @pytest.mark.asyncio
-    async def test_search_skips_the_agent_server(self, k8s, db_session, store):
-        await store(_stored())
-        k8s.add_claim()
-        agent_server = FakeAgentServer()
+        httpx_client = AsyncMock()
 
         page = await _service(
-            db_session, k8s, httpx_client=agent_server
+            db_session, k8s, httpx_client=httpx_client
         ).search_sandboxes()
 
-        assert agent_server.vscode_requests == []
-        assert VSCODE not in {url.name for url in page.items[0].exposed_urls}
-
-    @pytest.mark.asyncio
-    async def test_delete_drops_the_cached_url(self, k8s, db_session, store):
-        await store(_stored())
-        k8s.add_claim()
-        service = _service(db_session, k8s)
-        await service.get_sandbox(CLAIM_NAME)
-        assert CLAIM_NAME in k8s_agent_sandbox_service._vscode_urls
-
-        await service.delete_sandbox(CLAIM_NAME)
-
-        assert CLAIM_NAME not in k8s_agent_sandbox_service._vscode_urls
+        urls = {url.name: url.url for url in page.items[0].exposed_urls}
+        assert urls[VSCODE] == VSCODE_URL
+        httpx_client.get.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

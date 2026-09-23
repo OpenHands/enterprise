@@ -7,7 +7,6 @@ import uuid
 from dataclasses import dataclass, field
 from posixpath import dirname
 from typing import Any, AsyncGenerator, Callable
-from urllib.parse import urlsplit
 
 import base62
 import httpx
@@ -106,27 +105,6 @@ MISSING_ROUTER_URL = (
     "agent-sandbox router's path-routing prefix, for example "
     'https://openhands.example.com/sandbox-router.'
 )
-
-
-# VSCode connection URLs are fetched from the agent server rather than built
-# locally (see `_resolve_vscode_url`), so they are cached to keep `get_sandbox`
-# off the network. Each entry holds the time its claim last became ready. A
-# resume boots a new pod with a new VSCode token, which moves that time, so the
-# entry is fetched again.
-VSCODE_URL_CACHE_SIZE = 1024
-_vscode_urls: dict[str, tuple[str, str]] = {}
-
-
-def _cache_vscode_url(claim_name: str, ready_since: str, url: str) -> None:
-    """Cache a VSCode URL, dropping the oldest entry when the cache is full.
-
-    Claims deleted outside this service are never removed here, so the cache
-    needs a bound of its own.
-    """
-    _vscode_urls.pop(claim_name, None)
-    while len(_vscode_urls) >= VSCODE_URL_CACHE_SIZE:
-        _vscode_urls.pop(next(iter(_vscode_urls)))
-    _vscode_urls[claim_name] = (ready_since, url)
 
 
 def owner_label_value(user_id: str) -> str:
@@ -429,73 +407,20 @@ class K8sAgentSandboxService(SandboxService):
             f'{self.router_url.rstrip("/")}/{self.k8s.namespace}/{sandbox_name}/{port}'
         )
 
-    @property
-    def _router_origin(self) -> str:
-        """The router URL's scheme and host, without its path."""
-        parts = urlsplit(self.router_url)
-        return f'{parts.scheme}://{parts.netloc}'
-
-    async def _resolve_vscode_url(
-        self,
-        claim: dict,
-        sandbox_name: str,
-        sandbox_spec: K8sAgentSandboxSpecInfo,
-        session_api_key: str,
-    ) -> str | None:
-        """The VSCode connection URL, from the cache or the agent server.
-
-        The URL cannot be built locally: under deferred init, VSCode takes its
-        connection token at boot, so the token is unrelated to the session API
-        key. The agent server puts VSCode's base path, the router path from
-        ``OH_VSCODE_BASE_PATH``, after ``base_url``, so ``base_url`` is the
-        router's origin.
-
-        Returns None when the agent server cannot be reached, and when the URL
-        is not under the sandbox's router path: a template without the base
-        path, whose link would open the app instead of VSCode.
-        """
-        claim_name = claim['metadata']['name']
-        ready_since = _condition(claim).get('lastTransitionTime', '')
-        cached = _vscode_urls.get(claim_name)
-        if cached and cached[0] == ready_since:
-            return cached[1]
-        agent_server_url = self._port_url(sandbox_name, sandbox_spec.agent_server_port)
-        try:
-            response = await self.httpx_client.get(
-                f'{agent_server_url}/api/vscode/url',
-                params={
-                    'base_url': self._router_origin,
-                    'workspace_dir': sandbox_spec.working_dir,
-                },
-                headers={'X-Session-API-Key': session_api_key},
-            )
-            response.raise_for_status()
-            url = response.json().get('url')
-        except Exception as exc:
-            _logger.info(f'No VSCode URL for sandbox {claim_name}: {exc}')
-            return None
-        if not url:
-            return None
-        vscode_path = self._port_url(sandbox_name, sandbox_spec.vscode_port) + '/'
-        if not url.startswith(vscode_path):
-            _logger.warning(
-                f'The VSCode URL for sandbox {claim_name} is not under '
-                f"{vscode_path}. Set OH_VSCODE_BASE_PATH in the pool's "
-                'SandboxTemplate to <router prefix>/$(POD_NAMESPACE)/$(POD_NAME)/'
-                f'{sandbox_spec.vscode_port}.'
-            )
-            return None
-        _cache_vscode_url(claim_name, ready_since, url)
-        return url
-
     def _exposed_urls(
         self,
         sandbox_name: str,
         sandbox_spec: K8sAgentSandboxSpecInfo,
-        vscode_url: str | None = None,
+        session_api_key: str,
     ) -> list[ExposedUrl]:
         """The agent server, worker and VSCode URLs."""
-        exposed_urls = [
+        # The agent server gives VSCode the session API key as its connection
+        # token on POST /api/init.
+        vscode_url = (
+            f'{self._port_url(sandbox_name, sandbox_spec.vscode_port)}'
+            f'/?tkn={session_api_key}&folder={sandbox_spec.working_dir}'
+        )
+        return [
             ExposedUrl(
                 name=AGENT_SERVER,
                 url=self._port_url(sandbox_name, sandbox_spec.agent_server_port),
@@ -511,18 +436,13 @@ class K8sAgentSandboxService(SandboxService):
                 url=self._port_url(sandbox_name, WORKER_2_PORT),
                 port=WORKER_2_PORT,
             ),
+            ExposedUrl(name=VSCODE, url=vscode_url, port=sandbox_spec.vscode_port),
         ]
-        if vscode_url:
-            exposed_urls.append(
-                ExposedUrl(name=VSCODE, url=vscode_url, port=sandbox_spec.vscode_port)
-            )
-        return exposed_urls
 
     async def _to_sandbox_info(
         self,
         stored_sandbox: StoredSandbox,
         claim: dict | None,
-        with_vscode_url: bool = True,
     ) -> SandboxInfo:
         """Build a SandboxInfo from the stored row plus its claim.
 
@@ -540,12 +460,9 @@ class K8sAgentSandboxService(SandboxService):
             and sandbox_name
         ):
             sandbox_spec = await self._get_spec(stored_sandbox.sandbox_spec_id)
-            vscode_url = None
-            if with_vscode_url:
-                vscode_url = await self._resolve_vscode_url(
-                    claim, sandbox_name, sandbox_spec, session_api_key
-                )
-            exposed_urls = self._exposed_urls(sandbox_name, sandbox_spec, vscode_url)
+            exposed_urls = self._exposed_urls(
+                sandbox_name, sandbox_spec, session_api_key
+            )
         else:
             session_api_key = None
 
@@ -579,13 +496,7 @@ class K8sAgentSandboxService(SandboxService):
         page_id: str | None = None,
         limit: int = 100,
     ) -> SandboxPage:
-        """Search for sandboxes: one query for the page, one list call for its claims.
-
-        VSCode URLs are left out. Resolving one costs an HTTP call to the
-        sandbox, and search runs on every conversation start through
-        ``pause_old_sandboxes``. The frontend reads that URL through
-        ``batch_get_sandboxes``, which still resolves it.
-        """
+        """Search for sandboxes: one query for the page, one list call for its claims."""
         page = await search_stored_sandboxes(
             self.db_session,
             self.user_context,
@@ -595,9 +506,7 @@ class K8sAgentSandboxService(SandboxService):
         )
         claims = await self._live_claims({row.id for row in page.items})
         sandboxes = [
-            await self._to_sandbox_info(
-                stored_sandbox, claims.get(stored_sandbox.id), with_vscode_url=False
-            )
+            await self._to_sandbox_info(stored_sandbox, claims.get(stored_sandbox.id))
             for stored_sandbox in page.items
         ]
         return SandboxPage(items=sandboxes, next_page_id=page.next_page_id)
@@ -730,7 +639,7 @@ class K8sAgentSandboxService(SandboxService):
         try:
             self.db_session.add(stored_sandbox)
             await self.db_session.flush()
-            sandbox_name, claim = await self._wait_for_claim(claim_name)
+            sandbox_name = await self._wait_for_claim(claim_name)
             await self._initialize_agent_server(
                 sandbox_name, sandbox_spec, session_api_key
             )
@@ -747,11 +656,7 @@ class K8sAgentSandboxService(SandboxService):
             status=SandboxStatus.RUNNING,
             session_api_key=session_api_key,
             exposed_urls=self._exposed_urls(
-                sandbox_name,
-                sandbox_spec,
-                await self._resolve_vscode_url(
-                    claim, sandbox_name, sandbox_spec, session_api_key
-                ),
+                sandbox_name, sandbox_spec, session_api_key
             ),
             created_at=stored_sandbox.created_at,
         )
@@ -765,10 +670,8 @@ class K8sAgentSandboxService(SandboxService):
                 f'Could not delete SandboxClaim {claim_name} after a failed start'
             )
 
-    async def _wait_for_claim(self, claim_name: str) -> tuple[str, dict]:
-        """Poll a new claim until it holds a ready sandbox.
-
-        Returns the sandbox's name and the claim.
+    async def _wait_for_claim(self, claim_name: str) -> str:
+        """Poll a new claim until it holds a ready sandbox, and return its name.
 
         Adopting a warm sandbox is near instant. With the pool empty, the
         controller cold-starts one from the template, which can take minutes
@@ -784,7 +687,7 @@ class K8sAgentSandboxService(SandboxService):
             ready = _condition(claim)
             sandbox_name = _sandbox_name(claim)
             if ready.get('status') == 'True' and sandbox_name:
-                return sandbox_name, claim
+                return sandbox_name
             if ready.get('reason') == 'WarmPoolNotFound':
                 raise SandboxError(
                     f'SandboxWarmPool {claim["spec"]["warmPoolRef"]["name"]!r} does '
@@ -1038,7 +941,6 @@ class K8sAgentSandboxService(SandboxService):
                 f'Could not complete delete for sandbox {sandbox_id}: {exc}'
             ) from exc
         await self.db_session.delete(stored_sandbox)
-        _vscode_urls.pop(sandbox_id, None)
         return True
 
 

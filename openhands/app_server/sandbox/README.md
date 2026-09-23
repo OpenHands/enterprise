@@ -136,7 +136,7 @@ set up:
   `/sandbox-router/$(POD_NAMESPACE)/$(POD_NAME)/8001`, with `POD_NAME` and
   `POD_NAMESPACE` from the downward API. The router strips the path before
   forwarding, and openvscode-server answers with or without it, but it needs
-  the path to write its own links. Without it there is no VSCode link.
+  the path to write its own links.
 - A `SandboxWarmPool` on that template. Its name is the sandbox spec id.
 - agent-sandbox's router, run with `--path-routing-prefix=/sandbox-router`. A
   browser cannot set the router's `X-Sandbox-*` headers on a WebSocket, so the
@@ -163,6 +163,11 @@ deletes the pod and keeps its volume and Service. `resume_sandbox` sets it back
 to `Running` and repeats the handshake on the new pod with the stored key.
 The agent server's secret key is the session key, so the secrets it persisted
 on the volume still decrypt.
+
+The VSCode link carries the session API key as VSCode's connection token. The
+pool's agent server has to switch VSCode to that key on `POST /api/init`, which
+needs [software-agent-sdk#5282](https://github.com/OpenHands/software-agent-sdk/pull/5282).
+With an older image, the link answers 403.
 
 ### Known limitations
 
