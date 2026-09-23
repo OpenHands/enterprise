@@ -94,6 +94,30 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": false
+        },
+        {
+            "name": "Legacy OpenHands OSS",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "openhands.server.listen:app",
+                "--reload",
+                "--reload-include",
+                "openhands",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "3000"
+            ],
+            "env": {
+                "PERMITTED_CORS_ORIGINS": "http://localhost:3001",
+                "INIT_GIT_IN_EMPTY_WORKSPACE": "1",
+                "ENABLE_MCP_SEARCH_ENGINE": "true",
+                "OH_WEB_CLIENT_KIND": "DefaultWebClientConfigInjector"
+            },
+            "justMyCode": false
         }
     ]
 }
