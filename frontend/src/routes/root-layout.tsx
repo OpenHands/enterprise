@@ -31,11 +31,13 @@ import { LOCAL_STORAGE_KEYS } from "#/utils/local-storage";
 import { EmailVerificationGuard } from "#/components/features/guards/email-verification-guard";
 import { OnboardingGuard } from "#/components/features/guards/onboarding-guard";
 import { AlertBanner } from "#/components/features/alerts/alert-banner";
+import { FreeTrialChrome } from "#/components/features/billing/free-trial-chrome";
 import { cn } from "#/utils/utils";
 import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { useAppTitle } from "#/hooks/use-app-title";
 import { useAutoAcceptInvitation } from "#/hooks/use-auto-accept-invitation";
 import { usePostHogIdentify } from "#/hooks/use-posthog-identify";
+import { useAppMode } from "#/hooks/use-app-mode";
 
 export function ErrorBoundary() {
   const error = useRouteError();
@@ -86,6 +88,7 @@ export default function MainApp() {
   const { t } = useTranslation();
 
   const config = useConfig();
+  const { isSaas } = useAppMode();
   const {
     data: isAuthed,
     isFetching: isFetchingAuth,
@@ -271,6 +274,9 @@ export default function MainApp() {
   const isFlushChromeRoute =
     pathname.startsWith("/settings") || pathname.startsWith("/super-admin");
 
+  const showFreeTrialTopBar =
+    Boolean(isAuthed) && isSaas && !isOnIntermediatePage;
+
   return (
     <div
       data-testid="root-layout"
@@ -281,7 +287,9 @@ export default function MainApp() {
     >
       <title>{appTitle}</title>
 
-      <div className="flex flex-col w-full min-w-0 h-full gap-3">
+      {showFreeTrialTopBar && <FreeTrialChrome />}
+
+      <div className="flex flex-col w-full min-w-0 h-full gap-3 min-h-0 flex-1">
         {config.data &&
           (config.data.maintenance_start_time ||
             (config.data.faulty_models &&
