@@ -289,6 +289,8 @@ export type ConversationRow = {
   id: string;
   user_email?: string | null;
   org_name?: string | null;
+  /** Present on Super Admin multi-org rows for stop/routing. */
+  org_id?: string;
   total_tokens: number;
   accumulated_cost: number;
   created_at?: string | null;
@@ -300,6 +302,7 @@ export type ConversationRow = {
   llm_model?: string | null;
   trigger?: string | null;
   execution_status?: string | null;
+  sandbox_status?: string | null;
   title?: string | null;
 };
 
@@ -359,8 +362,9 @@ export function ConversationsTab({
   onStopConversation: (conversation: {
     id: string;
     title: string | null;
+    orgId?: string;
   }) => void;
-  pendingStop: { id: string; title: string | null } | null;
+  pendingStop: { id: string; title: string | null; orgId?: string } | null;
   stopConfirmationText: string;
   onConfirmStop: () => void;
   onCancelStop: () => void;
@@ -650,6 +654,7 @@ export function ConversationsTab({
                             onStopConversation({
                               id: conversation.id,
                               title: conversation.title ?? null,
+                              orgId: conversation.org_id,
                             })
                           }
                           disabled={stoppingIds.has(conversation.id)}

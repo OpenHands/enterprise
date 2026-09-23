@@ -126,7 +126,9 @@ Access still requires an instance Super Admin permission (`create_organization`,
 | Users directory | `GET/PATCH/DELETE /api/admin/users` |
 | Super admins | `GET/POST/DELETE /api/admin/super-admins` |
 | Provision user | `POST /api/organizations/provision-user` + `X-Org-Id` |
-| Dashboard usage | Per-org `.../conversations/usage-stats` + `user-usage` |
+- Dashboard usage: Per-org `usage-stats` + `user-usage` + `conversations`
+  (conversations capped at 100/org, all-orgs fan-out capped at 12)
+- Conversation **Stop** calls `POST .../conversations/{id}/stop`
 | Open org | `POST /api/organizations/{id}/switch` (super admin allowed without membership) |
 
 - **Org suspend/resume:** `org.status` (`active`/`suspended`); members blocked via `require_permission`
