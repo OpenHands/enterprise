@@ -325,4 +325,56 @@ describe("Budgets", () => {
       expect(organizationService.getBudgetSettings).toHaveBeenCalledTimes(2);
     });
   });
+
+  it("does not offer a toggle to disable the organization budget", async () => {
+    await renderBudgets();
+
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(screen.queryByText("Enable budget")).not.toBeInTheDocument();
+  });
+
+  it("saves the organization budget as enabled even when it is currently inactive", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      enabled: false,
+      reconciliation_state: "inactive",
+      desired_team_max_budget: null,
+      applied_team_max_budget: null,
+    });
+
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      expect(organizationService.updateBudgetSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            enabled: true,
+            monthly_limit: 1000,
+          }),
+        }),
+      );
+    });
+  });
+
+  it("disables saving the organization budget until a monthly limit is entered", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      enabled: false,
+      monthly_limit: null,
+      reconciliation_state: "inactive",
+      desired_team_max_budget: null,
+      applied_team_max_budget: null,
+    });
+
+    await renderBudgets();
+
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Monthly limit"), "500");
+
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+  });
 });

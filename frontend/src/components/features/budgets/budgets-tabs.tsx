@@ -15,7 +15,6 @@ import {
   PillBadge,
   SpendMeter,
   StatusPill,
-  Toggle,
   UserProgressBar,
 } from "./budgets-components";
 import { cn } from "#/utils/utils";
@@ -73,8 +72,6 @@ const STATUS_FILTER_ITEMS = [
 ];
 
 interface OrganizationBudgetTabProps {
-  orgBudgetEnabled: boolean;
-  onToggleOrgBudget: (value: boolean) => void;
   currentSpend: number | null;
   monthlyLimitValue: number | null;
   cycleLabel: string;
@@ -113,8 +110,6 @@ interface OrganizationBudgetTabProps {
 }
 
 export function OrganizationBudgetTab({
-  orgBudgetEnabled,
-  onToggleOrgBudget,
   currentSpend,
   monthlyLimitValue,
   cycleLabel,
@@ -178,14 +173,6 @@ export function OrganizationBudgetTab({
             Track total spend across your org and get alerted before you hit
             your cap.
           </p>
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          <span className="text-sm text-muted">Enable budget</span>
-          <Toggle
-            enabled={orgBudgetEnabled}
-            onChange={onToggleOrgBudget}
-            label="Enable organization budget"
-          />
         </div>
       </div>
 
