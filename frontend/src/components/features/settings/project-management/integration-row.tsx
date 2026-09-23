@@ -19,6 +19,7 @@ import { cn } from "#/utils/utils";
 import { settingsListRowHoverClassName } from "#/utils/settings-list-classes";
 import { formControlTransitionClassName } from "#/utils/form-control-classes";
 import { IntegrationProviderIcon } from "#/components/features/settings/git-settings/integration-provider-icon";
+import { OrgScopeBadge } from "./org-scope-badge";
 
 interface IntegrationRowProps {
   platform: "jira" | "jira-dc" | "linear";
@@ -121,6 +122,7 @@ export function IntegrationRow({
           <Text className="min-w-0 truncate text-sm font-medium text-content-2">
             {platformName}
           </Text>
+          {isJira && <OrgScopeBadge />}
         </div>
         {jiraInstanceStatus !== undefined && (
           <span
@@ -152,6 +154,7 @@ export function IntegrationRow({
         <Text className="min-w-0 truncate text-sm font-medium text-content-2">
           {platformName}
         </Text>
+        {isJira && <OrgScopeBadge />}
       </div>
       <ConfigureButton
         onClick={handleConfigure}
