@@ -111,6 +111,14 @@ function renderHub(path: string) {
             path="admin-user-requests"
             element={<div data-testid="integrations-hub-admin-user-requests" />}
           />
+          <Route
+            path="resolvers"
+            element={<div data-testid="integrations-hub-resolvers" />}
+          />
+          <Route
+            path="resolvers/:providerId"
+            element={<div data-testid="integrations-hub-resolver-page" />}
+          />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -198,6 +206,11 @@ describe("Integrations Hub admin nav", () => {
         name: /INTEGRATIONS_HUB\$NAV_ADMIN_USER_REQUESTS/,
       }),
     ).toHaveAttribute("href", INTEGRATIONS_HUB_PATHS.adminUserRequests);
+    expect(
+      screen.getByRole("link", {
+        name: "INTEGRATIONS_HUB$NAV_RESOLVERS_LEGACY",
+      }),
+    ).toHaveAttribute("href", INTEGRATIONS_HUB_PATHS.resolvers);
 
     const adminLinks = within(nav)
       .getAllByRole("link")
@@ -206,6 +219,7 @@ describe("Integrations Hub admin nav", () => {
       INTEGRATIONS_HUB_PATHS.adminCatalog,
       INTEGRATIONS_HUB_PATHS.adminOverview,
       INTEGRATIONS_HUB_PATHS.adminUserRequests,
+      INTEGRATIONS_HUB_PATHS.resolvers,
     ]);
 
     expect(

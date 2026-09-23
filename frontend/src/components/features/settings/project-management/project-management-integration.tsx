@@ -1,6 +1,6 @@
-import React from "react";
 import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
+import type { IntegrationProviderId } from "#/components/features/settings/git-settings/integration-provider-icon";
 import { IntegrationRow } from "./integration-row";
 import { JiraDcIntegrationPanel } from "./jira-dc-integration-panel";
 import { useConfig } from "#/hooks/query/use-config";
@@ -11,19 +11,40 @@ import {
   settingsListDividerClassName,
 } from "#/utils/settings-list-classes";
 
-export function ProjectManagementIntegration() {
+interface ProjectManagementIntegrationProps {
+  /** When set, only render this project-management provider. */
+  focusProvider?: IntegrationProviderId;
+}
+
+export function ProjectManagementIntegration({
+  focusProvider,
+}: ProjectManagementIntegrationProps = {}) {
   const { t } = useTranslation();
   const { data: config } = useConfig();
 
-  const jiraEnabled = config?.feature_flags?.enable_jira;
-  const linearEnabled = config?.feature_flags?.enable_linear;
-  const jiraDcEnabled = config?.feature_flags?.enable_jira_dc;
+  const jiraEnabled =
+    focusProvider === "jira" ||
+    (!focusProvider && !!config?.feature_flags?.enable_jira);
+  const linearEnabled =
+    focusProvider === "linear" ||
+    (!focusProvider && !!config?.feature_flags?.enable_linear);
+  const jiraDcEnabled =
+    focusProvider === "jira-dc" ||
+    (!focusProvider && !!config?.feature_flags?.enable_jira_dc);
+
+  if (!jiraEnabled && !linearEnabled && !jiraDcEnabled) {
+    return null;
+  }
+
+  const showSectionTitle = !focusProvider;
 
   return (
     <div className="flex flex-col gap-3">
-      <Text className="text-sm font-medium text-content-2">
-        {t(I18nKey.PROJECT_MANAGEMENT$TITLE)}
-      </Text>
+      {showSectionTitle ? (
+        <Text className="text-sm font-medium text-content-2">
+          {t(I18nKey.PROJECT_MANAGEMENT$TITLE)}
+        </Text>
+      ) : null}
 
       {/* Jira Cloud + Linear are multi-workspace SaaS integrations and keep the
           compact row + modal. Their config is short. */}

@@ -64,6 +64,8 @@ export default [
           "admin-user-requests",
           "routes/integrations-hub-admin-user-requests.tsx",
         ),
+        route("resolvers", "routes/integrations-hub-resolvers.tsx"),
+        route("resolvers/:providerId", "routes/integrations-hub-resolver.tsx"),
       ]),
       route("app", "routes/app-settings.tsx"),
       route("billing", "routes/billing.tsx"),

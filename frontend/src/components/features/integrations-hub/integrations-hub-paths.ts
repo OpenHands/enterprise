@@ -9,6 +9,7 @@ export const INTEGRATIONS_HUB_PATHS = {
   adminOverview: "/settings/integrations-hub/admin-overview",
   adminCatalog: "/settings/integrations-hub/admin-catalog",
   adminUserRequests: "/settings/integrations-hub/admin-user-requests",
+  resolvers: "/settings/integrations-hub/resolvers",
 } as const;
 
 export const LEGACY_HUB_PERSONAL_REDIRECTS: Record<string, string> = {
@@ -22,7 +23,15 @@ export const INTEGRATIONS_HUB_ADMIN_PATHS = [
   INTEGRATIONS_HUB_PATHS.adminOverview,
   INTEGRATIONS_HUB_PATHS.adminCatalog,
   INTEGRATIONS_HUB_PATHS.adminUserRequests,
+  INTEGRATIONS_HUB_PATHS.resolvers,
 ] as const;
+
+export function isIntegrationsHubResolverPath(pathname: string): boolean {
+  return (
+    pathname === INTEGRATIONS_HUB_PATHS.resolvers ||
+    pathname.startsWith(`${INTEGRATIONS_HUB_PATHS.resolvers}/`)
+  );
+}
 
 export function isPersonalIntegrationsPath(pathname: string): boolean {
   return (
@@ -39,5 +48,8 @@ export function isIntegrationsHubPath(pathname: string): boolean {
 }
 
 export function isIntegrationsHubAdminPath(pathname: string): boolean {
-  return INTEGRATIONS_HUB_ADMIN_PATHS.some((path) => pathname === path);
+  return (
+    INTEGRATIONS_HUB_ADMIN_PATHS.some((path) => pathname === path) ||
+    isIntegrationsHubResolverPath(pathname)
+  );
 }

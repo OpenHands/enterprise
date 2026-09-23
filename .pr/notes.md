@@ -98,6 +98,14 @@ Enterprise supplements `openhands_extensions` with legacy Settings providers:
 FE official catalog and Hub `default_managed_connectors()` both include these
 so cutover **Reconnect** can target them.
 
+## Resolvers in Integrations Admin
+
+Admin Hub left nav includes a **Resolvers** tab. The page lists every
+supported legacy provider with **Connected** chips when applicable. Row actions
+go straight to the real next step (GitHub App install, GitLab/Azure OAuth,
+Slack **Install**, webhook managers, Jira/Linear configure modals)—not a
+wrapper modal that re-shows Connect/Configure.
+
 ## Follow-ups (not in this PR)
 
 - In-process auth bridge (skip HTTP self-call to `/api/v1/users/me`)

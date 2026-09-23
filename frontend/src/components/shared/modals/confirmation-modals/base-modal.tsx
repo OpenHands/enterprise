@@ -30,7 +30,9 @@ export function BaseModalDescription({
   children,
 }: BaseModalDescriptionProps) {
   return (
-    <span className="text-xs text-modal-muted">{children || description}</span>
+    <div className="text-sm leading-5 text-tertiary-light">
+      {children || description}
+    </div>
   );
 }
 

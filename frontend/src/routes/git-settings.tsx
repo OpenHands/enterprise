@@ -35,6 +35,7 @@ import {
   settingsListContainerClassName,
   settingsListDividerClassName,
 } from "#/utils/settings-list-classes";
+import type { IntegrationProviderId } from "#/components/features/settings/git-settings/integration-provider-icon";
 
 export const clientLoader = createPermissionGuard("manage_integrations");
 
@@ -42,7 +43,12 @@ export const clientLoader = createPermissionGuard("manage_integrations");
 // Hub instead of this screen. First-visit reconnect guidance lives on
 // PersonalIntegrationsLayout (IntegrationsHubCutoverModal).
 
-function GitSettingsScreen() {
+interface GitSettingsScreenProps {
+  /** When set, only render configuration for this legacy resolver provider. */
+  focusProvider?: IntegrationProviderId;
+}
+
+function GitSettingsScreen({ focusProvider }: GitSettingsScreenProps = {}) {
   const { t } = useTranslation();
 
   const { mutate: saveGitProviders, isPending } = useAddGitProviders();
@@ -230,24 +236,54 @@ function GitSettingsScreen() {
     !bitbucketDCHostInputHasValue &&
     !azureDevOpsHostInputHasValue &&
     !forgejoHostInputHasValue;
-  const shouldRenderGitHubConfigureButton = isSaas && config?.github_app_slug;
-  const shouldRenderGitLabSection = isSaas && Boolean(config?.gitlab_enabled);
+  const shouldRenderGitHubConfigureButton =
+    focusProvider === "github" ||
+    (!focusProvider && isSaas && !!config?.github_app_slug);
+  const shouldRenderGitLabSection =
+    focusProvider === "gitlab" ||
+    (!focusProvider && isSaas && Boolean(config?.gitlab_enabled));
   const shouldRenderBitbucketDCSection =
-    isSaas &&
-    Boolean(config?.providers_configured?.includes("bitbucket_data_center"));
+    (focusProvider === "bitbucket_data_center" && isBitbucketDCTokenSet) ||
+    (!focusProvider &&
+      isSaas &&
+      Boolean(config?.providers_configured?.includes("bitbucket_data_center")));
   const shouldRenderAzureDevOpsSection =
-    isSaas && Boolean(config?.providers_configured?.includes("azure_devops"));
-  const shouldRenderSlackSection = isSaas && Boolean(config?.slack_enabled);
+    focusProvider === "azure_devops" ||
+    (!focusProvider &&
+      isSaas &&
+      Boolean(config?.providers_configured?.includes("azure_devops")));
+  const shouldRenderSlackSection =
+    focusProvider === "slack" ||
+    (!focusProvider && isSaas && Boolean(config?.slack_enabled));
   const shouldRenderProjectManagementIntegrations =
-    config?.feature_flags?.enable_jira ||
-    config?.feature_flags?.enable_jira_dc ||
-    config?.feature_flags?.enable_linear;
+    focusProvider === "jira" ||
+    focusProvider === "jira-dc" ||
+    focusProvider === "linear" ||
+    (!focusProvider &&
+      !!(
+        config?.feature_flags?.enable_jira ||
+        config?.feature_flags?.enable_jira_dc ||
+        config?.feature_flags?.enable_linear
+      ));
+  const shouldRenderBitbucketCloudOss =
+    !isSaas && (!focusProvider || focusProvider === "bitbucket");
+  const shouldRenderForgejoOss =
+    !isSaas && (!focusProvider || focusProvider === "forgejo");
+  const shouldRenderGithubOss =
+    !isSaas && (!focusProvider || focusProvider === "github");
+  const shouldRenderGitlabOss =
+    !isSaas && (!focusProvider || focusProvider === "gitlab");
+  const shouldRenderBitbucketDcOss =
+    !isSaas && (!focusProvider || focusProvider === "bitbucket_data_center");
+  const shouldRenderAzureDevOpsOss =
+    !isSaas && (!focusProvider || focusProvider === "azure_devops");
   const hasSaasProviderCards =
     shouldRenderGitHubConfigureButton ||
     shouldRenderGitLabSection ||
     shouldRenderBitbucketDCSection ||
     shouldRenderAzureDevOpsSection ||
     shouldRenderSlackSection;
+  const hideGitProvidersHeading = !!focusProvider;
 
   const connectedStatusLabel = (
     isConnected: boolean,
@@ -264,9 +300,11 @@ function GitSettingsScreen() {
         <div className="flex flex-col gap-6">
           {hasSaasProviderCards && (
             <div className="flex flex-col gap-3">
-              <Text className="text-sm font-medium text-content-2">
-                {t(I18nKey.SETTINGS$GIT_PROVIDERS)}
-              </Text>
+              {!hideGitProvidersHeading ? (
+                <Text className="text-sm font-medium text-content-2">
+                  {t(I18nKey.SETTINGS$GIT_PROVIDERS)}
+                </Text>
+              ) : null}
               <div
                 className={cn(
                   settingsListContainerClassName,
@@ -283,10 +321,12 @@ function GitSettingsScreen() {
                       isGitHubTokenSet ? t(I18nKey.STATUS$CONNECTED) : undefined
                     }
                     action={
-                      <ConfigureGitHubRepositoriesAnchor
-                        slug={config.github_app_slug!}
-                        isInstalled={isGitHubTokenSet}
-                      />
+                      config?.github_app_slug ? (
+                        <ConfigureGitHubRepositoriesAnchor
+                          slug={config.github_app_slug}
+                          isInstalled={isGitHubTokenSet}
+                        />
+                      ) : undefined
                     }
                   />
                 )}
@@ -362,82 +402,138 @@ function GitSettingsScreen() {
           )}
 
           {shouldRenderProjectManagementIntegrations && (
-            <ProjectManagementIntegration />
+            <ProjectManagementIntegration focusProvider={focusProvider} />
           )}
+
+          {isSaas && focusProvider === "bitbucket" ? (
+            <BitbucketTokenInput
+              name="bitbucket-token-input"
+              isBitbucketTokenSet={isBitbucketTokenSet}
+              onChange={(value) => {
+                setBitbucketTokenInputHasValue(!!value);
+              }}
+              onBitbucketHostChange={(value) => {
+                setBitbucketHostInputHasValue(!!value);
+              }}
+              bitbucketHostSet={existingBitbucketHost}
+            />
+          ) : null}
+
+          {isSaas &&
+          focusProvider === "bitbucket_data_center" &&
+          !isBitbucketDCTokenSet ? (
+            <BitbucketDCTokenInput
+              name="bitbucket-dc-token-input"
+              isBitbucketDCTokenSet={isBitbucketDCTokenSet}
+              onChange={(value) => {
+                setBitbucketDCTokenInputHasValue(!!value);
+              }}
+              onBitbucketDCHostChange={(value) => {
+                setBitbucketDCHostInputHasValue(!!value);
+              }}
+              bitbucketDCHostSet={existingBitbucketDCHost}
+            />
+          ) : null}
+
+          {isSaas && focusProvider === "forgejo" ? (
+            <ForgejoTokenInput
+              name="forgejo-token-input"
+              isForgejoTokenSet={isForgejoTokenSet}
+              onChange={(value) => {
+                setForgejoTokenInputHasValue(!!value);
+              }}
+              onForgejoHostChange={(value) => {
+                setForgejoHostInputHasValue(!!value);
+              }}
+              forgejoHostSet={existingForgejoHost}
+            />
+          ) : null}
 
           {!isSaas && (
             <div className="flex flex-col gap-6">
-              <GitHubTokenInput
-                name="github-token-input"
-                isGitHubTokenSet={isGitHubTokenSet}
-                onChange={(value) => {
-                  setGithubTokenInputHasValue(!!value);
-                }}
-                onGitHubHostChange={(value) => {
-                  setGithubHostInputHasValue(!!value);
-                }}
-                githubHostSet={existingGithubHost}
-              />
+              {shouldRenderGithubOss ? (
+                <GitHubTokenInput
+                  name="github-token-input"
+                  isGitHubTokenSet={isGitHubTokenSet}
+                  onChange={(value) => {
+                    setGithubTokenInputHasValue(!!value);
+                  }}
+                  onGitHubHostChange={(value) => {
+                    setGithubHostInputHasValue(!!value);
+                  }}
+                  githubHostSet={existingGithubHost}
+                />
+              ) : null}
 
-              <GitLabTokenInput
-                name="gitlab-token-input"
-                isGitLabTokenSet={isGitLabTokenSet}
-                onChange={(value) => {
-                  setGitlabTokenInputHasValue(!!value);
-                }}
-                onGitLabHostChange={(value) => {
-                  setGitlabHostInputHasValue(!!value);
-                }}
-                gitlabHostSet={existingGitlabHost}
-              />
+              {shouldRenderGitlabOss ? (
+                <GitLabTokenInput
+                  name="gitlab-token-input"
+                  isGitLabTokenSet={isGitLabTokenSet}
+                  onChange={(value) => {
+                    setGitlabTokenInputHasValue(!!value);
+                  }}
+                  onGitLabHostChange={(value) => {
+                    setGitlabHostInputHasValue(!!value);
+                  }}
+                  gitlabHostSet={existingGitlabHost}
+                />
+              ) : null}
 
-              <BitbucketTokenInput
-                name="bitbucket-token-input"
-                isBitbucketTokenSet={isBitbucketTokenSet}
-                onChange={(value) => {
-                  setBitbucketTokenInputHasValue(!!value);
-                }}
-                onBitbucketHostChange={(value) => {
-                  setBitbucketHostInputHasValue(!!value);
-                }}
-                bitbucketHostSet={existingBitbucketHost}
-              />
+              {shouldRenderBitbucketCloudOss ? (
+                <BitbucketTokenInput
+                  name="bitbucket-token-input"
+                  isBitbucketTokenSet={isBitbucketTokenSet}
+                  onChange={(value) => {
+                    setBitbucketTokenInputHasValue(!!value);
+                  }}
+                  onBitbucketHostChange={(value) => {
+                    setBitbucketHostInputHasValue(!!value);
+                  }}
+                  bitbucketHostSet={existingBitbucketHost}
+                />
+              ) : null}
 
-              <BitbucketDCTokenInput
-                name="bitbucket-dc-token-input"
-                isBitbucketDCTokenSet={isBitbucketDCTokenSet}
-                onChange={(value) => {
-                  setBitbucketDCTokenInputHasValue(!!value);
-                }}
-                onBitbucketDCHostChange={(value) => {
-                  setBitbucketDCHostInputHasValue(!!value);
-                }}
-                bitbucketDCHostSet={existingBitbucketDCHost}
-              />
+              {shouldRenderBitbucketDcOss ? (
+                <BitbucketDCTokenInput
+                  name="bitbucket-dc-token-input"
+                  isBitbucketDCTokenSet={isBitbucketDCTokenSet}
+                  onChange={(value) => {
+                    setBitbucketDCTokenInputHasValue(!!value);
+                  }}
+                  onBitbucketDCHostChange={(value) => {
+                    setBitbucketDCHostInputHasValue(!!value);
+                  }}
+                  bitbucketDCHostSet={existingBitbucketDCHost}
+                />
+              ) : null}
 
-              <AzureDevOpsTokenInput
-                name="azure-devops-token-input"
-                isAzureDevOpsTokenSet={isAzureDevOpsTokenSet}
-                onChange={(value) => {
-                  setAzureDevOpsTokenInputHasValue(!!value);
-                }}
-                onAzureDevOpsHostChange={(value) => {
-                  setAzureDevOpsHostInputHasValue(!!value);
-                }}
-                azureDevOpsHostSet={existingAzureDevOpsHost}
-              />
+              {shouldRenderAzureDevOpsOss ? (
+                <AzureDevOpsTokenInput
+                  name="azure-devops-token-input"
+                  isAzureDevOpsTokenSet={isAzureDevOpsTokenSet}
+                  onChange={(value) => {
+                    setAzureDevOpsTokenInputHasValue(!!value);
+                  }}
+                  onAzureDevOpsHostChange={(value) => {
+                    setAzureDevOpsHostInputHasValue(!!value);
+                  }}
+                  azureDevOpsHostSet={existingAzureDevOpsHost}
+                />
+              ) : null}
 
-              <ForgejoTokenInput
-                name="forgejo-token-input"
-                isForgejoTokenSet={isForgejoTokenSet}
-                onChange={(value) => {
-                  setForgejoTokenInputHasValue(!!value);
-                }}
-                onForgejoHostChange={(value) => {
-                  setForgejoHostInputHasValue(!!value);
-                }}
-                forgejoHostSet={existingForgejoHost}
-              />
+              {shouldRenderForgejoOss ? (
+                <ForgejoTokenInput
+                  name="forgejo-token-input"
+                  isForgejoTokenSet={isForgejoTokenSet}
+                  onChange={(value) => {
+                    setForgejoTokenInputHasValue(!!value);
+                  }}
+                  onForgejoHostChange={(value) => {
+                    setForgejoHostInputHasValue(!!value);
+                  }}
+                  forgejoHostSet={existingForgejoHost}
+                />
+              ) : null}
             </div>
           )}
         </div>
@@ -449,7 +545,11 @@ function GitSettingsScreen() {
         />
       )}
 
-      {!isSaas && (
+      {(!isSaas ||
+        focusProvider === "bitbucket" ||
+        focusProvider === "forgejo" ||
+        (focusProvider === "bitbucket_data_center" &&
+          !isBitbucketDCTokenSet)) && (
         <div className="flex justify-end gap-3">
           <BrandButton
             testId="disconnect-tokens-button"
@@ -484,3 +584,4 @@ function GitSettingsScreen() {
 }
 
 export default GitSettingsScreen;
+export { GitSettingsScreen };

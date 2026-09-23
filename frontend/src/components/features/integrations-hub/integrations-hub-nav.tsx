@@ -7,6 +7,7 @@ import {
   Inbox,
   KeyRound,
   Target,
+  Webhook,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router";
@@ -74,6 +75,13 @@ const ADMIN_ITEMS: SettingsNavItem[] = [
     to: INTEGRATIONS_HUB_PATHS.adminUserRequests,
     text: I18nKey.INTEGRATIONS_HUB$NAV_ADMIN_USER_REQUESTS,
     subtitle: I18nKey.INTEGRATIONS_HUB$PAGE_ADMIN_USER_REQUESTS_SUBLINE,
+  },
+  {
+    icon: <Webhook size={ICON} aria-hidden />,
+    to: INTEGRATIONS_HUB_PATHS.resolvers,
+    text: I18nKey.INTEGRATIONS_HUB$NAV_RESOLVERS_LEGACY,
+    subtitle: I18nKey.INTEGRATIONS_HUB$PAGE_RESOLVERS_SUBLINE,
+    end: false,
   },
 ];
 
@@ -246,7 +254,12 @@ export function IntegrationsHubNav({
   const isPersonal = variant === "personal";
   const items = isPersonal ? PERSONAL_ITEMS : ADMIN_ITEMS;
   const currentItem =
-    items.find((item) => location.pathname === item.to) ?? items[0]!;
+    items.find((item) =>
+      item.end === false
+        ? location.pathname === item.to ||
+          location.pathname.startsWith(`${item.to}/`)
+        : location.pathname === item.to,
+    ) ?? items[0]!;
   const ariaLabel = t(
     isPersonal
       ? I18nKey.INTEGRATIONS_HUB$NAV_MAIN

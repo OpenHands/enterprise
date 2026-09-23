@@ -11,9 +11,12 @@ import {
   formControlSwitchDescriptionClassName,
   formControlSwitchFieldClassName,
 } from "#/utils/form-control-classes";
-import { ModalBackdrop } from "#/components/shared/modals/modal-backdrop";
-import { ModalBody } from "#/components/shared/modals/modal-body";
-import { BaseModalTitle } from "#/components/shared/modals/confirmation-modals/base-modal";
+import {
+  HubModal,
+  hubModalBodyClassName,
+} from "#/components/features/integrations-hub/hub-modal";
+import { HubProviderModalHeader } from "#/components/features/integrations-hub/hub-provider-modal-header";
+import { getLegacyResolver } from "#/components/features/integrations-hub/legacy-resolvers";
 import { useConfig } from "#/hooks/query/use-config";
 import { useIntegrationStatus } from "#/hooks/query/use-integration-status";
 import { useConfigureIntegration } from "#/hooks/mutation/use-configure-integration";
@@ -62,8 +65,19 @@ function buildJiraDcEventsUrl(workspaceId?: number, serverEventsUrl?: string) {
  * collect server and service-account details. The modal is height-capped + scrollable
  * so it never overflows the viewport. Jira DC is single-server, so there's
  * exactly one connection / service account / webhook to manage.
+ *
+ * When ``directConfigure`` is set (Integrations Hub Resolvers), skip the
+ * resting interstitial and open the configure modal immediately.
  */
-export function JiraDcIntegrationPanel() {
+export function JiraDcIntegrationPanel({
+  directConfigure = false,
+  onConfigureDismiss,
+}: {
+  /** Open the configure modal immediately and hide the resting panel chrome. */
+  directConfigure?: boolean;
+  /** Called when the direct-configure modal is closed. */
+  onConfigureDismiss?: () => void;
+} = {}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data: config } = useConfig();
@@ -192,7 +206,19 @@ export function JiraDcIntegrationPanel() {
     seedForm();
     setRemoveAdminApiKey("");
     setModalView(null);
+    if (directConfigure) {
+      onConfigureDismiss?.();
+    }
   };
+
+  React.useEffect(() => {
+    if (!directConfigure) {
+      return;
+    }
+    openEdit();
+    // Only auto-open once when mounted for Hub Resolvers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional mount open
+  }, [directConfigure]);
 
   const validateMutation = useValidateIntegration("jira-dc", {
     onSuccess: (data) => {
@@ -270,8 +296,7 @@ export function JiraDcIntegrationPanel() {
             queryClient.invalidateQueries({
               queryKey: ["integration-status", "jira-dc"],
             });
-            seedForm();
-            setModalView(null);
+            closeModal();
           },
         },
       );
@@ -319,8 +344,7 @@ export function JiraDcIntegrationPanel() {
           displaySuccessToast(
             t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_WEBHOOK_SETUP_SAVED),
           );
-          seedForm();
-          setModalView(null);
+          closeModal();
         },
       },
     );
@@ -331,8 +355,7 @@ export function JiraDcIntegrationPanel() {
     if (!trimmedAdminApiKey) return;
     unlinkMutation.mutate(trimmedAdminApiKey, {
       onSuccess: () => {
-        setRemoveAdminApiKey("");
-        setModalView(null);
+        closeModal();
       },
     });
   };
@@ -664,134 +687,159 @@ export function JiraDcIntegrationPanel() {
     subtitleKey = I18nKey.PROJECT_MANAGEMENT$JIRA_DC_ADMIN_SUBTITLE;
   }
 
+  const resolver = getLegacyResolver("jira-dc");
+  const modalTitle = resolver
+    ? t(resolver.nameKey)
+    : t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_PLATFORM_NAME);
+  const modalSubline = resolver ? t(resolver.sublineKey) : undefined;
+
   return (
     <div className="flex flex-col gap-4" data-testid="jira-dc-panel">
-      <div className="flex items-start gap-3">
-        <IntegrationProviderIcon provider="jira-dc" className="mt-0.5" />
-        <div className="flex min-w-0 flex-col gap-1">
-          <Typography.H3 className="text-lg font-medium text-white">
-            {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_PLATFORM_NAME)}
-          </Typography.H3>
-          <Typography.Text className="text-sm text-gray-400">
-            {t(subtitleKey)}
-          </Typography.Text>
-        </div>
-      </div>
+      {!directConfigure ? (
+        <>
+          <div className="flex items-start gap-3">
+            <IntegrationProviderIcon provider="jira-dc" className="mt-0.5" />
+            <div className="flex min-w-0 flex-col gap-1">
+              <Typography.H3 className="text-lg font-medium text-white">
+                {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_PLATFORM_NAME)}
+              </Typography.H3>
+              <Typography.Text className="text-sm leading-5 text-tertiary-light">
+                {t(subtitleKey)}
+              </Typography.Text>
+            </div>
+          </div>
 
-      {existingWorkspace ? (
-        <div className={settingsListContainerClassName}>
-          <table className="w-full">
-            <thead className={settingsListTableHeadClassName}>
-              <tr>
-                <th className={colHead}>
-                  {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SERVER_SECTION_LABEL)}
-                </th>
-                <th className={colHead}>
-                  {t(
-                    I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SERVICE_ACCOUNT_SECTION_LABEL,
-                  )}
-                </th>
-                <th className={colHead}>
-                  {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_COL_STATUS)}
-                </th>
-                <th className={colHead}>
-                  {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_COL_ACTION)}
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-700">
-              <tr className="hover:bg-neutral-800/50 transition-colors">
-                <td className="px-4 py-3">
-                  <Typography.Text className="text-sm text-white break-all">
-                    {existingWorkspace.name}
-                  </Typography.Text>
-                  {serviceAccountManaged && (
-                    <Typography.Text className="block text-xs text-tertiary-alt mt-1">
+          {existingWorkspace ? (
+            <div className={settingsListContainerClassName}>
+              <table className="w-full">
+                <thead className={settingsListTableHeadClassName}>
+                  <tr>
+                    <th className={colHead}>
                       {t(
-                        I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SERVICE_ACCOUNT_MANAGED_BADGE,
+                        I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SERVER_SECTION_LABEL,
                       )}
-                    </Typography.Text>
-                  )}
-                </td>
-                <td className="px-4 py-3">
-                  <Typography.Text className="text-sm text-gray-300 break-all">
-                    {serviceAccountManaged
-                      ? managedServiceAccountEmail ||
-                        existingWorkspace.svc_acc_email ||
-                        "—"
-                      : existingWorkspace.svc_acc_email || "—"}
-                  </Typography.Text>
-                  {serviceAccountManaged && (
-                    <Typography.Text className="block text-xs text-tertiary-alt mt-1">
+                    </th>
+                    <th className={colHead}>
                       {t(
-                        I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SERVICE_ACCOUNT_MANAGED_BADGE,
+                        I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SERVICE_ACCOUNT_SECTION_LABEL,
                       )}
-                    </Typography.Text>
-                  )}
-                </td>
-                <td className="px-4 py-3">{statusBadge()}</td>
-                <td className="px-4 py-3">
-                  {isWorkspaceEditable ? (
-                    <div className="flex flex-wrap items-center gap-2">
-                      {isActiveIntegration ? (
-                        <BrandButton
-                          variant="danger"
-                          onClick={openRemove}
-                          testId="remove-integration-button"
-                          type="button"
-                          isDisabled={isBusy}
-                        >
-                          {t(
-                            I18nKey.PROJECT_MANAGEMENT$JIRA_DC_DISABLE_BUTTON_LABEL,
-                          )}
-                        </BrandButton>
-                      ) : (
-                        <BrandButton
-                          variant="primary"
-                          onClick={openEdit}
-                          testId="jira-dc-configure-button"
-                          type="button"
-                          isDisabled={isBusy}
-                        >
-                          {t(I18nKey.PROJECT_MANAGEMENT$CONFIGURE_BUTTON_LABEL)}
-                        </BrandButton>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-start gap-2">
-                      <BrandButton
-                        variant="secondary"
-                        onClick={() => unlinkMutation.mutate(undefined)}
-                        testId="jira-dc-disconnect-button"
-                        type="button"
-                        isDisabled={isBusy}
-                      >
-                        {t(I18nKey.PROJECT_MANAGEMENT$DISCONNECT_BUTTON_LABEL)}
-                      </BrandButton>
-                      <Typography.Text className="text-xs text-tertiary-alt max-w-56">
-                        {t(
-                          I18nKey.PROJECT_MANAGEMENT$JIRA_DC_INTEGRATION_OWNER_HELP,
-                        )}
+                    </th>
+                    <th className={colHead}>
+                      {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_COL_STATUS)}
+                    </th>
+                    <th className={colHead}>
+                      {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_COL_ACTION)}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-700">
+                  <tr className="hover:bg-neutral-800/50 transition-colors">
+                    <td className="px-4 py-3">
+                      <Typography.Text className="text-sm text-white break-all">
+                        {existingWorkspace.name}
                       </Typography.Text>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        renderEntryAction()
-      )}
+                      {serviceAccountManaged && (
+                        <Typography.Text className="block text-xs text-tertiary-alt mt-1">
+                          {t(
+                            I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SERVICE_ACCOUNT_MANAGED_BADGE,
+                          )}
+                        </Typography.Text>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Typography.Text className="text-sm text-gray-300 break-all">
+                        {serviceAccountManaged
+                          ? managedServiceAccountEmail ||
+                            existingWorkspace.svc_acc_email ||
+                            "—"
+                          : existingWorkspace.svc_acc_email || "—"}
+                      </Typography.Text>
+                      {serviceAccountManaged && (
+                        <Typography.Text className="block text-xs text-tertiary-alt mt-1">
+                          {t(
+                            I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SERVICE_ACCOUNT_MANAGED_BADGE,
+                          )}
+                        </Typography.Text>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">{statusBadge()}</td>
+                    <td className="px-4 py-3">
+                      {isWorkspaceEditable ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          {isActiveIntegration ? (
+                            <BrandButton
+                              variant="danger"
+                              onClick={openRemove}
+                              testId="remove-integration-button"
+                              type="button"
+                              isDisabled={isBusy}
+                            >
+                              {t(
+                                I18nKey.PROJECT_MANAGEMENT$JIRA_DC_DISABLE_BUTTON_LABEL,
+                              )}
+                            </BrandButton>
+                          ) : (
+                            <BrandButton
+                              variant="primary"
+                              onClick={openEdit}
+                              testId="jira-dc-configure-button"
+                              type="button"
+                              isDisabled={isBusy}
+                            >
+                              {t(
+                                I18nKey.PROJECT_MANAGEMENT$CONFIGURE_BUTTON_LABEL,
+                              )}
+                            </BrandButton>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-start gap-2">
+                          <BrandButton
+                            variant="secondary"
+                            onClick={() => unlinkMutation.mutate(undefined)}
+                            testId="jira-dc-disconnect-button"
+                            type="button"
+                            isDisabled={isBusy}
+                          >
+                            {t(
+                              I18nKey.PROJECT_MANAGEMENT$DISCONNECT_BUTTON_LABEL,
+                            )}
+                          </BrandButton>
+                          <Typography.Text className="text-xs text-tertiary-alt max-w-56">
+                            {t(
+                              I18nKey.PROJECT_MANAGEMENT$JIRA_DC_INTEGRATION_OWNER_HELP,
+                            )}
+                          </Typography.Text>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            renderEntryAction()
+          )}
+        </>
+      ) : null}
 
       {modalView === "edit" && (
-        <ModalBackdrop onClose={closeModal}>
-          <ModalBody className="items-start w-[520px] max-h-[85vh] overflow-y-auto gap-4">
-            <BaseModalTitle
-              title={t(I18nKey.PROJECT_MANAGEMENT$CONFIGURE_MODAL_TITLE, {
-                platform: t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_PLATFORM_NAME),
-              })}
+        <HubModal
+          ariaLabel={modalTitle}
+          testId="jira-dc-configure-modal"
+          width="md"
+          onClose={closeModal}
+        >
+          <div className={cn(hubModalBodyClassName, "max-h-[85vh]")}>
+            <HubProviderModalHeader
+              provider="jira-dc"
+              title={modalTitle}
+              subtitle={modalSubline}
+              className="mb-6"
             />
+            <p className="mb-4 text-sm leading-5 text-tertiary-light">
+              {t(subtitleKey)}
+            </p>
             <div className="flex flex-col gap-4 w-full">
               {showServerAndServiceAccountSection &&
                 serverAndServiceAccountSection}
@@ -809,16 +857,7 @@ export function JiraDcIntegrationPanel() {
               {webhookSection}
             </div>
 
-            <div className="flex items-center gap-3 w-full">
-              <BrandButton
-                variant="primary"
-                onClick={handleSubmit}
-                testId="jira-dc-submit-button"
-                type="button"
-                isDisabled={isSubmitDisabled}
-              >
-                {submitButtonLabel}
-              </BrandButton>
+            <div className="mt-4 flex w-full items-center justify-end gap-2">
               <BrandButton
                 variant="secondary"
                 onClick={closeModal}
@@ -828,16 +867,33 @@ export function JiraDcIntegrationPanel() {
               >
                 {t(I18nKey.FEEDBACK$CANCEL_LABEL)}
               </BrandButton>
+              <BrandButton
+                variant="primary"
+                onClick={handleSubmit}
+                testId="jira-dc-submit-button"
+                type="button"
+                isDisabled={isSubmitDisabled}
+              >
+                {submitButtonLabel}
+              </BrandButton>
             </div>
-          </ModalBody>
-        </ModalBackdrop>
+          </div>
+        </HubModal>
       )}
 
       {modalView === "remove" && (
-        <ModalBackdrop onClose={closeModal}>
-          <ModalBody className="items-start w-[460px]">
-            <BaseModalTitle
+        <HubModal
+          ariaLabel={t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_DISABLE_MODAL_TITLE)}
+          testId="jira-dc-remove-modal"
+          width="md"
+          onClose={closeModal}
+        >
+          <div className={hubModalBodyClassName}>
+            <HubProviderModalHeader
+              provider="jira-dc"
               title={t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_DISABLE_MODAL_TITLE)}
+              subtitle={modalSubline}
+              className="mb-6"
             />
             <div className="flex flex-col gap-4 w-full">
               <div className="flex flex-col gap-3">
@@ -893,7 +949,15 @@ export function JiraDcIntegrationPanel() {
                     </p>
                   }
                 />
-                <div className="flex items-center gap-2 w-full">
+                <div className="flex w-full items-center justify-end gap-2">
+                  <BrandButton
+                    variant="secondary"
+                    onClick={closeModal}
+                    testId="cancel-remove-integration-button"
+                    type="button"
+                  >
+                    {t(I18nKey.SETTINGS_FORM$CLOSE_LABEL)}
+                  </BrandButton>
                   <BrandButton
                     variant="danger"
                     onClick={confirmRemove}
@@ -905,19 +969,11 @@ export function JiraDcIntegrationPanel() {
                       I18nKey.PROJECT_MANAGEMENT$REMOVE_INTEGRATION_BUTTON_LABEL,
                     )}
                   </BrandButton>
-                  <BrandButton
-                    variant="secondary"
-                    onClick={closeModal}
-                    testId="cancel-remove-integration-button"
-                    type="button"
-                  >
-                    {t(I18nKey.SETTINGS_FORM$CLOSE_LABEL)}
-                  </BrandButton>
                 </div>
               </div>
             </div>
-          </ModalBody>
-        </ModalBackdrop>
+          </div>
+        </HubModal>
       )}
     </div>
   );
