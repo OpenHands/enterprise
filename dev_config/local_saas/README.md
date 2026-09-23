@@ -177,6 +177,7 @@ cp .env.template .env
 Edit `.env` and fill in the real values for secrets only:
 - `KEYCLOAK_CLIENT_SECRET`, `KEYCLOAK_ADMIN_PASSWORD` -- from staging Keycloak
 - `LITE_LLM_API_KEY` -- your LLM proxy API key
+- `SANDBOX_API_KEY` -- staging remote runtime API key
 - `DB_PASS` -- local PostgreSQL password (default: `postgres`)
 - GitHub App credentials (optional -- only if testing GitHub integration)
 
