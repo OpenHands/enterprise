@@ -934,12 +934,31 @@ class OrgBudgetService:
         snapshot: LiteLlmFinancialSnapshot,
     ) -> bool:
         now = datetime.now(UTC)
+        org_id = settings.org_id
+        # Lock the row and re-read the anchor. If another run rolled while we were
+        # reading LiteLLM, its snapshot anchors the new cycle -- not our stale one.
+        locked_start = (
+            await self.db_session.execute(
+                select(OrgBudgetSettings.cycle_start_at)
+                .where(OrgBudgetSettings.org_id == org_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if locked_start is not None and locked_start != settings.cycle_start_at:
+            await self.store.refresh(settings)
+            return False
+
         next_cycle = _next_cycle_start(settings.cycle_start_at, settings.reset_day)
         if now < next_cycle:
             return False
 
+        # Settle the anchor at the current period in this single roll. Advancing only
+        # one period per run would leave the anchor behind after a multi-period gap, so
+        # every later maintenance run would roll again and re-anchor cycle_start_spend
+        # to the current cumulative LiteLLM total -- forgiving spend incurred since
+        # recovery and renewing the cap each time. Jumping straight to the current
+        # period rolls at most once per period, so subsequent runs are no-ops.
         settings.cycle_start_at = _current_cycle_start(now, settings.reset_day)
-        org_id = settings.org_id
         settings.cycle_start_spend = snapshot.team_spend
         settings.user_cycle_start_spend = {
             user_id: member.spend for user_id, member in snapshot.members.items()
