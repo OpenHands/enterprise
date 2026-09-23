@@ -2487,6 +2487,14 @@ async def test_reads_do_not_create_settings_for_unconfigured_org(
 
     # The reads still answer with defaults for an org that has no settings row.
     assert state['settings'].enabled is False
+    # The transient defaults row must carry what a freshly created row would, so a
+    # read on an unconfigured org reports zero/empty baselines (not None/garbage).
+    # cycle_start_spend has teeth: it feeds current_spend, so a wrong default would
+    # misreport spend for exactly the unconfigured orgs this read path now serves.
+    assert state['settings'].cycle_start_spend == 0.0
+    assert state['settings'].user_cycle_start_spend == {}
+    assert state['settings'].litellm_last_member_spend == {}
+    assert state['settings'].litellm_known_member_ids == []
     assert state['thresholds'] == []
     assert reconciliation == 'inactive'
     assert row is None
