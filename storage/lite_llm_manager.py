@@ -471,9 +471,16 @@ class LiteLlmManager:
                         )
                         return None
 
-                    await LiteLlmManager._add_user_to_team(
-                        client, keycloak_user_id, org_id, team_budget
+                    from server.services.org_budget_provisioning import (
+                        provision_budget_member,
                     )
+
+                    if not await provision_budget_member(
+                        client, org_id, keycloak_user_id
+                    ):
+                        await LiteLlmManager._add_user_to_team(
+                            client, keycloak_user_id, org_id, team_budget
+                        )
 
                     # We delete the key if it already exists. In environments where multiple
                     # installations are using the same keycloak and litellm instance, this
