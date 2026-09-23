@@ -14,6 +14,27 @@
                 "--port",
                 "3030"
             ],
+            "env": {
+                "DEBUG": "1",
+                "OPENHANDS_CONFIG_CLS": "server.config.SaaSServerConfig",
+                "SERVE_FRONTEND": "false",
+                "FILE_STORE": "local",
+                "FILE_STORE_PATH": "/tmp/.openhands-state",
+                "FRONTEND_DIRECTORY": "${workspaceFolder}/frontend/build",
+                "WEB_HOST": "localhost",
+                "PERMITTED_CORS_ORIGINS": "http://localhost:3030",
+                "DB_HOST": "127.0.0.1",
+                "DB_PORT": "5432",
+                "DB_NAME": "openhands",
+                "DB_USER": "postgres",
+                "KEYCLOAK_SERVER_URL": "https://keycloak.staging.all-hands.dev",
+                "KEYCLOAK_SERVER_URL_EXT": "https://keycloak.staging.all-hands.dev",
+                "KEYCLOAK_REALM_NAME": "allhands",
+                "KEYCLOAK_CLIENT_ID": "openhands",
+                "AUTH_WEB_HOST": "keycloak.staging.all-hands.dev",
+                "LITE_LLM_API_URL": "https://llm-proxy.staging.all-hands.dev",
+                "LITE_LLM_TEAM_ID": "62ea39c4-8886-44f3-b7ce-07ed4fe42d2c"
+            },
             "envFile": "${workspaceFolder}/.env",
             "justMyCode": false,
             "cwd": "${workspaceFolder}"
@@ -27,6 +48,14 @@
             "args": [
                 "./tests/unit"
             ],
+            "env": {
+                "DEBUG": "1",
+                "DB_HOST": "127.0.0.1",
+                "DB_PORT": "5432",
+                "DB_NAME": "openhands",
+                "DB_USER": "postgres"
+            },
+            "envFile": "${workspaceFolder}/.env",
             "justMyCode": false,
             "cwd": "${workspaceFolder}"
         },
@@ -39,6 +68,14 @@
             "args": [
                 "${file}"
             ],
+            "env": {
+                "DEBUG": "1",
+                "DB_HOST": "127.0.0.1",
+                "DB_PORT": "5432",
+                "DB_NAME": "openhands",
+                "DB_USER": "postgres"
+            },
+            "envFile": "${workspaceFolder}/.env",
             "justMyCode": false,
             "cwd": "${workspaceFolder}"
         },

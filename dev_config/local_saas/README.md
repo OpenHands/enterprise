@@ -174,11 +174,15 @@ to start the SaaS server with breakpoints.
 cp .env.template .env
 ```
 
-Edit `.env` and fill in the real values for:
-- `KEYCLOAK_CLIENT_SECRET`, `KEYCLOAK_ADMIN_PASSWORD` — from staging Keycloak
-- `LITE_LLM_API_KEY` — your LLM proxy API key
-- `FILE_STORE_PATH`, `FRONTEND_DIRECTORY` — adjust paths for your machine
-- GitHub App credentials (optional — only if testing GitHub integration)
+Edit `.env` and fill in the real values for secrets only:
+- `KEYCLOAK_CLIENT_SECRET`, `KEYCLOAK_ADMIN_PASSWORD` -- from staging Keycloak
+- `LITE_LLM_API_KEY` -- your LLM proxy API key
+- `DB_PASS` -- local PostgreSQL password (default: `postgres`)
+- GitHub App credentials (optional -- only if testing GitHub integration)
+
+All non-sensitive config (hostnames, ports, paths, feature flags) is baked
+into `.vscode/launch.json` inline via the `env` block, which overrides values
+from `.env`. This keeps secrets isolated in `.env` while sharing the rest.
 
 Secrets may also be harvested directly from staging by connecting:
 `kubectl exec --stdin --tty <POD_NAME> -n <NAMESPACE> -- /bin/bash`
