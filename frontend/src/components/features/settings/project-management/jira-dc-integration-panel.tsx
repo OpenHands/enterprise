@@ -27,6 +27,7 @@ import { useJiraDcInstanceStatus } from "#/hooks/query/use-jira-dc-instance-stat
 import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import { IntegrationProviderIcon } from "#/components/features/settings/git-settings/integration-provider-icon";
 import { CopyableValue, generateWebhookSecret } from "./configure-modal";
+import { OrgScopeBadge } from "./org-scope-badge";
 import {
   settingsListContainerClassName,
   settingsListTableHeadClassName,
@@ -669,9 +670,12 @@ export function JiraDcIntegrationPanel() {
       <div className="flex items-start gap-3">
         <IntegrationProviderIcon provider="jira-dc" className="mt-0.5" />
         <div className="flex min-w-0 flex-col gap-1">
-          <Typography.H3 className="text-lg font-medium text-white">
-            {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_PLATFORM_NAME)}
-          </Typography.H3>
+          <div className="flex items-center gap-2">
+            <Typography.H3 className="text-lg font-medium text-white">
+              {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_PLATFORM_NAME)}
+            </Typography.H3>
+            <OrgScopeBadge />
+          </div>
           <Typography.Text className="text-sm text-gray-400">
             {t(subtitleKey)}
           </Typography.Text>

@@ -8,8 +8,9 @@ import OptionService from "#/api/option-service/option-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { openHands } from "#/api/open-hands-axios";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+import { MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME } from "#/mocks/org-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
-import { OrganizationMember } from "#/types/org";
+import { Organization, OrganizationMember } from "#/types/org";
 
 vi.mock("react-i18next", async () => {
   const actual =
@@ -92,6 +93,35 @@ const renderJiraRow = () => {
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     ),
   });
+};
+
+/**
+ * Render a row with `org` as the selected organization. The organizations
+ * query is seeded so the org type is known from the first render.
+ */
+const renderRowInOrg = (platform: "jira" | "linear", org: Organization) => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  queryClient.setQueryData(["organizations"], {
+    items: [org],
+    currentOrgId: org.id,
+  });
+  useSelectedOrganizationStore.setState({ organizationId: org.id });
+  vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+    items: [org],
+    currentOrgId: org.id,
+  });
+  return render(
+    <IntegrationRow platform={platform} platformName={platform} />,
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
+      ),
+    },
+  );
 };
 
 describe("IntegrationRow (Jira Cloud org scoping)", () => {
@@ -220,5 +250,62 @@ describe("IntegrationRow (Jira Cloud org scoping)", () => {
         "/integration/jira/events",
       );
     });
+  });
+
+  it("marks Jira Cloud as organization-scoped in a team org", async () => {
+    // Arrange
+    setupConfig(true);
+    setupUser("admin");
+    mockJiraEndpoints({ configured: false });
+
+    // Act
+    renderRowInOrg("jira", MOCK_TEAM_ORG_ACME);
+
+    // Assert
+    expect(await screen.findByTestId("org-scope-badge")).toHaveTextContent(
+      "COMMON$ORGANIZATION",
+    );
+  });
+
+  it("marks Jira Cloud as organization-scoped for a member in email mode", async () => {
+    // Arrange
+    setupConfig(false);
+    setupUser("member");
+    mockJiraEndpoints({ configured: true });
+
+    // Act
+    renderRowInOrg("jira", MOCK_TEAM_ORG_ACME);
+
+    // Assert
+    await screen.findByTestId("jira-member-guidance");
+    expect(screen.getByTestId("org-scope-badge")).toBeInTheDocument();
+  });
+
+  it("does not mark Jira Cloud as organization-scoped in a personal org", async () => {
+    // Arrange
+    setupConfig(true);
+    setupUser("admin");
+    mockJiraEndpoints({ configured: false });
+
+    // Act
+    renderRowInOrg("jira", MOCK_PERSONAL_ORG);
+
+    // Assert
+    await screen.findByTestId("jira-configure-button");
+    expect(screen.queryByTestId("org-scope-badge")).not.toBeInTheDocument();
+  });
+
+  it("does not mark Linear as organization-scoped", async () => {
+    // Arrange
+    setupConfig(true);
+    setupUser("admin");
+    mockJiraEndpoints({ configured: false });
+
+    // Act
+    renderRowInOrg("linear", MOCK_TEAM_ORG_ACME);
+
+    // Assert
+    await screen.findByTestId("linear-configure-button");
+    expect(screen.queryByTestId("org-scope-badge")).not.toBeInTheDocument();
   });
 });

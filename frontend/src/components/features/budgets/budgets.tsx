@@ -113,7 +113,6 @@ export function Budgets() {
       }),
   });
 
-  const [orgBudgetEnabled, setOrgBudgetEnabled] = useState(false);
   const [monthlyLimit, setMonthlyLimit] = useState("");
   const [billingCycle, setBillingCycle] = useState("1st");
   const [slackChannel, setSlackChannel] = useState("");
@@ -125,7 +124,6 @@ export function Budgets() {
 
   useEffect(() => {
     if (!budgetData) return;
-    setOrgBudgetEnabled(budgetData.enabled);
     setMonthlyLimit(
       budgetData.monthly_limit ? budgetData.monthly_limit.toString() : "",
     );
@@ -147,11 +145,21 @@ export function Budgets() {
 
   const monthlyLimitValue = monthlyLimit ? Number(monthlyLimit) : null;
   const isMonthlyLimitValid =
-    !orgBudgetEnabled ||
-    (typeof monthlyLimitValue === "number" && monthlyLimitValue > 0);
+    typeof monthlyLimitValue === "number" && monthlyLimitValue > 0;
 
   const currentSpend = budgetData?.current_spend ?? null;
   const percentage = budgetData?.current_spend_percentage ?? null;
+  // LiteLLM caps cumulative spend, so the desired team cap is
+  // cycle_start_spend + monthly_limit (see _desired_team_budget). Recover the
+  // baseline for the helper text; the API does not expose it directly.
+  const cycleStartSpend =
+    budgetData?.desired_team_max_budget != null &&
+    budgetData.monthly_limit != null
+      ? Math.max(
+          budgetData.desired_team_max_budget - budgetData.monthly_limit,
+          0,
+        )
+      : null;
   const cycleLabel = budgetData?.cycle_start_at
     ? new Date(budgetData.cycle_start_at).toLocaleDateString("en-US", {
         month: "long",
@@ -182,7 +190,7 @@ export function Budgets() {
   const handleSaveOrgBudget = () => {
     if (!organizationId || !isMonthlyLimitValid) return;
     updateBudgets.mutate({
-      enabled: orgBudgetEnabled,
+      enabled: true,
       monthly_limit: monthlyLimitValue,
       reset_day: billingCycle === "15th" ? 15 : 1,
       slack_channel: slackIntegrationEnabled
@@ -373,8 +381,6 @@ export function Budgets() {
 
       {activeTab === "organization" && (
         <OrganizationBudgetTab
-          orgBudgetEnabled={orgBudgetEnabled}
-          onToggleOrgBudget={setOrgBudgetEnabled}
           currentSpend={currentSpend}
           monthlyLimitValue={monthlyLimitValue}
           cycleLabel={cycleLabel}
@@ -387,6 +393,7 @@ export function Budgets() {
           reconciliationError={budgetData?.reconciliation_error ?? null}
           desiredTeamMaxBudget={budgetData?.desired_team_max_budget ?? null}
           appliedTeamMaxBudget={budgetData?.applied_team_max_budget ?? null}
+          cycleStartSpend={cycleStartSpend}
           unmappedSpend={budgetData?.unmapped_spend ?? null}
           unmappedMemberCount={budgetData?.unmapped_member_count ?? null}
           monthlyLimit={monthlyLimit}
