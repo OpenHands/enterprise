@@ -11,6 +11,7 @@ import {
   UserOverridesTab,
 } from "./budgets-tabs";
 import type { BudgetThreshold, BudgetUserRow } from "./budgets-tabs";
+import { nextBudgetResetDate } from "./budget-reset-date";
 
 export function Budgets() {
   const { organizationId } = useSelectedOrganizationId();
@@ -116,6 +117,20 @@ export function Budgets() {
 
   const [monthlyLimit, setMonthlyLimit] = useState("");
   const [billingCycle, setBillingCycle] = useState("1st");
+  const [calendarNow, setCalendarNow] = useState(() => new Date());
+  useEffect(() => {
+    const now = new Date();
+    const midnight = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + 1,
+    );
+    const timer = setTimeout(
+      () => setCalendarNow(new Date()),
+      midnight - now.getTime(),
+    );
+    return () => clearTimeout(timer);
+  }, [calendarNow]);
   const [slackChannel, setSlackChannel] = useState("");
   const [thresholds, setThresholds] = useState<BudgetThreshold[]>([]);
   const [defaultAmount, setDefaultAmount] = useState("");
@@ -170,6 +185,14 @@ export function Budgets() {
       })
     : "this cycle";
   const defaultUserLimit = budgetData?.default_user_monthly_limit ?? null;
+  const selectedResetDay = billingCycle === "15th" ? 15 : 1;
+  const resetDayChanged = selectedResetDay !== budgetData?.reset_day;
+  const nextReset = nextBudgetResetDate(
+    selectedResetDay,
+    budgetData?.enabled ? budgetData.reset_day : 0,
+    budgetData?.cycle_end_at,
+    calendarNow,
+  );
 
   const usersTotal = budgetData?.users_total ?? 0;
   const usersPerPage = budgetData?.users_per_page ?? USERS_PER_PAGE;
@@ -403,6 +426,8 @@ export function Budgets() {
           onMonthlyLimitChange={setMonthlyLimit}
           billingCycle={billingCycle}
           onBillingCycleChange={setBillingCycle}
+          nextReset={nextReset}
+          resetDayChanged={resetDayChanged && Boolean(budgetData?.enabled)}
           thresholds={thresholds}
           onAddThreshold={handleAddThreshold}
           onDeleteThreshold={handleDeleteThreshold}

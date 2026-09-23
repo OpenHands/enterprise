@@ -32,7 +32,7 @@ async def test_unverified_budget_policy_fails_closed_before_provider(
     user_id = budget_adapter.user_ids[0]
     first = await budget_adapter.send_request(user_id)
     assert first.status_code == 200, first.text
-    await budget_adapter.wait_for_spend(1.0)
+    await budget_adapter.wait_for_spend(1.0, expected_member_spend={user_id: 1.0})
     original_key = budget_adapter.keys[user_id]
 
     await budget_adapter.fail_next_management_call(failure_path, count=failure_count)
@@ -79,7 +79,9 @@ async def test_unverified_budget_policy_fails_closed_before_provider(
     recovered = await budget_adapter.send_request(user_id)
     assert recovered.status_code == 200, recovered.text
     record_property('same_key_recovery_status', recovered.status_code)
-    after_request = await budget_adapter.wait_for_spend(2.0)
+    after_request = await budget_adapter.wait_for_spend(
+        2.0, expected_member_spend={user_id: 2.0}
+    )
     assert after_request['members'][str(user_id)]['spend'] == 2.0
 
 

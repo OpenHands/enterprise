@@ -98,6 +98,8 @@ interface OrganizationBudgetTabProps {
   onMonthlyLimitChange: (value: string) => void;
   billingCycle: string;
   onBillingCycleChange: (value: string) => void;
+  nextReset: Date;
+  resetDayChanged: boolean;
   thresholds: BudgetThreshold[];
   onAddThreshold: () => void;
   onDeleteThreshold: (index: number) => void;
@@ -133,6 +135,8 @@ export function OrganizationBudgetTab({
   onMonthlyLimitChange,
   billingCycle,
   onBillingCycleChange,
+  nextReset,
+  resetDayChanged,
   thresholds,
   onAddThreshold,
   onDeleteThreshold,
@@ -147,7 +151,7 @@ export function OrganizationBudgetTab({
   isSaving,
   isMonthlyLimitValid,
 }: OrganizationBudgetTabProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const observedAtLabel = spendObservedAt
     ? new Date(spendObservedAt).toLocaleString()
     : null;
@@ -328,6 +332,22 @@ export function OrganizationBudgetTab({
             if (key != null) onBillingCycleChange(String(key));
           }}
         />
+      </div>
+
+      <div className="space-y-1 text-sm text-muted" aria-live="polite">
+        <p>
+          {t("SETTINGS$BUDGETS_NEXT_RESET", {
+            date: nextReset.toLocaleDateString(i18n.language, {
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+              timeZone: "UTC",
+            }),
+          })}
+        </p>
+        {resetDayChanged && (
+          <p>{t("SETTINGS$BUDGETS_RESET_DAY_CHANGE_HELPER")}</p>
+        )}
       </div>
 
       {(emailIntegrationEnabled || slackIntegrationEnabled) && (
