@@ -131,3 +131,41 @@ is otherwise shared; this experiment does not establish a customer usability
 winner. Human installation handoff, real application flows, customer-ingress
 mode, offline distribution and sustained resource saturation remain separate
 checks. These files are not a production Enterprise Compose installer.
+
+## Opt-in measurements
+
+`experiments.py` is deliberately outside normal pytest filename discovery. Run it
+explicitly when collecting setup, exit, resource, and fault-containment evidence:
+
+```sh
+uv run --no-sync python -m pytest tests/integration/proxy/experiments.py \
+  --confcutdir=tests/integration/proxy -q -o junit_family=xunit1 \
+  --junitxml=measurements.xml
+```
+
+Use `-k modest_fault` for the primary self-hosted isolation experiment: Enterprise
+stays at 20 requests/second and automation receives only 5 requests/second. The
+sequence is healthy, hung, healthy with a backend cap, hung with that cap, crashed,
+and recovered. Response waits are normalized to five seconds. The capped profiles
+allow eight active automation slots. Caddy limits requests; nginx limits upstream
+connections; HAProxy limits active HTTP requests and also allows eight queued
+requests with a 100ms queue timeout. These are deliberately disclosed policy
+differences, not equivalent queue implementations. These short-timeout profiles
+are test settings, not a production streaming recommendation.
+
+The proxy has a one-core/256 MiB cap; each fixture has half a core/256 MiB. The
+footprint experiment separately samples idle/light Enterprise traffic and 32
+concurrent healthy automation clients. Memory observations are end-of-window
+samples, not measured peak memory. CPU is approximate usage of one core over the
+sample window. Request counts, statuses, p50/p95/p99 and generator scheduling lag
+are recorded in JUnit properties. No proxy assertion turns missing observations
+into a success; functional assertion failures and measurement outcomes are
+reported separately.
+
+Setup uses three projects per candidate, already-cached images, and already-made
+config/cert files. It measures time to both fixtures being reachable, not human
+installation effort. Exit tests cover all six directions plus rollback, pin the
+original public port, and assert unchanged backend IDs/start timestamps. The
+continuous Enterprise probe runs approximately every 50ms with a 500ms timeout.
+Its longest gap between successes is a sampled gap, not an exact outage duration.
+A single proxy container replacement is expected to interrupt requests.

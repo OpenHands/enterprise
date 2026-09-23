@@ -65,11 +65,11 @@ def test_bad_config_is_rejected_and_previous_config_keeps_serving(compose_proxy)
     rig = compose_proxy
     original = rig.config.read_text()
     try:
-        rig.config.write_text(original + '\ninvalid_proxy_directive_for_test {\n')
+        rig.write_config(original + '\ninvalid_proxy_directive_for_test {\n')
         assert rig.validate().exit_code != 0
         assert rig.client.get('/echo').headers['x-proxy-generation'] == rig.generation
     finally:
-        rig.config.write_text(original)
+        rig.write_config(original)
     assert rig.validate().exit_code == 0
     rig.reload()
     rig.refresh_client()

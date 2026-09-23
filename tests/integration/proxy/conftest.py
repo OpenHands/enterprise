@@ -180,6 +180,27 @@ class Proxy:
             f'{self.candidate} failed readiness: {self.container.logs(tail=20).decode()}'
         )
 
+    def write_config(self, text):
+        temporary = self.config.with_suffix(self.config.suffix + '.pending')
+        temporary.write_text(text)
+        temporary.replace(self.config)
+        # Desktop VM bind mounts can briefly expose new bytes with stale file
+        # size metadata. Confirm both before asking a parser to load the file.
+        target = CANDIDATES[self.candidate][2] + '/' + self.config.name
+        deadline = time.monotonic() + 5
+        expected = text.encode()
+        while time.monotonic() < deadline:
+            contents = self.container.exec_run(['cat', target])
+            size = self.container.exec_run(['stat', '-c', '%s', target])
+            if (
+                contents.exit_code == size.exit_code == 0
+                and contents.output == expected
+                and size.output.strip() == str(len(expected)).encode()
+            ):
+                return
+            time.sleep(0.1)
+        pytest.fail('Config bind mount did not expose the complete new file within 5s')
+
     def validate(self):
         commands = {
             'caddy': ['caddy', 'validate', '--config', '/etc/caddy/Caddyfile'],
@@ -190,9 +211,7 @@ class Proxy:
 
     def reload(self):
         generation = uuid.uuid4().hex
-        self.config.write_text(
-            self.config.read_text().replace(self.generation, generation)
-        )
+        self.write_config(self.config.read_text().replace(self.generation, generation))
         self.generation = generation
         if self.candidate == 'haproxy':
             result = self.container.exec_run(
@@ -314,6 +333,8 @@ def compose_proxy(request, docker_client, fixture_image, tmp_path, record_proper
     config.mkdir()
     image, filename, target, command = CANDIDATES[request.param]
     shutil.copy(HERE / 'configs' / filename, config / filename)
+    manifest = tmp_path / 'compose.yaml'
+    shutil.copy(HERE / 'compose.yaml', manifest)
     override = tmp_path / 'override.json'
     override.write_text(json.dumps({'services': {'proxy': {'command': command}}}))
     environment = os.environ | {
@@ -332,7 +353,7 @@ def compose_proxy(request, docker_client, fixture_image, tmp_path, record_proper
                 '--project-name',
                 name,
                 '-f',
-                str(HERE / 'compose.yaml'),
+                str(manifest),
                 '-f',
                 str(override),
                 *args,
@@ -354,6 +375,32 @@ def compose_proxy(request, docker_client, fixture_image, tmp_path, record_proper
         compose('up', '-d', '--no-deps', 'proxy')
         compose('up', '-d', 'enterprise')
         rig = Proxy(request.param, service('proxy'), None, tls, config / filename)
+        rig.install_started_at = started
+
+        def swap_candidate(candidate):
+            image, filename, target, command = CANDIDATES[candidate]
+            # Freeze the originally published port for every candidate/rollback.
+            port = rig.client.base_url.port
+            manifest.write_text(
+                manifest.read_text().replace(
+                    '127.0.0.1::8443', f'127.0.0.1:{port}:8443'
+                )
+            )
+            shutil.copy(HERE / 'configs' / filename, config / filename)
+            environment.update(PROXY_IMAGE=image, PROXY_CONFIG_TARGET=target)
+            override.write_text(
+                json.dumps({'services': {'proxy': {'command': command}}})
+            )
+            compose('config', '--quiet')
+            compose('up', '-d', '--no-deps', 'proxy')
+            rig.candidate = candidate
+            rig.config = config / filename
+            rig.generation = 'initial'
+            rig.container = service('proxy')
+            rig.refresh_client()
+            rig.wait_ready()
+
+        rig.swap_candidate = swap_candidate
         rig.compose = compose
         rig.service = service
         rig.network = docker_client.networks.get(f'{name}_default')
