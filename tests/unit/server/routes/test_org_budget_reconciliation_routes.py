@@ -128,3 +128,40 @@ async def test_member_budget_delete_returns_503_for_unhealthy_reconciliation(
     )
 
     assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('verified', [True, False])
+@pytest.mark.parametrize('operation', ['settings', 'upsert', 'delete'])
+async def test_rejected_budget_routes_return_typed_503(operation, verified):
+    import json
+
+    from server.services.org_budget_service import BudgetChangeRejectedError
+
+    service = AsyncMock()
+    error = BudgetChangeRejectedError(previous_policy_verified=verified)
+    service.update_budget_settings.side_effect = error
+    service.upsert_user_override.side_effect = error
+    service.delete_user_override.side_effect = error
+    args = dict(
+        org_id=uuid4(),
+        user_id=str(uuid4()),
+        response=Response(),
+        budget_service=service,
+    )
+    if operation == 'settings':
+        result = await update_org_budget_settings(
+            **args, update=OrgBudgetSettingsUpdate(monthly_limit=10)
+        )
+    elif operation == 'upsert':
+        result = await upsert_org_budget_override(
+            **args,
+            current_user_id=str(uuid4()),
+            update=OrgBudgetUserOverrideUpdate(monthly_limit=10, is_disabled=False),
+        )
+    else:
+        result = await delete_org_budget_override(**args, current_user_id=str(uuid4()))
+    assert result.status_code == 503
+    assert json.loads(result.body)['detail'] == error.detail
+    service.get_user_budget_row.assert_not_awaited()
+    service.get_reconciliation_state.assert_not_awaited()

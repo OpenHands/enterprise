@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { AxiosError } from "axios";
 import { Budgets } from "#/components/features/budgets/budgets";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 
@@ -23,6 +24,9 @@ vi.mock("react-i18next", async () => {
     useTranslation: () => ({
       t: (key: string, params?: Record<string, string>) => {
         const translations: Record<string, string> = {
+          SETTINGS$BUDGETS_NEXT_RESET: `Next reset: ${params?.date} at 00:00 UTC.`,
+          SETTINGS$BUDGETS_RESET_DAY_CHANGE_HELPER:
+            "Saving keeps current organization and individual spending.",
           SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND: `The ${params?.cap} team cap includes the ${params?.priorSpend} already recorded before this cycle started.`,
           SETTINGS$BUDGETS_TEAM_CAP_HELPER:
             "The team cap includes any spend already recorded before this cycle started.",
@@ -131,6 +135,106 @@ describe("Budgets", () => {
     vi.mocked(organizationService.deleteBudgetOverride).mockResolvedValue();
   });
 
+  it("keeps a rejected settings edit through refetch and retries the draft", async () => {
+    const user = userEvent.setup();
+    const error = new AxiosError("503");
+    error.response = { data: { detail: {
+      code: "budget_change_rejected",
+      message: "Budget change wasn't saved. Your previous limits remain in effect. Please retry.",
+      previous_policy_verified: true,
+    } } } as AxiosError["response"];
+    vi.mocked(organizationService.updateBudgetSettings).mockRejectedValueOnce(error);
+    vi.mocked(organizationService.getBudgetSettings)
+      .mockResolvedValueOnce(budgetResponse)
+      .mockResolvedValue({ ...budgetResponse, current_spend: 201 });
+    await renderBudgets();
+    const input = screen.getByLabelText("Monthly limit");
+    await user.clear(input);
+    await user.type(input, "500");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByText(/Budget change wasn't saved/);
+    await waitFor(() => expect(organizationService.getBudgetSettings).toHaveBeenCalledTimes(2));
+    expect(input).toHaveValue(500);
+    expect(screen.getByText(/of \$1,000 spent/)).toBeInTheDocument();
+    expect(screen.queryByText(/of \$500 spent/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(organizationService.updateBudgetSettings).toHaveBeenCalledTimes(2));
+    expect(organizationService.updateBudgetSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({payload: expect.objectContaining({monthly_limit: 500})}),
+    );
+    await waitFor(() => expect(screen.queryByText(/Budget change wasn't saved/)).not.toBeInTheDocument());
+  });
+
+  it("keeps the individual editor open after a rejected save", async () => {
+    const user = userEvent.setup();
+    const error = new AxiosError("503");
+    error.response = { data: { detail: {
+      code: "budget_change_rejected", message: "Budget change wasn't saved. Please retry.",
+    } } } as AxiosError["response"];
+    vi.mocked(organizationService.upsertBudgetOverride).mockRejectedValueOnce(error);
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await user.click(screen.getByLabelText("Edit budget for User One"));
+    const input = screen.getByRole("spinbutton");
+    await user.clear(input);
+    await user.type(input, "75");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Budget change wasn't saved/);
+    expect(input).toHaveValue(75);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument());
+  });
+
+  it("clears a rejected individual edit when Cancel discards the draft", async () => {
+    const user = userEvent.setup();
+    const error = new AxiosError("503");
+    error.response = { data: { detail: {
+      code: "budget_change_rejected", message: "Budget change wasn't saved. Please retry.",
+    } } } as AxiosError["response"];
+    vi.mocked(organizationService.upsertBudgetOverride).mockRejectedValueOnce(error);
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await user.click(screen.getByLabelText("Edit budget for User One"));
+    await user.clear(screen.getByRole("spinbutton"));
+    await user.type(screen.getByRole("spinbutton"), "75");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Budget change wasn't saved/);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByText(/Budget change wasn't saved/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText("Edit budget for User One"));
+    expect(screen.getByRole("spinbutton")).toHaveValue(50);
+  });
+
+  it("previews the selected reset date and preserves the saved date on reload", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      reset_day: 15,
+      cycle_end_at: "2099-10-15T00:00:00Z",
+    });
+    await renderBudgets();
+    expect(
+      screen.getByText("Next reset: October 15, 2099 at 00:00 UTC."),
+    ).toBeInTheDocument();
+    await user.click(screen.getByTestId("org-billing-cycle"));
+    await user.click(screen.getByRole("option", { name: "1st of each month" }));
+    expect(
+      screen.getByText(
+        "Saving keeps current organization and individual spending.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Next reset: October 15, 2099 at 00:00 UTC."),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(organizationService.updateBudgetSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ reset_day: 1 }),
+      }),
+    );
+  });
+
   it.each([
     [false, false],
     [true, false],
@@ -192,8 +296,8 @@ describe("Budgets", () => {
     await waitFor(() =>
       expect(organizationService.updateBudgetSettings).toHaveBeenCalled(),
     );
-    const [{ payload }] =
-      vi.mocked(organizationService.updateBudgetSettings).mock.calls[0];
+    const [{ payload }] = vi.mocked(organizationService.updateBudgetSettings)
+      .mock.calls[0];
     expect(payload).not.toHaveProperty("thresholds");
     expect(payload).not.toHaveProperty("slack_channel");
   });
@@ -206,13 +310,20 @@ describe("Budgets", () => {
         ...budgetResponse,
         email_alerts_available: unavailable !== "email",
         slack_workspace_connected: unavailable !== "slack",
-        thresholds: [{ id: 1, percentage: 75, email_enabled: true, slack_enabled: true }],
+        thresholds: [
+          { id: 1, percentage: 75, email_enabled: true, slack_enabled: true },
+        ],
       });
       await renderBudgets();
       await user.click(screen.getByRole("button", { name: "Save changes" }));
-      await waitFor(() => expect(organizationService.updateBudgetSettings).toHaveBeenCalled());
-      const [{ payload }] = vi.mocked(organizationService.updateBudgetSettings).mock.calls[0];
-      expect(payload.thresholds).toEqual([{ percentage: 75, email_enabled: true, slack_enabled: true }]);
+      await waitFor(() =>
+        expect(organizationService.updateBudgetSettings).toHaveBeenCalled(),
+      );
+      const [{ payload }] = vi.mocked(organizationService.updateBudgetSettings)
+        .mock.calls[0];
+      expect(payload.thresholds).toEqual([
+        { percentage: 75, email_enabled: true, slack_enabled: true },
+      ]);
     },
   );
 
@@ -352,7 +463,9 @@ describe("Budgets", () => {
 
     await renderBudgets();
 
-    expect(screen.getByRole("alert")).toHaveTextContent("Degraded");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Degraded — The last budget update could not be completed or verified.",
+    );
     expect(screen.getByRole("alert")).toHaveTextContent(
       "member cycle baseline is unavailable",
     );
