@@ -1,6 +1,7 @@
 /* eslint-disable i18next/no-literal-string */
 import React, { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { isAxiosError } from "axios";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { useDebounce } from "#/hooks/use-debounce";
@@ -13,6 +14,15 @@ import {
 import type { BudgetThreshold, BudgetUserRow } from "./budgets-tabs";
 import { nextBudgetResetDate } from "./budget-reset-date";
 
+function rejectedBudgetChange(error: unknown): string | null {
+  if (!isAxiosError(error)) return null;
+  const detail = error.response?.data?.detail;
+  return detail?.code === "budget_change_rejected" &&
+    typeof detail.message === "string"
+    ? detail.message
+    : null;
+}
+
 export function Budgets() {
   const { organizationId } = useSelectedOrganizationId();
   const queryClient = useQueryClient();
@@ -20,6 +30,7 @@ export function Budgets() {
   const [usersPage, setUsersPage] = useState(1);
 
   const [activeTab, setActiveTab] = useState<BudgetTab>("organization");
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
@@ -97,6 +108,11 @@ export function Budgets() {
         userId: params.userId,
         payload: params.payload,
       }),
+    onSuccess: (_, variables) => {
+      setEditingUserId((current) =>
+        current === variables.userId ? null : current,
+      );
+    },
     onSettled: () =>
       queryClient.invalidateQueries({
         queryKey: ["organizations", "budgets", organizationId],
@@ -134,12 +150,32 @@ export function Budgets() {
   const [slackChannel, setSlackChannel] = useState("");
   const [thresholds, setThresholds] = useState<BudgetThreshold[]>([]);
   const [defaultAmount, setDefaultAmount] = useState("");
-  const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [overrideAmount, setOverrideAmount] = useState("");
   const [overrideDisabled, setOverrideDisabled] = useState(false);
+  const rejectedSettingsMessage = rejectedBudgetChange(updateBudgets.error);
+  const rejectedMessage =
+    activeTab === "overrides"
+      ? rejectedBudgetChange(upsertOverride.error) ||
+        rejectedBudgetChange(deleteOverride.error)
+      : rejectedSettingsMessage;
+  const resetSettingsMutation = updateBudgets.reset;
+  const resetOverrideMutation = upsertOverride.reset;
+  const resetDeleteMutation = deleteOverride.reset;
 
   useEffect(() => {
-    if (!budgetData) return;
+    resetSettingsMutation();
+    resetOverrideMutation();
+    resetDeleteMutation();
+  }, [
+    organizationId,
+    resetSettingsMutation,
+    resetOverrideMutation,
+    resetDeleteMutation,
+  ]);
+
+  useEffect(() => {
+    if (!budgetData || rejectedSettingsMessage || updateBudgets.isPending)
+      return;
     setMonthlyLimit(
       budgetData.monthly_limit ? budgetData.monthly_limit.toString() : "",
     );
@@ -157,7 +193,7 @@ export function Budgets() {
         ? budgetData.default_user_monthly_limit.toString()
         : "",
     );
-  }, [budgetData]);
+  }, [budgetData, rejectedSettingsMessage, updateBudgets.isPending]);
 
   const monthlyLimitValue = monthlyLimit ? Number(monthlyLimit) : null;
   const isMonthlyLimitValid =
@@ -358,6 +394,7 @@ export function Budgets() {
 
   const saveOverride = (userId: string) => {
     if (!organizationId) return;
+    deleteOverride.reset();
     const overrideValue = overrideAmount ? Number(overrideAmount) : null;
     upsertOverride.mutate({
       userId,
@@ -366,11 +403,11 @@ export function Budgets() {
         is_disabled: overrideDisabled,
       },
     });
-    cancelEditing();
   };
 
   const removeOverride = (userId: string) => {
     if (!organizationId) return;
+    upsertOverride.reset();
     deleteOverride.mutate(userId);
   };
 
@@ -405,9 +442,21 @@ export function Budgets() {
         ))}
       </div>
 
+      {rejectedMessage && (
+        <div
+          role="alert"
+          className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm"
+        >
+          {rejectedMessage}
+        </div>
+      )}
+
       {activeTab === "organization" && (
         <OrganizationBudgetTab
           currentSpend={currentSpend}
+          currentMonthlyLimit={
+            budgetData?.enabled ? budgetData.monthly_limit : null
+          }
           monthlyLimitValue={monthlyLimitValue}
           cycleLabel={cycleLabel}
           percentage={percentage}

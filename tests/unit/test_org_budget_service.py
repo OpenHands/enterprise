@@ -506,6 +506,7 @@ async def test_update_budget_settings_marks_explicit_disable_for_cap_clear(
         [],
         clear_disabled=True,
         snapshot=None,
+        admission_blocked=True,
     )
 
 
@@ -3618,7 +3619,7 @@ async def test_reset_day_change_does_not_roll_at_the_old_boundary(
     assert rolled['current_spend'] == 20.0
     assert settings.cycle_start_spend == 10.0
 
-    set_team_blocked.assert_not_awaited()
+    set_team_blocked.assert_awaited_once_with(str(budget_org.id), True)
 
 
 @pytest.mark.asyncio
