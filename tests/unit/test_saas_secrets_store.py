@@ -608,14 +608,15 @@ class TestSaasSecretsStoreOrgSharedMerge:
         )
         await secrets_store.store(personal)
 
-        # Insert an org-shared secret
+        # Insert an org-shared secret (description must be encrypted, as
+        # store() would write it, because load()/_decrypt_kwargs decrypts it).
         async with secrets_store.a_session_maker() as session:
             shared = StoredCustomSecrets(
                 keycloak_user_id='admin-user-id',
                 org_id=org_id,
                 secret_name='SHARED',
                 secret_value=secrets_store._jwt_svc.encrypt_value('shared_val'),
-                description='org-wide',
+                description=secrets_store._jwt_svc.encrypt_value('org-wide'),
                 is_org_shared=True,
             )
             session.add(shared)
@@ -651,14 +652,15 @@ class TestSaasSecretsStoreOrgSharedMerge:
         mock_get_user.return_value = mock_user
         org_id = mock_user.current_org_id
 
-        # Insert an org-shared secret
+        # Insert an org-shared secret (description must be encrypted, as
+        # store() would write it, because load()/_decrypt_kwargs decrypts it).
         async with secrets_store.a_session_maker() as session:
             shared = StoredCustomSecrets(
                 keycloak_user_id='admin-user-id',
                 org_id=org_id,
                 secret_name='SHARED',
                 secret_value=secrets_store._jwt_svc.encrypt_value('shared_val'),
-                description='org-wide',
+                description=secrets_store._jwt_svc.encrypt_value('org-wide'),
                 is_org_shared=True,
             )
             session.add(shared)
