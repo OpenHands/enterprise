@@ -545,6 +545,25 @@ class TestLitellmDisabledNeverContactsGateway:
         await LiteLlmManager.sync_free_model_allowlists(db_session=MagicMock())
         _no_network.assert_not_called()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'call',
+        [
+            lambda: LiteLlmManager.set_team_blocked('test-org-id', True),
+            lambda: LiteLlmManager.block_team('test-org-id'),
+        ],
+        ids=['set_team_blocked', 'block_team'],
+    )
+    async def test_team_block_methods_are_noops_when_configured(
+        self, _no_network, call
+    ):
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://litellm'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'sk-test'),
+        ):
+            assert await call() is None
+        _no_network.assert_not_called()
+
 
 class TestLiteLlmManager:
     """Test cases for LiteLlmManager class."""

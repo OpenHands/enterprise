@@ -1153,6 +1153,8 @@ class LiteLlmManager:
         team_id: str,
         blocked: bool,
     ) -> None:
+        if not await is_litellm_enabled():
+            return
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             raise RuntimeError('LiteLLM API configuration not found')
 
@@ -1168,6 +1170,8 @@ class LiteLlmManager:
         client: httpx.AsyncClient,
         team_id: str,
     ) -> None:
+        if not await is_litellm_enabled():
+            return
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             raise RuntimeError('LiteLLM API configuration not found')
 
