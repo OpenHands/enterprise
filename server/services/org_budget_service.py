@@ -1015,6 +1015,7 @@ class OrgBudgetService:
         for threshold in thresholds:
             threshold.last_triggered_at = None
             threshold.last_triggered_cycle_start = None
+            threshold.delivery_state = {}
         await self.store.flush()
         await self.store.refresh(settings)
         await self._sync_litellm_budgets(org_id, settings, overrides, snapshot=snapshot)
@@ -1726,15 +1727,20 @@ class OrgBudgetService:
             if threshold.last_triggered_cycle_start == cycle_start:
                 continue
 
-            await self._send_alerts(
+            if (threshold.delivery_state or {}).get(
+                'cycle_start'
+            ) != cycle_start.isoformat():
+                threshold.delivery_state = {'cycle_start': cycle_start.isoformat()}
+            delivered = await self._send_alerts(
                 org_id,
                 settings,
                 threshold,
                 current_spend,
                 percentage,
             )
-            threshold.last_triggered_at = now
-            threshold.last_triggered_cycle_start = cycle_start
+            if delivered:
+                threshold.last_triggered_at = now
+                threshold.last_triggered_cycle_start = cycle_start
             triggered = True
 
         if triggered:
@@ -1747,29 +1753,45 @@ class OrgBudgetService:
         threshold: OrgBudgetThreshold,
         current_spend: float,
         percentage: float,
-    ) -> None:
+    ) -> bool:
         org_name = await self._get_org_name(org_id)
+        progress = dict(threshold.delivery_state or {})
+        delivered = True
         if threshold.email_enabled:
             recipients = await self._get_admin_emails(org_id)
-            if recipients:
-                await asyncio.to_thread(
-                    SMTPEmailService.send_budget_alert_email,
-                    recipients,
-                    org_name=org_name,
-                    percentage=percentage,
-                    current_spend=current_spend,
-                    monthly_limit=settings.monthly_limit or 0,
-                    threshold=threshold.percentage,
-                )
+            sent_to = set(progress.get('email_recipients', []))
+            for recipient in set(recipients) - sent_to:
+                try:
+                    success = await asyncio.to_thread(
+                        SMTPEmailService.send_budget_alert_email,
+                        [recipient],
+                        org_name=org_name,
+                        percentage=percentage,
+                        current_spend=current_spend,
+                        monthly_limit=settings.monthly_limit or 0,
+                        threshold=threshold.percentage,
+                    )
+                except Exception:
+                    logger.exception('Budget alert email delivery failed')
+                    success = False
+                if success:
+                    sent_to.add(recipient)
+            progress['email_recipients'] = sorted(sent_to)
+            delivered = bool(recipients) and set(recipients).issubset(sent_to)
 
         if threshold.slack_enabled:
-            await self._send_slack_alert(
-                org_name,
-                settings,
-                threshold.percentage,
-                current_spend,
-                percentage,
-            )
+            if not progress.get('slack'):
+                progress['slack'] = await self._send_slack_alert(
+                    org_name,
+                    settings,
+                    threshold.percentage,
+                    current_spend,
+                    percentage,
+                )
+            delivered = delivered and bool(progress['slack'])
+
+        threshold.delivery_state = progress
+        return delivered
 
     async def _get_org_name(self, org_id: UUID) -> str:
         result = await self.db_session.execute(select(Org.name).where(Org.id == org_id))
@@ -1793,13 +1815,13 @@ class OrgBudgetService:
         threshold: int,
         current_spend: float,
         percentage: float,
-    ) -> None:
+    ) -> bool:
         if not settings.slack_channel:
-            return
+            return False
         team_id = await self._resolve_slack_team_id(settings.slack_team_id)
         token = await self._get_slack_bot_token(team_id) if team_id else None
         if not token:
-            return
+            return False
 
         client = AsyncWebClient(token=token)
         message = (
@@ -1809,15 +1831,17 @@ class OrgBudgetService:
             f'({percentage:.1f}% of ${settings.monthly_limit:,.2f})'
         )
         try:
-            await client.chat_postMessage(
+            result = await client.chat_postMessage(
                 channel=settings.slack_channel,
                 text=message,
             )
+            return bool(result.get('ok'))
         except Exception as e:
             logger.warning(
                 'Slack budget alert failed',
                 extra={'error': str(e), 'team_id': team_id},
             )
+            return False
 
     async def _get_slack_bot_token(self, team_id: str | None) -> str | None:
         if not SLACK_AVAILABLE or not is_slack_configured():
