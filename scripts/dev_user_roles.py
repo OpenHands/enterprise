@@ -121,17 +121,28 @@ def _ensure_config_bootstrapped() -> None:
     terminal (VS Code's launch.json already loads ``envFile``, but a bare
     ``uv run`` invocation does not).
 
-    ``DB_HOST`` is the one DB field without a built-in default in
-    ``DbSessionInjector`` (port/name/user/password all default), so we
-    fall back to ``localhost`` -- matching ``.vscode/launch.json`` -- so
-    the script works out-of-the-box against a ``make local-db`` Postgres
-    without duplicating DB config in ``.env``. Any value in ``.env`` or
-    the environment wins. The store layer lazily resolves the global
-    config on first use; calling it up front surfaces configuration
-    errors with a clear traceback before any DB work starts.
+    Two env vars live in ``.vscode/launch.json`` rather than ``.env`` (they
+    are non-sensitive config), so a terminal-launched script does not inherit
+    them. We default both to match launch.json exactly so the script uses the
+    same DB and the same encryption key (``.keys``) as the running app --
+    otherwise encrypted DB columns (e.g. ``user._llm_api_key``) fail to
+    decrypt:
+
+    * ``DB_HOST`` -> ``localhost`` (the one DB field without a built-in
+      default in ``DbSessionInjector``; port/name/user/password all default).
+    * ``FILE_STORE_PATH`` -> ``~/.openhands-state``. ``get_default_persistence_dir()``
+      resolves this as the persistence dir, and ``JwtServiceInjector`` reads
+      ``.keys`` from it. Without it the script falls through to the default
+      ``~/.openhands`` and uses a *different* key than the app.
+
+    Any value already in ``.env`` or the environment wins via ``setdefault``.
+    The store layer lazily resolves the global config on first use; calling
+    it up front surfaces configuration errors with a clear traceback before
+    any DB work starts.
     """
     load_dotenv()
     os.environ.setdefault('DB_HOST', 'localhost')
+    os.environ.setdefault('FILE_STORE_PATH', str(Path.home() / '.openhands-state'))
     get_global_config()
 
 
