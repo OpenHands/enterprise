@@ -25,7 +25,7 @@ from openhands.sdk.settings import (
     ConversationSettings,
     OpenHandsAgentSettings,
 )
-from server.constants import LITE_LLM_API_URL
+from server.constants import LITE_LLM_API_URL, canonicalize_bundled_proxy_llm
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.role import Role
@@ -500,8 +500,13 @@ class OrgDefaultsSettingsResponse(BaseModel):
 
     @staticmethod
     def _prepare_llm_for_response(agent_settings: AgentSettingsConfig) -> None:
-        """Strip response-only LLM fields without changing provider names."""
+        """Strip response-only LLM fields and show bundled-proxy routes by their
+        public ``openhands/`` name."""
         llm = agent_settings.llm
+        if llm.model:
+            llm.model = canonicalize_bundled_proxy_llm(
+                {'model': llm.model, 'base_url': llm.base_url}
+            )['model']
         if (
             llm.model
             and llm.model.startswith('openhands/')

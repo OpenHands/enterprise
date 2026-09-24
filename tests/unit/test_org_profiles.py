@@ -414,6 +414,45 @@ class TestProfileLifecycleIntegration:
         assert models['Pinned'] == 'anthropic/claude-3-5-sonnet'
 
     @pytest.mark.asyncio
+    async def test_bundled_proxy_default_listed_by_openhands_name(
+        self, async_session_maker, patch_route_db, monkeypatch
+    ):
+        """Self-hosted: a stored ``litellm_proxy/<route>`` Default on the
+        bundled proxy lists as ``openhands/<route>`` even with no DB-backed
+        OpenHands default, and keeps its base_url.
+        """
+        from server import constants
+
+        proxy_url = 'http://litellm.test:4000'
+        monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+        monkeypatch.setattr(constants, 'LITE_LLM_API_URL', proxy_url)
+        org_id = patch_route_db
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org is not None
+            org.llm_profiles = {
+                'profiles': {
+                    'Default': {
+                        'model': 'litellm_proxy/claude-sonnet-4-5-20250929',
+                        'base_url': proxy_url,
+                    },
+                },
+                'active': 'Default',
+            }
+            await session.commit()
+
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+        models = {profile.name: profile.model for profile in listing.profiles}
+        assert models == {'Default': 'openhands/claude-sonnet-4-5-20250929'}
+        assert listing.active_profile == 'Default'
+
+        detail = await get_profile(
+            org_id=org_id, name='Default', user_id=str(ADMIN_USER_ID)
+        )
+        assert detail.llm['model'] == 'openhands/claude-sonnet-4-5-20250929'
+        assert detail.llm['base_url'] == proxy_url
+
+    @pytest.mark.asyncio
     async def test_default_profile_cleared_when_db_default_disabled(
         self, async_session_maker, patch_route_db
     ):

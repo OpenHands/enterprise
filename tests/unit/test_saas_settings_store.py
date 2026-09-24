@@ -703,6 +703,67 @@ async def test_load_canonicalizes_legacy_litellm_proxy_llm_profiles(
 
 
 @pytest.mark.asyncio
+async def test_load_represents_bundled_proxy_default_as_openhands(
+    async_session_maker, org_with_multiple_members_fixture, monkeypatch
+):
+    """Self-hosted: a ``litellm_proxy/<route>`` default on the bundled proxy
+    loads as the picker's ``openhands/<route>`` with its base_url kept, and the
+    seeded ``Default`` profile survives without a DB-backed OpenHands default.
+    """
+    from sqlalchemy import update
+
+    from server import constants
+    from storage import saas_settings_store
+    from storage.org_member import OrgMember
+    from storage.user import User
+
+    proxy_url = 'http://litellm.test:4000'
+    monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+    monkeypatch.setattr(constants, 'LITE_LLM_API_URL', proxy_url)
+    monkeypatch.setattr(saas_settings_store, 'LITE_LLM_API_URL', proxy_url)
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+
+    async with async_session_maker() as session:
+        await session.execute(
+            update(OrgMember)
+            .where(OrgMember.org_id == org_id, OrgMember.user_id == admin_user_id)
+            .values(
+                agent_settings_diff={
+                    'llm': {
+                        'model': 'litellm_proxy/claude-sonnet-4-5-20250929',
+                        'base_url': proxy_url,
+                    },
+                }
+            )
+        )
+        await session.execute(
+            update(User)
+            .where(User.id == admin_user_id)
+            .values(enable_sound_notifications=False)
+        )
+        await session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.agent_settings.llm.model == 'openhands/claude-sonnet-4-5-20250929'
+    assert loaded.agent_settings.llm.base_url == proxy_url
+    assert loaded.llm_profiles.active == 'Default'
+    default = loaded.llm_profiles.require('Default')
+    assert default.model == 'openhands/claude-sonnet-4-5-20250929'
+    assert default.base_url == proxy_url
+
+
+@pytest.mark.asyncio
 async def test_load_derives_analytics_consent_from_tos(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):

@@ -1,5 +1,8 @@
 import os
 import re
+from typing import Any
+
+from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_url
 
 HOST = os.getenv('WEB_HOST', 'app.all-hands.dev').strip()
 
@@ -196,10 +199,69 @@ def should_use_direct_llm_defaults() -> bool:
     )
 
 
+_LITELLM_PROXY_PREFIX = 'litellm_proxy/'
+_OPENHANDS_PREFIX = 'openhands/'
+
+
+def to_openhands_model(model: str) -> str:
+    """Translate a proxy route to the public ``openhands/`` model name.
+
+    ``litellm_proxy/<name>`` becomes ``openhands/<name>``; an
+    ``openhands/``-prefixed model is kept and a bare name is prefixed.
+    """
+    if model.startswith(_LITELLM_PROXY_PREFIX):
+        return _OPENHANDS_PREFIX + model[len(_LITELLM_PROXY_PREFIX) :]
+    if model.startswith(_OPENHANDS_PREFIX):
+        return model
+    return _OPENHANDS_PREFIX + model
+
+
+def uses_bundled_litellm_proxy() -> bool:
+    """Whether managed models are served by a self-hosted bundled LiteLLM proxy.
+
+    The model picker then lists the proxy's routes as ``openhands/<route>``,
+    so managed defaults must use that name while keeping the proxy base_url.
+    The OpenHands SaaS proxy keeps the SDK's canonicalization instead.
+    """
+    return (
+        DEPLOYMENT_MODE == 'self_hosted'
+        and not should_use_direct_llm_defaults()
+        and bool(LITE_LLM_API_URL)
+        and not is_openhands_proxy_base_url(LITE_LLM_API_URL)
+    )
+
+
+def is_bundled_proxy_base_url(base_url: object) -> bool:
+    """Whether ``base_url`` points at the self-hosted bundled LiteLLM proxy."""
+    return (
+        isinstance(base_url, str)
+        and base_url.rstrip('/') == LITE_LLM_API_URL.rstrip('/')
+        and uses_bundled_litellm_proxy()
+    )
+
+
+def canonicalize_bundled_proxy_llm(payload: dict[str, Any]) -> dict[str, Any]:
+    """Represent a stored bundled-proxy LLM as ``openhands/<route>``.
+
+    Only ``litellm_proxy/`` models whose base_url is the bundled proxy are
+    renamed; the base_url is kept so requests still reach that proxy.
+    """
+    model = payload.get('model')
+    if (
+        isinstance(model, str)
+        and model.startswith(_LITELLM_PROXY_PREFIX)
+        and is_bundled_proxy_base_url(payload.get('base_url'))
+    ):
+        return {**payload, 'model': to_openhands_model(model)}
+    return payload
+
+
 def get_default_llm_model() -> str:
     """Return the deployment default LLM model."""
     if should_use_direct_llm_defaults() and OPENHANDS_DEFAULT_LLM_MODEL:
         return OPENHANDS_DEFAULT_LLM_MODEL
+    if uses_bundled_litellm_proxy():
+        return to_openhands_model(get_default_litellm_model())
     return get_default_litellm_model()
 
 

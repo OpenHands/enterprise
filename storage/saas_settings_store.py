@@ -20,7 +20,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import resolve_agent_profile
 from server.auth.token_manager import TokenManager
-from server.constants import LITE_LLM_API_URL
+from server.constants import LITE_LLM_API_URL, canonicalize_bundled_proxy_llm
 from server.logger import logger
 from server.routes.org_models import (
     MEMBER_PRIVATE_AGENT_KEYS,
@@ -322,7 +322,9 @@ class SaasSettingsStore(SettingsStore):
             # normalize an org's pre-canonical llm_profiles identically.
             resolved_llm = resolved_dump.get('llm')
             if isinstance(resolved_llm, dict):
-                resolved_dump['llm'] = canonicalize_openhands_llm_payload(resolved_llm)
+                resolved_dump['llm'] = canonicalize_bundled_proxy_llm(
+                    canonicalize_openhands_llm_payload(resolved_llm)
+                )
         except Exception as exc:
             # Never-brick contract: catch broadly, not just the known resolver
             # errors — SDK contract drift (e.g. a new required kwarg raising
@@ -444,10 +446,12 @@ class SaasSettingsStore(SettingsStore):
             )
         # Canonicalize legacy managed OpenHands LLM payloads before Settings
         # validation so current settings and seeded profiles use the public
-        # openhands/ prefix.
+        # openhands/ prefix (including bundled-proxy defaults on self-hosted).
         llm_dict = merged_agent_settings.get('llm')
         if isinstance(llm_dict, dict):
-            merged_agent_settings['llm'] = canonicalize_openhands_llm_payload(llm_dict)
+            merged_agent_settings['llm'] = canonicalize_bundled_proxy_llm(
+                canonicalize_openhands_llm_payload(llm_dict)
+            )
 
         kwargs['agent_settings'] = merged_agent_settings
         org_conversation = OrgStore.get_conversation_settings_from_org(org)
@@ -498,7 +502,9 @@ class SaasSettingsStore(SettingsStore):
             raw_profiles = profiles_data.get('profiles')
             if isinstance(raw_profiles, dict):
                 profiles_data['profiles'] = {
-                    name: canonicalize_openhands_llm_payload(prof)
+                    name: canonicalize_bundled_proxy_llm(
+                        canonicalize_openhands_llm_payload(prof)
+                    )
                     if isinstance(prof, dict)
                     else prof
                     for name, prof in raw_profiles.items()
