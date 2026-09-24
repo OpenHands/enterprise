@@ -576,6 +576,17 @@ class DockerSandboxService(SandboxService):
             return False
 
 
+def _default_exposed_ports() -> list[ExposedPort]:
+    ports = [
+        ExposedPort(name=AGENT_SERVER, description='Agent server', container_port=8000),
+        ExposedPort(name=VSCODE, description='VSCode server', container_port=8001),
+        ExposedPort(name=WORKER_1, description='First application server', container_port=8011),
+        ExposedPort(name=WORKER_2, description='Second application server', container_port=8012),
+    ]
+    if os.getenv('OH_ENABLE_VSCODE', '0').lower() not in ('1', 'true'):
+        ports = [port for port in ports if port.name != VSCODE]
+    return ports
+
 class DockerSandboxServiceInjector(SandboxServiceInjector):
     """Dependency injector for docker sandbox services."""
 
@@ -602,38 +613,7 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
         description='Maximum number of sandboxes allowed to run simultaneously',
     )
     mounts: list[VolumeMount] = Field(default_factory=list)
-    exposed_ports: list[ExposedPort] = Field(
-        default_factory=lambda: [
-            ExposedPort(
-                name=AGENT_SERVER,
-                description=(
-                    'The port on which the agent server runs within the container'
-                ),
-                container_port=8000,
-            ),
-            ExposedPort(
-                name=VSCODE,
-                description=(
-                    'The port on which the VSCode server runs within the container'
-                ),
-                container_port=8001,
-            ),
-            ExposedPort(
-                name=WORKER_1,
-                description=(
-                    'The first port on which the agent should start application servers.'
-                ),
-                container_port=8011,
-            ),
-            ExposedPort(
-                name=WORKER_2,
-                description=(
-                    'The second port on which the agent should start application servers.'
-                ),
-                container_port=8012,
-            ),
-        ]
-    )
+    exposed_ports: list[ExposedPort] = Field(default_factory=_default_exposed_ports)
     health_check_path: str | None = Field(
         default='/health',
         description=(
