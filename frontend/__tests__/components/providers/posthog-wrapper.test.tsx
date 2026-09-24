@@ -123,7 +123,7 @@ describe("PostHogWrapper", () => {
     );
   });
 
-  it("should clean up sessionStorage after consuming bootstrap IDs", async () => {
+  it("should clean up legacy sessionStorage bootstrap IDs after consuming them", async () => {
     sessionStorage.setItem(
       "posthog_bootstrap",
       JSON.stringify({ distinctID: "user-123", sessionID: "session-456" }),
@@ -138,6 +138,32 @@ describe("PostHogWrapper", () => {
     await screen.findByTestId("child");
 
     expect(sessionStorage.getItem("posthog_bootstrap")).toBeNull();
+  });
+
+  it("should keep structured stored handoffs for adjacent same-origin apps", async () => {
+    sessionStorage.setItem(
+      "posthog_bootstrap",
+      JSON.stringify({
+        bootstrap: { distinctID: "user-123", sessionID: "session-456" },
+        exp: Date.now() + 60_000,
+        attribution: { cta_surface: "docs_link" },
+      }),
+    );
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child");
+
+    expect(
+      JSON.parse(sessionStorage.getItem("posthog_bootstrap") ?? "{}"),
+    ).toMatchObject({
+      bootstrap: { distinctID: "user-123", sessionID: "session-456" },
+      attribution: { cta_surface: "docs_link" },
+    });
   });
 
   it("should initialize PostHog from structured website handoff and register attribution", async () => {

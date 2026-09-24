@@ -245,12 +245,22 @@ function getStoredHandoff(): PostHogHandoff | undefined {
     const stored = storage.getItem(POSTHOG_BOOTSTRAP_KEY);
     if (!stored) return undefined;
 
-    storage.removeItem(POSTHOG_BOOTSTRAP_KEY);
     const parsed: unknown = JSON.parse(stored);
-    if (!isStoredHandoff(parsed)) return undefined;
-    if (isBootstrapConfig(parsed)) return { bootstrap: parsed };
-    if (typeof parsed.exp === "number" && parsed.exp < Date.now())
+    if (!isStoredHandoff(parsed)) {
+      storage.removeItem(POSTHOG_BOOTSTRAP_KEY);
       return undefined;
+    }
+    if (isBootstrapConfig(parsed)) {
+      storage.removeItem(POSTHOG_BOOTSTRAP_KEY);
+      return { bootstrap: parsed };
+    }
+    if (typeof parsed.exp === "number" && parsed.exp < Date.now()) {
+      storage.removeItem(POSTHOG_BOOTSTRAP_KEY);
+      return undefined;
+    }
+
+    // Keep valid handoffs for adjacent apps on the same origin, especially
+    // Agent Canvas after the Cloud root redirects to /canvas.
     return {
       bootstrap: parsed.bootstrap,
       attribution: sanitizeAttribution(parsed.attribution),
