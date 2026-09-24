@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.llm import LLM
+from server.constants import is_bundled_proxy_base_url
 
 from .verified_model_service import StoredVerifiedModel
 
@@ -42,7 +43,13 @@ def materialize_default_llm_profile(
         # concrete LLM) is a user-owned concrete profile, not a managed-default
         # pointer, so it is preserved.
         existing = profiles.get(DEFAULT_LLM_PROFILE_NAME)
-        if existing is not None and is_openhands_model(existing.model):
+        if (
+            existing is not None
+            and is_openhands_model(existing.model)
+            # A self-hosted default seeded from LITELLM_DEFAULT_MODEL keeps
+            # the bundled proxy base_url: a concrete route, not a DB pointer.
+            and not is_bundled_proxy_base_url(existing.base_url)
+        ):
             profiles.profiles.pop(DEFAULT_LLM_PROFILE_NAME, None)
             # The logical pointer is gone; ``active`` must not keep pointing
             # at a profile that no longer exists (a downstream launch would

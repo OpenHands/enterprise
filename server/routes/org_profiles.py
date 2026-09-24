@@ -38,7 +38,7 @@ from openhands.sdk.profiles import (
     rename_llm_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
-from server.constants import LITE_LLM_API_URL
+from server.constants import LITE_LLM_API_URL, canonicalize_bundled_proxy_llm
 from server.routes.org_models import OrgNotFoundError
 from server.routes.org_provider_connections import _load_connections
 from server.verified_models.default_profile import (
@@ -187,8 +187,17 @@ def _load_profiles(org: Org) -> LLMProfiles:
     """Load LLMProfiles from org row, defaulting to empty if not set."""
     if org.llm_profiles is None:
         return LLMProfiles()
+    data = dict(org.llm_profiles)
+    raw_profiles = data.get('profiles')
+    if isinstance(raw_profiles, dict):
+        data['profiles'] = {
+            name: canonicalize_bundled_proxy_llm(prof)
+            if isinstance(prof, dict)
+            else prof
+            for name, prof in raw_profiles.items()
+        }
     try:
-        return LLMProfiles.model_validate(org.llm_profiles)
+        return LLMProfiles.model_validate(data)
     except ValidationError as exc:
         # Schema drift / partially-invalid stored profiles: degrade to empty
         # rather than 500-ing. Other exceptions (DB decrypt failures, etc.)
