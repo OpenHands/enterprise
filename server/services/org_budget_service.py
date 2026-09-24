@@ -71,7 +71,9 @@ _UNIQUE_VIOLATION = '23505'
 
 
 class BudgetChangeRejectedError(Exception):
-    previous_policy_verified = False
+    def __init__(self, previous_policy_verified: bool = False):
+        super().__init__()
+        self.previous_policy_verified = previous_policy_verified
 
     @property
     def detail(self) -> dict:
@@ -550,7 +552,7 @@ class OrgBudgetService:
         )
         if snapshot_result.snapshot is None:
             reconciliation_error = self._snapshot_unavailable_detail()
-            if settings.enabled:
+            if self._needs_litellm_sync(settings, overrides):
                 await self._block_litellm_admission(org_id, settings)
             await self._record_litellm_sync(
                 settings,
@@ -578,9 +580,9 @@ class OrgBudgetService:
         cycle_due = datetime.now(UTC) >= next_cycle
         policy_matches = False
         if cycle_due:
-            if settings.enabled and not await self._block_litellm_admission(
-                org_id, settings
-            ):
+            if self._needs_litellm_sync(
+                settings, overrides
+            ) and not await self._block_litellm_admission(org_id, settings):
                 return {
                     'cycle_start_at': cycle.start_at,
                     'cycle_end_at': cycle.end_at,
@@ -641,7 +643,7 @@ class OrgBudgetService:
             cycle.start_at,
         )
         if not cycle_rolled:
-            if not settings.enabled:
+            if not self._needs_litellm_sync(settings, overrides):
                 await self._record_litellm_sync(settings, 'skipped')
             elif policy_matches:
                 admission_ready = settings.litellm_last_sync_status == 'success'
@@ -729,7 +731,30 @@ class OrgBudgetService:
             baseline_snapshot = snapshot_result.snapshot
 
         admission_ready = None
-        if enabled or 'enabled' in fields_set:
+        unchanged_disabled_policy = False
+        if (
+            not previous_enabled
+            and not enabled
+            and settings.litellm_last_sync_status == 'success'
+            and (
+                'default_user_monthly_limit' not in fields_set
+                or update_data.default_user_monthly_limit
+                == settings.default_user_monthly_limit
+            )
+        ):
+            baseline_snapshot = (
+                await self._get_financial_snapshot(org_id, settings, allow_stale=False)
+            ).snapshot
+            unchanged_disabled_policy = (
+                baseline_snapshot is not None
+                and await self._budget_policy_matches_snapshot(
+                    org_id, settings, overrides, baseline_snapshot
+                )
+            )
+        if not unchanged_disabled_policy and (
+            self._needs_litellm_sync(settings, overrides)
+            or fields_set & {'enabled', 'default_user_monthly_limit'}
+        ):
             admission_ready = await self._begin_budget_edit(org_id, settings, overrides)
 
         if 'enabled' in fields_set:
@@ -787,7 +812,9 @@ class OrgBudgetService:
                 org_id,
                 settings,
                 overrides,
-                clear_disabled='enabled' in fields_set and not settings.enabled,
+                clear_disabled=bool(
+                    fields_set & {'enabled', 'default_user_monthly_limit'}
+                ),
                 snapshot=baseline_snapshot,
                 admission_blocked=admission_ready is True,
             )
@@ -858,12 +885,8 @@ class OrgBudgetService:
     ) -> OrgUserBudgetOverride:
         await self._reject_personal_org(org_id, 'upsert_user_override')
         settings = await self._get_or_create_settings(org_id, for_update=True)
-        admission_ready = (
-            await self._begin_budget_edit(
-                org_id, settings, await self._get_overrides(org_id)
-            )
-            if settings.enabled
-            else None
+        admission_ready = await self._begin_budget_edit(
+            org_id, settings, await self._get_overrides(org_id)
         )
         override = await self.store.upsert_override(
             org_id=org_id,
@@ -877,6 +900,7 @@ class OrgBudgetService:
                 org_id,
                 settings,
                 overrides,
+                clear_disabled=True,
                 admission_blocked=admission_ready is True,
             )
         quint_oracle.log(
@@ -899,12 +923,8 @@ class OrgBudgetService:
                 org_id=quint_oracle.In('org', 'ORG_IDS'),
             )
             return
-        admission_ready = (
-            await self._begin_budget_edit(
-                org_id, settings, await self._get_overrides(org_id)
-            )
-            if settings.enabled
-            else None
+        admission_ready = await self._begin_budget_edit(
+            org_id, settings, await self._get_overrides(org_id)
         )
         await self.store.delete_override(override)
         overrides = await self._get_overrides(org_id)
@@ -913,6 +933,7 @@ class OrgBudgetService:
                 org_id,
                 settings,
                 overrides,
+                clear_disabled=True,
                 admission_blocked=admission_ready is True,
             )
         quint_oracle.log(
@@ -1506,30 +1527,23 @@ class OrgBudgetService:
         overrides: list[OrgUserBudgetOverride],
         snapshot: LiteLlmFinancialSnapshot,
     ) -> bool:
-        override_map = {str(override.user_id): override for override in overrides}
-        baselines = settings.user_cycle_start_spend or {}
-        expected_member_budgets: dict[str, float | None] = {}
-        for user_id in await self._org_member_ids(org_id):
-            effective_limit, is_disabled, _ = _effective_user_budget_limit(
-                override_map.get(user_id), settings.default_user_monthly_limit
-            )
-            if settings.enabled and not is_disabled and effective_limit is not None:
-                baseline = baselines.get(user_id)
-                if baseline is None:
-                    return False
-                expected_member_budgets[user_id] = baseline + effective_limit
-            else:
-                expected_member_budgets[user_id] = None
-
-        expected_team_budget = (
-            settings.cycle_start_spend + settings.monthly_limit
-            if settings.enabled and settings.monthly_limit
-            else None
+        comparison = _budget_policy_comparison(
+            settings,
+            overrides,
+            await self._org_member_ids(org_id),
+            BudgetFinancialSnapshotResult(snapshot=snapshot, status='live'),
         )
-        return not _budget_sync_readback_errors(
-            snapshot,
-            expected_team_budget,
-            expected_member_budgets,
+        return comparison['budget_policy_matches'] is True
+
+    @staticmethod
+    def _needs_litellm_sync(
+        settings: OrgBudgetSettings, overrides: list[OrgUserBudgetOverride]
+    ) -> bool:
+        return (
+            settings.enabled
+            or settings.default_user_monthly_limit is not None
+            or bool(overrides)
+            or settings.litellm_last_sync_status in {'pending', 'success', 'error'}
         )
 
     async def _org_member_ids(self, org_id: UUID) -> set[str]:
@@ -1604,9 +1618,22 @@ class OrgBudgetService:
         snapshot: LiteLlmFinancialSnapshot | None = None,
         admission_blocked: bool = False,
     ) -> LiteLlmFinancialSnapshot | None:
-        if not settings.enabled and not clear_disabled:
+        if not clear_disabled and not self._needs_litellm_sync(settings, overrides):
             await self._record_litellm_sync(settings, 'skipped')
             return snapshot
+
+        # A verified unchanged disabled policy does not need an admission outage.
+        if not settings.enabled and settings.litellm_last_sync_status == 'success':
+            if snapshot is None:
+                snapshot = (
+                    await self._get_financial_snapshot(
+                        org_id, settings, allow_stale=False
+                    )
+                ).snapshot
+            if snapshot is not None and await self._budget_policy_matches_snapshot(
+                org_id, settings, overrides, snapshot
+            ):
+                return snapshot
 
         if not admission_blocked and not await self._block_litellm_admission(
             org_id, settings

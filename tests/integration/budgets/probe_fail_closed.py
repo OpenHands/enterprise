@@ -87,18 +87,29 @@ async def test_unverified_budget_policy_fails_closed_before_provider(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['organization', 'default', 'override', 'delete'])
+@pytest.mark.parametrize(
+    'change,org_enabled',
+    [
+        (change, enabled)
+        for enabled in (True, False)
+        for change in ('organization', 'default', 'override', 'delete')
+        if enabled or change != 'organization'
+    ],
+)
 @pytest.mark.parametrize('readback_available', [True, False])
 async def test_edit_is_rejected_when_both_block_endpoints_fail(
     budget_adapter: BudgetTestAdapter,
     budget_http: httpx.AsyncClient,
     change: str,
     readback_available: bool,
+    org_enabled: bool,
 ) -> None:
     adapter = budget_adapter
     await adapter.configure_budget(5.0, 3.0)
     user = adapter.user_ids[0]
     await adapter.set_override(user, 2)
+    if not org_enabled:
+        await adapter.disable_budget()
     first = await adapter.send_request(user)
     assert first.status_code == 200, first.text
     await adapter.wait_for_spend(1, expected_member_spend={user: 1})
@@ -145,7 +156,7 @@ async def test_edit_is_rejected_when_both_block_endpoints_fail(
     assert await adapter.provider_calls() == calls + 1
     await adapter.reset_faults()
     native = await adapter.wait_for_spend(2, expected_member_spend={user: 2})
-    assert native['team_max_budget'] == 5
+    assert native['team_max_budget'] == (5 if org_enabled else None)
     assert native['members'][str(user)]['max_budget'] == 2
     assert (await adapter.send_request(user)).status_code in {401, 403, 429}
     assert await adapter.provider_calls() == calls + 1

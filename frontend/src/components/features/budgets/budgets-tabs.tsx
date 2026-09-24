@@ -170,7 +170,7 @@ export function OrganizationBudgetTab({
       "Pending — the desired policy has not yet been verified in LiteLLM.",
     healthy: "Healthy — LiteLLM has verified the desired budget policy.",
     degraded:
-      "The last budget update could not be completed or verified. Review the applied limits below and retry.",
+      "Degraded — The last budget update could not be completed or verified. Review the applied limits below and retry.",
     failed:
       "Failed — the applied LiteLLM policy could not be read or verified.",
   }[reconciliationState];

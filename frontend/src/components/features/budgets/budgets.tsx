@@ -387,6 +387,8 @@ export function Budgets() {
   };
 
   const cancelEditing = () => {
+    upsertOverride.reset();
+    deleteOverride.reset();
     setEditingUserId(null);
     setOverrideAmount("");
     setOverrideDisabled(false);

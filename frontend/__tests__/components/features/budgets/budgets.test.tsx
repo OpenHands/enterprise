@@ -185,6 +185,27 @@ describe("Budgets", () => {
     await waitFor(() => expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument());
   });
 
+  it("clears a rejected individual edit when Cancel discards the draft", async () => {
+    const user = userEvent.setup();
+    const error = new AxiosError("503");
+    error.response = { data: { detail: {
+      code: "budget_change_rejected", message: "Budget change wasn't saved. Please retry.",
+    } } } as AxiosError["response"];
+    vi.mocked(organizationService.upsertBudgetOverride).mockRejectedValueOnce(error);
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await user.click(screen.getByLabelText("Edit budget for User One"));
+    await user.clear(screen.getByRole("spinbutton"));
+    await user.type(screen.getByRole("spinbutton"), "75");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Budget change wasn't saved/);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByText(/Budget change wasn't saved/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText("Edit budget for User One"));
+    expect(screen.getByRole("spinbutton")).toHaveValue(50);
+  });
+
   it("previews the selected reset date and preserves the saved date on reload", async () => {
     const user = userEvent.setup();
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
@@ -443,7 +464,7 @@ describe("Budgets", () => {
     await renderBudgets();
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "The last budget update could not be completed or verified.",
+      "Degraded — The last budget update could not be completed or verified.",
     );
     expect(screen.getByRole("alert")).toHaveTextContent(
       "member cycle baseline is unavailable",

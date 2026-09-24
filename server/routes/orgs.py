@@ -1344,6 +1344,10 @@ async def update_org_budget_settings(
     users_status: str | None = Query(None),
     budget_service: OrgBudgetService = org_budget_service_dependency,
 ) -> OrgBudgetSettingsResponse | JSONResponse:
+    """503 with detail.code=budget_change_rejected means no edit was saved.
+
+    A 503 settings body means the edit was saved but enforcement is unverified.
+    """
     logger.info(
         'Updating org budget settings',
         extra={'org_id': str(org_id), 'user_id': user_id},
@@ -1376,6 +1380,10 @@ async def upsert_org_budget_override(
     current_user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     budget_service: OrgBudgetService = org_budget_service_dependency,
 ) -> OrgBudgetUserMutationResponse | JSONResponse:
+    """503 with detail.code=budget_change_rejected means no edit was saved.
+
+    A 503 user body means the edit was saved but enforcement is unverified.
+    """
     logger.info(
         'Updating org budget override',
         extra={
@@ -1416,6 +1424,10 @@ async def delete_org_budget_override(
     current_user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     budget_service: OrgBudgetService = org_budget_service_dependency,
 ) -> JSONResponse | None:
+    """503 with detail.code=budget_change_rejected means no edit was saved.
+
+    An empty 503 means deletion was saved but enforcement is unverified.
+    """
     logger.info(
         'Deleting org budget override',
         extra={
@@ -1435,7 +1447,7 @@ async def delete_org_budget_override(
 
 
 def _rejected_budget_change(error: BudgetChangeRejectedError) -> JSONResponse:
-    # Commit failure metadata so maintenance can repair an ambiguous native block.
+    # Return rather than raise: the request must commit failure metadata for recovery.
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content={'detail': error.detail},
