@@ -201,6 +201,7 @@ export type Settings = {
   agent_settings?: Record<string, SettingsValue> | null;
   conversation_settings_schema?: SettingsSchema | null;
   conversation_settings?: Record<string, SettingsValue> | null;
+  enable_memory_context?: boolean;
   sandbox_grouping_strategy?: SandboxGroupingStrategy;
   registered_marketplaces?: MarketplaceRegistration[];
   inherited_marketplaces?: MarketplaceRegistration[];

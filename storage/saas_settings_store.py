@@ -21,7 +21,11 @@ from openhands.sdk.llm.utils.openhands_provider import (
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import resolve_agent_profile
 from server.auth.token_manager import TokenManager
-from server.constants import LITE_LLM_API_URL, canonicalize_bundled_proxy_llm
+from server.constants import (
+    LITE_LLM_API_URL,
+    canonicalize_bundled_proxy_llm,
+    is_bundled_proxy_base_url,
+)
 from server.logger import logger
 from server.routes.org_models import (
     MEMBER_PRIVATE_AGENT_KEYS,
@@ -109,7 +113,9 @@ def managed_llm_key_config_from_model(
     ) or uses_openhands_provider_proxy
     if not uses_managed_llm_key:
         return None
-    return ManagedLlmKeyConfig(openhands_type=openhands_type)
+    return ManagedLlmKeyConfig(
+        openhands_type=openhands_type and not is_bundled_proxy_base_url(llm_base_url)
+    )
 
 
 def _org_rotation_advisory_lock_key(org_id: str) -> int:
@@ -739,12 +745,7 @@ class SaasSettingsStore(SettingsStore):
 
             llm_model = item.agent_settings.llm.model
             llm_base_url = item.agent_settings.llm.base_url
-            normalized_llm_base_url = llm_base_url.rstrip('/') if llm_base_url else None
-            normalized_managed_base_url = LITE_LLM_API_URL.rstrip('/')
-            uses_managed_llm_key = (
-                normalized_llm_base_url == normalized_managed_base_url
-                or (normalized_llm_base_url is None and is_openhands_model(llm_model))
-            )
+            managed_config = managed_llm_key_config_from_model(llm_model, llm_base_url)
             logger.info(
                 'saas_settings_store:store:managed_llm_config_decision',
                 extra={
@@ -752,11 +753,11 @@ class SaasSettingsStore(SettingsStore):
                     'org_id': str(org_id),
                     'model': llm_model,
                     'base_url': llm_base_url or '',
-                    'uses_managed_llm_key': uses_managed_llm_key,
+                    'uses_managed_llm_key': managed_config is not None,
                 },
             )
 
-            if uses_managed_llm_key:
+            if managed_config is not None:
                 fallback_api_key = (
                     org_member.llm_api_key
                     if not org._llm_api_key
@@ -767,7 +768,7 @@ class SaasSettingsStore(SettingsStore):
                 await self._ensure_api_key(
                     item,
                     str(org_id),
-                    openhands_type=is_openhands_model(llm_model),
+                    openhands_type=managed_config.openhands_type,
                     fallback_api_key=fallback_api_key,
                 )
                 item.sync_active_profile_from_settings()
@@ -790,6 +791,10 @@ class SaasSettingsStore(SettingsStore):
             kwargs.pop('agent_settings', None)
             kwargs.pop('conversation_settings', None)
             kwargs.pop('user_consents_to_analytics', None)
+            # ``memory_context`` is written exclusively by the
+            # MemoryChangeCallbackProcessor; a normal settings save must not
+            # clobber it with the (possibly stale) value on the Settings object.
+            kwargs.pop('memory_context', None)
 
             # Get or create user_settings for this user
             user_settings_result = await session.execute(
@@ -832,7 +837,7 @@ class SaasSettingsStore(SettingsStore):
                 OrgMemberSettingsUpdate(
                     llm_api_key=(
                         current_member_llm_api_key_raw  # type: ignore[arg-type]
-                        if not uses_managed_llm_key
+                        if managed_config is None
                         else None
                     ),
                 ),
@@ -866,7 +871,7 @@ class SaasSettingsStore(SettingsStore):
                     )
                     org_member.mcp_config = member_mcp_config
 
-            if uses_managed_llm_key and current_member_llm_api_key is not None:
+            if managed_config is not None and current_member_llm_api_key is not None:
                 # Managed/proxy key — store on this member but mark as org-managed
                 org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
                 org_member.has_custom_llm_api_key = False

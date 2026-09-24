@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+import sqlalchemy as sa
 from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -61,6 +62,16 @@ class User(Base):
     work_email_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Enterprise persistent-memory: when True, the MemoryChangeCallbackProcessor
+    # is registered for the user's conversations and the stored ``memory_context``
+    # is injected into each sandbox at conversation start.
+    enable_memory_context: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
+    # The latest MEMORY.md content captured by the callback. Written by the
+    # callback on every successful file_editor edit; read at conversation start
+    # to seed the sandbox's memory file before the agent runs.
+    memory_context: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
 
     # Relationships
     # Instance-level super-role relationship, not an org-scoped membership role.

@@ -108,6 +108,13 @@ class TestNewOrgDefault:
             constants.get_default_llm_model(), constants.get_default_llm_base_url()
         )
         assert config is not None
+        assert config.openhands_type is False
+
+    def test_cloud_openhands_keys_remain_typed(self, saas_proxy):
+        config = saas_settings_store.managed_llm_key_config_from_model(
+            'openhands/gpt-5', OPENHANDS_LLM_PROXY_BASE_URL
+        )
+        assert config is not None
         assert config.openhands_type is True
 
     def test_saas_default_is_unchanged(self, saas_proxy):

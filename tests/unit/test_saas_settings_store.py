@@ -761,6 +761,80 @@ async def test_load_represents_bundled_proxy_default_as_openhands(
 
 
 @pytest.mark.asyncio
+async def test_bundled_proxy_load_and_save_preserve_untyped_member_key(
+    async_session_maker, org_with_multiple_members_fixture, monkeypatch
+):
+    from sqlalchemy import update
+
+    from server import constants
+    from storage import saas_settings_store
+    from storage.lite_llm_manager import (
+        LiteLlmManager,
+        get_openhands_cloud_key_alias,
+    )
+    from storage.org_member import OrgMember
+
+    proxy_url = 'http://litellm.test:4000'
+    monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+    monkeypatch.setattr(constants, 'LITE_LLM_API_URL', proxy_url)
+    monkeypatch.setattr(saas_settings_store, 'LITE_LLM_API_URL', proxy_url)
+    fixture = org_with_multiple_members_fixture
+    user_id, org_id = fixture['admin_user_id'], fixture['org_id']
+    async with async_session_maker() as session:
+        await session.execute(
+            update(OrgMember)
+            .where(OrgMember.org_id == org_id, OrgMember.user_id == user_id)
+            .values(
+                agent_settings_diff={
+                    'llm': {
+                        'model': 'litellm_proxy/test-model',
+                        'base_url': proxy_url,
+                    }
+                }
+            )
+        )
+        await session.commit()
+
+    keys = [
+        {
+            'key_alias': get_openhands_cloud_key_alias(str(user_id), str(org_id)),
+            'team_id': str(org_id),
+            'key_name': 'admin-initial-key',
+            'metadata': {},
+        }
+    ]
+    store = SaasSettingsStore(str(user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch.object(
+            LiteLlmManager, '_get_all_keys_for_user', AsyncMock(return_value=keys)
+        ),
+        patch.object(LiteLlmManager, 'delete_key_by_alias', AsyncMock()) as delete_key,
+        patch.object(
+            LiteLlmManager,
+            'generate_key',
+            AsyncMock(return_value='unexpected-rotation'),
+        ) as generate_key,
+    ):
+        loaded = await store.load()
+        assert loaded is not None
+        assert loaded.agent_settings.llm.model == 'openhands/test-model'
+        config = saas_settings_store.managed_llm_key_config_from_model(
+            loaded.agent_settings.llm.model, loaded.agent_settings.llm.base_url
+        )
+        assert config is not None and config.openhands_type is False
+        await store.store(loaded)
+        reloaded = await store.load()
+
+    delete_key.assert_not_awaited()
+    generate_key.assert_not_awaited()
+    assert reloaded is not None
+    assert _secret_value(reloaded, 'llm.api_key') == 'admin-initial-key'
+
+
+@pytest.mark.asyncio
 async def test_load_derives_analytics_consent_from_tos(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):

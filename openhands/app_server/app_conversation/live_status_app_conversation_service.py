@@ -76,6 +76,9 @@ from openhands.app_server.event_callback.event_callback_models import EventCallb
 from openhands.app_server.event_callback.event_callback_service import (
     EventCallbackService,
 )
+from openhands.app_server.event_callback.memory_change_callback_processor import (
+    MemoryChangeCallbackProcessor,
+)
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
@@ -702,6 +705,19 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
                 if not has_set_title_processor:
                     processors.append(SetTitleCallbackProcessor())
+
+            # Register MemoryChangeCallbackProcessor when the user has
+            # enterprise persistent memory enabled. ``enable_memory_context``
+            # is a top-level user setting (not the SDK's ``load_memory``, which
+            # lives inside agent_settings.agent_context and is dropped by the
+            # fresh AgentContext built in _build_start_conversation_request).
+            if getattr(user, 'enable_memory_context', False):
+                has_memory_processor = any(
+                    isinstance(processor, MemoryChangeCallbackProcessor)
+                    for processor in processors
+                )
+                if not has_memory_processor:
+                    processors.append(MemoryChangeCallbackProcessor())
 
             # Save processors
             for processor in processors:
@@ -2241,18 +2257,25 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 agent_definitions = list(get_registered_agent_definitions())
 
         # --- build AgentSettings and create agent ---------------------------
+        # When enterprise persistent memory is enabled, stamp load_memory=True
+        # so the SDK's LocalConversation reads MEMORY.md from disk at session
+        # start. The memory file itself is written to the sandbox by
+        # maybe_inject_memory_context() in run_setup_scripts.
+        agent_context_kwargs: dict[str, Any] = {
+            'system_message_suffix': effective_suffix,
+            'secrets': secrets,
+            'registered_marketplaces': _to_sdk_marketplace_registrations(
+                registered_marketplaces
+            ),
+        }
+        if getattr(user, 'enable_memory_context', False):
+            agent_context_kwargs['load_memory'] = True
         configured_agent_settings = user.agent_settings.model_copy(
             update={
                 'llm': llm,
                 'tools': tools,
                 'mcp_config': mcp_config if mcp_config else {},
-                'agent_context': AgentContext(
-                    system_message_suffix=effective_suffix,
-                    secrets=secrets,
-                    registered_marketplaces=_to_sdk_marketplace_registrations(
-                        registered_marketplaces
-                    ),
-                ),
+                'agent_context': AgentContext(**agent_context_kwargs),
             }
         )
         agent = configured_agent_settings.create_agent()

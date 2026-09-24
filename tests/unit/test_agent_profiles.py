@@ -466,6 +466,45 @@ class TestAgentProfileRouterErrors:
         assert diag.valid is True
         assert diag.llm_profile_resolved is True
 
+    async def test_materialize_resolves_live_deployment_default(
+        self,
+        async_session_maker,
+        patch_agent_routes,
+        monkeypatch,
+    ):
+        from server import constants
+
+        monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+        monkeypatch.setattr(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', 'proxy')
+        monkeypatch.setattr(constants, 'LITE_LLM_API_URL', 'http://litellm.test:4000')
+        org_id, uid = patch_agent_routes, str(USER_ID)
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            org.llm_profiles = {
+                'profiles': {'Default': {'model': 'openhands/default'}},
+                'active': 'Default',
+            }
+            await session.commit()
+        await save_agent_profile(
+            name='reviewer',
+            body={'llm_profile_ref': 'Default'},
+            effective_org_id=org_id,
+            user_id=uid,
+        )
+
+        for route in ['first-route', 'second-route']:
+            monkeypatch.setattr(
+                constants, 'LITELLM_DEFAULT_MODEL', f'litellm_proxy/{route}'
+            )
+            diag = await materialize_agent_profile(
+                name='reviewer', effective_org_id=org_id, user_id=uid
+            )
+            assert diag.valid is True
+            assert diag.resolved_settings['llm']['model'] == f'openhands/{route}'
+            assert (
+                diag.resolved_settings['llm']['base_url'] == 'http://litellm.test:4000'
+            )
+
 
 class TestListAgentProfiles:
     @pytest.mark.asyncio
