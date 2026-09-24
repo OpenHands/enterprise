@@ -567,6 +567,8 @@ class OrgBudgetService:
                     'cycle_rolled': False,
                     'current_spend': _litellm_cycle_spend(settings, snapshot),
                     'skipped': 'admission_block_failed',
+                    'reconciliation_status': 'error',
+                    'reconciliation_error': settings.litellm_last_sync_error,
                 }
             repair_result = await self._repair_missing_members_for_cycle(
                 org_id, settings, overrides, snapshot

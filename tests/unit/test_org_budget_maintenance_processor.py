@@ -96,8 +96,10 @@ async def test_processor_persists_budget_maintenance_updates(async_session_maker
 
 
 @pytest.mark.asyncio
-async def test_processor_reports_reconciliation_failure(async_session_maker):
+@pytest.mark.parametrize('failure', ['snapshot', 'admission', 'admission_and_fallback'])
+async def test_processor_reports_reconciliation_failure(async_session_maker, failure):
     org_id = uuid4()
+    cycle_start = _current_cycle_start(datetime.now(UTC) - timedelta(days=40), 1)
     async with async_session_maker() as session:
         session.add(
             Org(
@@ -113,7 +115,7 @@ async def test_processor_reports_reconciliation_failure(async_session_maker):
                 enabled=True,
                 reset_day=1,
                 monthly_limit=1000.0,
-                cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
+                cycle_start_at=cycle_start,
                 cycle_start_spend=0.0,
             )
         )
@@ -137,7 +139,27 @@ async def test_processor_reports_reconciliation_failure(async_session_maker):
         ),
         patch(
             'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
-            AsyncMock(return_value=None),
+            AsyncMock(
+                return_value=None
+                if failure == 'snapshot'
+                else {'team_spend': 100.0, 'team_max_budget': 1000.0, 'members': {}}
+            ),
+        ),
+        patch(
+            'server.services.org_budget_service.LiteLlmManager.set_team_blocked',
+            AsyncMock(
+                side_effect=None
+                if failure == 'snapshot'
+                else RuntimeError('primary block unavailable')
+            ),
+        ),
+        patch(
+            'server.services.org_budget_service.LiteLlmManager.block_team',
+            AsyncMock(
+                side_effect=RuntimeError('fallback unavailable')
+                if failure == 'admission_and_fallback'
+                else None
+            ),
         ),
     ):
         result = await processor(task)
@@ -145,7 +167,15 @@ async def test_processor_reports_reconciliation_failure(async_session_maker):
     assert result['processed'] == 1
     assert result['error_count'] == 1
     assert result['errors'][0]['org_id'] == str(org_id)
-    assert 'fresh litellm spend data' in result['errors'][0]['error'].lower()
+    if failure == 'snapshot':
+        assert 'fresh litellm spend data' in result['errors'][0]['error'].lower()
+    else:
+        expected_error = 'admission_block_failed: primary block unavailable'
+        if failure == 'admission_and_fallback':
+            expected_error = (
+                f'admission_fallback_failed: fallback unavailable; {expected_error}'
+            )
+        assert result['errors'][0]['error'] == expected_error
 
     async with async_session_maker() as session:
         settings = await session.scalar(
@@ -153,7 +183,9 @@ async def test_processor_reports_reconciliation_failure(async_session_maker):
         )
     assert settings is not None
     assert settings.litellm_last_sync_status == 'error'
-    assert settings.litellm_last_sync_error is not None
+    assert settings.litellm_last_sync_error == result['errors'][0]['error']
+    assert settings.cycle_start_at.replace(tzinfo=UTC) == cycle_start
+    assert settings.cycle_start_spend == 0.0
 
 
 @pytest.mark.asyncio

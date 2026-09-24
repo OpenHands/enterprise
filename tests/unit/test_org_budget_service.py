@@ -1402,6 +1402,8 @@ async def test_maintenance_aborts_cycle_roll_when_admission_cannot_be_blocked(
             result = await service.run_budget_maintenance(budget_org.id)
 
     assert result['skipped'] == 'admission_block_failed'
+    assert result['reconciliation_status'] == 'error'
+    assert result['reconciliation_error'] == settings.litellm_last_sync_error
     get_snapshot.assert_awaited_once()
     assert settings.litellm_last_sync_status == 'error'
     assert settings.litellm_last_sync_error == (
