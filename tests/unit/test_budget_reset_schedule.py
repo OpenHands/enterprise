@@ -186,6 +186,7 @@ async def test_schedule_survives_saves_and_renews_exactly_once(
                 await session.commit()
                 assert result['cycle'].end_at == boundary
                 assert result['current_spend'] == 20
+                mock_litellm_admission.reset_mock()
                 assert (await service.run_budget_maintenance(org.id))['cycle_rolled']
                 await session.commit()
                 assert settings.next_reset_at is None
