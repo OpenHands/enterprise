@@ -119,21 +119,20 @@ def _ensure_config_bootstrapped() -> None:
     ``load_dotenv()`` mirrors ``saas_server.py``: it picks up ``DB_*``,
     ``DEV_USER_ID``, etc. from ``.env`` automatically when run from a
     terminal (VS Code's launch.json already loads ``envFile``, but a bare
-    ``uv run`` invocation does not). The store layer lazily resolves the
-    global config on first use; calling it up front surfaces configuration
-    errors (missing DB_HOST, no encryption key, ...) with a clear
-    traceback before any DB work starts.
+    ``uv run`` invocation does not).
+
+    ``DB_HOST`` is the one DB field without a built-in default in
+    ``DbSessionInjector`` (port/name/user/password all default), so we
+    fall back to ``localhost`` -- matching ``.vscode/launch.json`` -- so
+    the script works out-of-the-box against a ``make local-db`` Postgres
+    without duplicating DB config in ``.env``. Any value in ``.env`` or
+    the environment wins. The store layer lazily resolves the global
+    config on first use; calling it up front surfaces configuration
+    errors with a clear traceback before any DB work starts.
     """
     load_dotenv()
-    cfg = get_global_config()
-    db = cfg.db_session
-    if not (db.host or os.getenv('DB_HOST')):
-        print(
-            'ERROR: no database host configured. Run `make local-db` and set '
-            'DB_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASS (or DATABASE_URL).',
-            file=sys.stderr,
-        )
-        sys.exit(2)
+    os.environ.setdefault('DB_HOST', 'localhost')
+    get_global_config()
 
 
 # --------------------------------------------------------------------------- #
