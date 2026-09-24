@@ -8,8 +8,8 @@ a deploy rolls out, so the column defaults to ``remote``.
 ``session_api_key`` holds the key itself, encrypted by ``StoredSecretStr``, for
 backends that cannot read a key back from the provider.
 
-Revision ID: 165
-Revises: 164
+Revision ID: 167
+Revises: 166
 Create Date: 2026-09-22 00:00:00.000000
 """
 
@@ -18,8 +18,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '165'
-down_revision: str | None = '164'
+revision: str = '167'
+down_revision: str | None = '166'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
