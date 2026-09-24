@@ -34,6 +34,7 @@ from server.constants import (
     LITE_LLM_API_KEY,
     LITE_LLM_API_URL,
     get_default_litellm_model,
+    to_openhands_model,
 )
 
 _logger = logging.getLogger(__name__)
@@ -43,8 +44,6 @@ MODEL_INFO_TIMEOUT = 5.0
 # How long (seconds) a successful discovery result is reused before refetching.
 CACHE_TTL_SECONDS = 60.0
 
-# The proxy-transport prefix used by LITELLM_DEFAULT_MODEL.
-_LITELLM_PROXY_PREFIX = 'litellm_proxy/'
 # The public/stored prefix used by the app. The SDK translates
 # ``openhands/`` -> ``litellm_proxy/`` at the transport boundary.
 _OPENHANDS_PREFIX = 'openhands/'
@@ -57,12 +56,7 @@ def _derive_default_model() -> str:
     the app stores and displays models as ``openhands/<name>``. An already-
     ``openhands/``-prefixed default is kept as-is; a bare name is prefixed.
     """
-    default = get_default_litellm_model()
-    if default.startswith(_LITELLM_PROXY_PREFIX):
-        return _OPENHANDS_PREFIX + default[len(_LITELLM_PROXY_PREFIX) :]
-    if default.startswith(_OPENHANDS_PREFIX):
-        return default
-    return _OPENHANDS_PREFIX + default
+    return to_openhands_model(get_default_litellm_model())
 
 
 class LiteLLMProxyModelService(DefaultLLMModelService):
