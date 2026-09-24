@@ -338,6 +338,38 @@ that template. Docker has to be running; nothing else is needed. The container i
 
 ---
 
+## Running against a local `software-agent-sdk` checkout
+
+Enterprise pins `openhands-agent-server`, `openhands-sdk`, and `openhands-tools`
+to specific PyPI releases in `pyproject.toml`. When you're reproducing a bug
+whose fix lives in the SDK — often "fix in agent-server, exercised by
+enterprise-server and Agent Canvas" — you want to run enterprise against a
+local checkout of `OpenHands/software-agent-sdk` instead.
+
+```bash
+make build                              # once, to create .venv
+make overlay-local-sdk OH_AGENT_SERVER_LOCAL_PATH=/absolute/path/to/software-agent-sdk
+make run-saas                           # or make run, make start-saas-backend, etc.
+```
+
+`overlay-local-sdk` runs `uv pip install --no-deps -e` against the three
+package directories inside the checkout (`openhands-sdk`, `openhands-tools`,
+`openhands-agent-server`) and prints where `openhands.sdk`, `openhands.tools`,
+and `openhands.agent_server` now resolve from. It does not touch
+`pyproject.toml` or `uv.lock`, and it assumes the local checkout's declared
+dependencies match the pinned versions — if you're pulling a branch that adds
+a new dependency, add it to enterprise's `pyproject.toml` first.
+
+The env var name (`OH_AGENT_SERVER_LOCAL_PATH`) matches Agent Canvas's
+[`scripts/dev-safe.mjs::buildAgentServerCommand`](https://github.com/OpenHands/OpenHands/blob/main/scripts/dev-safe.mjs),
+so the same value swaps the SDK in both dev stacks.
+
+Undo the overlay with `make reset-sdk-overlay` (equivalent to any `uv sync`
+or a fresh `make build`), which reinstalls the pinned PyPI versions from
+`uv.lock`.
+
+---
+
 ## Help
 
 ```bash
