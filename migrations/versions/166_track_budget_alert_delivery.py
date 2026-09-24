@@ -23,4 +23,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Dropping partial progress can resend successful destinations after re-upgrade.
     op.drop_column('org_budget_threshold', 'delivery_state')

@@ -4273,3 +4273,53 @@ async def test_preexisting_delivered_threshold_is_not_rearmed(
             budget_org.id, settings, [threshold], 85, cycle
         )
         service._send_alerts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'outcome', ['success', 'error', 'missing_channel', 'missing_token']
+)
+async def test_slack_alert_reports_delivery_outcome(
+    async_session_maker, budget_org, outcome
+):
+    from slack_sdk.errors import SlackApiError
+
+    async with async_session_maker() as session:
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            monthly_limit=100,
+            slack_channel=None if outcome == 'missing_channel' else 'C_TEST',
+            slack_team_id='T_TEST',
+        )
+        service = OrgBudgetService(session)
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock(return_value={'ok': True})
+        if outcome == 'error':
+            client.chat_postMessage.side_effect = SlackApiError(
+                'channel_not_found',
+                response={'ok': False, 'error': 'channel_not_found'},
+            )
+        with (
+            patch.object(
+                service, '_resolve_slack_team_id', AsyncMock(return_value='T_TEST')
+            ),
+            patch.object(
+                service,
+                '_get_slack_bot_token',
+                AsyncMock(
+                    return_value=None if outcome == 'missing_token' else 'test-token'
+                ),
+            ),
+            patch(
+                'server.services.org_budget_service.AsyncWebClient', return_value=client
+            ),
+        ):
+            delivered = await service._send_slack_alert(
+                'Test organization', settings, 80, 85, 85
+            )
+        assert delivered is (outcome == 'success')
+        if outcome in {'missing_channel', 'missing_token'}:
+            client.chat_postMessage.assert_not_awaited()
+        else:
+            client.chat_postMessage.assert_awaited_once()
+            assert client.chat_postMessage.call_args.kwargs['channel'] == 'C_TEST'
