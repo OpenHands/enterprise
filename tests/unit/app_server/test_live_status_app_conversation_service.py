@@ -1,5 +1,6 @@
 """Unit tests for the methods in LiveStatusAppConversationService."""
 
+import copy
 import io
 import json
 import os
@@ -3247,6 +3248,91 @@ class TestLiveStatusAppConversationService:
             await self.service.export_conversation(conversation_id)
 
         self.mock_event_service.iter_events_for_export.assert_not_called()
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_uses_current_key_when_profile_seeding_refreshes_credentials(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
+
+        current_key = 'initial-managed-key'
+        rotated = False
+        self.mock_user.llm_model = 'openhands/test-model'
+        self.mock_user.llm_base_url = LITE_LLM_API_URL
+        self.mock_user.agent_settings = self.mock_user.agent_settings
+        self.mock_user.agent_settings.llm.api_key = SecretStr(current_key)
+        self.mock_user.llm_profiles = LLMProfiles(
+            profiles={'Default': self.mock_user.agent_settings.llm}, active='Default'
+        )
+
+        async def load_user(**kwargs):
+            user = copy.deepcopy(self.mock_user)
+            user.agent_settings.llm.api_key = SecretStr(current_key)
+            return user
+
+        async def refresh_key(user, llm):
+            nonlocal current_key, rotated
+            if llm.api_key.get_secret_value() == current_key and not rotated:
+                current_key = 'refreshed-managed-key'
+                rotated = True
+                return llm.model_copy(update={'api_key': SecretStr(current_key)})
+            return llm
+
+        self.mock_user_context.get_user_info = AsyncMock(side_effect=load_user)
+        self.service._maybe_refresh_managed_llm_key = AsyncMock(side_effect=refresh_key)
+        start_request = (
+            self.service._build_start_conversation_request_for_user.return_value
+        )
+
+        async def build_request(user, *args, **kwargs):
+            llm = await self.service._maybe_refresh_managed_llm_key(
+                user, user.agent_settings.llm
+            )
+            start_request.agent.llm = llm
+            start_request.model_dump.return_value = {
+                'agent': {'llm': {'api_key': llm.api_key.get_secret_value()}}
+            }
+            return start_request
+
+        self.service._build_start_conversation_request_for_user = AsyncMock(
+            side_effect=build_request
+        )
+        self.service._process_pending_messages = AsyncMock()
+        listing = Mock(raise_for_status=Mock())
+        listing.json.return_value = {'profiles': []}
+        self.mock_httpx_client.get = AsyncMock(return_value=listing)
+
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest(title='Key refresh regression')
+            )
+        ]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.READY
+        posts = {
+            call.args[0]: call.kwargs['json']
+            for call in self.mock_httpx_client.post.await_args_list
+        }
+        assert (
+            posts['http://agent-server:8000/api/conversations']['agent']['llm'][
+                'api_key'
+            ]
+            == current_key
+        )
+        assert (
+            posts['http://agent-server:8000/api/profiles/Default']['llm']['api_key']
+            == current_key
+        )
+        assert rotated
 
     def _arrange_start_app_conversation(
         self,
