@@ -17,6 +17,9 @@ failures together. Customer-specific 1finity rollout remains separate.
 - Verify enforcement failure/recovery (OHE-3268 / PR359), and coordinated
   reconciliation/rollover (OHE-3259 / PR403). Review the final implementation
   chosen from overlapping PRs rather than assuming all branches must merge.
+  PR359's emergency team block requires uncached native authorization and an
+  available `/team/block` endpoint. Denial when both block endpoints fail remains
+  an informational OHE-3268 probe, not a guarantee provided by the fallback.
 - Run the full backend gate below, including fault and concurrency probes.
   No skipped or expected-failure contract counts as passing readiness.
 - Run separate browser/API/actual-agent E2E tests: change settings, use a real

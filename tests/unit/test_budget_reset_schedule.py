@@ -18,6 +18,15 @@ from server.services.org_budget_service import (
 from storage.org_budget_settings import OrgBudgetSettings
 
 
+@pytest.fixture(autouse=True)
+def mock_litellm_admission():
+    with patch(
+        'server.services.org_budget_service.LiteLlmManager.set_team_blocked',
+        AsyncMock(),
+    ) as admission:
+        yield admission
+
+
 def test_upgrade_preserves_existing_budget_schedule(engine, create_org):
     org = create_org()
     migration = import_module('migrations.versions.165_add_budget_next_reset')
@@ -133,7 +142,7 @@ async def test_editor_waits_for_maintenance_before_scheduling(
     ],
 )
 async def test_schedule_survives_saves_and_renews_exactly_once(
-    async_session_maker, create_org, now, new_day, expected
+    async_session_maker, create_org, mock_litellm_admission, now, new_day, expected
 ):
     org = create_org()
     boundary = datetime.fromisoformat(expected).replace(tzinfo=UTC)
@@ -185,6 +194,7 @@ async def test_schedule_survives_saves_and_renews_exactly_once(
                 assert not (await service.run_budget_maintenance(org.id))[
                     'cycle_rolled'
                 ]
+                mock_litellm_admission.assert_awaited_once_with(str(org.id), True)
                 assert (await service.get_budget_state(org.id))['current_spend'] == 0
 
 

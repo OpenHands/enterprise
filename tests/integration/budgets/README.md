@@ -50,6 +50,14 @@ immediate same-key recovery after removing an individual limit. Set the image
 and TTL explicitly when reproducing an older deployment; a passing default run
 does not certify that older deployment.
 
+Admission quarantine also requires that configuration: if `/team/update` fails,
+Enterprise falls back to `/team/block`, whose native implementation does not
+invalidate warm authorization caches. The fault probes verify denial before the
+provider, unrelated-organization isolation, unchanged spend, and recovery on the
+same key after reconciliation. Both block endpoints failing remains an explicit
+OHE-3268 known-issue probe; a management API fallback cannot enforce quarantine
+when neither endpoint is reachable.
+
 ## Coverage
 
 | Contract | File | Boundary |
