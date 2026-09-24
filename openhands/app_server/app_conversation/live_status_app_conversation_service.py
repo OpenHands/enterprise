@@ -510,12 +510,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             assert sandbox is not None
             agent_server_url = self._get_agent_server_url(sandbox)
 
-            # Mirror the user's LLM profiles into the sandbox so the agent's
-            # built-in switch_llm tool can resolve them (in SaaS profiles live
-            # on the app-server, not the sandbox filesystem). Before conversation
-            # creation, so the tool is enabled; re-runs on every start/resume.
-            await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
-
             # Get the working dir
             sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
                 sandbox.sandbox_spec_id
@@ -580,6 +574,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     request_observability_span_name=request.observability_span_name,
                 )
             )
+
+            # Build before seeding, which can refresh the captured user's LLM key.
+            # Profiles must still be available before the conversation is created.
+            await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
 
             # update status
             task.status = AppConversationStartTaskStatus.STARTING_CONVERSATION

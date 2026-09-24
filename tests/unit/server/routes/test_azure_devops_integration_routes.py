@@ -341,3 +341,138 @@ async def test_events_route_skips_duplicate_without_scheduling(monkeypatch):
 
     assert response.status_code == 200
     background_tasks.add_task.assert_not_called()
+
+
+@pytest.fixture
+def organization_service(monkeypatch):
+    service = MagicMock()
+    service.organization = 'configured-org'
+    service.get_accessible_organizations = AsyncMock(return_value=['Alpha', 'Beta'])
+    service.list_service_hook_subscriptions = AsyncMock(return_value=[])
+    service.delete_service_hook_subscription = AsyncMock()
+    service.create_pr_comment_service_hook = AsyncMock(return_value={'id': 'pr'})
+    service.create_work_item_comment_service_hook = AsyncMock(return_value={'id': 'wi'})
+    monkeypatch.setattr(
+        azure_devops, 'SaaSAzureDevOpsService', lambda **kwargs: service
+    )
+    monkeypatch.setattr(azure_devops, 'AZURE_DEVOPS_WEBHOOK_SECRET', 'test-secret')
+    return service
+
+
+@pytest.mark.asyncio
+async def test_organizations_list_uses_membership_not_configured_default(
+    organization_service,
+):
+    result = await azure_devops.get_azure_devops_organizations(user_id='user')
+    assert result.organizations == ['Alpha', 'Beta']
+    assert result.default_organization is None
+    organization_service.organization = 'alpha'
+    result = await azure_devops.get_azure_devops_organizations(user_id='user')
+    assert result.default_organization == 'Alpha'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'operation',
+    [
+        azure_devops.get_azure_devops_resources,
+        azure_devops.reinstall_azure_devops_webhook,
+        azure_devops.uninstall_azure_devops_webhook,
+    ],
+)
+@pytest.mark.parametrize('requested,expected', [(' alpha ', 'Alpha'), ('BETA', 'Beta')])
+async def test_operations_use_explicit_canonical_organization(
+    organization_service, operation, requested, expected
+):
+    result = await operation(user_id='user', organization=requested)
+    assert result.organization == expected
+    assert organization_service.organization == expected
+    organization_service.get_accessible_organizations.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'operation',
+    [
+        azure_devops.get_azure_devops_resources,
+        azure_devops.reinstall_azure_devops_webhook,
+        azure_devops.uninstall_azure_devops_webhook,
+    ],
+)
+@pytest.mark.parametrize(
+    'requested,code',
+    [
+        ('configured-org', 403),
+        ('https://attacker.invalid', 403),
+        (' ', 400),
+    ],
+)
+async def test_inaccessible_organization_never_reads_or_changes_hooks(
+    organization_service, operation, requested, code
+):
+    with pytest.raises(HTTPException) as error:
+        await operation(user_id='user', organization=requested)
+    assert error.value.status_code == code
+    organization_service.list_service_hook_subscriptions.assert_not_awaited()
+    organization_service.delete_service_hook_subscription.assert_not_awaited()
+    organization_service.create_pr_comment_service_hook.assert_not_awaited()
+    organization_service.create_work_item_comment_service_hook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'operation',
+    [
+        azure_devops.get_azure_devops_resources,
+        azure_devops.reinstall_azure_devops_webhook,
+        azure_devops.uninstall_azure_devops_webhook,
+    ],
+)
+async def test_membership_failure_blocks_hook_operations(
+    organization_service, operation
+):
+    organization_service.get_accessible_organizations.side_effect = RuntimeError(
+        'Azure unavailable'
+    )
+    with pytest.raises(HTTPException) as error:
+        await operation(user_id='user', organization='Alpha')
+    assert error.value.status_code == 503
+    organization_service.list_service_hook_subscriptions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sequential_users_cannot_reuse_another_users_membership(monkeypatch):
+    memberships = {
+        'shared-user': ['Alpha', 'Beta'],
+        'alpha-user': ['Alpha'],
+        'beta-user': ['Beta'],
+    }
+    services = []
+
+    def make_service(external_auth_id):
+        service = MagicMock()
+        service.organization = ''
+        service.get_accessible_organizations = AsyncMock(
+            return_value=memberships[external_auth_id]
+        )
+        service.list_service_hook_subscriptions = AsyncMock(return_value=[])
+        services.append(service)
+        return service
+
+    monkeypatch.setattr(azure_devops, 'SaaSAzureDevOpsService', make_service)
+    for user, org in [
+        ('shared-user', 'Alpha'),
+        ('shared-user', 'Beta'),
+        ('alpha-user', 'Alpha'),
+        ('beta-user', 'Beta'),
+    ]:
+        result = await azure_devops.get_azure_devops_resources(
+            user_id=user, organization=org
+        )
+        assert result.organization == org
+    with pytest.raises(HTTPException) as error:
+        await azure_devops.get_azure_devops_resources(
+            user_id='alpha-user', organization='Beta'
+        )
+    assert error.value.status_code == 403
+    services[-1].list_service_hook_subscriptions.assert_not_awaited()

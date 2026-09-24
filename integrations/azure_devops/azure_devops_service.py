@@ -83,6 +83,10 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
         if self.organization:
             return [self.organization]
 
+        return await self.get_accessible_organizations()
+
+    async def get_accessible_organizations(self) -> list[str]:
+        """Discover token-holder membership without trusting the configured default."""
         profile_url = (
             'https://app.vssps.visualstudio.com/_apis/profile/profiles/me'
             '?api-version=7.1-preview.3'
