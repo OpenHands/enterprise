@@ -54,9 +54,12 @@ Admission quarantine also requires that configuration: if `/team/update` fails,
 Enterprise falls back to `/team/block`, whose native implementation does not
 invalidate warm authorization caches. The fault probes verify denial before the
 provider, unrelated-organization isolation, unchanged spend, and recovery on the
-same key after reconciliation. Both block endpoints failing remains an explicit
-OHE-3268 known-issue probe; a management API fallback cannot enforce quarantine
-when neither endpoint is reachable.
+same key after reconciliation. If both block endpoints fail before a settings or
+override edit, the API rejects the change and retains the previous policy. Fresh
+readback determines whether that policy's enforcement can still be verified.
+Existing keys may continue under their previous limits; this is not an
+inference-time availability guard. The rejected-edit probes cover preserved
+settings and spend, prior-cap enforcement, and retry after recovery.
 
 ## Coverage
 
@@ -66,11 +69,11 @@ when neither endpoint is reachable.
 | Generated limit/override edits and idempotent maintenance | `test_org_budget_state_machine.py` | Service + real LiteLLM |
 | Disable org cap while preserving independent member enforcement | `test_disable_organization_limit.py` | Native behavior; API outcome tested separately |
 | Limit edits after spend, normal rollover and repeat maintenance | `test_budget_lifecycle.py` | Service + real spend; controlled clock |
-| Actual save status/readback and unchanged-day alert save | `probe_budget_api.py` | Real FastAPI routes with injected identity/session |
+| Save status/readback, spend preservation, org disable and failure/retry with retained member caps | `probe_budget_api.py` | Real FastAPI routes with injected identity/session |
 | New-user provisioning and existing-user reprovisioning | `probe_membership.py` | Real `create_entries` + LiteLLM; Keycloak identity stubbed |
 | Delayed rollover worker cannot renew allowance twice | `probe_rollover.py` | Two DB sessions, controlled interleaving, real spend |
 | Failed Slack delivery remains retryable and then deduplicates | `probe_alert_delivery.py` | Real DB/service with simulated Slack transport |
-| Reject inference after write/readback failures | `probe_fail_closed.py` | Fault proxy + provider-call counts |
+| Reject inference after partial updates; reject edits when neither block endpoint works | `probe_fail_closed.py` | Fault proxy + provider-call counts |
 | Recovery preserves spend and permits requests | `probe_recovery.py` | Fault proxy + real accounting |
 | Sequential accounting and disabled member overrides | `probe_sequential_accounting.py`, `probe_disabled_override.py` | Generated service/request sequences |
 | Concurrent same/cross-member admission, accounting, rejected retries | `probe_same_member_concurrency.py`, `probe_cross_member_concurrency.py` | Concurrent HTTP inference |

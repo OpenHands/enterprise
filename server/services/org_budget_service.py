@@ -70,6 +70,28 @@ LITELLM_FINANCIAL_READ_RETRY_DELAY_SECONDS = 0.1
 _UNIQUE_VIOLATION = '23505'
 
 
+class BudgetChangeRejectedError(Exception):
+    def __init__(self, previous_policy_verified: bool = False):
+        super().__init__()
+        self.previous_policy_verified = previous_policy_verified
+
+    @property
+    def detail(self) -> dict:
+        message = "Budget change wasn't saved. "
+        if self.previous_policy_verified:
+            message += 'Your previous limits remain in effect. Please retry.'
+        else:
+            message += (
+                'Previous settings are unchanged, but their enforcement could not '
+                'be verified. Please retry.'
+            )
+        return {
+            'code': 'budget_change_rejected',
+            'message': message,
+            'previous_policy_verified': self.previous_policy_verified,
+        }
+
+
 @dataclass
 class BudgetCycle:
     start_at: datetime
@@ -344,7 +366,7 @@ def _budget_policy_comparison(
             effective_limit, is_disabled, _ = _effective_user_budget_limit(
                 override_map.get(user_id), settings.default_user_monthly_limit
             )
-            if settings.enabled and not is_disabled and effective_limit is not None:
+            if not is_disabled and effective_limit is not None:
                 baseline = baselines.get(user_id)
                 if baseline is None:
                     drift_errors.append(f'member_cycle_baseline_missing: {user_id}')
@@ -530,7 +552,7 @@ class OrgBudgetService:
         )
         if snapshot_result.snapshot is None:
             reconciliation_error = self._snapshot_unavailable_detail()
-            if settings.enabled:
+            if self._needs_litellm_sync(settings, overrides):
                 await self._block_litellm_admission(org_id, settings)
             await self._record_litellm_sync(
                 settings,
@@ -558,9 +580,9 @@ class OrgBudgetService:
         cycle_due = datetime.now(UTC) >= next_cycle
         policy_matches = False
         if cycle_due:
-            if settings.enabled and not await self._block_litellm_admission(
-                org_id, settings
-            ):
+            if self._needs_litellm_sync(
+                settings, overrides
+            ) and not await self._block_litellm_admission(org_id, settings):
                 return {
                     'cycle_start_at': cycle.start_at,
                     'cycle_end_at': cycle.end_at,
@@ -621,7 +643,7 @@ class OrgBudgetService:
             cycle.start_at,
         )
         if not cycle_rolled:
-            if not settings.enabled:
+            if not self._needs_litellm_sync(settings, overrides):
                 await self._record_litellm_sync(settings, 'skipped')
             elif policy_matches:
                 admission_ready = settings.litellm_last_sync_status == 'success'
@@ -670,6 +692,70 @@ class OrgBudgetService:
         fields_set = update_data.model_fields_set
         previous_enabled = settings.enabled
         baseline_snapshot: LiteLlmFinancialSnapshot | None = None
+        enabled = update_data.enabled if 'enabled' in fields_set else settings.enabled
+        monthly_limit = (
+            update_data.monthly_limit
+            if 'monthly_limit' in fields_set
+            else settings.monthly_limit
+        )
+
+        if enabled and (monthly_limit is None or monthly_limit <= 0):
+            quint_oracle.log(
+                'update_budget_settings',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+                outcome='rejected',
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='monthly_limit is required when budgets are enabled',
+            )
+
+        if not previous_enabled and enabled:
+            snapshot_result = await self._get_financial_snapshot(
+                org_id,
+                settings,
+                allow_stale=False,
+                require_complete_membership=True,
+            )
+            if snapshot_result.snapshot is None:
+                quint_oracle.log(
+                    'update_budget_settings',
+                    'org-budgets',
+                    org_id=quint_oracle.In('org', 'ORG_IDS'),
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=self._snapshot_unavailable_detail(),
+                )
+            baseline_snapshot = snapshot_result.snapshot
+
+        admission_ready = None
+        unchanged_disabled_policy = False
+        if (
+            not previous_enabled
+            and not enabled
+            and settings.litellm_last_sync_status == 'success'
+            and (
+                'default_user_monthly_limit' not in fields_set
+                or update_data.default_user_monthly_limit
+                == settings.default_user_monthly_limit
+            )
+        ):
+            baseline_snapshot = (
+                await self._get_financial_snapshot(org_id, settings, allow_stale=False)
+            ).snapshot
+            unchanged_disabled_policy = (
+                baseline_snapshot is not None
+                and await self._budget_policy_matches_snapshot(
+                    org_id, settings, overrides, baseline_snapshot
+                )
+            )
+        if not unchanged_disabled_policy and (
+            self._needs_litellm_sync(settings, overrides)
+            or fields_set & {'enabled', 'default_user_monthly_limit'}
+        ):
+            admission_ready = await self._begin_budget_edit(org_id, settings, overrides)
 
         if 'enabled' in fields_set:
             settings.enabled = update_data.enabled
@@ -689,38 +775,8 @@ class OrgBudgetService:
         if 'slack_team_id' in fields_set:
             settings.slack_team_id = update_data.slack_team_id
 
-        if settings.enabled and (
-            settings.monthly_limit is None or settings.monthly_limit <= 0
-        ):
-            quint_oracle.log(
-                'update_budget_settings',
-                'org-budgets',
-                org_id=quint_oracle.In('org', 'ORG_IDS'),
-                outcome='rejected',
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail='monthly_limit is required when budgets are enabled',
-            )
-
         if not previous_enabled and settings.enabled:
-            snapshot_result = await self._get_financial_snapshot(
-                org_id,
-                settings,
-                allow_stale=False,
-                require_complete_membership=True,
-            )
-            if snapshot_result.snapshot is None:
-                quint_oracle.log(
-                    'update_budget_settings',
-                    'org-budgets',
-                    org_id=quint_oracle.In('org', 'ORG_IDS'),
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=self._snapshot_unavailable_detail(),
-                )
-            baseline_snapshot = snapshot_result.snapshot
+            assert baseline_snapshot is not None
             settings.cycle_start_at = _current_cycle_start(
                 datetime.now(UTC), settings.reset_day
             )
@@ -750,13 +806,18 @@ class OrgBudgetService:
         await self.store.flush()
         await self.store.refresh(settings)
 
-        snapshot = await self._sync_litellm_budgets(
-            org_id,
-            settings,
-            overrides,
-            clear_disabled=previous_enabled and not settings.enabled,
-            snapshot=baseline_snapshot,
-        )
+        snapshot = baseline_snapshot
+        if admission_ready is not False:
+            snapshot = await self._sync_litellm_budgets(
+                org_id,
+                settings,
+                overrides,
+                clear_disabled=bool(
+                    fields_set & {'enabled', 'default_user_monthly_limit'}
+                ),
+                snapshot=baseline_snapshot,
+                admission_blocked=admission_ready is True,
+            )
 
         cycle = self._current_cycle(settings)
         if snapshot is None:
@@ -823,15 +884,25 @@ class OrgBudgetService:
         is_disabled: bool,
     ) -> OrgUserBudgetOverride:
         await self._reject_personal_org(org_id, 'upsert_user_override')
+        settings = await self._get_or_create_settings(org_id, for_update=True)
+        admission_ready = await self._begin_budget_edit(
+            org_id, settings, await self._get_overrides(org_id)
+        )
         override = await self.store.upsert_override(
             org_id=org_id,
             user_id=user_id,
             monthly_limit=monthly_limit,
             is_disabled=is_disabled,
         )
-        settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
-        await self._sync_litellm_budgets(org_id, settings, overrides)
+        if admission_ready is not False:
+            await self._sync_litellm_budgets(
+                org_id,
+                settings,
+                overrides,
+                clear_disabled=True,
+                admission_blocked=admission_ready is True,
+            )
         quint_oracle.log(
             'upsert_user_override',
             'org-budgets',
@@ -842,6 +913,7 @@ class OrgBudgetService:
 
     async def delete_user_override(self, org_id: UUID, user_id: UUID) -> None:
         await self._reject_personal_org(org_id, 'delete_user_override')
+        settings = await self._get_or_create_settings(org_id, for_update=True)
         override = await self._get_override(org_id, user_id)
         if override is None:
             # The early return: no row, so no resync and no post-state count to read.
@@ -851,10 +923,19 @@ class OrgBudgetService:
                 org_id=quint_oracle.In('org', 'ORG_IDS'),
             )
             return
+        admission_ready = await self._begin_budget_edit(
+            org_id, settings, await self._get_overrides(org_id)
+        )
         await self.store.delete_override(override)
-        settings = await self._get_or_create_settings(org_id)
         overrides = await self._get_overrides(org_id)
-        await self._sync_litellm_budgets(org_id, settings, overrides)
+        if admission_ready is not False:
+            await self._sync_litellm_budgets(
+                org_id,
+                settings,
+                overrides,
+                clear_disabled=True,
+                admission_blocked=admission_ready is True,
+            )
         quint_oracle.log(
             'delete_user_override',
             'org-budgets',
@@ -1363,10 +1444,35 @@ class OrgBudgetService:
         settings.litellm_last_sync_error = error
         await self.store.flush()
 
+    async def _begin_budget_edit(
+        self,
+        org_id: UUID,
+        settings: OrgBudgetSettings,
+        overrides: list[OrgUserBudgetOverride],
+    ) -> bool:
+        try:
+            return await self._block_litellm_admission(
+                org_id, settings, reject_on_failure=True
+            )
+        except BudgetChangeRejectedError as error:
+            snapshot = await self._get_financial_snapshot(
+                org_id, settings, allow_stale=False
+            )
+            comparison = _budget_policy_comparison(
+                settings,
+                overrides,
+                await self._org_member_ids(org_id),
+                snapshot,
+            )
+            error.previous_policy_verified = comparison['budget_policy_matches'] is True
+            raise
+
     async def _block_litellm_admission(
         self,
         org_id: UUID,
         settings: OrgBudgetSettings,
+        *,
+        reject_on_failure: bool = False,
     ) -> bool:
         team_id = str(org_id)
         try:
@@ -1377,9 +1483,11 @@ class OrgBudgetService:
                 'org_budget_litellm_admission_block_failed',
                 extra={'org_id': team_id, 'error': str(error)},
             )
+            fallback_failed = False
             try:
                 await LiteLlmManager.block_team(team_id)
             except Exception as fallback_error:
+                fallback_failed = True
                 error_message = (
                     f'admission_fallback_failed: {fallback_error}; {error_message}'
                 )
@@ -1389,6 +1497,8 @@ class OrgBudgetService:
                 )
             # Quarantine is not a verified policy; leave reconciliation retryable.
             await self._record_litellm_sync(settings, 'error', error_message[:500])
+            if fallback_failed and reject_on_failure:
+                raise BudgetChangeRejectedError() from error
             return False
 
         await self._record_litellm_sync(settings, 'pending')
@@ -1418,30 +1528,23 @@ class OrgBudgetService:
         overrides: list[OrgUserBudgetOverride],
         snapshot: LiteLlmFinancialSnapshot,
     ) -> bool:
-        override_map = {str(override.user_id): override for override in overrides}
-        baselines = settings.user_cycle_start_spend or {}
-        expected_member_budgets: dict[str, float | None] = {}
-        for user_id in await self._org_member_ids(org_id):
-            effective_limit, is_disabled, _ = _effective_user_budget_limit(
-                override_map.get(user_id), settings.default_user_monthly_limit
-            )
-            if settings.enabled and not is_disabled and effective_limit is not None:
-                baseline = baselines.get(user_id)
-                if baseline is None:
-                    return False
-                expected_member_budgets[user_id] = baseline + effective_limit
-            else:
-                expected_member_budgets[user_id] = None
-
-        expected_team_budget = (
-            settings.cycle_start_spend + settings.monthly_limit
-            if settings.enabled and settings.monthly_limit
-            else None
+        comparison = _budget_policy_comparison(
+            settings,
+            overrides,
+            await self._org_member_ids(org_id),
+            BudgetFinancialSnapshotResult(snapshot=snapshot, status='live'),
         )
-        return not _budget_sync_readback_errors(
-            snapshot,
-            expected_team_budget,
-            expected_member_budgets,
+        return comparison['budget_policy_matches'] is True
+
+    @staticmethod
+    def _needs_litellm_sync(
+        settings: OrgBudgetSettings, overrides: list[OrgUserBudgetOverride]
+    ) -> bool:
+        return (
+            settings.enabled
+            or settings.default_user_monthly_limit is not None
+            or bool(overrides)
+            or settings.litellm_last_sync_status in {'pending', 'success', 'error'}
         )
 
     async def _org_member_ids(self, org_id: UUID) -> set[str]:
@@ -1514,12 +1617,28 @@ class OrgBudgetService:
         overrides: list[OrgUserBudgetOverride],
         clear_disabled: bool = False,
         snapshot: LiteLlmFinancialSnapshot | None = None,
+        admission_blocked: bool = False,
     ) -> LiteLlmFinancialSnapshot | None:
-        if not settings.enabled and not clear_disabled:
+        if not clear_disabled and not self._needs_litellm_sync(settings, overrides):
             await self._record_litellm_sync(settings, 'skipped')
             return snapshot
 
-        if not await self._block_litellm_admission(org_id, settings):
+        # A verified unchanged disabled policy does not need an admission outage.
+        if not settings.enabled and settings.litellm_last_sync_status == 'success':
+            if snapshot is None:
+                snapshot = (
+                    await self._get_financial_snapshot(
+                        org_id, settings, allow_stale=False
+                    )
+                ).snapshot
+            if snapshot is not None and await self._budget_policy_matches_snapshot(
+                org_id, settings, overrides, snapshot
+            ):
+                return snapshot
+
+        if not admission_blocked and not await self._block_litellm_admission(
+            org_id, settings
+        ):
             return snapshot
 
         sync_errors: list[str] = []
