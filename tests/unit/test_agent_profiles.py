@@ -975,12 +975,27 @@ class TestPersistedVsResolvedSettingsView:
         assert set(stored_mcp) == {'a', 'b', 'c'}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('deployment_route', [None, 'proxy', 'direct'])
     async def test_plain_round_trip_keeps_member_llm_key(
-        self, async_session_maker, patch_agent_routes
+        self, async_session_maker, patch_agent_routes, monkeypatch, deployment_route
     ):
         """F2: a routine save while a profile is active must not overwrite the
         member's own LLM key with the referenced LLM profile's key."""
         from storage.encrypt_utils import decrypt_value
+
+        if deployment_route:
+            from server import constants
+
+            monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+            monkeypatch.setattr(
+                constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', deployment_route
+            )
+            monkeypatch.setattr(
+                constants, 'LITE_LLM_API_URL', 'http://litellm.test:4000'
+            )
+            monkeypatch.setattr(
+                constants, 'OPENHANDS_DEFAULT_LLM_API_KEY', 'deployment-key'
+            )
 
         org_id = patch_agent_routes
         uid = str(USER_ID)

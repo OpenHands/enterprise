@@ -24,6 +24,20 @@ def _uses_deployment_default() -> bool:
     )
 
 
+def uses_deployment_default_profile(profiles: LLMProfiles) -> bool:
+    existing = profiles.get(DEFAULT_LLM_PROFILE_NAME)
+    return _uses_deployment_default() and (
+        existing is None
+        or (
+            is_openhands_model(existing.model)
+            and (
+                not existing.base_url or is_openhands_proxy_base_url(existing.base_url)
+            )
+            and not getattr(existing, 'provider_connection_id', None)
+        )
+    )
+
+
 async def get_openhands_default_model_name(db_session: AsyncSession) -> str | None:
     if _uses_deployment_default():
         return None
@@ -45,13 +59,7 @@ def materialize_default_llm_profile(
     existing = profiles.get(DEFAULT_LLM_PROFILE_NAME)
     if _uses_deployment_default():
         # Keep concrete profiles; repair only a missing or cloud-managed default.
-        if existing is not None and not (
-            is_openhands_model(existing.model)
-            and (
-                not existing.base_url or is_openhands_proxy_base_url(existing.base_url)
-            )
-            and not getattr(existing, 'provider_connection_id', None)
-        ):
+        if not uses_deployment_default_profile(profiles):
             return profiles
         deployment_llm = LLM(
             model=constants.get_default_llm_model(),
