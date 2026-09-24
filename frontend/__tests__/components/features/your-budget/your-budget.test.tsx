@@ -365,7 +365,7 @@ describe("YourBudget", () => {
 
       // Assert
       const link = await screen.findByRole("link", { name: /Fix login/ });
-      expect(link).toHaveAttribute("href", "/conversations/conv-1");
+      expect(link).toHaveAttribute("href", "/canvas/conversations/conv-1");
       expect(link).toHaveTextContent("$2.34");
     });
 
