@@ -36,7 +36,10 @@ async def test_limit_edits_keep_existing_spend(
 
 
 @pytest.mark.asyncio
-async def test_month_rollover_renews_once(budget_adapter: BudgetTestAdapter) -> None:
+@pytest.mark.parametrize('org_enabled', [True, False])
+async def test_month_rollover_renews_once(
+    budget_adapter: BudgetTestAdapter, org_enabled: bool
+) -> None:
     adapter = budget_adapter
     now = datetime.now(UTC)
     previous = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -53,6 +56,8 @@ async def test_month_rollover_renews_once(budget_adapter: BudgetTestAdapter) -> 
 
     with patch('server.services.org_budget_service.datetime', PreviousMonth):
         await adapter.configure_budget(5, 3)
+        if not org_enabled:
+            await adapter.disable_budget()
     assert (await adapter.send_request(adapter.user_ids[0])).status_code == 200
     await adapter.wait_for_spend(1)
     first = await adapter.run_maintenance()
@@ -65,6 +70,9 @@ async def test_month_rollover_renews_once(budget_adapter: BudgetTestAdapter) -> 
     baseline = settings.cycle_start_spend
     member_baselines = dict(settings.user_cycle_start_spend)
     assert baseline == 1
+    native = await adapter.financial_data()
+    assert native['team_max_budget'] == (6 if org_enabled else None)
+    assert native['members'][str(adapter.user_ids[0])]['max_budget'] == 4
     assert (await adapter.send_request(adapter.user_ids[0])).status_code == 200
     await adapter.wait_for_spend(2)
     second = await adapter.run_maintenance()
