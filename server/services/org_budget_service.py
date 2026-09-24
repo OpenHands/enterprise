@@ -518,7 +518,7 @@ class OrgBudgetService:
                 'skipped': 'personal_org',
             }
 
-        settings = await self._get_or_create_settings(org_id)
+        settings = await self._get_or_create_settings(org_id, for_update=True)
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
         cycle = self._current_cycle(settings)
@@ -530,6 +530,8 @@ class OrgBudgetService:
         )
         if snapshot_result.snapshot is None:
             reconciliation_error = self._snapshot_unavailable_detail()
+            if settings.enabled:
+                await self._block_litellm_admission(org_id, settings)
             await self._record_litellm_sync(
                 settings,
                 'error',
@@ -552,11 +554,31 @@ class OrgBudgetService:
             }
 
         snapshot = snapshot_result.snapshot
-        next_cycle = _next_cycle_start(settings.cycle_start_at, settings.reset_day)
-        if datetime.now(UTC) >= next_cycle:
+        next_cycle = self._current_cycle(settings).end_at
+        cycle_due = datetime.now(UTC) >= next_cycle
+        policy_matches = False
+        if cycle_due:
+            if settings.enabled and not await self._block_litellm_admission(
+                org_id, settings
+            ):
+                return {
+                    'cycle_start_at': cycle.start_at,
+                    'cycle_end_at': cycle.end_at,
+                    'cycle_rolled': False,
+                    'current_spend': _litellm_cycle_spend(settings, snapshot),
+                    'skipped': 'admission_block_failed',
+                    'reconciliation_status': 'error',
+                    'reconciliation_error': settings.litellm_last_sync_error,
+                }
             repair_result = await self._repair_missing_members_for_cycle(
                 org_id, settings, overrides, snapshot
             )
+        else:
+            policy_matches = await self._budget_policy_matches_snapshot(
+                org_id, settings, overrides, snapshot
+            )
+
+        if cycle_due:
             if repair_result.snapshot is None:
                 reconciliation_error = (
                     repair_result.error
@@ -587,8 +609,7 @@ class OrgBudgetService:
         cycle_rolled = await self._roll_cycle_if_needed(
             settings, thresholds, overrides, snapshot
         )
-        if cycle_rolled:
-            cycle = self._current_cycle(settings)
+        cycle = self._current_cycle(settings)
 
         current_spend = _litellm_cycle_spend(settings, snapshot)
         assert current_spend is not None
@@ -600,9 +621,20 @@ class OrgBudgetService:
             cycle.start_at,
         )
         if not cycle_rolled:
-            await self._sync_litellm_budgets(
-                org_id, settings, overrides, snapshot=snapshot
-            )
+            if not settings.enabled:
+                await self._record_litellm_sync(settings, 'skipped')
+            elif policy_matches:
+                admission_ready = settings.litellm_last_sync_status == 'success'
+                if not admission_ready:
+                    admission_ready = await self._restore_litellm_admission(
+                        org_id, settings
+                    )
+                if admission_ready:
+                    await self._record_litellm_sync(settings, 'success')
+            else:
+                await self._sync_litellm_budgets(
+                    org_id, settings, overrides, snapshot=snapshot
+                )
 
         quint_oracle.log(
             'run_budget_maintenance',
@@ -629,14 +661,13 @@ class OrgBudgetService:
         users_status: str | None = None,
     ):
         await self._reject_personal_org(org_id, 'update_budget_settings')
-        settings = await self._get_or_create_settings(org_id)
+        settings = await self._get_or_create_settings(org_id, for_update=True)
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
 
         await self._validate_alert_settings(settings, update_data, thresholds)
 
         fields_set = update_data.model_fields_set
-        reset_day_changed = False
         previous_enabled = settings.enabled
         baseline_snapshot: LiteLlmFinancialSnapshot | None = None
 
@@ -644,9 +675,13 @@ class OrgBudgetService:
             settings.enabled = update_data.enabled
         if 'monthly_limit' in fields_set:
             settings.monthly_limit = update_data.monthly_limit
-        if 'reset_day' in fields_set:
-            reset_day_changed = update_data.reset_day != settings.reset_day
+        if 'reset_day' in fields_set and update_data.reset_day != settings.reset_day:
             settings.reset_day = update_data.reset_day
+            # Keep spend until the next future occurrence, even across maintenance.
+            settings.next_reset_at = _next_cycle_start(
+                _current_cycle_start(datetime.now(UTC), settings.reset_day),
+                settings.reset_day,
+            )
         if 'default_user_monthly_limit' in fields_set:
             settings.default_user_monthly_limit = update_data.default_user_monthly_limit
         if 'slack_channel' in fields_set:
@@ -668,7 +703,7 @@ class OrgBudgetService:
                 detail='monthly_limit is required when budgets are enabled',
             )
 
-        if reset_day_changed or (not previous_enabled and settings.enabled):
+        if not previous_enabled and settings.enabled:
             snapshot_result = await self._get_financial_snapshot(
                 org_id,
                 settings,
@@ -689,6 +724,7 @@ class OrgBudgetService:
             settings.cycle_start_at = _current_cycle_start(
                 datetime.now(UTC), settings.reset_day
             )
+            settings.next_reset_at = None
             settings.cycle_start_spend = baseline_snapshot.team_spend
             settings.user_cycle_start_spend = {
                 user_id: member.spend
@@ -834,8 +870,10 @@ class OrgBudgetService:
             return 'pending'
         return 'healthy' if settings.enabled else 'inactive'
 
-    async def _get_or_create_settings(self, org_id: UUID) -> OrgBudgetSettings:
-        settings = await self.store.get_settings(org_id)
+    async def _get_or_create_settings(
+        self, org_id: UUID, *, for_update: bool = False
+    ) -> OrgBudgetSettings:
+        settings = await self.store.get_settings(org_id, for_update=for_update)
         if settings:
             await self._hydrate_cycle_baselines(settings)
             return settings
@@ -859,7 +897,7 @@ class OrgBudgetService:
             # Finding the winner's committed row depends on READ COMMITTED, where
             # each statement takes a fresh snapshot. Under REPEATABLE READ this
             # session's snapshot predates that commit and the re-read returns None.
-            settings = await self.store.get_settings(org_id)
+            settings = await self.store.get_settings(org_id, for_update=for_update)
             if settings is None:
                 raise
             await self._hydrate_cycle_baselines(settings)
@@ -923,7 +961,9 @@ class OrgBudgetService:
 
     def _current_cycle(self, settings: OrgBudgetSettings) -> BudgetCycle:
         start_at = settings.cycle_start_at
-        end_at = _next_cycle_start(start_at, settings.reset_day)
+        end_at = settings.next_reset_at or _next_cycle_start(
+            start_at, settings.reset_day
+        )
         return BudgetCycle(start_at=start_at, end_at=end_at)
 
     async def _roll_cycle_if_needed(
@@ -948,7 +988,7 @@ class OrgBudgetService:
             await self.store.refresh(settings)
             return False
 
-        next_cycle = _next_cycle_start(settings.cycle_start_at, settings.reset_day)
+        next_cycle = self._current_cycle(settings).end_at
         if now < next_cycle:
             return False
 
@@ -959,6 +999,7 @@ class OrgBudgetService:
         # recovery and renewing the cap each time. Jumping straight to the current
         # period rolls at most once per period, so subsequent runs are no-ops.
         settings.cycle_start_at = _current_cycle_start(now, settings.reset_day)
+        settings.next_reset_at = None
         settings.cycle_start_spend = snapshot.team_spend
         settings.user_cycle_start_spend = {
             user_id: member.spend for user_id, member in snapshot.members.items()
@@ -974,6 +1015,7 @@ class OrgBudgetService:
         for threshold in thresholds:
             threshold.last_triggered_at = None
             threshold.last_triggered_cycle_start = None
+            threshold.delivery_state = {}
         await self.store.flush()
         await self.store.refresh(settings)
         await self._sync_litellm_budgets(org_id, settings, overrides, snapshot=snapshot)
@@ -1321,6 +1363,87 @@ class OrgBudgetService:
         settings.litellm_last_sync_error = error
         await self.store.flush()
 
+    async def _block_litellm_admission(
+        self,
+        org_id: UUID,
+        settings: OrgBudgetSettings,
+    ) -> bool:
+        team_id = str(org_id)
+        try:
+            await LiteLlmManager.set_team_blocked(team_id, True)
+        except Exception as error:
+            error_message = f'admission_block_failed: {error}'
+            logger.warning(
+                'org_budget_litellm_admission_block_failed',
+                extra={'org_id': team_id, 'error': str(error)},
+            )
+            try:
+                await LiteLlmManager.block_team(team_id)
+            except Exception as fallback_error:
+                error_message = (
+                    f'admission_fallback_failed: {fallback_error}; {error_message}'
+                )
+                logger.error(
+                    'org_budget_litellm_admission_fallback_failed',
+                    extra={'org_id': team_id, 'error': str(fallback_error)},
+                )
+            # Quarantine is not a verified policy; leave reconciliation retryable.
+            await self._record_litellm_sync(settings, 'error', error_message[:500])
+            return False
+
+        await self._record_litellm_sync(settings, 'pending')
+        return True
+
+    async def _restore_litellm_admission(
+        self,
+        org_id: UUID,
+        settings: OrgBudgetSettings,
+    ) -> bool:
+        try:
+            await LiteLlmManager.set_team_blocked(str(org_id), False)
+        except Exception as error:
+            error_message = f'admission_restore_failed: {error}'
+            logger.warning(
+                'org_budget_litellm_admission_restore_failed',
+                extra={'org_id': str(org_id), 'error': str(error)},
+            )
+            await self._record_litellm_sync(settings, 'error', error_message[:500])
+            return False
+        return True
+
+    async def _budget_policy_matches_snapshot(
+        self,
+        org_id: UUID,
+        settings: OrgBudgetSettings,
+        overrides: list[OrgUserBudgetOverride],
+        snapshot: LiteLlmFinancialSnapshot,
+    ) -> bool:
+        override_map = {str(override.user_id): override for override in overrides}
+        baselines = settings.user_cycle_start_spend or {}
+        expected_member_budgets: dict[str, float | None] = {}
+        for user_id in await self._org_member_ids(org_id):
+            effective_limit, is_disabled, _ = _effective_user_budget_limit(
+                override_map.get(user_id), settings.default_user_monthly_limit
+            )
+            if settings.enabled and not is_disabled and effective_limit is not None:
+                baseline = baselines.get(user_id)
+                if baseline is None:
+                    return False
+                expected_member_budgets[user_id] = baseline + effective_limit
+            else:
+                expected_member_budgets[user_id] = None
+
+        expected_team_budget = (
+            settings.cycle_start_spend + settings.monthly_limit
+            if settings.enabled and settings.monthly_limit
+            else None
+        )
+        return not _budget_sync_readback_errors(
+            snapshot,
+            expected_team_budget,
+            expected_member_budgets,
+        )
+
     async def _org_member_ids(self, org_id: UUID) -> set[str]:
         member_result = await self.db_session.execute(
             select(OrgMember.user_id).where(OrgMember.org_id == org_id)
@@ -1394,6 +1517,9 @@ class OrgBudgetService:
     ) -> LiteLlmFinancialSnapshot | None:
         if not settings.enabled and not clear_disabled:
             await self._record_litellm_sync(settings, 'skipped')
+            return snapshot
+
+        if not await self._block_litellm_admission(org_id, settings):
             return snapshot
 
         sync_errors: list[str] = []
@@ -1563,6 +1689,11 @@ class OrgBudgetService:
                 f'verification_fetch_failed: {readback_result.error or "unknown"}'
             )
 
+        if not sync_errors and not await self._restore_litellm_admission(
+            org_id, settings
+        ):
+            return snapshot
+
         if sync_errors:
             summary = sync_errors[0]
             if len(sync_errors) > 1:
@@ -1596,15 +1727,20 @@ class OrgBudgetService:
             if threshold.last_triggered_cycle_start == cycle_start:
                 continue
 
-            await self._send_alerts(
+            if (threshold.delivery_state or {}).get(
+                'cycle_start'
+            ) != cycle_start.isoformat():
+                threshold.delivery_state = {'cycle_start': cycle_start.isoformat()}
+            delivered = await self._send_alerts(
                 org_id,
                 settings,
                 threshold,
                 current_spend,
                 percentage,
             )
-            threshold.last_triggered_at = now
-            threshold.last_triggered_cycle_start = cycle_start
+            if delivered:
+                threshold.last_triggered_at = now
+                threshold.last_triggered_cycle_start = cycle_start
             triggered = True
 
         if triggered:
@@ -1617,29 +1753,45 @@ class OrgBudgetService:
         threshold: OrgBudgetThreshold,
         current_spend: float,
         percentage: float,
-    ) -> None:
+    ) -> bool:
         org_name = await self._get_org_name(org_id)
+        progress = dict(threshold.delivery_state or {})
+        delivered = True
         if threshold.email_enabled:
             recipients = await self._get_admin_emails(org_id)
-            if recipients:
-                await asyncio.to_thread(
-                    SMTPEmailService.send_budget_alert_email,
-                    recipients,
-                    org_name=org_name,
-                    percentage=percentage,
-                    current_spend=current_spend,
-                    monthly_limit=settings.monthly_limit or 0,
-                    threshold=threshold.percentage,
-                )
+            sent_to = set(progress.get('email_recipients', []))
+            for recipient in set(recipients) - sent_to:
+                try:
+                    success = await asyncio.to_thread(
+                        SMTPEmailService.send_budget_alert_email,
+                        [recipient],
+                        org_name=org_name,
+                        percentage=percentage,
+                        current_spend=current_spend,
+                        monthly_limit=settings.monthly_limit or 0,
+                        threshold=threshold.percentage,
+                    )
+                except Exception:
+                    logger.exception('Budget alert email delivery failed')
+                    success = False
+                if success:
+                    sent_to.add(recipient)
+            progress['email_recipients'] = sorted(sent_to)
+            delivered = bool(recipients) and set(recipients).issubset(sent_to)
 
         if threshold.slack_enabled:
-            await self._send_slack_alert(
-                org_name,
-                settings,
-                threshold.percentage,
-                current_spend,
-                percentage,
-            )
+            if not progress.get('slack'):
+                progress['slack'] = await self._send_slack_alert(
+                    org_name,
+                    settings,
+                    threshold.percentage,
+                    current_spend,
+                    percentage,
+                )
+            delivered = delivered and bool(progress['slack'])
+
+        threshold.delivery_state = progress
+        return delivered
 
     async def _get_org_name(self, org_id: UUID) -> str:
         result = await self.db_session.execute(select(Org.name).where(Org.id == org_id))
@@ -1663,13 +1815,13 @@ class OrgBudgetService:
         threshold: int,
         current_spend: float,
         percentage: float,
-    ) -> None:
+    ) -> bool:
         if not settings.slack_channel:
-            return
+            return False
         team_id = await self._resolve_slack_team_id(settings.slack_team_id)
         token = await self._get_slack_bot_token(team_id) if team_id else None
         if not token:
-            return
+            return False
 
         client = AsyncWebClient(token=token)
         message = (
@@ -1679,15 +1831,17 @@ class OrgBudgetService:
             f'({percentage:.1f}% of ${settings.monthly_limit:,.2f})'
         )
         try:
-            await client.chat_postMessage(
+            result = await client.chat_postMessage(
                 channel=settings.slack_channel,
                 text=message,
             )
+            return bool(result.get('ok'))
         except Exception as e:
             logger.warning(
                 'Slack budget alert failed',
                 extra={'error': str(e), 'team_id': team_id},
             )
+            return False
 
     async def _get_slack_bot_token(self, team_id: str | None) -> str | None:
         if not SLACK_AVAILABLE or not is_slack_configured():
