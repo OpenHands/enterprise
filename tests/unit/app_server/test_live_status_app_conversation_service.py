@@ -43,6 +43,9 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     effective_disabled_skills,
 )
 from openhands.app_server.errors import ACPProviderNotAvailableError, SandboxError
+from openhands.app_server.event_callback.memory_change_callback_processor import (
+    MemoryChangeCallbackProcessor,
+)
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
@@ -3403,6 +3406,64 @@ class TestLiveStatusAppConversationService:
         saved_processors = [call.args[0].processor for call in saved_callbacks]
         assert not any(
             isinstance(p, SetTitleCallbackProcessor) for p in saved_processors
+        )
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_registers_memory_processor_when_enable_memory_context(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """MemoryChangeCallbackProcessor is registered when enable_memory_context is enabled."""
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        # Enable enterprise persistent memory on the user record.
+        self.mock_user.enable_memory_context = True
+
+        request = AppConversationStartRequest()
+        async for _task in self.service._start_app_conversation(request):
+            pass
+
+        saved_callbacks = (
+            self.mock_event_callback_service.save_event_callback.await_args_list
+        )
+        saved_processors = [call.args[0].processor for call in saved_callbacks]
+        assert any(
+            isinstance(p, MemoryChangeCallbackProcessor) for p in saved_processors
+        )
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_skips_memory_processor_when_enable_memory_context_off(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """MemoryChangeCallbackProcessor is NOT registered when enable_memory_context is off."""
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        # enable_memory_context defaults to off (not set on _TestUserInfo).
+        request = AppConversationStartRequest()
+        async for _task in self.service._start_app_conversation(request):
+            pass
+
+        saved_callbacks = (
+            self.mock_event_callback_service.save_event_callback.await_args_list
+        )
+        saved_processors = [call.args[0].processor for call in saved_callbacks]
+        assert not any(
+            isinstance(p, MemoryChangeCallbackProcessor) for p in saved_processors
         )
 
     @patch(
