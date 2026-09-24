@@ -1,7 +1,7 @@
 """Prevent duplicate personal custom-secret rows (OHE-3342).
 
-Revision ID: 165
-Revises: 164
+Revision ID: 167
+Revises: 166
 Create Date: 2026-09-23 00:00:00.000000
 
 Adds a partial unique index on ``(keycloak_user_id, org_id, secret_name)``
@@ -24,11 +24,10 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '165'
-down_revision: str | None = '164'
+revision: str = '167'
+down_revision: str | None = '166'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
-
 
 _INDEX_NAME = 'uq_custom_secrets_personal_user_org_name'
 # Personal secrets have a non-null keycloak_user_id (org-shared rows set it

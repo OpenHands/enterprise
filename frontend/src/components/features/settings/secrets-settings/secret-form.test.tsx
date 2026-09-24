@@ -10,8 +10,6 @@ import { SecretForm } from "./secret-form";
 
 const updateSecretMock = vi.hoisted(() => vi.fn());
 const createSecretMock = vi.hoisted(() => vi.fn());
-const updateOrgSecretMock = vi.hoisted(() => vi.fn());
-const createOrgSecretMock = vi.hoisted(() => vi.fn());
 
 vi.mock("#/hooks/mutation/use-update-secret", () => ({
   useUpdateSecret: () => ({ mutate: updateSecretMock }),
@@ -19,38 +17,6 @@ vi.mock("#/hooks/mutation/use-update-secret", () => ({
 
 vi.mock("#/hooks/mutation/use-create-secret", () => ({
   useCreateSecret: () => ({ mutate: createSecretMock }),
-}));
-
-vi.mock("#/api/secrets-service", () => ({
-  SecretsService: {
-    updateSecret: vi.fn(async (...args: unknown[]) => {
-      updateSecretMock(...(args as [string, string, string | undefined]));
-    }),
-    createSecret: vi.fn(async (...args: unknown[]) => {
-      createSecretMock(...(args as [string, string, string | undefined]));
-    }),
-    searchSecrets: vi.fn(),
-    getSecrets: vi.fn(),
-  },
-}));
-
-vi.mock("#/api/organization-service/organization-service.api", () => ({
-  organizationService: {
-    updateOrgSecret: vi.fn(async (...args: unknown[]) => {
-      updateOrgSecretMock(
-        ...(args as [string, string, { name: string; description?: string }]),
-      );
-    }),
-    createOrgSecret: vi.fn(async (...args: unknown[]) => {
-      createOrgSecretMock(
-        ...(args as [
-          string,
-          { name: string; value: string; description?: string },
-        ]),
-      );
-    }),
-    deleteOrgSecret: vi.fn(),
-  },
 }));
 
 vi.mock("#/hooks/query/use-get-secrets", () => ({

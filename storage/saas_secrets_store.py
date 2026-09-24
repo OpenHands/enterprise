@@ -155,29 +155,16 @@ class SaasSecretsStore(SecretsStore):
         scope badges — the runtime ``load()`` merges both, but the listing
         API needs to distinguish them.
         """
-        if not self.user_id:
-            return []
-        user = await UserStore.get_user_by_id(self.user_id)
-        org_id = self.effective_org_id or (user.current_org_id if user else None)
-
-        async with a_session_maker() as session:
-            query = select(StoredCustomSecrets).filter(
-                StoredCustomSecrets.keycloak_user_id == self.user_id,
-                StoredCustomSecrets.is_org_shared.is_(False),
+        rows = await self._fetch_personal_rows()
+        return [
+            (
+                row.secret_name,
+                self._jwt_svc.decrypt_value(row.description)
+                if row.description
+                else None,
             )
-            if org_id is not None:
-                query = query.filter(StoredCustomSecrets.org_id == org_id)
-            result = await session.execute(query)
-            rows = result.scalars().all()
-            return [
-                (
-                    row.secret_name,
-                    self._jwt_svc.decrypt_value(row.description)
-                    if row.description
-                    else None,
-                )
-                for row in rows
-            ]
+            for row in rows
+        ]
 
     async def store(self, item: Secrets):
         user = await UserStore.get_user_by_id(self.user_id)
