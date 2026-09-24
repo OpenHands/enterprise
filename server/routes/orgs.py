@@ -5,7 +5,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
 from openhands.analytics import get_analytics_service
@@ -68,6 +68,7 @@ from server.services.org_app_settings_service import (
     OrgAppSettingsServiceInjector,
 )
 from server.services.org_budget_service import (
+    BudgetChangeRejectedError,
     OrgBudgetService,
     OrgBudgetServiceInjector,
 )
@@ -1342,19 +1343,26 @@ async def update_org_budget_settings(
     users_search: str | None = Query(None, max_length=200),
     users_status: str | None = Query(None),
     budget_service: OrgBudgetService = org_budget_service_dependency,
-) -> OrgBudgetSettingsResponse:
+) -> OrgBudgetSettingsResponse | JSONResponse:
+    """503 with detail.code=budget_change_rejected means no edit was saved.
+
+    A 503 settings body means the edit was saved but enforcement is unverified.
+    """
     logger.info(
         'Updating org budget settings',
         extra={'org_id': str(org_id), 'user_id': user_id},
     )
-    state = await budget_service.update_budget_settings(
-        org_id,
-        update,
-        users_page=users_page,
-        users_per_page=users_per_page,
-        users_search=users_search,
-        users_status=users_status,
-    )
+    try:
+        state = await budget_service.update_budget_settings(
+            org_id,
+            update,
+            users_page=users_page,
+            users_per_page=users_per_page,
+            users_search=users_search,
+            users_status=users_status,
+        )
+    except BudgetChangeRejectedError as error:
+        return _rejected_budget_change(error)
     if state['reconciliation_state'] in {'degraded', 'failed'}:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return _build_budget_response(state)
@@ -1371,7 +1379,11 @@ async def upsert_org_budget_override(
     response: Response,
     current_user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     budget_service: OrgBudgetService = org_budget_service_dependency,
-) -> OrgBudgetUserMutationResponse:
+) -> OrgBudgetUserMutationResponse | JSONResponse:
+    """503 with detail.code=budget_change_rejected means no edit was saved.
+
+    A 503 user body means the edit was saved but enforcement is unverified.
+    """
     logger.info(
         'Updating org budget override',
         extra={
@@ -1380,12 +1392,15 @@ async def upsert_org_budget_override(
             'actor_id': current_user_id,
         },
     )
-    await budget_service.upsert_user_override(
-        org_id,
-        UUID(user_id),
-        monthly_limit=update.monthly_limit,
-        is_disabled=update.is_disabled,
-    )
+    try:
+        await budget_service.upsert_user_override(
+            org_id,
+            UUID(user_id),
+            monthly_limit=update.monthly_limit,
+            is_disabled=update.is_disabled,
+        )
+    except BudgetChangeRejectedError as error:
+        return _rejected_budget_change(error)
     user_row = await budget_service.get_user_budget_row(org_id, UUID(user_id))
     if not user_row:
         raise HTTPException(
@@ -1400,6 +1415,7 @@ async def upsert_org_budget_override(
 @org_router.delete(
     '/{org_id}/budgets/overrides/{user_id}',
     status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
 )
 async def delete_org_budget_override(
     org_id: UUID,
@@ -1407,7 +1423,11 @@ async def delete_org_budget_override(
     response: Response,
     current_user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
     budget_service: OrgBudgetService = org_budget_service_dependency,
-) -> None:
+) -> JSONResponse | None:
+    """503 with detail.code=budget_change_rejected means no edit was saved.
+
+    An empty 503 means deletion was saved but enforcement is unverified.
+    """
     logger.info(
         'Deleting org budget override',
         extra={
@@ -1416,11 +1436,22 @@ async def delete_org_budget_override(
             'actor_id': current_user_id,
         },
     )
-    await budget_service.delete_user_override(org_id, UUID(user_id))
+    try:
+        await budget_service.delete_user_override(org_id, UUID(user_id))
+    except BudgetChangeRejectedError as error:
+        return _rejected_budget_change(error)
     reconciliation_state = await budget_service.get_reconciliation_state(org_id)
     if reconciliation_state in {'degraded', 'failed'}:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return None
+
+
+def _rejected_budget_change(error: BudgetChangeRejectedError) -> JSONResponse:
+    # Return rather than raise: the request must commit failure metadata for recovery.
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={'detail': error.detail},
+    )
 
 
 @org_router.get(
