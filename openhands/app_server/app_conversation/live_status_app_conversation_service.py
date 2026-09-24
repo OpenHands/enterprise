@@ -510,12 +510,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             assert sandbox is not None
             agent_server_url = self._get_agent_server_url(sandbox)
 
-            # Mirror the user's LLM profiles into the sandbox so the agent's
-            # built-in switch_llm tool can resolve them (in SaaS profiles live
-            # on the app-server, not the sandbox filesystem). Before conversation
-            # creation, so the tool is enabled; re-runs on every start/resume.
-            await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
-
             # Get the working dir
             sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
                 sandbox.sandbox_spec_id
@@ -580,6 +574,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     request_observability_span_name=request.observability_span_name,
                 )
             )
+
+            # Build before seeding, which can refresh the captured user's LLM key.
+            # Profiles must still be available before the conversation is created.
+            await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
 
             # update status
             task.status = AppConversationStartTaskStatus.STARTING_CONVERSATION
@@ -1390,9 +1388,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def _maybe_refresh_managed_llm_key(self, user: UserInfo, llm: LLM) -> LLM:
         """Best-effort refresh for stale SaaS managed LiteLLM keys.
 
-        This intentionally only runs for SaaS managed LiteLLM keys that are the
-        current member's stored managed key. BYOK/custom keys and OSS/local
-        deployments are left untouched.
+        Uses the current member's managed key if a concurrent start replaced
+        the captured credential. BYOK/custom keys and OSS/local deployments
+        are left untouched.
         """
         _logger.debug(
             'managed_llm_key_refresh:evaluate',
@@ -1572,14 +1570,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 return llm
             if managed_key != key:
                 _logger.debug(
-                    'managed_llm_key_refresh:skip_key_mismatch',
+                    'managed_llm_key_refresh:use_current_member_key',
                     extra={
                         'user_id': user.id,
                         'org_id': str(org_id),
                         'model': llm.model,
                     },
                 )
-                return llm
+                key = managed_key
+                llm = llm.model_copy(update={'api_key': SecretStr(key)})
+                self.user_context.invalidate_user_info_cache()
 
             key_belongs_to_user = await LiteLlmManager.verify_existing_key(
                 key,
