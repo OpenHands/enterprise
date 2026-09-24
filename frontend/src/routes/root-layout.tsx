@@ -233,13 +233,11 @@ export default function MainApp() {
     if (shouldRedirectToLogin) {
       // Include search params in returnTo to preserve query string (e.g., user_code for device OAuth)
       const searchString = searchParams.toString();
-      let fullPath = "";
-      if (pathname !== "/") {
-        fullPath = searchString ? `${pathname}?${searchString}` : pathname;
-      }
-      const loginUrl = fullPath
-        ? `/login?returnTo=${encodeURIComponent(fullPath)}`
-        : "/login";
+      const fullPath = searchString ? `${pathname}?${searchString}` : pathname;
+      const loginUrl =
+        fullPath === "/"
+          ? "/login"
+          : `/login?returnTo=${encodeURIComponent(fullPath)}`;
       navigate(loginUrl, { replace: true });
     }
   }, [shouldRedirectToLogin, pathname, searchParams, navigate]);
