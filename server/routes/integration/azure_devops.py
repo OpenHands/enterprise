@@ -59,6 +59,11 @@ class AzureDevOpsWebhookInstallationResult(BaseModel):
     webhook_url: str
 
 
+class AzureDevOpsOrganizations(BaseModel):
+    organizations: list[str]
+    default_organization: str | None
+
+
 def get_azure_devops_manager():
     global _azure_devops_manager
     if _azure_devops_manager is None:
@@ -163,6 +168,64 @@ def _ensure_azure_devops_organization(service: SaaSAzureDevOpsService) -> None:
         )
 
 
+async def _accessible_organizations(service: SaaSAzureDevOpsService) -> list[str]:
+    try:
+        return await service.get_accessible_organizations()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception('Unable to verify Azure DevOps organization access')
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Unable to verify Azure DevOps organization access.',
+        ) from exc
+
+
+async def _service_for_organization(
+    user_id: str, organization: str | None
+) -> SaaSAzureDevOpsService:
+    service = SaaSAzureDevOpsService(external_auth_id=user_id)
+    if organization is None:
+        # Preserve existing clients that use the installation's single default.
+        _ensure_azure_devops_organization(service)
+        return service
+    requested = organization.strip()
+    if not requested:
+        raise HTTPException(
+            status_code=400, detail='Select an Azure DevOps organization.'
+        )
+    accessible = await _accessible_organizations(service)
+    selected = next(
+        (name for name in accessible if name.casefold() == requested.casefold()), None
+    )
+    if selected is None:
+        raise HTTPException(
+            status_code=403, detail='Azure DevOps organization access denied.'
+        )
+    # Use the canonical name supplied by Azure, never an arbitrary request URL.
+    service.organization = selected
+    return service
+
+
+@azure_devops_integration_router.get('/azure-devops/organizations')
+async def get_azure_devops_organizations(
+    user_id: str = Depends(require_permission(Permission.MANAGE_INTEGRATIONS)),
+) -> AzureDevOpsOrganizations:
+    service = SaaSAzureDevOpsService(external_auth_id=user_id)
+    organizations = await _accessible_organizations(service)
+    return AzureDevOpsOrganizations(
+        organizations=organizations,
+        default_organization=next(
+            (
+                name
+                for name in organizations
+                if name.casefold() == (service.organization or '').casefold()
+            ),
+            None,
+        ),
+    )
+
+
 async def verify_azure_devops_signature(
     header_webhook_secret: str | None,
     authorization: str | None,
@@ -183,11 +246,11 @@ async def verify_azure_devops_signature(
 @azure_devops_integration_router.get('/azure-devops/resources')
 async def get_azure_devops_resources(
     user_id: str = Depends(require_permission(Permission.MANAGE_INTEGRATIONS)),
+    organization: str | None = None,
 ) -> AzureDevOpsWebhookStatus:
     """Report org-wide resolver hook installation status."""
     try:
-        service = SaaSAzureDevOpsService(external_auth_id=user_id)
-        _ensure_azure_devops_organization(service)
+        service = await _service_for_organization(user_id, organization)
         webhook_url = azure_devops_webhook_url()
 
         subscriptions = await service.list_service_hook_subscriptions()
@@ -245,10 +308,10 @@ async def get_azure_devops_resources(
 @azure_devops_integration_router.post('/azure-devops/reinstall-webhook')
 async def reinstall_azure_devops_webhook(
     user_id: str = Depends(require_permission(Permission.MANAGE_INTEGRATIONS)),
+    organization: str | None = None,
 ) -> AzureDevOpsWebhookInstallationResult:
     """Install or reinstall the org-wide Azure DevOps resolver Service Hooks."""
-    service = SaaSAzureDevOpsService(external_auth_id=user_id)
-    _ensure_azure_devops_organization(service)
+    service = await _service_for_organization(user_id, organization)
     webhook_secret = _ensure_azure_devops_webhook_secret()
     webhook_url = azure_devops_webhook_url()
 
@@ -311,10 +374,10 @@ async def reinstall_azure_devops_webhook(
 @azure_devops_integration_router.post('/azure-devops/uninstall-webhook')
 async def uninstall_azure_devops_webhook(
     user_id: str = Depends(require_permission(Permission.MANAGE_INTEGRATIONS)),
+    organization: str | None = None,
 ) -> AzureDevOpsWebhookInstallationResult:
     """Delete the org-wide Azure DevOps resolver Service Hooks."""
-    service = SaaSAzureDevOpsService(external_auth_id=user_id)
-    _ensure_azure_devops_organization(service)
+    service = await _service_for_organization(user_id, organization)
     webhook_url = azure_devops_webhook_url()
 
     try:
