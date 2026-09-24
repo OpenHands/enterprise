@@ -86,6 +86,15 @@ which group runs each test. A raw default pytest invocation omits probe files,
 so use the runner commands above. Consult the command's current JUnit output;
 this table does not label unexecuted or failing contracts as passing.
 
+Budget alert delivery records successful Slack and individual SMTP destinations
+in PostgreSQL. Failed destinations remain retryable on the next maintenance run;
+successful destinations are skipped within that cycle. The native Slack probe
+covers failure/recovery, and unit tests cover mixed-channel delivery across fresh
+database sessions. Transport acceptance is not an exactly-once guarantee: a
+crash after delivery but before commit, or an ambiguous transport timeout, can
+still cause a duplicate. Controlled transports do not certify a real Slack
+workspace or SMTP server.
+
 The provisioning probe is not invitation acceptance or UI key refresh. The
 HTTP fixture bypasses authentication while retaining route validation,
 serialization and response status. The delayed-worker test controls a stale

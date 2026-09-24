@@ -202,7 +202,7 @@ class SMTPEmailService:
         current_spend: float,
         monthly_limit: float,
         threshold: int,
-    ) -> None:
+    ) -> bool:
         subject = (
             f'OpenHands budget alert: {org_name} reached {threshold}% of its limit'
         )
@@ -222,5 +222,7 @@ class SMTPEmailService:
 
         extra = {'org_name': org_name, 'recipient_count': len(to_emails)}
 
-        if SMTPEmailService._send_smtp_email(to_emails, subject, body, extra):
+        delivered = SMTPEmailService._send_smtp_email(to_emails, subject, body, extra)
+        if delivered:
             logger.info('Budget alert email sent via SMTP', extra=extra)
+        return delivered
