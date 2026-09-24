@@ -8,7 +8,7 @@ import {
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
 
-export function useReinstallAzureDevOpsWebhook() {
+export function useReinstallAzureDevOpsWebhook(organization?: string) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
@@ -18,9 +18,12 @@ export function useReinstallAzureDevOpsWebhook() {
     void,
     unknown
   >({
-    mutationFn: () => integrationService.reinstallAzureDevOpsWebhook(),
+    mutationFn: () =>
+      integrationService.reinstallAzureDevOpsWebhook(organization),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["azure-devops-resources"] });
+      queryClient.invalidateQueries({
+        queryKey: ["azure-devops-resources", organization],
+      });
 
       if (data.success) {
         displaySuccessToast(t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL_SUCCESS));
