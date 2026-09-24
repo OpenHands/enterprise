@@ -344,7 +344,7 @@ def _budget_policy_comparison(
             effective_limit, is_disabled, _ = _effective_user_budget_limit(
                 override_map.get(user_id), settings.default_user_monthly_limit
             )
-            if settings.enabled and not is_disabled and effective_limit is not None:
+            if not is_disabled and effective_limit is not None:
                 baseline = baselines.get(user_id)
                 if baseline is None:
                     drift_errors.append(f'member_cycle_baseline_missing: {user_id}')
@@ -754,7 +754,7 @@ class OrgBudgetService:
             org_id,
             settings,
             overrides,
-            clear_disabled=previous_enabled and not settings.enabled,
+            clear_disabled='enabled' in fields_set and not settings.enabled,
             snapshot=baseline_snapshot,
         )
 

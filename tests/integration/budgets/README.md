@@ -66,7 +66,7 @@ when neither endpoint is reachable.
 | Generated limit/override edits and idempotent maintenance | `test_org_budget_state_machine.py` | Service + real LiteLLM |
 | Disable org cap while preserving independent member enforcement | `test_disable_organization_limit.py` | Native behavior; API outcome tested separately |
 | Limit edits after spend, normal rollover and repeat maintenance | `test_budget_lifecycle.py` | Service + real spend; controlled clock |
-| Actual save status/readback and unchanged-day alert save | `probe_budget_api.py` | Real FastAPI routes with injected identity/session |
+| Save status/readback, spend preservation, org disable and failure/retry with retained member caps | `probe_budget_api.py` | Real FastAPI routes with injected identity/session |
 | New-user provisioning and existing-user reprovisioning | `probe_membership.py` | Real `create_entries` + LiteLLM; Keycloak identity stubbed |
 | Delayed rollover worker cannot renew allowance twice | `probe_rollover.py` | Two DB sessions, controlled interleaving, real spend |
 | Failed Slack delivery remains retryable and then deduplicates | `probe_alert_delivery.py` | Real DB/service with simulated Slack transport |

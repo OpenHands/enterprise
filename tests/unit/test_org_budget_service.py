@@ -131,6 +131,49 @@ def test_budget_policy_comparison_reports_verified_healthy_state():
     assert result['applied_at'] == applied_at
 
 
+@pytest.mark.parametrize('policy', ['default', 'override', 'disabled', 'unlimited'])
+@pytest.mark.parametrize('matches', [True, False])
+def test_disabled_org_verifies_retained_member_policy(policy, matches):
+    user_id = uuid4()
+    settings = OrgBudgetSettings(
+        org_id=uuid4(),
+        enabled=False,
+        monthly_limit=100.0,
+        default_user_monthly_limit=None if policy == 'unlimited' else 30.0,
+        cycle_start_spend=20.0,
+        user_cycle_start_spend={str(user_id): 8.0},
+        litellm_last_sync_status='success',
+    )
+    overrides = (
+        [
+            OrgUserBudgetOverride(
+                org_id=settings.org_id,
+                user_id=user_id,
+                monthly_limit=10.0,
+                is_disabled=policy == 'disabled',
+            )
+        ]
+        if policy in {'override', 'disabled'}
+        else []
+    )
+    expected_cap = {'default': 38.0, 'override': 18.0}.get(policy)
+    actual_cap = expected_cap if matches else (None if expected_cap else 9.0)
+    snapshot = _snapshot(
+        team_max_budget=None,
+        members={str(user_id): (12.0, actual_cap, actual_cap is None)},
+    )
+    result = _budget_policy_comparison(
+        settings,
+        overrides,
+        {str(user_id)},
+        BudgetFinancialSnapshotResult(snapshot=snapshot, status='live'),
+    )
+
+    assert result['budget_policy_matches'] is matches
+    assert result['reconciliation_state'] == ('inactive' if matches else 'degraded')
+    assert result['desired_team_max_budget'] is None
+
+
 @pytest.mark.asyncio
 async def test_get_reconciliation_state_reports_sync_error_as_degraded():
     settings = OrgBudgetSettings(
