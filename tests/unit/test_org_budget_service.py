@@ -4102,3 +4102,174 @@ async def test_non_unique_integrity_error_is_not_swallowed_by_the_recovery_read(
                 await loser_service._get_or_create_settings(budget_org.id)
 
     assert excinfo.value.orig.sqlstate == '23502'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failed_destination', ['slack', 'first_email', 'all'])
+async def test_alert_retries_only_failed_destinations_after_new_session(
+    async_session_maker, budget_org, failed_destination
+):
+    cycle = datetime(2026, 9, 1, tzinfo=UTC)
+    recipients = ['first@example.invalid', 'second@example.invalid']
+    async with async_session_maker() as session:
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            monthly_limit=100,
+            cycle_start_at=cycle,
+            cycle_start_spend=0,
+        )
+        threshold = OrgBudgetThreshold(
+            org_id=budget_org.id,
+            percentage=80,
+            email_enabled=True,
+            slack_enabled=True,
+        )
+        session.add_all([settings, threshold])
+        await session.commit()
+        threshold_id = threshold.id
+
+    attempts = {'slack': 0, **{email: 0 for email in recipients}}
+
+    def email_delivery(to_emails, **kwargs):
+        assert len(to_emails) == 1
+        email = to_emails[0]
+        attempts[email] += 1
+        fails = failed_destination == 'all' or (
+            failed_destination == 'first_email' and email == recipients[0]
+        )
+        return not fails or attempts[email] > 1
+
+    async def slack_delivery(*args):
+        attempts['slack'] += 1
+        return failed_destination == 'first_email' or attempts['slack'] > 1
+
+    with patch(
+        'server.services.org_budget_service.SMTPEmailService.send_budget_alert_email',
+        side_effect=email_delivery,
+    ):
+        for iteration in range(3):
+            async with async_session_maker() as session:
+                settings = await session.scalar(
+                    select(OrgBudgetSettings).where(
+                        OrgBudgetSettings.org_id == budget_org.id
+                    )
+                )
+                threshold = await session.get(OrgBudgetThreshold, threshold_id)
+                service = OrgBudgetService(session)
+                service._get_org_name = AsyncMock(return_value='Budget alert test')
+                service._get_admin_emails = AsyncMock(return_value=recipients)
+                service._send_slack_alert = AsyncMock(side_effect=slack_delivery)
+                await service._maybe_send_alerts(
+                    budget_org.id, settings, [threshold], 85, cycle
+                )
+                if iteration == 0:
+                    assert threshold.last_triggered_cycle_start is None
+                else:
+                    assert threshold.last_triggered_cycle_start == cycle
+                await session.commit()
+    assert attempts == {
+        'slack': 1 if failed_destination == 'first_email' else 2,
+        recipients[0]: 1 if failed_destination == 'slack' else 2,
+        recipients[1]: 2 if failed_destination == 'all' else 1,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('missing', ['email', 'slack'])
+async def test_missing_alert_destination_does_not_mark_threshold_delivered(
+    async_session_maker, budget_org, missing
+):
+    cycle = datetime(2026, 9, 1, tzinfo=UTC)
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        service._get_org_name = AsyncMock(return_value='Budget alert test')
+        service._get_admin_emails = AsyncMock(return_value=[])
+        service._resolve_slack_team_id = AsyncMock(return_value=None)
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            monthly_limit=100,
+            cycle_start_at=cycle,
+        )
+        threshold = OrgBudgetThreshold(
+            org_id=budget_org.id,
+            percentage=80,
+            email_enabled=missing == 'email',
+            slack_enabled=missing == 'slack',
+        )
+        await service._maybe_send_alerts(
+            budget_org.id, settings, [threshold], 85, cycle
+        )
+        assert threshold.last_triggered_cycle_start is None
+        assert threshold.last_triggered_at is None
+
+
+@pytest.mark.asyncio
+async def test_alert_delivery_progress_is_scoped_to_cycle(
+    async_session_maker, budget_org
+):
+    cycle = datetime(2026, 9, 1, tzinfo=UTC)
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        service._get_org_name = AsyncMock(return_value='Budget alert test')
+        service._get_admin_emails = AsyncMock(return_value=['admin@example.invalid'])
+        service._send_slack_alert = AsyncMock(side_effect=[False, True, True])
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            monthly_limit=100,
+            cycle_start_at=cycle,
+        )
+        threshold = OrgBudgetThreshold(
+            org_id=budget_org.id,
+            percentage=80,
+            email_enabled=True,
+            slack_enabled=True,
+        )
+        with patch(
+            'server.services.org_budget_service.SMTPEmailService.send_budget_alert_email',
+            return_value=True,
+        ) as email:
+            await service._maybe_send_alerts(
+                budget_org.id, settings, [threshold], 85, cycle
+            )
+            assert threshold.last_triggered_cycle_start is None
+            await service._maybe_send_alerts(
+                budget_org.id, settings, [threshold], 85, cycle
+            )
+            assert email.call_count == 1
+            next_cycle = datetime(2026, 10, 1, tzinfo=UTC)
+            await service._maybe_send_alerts(
+                budget_org.id, settings, [threshold], 85, next_cycle
+            )
+            assert email.call_count == 2
+            assert threshold.last_triggered_cycle_start == next_cycle
+
+
+@pytest.mark.asyncio
+async def test_preexisting_delivered_threshold_is_not_rearmed(
+    async_session_maker, budget_org
+):
+    cycle = datetime(2026, 9, 1, tzinfo=UTC)
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        service._send_alerts = AsyncMock(return_value=True)
+        settings = OrgBudgetSettings(
+            org_id=budget_org.id,
+            enabled=True,
+            monthly_limit=100,
+            cycle_start_at=cycle,
+        )
+        threshold = OrgBudgetThreshold(
+            org_id=budget_org.id,
+            percentage=80,
+            email_enabled=True,
+            slack_enabled=True,
+            last_triggered_cycle_start=cycle,
+            delivery_state={},
+        )
+        await service._maybe_send_alerts(
+            budget_org.id, settings, [threshold], 85, cycle
+        )
+        service._send_alerts.assert_not_awaited()
