@@ -230,6 +230,37 @@ def test_oauth_install_round_trips_through_the_public_callback(redis):
     assert reused.status_code == 404
 
 
+def test_start_succeeds_without_consent_when_stored_tokens_work(redis):
+    # Arrange: the probe connects with the restored tokens (still valid, or
+    # refreshed) and never asks the user for consent.
+    def probe(request, cipher, mcp_oauth_factory=None):
+        return MCPTestSuccess(
+            tools=['read_subject'],
+            oauth_state=MCPOAuthStateResponse(
+                tokens={'access_token': 'refreshed-access-token'}
+            ),
+        )
+
+    client = _client()
+    with patch.object(mcp_oauth_router, '_probe_mcp_server', side_effect=probe):
+        # Act
+        start = client.post(
+            '/api/v1/mcp/oauth/start',
+            json={'name': 'atlassian', 'server': OAUTH_SERVER, 'timeout': 120},
+        )
+        job_id = start.json()['job_id']
+        final = _wait_for(
+            lambda: client.get(f'/api/v1/mcp/oauth/status/{job_id}').json(),
+            lambda s: s['status'] in ('succeeded', 'failed'),
+        )
+
+    # Assert: success with only the job id; the state is on the status route.
+    assert start.status_code == 200
+    assert start.json() == {'ok': True, 'job_id': job_id}
+    assert final['status'] == 'succeeded'
+    assert final['oauth_state']['tokens']['access_token'] == 'refreshed-access-token'
+
+
 def test_start_requires_an_oauth_credential(redis):
     client = _client()
 
