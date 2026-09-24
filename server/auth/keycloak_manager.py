@@ -3,6 +3,7 @@ from keycloak.keycloak_openid import KeycloakOpenID
 
 from server.auth.constants import (
     KEYCLOAK_ADMIN_CLIENT_ID,
+    KEYCLOAK_ADMIN_CLIENT_SECRET,
     KEYCLOAK_ADMIN_PASSWORD,
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_CLIENT_SECRET,
@@ -49,7 +50,9 @@ def get_keycloak_admin(external=False) -> KeycloakAdmin:
             user_realm_name='master',
             client_id=KEYCLOAK_ADMIN_CLIENT_ID or 'admin-cli',
             client_secret_key=(
-                KEYCLOAK_ADMIN_PASSWORD if KEYCLOAK_ADMIN_CLIENT_ID else None
+                (KEYCLOAK_ADMIN_CLIENT_SECRET or KEYCLOAK_ADMIN_PASSWORD)
+                if KEYCLOAK_ADMIN_CLIENT_ID
+                else None
             ),
             verify=True,
             timeout=KEYCLOAK_REQUEST_TIMEOUT,

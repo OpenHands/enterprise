@@ -305,6 +305,11 @@ class AppConversationServiceBase(AppConversationService, ABC):
         yield task
         await self.maybe_setup_git_hooks(workspace, project_dir)
 
+        # Inject the user's stored memory context into the sandbox before the
+        # conversation starts. This writes the MEMORY.md file so the SDK's
+        # load_memory() picks it up on the first send_message/run.
+        await self.maybe_inject_memory_context(workspace, project_dir)
+
         task.status = AppConversationStartTaskStatus.SETTING_UP_SKILLS
         yield task
         await self.load_and_merge_all_skills(
@@ -843,6 +848,56 @@ printf 'password=%s\\n' "$token"
             return
 
         _logger.info('Git pre-commit hook installed successfully')
+
+    async def maybe_inject_memory_context(
+        self,
+        workspace: AsyncRemoteWorkspace,
+        project_dir: str,
+    ) -> None:
+        """Inject the user's stored memory context into the sandbox.
+
+        If the user has ``enable_memory_context`` enabled and a non-empty
+        ``memory_context`` on their user record, writes the content to
+        ``<project_dir>/.openhands/memory/MEMORY.md`` in the sandbox so the
+        SDK's ``load_memory()`` picks it up on the first
+        ``send_message()``/``run()``.
+
+        Args:
+            workspace: Remote workspace for command execution.
+            project_dir: Project root directory (repo root when a repo is selected).
+        """
+        try:
+            user_info = await self.user_context.get_user_info()
+        except Exception as e:
+            _logger.warning(f'Failed to get user info for memory injection: {e}')
+            return
+
+        if not getattr(user_info, 'enable_memory_context', False):
+            return
+
+        memory_context = getattr(user_info, 'memory_context', None)
+        if not memory_context:
+            return
+
+        memory_dir = f'{project_dir}/.openhands/memory'
+        memory_file = f'{memory_dir}/MEMORY.md'
+
+        # Create the memory directory and write the file content. The content
+        # is base64-encoded to safely handle arbitrary text (quotes, special
+        # chars, newlines) through a shell command.
+        encoded = base64.b64encode(memory_context.encode('utf-8')).decode('ascii')
+        command = (
+            f'mkdir -p {memory_dir} && echo "{encoded}" | base64 -d > {memory_file}'
+        )
+        result = await workspace.execute_command(command, project_dir)
+        if result.exit_code:
+            _logger.error(f'Failed to write memory context to sandbox: {result.stderr}')
+        else:
+            _logger.info(
+                'Injected memory_context (%d chars) into sandbox at %s',
+                len(memory_context),
+                memory_file,
+            )
 
     def _create_condenser(
         self,

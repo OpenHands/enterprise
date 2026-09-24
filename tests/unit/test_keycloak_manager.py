@@ -30,11 +30,15 @@ def test_admin_client_uses_configured_timeout_and_retries():
 
 @pytest.mark.parametrize('external', [False, True])
 @pytest.mark.parametrize('client_id', ['', 'openhands-provisioner'])
-def test_admin_auth_and_refresh_realm(monkeypatch, external, client_id):
+@pytest.mark.parametrize('client_secret', ['', 'separate-service-secret'])
+def test_admin_auth_and_refresh_realm(monkeypatch, external, client_id, client_secret):
     from keycloak.keycloak_admin import KeycloakAdmin
 
     keycloak_manager._keycloak_admin_instances.clear()
     monkeypatch.setattr(keycloak_manager, 'KEYCLOAK_ADMIN_CLIENT_ID', client_id)
+    monkeypatch.setattr(
+        keycloak_manager, 'KEYCLOAK_ADMIN_CLIENT_SECRET', client_secret, raising=False
+    )
     monkeypatch.setattr(keycloak_manager, 'KEYCLOAK_ADMIN_PASSWORD', 'test-secret')
     monkeypatch.setattr(keycloak_manager, 'KEYCLOAK_REALM_NAME', 'allhands')
     monkeypatch.setattr(
@@ -56,7 +60,10 @@ def test_admin_auth_and_refresh_realm(monkeypatch, external, client_id):
     assert connection.client_id == (client_id or 'admin-cli')
     assert connection.username == (None if client_id else 'admin')
     assert connection.password == (None if client_id else 'test-secret')
-    assert connection.client_secret_key == ('test-secret' if client_id else None)
+    assert connection.client_secret_key == (
+        (client_secret or 'test-secret') if client_id else None
+    )
+    assert connection.verify is True
     with patch.object(
         connection.keycloak_openid,
         'token',
@@ -69,3 +76,17 @@ def test_admin_auth_and_refresh_realm(monkeypatch, external, client_id):
         assert call.kwargs['grant_type'] == connection.grant_type
     assert keycloak_manager.get_keycloak_admin(external) is client
     keycloak_manager._keycloak_admin_instances.clear()
+
+
+def test_whitespace_client_id_keeps_legacy_admin_auth(monkeypatch):
+    import importlib
+
+    from server.auth import constants
+
+    try:
+        with monkeypatch.context() as env:
+            env.setenv('KEYCLOAK_ADMIN_CLIENT_ID', '  ')
+            importlib.reload(constants)
+            assert constants.KEYCLOAK_ADMIN_CLIENT_ID == ''
+    finally:
+        importlib.reload(constants)
