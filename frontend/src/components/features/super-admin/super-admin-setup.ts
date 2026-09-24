@@ -1,14 +1,16 @@
 import { useSyncExternalStore } from "react";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
+import { SUPER_ADMIN_SETUP_STEP_EVENT } from "#/components/features/setup/tours/types";
 
 export const SUPER_ADMIN_SETUP_STORAGE_KEY = "oh-super-admin-setup";
 
 export type SuperAdminSetupStepId =
   | "create-org"
-  | "provision-users"
-  | "review-instance"
-  | "grant-admins"
-  | "review-dashboard";
+  | "add-llm"
+  | "add-integration"
+  | "first-automation"
+  | "invite-users"
+  | "optional-saml";
 
 export interface SuperAdminSetupStep {
   id: SuperAdminSetupStepId;
@@ -17,6 +19,10 @@ export interface SuperAdminSetupStep {
   to: string;
 }
 
+/**
+ * Instance Super Admin NUX order (locked):
+ * org → LLM → integration → automation → invite → optional SAML
+ */
 export const SUPER_ADMIN_SETUP_STEPS: SuperAdminSetupStep[] = [
   {
     id: "create-org",
@@ -25,35 +31,38 @@ export const SUPER_ADMIN_SETUP_STEPS: SuperAdminSetupStep[] = [
     to: SUPER_ADMIN_PATHS.organizations,
   },
   {
-    id: "provision-users",
-    title: "SUPER_ADMIN$SETUP_STEP_USERS",
-    description: "SUPER_ADMIN$SETUP_STEP_USERS_HINT",
-    to: SUPER_ADMIN_PATHS.users,
+    id: "add-llm",
+    title: "SUPER_ADMIN$SETUP_STEP_LLM",
+    description: "SUPER_ADMIN$SETUP_STEP_LLM_HINT",
+    to: "/settings/org-defaults",
   },
   {
-    id: "review-instance",
-    title: "SUPER_ADMIN$SETUP_STEP_INSTANCE",
-    description: "SUPER_ADMIN$SETUP_STEP_INSTANCE_HINT",
+    id: "add-integration",
+    title: "SUPER_ADMIN$SETUP_STEP_INTEGRATION",
+    description: "SUPER_ADMIN$SETUP_STEP_INTEGRATION_HINT",
+    to: "/settings/integrations-hub",
+  },
+  {
+    id: "first-automation",
+    title: "SUPER_ADMIN$SETUP_STEP_AUTOMATION",
+    description: "SUPER_ADMIN$SETUP_STEP_AUTOMATION_HINT",
+    to: "/automations",
+  },
+  {
+    id: "invite-users",
+    title: "SUPER_ADMIN$SETUP_STEP_INVITE",
+    description: "SUPER_ADMIN$SETUP_STEP_INVITE_HINT",
+    to: "/settings/org-members",
+  },
+  {
+    id: "optional-saml",
+    title: "SUPER_ADMIN$SETUP_STEP_SAML",
+    description: "SUPER_ADMIN$SETUP_STEP_SAML_HINT",
     to: SUPER_ADMIN_PATHS.instance,
-  },
-  {
-    id: "grant-admins",
-    title: "SUPER_ADMIN$SETUP_STEP_ADMINS",
-    description: "SUPER_ADMIN$SETUP_STEP_ADMINS_HINT",
-    to: SUPER_ADMIN_PATHS.admins,
-  },
-  {
-    id: "review-dashboard",
-    title: "SUPER_ADMIN$SETUP_STEP_DASHBOARD",
-    description: "SUPER_ADMIN$SETUP_STEP_DASHBOARD_HINT",
-    to: SUPER_ADMIN_PATHS.root,
   },
 ];
 
-const DEFAULT_COMPLETED: SuperAdminSetupStepId[] = [
-  "create-org",
-  "provision-users",
-];
+const DEFAULT_COMPLETED: SuperAdminSetupStepId[] = [];
 
 interface StoredSetup {
   completed: SuperAdminSetupStepId[];
@@ -142,6 +151,7 @@ export function setSuperAdminSetupStepComplete(
 ) {
   const current = readStored();
   const completed = new Set(current.completed);
+  const wasComplete = completed.has(stepId);
   if (complete) {
     completed.add(stepId);
   } else {
@@ -153,6 +163,13 @@ export function setSuperAdminSetupStepComplete(
       completed.has(id),
     ),
   });
+  if (complete && !wasComplete && typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent(SUPER_ADMIN_SETUP_STEP_EVENT, {
+        detail: { id: stepId },
+      }),
+    );
+  }
 }
 
 export function setSuperAdminSetupVisible(visible: boolean) {

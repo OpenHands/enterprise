@@ -2,6 +2,9 @@ import { http, delay, HttpResponse } from "msw";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import { DEFAULT_SETTINGS } from "#/services/settings";
 import { Provider, Settings, SettingsValue, MCPConfig } from "#/types/settings";
+import { requestWantsFreshSa } from "./mock-fresh-sa";
+
+export { MOCK_FRESH_SA_COOKIE, requestWantsFreshSa } from "./mock-fresh-sa";
 
 /** Simple recursive merge — objects merge, scalars overwrite. */
 function deepMerge(
@@ -460,6 +463,8 @@ const createInitialMockSettings = (): Settings => {
   return settings;
 };
 
+let freshSaSeedApplied = false;
+
 const MOCK_USER_PREFERENCES: {
   settings: Settings | null;
 } = {
@@ -467,9 +472,33 @@ const MOCK_USER_PREFERENCES: {
   settings: createInitialMockSettings(),
 };
 
+function applyFreshSaSettingsSeed(): Settings {
+  const settings = structuredClone(MOCK_DEFAULT_USER_SETTINGS);
+  settings.provider_tokens_set = {};
+  settings.llm_model = "";
+  settings.llm_api_key = null;
+  settings.llm_api_key_set = false;
+  settings.agent_settings = {
+    ...(settings.agent_settings ?? {}),
+    llm: {
+      ...((settings.agent_settings?.llm as Record<string, unknown>) ?? {}),
+      model: "",
+      api_key: null,
+    },
+  };
+  MOCK_USER_PREFERENCES.settings = settings;
+  freshSaSeedApplied = true;
+  return settings;
+}
+
 export const resetTestHandlersMockSettings = () => {
   MOCK_USER_PREFERENCES.settings = createInitialMockSettings();
+  freshSaSeedApplied = false;
 };
+
+if (import.meta.env.VITE_MOCK_FRESH_SA === "true") {
+  applyFreshSaSettingsSeed();
+}
 
 // Mock model data used by both V0 and V1 endpoints
 const MOCK_MODELS = [
@@ -676,8 +705,19 @@ export const SETTINGS_HANDLERS = [
     return HttpResponse.json(MOCK_CONVERSATION_SETTINGS_SCHEMA);
   }),
 
-  http.get("/api/v1/settings", async () => {
+  http.get("/api/v1/settings", async ({ request }) => {
     await delay();
+    if (
+      requestWantsFreshSa(request) ||
+      import.meta.env.VITE_MOCK_FRESH_SA === "true"
+    ) {
+      if (!freshSaSeedApplied) {
+        applyFreshSaSettingsSeed();
+      }
+    } else {
+      freshSaSeedApplied = false;
+    }
+
     const { settings } = MOCK_USER_PREFERENCES;
 
     if (!settings) return HttpResponse.json(null, { status: 404 });

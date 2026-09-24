@@ -11,6 +11,12 @@ import {
   resetSuperAdminSetupState,
   setSuperAdminSetupVisible,
 } from "#/components/features/super-admin/super-admin-setup";
+import {
+  markSuperAdminNuxAccountDone,
+  markSuperAdminNuxTosDone,
+  markSuperAdminNuxWelcomeDone,
+  resetSuperAdminNux,
+} from "#/utils/org/super-admin-nux";
 
 const mockMe = vi.hoisted(() => ({
   data: { permissions: ["create_organization"] } as {
@@ -77,6 +83,10 @@ function renderSuperAdmin(initialPath = SUPER_ADMIN_PATHS.root) {
       ],
     },
     {
+      path: "/install",
+      Component: () => <div data-testid="install-stub" />,
+    },
+    {
       path: "/settings",
       Component: () => <div data-testid="settings-fallback" />,
     },
@@ -91,12 +101,16 @@ function renderSuperAdmin(initialPath = SUPER_ADMIN_PATHS.root) {
 
 describe("SuperAdminLayout", () => {
   beforeEach(() => {
-    mockMe.data = { permissions: ["create_organization"] };
+    mockMe.data = { permissions: ["manage_super_admins", "create_organization"] };
     mockMe.isLoading = false;
     mockMe.isPending = false;
     mockConfig.data = { feature_flags: { enable_super_admin: true } };
     mockConfig.isLoading = false;
     resetSuperAdminSetupState();
+    resetSuperAdminNux();
+    markSuperAdminNuxWelcomeDone();
+    markSuperAdminNuxTosDone();
+    markSuperAdminNuxAccountDone({ name: "Neo", email: "neo@example.com" });
   });
 
   it("renders the standalone Super Admin shell without Org Settings", () => {

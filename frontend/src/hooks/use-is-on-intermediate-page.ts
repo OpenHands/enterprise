@@ -1,6 +1,12 @@
 import { useLocation } from "react-router";
 
-const INTERMEDIATE_PAGE_PATHS = ["/accept-tos", "/information-request"];
+const INTERMEDIATE_PAGE_PATHS = [
+  "/accept-tos",
+  "/information-request",
+  "/install",
+  "/install/tos",
+  "/install/account",
+];
 
 /**
  * Checks if the current page is an intermediate page.

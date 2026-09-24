@@ -228,6 +228,9 @@ frontend/dist
 .env.test.local
 .env.production.local
 
+# Local research / notes (not for commit)
+.local/
+
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

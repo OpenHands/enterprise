@@ -7,6 +7,7 @@ import {
   UpdateOrganizationMemberParams,
 } from "#/types/org";
 import { isInstanceSuperAdmin } from "#/utils/org/permissions";
+import { requestWantsFreshSa } from "./mock-fresh-sa";
 
 /** Sample GitHub orgs for Git Conversation Routing in mock SaaS mode. */
 const MOCK_USER_GIT_ORGS = {
@@ -324,6 +325,32 @@ export const ORGS_AND_MEMBERS: Record<string, OrganizationMember[]> = {
 const orgs = new Map(INITIAL_MOCK_ORGS.map((org) => [org.id, org]));
 const DEFAULT_CURRENT_ORG_ID = MOCK_TEAM_ORG_ACME.id;
 let mockCurrentOrgId = DEFAULT_CURRENT_ORG_ID;
+let freshSaOrgsApplied = false;
+
+/** First-install Super Admin walkthrough with a single team org.
+ * Keeps a personal workspace so /me and org selection still work.
+ */
+export function applyFreshSaOrgSeed() {
+  orgs.clear();
+  Object.keys(ORGS_AND_MEMBERS).forEach((orgId) => {
+    delete ORGS_AND_MEMBERS[orgId];
+  });
+  mockGitClaimsByOrgId.clear();
+  orgs.set(MOCK_PERSONAL_ORG.id, { ...MOCK_PERSONAL_ORG });
+  orgs.set(MOCK_TEAM_ORG_ACME.id, { ...MOCK_TEAM_ORG_ACME });
+  ORGS_AND_MEMBERS[MOCK_PERSONAL_ORG.id] = [
+    currentUserMembership(MOCK_PERSONAL_ORG.id, "owner"),
+  ];
+  ORGS_AND_MEMBERS[MOCK_TEAM_ORG_ACME.id] = [
+    currentUserMembership(MOCK_TEAM_ORG_ACME.id, "owner"),
+  ];
+  mockCurrentOrgId = MOCK_TEAM_ORG_ACME.id;
+  freshSaOrgsApplied = true;
+}
+
+if (import.meta.env.VITE_MOCK_FRESH_SA === "true") {
+  applyFreshSaOrgSeed();
+}
 
 type MockOrgLlmProfile = {
   name: string;
@@ -385,6 +412,7 @@ export const resetOrgMockData = () => {
       delete ORGS_AND_MEMBERS[orgId];
     }
   });
+  freshSaOrgsApplied = false;
 };
 
 export const resetOrgsAndMembersMockData = () => {
@@ -396,6 +424,21 @@ export const resetOrgsAndMembersMockData = () => {
     }));
   });
 };
+
+function ensureFreshSaOrgs(request: Request) {
+  if (
+    requestWantsFreshSa(request) ||
+    import.meta.env.VITE_MOCK_FRESH_SA === "true"
+  ) {
+    if (!freshSaOrgsApplied) {
+      applyFreshSaOrgSeed();
+    }
+  } else if (freshSaOrgsApplied) {
+    resetOrgMockData();
+    resetOrgsAndMembersMockData();
+    freshSaOrgsApplied = false;
+  }
+}
 
 export const ORG_HANDLERS = [
   http.get("/api/v1/users/git-organizations", () =>
@@ -546,12 +589,22 @@ export const ORG_HANDLERS = [
   }),
 
   http.get("/api/organizations/:orgId/members/count", ({ params, request }) => {
+    ensureFreshSaOrgs(request);
     const orgId = params.orgId?.toString();
     if (!orgId || !ORGS_AND_MEMBERS[orgId]) {
+      // Fresh install / unknown org: no teammates yet
+      if (requestWantsFreshSa(request)) {
+        return HttpResponse.json(0);
+      }
       return HttpResponse.json(
         { error: "Organization not found" },
         { status: 404 },
       );
+    }
+
+    // Fresh Super Admin walkthrough: act as the only member.
+    if (requestWantsFreshSa(request)) {
+      return HttpResponse.json(1);
     }
 
     // Parse query parameters
@@ -570,14 +623,15 @@ export const ORG_HANDLERS = [
     return HttpResponse.json(members.length);
   }),
 
-  http.get("/api/organizations", () => {
+  http.get("/api/organizations", ({ request }) => {
+    ensureFreshSaOrgs(request);
     const organizations = Array.from(orgs.values());
     // Default to Acme (owner) so admin settings stay visible. Switch to Beta
     // LLC to exercise the non-admin member experience; that choice persists
     // until resetOrgMockData().
     return HttpResponse.json({
       items: organizations,
-      current_org_id: mockCurrentOrgId,
+      current_org_id: mockCurrentOrgId || null,
     });
   }),
 
@@ -616,6 +670,8 @@ export const ORG_HANDLERS = [
     };
     orgs.set(orgId, org);
     ORGS_AND_MEMBERS[orgId] = [currentUserMembership(orgId, "owner")];
+    // Switch into the new org so org-defaults / setup tour can continue.
+    mockCurrentOrgId = orgId;
     return HttpResponse.json(org, { status: 201 });
   }),
 

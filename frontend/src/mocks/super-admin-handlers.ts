@@ -1,4 +1,5 @@
 import { http, HttpResponse } from "msw";
+import { requestWantsFreshSa } from "./mock-fresh-sa";
 
 const MOCK_SUPER_ADMINS = [
   { user_id: "99", email: "me@acme.org" },
@@ -90,11 +91,72 @@ const MOCK_ADMIN_USERS: MockAdminUser[] = [
 ];
 
 let adminUsers = [...MOCK_ADMIN_USERS];
+let freshSaAdminApplied = false;
+
+const FRESH_SA_ADMIN_ORG = {
+  id: "2",
+  name: "Acme Corp",
+  contact_email: "me@acme.org",
+  contact_name: "openhands",
+  member_count: 1,
+  is_personal: false,
+  status: "active" as const,
+};
+
+const FRESH_SA_ADMIN_USER: MockAdminUser = {
+  user_id: "99",
+  email: "me@acme.org",
+  name: "openhands",
+  status: "active",
+  memberships: [
+    {
+      org_id: "2",
+      org_name: "Acme Corp",
+      role: "owner",
+      status: "active",
+    },
+  ],
+};
+
+function applyFreshSaAdminSeed() {
+  adminOrgs = [{ ...FRESH_SA_ADMIN_ORG }];
+  adminUsers = [
+    {
+      ...FRESH_SA_ADMIN_USER,
+      memberships: FRESH_SA_ADMIN_USER.memberships.map((membership) => ({
+        ...membership,
+      })),
+    },
+  ];
+  superAdmins = [{ user_id: "99", email: "me@acme.org" }];
+  freshSaAdminApplied = true;
+}
+
+function ensureFreshSaAdminState(request: Request) {
+  if (
+    requestWantsFreshSa(request) ||
+    import.meta.env.VITE_MOCK_FRESH_SA === "true"
+  ) {
+    if (!freshSaAdminApplied) {
+      applyFreshSaAdminSeed();
+    }
+  } else if (freshSaAdminApplied) {
+    superAdmins = [...MOCK_SUPER_ADMINS];
+    adminOrgs = [...MOCK_ADMIN_ORGS];
+    adminUsers = [...MOCK_ADMIN_USERS];
+    freshSaAdminApplied = false;
+  }
+}
+
+if (import.meta.env.VITE_MOCK_FRESH_SA === "true") {
+  applyFreshSaAdminSeed();
+}
 
 export const resetSuperAdminMockState = () => {
   superAdmins = [...MOCK_SUPER_ADMINS];
   adminOrgs = [...MOCK_ADMIN_ORGS];
   adminUsers = [...MOCK_ADMIN_USERS];
+  freshSaAdminApplied = false;
 };
 
 export const SUPER_ADMIN_HANDLERS = [
@@ -149,9 +211,10 @@ export const SUPER_ADMIN_HANDLERS = [
     return HttpResponse.json(target);
   }),
 
-  http.get("/api/admin/organizations", () =>
-    HttpResponse.json({ organizations: adminOrgs }),
-  ),
+  http.get("/api/admin/organizations", ({ request }) => {
+    ensureFreshSaAdminState(request);
+    return HttpResponse.json({ organizations: adminOrgs });
+  }),
 
   http.patch("/api/admin/organizations/:orgId", async ({ params, request }) => {
     const { orgId } = params;
@@ -200,7 +263,10 @@ export const SUPER_ADMIN_HANDLERS = [
     });
   }),
 
-  http.get("/api/admin/users", () => HttpResponse.json({ users: adminUsers })),
+  http.get("/api/admin/users", ({ request }) => {
+    ensureFreshSaAdminState(request);
+    return HttpResponse.json({ users: adminUsers });
+  }),
 
   http.patch("/api/admin/users/:userId", async ({ params, request }) => {
     const { userId } = params;
