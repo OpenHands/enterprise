@@ -162,6 +162,7 @@ if AZURE_DEVOPS_CLIENT_ID:
 
 base_app.include_router(api_keys_router)  # Add routes for API key management
 base_app.include_router(service_router)  # Add routes for internal service API
+base_app.include_router(invitation_router)  # Static member paths precede /{user_id}.
 base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
 base_app.include_router(
@@ -194,7 +195,6 @@ base_app.include_router(
 # This replaces the OSS endpoint with a SAAS version that adds org_id, org_name, role, permissions
 override_users_me_endpoint(base_app)
 
-base_app.include_router(invitation_router)  # Add routes for org invitation management
 base_app.include_router(invitation_accept_router)  # Add route for accepting invitations
 add_github_proxy_routes(base_app)
 base_app.include_router(slack_router)

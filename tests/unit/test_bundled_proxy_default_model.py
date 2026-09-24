@@ -7,7 +7,7 @@ that public name so the picker can show and select them, while keeping the
 bundled proxy base_url so requests still reach it.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -22,6 +22,7 @@ from server.routes import org_models
 from server.routes.org_models import OrgDefaultsSettingsResponse
 from server.verified_models.default_profile import (
     DEFAULT_LLM_PROFILE_NAME,
+    get_openhands_default_model_name,
     materialize_default_llm_profile,
 )
 from server.verified_models.litellm_proxy_model_router import (
@@ -204,12 +205,80 @@ class TestStoredProfiles:
             == 'openhands/claude-sonnet-4-5-20250929'
         )
 
-    def test_default_pointer_without_db_default_is_still_dropped(self, bundled_proxy):
+    @pytest.mark.parametrize('db_default', [None, 'cloud-only-model'])
+    @pytest.mark.parametrize('stored_base_url', [None, OPENHANDS_LLM_PROXY_BASE_URL])
+    def test_cloud_default_uses_deployment_route(
+        self, bundled_proxy, db_default, stored_base_url
+    ):
         profiles = LLMProfiles()
-        profiles.save(DEFAULT_LLM_PROFILE_NAME, LLM(model='openhands/stale'))
+        profiles.save(
+            DEFAULT_LLM_PROFILE_NAME,
+            LLM(model='openhands/stale', base_url=stored_base_url, temperature=0.3),
+        )
         profiles.active = DEFAULT_LLM_PROFILE_NAME
+        materialize_default_llm_profile(profiles, db_default)
+        default = profiles.require(DEFAULT_LLM_PROFILE_NAME)
+        assert default.model == 'openhands/claude-sonnet-4-5-20250929'
+        assert default.base_url == PROXY_URL
+        assert default.temperature == 0.3
+        assert profiles.active == DEFAULT_LLM_PROFILE_NAME
+
+    async def test_deployment_default_does_not_query_cloud_catalogue(
+        self, bundled_proxy
+    ):
+        session = AsyncMock()
+        assert await get_openhands_default_model_name(session) is None
+        session.execute.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        'llm',
+        [
+            LLM(model='openhands/claude-opus-4-7', base_url=PROXY_URL),
+            LLM(model='openai/custom', base_url='https://byok.example.com'),
+            LLM(model='openhands/custom', base_url='https://byok.example.com'),
+            LLM(model='openhands/custom', provider_connection_id='custom'),
+        ],
+    )
+    def test_concrete_default_survives_cloud_database_default(self, bundled_proxy, llm):
+        profiles = LLMProfiles(profiles={'Default': llm}, active='Default')
+        before = profiles.model_dump()
+        materialize_default_llm_profile(profiles, 'cloud-only-model')
+        assert profiles.model_dump() == before
+
+    async def test_missing_default_is_selectable_without_changing_active(
+        self, bundled_proxy
+    ):
+        profiles = LLMProfiles(
+            profiles={'Pinned': LLM(model='openai/custom')}, active='Pinned'
+        )
+        materialize_default_llm_profile(profiles, 'cloud-only-model')
+        assert profiles.require('Default').model in await _catalogue()
+        assert profiles.require('Default').base_url == PROXY_URL
+        assert profiles.active == 'Pinned'
+
+    def test_direct_default_keeps_endpoint_and_secret(self, bundled_proxy, monkeypatch):
+        monkeypatch.setattr(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', 'direct')
+        monkeypatch.setattr(constants, 'OPENHANDS_DEFAULT_LLM_MODEL', 'openai/custom')
+        monkeypatch.setattr(
+            constants, 'OPENHANDS_DEFAULT_LLM_BASE_URL', 'https://llm.example.com/v1'
+        )
+        monkeypatch.setattr(
+            constants, 'OPENHANDS_DEFAULT_LLM_API_KEY', 'test-direct-key'
+        )
+        profiles = LLMProfiles()
+        materialize_default_llm_profile(profiles, 'cloud-only-model')
+        default = profiles.require('Default')
+        assert default.model == 'openai/custom'
+        assert default.base_url == 'https://llm.example.com/v1'
+        assert default.api_key.get_secret_value() == 'test-direct-key'
+        assert 'test-direct-key' not in default.model_dump_json()
+
+    def test_cloud_default_without_db_default_is_dropped(self, saas_proxy):
+        profiles = LLMProfiles(
+            profiles={'Default': LLM(model='openhands/stale')}, active='Default'
+        )
         materialize_default_llm_profile(profiles, None)
-        assert profiles.get(DEFAULT_LLM_PROFILE_NAME) is None
+        assert profiles.get('Default') is None
         assert profiles.active is None
 
     def test_org_defaults_response_shows_openhands_name(self, bundled_proxy):
