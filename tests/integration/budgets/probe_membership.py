@@ -41,6 +41,7 @@ def provisioning_services(async_session_maker, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('org_enabled', [True, False])
 @pytest.mark.parametrize(
     'mode',
     [
@@ -56,9 +57,12 @@ async def test_provisioning_preserves_member_policy_before_first_request(
     budget_adapter: BudgetTestAdapter,
     provisioning_services,
     mode: str,
+    org_enabled: bool,
 ) -> None:
     adapter = budget_adapter
     await adapter.configure_budget(5, 1)
+    if not org_enabled:
+        await adapter.disable_budget()
     existing_member = mode.endswith('key-refresh')
     user_id = adapter.user_ids[0] if existing_member else uuid4()
     if mode == 'override-key-refresh':
@@ -133,7 +137,7 @@ async def test_provisioning_preserves_member_policy_before_first_request(
         member = native['members'][str(user_id)]
         if mode == 'disabled-new-user':
             assert member['uses_shared_budget'] is True
-            assert member['max_budget'] == 5
+            assert member['max_budget'] == (5 if org_enabled else None)
             assert (await adapter.send_request(user_id)).status_code == 200
             return
         assert member['max_budget'] == 1
