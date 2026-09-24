@@ -576,6 +576,12 @@ class SaasSettingsStore(SettingsStore):
                 merged_llm = dict(merged_agent_settings.get('llm') or {})
                 merged_llm['model'] = default_llm.model
                 merged_llm['base_url'] = default_llm.base_url
+                if default_llm.api_key is not None:
+                    merged_llm['api_key'] = (
+                        default_llm.api_key.get_secret_value()
+                        if isinstance(default_llm.api_key, SecretStr)
+                        else default_llm.api_key
+                    )
                 merged_agent_settings['llm'] = merged_llm
                 kwargs['agent_settings'] = merged_agent_settings
 
