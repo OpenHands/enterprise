@@ -28,11 +28,19 @@ testing -- rather than hand-rolled SQL.
 Prerequisites
 -------------
 * A migrated local PostgreSQL (``make local-db``).
-* ``JWT_SECRET`` set, so the encrypted ``_llm_api_key`` column round-trips.
-* The target user's id exported as a private env var, e.g.::
+* The app's encryption key available. The script resolves this exactly as
+  the enterprise config does: ``get_global_config()`` -> ``JwtServiceInjector``
+  -> ``get_default_encryption_keys(persistence_dir)``, which reads
+  ``.openhands-state/.keys`` (or whatever ``FILE_STORE_PATH`` / ``OH_PERSISTENCE_DIR``
+  points at). You do **not** need to set ``JWT_SECRET`` manually -- the same
+  ``.keys`` file your ``launch.json``-launched server uses is picked up here.
+* ``.env`` populated (``cp .env.template .env && edit``). The script calls
+  ``load_dotenv()`` at startup, mirroring ``saas_server.py``, so it picks up
+  ``DB_*``, ``DEV_USER_ID``, etc. automatically -- no manual ``source`` needed.
+* The target user's id in ``DEV_USER_ID`` (see ``.env.template``), e.g.::
 
-      read -rs DEV_USER_ID   # paste, press enter (never echoed)
-      export DEV_USER_ID
+      # in .env (gitignored):
+      DEV_USER_ID=<paste-your-keycloak-sub>
 
 Usage
 -----
@@ -53,9 +61,8 @@ Usage
       # revoke superadmin (refuses if it would remove the last one)
       uv run python scripts/dev_user_roles.py no-superadmin
 
-      # point at a different org / env var name
-      uv run python scripts/dev_user_roles.py status \\
-          --org-name "My Other Org" --user-id-env MY_DEV_USER_ID
+      # point at a different org
+      uv run python scripts/dev_user_roles.py status --org-name "My Other Org"
 
 Notes
 -----
@@ -82,6 +89,7 @@ from typing import Optional
 # the repo root being on PYTHONPATH.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from dotenv import load_dotenv
 from sqlalchemy import select
 
 from openhands.app_server.config import get_global_config
@@ -106,12 +114,17 @@ SUPER_ADMIN_ROLE_NAME = 'admin'  # role row referenced by user.role_id
 
 
 def _ensure_config_bootstrapped() -> None:
-    """Touch ``get_global_config()`` so DB/JWT injectors initialise.
+    """Load ``.env`` and touch ``get_global_config()`` to init DB/JWT injectors.
 
-    The store layer lazily resolves the global config on first use; calling
-    it up front surfaces configuration errors (missing DB_HOST, no
-    JWT_SECRET, ...) with a clear traceback before any DB work starts.
+    ``load_dotenv()`` mirrors ``saas_server.py``: it picks up ``DB_*``,
+    ``DEV_USER_ID``, etc. from ``.env`` automatically when run from a
+    terminal (VS Code's launch.json already loads ``envFile``, but a bare
+    ``uv run`` invocation does not). The store layer lazily resolves the
+    global config on first use; calling it up front surfaces configuration
+    errors (missing DB_HOST, no encryption key, ...) with a clear
+    traceback before any DB work starts.
     """
+    load_dotenv()
     cfg = get_global_config()
     db = cfg.db_session
     if not (db.host or os.getenv('DB_HOST')):
@@ -329,7 +342,9 @@ def _resolve_user_id(env_var: str) -> uuid.UUID:
     raw = os.getenv(env_var, '').strip()
     if not raw:
         print(
-            f'ERROR: target user id not provided. Export it as a private env var:\n'
+            f'ERROR: target user id not provided. Add it to your .env:\n'
+            f'  {env_var}=<your-keycloak-sub>   # in .env (gitignored)\n'
+            f'or export it in this shell:\n'
             f'  read -rs {env_var}  # paste the Keycloak sub, press enter\n'
             f'  export {env_var}',
             file=sys.stderr,
