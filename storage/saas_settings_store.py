@@ -35,6 +35,7 @@ from server.verified_models.default_profile import (
     DEFAULT_LLM_PROFILE_NAME,
     get_openhands_default_model_name,
     materialize_default_llm_payload,
+    uses_deployment_default_profile,
 )
 from storage.agent_profile_resolution import (
     OrgLLMProfileLoader,
@@ -571,6 +572,9 @@ class SaasSettingsStore(SettingsStore):
         persist_seeded_default = seeded_default and openhands_default_model_name is None
 
         live_llm_profiles: LLMProfiles | None = None
+        deployment_default_materialized = uses_deployment_default_profile(
+            LLMProfiles.model_validate(kwargs.get('llm_profiles') or {})
+        )
         profiles_payload = materialize_default_llm_payload(
             kwargs.get('llm_profiles'), openhands_default_model_name
         )
@@ -582,6 +586,12 @@ class SaasSettingsStore(SettingsStore):
                 merged_llm = dict(merged_agent_settings.get('llm') or {})
                 merged_llm['model'] = default_llm.model
                 merged_llm['base_url'] = default_llm.base_url
+                if deployment_default_materialized and default_llm.api_key is not None:
+                    merged_llm['api_key'] = (
+                        default_llm.api_key.get_secret_value()
+                        if isinstance(default_llm.api_key, SecretStr)
+                        else default_llm.api_key
+                    )
                 merged_agent_settings['llm'] = merged_llm
                 kwargs['agent_settings'] = merged_agent_settings
 
