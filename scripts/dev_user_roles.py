@@ -205,7 +205,10 @@ async def ensure_setup(user_id: uuid.UUID, shared_org_name: str) -> SetupResult:
             await session.flush()
 
         # --- user row --------------------------------------------------------
-        user = await _get_user(user_id)
+        # Look up inline (NOT via _get_user) so the instance stays bound to
+        # this session -- a detached instance from another session cannot be
+        # refresh()-ed or added here.
+        user = await session.get(User, user_id)
         if user is None:
             user = User(
                 id=user_id,
