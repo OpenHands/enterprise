@@ -84,9 +84,7 @@ class _Bind:
 def _run(monkeypatch, org_rows, verified_rows=(), web_host='openhands.example.com'):
     bind = _Bind(org_rows, verified_rows)
     monkeypatch.setenv('WEB_HOST', web_host)
-    monkeypatch.setattr(
-        migration_166, 'op', SimpleNamespace(get_bind=lambda: bind)
-    )
+    monkeypatch.setattr(migration_166, 'op', SimpleNamespace(get_bind=lambda: bind))
     migration_166.upgrade()
     return bind
 
@@ -125,9 +123,7 @@ def test_classify_strip_when_bogus_default_and_no_legacy():
 
 
 def test_classify_review_when_bogus_default_and_managed_legacy():
-    assert (
-        migration_166._classify(_profiles(DEFAULT_MODEL), DEFAULT_MODEL) == 'review'
-    )
+    assert migration_166._classify(_profiles(DEFAULT_MODEL), DEFAULT_MODEL) == 'review'
 
 
 # ── WEB_HOST gate ────────────────────────────────────────────────────────────
@@ -235,9 +231,7 @@ def test_upgrade_skips_noop_orgs(monkeypatch):
 
 
 def test_upgrade_skips_org_with_no_profiles(monkeypatch):
-    org_rows = [
-        {'id': uuid4(), 'agent_settings': {}, 'llm_profiles': None}
-    ]
+    org_rows = [{'id': uuid4(), 'agent_settings': {}, 'llm_profiles': None}]
     bind = _run(monkeypatch, org_rows)
     assert _org_writes(bind) == []
 
