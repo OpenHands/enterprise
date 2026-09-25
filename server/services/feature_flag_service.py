@@ -68,6 +68,12 @@ class _EnvFlagDefault:
 # keys default to False when missing from the database.
 _ENV_FLAG_DEFAULTS: dict[str, _EnvFlagDefault] = {
     'ENABLE_BILLING': _EnvFlagDefault('ENABLE_BILLING', False),
+    # Deployment-wide switch for the bundled/external LiteLLM gateway.
+    # Defaults to True so existing installs (which have always talked to
+    # LiteLLM) keep working unchanged after this flag is introduced. Set to
+    # False to run OHE without ever contacting LiteLLM (see
+    # ``storage.lite_llm_manager.LiteLlmManager._litellm_disabled``).
+    'ENABLE_LITELLM': _EnvFlagDefault('ENABLE_LITELLM', True),
 }
 
 

@@ -1219,6 +1219,27 @@ async def get_org_members_financial(
         )
 
 
+async def _validate_litellm_enabled_for_budgets() -> None:
+    """Budgets are enforced through the LiteLLM gateway, so the feature is
+    unavailable whenever ``ENABLE_LITELLM`` is off.
+
+    Mirrors ``billing.validate_billing_enabled``'s default-flag pattern (DB
+    row first, then the registered env-var default, both via the
+    fault-tolerant ``resolve``).
+    """
+    from storage.lite_llm_manager import is_litellm_enabled
+
+    if not await is_litellm_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                'Budgets require the LiteLLM integration, which is disabled '
+                'in this environment. Enable the ENABLE_LITELLM feature flag '
+                '(or the ENABLE_LITELLM environment variable) to use budgets.'
+            ),
+        )
+
+
 def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
     settings = state['settings']
     thresholds = state['thresholds']
@@ -1290,6 +1311,7 @@ async def get_org_budget_settings(
     users_status: str | None = Query(None),
     budget_service: OrgBudgetService = org_budget_service_dependency,
 ) -> OrgBudgetSettingsResponse:
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Getting org budget settings',
         extra={'org_id': str(org_id), 'user_id': user_id},
@@ -1319,6 +1341,7 @@ async def get_my_org_budget(
     The user is taken from the session only, so a caller can never read
     another member's budget.
     """
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Getting own org budget',
         extra={'org_id': str(org_id), 'user_id': user_id},
@@ -1348,6 +1371,7 @@ async def update_org_budget_settings(
 
     A 503 settings body means the edit was saved but enforcement is unverified.
     """
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Updating org budget settings',
         extra={'org_id': str(org_id), 'user_id': user_id},
@@ -1384,6 +1408,7 @@ async def upsert_org_budget_override(
 
     A 503 user body means the edit was saved but enforcement is unverified.
     """
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Updating org budget override',
         extra={
@@ -1428,6 +1453,7 @@ async def delete_org_budget_override(
 
     An empty 503 means deletion was saved but enforcement is unverified.
     """
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Deleting org budget override',
         extra={

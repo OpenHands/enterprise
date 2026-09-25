@@ -45,6 +45,15 @@ class WebClientFeatureFlags(BaseModel):
     # billing/credits. Mirrors the ENABLE_BYOR_EXPORT env var so the frontend can
     # distinguish "export disabled on this deployment" from "buy credits to enable".
     enable_byor_export: bool = False
+    # Deployment-wide switch for the bundled/external LiteLLM gateway.
+    # Defaults to True for backward compatibility with existing installs.
+    # When False, the frontend must hide every feature that depends on
+    # LiteLLM (Budgets, managed/OpenHands models, managed LLM key
+    # create/refresh) and show a "Please enable LiteLLM to use this
+    # feature" placeholder instead. Mirrors the DB-backed ENABLE_LITELLM
+    # feature flag; re-resolved against the DB on every request the same
+    # way ``enable_billing`` is (see ``get_web_client_config``).
+    enable_litellm: bool = True
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')

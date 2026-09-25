@@ -10,7 +10,11 @@ from pydantic import SecretStr
 from sqlalchemy import select, text
 from sqlalchemy.orm import joinedload
 
-from openhands.app_server.settings.llm_profiles import LLMProfiles, resolve_profile_llm
+from openhands.app_server.settings.llm_profiles import (
+    LLMProfiles,
+    has_real_api_key,
+    resolve_profile_llm,
+)
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
@@ -38,7 +42,11 @@ from storage.agent_profile_resolution import (
     load_llm_profiles,
 )
 from storage.database import a_session_maker
-from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
+from storage.lite_llm_manager import (
+    LiteLlmManager,
+    get_openhands_cloud_key_alias,
+    is_litellm_enabled,
+)
 from storage.mcp_config import (
     coerce_persisted_mcp_config,
     serialize_mcp_config,
@@ -957,17 +965,49 @@ class SaasSettingsStore(SettingsStore):
         First checks if an existing key exists for the user and verifies it
         is valid in LiteLLM. If valid, reuses it. Otherwise, generates a new key.
         """
-        llm_api_key = item.agent_settings.llm.api_key or fallback_api_key
+        if not await is_litellm_enabled():
+            # LiteLLM is disabled deployment-wide: there is no gateway to
+            # generate, verify, or rotate a key against. A managed
+            # (openhands/* or LiteLLM-proxy) model is virtually every
+            # existing member's default, so without this guard *any*
+            # settings save would otherwise unconditionally try to mint a
+            # key and raise ``ValueError`` out of
+            # ``LiteLlmManager.generate_key`` -- caught by
+            # ``store_settings``'s generic exception handler as an opaque
+            # 500. Leave the existing key field untouched (whatever it
+            # already decrypted to, including an empty key) rather than
+            # attempting any LiteLLM call.
+            logger.info(
+                'saas_settings_store:ensure_api_key:skipped_litellm_disabled',
+                extra={'user_id': self.user_id, 'org_id': org_id},
+            )
+            return
+
+        # A ``SecretStr`` can wrap a Python ``None`` (e.g. a pre-existing
+        # member row created before an LLM key was ever assigned, such as a
+        # user provisioned while ENABLE_LITELLM was off). ``bool()``/``len()``
+        # on that value raises inside pydantic rather than reporting "empty",
+        # so route both the settings value and the fallback through
+        # ``has_real_api_key`` -- the same "is this actually set" check
+        # ``llm_api_key_is_set``/``llm_profiles`` already use -- instead of a
+        # bare truthiness check.
+        item_api_key = (
+            item.agent_settings.llm.api_key
+            if has_real_api_key(item.agent_settings.llm.api_key)
+            else None
+        )
+        llm_api_key = item_api_key or (
+            fallback_api_key if has_real_api_key(fallback_api_key) else None
+        )
         logger.info(
             'saas_settings_store:ensure_api_key:evaluate',
             extra={
                 'user_id': self.user_id,
                 'org_id': org_id,
                 'openhands_type': openhands_type,
-                'has_api_key': bool(llm_api_key),
-                'used_fallback_api_key': bool(
-                    fallback_api_key and not item.agent_settings.llm.api_key
-                ),
+                'has_api_key': llm_api_key is not None,
+                'used_fallback_api_key': item_api_key is None
+                and llm_api_key is not None,
             },
         )
 

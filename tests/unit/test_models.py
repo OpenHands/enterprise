@@ -71,6 +71,51 @@ def test_org_member_model_persist_and_query(session_maker):
         assert queried_org_member.llm_api_key.get_secret_value() == 'test-api-key'
 
 
+def test_org_member_llm_api_key_none_round_trips_as_empty_not_null(session_maker):
+    """An ``OrgMember`` created with ``llm_api_key=None`` (e.g. a new member
+    provisioned while ``ENABLE_LITELLM`` is off) must round-trip as an empty
+    key, not a Python ``None`` wrapped in ``SecretStr``.
+
+    ``_llm_api_key`` is a NOT NULL column, so passing None used to "succeed"
+    at write time (JWE happily encrypts a null payload) but produced a
+    ``SecretStr(None)`` on read, which raises ``TypeError`` from pydantic's
+    ``SecretStr.__len__``/``__bool__`` the moment any caller does a plain
+    ``bool(...)``/``len(...)`` check on it (regression: enterprise#474).
+    """
+    with session_maker() as session:
+        org = Org(name='test_org_none_key')
+        session.add(org)
+        session.flush()
+
+        user = User(id=uuid4(), current_org_id=org.id)
+        session.add(user)
+        role = Role(name='member', rank=1)
+        session.add(role)
+        session.flush()
+
+        org_member = OrgMember(
+            org_id=org.id,
+            user_id=user.id,
+            role_id=role.id,
+            llm_api_key=None,
+            status='active',
+        )
+        session.add(org_member)
+        session.commit()
+
+        queried_org_member = (
+            session.query(OrgMember)
+            .filter(OrgMember.org_id == org.id, OrgMember.user_id == user.id)
+            .first()
+        )
+        assert queried_org_member is not None
+        key = queried_org_member.llm_api_key
+        # Must not raise -- this is exactly what blew up in production.
+        assert bool(key) is False
+        assert len(key) == 0
+        assert key.get_secret_value() == ''
+
+
 def test_user_model_git_user_fields(session_maker):
     """Test that git_user_name and git_user_email columns exist and work correctly."""
     with session_maker() as session:

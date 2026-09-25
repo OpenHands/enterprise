@@ -417,6 +417,154 @@ class TestIsBillingEnabled:
             assert await module._is_billing_enabled() is False
 
 
+class TestIsLitellmEnabled:
+    """Runtime resolution of the ENABLE_LITELLM deployment flag.
+
+    Mirrors ``TestIsBillingEnabled``: delegates to the feature flag
+    service's fault-tolerant ``resolve``; only an import failure falls back
+    to the import-time env snapshot (``ENABLE_LITELLM`` module constant,
+    which defaults to True).
+    """
+
+    @pytest.mark.asyncio
+    async def test_passes_through_resolve_true(self):
+        from storage import lite_llm_manager as module
+
+        with patch(
+            'server.services.feature_flag_service.feature_flag_service.resolve',
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            assert await module.is_litellm_enabled() is True
+
+    @pytest.mark.asyncio
+    async def test_passes_through_resolve_false(self):
+        from storage import lite_llm_manager as module
+
+        with patch(
+            'server.services.feature_flag_service.feature_flag_service.resolve',
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            assert await module.is_litellm_enabled() is False
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_env_snapshot_on_import_error(self):
+        from storage import lite_llm_manager as module
+
+        with (
+            patch(
+                'builtins.__import__',
+                side_effect=ImportError('no enterprise service'),
+            ),
+            patch.object(module, 'ENABLE_LITELLM', True),
+        ):
+            assert await module.is_litellm_enabled() is True
+
+    @pytest.mark.asyncio
+    async def test_env_snapshot_false_on_import_error(self):
+        from storage import lite_llm_manager as module
+
+        with (
+            patch(
+                'builtins.__import__',
+                side_effect=ImportError('no enterprise service'),
+            ),
+            patch.object(module, 'ENABLE_LITELLM', False),
+        ):
+            assert await module.is_litellm_enabled() is False
+
+
+class TestLitellmDisabledNeverContactsGateway:
+    """With ENABLE_LITELLM off, LiteLlmManager must never hit the network.
+
+    Each case patches ``is_litellm_enabled`` to False and asserts both the
+    method's safe-fallback return value and that no ``httpx.AsyncClient``
+    was constructed (the sole means these methods reach the network).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _disable_litellm(self):
+        with patch(
+            'storage.lite_llm_manager.is_litellm_enabled',
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            yield
+
+    @pytest.fixture
+    def _no_network(self):
+        with patch('storage.lite_llm_manager.httpx.AsyncClient') as mock_client:
+            yield mock_client
+
+    @pytest.mark.asyncio
+    async def test_create_entries_provisions_user_without_litellm(self, _no_network):
+        """New-user provisioning must succeed without a LiteLLM user/team/key."""
+        settings = Settings(language='en')
+        result = await LiteLlmManager.create_entries(
+            'test-org-id', 'test-user-id', settings, create_user=True
+        )
+        assert result is settings
+        _no_network.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_verify_key_is_inconclusive_not_a_failure(self, _no_network):
+        assert await LiteLlmManager.verify_key('some-key', 'test-user-id') is True
+        _no_network.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_user_team_info_returns_none(self, _no_network):
+        assert (
+            await LiteLlmManager.get_user_team_info('test-user-id', 'test-org-id')
+            is None
+        )
+        _no_network.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_team_members_financial_data_returns_empty(self, _no_network):
+        assert await LiteLlmManager.get_team_members_financial_data('test-org-id') == {}
+        _no_network.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_remove_user_from_team_is_a_noop(self, _no_network):
+        await LiteLlmManager.remove_user_from_team('test-user-id', 'test-org-id')
+        _no_network.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_team_is_a_noop(self, _no_network):
+        await LiteLlmManager.delete_team('test-org-id')
+        _no_network.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ensure_free_team_models_returns_false(self, _no_network):
+        assert await LiteLlmManager.ensure_free_team_models('test-org-id') is False
+        _no_network.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_free_model_allowlists_is_a_noop(self, _no_network):
+        await LiteLlmManager.sync_free_model_allowlists(db_session=MagicMock())
+        _no_network.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'call',
+        [
+            lambda: LiteLlmManager.set_team_blocked('test-org-id', True),
+            lambda: LiteLlmManager.block_team('test-org-id'),
+        ],
+        ids=['set_team_blocked', 'block_team'],
+    )
+    async def test_team_block_methods_are_noops_when_configured(
+        self, _no_network, call
+    ):
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://litellm'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'sk-test'),
+        ):
+            assert await call() is None
+        _no_network.assert_not_called()
+
+
 class TestLiteLlmManager:
     """Test cases for LiteLlmManager class."""
 
