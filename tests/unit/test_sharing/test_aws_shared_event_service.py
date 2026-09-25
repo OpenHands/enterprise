@@ -482,6 +482,50 @@ class TestAwsSharedEventServiceInjector:
             # Verify SQLSharedConversationInfoService was created with db_session
             mock_sql_service_class.assert_called_once_with(db_session=mock_db_session)
 
+    async def test_injector_assigns_resolved_viewer_to_shared_conversation_info_service(
+        self,
+    ):
+        """Test that the injector hands the resolved viewer to the shared conversation info service."""
+        # Arrange
+        viewer_id = uuid4()
+        mock_state = MagicMock()
+        mock_request = MagicMock()
+        mock_db_session = AsyncMock()
+
+        injector = AwsSharedEventServiceInjector()
+        injector.bucket_name = 'test-bucket'
+
+        mock_db_context = AsyncMock()
+        mock_db_context.__aenter__.return_value = mock_db_session
+        mock_db_context.__aexit__.return_value = None
+        with (
+            patch(
+                'server.sharing.aws_shared_event_service._get_shared_s3_client',
+                return_value=MagicMock(),
+            ),
+            patch(
+                'openhands.app_server.config.get_db_session',
+                return_value=mock_db_context,
+            ),
+            patch(
+                'server.sharing.aws_shared_event_service.SQLSharedConversationInfoService'
+            ) as mock_sql_service_class,
+            patch(
+                'server.sharing.aws_shared_event_service.resolve_viewer_user_id',
+                AsyncMock(return_value=viewer_id),
+            ) as mock_resolve,
+        ):
+            mock_sql_service = MagicMock()
+            mock_sql_service_class.return_value = mock_sql_service
+
+            # Act
+            async for _service in injector.inject(mock_state, mock_request):
+                pass
+
+        # Assert
+        mock_resolve.assert_awaited_once_with(mock_state, mock_request)
+        assert mock_sql_service.viewer_user_id == viewer_id
+
     async def test_injector_works_without_request(self):
         """Test that the injector works when request is None."""
         mock_state = MagicMock()

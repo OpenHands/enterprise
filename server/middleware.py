@@ -188,7 +188,8 @@ class SetAuthCookieMiddleware:
         if path in ignore_paths:
             return False
 
-        # Allow public access to shared conversations and events
+        # Shared conversations and events: authentication is optional there
+        # (see server/sharing), so the middleware never blocks them.
         if path.startswith('/api/shared-conversations') or path.startswith(
             '/api/shared-events'
         ):

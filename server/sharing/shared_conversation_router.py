@@ -23,8 +23,10 @@ shared_conversation_info_service_dependency = Depends(
 
 # Read methods
 #
-# These endpoints are unauthenticated. Only batch lookup by known IDs is
-# exposed publicly so that share links of the form
+# Authentication is optional on these endpoints. Anonymous callers see
+# public conversations; authenticated callers additionally see the
+# automation-triggered conversations of the orgs they belong to. Only batch
+# lookup by known IDs is exposed so that share links of the form
 # /shared/conversations/<id> can be viewed without auth. Listing or
 # enumerating shared conversations is intentionally not exposed.
 
