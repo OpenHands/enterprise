@@ -4,7 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isAxiosError } from "axios";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
+import { useConfig } from "#/hooks/query/use-config";
 import { useDebounce } from "#/hooks/use-debounce";
+import { FeatureDisabledScreen } from "#/components/shared/feature-disabled-screen";
 import { BUDGET_TABS, BudgetTab, USERS_PER_PAGE } from "./budgets-constants";
 import {
   DefaultBudgetsTab,
@@ -27,6 +29,8 @@ export function Budgets() {
   const { organizationId } = useSelectedOrganizationId();
   const queryClient = useQueryClient();
 
+  const { data: config } = useConfig();
+  const litellmEnabled = config?.feature_flags?.enable_litellm ?? true;
   const [usersPage, setUsersPage] = useState(1);
 
   const [activeTab, setActiveTab] = useState<BudgetTab>("organization");
@@ -55,7 +59,7 @@ export function Budgets() {
         usersSearch: usersSearch || undefined,
         usersStatus,
       }),
-    enabled: !!organizationId,
+    enabled: !!organizationId && litellmEnabled,
   });
 
   const emailIntegrationEnabled = Boolean(budgetData?.email_alerts_available);
@@ -412,6 +416,10 @@ export function Budgets() {
     upsertOverride.reset();
     deleteOverride.mutate(userId);
   };
+
+  if (!litellmEnabled) {
+    return <FeatureDisabledScreen title="Budgets" />;
+  }
 
   if (!organizationId) {
     return (
