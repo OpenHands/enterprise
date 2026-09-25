@@ -28,6 +28,12 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxPage,
     SandboxStatus,
 )
+from openhands.app_server.sandbox.sandbox_service import (
+    LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE,
+    LLM_API_KEY_REFRESH_HEADERS_VALUE,
+    LLM_API_KEY_REFRESH_HEADERS_VARIABLE,
+    LLM_API_KEY_REFRESH_URL_VARIABLE,
+)
 
 
 @pytest.fixture
@@ -790,6 +796,98 @@ class TestDockerSandboxService:
         call_args = mock_docker_client.containers.run.call_args
         env_vars = call_args[1]['environment']
         assert 'OH_ALLOW_CORS_ORIGINS_0' not in env_vars
+
+    @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
+    @patch('os.urandom')
+    async def test_start_sandbox_injects_refresh_contract(
+        self,
+        mock_urandom,
+        mock_encodebytes,
+        service,
+        mock_docker_client,
+    ):
+        """The docker path injects the managed-key refresh contract (#5189).
+
+        The URL points at ``host.docker.internal`` (reachable from inside the
+        container), the header references the session key, and the base-urls
+        allow-list carries the configured managed proxy URL.
+        """
+        mock_urandom.side_effect = [b'container_id', b'session_key']
+        mock_encodebytes.side_effect = ['test_container_id', 'test_session_key']
+
+        mock_container = MagicMock()
+        mock_container.name = 'oh-test-test_container_id'
+        mock_container.status = 'running'
+        mock_container.image.tags = ['test-image:latest']
+        mock_container.attrs = {
+            'Created': '2024-01-15T10:30:00.000000000Z',
+            'Config': {'Env': ['OH_SESSION_API_KEYS_0=test_session_key']},
+            'NetworkSettings': {'Ports': {}},
+        }
+        mock_docker_client.containers.run.return_value = mock_container
+
+        with (
+            patch.object(service, '_find_unused_port', return_value=12345),
+            patch.object(service, 'pause_old_sandboxes', return_value=[]),
+            patch('server.constants.LITE_LLM_API_URL', 'https://llm-proxy.example'),
+        ):
+            await service.start_sandbox()
+
+        env_vars = mock_docker_client.containers.run.call_args[1]['environment']
+        assert (
+            env_vars[LLM_API_KEY_REFRESH_URL_VARIABLE]
+            == 'http://host.docker.internal:3000/api/keys/llm/managed/current'
+        )
+        assert (
+            env_vars[LLM_API_KEY_REFRESH_HEADERS_VARIABLE]
+            == LLM_API_KEY_REFRESH_HEADERS_VALUE
+        )
+        assert (
+            env_vars[LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE]
+            == 'https://llm-proxy.example'
+        )
+
+    @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
+    @patch('os.urandom')
+    async def test_start_sandbox_skips_base_urls_without_managed_url(
+        self,
+        mock_urandom,
+        mock_encodebytes,
+        service,
+        mock_docker_client,
+    ):
+        """With no managed proxy URL the base-urls var is absent, not empty.
+
+        The URL/headers still go out, but an empty allow-list is a different
+        contract than "no allow-list" to the in-sandbox consumer.
+        """
+        mock_urandom.side_effect = [b'container_id', b'session_key']
+        mock_encodebytes.side_effect = ['test_container_id', 'test_session_key']
+
+        mock_container = MagicMock()
+        mock_container.name = 'oh-test-test_container_id'
+        mock_container.status = 'running'
+        mock_container.image.tags = ['test-image:latest']
+        mock_container.attrs = {
+            'Created': '2024-01-15T10:30:00.000000000Z',
+            'Config': {'Env': ['OH_SESSION_API_KEYS_0=test_session_key']},
+            'NetworkSettings': {'Ports': {}},
+        }
+        mock_docker_client.containers.run.return_value = mock_container
+
+        with (
+            patch.object(service, '_find_unused_port', return_value=12345),
+            patch.object(service, 'pause_old_sandboxes', return_value=[]),
+            patch('server.constants.LITE_LLM_API_URL', ''),
+        ):
+            await service.start_sandbox()
+
+        env_vars = mock_docker_client.containers.run.call_args[1]['environment']
+        assert (
+            env_vars[LLM_API_KEY_REFRESH_URL_VARIABLE]
+            == 'http://host.docker.internal:3000/api/keys/llm/managed/current'
+        )
+        assert LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE not in env_vars
 
     async def test_resume_sandbox_from_paused(self, service):
         """Test resuming a paused sandbox."""

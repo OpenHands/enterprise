@@ -3,9 +3,11 @@ from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, SecretStr, field_validator, model_validator
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
+from openhands.app_server.sandbox.session_auth import validate_session_key
 from openhands.app_server.user_auth import get_user_auth, get_user_id
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -518,6 +520,53 @@ async def refresh_managed_llm_api_key(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to refresh managed LLM API key',
         )
+
+
+@api_router.get(
+    '/llm/managed/current',
+    tags=['Keys'],
+    response_class=PlainTextResponse,
+    include_in_schema=False,
+)
+async def get_managed_llm_key_for_sandbox(request: Request) -> PlainTextResponse:
+    """Return the calling sandbox's current-valid managed LLM key as plain text.
+
+    This is called from inside the agent-server sandbox (not by end users) when
+    a managed-proxy LLM hits a 401, so the key can be re-resolved and the request
+    retried in place (#5189). It is authenticated by the sandbox's own
+    ``X-Session-API-Key`` (the same credential used for webhooks), and the
+    response body is the raw key -- the format the SDK ``LookupSecret`` refresh
+    hook expects. A 404 is returned when the caller has no managed key to hand
+    out (non-managed / BYOK config, or none could be produced) so the SDK leaves
+    the original 401 to surface instead of masking it.
+    """
+    sandbox = await validate_session_key(request.headers.get('X-Session-API-Key'))
+    user_id = sandbox.created_by_user_id
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Sandbox has no owning user',
+        )
+
+    try:
+        settings_store = await SaasSettingsStore.get_instance(user_id)
+        key = await settings_store.resolve_valid_managed_llm_key()
+    except Exception:
+        logger.exception(
+            'Failed to resolve managed LLM key for sandbox',
+            extra={'user_id': user_id, 'sandbox_id': sandbox.id},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to resolve managed LLM key',
+        )
+
+    if not key:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='No managed LLM key available for this sandbox',
+        )
+    return PlainTextResponse(key)
 
 
 @api_router.get('/llm/byor', tags=['Keys'])

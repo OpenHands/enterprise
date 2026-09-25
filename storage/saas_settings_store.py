@@ -1078,6 +1078,39 @@ class SaasSettingsStore(SettingsStore):
                 return None
             return org_member.llm_api_key.get_secret_value()
 
+    async def resolve_valid_managed_llm_key(self) -> str | None:
+        """Return a currently-valid managed key for this user/org, rotating if stale.
+
+        Backs the sandbox-facing refresh endpoint: an agent that hits a 401 with
+        a stale managed proxy key can re-resolve it and retry in place (#5189).
+        Returns the current key when it still verifies, otherwise force-rotates
+        and returns the replacement. Returns ``None`` for non-managed / BYOK
+        configs and when no valid key can be produced, so the caller surfaces the
+        original auth error instead of masking it with a fresh one.
+        """
+        current = await self.get_current_managed_llm_key()
+        if current and await LiteLlmManager.verify_key(current, self.user_id):
+            return current
+
+        # Missing or stale managed key: rotate. rotate_managed_llm_key() rejects
+        # non-managed / BYOK configs (non-ROTATED status), so this never mints a
+        # key for a config that should not have one.
+        rotation = await self.rotate_managed_llm_key()
+        if rotation.status != ManagedLlmKeyStatus.ROTATED or not rotation.new_key:
+            return None
+
+        if rotation.old_key and rotation.old_key != rotation.new_key:
+            try:
+                await LiteLlmManager.delete_key(rotation.old_key)
+            except Exception:
+                logger.warning(
+                    'saas_settings_store:resolve_valid_managed_llm_key:'
+                    'delete_old_failed',
+                    extra={'user_id': self.user_id},
+                    exc_info=True,
+                )
+        return rotation.new_key
+
     async def clear_stale_org_level_llm_key_if_managed(self) -> bool:
         """Heal orgs left in the broken state from #421/#425.
 
