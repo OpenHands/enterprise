@@ -12,6 +12,9 @@ Since agents can do things that may harm your system, they are typically run ins
 - **DockerSandboxService**: Docker-based sandbox implementation
 - **SandboxSpecService**: Manages sandbox specifications and templates
 - **SandboxRouter**: FastAPI router for sandbox endpoints
+- **sandbox_store**: The sandbox table (`v1_remote_sandbox`), which records who
+  owns each sandbox for every backend, and the helper that scopes reads to the
+  caller.
 
 ## Features
 

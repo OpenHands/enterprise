@@ -29,7 +29,6 @@ from openhands.app_server.sandbox.remote_sandbox_service import (
     STATUS_MAPPING,
     WEBHOOK_CALLBACK_VARIABLE,
     RemoteSandboxService,
-    StoredRemoteSandbox,
     _hash_session_api_key,
 )
 from openhands.app_server.sandbox.sandbox_models import (
@@ -44,7 +43,13 @@ from openhands.app_server.sandbox.sandbox_spec_models import (
     RemoteSandboxSpecInfo,
     SandboxSpecInfo,
 )
+from openhands.app_server.sandbox.sandbox_store import (
+    DOCKER_BACKEND,
+    REMOTE_BACKEND,
+    StoredSandbox,
+)
 from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
+from openhands.app_server.user.specifiy_user_context import ADMIN
 from openhands.app_server.user.user_context import UserContext
 
 
@@ -182,13 +187,14 @@ def create_stored_sandbox(
     spec_id: str = 'test-image:latest',
     created_at: datetime | None = None,
     session_api_key_hash: str | None = None,
-) -> StoredRemoteSandbox:
-    """Helper function to create StoredRemoteSandbox for testing."""
+) -> StoredSandbox:
+    """Helper function to create a remote StoredSandbox for testing."""
     if created_at is None:
         created_at = datetime.now(timezone.utc)
 
-    return StoredRemoteSandbox(
+    return StoredSandbox(
         id=sandbox_id,
+        backend=REMOTE_BACKEND,
         created_by_user_id=user_id,
         sandbox_spec_id=spec_id,
         session_api_key_hash=session_api_key_hash,
@@ -602,6 +608,7 @@ class TestSandboxLifecycle:
         # Verify the stored sandbox used the custom ID
         add_call_args = remote_sandbox_service.db_session.add.call_args[0][0]
         assert add_call_args.id == 'custom_sandbox_id'
+        assert add_call_args.backend == REMOTE_BACKEND
 
     @pytest.mark.asyncio
     async def test_start_sandbox_http_error(self, remote_sandbox_service):
@@ -1557,33 +1564,61 @@ class TestSandboxSearch:
 
 
 class TestUserSecurity:
-    """Test cases for user-scoped operations and security."""
+    """Test cases for user-scoped operations and security, on a real database."""
+
+    @pytest.fixture
+    async def db_service(self, remote_sandbox_service, async_session_maker):
+        """The service reading this test's own postgres database."""
+        async with async_session_maker() as session:
+            remote_sandbox_service.db_session = session
+            yield remote_sandbox_service
+
+    @staticmethod
+    def _row(
+        sandbox_id: str, backend: str, user_id: str, session_api_key: str
+    ) -> StoredSandbox:
+        return StoredSandbox(
+            id=sandbox_id,
+            backend=backend,
+            created_by_user_id=user_id,
+            sandbox_spec_id='test-image:latest',
+            session_api_key_hash=_hash_session_api_key(session_api_key),
+        )
 
     @pytest.mark.asyncio
-    async def test_secure_select_with_user_id(self, remote_sandbox_service):
-        """Test that _secure_select filters by user ID."""
-        # Setup
-        remote_sandbox_service.user_context.get_user_id.return_value = 'test-user-123'
+    async def test_reads_only_remote_rows(self, db_service):
+        """The table is shared, so even ADMIN must not see another backend's row."""
+        db_service.db_session.add_all(
+            [
+                self._row('sb-remote', REMOTE_BACKEND, 'test-user-123', 'remote-key'),
+                self._row('sb-docker', DOCKER_BACKEND, 'test-user-123', 'docker-key'),
+            ]
+        )
+        await db_service.db_session.flush()
+        db_service.user_context = ADMIN
 
-        # Execute
-        await remote_sandbox_service._secure_select()
+        remote = await db_service.get_sandbox_record_by_session_api_key('remote-key')
+        docker = await db_service.get_sandbox_record_by_session_api_key('docker-key')
 
-        # Verify
-        # Note: We can't easily test the exact SQL query structure, but we can verify
-        # that get_user_id was called, which means user filtering should be applied
-        remote_sandbox_service.user_context.get_user_id.assert_called_once()
+        assert remote is not None
+        assert remote.id == 'sb-remote'
+        assert docker is None
+        assert await db_service._get_stored_sandbox('sb-docker') is None
 
     @pytest.mark.asyncio
-    async def test_secure_select_without_user_id(self, remote_sandbox_service):
-        """Test that _secure_select works when user ID is None."""
-        # Setup
-        remote_sandbox_service.user_context.get_user_id.return_value = None
+    async def test_a_user_cannot_read_another_users_sandbox(self, db_service):
+        db_service.db_session.add_all(
+            [
+                self._row('sb-a', REMOTE_BACKEND, 'user-a', 'key-a'),
+                self._row('sb-b', REMOTE_BACKEND, 'user-b', 'key-b'),
+            ]
+        )
+        await db_service.db_session.flush()
+        db_service.user_context.get_user_id.return_value = 'user-a'
 
-        # Execute
-        await remote_sandbox_service._secure_select()
-
-        # Verify
-        remote_sandbox_service.user_context.get_user_id.assert_called_once()
+        assert await db_service._get_stored_sandbox('sb-a') is not None
+        assert await db_service._get_stored_sandbox('sb-b') is None
+        assert await db_service.get_sandbox_record_by_session_api_key('key-b') is None
 
 
 class TestErrorHandling:
