@@ -42,7 +42,7 @@ async def test_read_paths_do_not_create_settings_row(
     assert await _settings_row_count(adapter) == 0
 
     # Exercise every read entry point that used to create-on-read.
-    await adapter.service.get_budget_state(adapter.org_id)
+    initial = await adapter.service.get_budget_state(adapter.org_id)
     await adapter.service.get_user_budget_row(adapter.org_id, adapter.user_ids[0])
     await adapter.service.get_reconciliation_state(adapter.org_id)
     await adapter.session.commit()
@@ -52,7 +52,20 @@ async def test_read_paths_do_not_create_settings_row(
     )
 
     # A write path still materialises the row and its default thresholds.
-    await adapter.configure_budget(5, 3)
+    saved = await adapter.update_settings(
+        enabled=True,
+        monthly_limit=5,
+        default_user_monthly_limit=3,
+        thresholds=[
+            dict(
+                percentage=t.percentage,
+                email_enabled=t.email_enabled,
+                slack_enabled=t.slack_enabled,
+            )
+            for t in initial['thresholds']
+        ],
+    )
+    assert sorted(t.percentage for t in saved['thresholds']) == [80, 90, 100]
     assert await _settings_row_count(adapter) == 1, (
         'configuring budgets must create the settings row'
     )

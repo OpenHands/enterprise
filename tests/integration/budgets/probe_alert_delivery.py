@@ -12,10 +12,13 @@ from tests.integration.budgets.adapter import BudgetTestAdapter
 
 
 @pytest.mark.asyncio
-@pytest.mark.budget_known_issue('OHE-3321')
 async def test_failed_slack_delivery_retries_after_recovery(
     budget_adapter: BudgetTestAdapter,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv('SLACK_WEBHOOKS_ENABLED', 'true')
+    for name in ('SLACK_CLIENT_ID', 'SLACK_CLIENT_SECRET', 'SLACK_SIGNING_SECRET'):
+        monkeypatch.setenv(name, 'test-only-no-network')
     adapter = budget_adapter
     await adapter.configure_budget(5, 3)
     assert (await adapter.send_request(adapter.user_ids[0])).status_code == 200

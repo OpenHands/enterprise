@@ -774,6 +774,10 @@ class SaasSettingsStore(SettingsStore):
             kwargs.pop('agent_settings', None)
             kwargs.pop('conversation_settings', None)
             kwargs.pop('user_consents_to_analytics', None)
+            # ``memory_context`` is written exclusively by the
+            # MemoryChangeCallbackProcessor; a normal settings save must not
+            # clobber it with the (possibly stale) value on the Settings object.
+            kwargs.pop('memory_context', None)
 
             # Get or create user_settings for this user
             user_settings_result = await session.execute(

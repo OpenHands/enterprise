@@ -256,7 +256,9 @@ async def store_provider_tokens(
     await check_provider_tokens(provider_info, provider_tokens)
 
     async with _secrets_write_lock(user_id, secrets_store):
-        user_secrets = await secrets_store.load()
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        user_secrets = await secrets_store.load_personal()
         if not user_secrets:
             user_secrets = Secrets()
 
@@ -315,7 +317,9 @@ async def unset_provider_tokens(
         500: Error unsetting git provider tokens
     """
     async with _secrets_write_lock(user_id, secrets_store):
-        user_secrets = await secrets_store.load()
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        user_secrets = await secrets_store.load_personal()
         if user_secrets:
             updated_secrets = user_secrets.model_copy(update={'provider_tokens': {}})
             await secrets_store.store(updated_secrets)
@@ -480,7 +484,9 @@ async def create_custom_secret(
     )
 
     async with _secrets_write_lock(user_id, secrets_store):
-        existing_secrets = await secrets_store.load()
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        existing_secrets = await secrets_store.load_personal()
         custom_secrets = (
             dict(existing_secrets.custom_secrets) if existing_secrets else {}
         )
@@ -534,7 +540,11 @@ async def update_custom_secret(
         500: Error updating secret
     """
     async with _secrets_write_lock(user_id, secrets_store):
-        existing_secrets = await secrets_store.load()
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        # A shared secret name is therefore 404 here — it is managed via the
+        # org-secrets endpoints, not the personal ones.
+        existing_secrets = await secrets_store.load_personal()
         if not existing_secrets or secret_id not in existing_secrets.custom_secrets:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -589,7 +599,11 @@ async def delete_custom_secret(
         500: Error deleting secret
     """
     async with _secrets_write_lock(user_id, secrets_store):
-        existing_secrets = await secrets_store.load()
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        # A shared secret name is therefore 404 here — it is managed via the
+        # org-secrets endpoints, not the personal ones.
+        existing_secrets = await secrets_store.load_personal()
         if existing_secrets:
             # Get existing custom secrets
             custom_secrets = dict(existing_secrets.custom_secrets)
