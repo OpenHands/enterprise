@@ -24,7 +24,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Literal
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -398,16 +398,27 @@ async def oauth_v2_callback(
     )
 
     redirect_url = state_data.redirect_url or '/'
-    response = RedirectResponse(redirect_url, status_code=302)
+
     if state_data.mode == 'login':
+        # Mirror the legacy Keycloak callback: derive ``accepted_tos`` from
+        # the user row so the cookie reflects the real TOS state, and
+        # redirect to the TOS page when it has not been accepted yet.
+        user = await UserStore.get_user_by_id(user_id)
+        has_accepted_tos = user is not None and user.accepted_tos is not None
+        if not has_accepted_tos:
+            encoded_redirect_url = quote(redirect_url, safe='')
+            redirect_url = f'{web_url}/accept-tos?redirect_url={encoded_redirect_url}'
+        response = RedirectResponse(redirect_url, status_code=302)
         _set_oauth_v2_cookie(
             request=request,
             response=response,
             user_id=user_id,
             access_token_expires_at=access_exp,
-            accepted_tos=False,
+            accepted_tos=has_accepted_tos,
             refresh_token_expires_at=refresh_exp,
         )
+    else:
+        response = RedirectResponse(redirect_url, status_code=302)
     return response
 
 

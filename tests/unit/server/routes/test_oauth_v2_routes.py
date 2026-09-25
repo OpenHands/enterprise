@@ -18,6 +18,7 @@ run without a database or live OAuth provider.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -221,6 +222,7 @@ def test_callback_login_persists_tokens_and_sets_cookie(client, jwt_svc):
 
     fake_user = MagicMock()
     fake_user.id = user_id
+    fake_user.accepted_tos = datetime.now(timezone.utc)
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
@@ -243,6 +245,11 @@ def test_callback_login_persists_tokens_and_sets_cookie(client, jwt_svc):
         patch.object(
             oauth_v2.UserStore,
             'create_user',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_id',
             new=AsyncMock(return_value=fake_user),
         ),
         patch.object(
@@ -271,6 +278,72 @@ def test_callback_login_persists_tokens_and_sets_cookie(client, jwt_svc):
     assert kwargs['access_token'] == 'at-123'
     assert kwargs['refresh_token'] == 'rt-123'
     assert kwargs['access_token_expires_at'] is not None
+
+
+def test_callback_login_redirects_to_tos_when_not_accepted(client, jwt_svc):
+    """A login for a user who has not accepted the TOS redirects to /accept-tos."""
+    provider = _fake_provider()
+    user_id = uuid4()
+    token_response = {
+        'access_token': 'at-123',
+        'refresh_token': 'rt-123',
+        'expires_in': 3600,
+    }
+    userinfo = {'sub': 'ext-sub-1', 'email': 'a@b.com'}
+
+    fake_user = MagicMock()
+    fake_user.id = user_id
+    fake_user.accepted_tos = None  # TOS not yet accepted
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx(token_response, userinfo),
+        patch.object(
+            oauth_v2.OAuthProviderUserStore,
+            'get',
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            oauth_v2.OAuthProviderUserStore,
+            'link',
+            new=AsyncMock(),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'create_user',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_id',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.OAuthTokenStore,
+            'store_tokens',
+            new=AsyncMock(),
+        ),
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    location = response.headers['location']
+    assert '/accept-tos' in location
+    assert 'redirect_url=%2Fdone' in location
+    # Cookie is still set (with accepted_tos=False) so the TOS page can accept.
+    assert 'openhands_auth' in response.cookies
 
 
 def test_callback_link_flow_no_cookie(client, jwt_svc):
