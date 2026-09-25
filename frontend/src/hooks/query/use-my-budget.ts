@@ -24,7 +24,7 @@ export const useMyBudget = ({
       }),
     enabled: !!organizationId && enabled,
     staleTime,
-    // The settings nav probes this on every page, so a failure must stay quiet.
+    // The page renders its own error state, so a failure must stay quiet.
     retry: false,
     meta: { disableToast: true },
   });

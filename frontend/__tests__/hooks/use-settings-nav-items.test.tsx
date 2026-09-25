@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { SAAS_NAV_ITEMS, OSS_NAV_ITEMS } from "#/constants/settings-nav";
 import OptionService from "#/api/option-service/option-service.api";
 import {
@@ -9,7 +9,6 @@ import {
 } from "#/hooks/use-settings-nav-items";
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
 import { organizationService } from "#/api/organization-service/organization-service.api";
-import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 
 // Helper to find an item by path in rendered items
 const findItemByPath = (
@@ -643,21 +642,14 @@ describe("useSettingsNavItems", () => {
       mockMe.data = { role };
       mockOrgTypeAndAccess.isTeamOrg = true;
       mockOrgTypeAndAccess.organizationId = "org-1";
-      useSelectedOrganizationStore.setState({ organizationId: "org-1" });
     };
 
-    afterEach(() => {
-      useSelectedOrganizationStore.setState({ organizationId: null });
-    });
-
     it.each(["member", "admin", "owner"])(
-      "should show Your Budget to a %s when the team org has budgets enabled",
+      "should show Your Budget to a %s in a team org without asking whether budgets are enabled",
       async (role) => {
         // Arrange
         selectTeamOrg(role);
-        vi.spyOn(organizationService, "getMyBudget").mockResolvedValue({
-          enabled: true,
-        });
+        const getMyBudgetSpy = vi.spyOn(organizationService, "getMyBudget");
 
         // Act
         const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
@@ -668,51 +660,15 @@ describe("useSettingsNavItems", () => {
             findItemByPath(result.current, "/settings/your-budget"),
           ).toBeDefined();
         });
+        expect(getMyBudgetSpy).not.toHaveBeenCalled();
       },
     );
 
-    it("should hide Your Budget when the org has not enabled budgets", async () => {
-      // Arrange
-      selectTeamOrg("member");
-      const getMyBudgetSpy = vi
-        .spyOn(organizationService, "getMyBudget")
-        .mockResolvedValue({ enabled: false });
-
-      // Act
-      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
-
-      // Assert
-      await waitFor(() => expect(getMyBudgetSpy).toHaveBeenCalled());
-      expect(
-        findItemByPath(result.current, "/settings/your-budget"),
-      ).toBeUndefined();
-    });
-
-    it("should only ask whether budgets are enabled, never for spend", async () => {
-      // Arrange
-      selectTeamOrg("member");
-      const getMyBudgetSpy = vi
-        .spyOn(organizationService, "getMyBudget")
-        .mockResolvedValue({ enabled: true });
-
-      // Act
-      renderHook(() => useSettingsNavItems(), { wrapper });
-
-      // Assert
-      await waitFor(() => {
-        expect(getMyBudgetSpy).toHaveBeenCalledWith({
-          orgId: "org-1",
-          includeSpend: false,
-        });
-      });
-    });
-
-    it("should not look up a budget in a personal workspace", async () => {
+    it("should hide Your Budget in a personal workspace", async () => {
       // Arrange
       selectTeamOrg("owner");
       mockOrgTypeAndAccess.isTeamOrg = false;
       mockOrgTypeAndAccess.isPersonalOrg = true;
-      const getMyBudgetSpy = vi.spyOn(organizationService, "getMyBudget");
 
       // Act
       const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
@@ -724,7 +680,6 @@ describe("useSettingsNavItems", () => {
       expect(
         findItemByPath(result.current, "/settings/your-budget"),
       ).toBeUndefined();
-      expect(getMyBudgetSpy).not.toHaveBeenCalled();
     });
   });
 });

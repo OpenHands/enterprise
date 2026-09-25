@@ -200,17 +200,19 @@ describe("YourBudget", () => {
   });
 
   describe("when there is no budget to show", () => {
-    it("should say budgets are not enabled and skip loading usage", async () => {
+    it("should still show the budget cards and load usage when the org has not enabled budgets", async () => {
       // Arrange & Act
-      const { getMyUsageSpy } = renderYourBudget(
-        createBudget({ enabled: false }),
-      );
+      const { getMyUsageSpy } = renderYourBudget({ enabled: false });
 
       // Assert
       expect(
-        await screen.findByTestId("your-budget-not-enabled"),
-      ).toBeInTheDocument();
-      expect(getMyUsageSpy).not.toHaveBeenCalled();
+        await screen.findByTestId("your-budget-allocation"),
+      ).toHaveTextContent("SETTINGS$YOUR_BUDGET_NO_LIMIT");
+      expect(screen.getByTestId("your-budget-spent")).toHaveTextContent(
+        "SETTINGS$YOUR_BUDGET_SPEND_UNAVAILABLE",
+      );
+      expect(screen.queryByTestId("your-budget-meter")).not.toBeInTheDocument();
+      await waitFor(() => expect(getMyUsageSpy).toHaveBeenCalled());
     });
 
     it("should show an error when the budget cannot be loaded", async () => {

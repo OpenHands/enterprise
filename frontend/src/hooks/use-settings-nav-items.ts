@@ -17,7 +17,6 @@ import { usePermission } from "./organizations/use-permissions";
 import { useOrgTypeAndAccess } from "./use-org-type-and-access";
 import { useSettings } from "./query/use-settings";
 import { useQuotaStatus } from "./query/use-quota-status";
-import { useMyBudget } from "./query/use-my-budget";
 import { I18nKey } from "#/i18n/declaration";
 
 // Rendered navigation item types
@@ -62,13 +61,6 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
   // Every role has its own budget; personal workspaces have none.
   const canHaveOwnBudget = isSaasMode && isTeamOrg && !!organizationId;
-  // This hook is mounted on every page (user menu), so only ask whether
-  // budgets are enabled — never read spend from here.
-  const { data: myBudget } = useMyBudget({
-    includeSpend: false,
-    enabled: canHaveOwnBudget,
-    staleTime: 5 * 60_000,
-  });
 
   const shouldHideBilling = isBillingHidden(
     config,
@@ -127,8 +119,8 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     items = items.filter((item) => !ADMIN_ONLY_SETTINGS_PATHS.has(item.to));
   }
 
-  // Everyone in a team org sees their own budget once the org enables budgets
-  if (canHaveOwnBudget && myBudget?.enabled) {
+  // Everyone in a team org has their own budget; personal workspaces do not.
+  if (canHaveOwnBudget) {
     items = [...items, YOUR_BUDGET_NAV_ITEM];
   }
 
