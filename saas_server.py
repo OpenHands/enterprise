@@ -54,6 +54,7 @@ from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
 from server.routes.integration.slack import slack_router  # noqa: E402
 from server.routes.oauth_device import oauth_device_router  # noqa: E402
+from server.routes.oauth_v2 import oauth_v2_router  # noqa: E402
 from server.routes.org_invitations import (  # noqa: E402
     accept_router as invitation_accept_router,
 )
@@ -105,6 +106,7 @@ base_app.include_router(readiness_router)  # Add routes for readiness checks
 base_app.include_router(api_router)  # Add additional route for github auth
 base_app.include_router(oauth_router)  # Add additional route for oauth callback
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
+base_app.include_router(oauth_v2_router)  # Phase 1 OAuth v2 routes (additive)
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings
 base_app.include_router(
     billing_router
