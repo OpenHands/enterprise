@@ -40,7 +40,6 @@ from server.middleware import (  # noqa: E402
     SetAuthCookieMiddleware,
 )
 from server.rate_limit import setup_rate_limit_handler  # noqa: E402
-from server.routes.admin_users import admin_user_router  # noqa: E402
 from server.routes.agent_profiles import router as agent_profiles_router  # noqa: E402
 from server.routes.analytics_events import analytics_events_router  # noqa: E402
 from server.routes.api_keys import api_router as api_keys_router  # noqa: E402
@@ -89,6 +88,12 @@ from server.verified_models.verified_model_router import (  # noqa: E402
 )
 
 directory = os.getenv('FRONTEND_DIRECTORY', './frontend/build')
+# Agent Canvas SPA, built into the frontend output by scripts/build-agent-canvas.sh.
+# Cloud serves /canvas from a separate service behind an ingress rule; locally it
+# is served from this app so `make run-saas` exercises the same URLs.
+canvas_directory = os.getenv(
+    'AGENT_CANVAS_DIRECTORY', os.path.join(directory, 'canvas')
+)
 
 
 @base_app.get('/saas')
@@ -163,6 +168,7 @@ if AZURE_DEVOPS_CLIENT_ID:
 
 base_app.include_router(api_keys_router)  # Add routes for API key management
 base_app.include_router(service_router)  # Add routes for internal service API
+base_app.include_router(invitation_router)  # Static member paths precede /{user_id}.
 base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
 base_app.include_router(
@@ -171,9 +177,6 @@ base_app.include_router(
 base_app.include_router(
     feature_flag_router
 )  # Add routes for database-driven feature flags
-base_app.include_router(
-    admin_user_router
-)  # Add routes for instance-level user lifecycle management
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value
@@ -198,7 +201,6 @@ base_app.include_router(
 # This replaces the OSS endpoint with a SAAS version that adds org_id, org_name, role, permissions
 override_users_me_endpoint(base_app)
 
-base_app.include_router(invitation_router)  # Add routes for org invitation management
 base_app.include_router(invitation_accept_router)  # Add route for accepting invitations
 add_github_proxy_routes(base_app)
 base_app.include_router(slack_router)
@@ -241,8 +243,14 @@ base_app.add_middleware(
 base_app.add_middleware(CacheControlMiddleware)
 base_app.middleware('http')(SetAuthCookieMiddleware())
 
+if os.path.isdir(canvas_directory):
+    # Mounted before the '/' catch-all so /canvas is matched first.
+    base_app.mount(
+        '/canvas',
+        SPAStaticFiles(directory=canvas_directory, html=True),
+        name='canvas',
+    )
 base_app.mount('/', SPAStaticFiles(directory=directory, html=True), name='dist')
-
 
 setup_rate_limit_handler(base_app)
 

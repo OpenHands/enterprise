@@ -1508,3 +1508,70 @@ class TestResolverOrgIdRouting:
 
         assert saas_metadata is not None
         assert saas_metadata.org_id == ORG1_ID
+
+
+class TestTagsContainsFilterSaas:
+    """Test suite for tags__contains filter parameter in SAAS service."""
+
+    @staticmethod
+    def _conversation(user_id: UUID, tags: dict[str, str]) -> AppConversationInfo:
+        return AppConversationInfo(
+            id=uuid4(),
+            created_by_user_id=str(user_id),
+            sandbox_id='sandbox_tags',
+            title='Tagged Conversation',
+            tags=tags,
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_by_tag_respects_user_isolation(
+        self,
+        async_session_with_users: AsyncSession,
+    ):
+        """Test that the tag filter only matches the current user's conversations."""
+        # Arrange
+        user1_service = SaasSQLAppConversationInfoService(
+            db_session=async_session_with_users,
+            user_context=SpecifyUserContext(user_id=str(USER1_ID)),
+        )
+        user2_service = SaasSQLAppConversationInfoService(
+            db_session=async_session_with_users,
+            user_context=SpecifyUserContext(user_id=str(USER2_ID)),
+        )
+        tags = {'environmenturl': 'https://env/a'}
+        user1_match = self._conversation(USER1_ID, tags)
+        user1_other = self._conversation(USER1_ID, {'environmenturl': 'https://env/b'})
+        user2_match = self._conversation(USER2_ID, tags)
+        await user1_service.save_app_conversation_info(user1_match)
+        await user1_service.save_app_conversation_info(user1_other)
+        await user2_service.save_app_conversation_info(user2_match)
+
+        # Act
+        page = await user1_service.search_app_conversation_info(tags__contains=tags)
+
+        # Assert
+        assert [item.id for item in page.items] == [user1_match.id]
+
+    @pytest.mark.asyncio
+    async def test_count_by_tag(
+        self,
+        async_session_with_users: AsyncSession,
+    ):
+        """Test counting the current user's conversations by tag."""
+        # Arrange
+        user1_service = SaasSQLAppConversationInfoService(
+            db_session=async_session_with_users,
+            user_context=SpecifyUserContext(user_id=str(USER1_ID)),
+        )
+        for tags in ({'team': 'platform'}, {'team': 'platform'}, {'team': 'growth'}):
+            await user1_service.save_app_conversation_info(
+                self._conversation(USER1_ID, tags)
+            )
+
+        # Act
+        count = await user1_service.count_app_conversation_info(
+            tags__contains={'team': 'platform'}
+        )
+
+        # Assert
+        assert count == 2

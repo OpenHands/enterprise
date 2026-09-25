@@ -46,10 +46,7 @@ def combine_lifespans(*lifespans):
     return combined_lifespan
 
 
-lifespans = [mcp_app.lifespan]
-app_lifespan_ = get_app_lifespan_service()
-if app_lifespan_:
-    lifespans.append(app_lifespan_.lifespan)
+lifespans = [mcp_app.lifespan, get_app_lifespan_service().lifespan]
 
 
 app = FastAPI(
@@ -74,6 +71,17 @@ app.include_router(health_router)
 
 # Middleware and static file setup (merged from listen.py)
 if os.getenv('SERVE_FRONTEND', 'true').lower() == 'true':
+    # The Agent Canvas SPA is built into frontend/build/canvas (see
+    # scripts/build-agent-canvas.sh) and mounted at /canvas. Cloud serves this
+    # path from a separate service behind an ingress rule; locally there is no
+    # ingress, so it is served from the same app. Must be mounted before the '/'
+    # catch-all below.
+    if os.path.isdir('./frontend/build/canvas'):
+        app.mount(
+            '/canvas',
+            SPAStaticFiles(directory='./frontend/build/canvas', html=True),
+            name='canvas',
+        )
     if os.path.isdir('./frontend/build'):
         app.mount(
             '/', SPAStaticFiles(directory='./frontend/build', html=True), name='dist'

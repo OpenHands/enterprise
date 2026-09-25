@@ -76,6 +76,9 @@ from openhands.app_server.event_callback.event_callback_models import EventCallb
 from openhands.app_server.event_callback.event_callback_service import (
     EventCallbackService,
 )
+from openhands.app_server.event_callback.memory_change_callback_processor import (
+    MemoryChangeCallbackProcessor,
+)
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
@@ -335,6 +338,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 20,
@@ -348,6 +352,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
             sort_order=sort_order,
             page_id=page_id,
             limit=limit,
@@ -366,6 +371,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
     ) -> int:
         return await self.app_conversation_info_service.count_app_conversation_info(
             title__contains=title__contains,
@@ -374,6 +380,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
         )
 
     async def get_app_conversation(
@@ -503,12 +510,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             assert sandbox is not None
             agent_server_url = self._get_agent_server_url(sandbox)
 
-            # Mirror the user's LLM profiles into the sandbox so the agent's
-            # built-in switch_llm tool can resolve them (in SaaS profiles live
-            # on the app-server, not the sandbox filesystem). Before conversation
-            # creation, so the tool is enabled; re-runs on every start/resume.
-            await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
-
             # Get the working dir
             sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
                 sandbox.sandbox_spec_id
@@ -573,6 +574,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     request_observability_span_name=request.observability_span_name,
                 )
             )
+
+            # Build before seeding, which can refresh the captured user's LLM key.
+            # Profiles must still be available before the conversation is created.
+            await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
 
             # update status
             task.status = AppConversationStartTaskStatus.STARTING_CONVERSATION
@@ -658,7 +663,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 llm_model = request_agent.llm.model
                 agent_kind = 'openhands'
 
-            conversation_tags: dict[str, str] = dict(tags)
+            conversation_tags: dict[str, str] = {**(request.tags or {}), **tags}
             if request.selected_repository:
                 conversation_tags['repo_name'] = request.selected_repository
             if request.git_provider:
@@ -698,6 +703,19 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
                 if not has_set_title_processor:
                     processors.append(SetTitleCallbackProcessor())
+
+            # Register MemoryChangeCallbackProcessor when the user has
+            # enterprise persistent memory enabled. ``enable_memory_context``
+            # is a top-level user setting (not the SDK's ``load_memory``, which
+            # lives inside agent_settings.agent_context and is dropped by the
+            # fresh AgentContext built in _build_start_conversation_request).
+            if getattr(user, 'enable_memory_context', False):
+                has_memory_processor = any(
+                    isinstance(processor, MemoryChangeCallbackProcessor)
+                    for processor in processors
+                )
+                if not has_memory_processor:
+                    processors.append(MemoryChangeCallbackProcessor())
 
             # Save processors
             for processor in processors:
@@ -1370,9 +1388,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def _maybe_refresh_managed_llm_key(self, user: UserInfo, llm: LLM) -> LLM:
         """Best-effort refresh for stale SaaS managed LiteLLM keys.
 
-        This intentionally only runs for SaaS managed LiteLLM keys that are the
-        current member's stored managed key. BYOK/custom keys and OSS/local
-        deployments are left untouched.
+        Uses the current member's managed key if a concurrent start replaced
+        the captured credential. BYOK/custom keys and OSS/local deployments
+        are left untouched.
         """
         _logger.debug(
             'managed_llm_key_refresh:evaluate',
@@ -1478,6 +1496,67 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             settings_store = await SaasSettingsStore.get_instance(
                 user.id, effective_org_id=org_id
             )
+            # Heal orgs left broken by #421: a stale org-level BYOR key shadows
+            # the member's managed key. PR #425 prevents new occurrences; this
+            # restores already-broken users on their next load. Clearing the
+            # stale field flips the effective key off the dummy, then we
+            # force-rotate a fresh managed key so the returned LLM carries it
+            # (otherwise the existing verify path would skip on key mismatch).
+            # Gate to the All-Hands-managed cloud: ``app_mode == 'saas'`` is also
+            # true on self-hosted OHE, where clearing an org-level key breaks a
+            # legitimately managed enterprise org. ``DEPLOYMENT_MODE`` is the axis
+            # that actually separates cloud from self-hosted.
+            from server.constants import DEPLOYMENT_MODE
+
+            if (
+                DEPLOYMENT_MODE == 'cloud'
+                and await settings_store.clear_stale_org_level_llm_key_if_managed()
+            ):
+                _logger.info(
+                    'managed_llm_key_refresh:cleared_stale_org_level_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                    },
+                )
+                # Clearing the stale org-level shadow is the heal; we still need
+                # the returned LLM to carry a valid managed key on *this* request.
+                # Prefer a freshly rotated key, but if rotation yields none
+                # (MISSING_MEMBER / already-current / LiteLLM transient) fall back
+                # to re-resolving the effective key off the now-healed DB. Without
+                # this re-resolve we'd drop through to the mismatch bail below and
+                # return the original stale llm — healing the DB but not the
+                # in-flight request, so the 401 would persist until the next load.
+                rotation = await settings_store.rotate_managed_llm_key()
+                healed_key: str | None = (
+                    rotation.new_key
+                    if rotation.status == ManagedLlmKeyStatus.ROTATED
+                    and rotation.new_key
+                    else await settings_store.get_current_managed_llm_key()
+                )
+                if healed_key:
+                    _logger.info(
+                        'managed_llm_key_refresh:healed_after_clear',
+                        extra={
+                            'user_id': user.id,
+                            'org_id': str(org_id),
+                            'model': llm.model,
+                            'rotation_status': getattr(rotation, 'status', None),
+                            'openhands_type': getattr(rotation, 'openhands_type', None),
+                        },
+                    )
+                    self.user_context.invalidate_user_info_cache()
+                    return llm.model_copy(update={'api_key': SecretStr(healed_key)})
+                _logger.warning(
+                    'managed_llm_key_refresh:cleared_without_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                        'rotation_status': getattr(rotation, 'status', None),
+                    },
+                )
             managed_key = await settings_store.get_current_managed_llm_key()
             if managed_key is None:
                 _logger.debug(
@@ -1491,14 +1570,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 return llm
             if managed_key != key:
                 _logger.debug(
-                    'managed_llm_key_refresh:skip_key_mismatch',
+                    'managed_llm_key_refresh:use_current_member_key',
                     extra={
                         'user_id': user.id,
                         'org_id': str(org_id),
                         'model': llm.model,
                     },
                 )
-                return llm
+                key = managed_key
+                llm = llm.model_copy(update={'api_key': SecretStr(key)})
+                self.user_context.invalidate_user_info_cache()
 
             key_belongs_to_user = await LiteLlmManager.verify_existing_key(
                 key,
@@ -1524,7 +1605,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'managed_llm_key_refresh:stale_key_detected',
                 extra={'user_id': user.id, 'org_id': str(org_id), 'model': llm.model},
             )
-            rotation = await settings_store.rotate_managed_llm_key()
+            # Pass the stale key so overlapping refreshes are idempotent: if a
+            # concurrent start already rotated it, reuse that fresh key instead
+            # of rotating again and orphaning the sandbox's key (enterprise#439).
+            rotation = await settings_store.rotate_managed_llm_key(only_if_current=key)
             if rotation.status == ManagedLlmKeyStatus.ROTATED and rotation.new_key:
                 _logger.info(
                     'managed_llm_key_refresh:rotated',
@@ -2173,18 +2257,25 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 agent_definitions = list(get_registered_agent_definitions())
 
         # --- build AgentSettings and create agent ---------------------------
+        # When enterprise persistent memory is enabled, stamp load_memory=True
+        # so the SDK's LocalConversation reads MEMORY.md from disk at session
+        # start. The memory file itself is written to the sandbox by
+        # maybe_inject_memory_context() in run_setup_scripts.
+        agent_context_kwargs: dict[str, Any] = {
+            'system_message_suffix': effective_suffix,
+            'secrets': secrets,
+            'registered_marketplaces': _to_sdk_marketplace_registrations(
+                registered_marketplaces
+            ),
+        }
+        if getattr(user, 'enable_memory_context', False):
+            agent_context_kwargs['load_memory'] = True
         configured_agent_settings = user.agent_settings.model_copy(
             update={
                 'llm': llm,
                 'tools': tools,
                 'mcp_config': mcp_config if mcp_config else {},
-                'agent_context': AgentContext(
-                    system_message_suffix=effective_suffix,
-                    secrets=secrets,
-                    registered_marketplaces=_to_sdk_marketplace_registrations(
-                        registered_marketplaces
-                    ),
-                ),
+                'agent_context': AgentContext(**agent_context_kwargs),
             }
         )
         agent = configured_agent_settings.create_agent()
@@ -2818,8 +2909,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # This uses Pydantic's model_fields_set to detect which fields were set,
         # allowing us to distinguish between "not provided" and "explicitly set to None"
         for field_name in request.model_fields_set:
+            if field_name == 'tags':
+                continue
             value = getattr(request, field_name)
             setattr(info, field_name, value)
+
+        # Tags are applied as a merge patch: a None value deletes the key and keys
+        # not mentioned in the request are left untouched.
+        if request.tags is not None:
+            merged_tags = dict(info.tags)
+            for key, tag_value in request.tags.items():
+                if tag_value is None:
+                    merged_tags.pop(key, None)
+                else:
+                    merged_tags[key] = tag_value
+            info.tags = merged_tags
 
         info = await self.app_conversation_info_service.save_app_conversation_info(info)
         conversations = await self._build_app_conversations([info])

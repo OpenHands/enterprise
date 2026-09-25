@@ -471,9 +471,17 @@ class LiteLlmManager:
                         )
                         return None
 
-                    await LiteLlmManager._add_user_to_team(
-                        client, keycloak_user_id, org_id, team_budget
+                    # Provisioning uses this manager; defer to avoid a circular import.
+                    from storage.org_budget_provisioning import (
+                        provision_budget_member,
                     )
+
+                    if not await provision_budget_member(
+                        client, org_id, keycloak_user_id
+                    ):
+                        await LiteLlmManager._add_user_to_team(
+                            client, keycloak_user_id, org_id, team_budget
+                        )
 
                     # We delete the key if it already exists. In environments where multiple
                     # installations are using the same keycloak and litellm instance, this
@@ -1067,6 +1075,39 @@ class LiteLlmManager:
                 },
             )
         response.raise_for_status()
+
+    @staticmethod
+    async def _set_team_blocked(
+        client: httpx.AsyncClient,
+        team_id: str,
+        blocked: bool,
+    ) -> None:
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            raise RuntimeError('LiteLLM API configuration not found')
+
+        # LiteLLM 1.94 refreshes team auth caches here; /team/block does not.
+        response = await client.post(
+            f'{LITE_LLM_API_URL}/team/update',
+            json={'team_id': team_id, 'blocked': blocked},
+        )
+        response.raise_for_status()
+
+    @staticmethod
+    async def _block_team(
+        client: httpx.AsyncClient,
+        team_id: str,
+    ) -> None:
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            raise RuntimeError('LiteLLM API configuration not found')
+
+        # This endpoint needs user_api_key_cache_ttl=0 to block warm keys immediately.
+        response = await client.post(
+            f'{LITE_LLM_API_URL}/team/block', json={'team_id': team_id}
+        )
+        response.raise_for_status()
+        result = response.json()
+        if result.get('team_id') != team_id or result.get('blocked') is not True:
+            raise RuntimeError('LiteLLM did not confirm the team admission block')
 
     @staticmethod
     async def _user_exists(
@@ -2099,6 +2140,8 @@ class LiteLlmManager:
     async def _get_team_members_financial_data(
         client: httpx.AsyncClient,
         team_id: str,
+        *,
+        unkeyed_member_id: str | None = None,
     ) -> dict:
         """
         Get financial data for all members in a team.
@@ -2218,6 +2261,10 @@ class LiteLlmManager:
                 key_count_by_user[user_id] = key_count_by_user.get(user_id, 0) + 1
 
             missing_key_spend = role_only_member_ids - key_count_by_user.keys()
+            if unkeyed_member_id is not None and unkeyed_member_id in missing_key_spend:
+                # Provisioning reads back a new roster member before issuing its first key.
+                role_only_spend[unkeyed_member_id] = 0.0
+                missing_key_spend.remove(unkeyed_member_id)
             if missing_key_spend:
                 raise ValueError(
                     'LiteLLM role-only members have no validated key spend: '
@@ -2291,6 +2338,8 @@ class LiteLlmManager:
     create_team = staticmethod(with_http_client(_create_team))
     get_team = staticmethod(with_http_client(_get_team))
     update_team = staticmethod(with_http_client(_update_team))
+    set_team_blocked = staticmethod(with_http_client(_set_team_blocked))
+    block_team = staticmethod(with_http_client(_block_team))
     user_exists = staticmethod(with_http_client(_user_exists))
     create_user = staticmethod(with_http_client(_create_user))
     get_user = staticmethod(with_http_client(_get_user))
