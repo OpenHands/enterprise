@@ -47,6 +47,7 @@ dependencies = [
   "joserfc>=1.0.0",
   "json-repair",
   "jupyter-kernel-gateway==3.0.1",
+  "k8s-agent-sandbox[async]==1.0.2",
   "kubernetes>=33.1",
   "libtmux>=0.46.2",
   "limits==5.8.0",

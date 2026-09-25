@@ -2704,6 +2704,27 @@ wheels = [
 ]
 
 [[package]]
+name = "k8s-agent-sandbox"
+version = "1.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "kubernetes" },
+    { name = "prometheus-client" },
+    { name = "pydantic" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2b/34/96f83e88f6363a7988f130b2f8c73e1736f1c589c71d487980ea10660eb7/k8s_agent_sandbox-1.0.2.tar.gz", hash = "sha256:5f48feb29407a9e16c62662e1303e5bc887309c2a43d8448b69533836b9b4873", size = 168686, upload-time = "2026-09-11T00:21:01.461Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/0a/5b31c7b799d14478b0036cb4f1339b8147d808267b05629c5900266fe3bb/k8s_agent_sandbox-1.0.2-py3-none-any.whl", hash = "sha256:13df09140376816148e19c57735586e41511262f6cf2b35ed0d912685d6fe139", size = 96998, upload-time = "2026-09-11T00:21:00Z" },
+]
+
+[package.optional-dependencies]
+async = [
+    { name = "httpx" },
+    { name = "kubernetes-asyncio" },
+]
+
+[[package]]
 name = "keyring"
 version = "25.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2738,6 +2759,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/2c/8f/85bf51ad4150f64e8c665daf0d9dfe9787ae92005efb9a4d1cba592bd79d/kubernetes-35.0.0.tar.gz", hash = "sha256:3d00d344944239821458b9efd484d6df9f011da367ecb155dadf9513f05f09ee", size = 1094642, upload-time = "2026-01-16T01:05:27.76Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0c/70/05b685ea2dffcb2adbf3cdcea5d8865b7bc66f67249084cf845012a0ff13/kubernetes-35.0.0-py2.py3-none-any.whl", hash = "sha256:39e2b33b46e5834ef6c3985ebfe2047ab39135d41de51ce7641a7ca5b372a13d", size = 2017602, upload-time = "2026-01-16T01:05:25.991Z" },
+]
+
+[[package]]
+name = "kubernetes-asyncio"
+version = "33.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "certifi" },
+    { name = "python-dateutil" },
+    { name = "pyyaml" },
+    { name = "six" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/41/5f/c175f86b92ff5f19444e3be1423819491ae9859d1f6f7d83d404eab8b10d/kubernetes_asyncio-33.3.0.tar.gz", hash = "sha256:4c59cd4c99b197995ef38ef0c8ff45aab24b84830ebf0ddcb67355caea9674c9", size = 1124931, upload-time = "2025-08-11T21:39:37.825Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bc/20/90985f53c141e6f3464b7295a617ffd36574168861882f9291847d09f9b1/kubernetes_asyncio-33.3.0-py3-none-any.whl", hash = "sha256:25e6e265932ebb1aeecbdb30a107dbef3ee0bcd388ed12d092be70915733982b", size = 2174591, upload-time = "2025-08-11T21:39:35.697Z" },
 ]
 
 [[package]]
@@ -3526,6 +3564,7 @@ dependencies = [
     { name = "joserfc" },
     { name = "json-repair" },
     { name = "jupyter-kernel-gateway" },
+    { name = "k8s-agent-sandbox", extra = ["async"] },
     { name = "kubernetes" },
     { name = "libtmux" },
     { name = "limits" },
@@ -3665,6 +3704,7 @@ requires-dist = [
     { name = "joserfc", specifier = ">=1.0.0" },
     { name = "json-repair" },
     { name = "jupyter-kernel-gateway", specifier = "==3.0.1" },
+    { name = "k8s-agent-sandbox", extras = ["async"], specifier = "==1.0.2" },
     { name = "kubernetes", specifier = ">=33.1" },
     { name = "libtmux", specifier = ">=0.46.2" },
     { name = "limits", specifier = "==5.8.0" },
