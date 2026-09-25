@@ -27,7 +27,7 @@ from typing import Literal
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
@@ -241,37 +241,29 @@ async def _resolve_or_create_user(provider: OAuthProvider, userinfo: dict) -> st
 
 def _set_oauth_v2_cookie(
     request: Request,
-    response: RedirectResponse,
+    response: Response,
     user_id: str,
     access_token_expires_at: datetime | None,
     accepted_tos: bool,
+    refresh_token_expires_at: datetime | None = None,
 ) -> None:
-    """Set the small Phase-1 JWT cookie.
+    """Set the small JWT cookie for the OAuth v2 path.
 
     The cookie carries only ``user_id``, ``access_token_expires_at``, and
-    ``accepted_tos`` — not the tokens themselves. Phase 2's dual-cookie
-    middleware reads this cookie; Phase 1 only sets it so the new path is
-    exercised in isolation.
+    ``accepted_tos`` — not the tokens themselves. ``Max-Age`` is the IDP
+    refresh-token expiry (or a 30-day cap if ``None``), per the Phase 2 spec.
     """
-    max_age_seconds = 7 * 24 * 3600  # 1 week default
-    if access_token_expires_at is not None:
-        delta = access_token_expires_at - datetime.now(timezone.utc)
-        if delta.total_seconds() > 0:
-            max_age_seconds = int(delta.total_seconds())
-
-    payload = {
-        'user_id': user_id,
-        'access_token_expires_at': (
-            int(access_token_expires_at.timestamp())
-            if access_token_expires_at
-            else None
-        ),
-        'accepted_tos': accepted_tos,
-        'iat': int(time.time()),
-    }
-    signed = get_jwt_service().create_jws_token(
-        payload, expires_in=timedelta(seconds=max_age_seconds)
+    from server.auth.oauth_v2_refresh import (
+        compute_cookie_max_age,
+        create_oauth_v2_cookie_payload,
+        sign_oauth_v2_cookie,
     )
+
+    max_age_seconds = compute_cookie_max_age(refresh_token_expires_at)
+    payload = create_oauth_v2_cookie_payload(
+        user_id, access_token_expires_at, accepted_tos
+    )
+    signed = sign_oauth_v2_cookie(payload, max_age_seconds)
     web_url = get_web_url(request)
     response.set_cookie(
         key='openhands_auth',
@@ -414,6 +406,7 @@ async def oauth_v2_callback(
             user_id=user_id,
             access_token_expires_at=access_exp,
             accepted_tos=False,
+            refresh_token_expires_at=refresh_exp,
         )
     return response
 
