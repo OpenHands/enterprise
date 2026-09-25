@@ -1,6 +1,6 @@
 """Store for ``oauth_providers`` — CRUD + IDP/git provider lookups.
 
-The provider table is seeded by migration 165 from environment variables, but
+The provider table is seeded by migration 168 from environment variables, but
 runtime reads and (future) config mutations go through this store.
 """
 

@@ -39,7 +39,7 @@ DEFAULT_PERMITTED_DRIFT_SECONDS = 60
 class OAuthProvider(Base):
     """Per-provider OAuth/OIDC configuration.
 
-    Seeded by migration 165 from environment variables (one row for the IDP —
+    Seeded by migration 168 from environment variables (one row for the IDP —
     Keycloak — and one row per configured git provider). Runtime config changes
     go through ``OAuthProviderStore``.
     """

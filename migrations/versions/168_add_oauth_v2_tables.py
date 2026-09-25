@@ -12,8 +12,8 @@ Seeding: one IDP row for Keycloak (from ``KEYCLOAK_*`` env vars) and one row
 per configured git provider (when its ``*_CLIENT_ID`` env var is set).
 ``client_secret`` is encrypted at rest via the existing JWE service.
 
-Revision ID: 165
-Revises: 164
+Revision ID: 168
+Revises: 167
 Create Date: 2026-09-23 00:00:00.000000
 """
 
@@ -24,8 +24,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '165'
-down_revision: str | None = '164'
+revision: str = '168'
+down_revision: str | None = '167'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
