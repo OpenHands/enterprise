@@ -447,7 +447,9 @@ async def _load_owned_job(job_id: str, user_id: str | None) -> dict[str, str]:
         'Start the OAuth flow for a candidate remote MCP server and return the '
         "provider's authorization URL to open in the browser. The provider "
         'redirects back to the app server; poll `GET /api/v1/mcp/oauth/status/'
-        '{job_id}` for the outcome and the OAuth state to persist. Validation '
+        '{job_id}` for the outcome and the OAuth state to persist. When the '
+        'stored tokens are still valid or could be refreshed, no consent is '
+        'needed and the response is `ok` with only `job_id`. Validation '
         'matches `POST /api/v1/mcp/test`; `auth.strategy` must be `oauth2`.'
     ),
 )
@@ -495,6 +497,10 @@ async def start_mcp_oauth(
             ok=True, job_id=job_id, authorization_url=authorization_url
         )
     result = _load_result(job) if job else None
+    if isinstance(result, MCPTestSuccess):
+        # No consent was needed: the stored tokens were valid or refreshed.
+        # The caller reads the outcome from the status route.
+        return MCPOAuthStartResponse(ok=True, job_id=job_id)
     if isinstance(result, MCPTestFailure):
         return MCPOAuthStartResponse(
             ok=False, job_id=job_id, error=result.error, error_kind=result.error_kind
