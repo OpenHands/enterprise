@@ -2495,7 +2495,7 @@ async def test_reads_do_not_create_settings_for_unconfigured_org(
     assert state['settings'].user_cycle_start_spend == {}
     assert state['settings'].litellm_last_member_spend == {}
     assert state['settings'].litellm_known_member_ids == []
-    assert state['thresholds'] == []
+    assert [t.percentage for t in state['thresholds']] == [80, 90, 100]
     assert reconciliation == 'inactive'
     assert row is None
     # ...and none of them created the row.
@@ -3618,3 +3618,73 @@ async def test_non_unique_integrity_error_is_not_swallowed_by_the_recovery_read(
                 await loser_service._get_or_create_settings(budget_org.id)
 
     assert excinfo.value.orig.sqlstate == '23502'
+
+
+@pytest.mark.asyncio
+async def test_first_ui_save_preserves_default_alerts(async_session_maker, budget_org):
+    from server.routes.orgs import _build_budget_response
+
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        with (
+            patch.object(
+                service,
+                '_get_financial_snapshot',
+                AsyncMock(
+                    return_value=BudgetFinancialSnapshotResult(
+                        snapshot=_snapshot(), status='live'
+                    )
+                ),
+            ),
+            patch.object(
+                service, '_sync_litellm_budgets', AsyncMock(return_value=_snapshot())
+            ),
+        ):
+            initial = _build_budget_response(
+                await service.get_budget_state(budget_org.id)
+            )
+            await service.update_budget_settings(
+                budget_org.id,
+                OrgBudgetSettingsUpdate(
+                    enabled=True,
+                    monthly_limit=100,
+                    reset_day=1,
+                    thresholds=[
+                        OrgBudgetThresholdUpdate(
+                            percentage=t.percentage,
+                            email_enabled=t.email_enabled,
+                            slack_enabled=t.slack_enabled,
+                        )
+                        for t in initial.thresholds
+                    ],
+                ),
+            )
+            await session.commit()
+            saved = await service.get_budget_state(budget_org.id)
+        assert sorted(t.percentage for t in saved['thresholds']) == sorted(
+            percentage for percentage, _, _ in DEFAULT_THRESHOLDS
+        )
+
+
+@pytest.mark.asyncio
+async def test_read_preserves_intentionally_empty_thresholds(
+    async_session_maker, budget_org
+):
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        await service._get_or_create_settings(budget_org.id)
+        await service.store.replace_thresholds(
+            budget_org.id, await service.store.get_thresholds(budget_org.id), []
+        )
+        await session.commit()
+        with patch.object(
+            service,
+            '_get_financial_snapshot',
+            AsyncMock(
+                return_value=BudgetFinancialSnapshotResult(
+                    snapshot=_snapshot(), status='live'
+                )
+            ),
+        ):
+            result = await service.get_budget_state(budget_org.id)
+        assert result['thresholds'] == []

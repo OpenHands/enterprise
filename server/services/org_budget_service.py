@@ -10,7 +10,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException, Request, status
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, inspect, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -452,6 +452,18 @@ class OrgBudgetService:
         await self._reject_personal_org(org_id, 'get_budget_state')
         settings = await self._get_settings_for_read(org_id)
         thresholds = await self._get_thresholds(org_id)
+        if inspect(settings).transient:
+            # Negative IDs identify defaults that have not been persisted yet.
+            thresholds = [
+                OrgBudgetThreshold(
+                    id=-percentage,
+                    org_id=org_id,
+                    percentage=percentage,
+                    email_enabled=email_enabled,
+                    slack_enabled=slack_enabled,
+                )
+                for percentage, email_enabled, slack_enabled in DEFAULT_THRESHOLDS
+            ]
         overrides = await self._get_overrides(org_id)
         cycle = self._current_cycle(settings)
 
