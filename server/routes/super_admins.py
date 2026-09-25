@@ -203,3 +203,53 @@ async def revoke_super_admin(
         extra={'caller_user_id': caller_user_id, 'target_user_id': user_id},
     )
     return SuperAdminResponse(user_id=user_id)
+
+
+# ── IDP swap-over: one-time email-match seeding (ALL-5978) ────────────────
+
+
+class BulkAllowMatchByEmailResponse(BaseModel):
+    """Result of bulk-toggling ``allow_match_by_email``."""
+
+    updated: int
+    duplicate_emails: list[str]
+    value: bool
+
+
+@super_admin_router.put(
+    '/allow-match-by-email',
+    response_model=BulkAllowMatchByEmailResponse,
+)
+async def bulk_set_allow_match_by_email(
+    value: bool = True,
+    caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
+) -> BulkAllowMatchByEmailResponse:
+    """Bulk-set the one-time ``allow_match_by_email`` flag on all users.
+
+    Used at the IDP swap-over moment: an operator enables the flag so that the
+    next login for each user via the *new* IDP binds the new ``sub`` to the
+    existing ``User`` by email. The flag self-clears on each successful link,
+    so the email-match window is exactly one login wide per user.
+
+    Requires ``MANAGE_SUPER_ADMINS`` (super-admin only).
+
+    The response includes ``duplicate_emails`` — emails that appear on more
+    than one user row. These will *not* auto-link at match time (the resolver
+    returns 409 for them); the operator must resolve them manually (e.g. via
+    the separate account-merge operation) before those users log in.
+    """
+    result = await UserStore.bulk_set_allow_match_by_email(value)
+    logger.info(
+        'super_admins:bulk_set_allow_match_by_email',
+        extra={
+            'caller_user_id': caller_user_id,
+            'value': value,
+            'updated': result['updated'],
+            'duplicate_email_count': len(result['duplicate_emails']),
+        },
+    )
+    return BulkAllowMatchByEmailResponse(
+        updated=result['updated'],
+        duplicate_emails=result['duplicate_emails'],
+        value=value,
+    )
