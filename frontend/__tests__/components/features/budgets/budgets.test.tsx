@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { AxiosError } from "axios";
 import { Budgets } from "#/components/features/budgets/budgets";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 
@@ -15,14 +16,27 @@ vi.mock("#/api/organization-service/organization-service.api", () => ({
   },
 }));
 
-vi.mock("#/hooks/query/use-config", () => ({
-  useConfig: () => ({
-    data: {
-      slack_enabled: true,
-      email_enabled: true,
-    },
-  }),
-}));
+vi.mock("react-i18next", async () => {
+  const actual =
+    await vi.importActual<typeof import("react-i18next")>("react-i18next");
+  return {
+    ...actual,
+    useTranslation: () => ({
+      t: (key: string, params?: Record<string, string>) => {
+        const translations: Record<string, string> = {
+          SETTINGS$BUDGETS_NEXT_RESET: `Next reset: ${params?.date} at 00:00 UTC.`,
+          SETTINGS$BUDGETS_RESET_DAY_CHANGE_HELPER:
+            "Saving keeps current organization and individual spending.",
+          SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND: `The ${params?.cap} team cap includes the ${params?.priorSpend} already recorded before this cycle started.`,
+          SETTINGS$BUDGETS_TEAM_CAP_HELPER:
+            "The team cap includes any spend already recorded before this cycle started.",
+        };
+        return translations[key] || key;
+      },
+      i18n: { language: "en", exists: () => false },
+    }),
+  };
+});
 
 vi.mock("#/context/use-selected-organization", () => ({
   useSelectedOrganizationId: () => ({
@@ -36,6 +50,9 @@ vi.mock("#/hooks/use-debounce", () => ({
 }));
 
 const budgetResponse = {
+  email_alerts_available: true,
+  slack_integration_configured: true,
+  slack_workspace_connected: true,
   enabled: true,
   monthly_limit: 1000,
   litellm_last_sync_at: "2024-01-15T12:00:00Z",
@@ -116,6 +133,220 @@ describe("Budgets", () => {
       budgetResponse.users[0],
     );
     vi.mocked(organizationService.deleteBudgetOverride).mockResolvedValue();
+  });
+
+  it("keeps a rejected settings edit through refetch and retries the draft", async () => {
+    const user = userEvent.setup();
+    const error = new AxiosError("503");
+    error.response = { data: { detail: {
+      code: "budget_change_rejected",
+      message: "Budget change wasn't saved. Your previous limits remain in effect. Please retry.",
+      previous_policy_verified: true,
+    } } } as AxiosError["response"];
+    vi.mocked(organizationService.updateBudgetSettings).mockRejectedValueOnce(error);
+    vi.mocked(organizationService.getBudgetSettings)
+      .mockResolvedValueOnce(budgetResponse)
+      .mockResolvedValue({ ...budgetResponse, current_spend: 201 });
+    await renderBudgets();
+    const input = screen.getByLabelText("Monthly limit");
+    await user.clear(input);
+    await user.type(input, "500");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByText(/Budget change wasn't saved/);
+    await waitFor(() => expect(organizationService.getBudgetSettings).toHaveBeenCalledTimes(2));
+    expect(input).toHaveValue(500);
+    expect(screen.getByText(/of \$1,000 spent/)).toBeInTheDocument();
+    expect(screen.queryByText(/of \$500 spent/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(organizationService.updateBudgetSettings).toHaveBeenCalledTimes(2));
+    expect(organizationService.updateBudgetSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({payload: expect.objectContaining({monthly_limit: 500})}),
+    );
+    await waitFor(() => expect(screen.queryByText(/Budget change wasn't saved/)).not.toBeInTheDocument());
+  });
+
+  it("keeps the individual editor open after a rejected save", async () => {
+    const user = userEvent.setup();
+    const error = new AxiosError("503");
+    error.response = { data: { detail: {
+      code: "budget_change_rejected", message: "Budget change wasn't saved. Please retry.",
+    } } } as AxiosError["response"];
+    vi.mocked(organizationService.upsertBudgetOverride).mockRejectedValueOnce(error);
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await user.click(screen.getByLabelText("Edit budget for User One"));
+    const input = screen.getByRole("spinbutton");
+    await user.clear(input);
+    await user.type(input, "75");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Budget change wasn't saved/);
+    expect(input).toHaveValue(75);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument());
+  });
+
+  it("clears a rejected individual edit when Cancel discards the draft", async () => {
+    const user = userEvent.setup();
+    const error = new AxiosError("503");
+    error.response = { data: { detail: {
+      code: "budget_change_rejected", message: "Budget change wasn't saved. Please retry.",
+    } } } as AxiosError["response"];
+    vi.mocked(organizationService.upsertBudgetOverride).mockRejectedValueOnce(error);
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await user.click(screen.getByLabelText("Edit budget for User One"));
+    await user.clear(screen.getByRole("spinbutton"));
+    await user.type(screen.getByRole("spinbutton"), "75");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Budget change wasn't saved/);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByText(/Budget change wasn't saved/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText("Edit budget for User One"));
+    expect(screen.getByRole("spinbutton")).toHaveValue(50);
+  });
+
+  it("previews the selected reset date and preserves the saved date on reload", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      reset_day: 15,
+      cycle_end_at: "2099-10-15T00:00:00Z",
+    });
+    await renderBudgets();
+    expect(
+      screen.getByText("Next reset: October 15, 2099 at 00:00 UTC."),
+    ).toBeInTheDocument();
+    await user.click(screen.getByTestId("org-billing-cycle"));
+    await user.click(screen.getByRole("option", { name: "1st of each month" }));
+    expect(
+      screen.getByText(
+        "Saving keeps current organization and individual spending.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Next reset: October 15, 2099 at 00:00 UTC."),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(organizationService.updateBudgetSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ reset_day: 1 }),
+      }),
+    );
+  });
+
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "shows available alert channels (email=%s, Slack=%s)",
+    async (email, slack) => {
+      vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+        ...budgetResponse,
+        email_alerts_available: email,
+        slack_integration_configured: slack,
+        slack_workspace_connected: slack,
+      });
+      await renderBudgets();
+      expect(Boolean(screen.queryByText("Alert thresholds"))).toBe(
+        email || slack,
+      );
+      expect(
+        Boolean(screen.queryByRole("button", { name: "Email org admins" })),
+      ).toBe(email);
+      expect(
+        Boolean(screen.queryByRole("button", { name: "# Post to Slack" })),
+      ).toBe(slack);
+      expect(Boolean(screen.queryByLabelText("Slack channel"))).toBe(slack);
+    },
+  );
+
+  it("requires connecting Slack before enabling alerts", async () => {
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      email_alerts_available: false,
+      slack_workspace_connected: false,
+    });
+    await renderBudgets();
+    expect(
+      screen.getByRole("button", { name: "# Post to Slack" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /Add threshold/ }),
+    ).toBeDisabled();
+    expect(screen.getByLabelText("Delete 75% threshold")).toBeDisabled();
+    expect(screen.getByRole("link", { name: /Connect Slack/ })).toHaveAttribute(
+      "href",
+      "/settings/integrations",
+    );
+  });
+
+  it("preserves hidden alert settings when saving the monthly limit", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      email_alerts_available: false,
+      slack_integration_configured: false,
+      slack_workspace_connected: false,
+    });
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(organizationService.updateBudgetSettings).toHaveBeenCalled(),
+    );
+    const [{ payload }] = vi.mocked(organizationService.updateBudgetSettings)
+      .mock.calls[0];
+    expect(payload).not.toHaveProperty("thresholds");
+    expect(payload).not.toHaveProperty("slack_channel");
+  });
+
+  it.each(["email", "slack"])(
+    "preserves stored %s flags while that channel is unavailable",
+    async (unavailable) => {
+      const user = userEvent.setup();
+      vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+        ...budgetResponse,
+        email_alerts_available: unavailable !== "email",
+        slack_workspace_connected: unavailable !== "slack",
+        thresholds: [
+          { id: 1, percentage: 75, email_enabled: true, slack_enabled: true },
+        ],
+      });
+      await renderBudgets();
+      await user.click(screen.getByRole("button", { name: "Save changes" }));
+      await waitFor(() =>
+        expect(organizationService.updateBudgetSettings).toHaveBeenCalled(),
+      );
+      const [{ payload }] = vi.mocked(organizationService.updateBudgetSettings)
+        .mock.calls[0];
+      expect(payload.thresholds).toEqual([
+        { percentage: 75, email_enabled: true, slack_enabled: true },
+      ]);
+    },
+  );
+
+  it("defaults a new threshold to Slack when only Slack is available", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      email_alerts_available: false,
+    });
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: /Add threshold/ }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(organizationService.updateBudgetSettings).toHaveBeenCalled(),
+    );
+    expect(
+      vi.mocked(organizationService.updateBudgetSettings).mock.calls[0][0]
+        .payload.thresholds,
+    ).toContainEqual({
+      percentage: 50,
+      email_enabled: false,
+      slack_enabled: true,
+    });
   });
 
   it("adds and removes thresholds, then saves updated settings", async () => {
@@ -233,12 +464,57 @@ describe("Budgets", () => {
     await renderBudgets();
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Degraded",
+      "Degraded — The last budget update could not be completed or verified.",
     );
     expect(screen.getByRole("alert")).toHaveTextContent(
       "member cycle baseline is unavailable",
     );
     expect(screen.getByText("$200.00")).toBeInTheDocument();
+  });
+
+  it("explains a team cap that includes spend recorded before the cycle started", async () => {
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      desired_team_max_budget: 1770,
+      applied_team_max_budget: 1770,
+    });
+
+    await renderBudgets();
+
+    expect(
+      screen.getByText(
+        "The $1,770 team cap includes the $770.00 already recorded before this cycle started.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("explains the team cap without an amount when it equals the monthly limit", async () => {
+    await renderBudgets();
+
+    expect(
+      screen.getByText(
+        "The team cap includes any spend already recorded before this cycle started.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/team cap includes the \$/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("omits the team cap explanation when no organization budget is enforced", async () => {
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      enabled: false,
+      reconciliation_state: "inactive",
+      desired_team_max_budget: null,
+      applied_team_max_budget: null,
+    });
+
+    await renderBudgets();
+
+    expect(
+      screen.queryByText(/already recorded before this cycle started/),
+    ).not.toBeInTheDocument();
   });
 
   it("refetches budget state after a failed settings write", async () => {
@@ -324,5 +600,82 @@ describe("Budgets", () => {
     await waitFor(() => {
       expect(organizationService.getBudgetSettings).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("does not offer a toggle to disable the organization budget", async () => {
+    await renderBudgets();
+
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(screen.queryByText("Enable budget")).not.toBeInTheDocument();
+  });
+
+  it("saves the organization budget as enabled even when it is currently inactive", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      enabled: false,
+      reconciliation_state: "inactive",
+      desired_team_max_budget: null,
+      applied_team_max_budget: null,
+    });
+
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      expect(organizationService.updateBudgetSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            enabled: true,
+            monthly_limit: 1000,
+          }),
+        }),
+      );
+    });
+  });
+
+  it("disables saving the organization budget until a monthly limit is entered", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      enabled: false,
+      monthly_limit: null,
+      reconciliation_state: "inactive",
+      desired_team_max_budget: null,
+      applied_team_max_budget: null,
+    });
+
+    await renderBudgets();
+
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Monthly limit"), "500");
+
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+  });
+
+  it("describes the default budget as applying to users without an override", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+
+    await user.click(
+      screen.getByRole("button", { name: "Default budget for users" }),
+    );
+
+    expect(
+      screen.getByRole("heading", {
+        name: "SETTINGS$BUDGETS_DEFAULT_FOR_USERS",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("SETTINGS$BUDGETS_DEFAULT_FOR_USERS_DESCRIPTION"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("SETTINGS$BUDGETS_DEFAULT_PREVIEW"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/new users/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/keep their current budgets/i),
+    ).not.toBeInTheDocument();
   });
 });
