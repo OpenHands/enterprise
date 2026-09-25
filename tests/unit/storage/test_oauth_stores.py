@@ -133,6 +133,38 @@ class TestOAuthProviderStore:
         assert rows[0].provider_category == 'github'
 
     @pytest.mark.asyncio
+    async def test_get_first_idp(self, patched_session, make_provider):
+        first = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+
+        got = await OAuthProviderStore().get_first_idp()
+        assert got is not None
+        assert got.id == first.id
+        assert got.is_idp is True
+
+    @pytest.mark.asyncio
+    async def test_get_first_idp_none(self, patched_session, make_provider):
+        await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        assert await OAuthProviderStore().get_first_idp() is None
+
+    @pytest.mark.asyncio
+    async def test_get_first_by_category(self, patched_session, make_provider):
+        first = await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        await make_provider(category=ProviderType.GITLAB, is_idp=False)
+
+        got = await OAuthProviderStore().get_first_by_category('github')
+        assert got is not None
+        assert got.id == first.id
+        assert got.provider_category == 'github'
+
+    @pytest.mark.asyncio
+    async def test_get_first_by_category_none(self, patched_session, make_provider):
+        await make_provider(category=ProviderType.GITHUB)
+        assert await OAuthProviderStore().get_first_by_category('gitlab') is None
+
+    @pytest.mark.asyncio
     async def test_upsert_insert_then_update(self, patched_session):
         provider = OAuthProvider(
             provider_category=ProviderType.GITHUB.value,
