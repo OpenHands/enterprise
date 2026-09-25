@@ -816,6 +816,13 @@ async def authenticate(request: Request):
                 domain=get_cookie_domain(),
                 samesite=get_cookie_samesite(),
             )
+        # Also clear the OAuth v2 cookie if present.
+        if request.cookies.get('openhands_auth'):
+            response.delete_cookie(
+                'openhands_auth',
+                domain=get_cookie_domain(),
+                samesite=get_cookie_samesite(),
+            )
 
         return response
 
@@ -1271,6 +1278,12 @@ async def logout(request: Request):
     delete_chunked_cookie(
         response,
         'keycloak_auth',
+        domain=get_cookie_domain(),
+        samesite=get_cookie_samesite(),
+    )
+    # Also clear the OAuth v2 (Phase 2) cookie so v2-cookie sessions log out.
+    response.delete_cookie(
+        'openhands_auth',
         domain=get_cookie_domain(),
         samesite=get_cookie_samesite(),
     )

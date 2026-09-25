@@ -1,5 +1,6 @@
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from uuid import UUID
 
@@ -82,6 +83,20 @@ class SaasUserAuth(UserAuth):
     _secrets: Secrets | None = None
     accepted_tos: bool | None = None
     auth_type: AuthType = AuthType.COOKIE
+    # OAuth v2 (Phase 2) cookie session. When True, the instance was minted
+    # from the small ``openhands_auth`` JWT cookie and resolves tokens via the
+    # new ``oauth_tokens`` table / ``OAuthTokenStore`` instead of the legacy
+    # Keycloak-coupled path. The dual-cookie middleware tries this cookie
+    # before falling back to the old ``keycloak_auth`` chunked cookie.
+    oauth_v2_cookie: bool = False
+    # IDP access-token expiry as carried in the v2 cookie payload. Used by
+    # ``get_access_token`` to decide whether a refresh is needed, and by the
+    # middleware to re-mint the cookie after a refresh.
+    access_token_expires_at: datetime | None = field(default=None, repr=False)
+    # IDP refresh-token expiry, read from ``oauth_tokens`` after the first
+    # IDP token resolution. The middleware uses it to compute the re-minted
+    # cookie's ``Max-Age`` (30-day cap).
+    idp_refresh_token_expires_at: datetime | None = field(default=None, repr=False)
     # API key context fields - populated when authenticated via API key
     api_key_org_id: UUID | None = None  # Org bound to the API key used for auth
     api_key_id: int | None = None
@@ -138,6 +153,9 @@ class SaasUserAuth(UserAuth):
         self._role = None
         self._permissions = None
         self._org_info_loaded = False
+        # The v2 access token is org-independent but the memoized token must
+        # not survive a re-scope that clears provider_tokens.
+        self.access_token = None if self.oauth_v2_cookie else self.access_token
 
     async def _resolve_and_verify_override_org(self) -> UUID | None:
         """Verify and return the trusted resolver org override, if present."""
@@ -506,8 +524,115 @@ class SaasUserAuth(UserAuth):
         self._secrets = user_secrets
         return user_secrets
 
+    async def _v2_get_idp_access_token(self) -> SecretStr | None:
+        """Resolve the IDP access token for an OAuth v2 cookie session.
+
+        Reads the user's IDP ``oauth_tokens`` row and refreshes it via
+        ``OAuthTokenStore.get_valid_access_token`` if the access token is
+        within the provider's drift margin. On refresh, updates
+        ``access_token_expires_at`` / ``idp_refresh_token_expires_at`` and
+        sets ``refreshed = True`` so the middleware re-mints the cookie.
+        """
+        from storage.oauth_provider_store import OAuthProviderStore
+        from storage.oauth_token_store import OAuthTokenStore
+
+        try:
+            user_uuid = UUID(self.user_id)
+        except ValueError as exc:
+            logger.warning('oauth_v2_invalid_user_id', extra={'user_id': self.user_id})
+            raise AuthError('Invalid user identity') from exc
+
+        idp_providers = await OAuthProviderStore().get_idp_providers()
+        for provider in idp_providers:
+            store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
+            raw = await store.get_raw()
+            if raw is None:
+                continue
+
+            refreshed: list[bool] = []
+
+            async def _refresh_cb(
+                refresh_token: str,
+                _access_expires_at: datetime | None,
+                _refresh_expires_at: datetime | None,
+                *,
+                _provider=provider,
+                _refreshed=refreshed,
+            ) -> dict | None:
+                from server.auth.oauth_v2_refresh import refresh_oauth_token
+
+                result = await refresh_oauth_token(_provider, refresh_token)
+                _refreshed.append(True)
+                return result
+
+            token = await store.get_valid_access_token(
+                permitted_drift_seconds=provider.permitted_drift_seconds,
+                refresh=_refresh_cb,
+            )
+            if token is None:
+                continue
+
+            # Re-read the row to capture the (possibly refreshed) expiry so
+            # the middleware can re-mint the cookie with accurate claims.
+            raw_after = await store.get_raw()
+            self.access_token_expires_at = (
+                raw_after.access_token_expires_at if raw_after else None
+            )
+            self.idp_refresh_token_expires_at = (
+                raw_after.refresh_token_expires_at if raw_after else None
+            )
+            if refreshed:
+                self.refreshed = True
+            return SecretStr(token)
+
+        # No IDP token row for this user — the v2 cookie is stale.
+        raise ExpiredError()
+
+    def _v2_idp_token_needs_refresh(self) -> bool:
+        """Whether the v2 cookie's IDP access token is within the drift margin.
+
+        ``access_token_expires_at`` is ``None`` when the token never expires;
+        otherwise the refresh trigger is ``now + permitted_drift_seconds >=
+        access_token_expires_at``. The drift margin is read from the provider
+        at refresh time (see ``_v2_get_idp_access_token``); here we use the
+        default 60s so the trigger fires early enough.
+        """
+        from storage.oauth_provider import DEFAULT_PERMITTED_DRIFT_SECONDS
+
+        if self.access_token_expires_at is None:
+            return False
+        exp = self.access_token_expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return (
+            datetime.now(timezone.utc)
+            + timedelta(seconds=DEFAULT_PERMITTED_DRIFT_SECONDS)
+            >= exp
+        )
+
     async def get_access_token(self) -> SecretStr | None:
         logger.debug('saas_user_auth_get_access_token')
+        # OAuth v2 cookie sessions resolve the IDP access token from the
+        # ``oauth_tokens`` table instead of the Keycloak offline session.
+        if self.oauth_v2_cookie:
+            try:
+                if self.access_token is None or self._v2_idp_token_needs_refresh():
+                    token = await self._v2_get_idp_access_token()
+                    self.access_token = token
+                return self.access_token
+            except AuthError:
+                if self.auth_type == AuthType.BEARER:
+                    return None
+                raise
+            except Exception as e:
+                if self.auth_type == AuthType.BEARER:
+                    logger.warning('bearer_get_access_token_failed', exc_info=True)
+                    return None
+                if _is_transient_keycloak_error(e):
+                    raise TokenRefreshError(
+                        'Authentication service temporarily unavailable'
+                    ) from e
+                raise AuthError() from e
         try:
             if self.access_token is None or self._is_token_expired(self.access_token):
                 await self.refresh()
@@ -532,10 +657,81 @@ class SaasUserAuth(UserAuth):
                 ) from e
             raise AuthError() from e
 
+    async def _v2_get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
+        """Resolve git-provider tokens for an OAuth v2 cookie session.
+
+        Queries ``oauth_tokens`` for this user where the linked provider
+        ``is_idp=False`` and builds ``ProviderToken`` objects via
+        ``OAuthTokenStore.get_valid_access_token`` with a provider-specific
+        refresh callback. The interface to ``ProviderHandler`` / ``GitService``
+        is unchanged: callers still receive a ``{ProviderType: ProviderToken}``
+        mapping.
+        """
+        from server.auth.oauth_v2_refresh import make_refresh_callback
+        from storage.oauth_provider_store import OAuthProviderStore
+        from storage.oauth_token_store import OAuthTokenStore
+
+        provider_tokens: dict[ProviderType, ProviderToken] = {}
+        user_secrets = await self.get_secrets()
+        try:
+            user_uuid = UUID(self.user_id)
+        except ValueError as exc:
+            raise AuthError('Invalid user identity') from exc
+
+        try:
+            git_providers = await OAuthProviderStore().get_git_providers()
+            for provider in git_providers:
+                store = OAuthTokenStore(
+                    user_id=user_uuid, oauth_provider_id=provider.id
+                )
+                raw = await store.get_raw()
+                if raw is None:
+                    continue
+                try:
+                    idp_type = ProviderType(provider.provider_category)
+
+                    host = None
+                    if user_secrets and idp_type in user_secrets.provider_tokens:
+                        host = user_secrets.provider_tokens[idp_type].host
+                    if idp_type == ProviderType.BITBUCKET_DATA_CENTER and not host:
+                        host = BITBUCKET_DATA_CENTER_HOST or None
+                    if idp_type == ProviderType.AZURE_DEVOPS and not host:
+                        host = AZURE_DEVOPS_ORGANIZATION or None
+
+                    token = await store.get_valid_access_token(
+                        permitted_drift_seconds=provider.permitted_drift_seconds,
+                        refresh=make_refresh_callback(provider),
+                    )
+                    if token is None:
+                        continue
+                    provider_tokens[idp_type] = ProviderToken(
+                        token=SecretStr(token), user_id=None, host=host
+                    )
+                except Exception:
+                    logger.exception(
+                        'Error refreshing v2 provider token',
+                        extra={
+                            'user_id': self.user_id,
+                            'provider': provider.provider_category,
+                        },
+                        stack_info=True,
+                    )
+                    # Delete the stale token row so the user can re-link, mirroring
+                    # the legacy path's behavior on an unrecoverable refresh token.
+                    await store.delete_tokens()
+                    raise
+
+            self.provider_tokens = MappingProxyType(provider_tokens)
+            return self.provider_tokens
+        except Exception as e:
+            raise AuthError() from e
+
     async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         logger.debug('saas_user_auth_get_provider_tokens')
         if self.provider_tokens is not None:
             return self.provider_tokens
+        if self.oauth_v2_cookie:
+            return await self._v2_get_provider_tokens()
         provider_tokens: dict[ProviderType, ProviderToken] = {}
 
         user_secrets = await self.get_secrets()
@@ -828,6 +1024,15 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
 
 
 async def saas_user_auth_from_cookie(request: Request) -> SaasUserAuth | None:
+    # Dual-cookie (Phase 2): prefer the new small ``openhands_auth`` JWT
+    # cookie, then fall back to the legacy ``keycloak_auth`` chunked cookie so
+    # existing sessions keep working until their cookies naturally expire.
+    v2_signed = request.cookies.get('openhands_auth')
+    if v2_signed:
+        try:
+            return await saas_user_auth_from_oauth_v2_cookie(v2_signed)
+        except Exception as exc:
+            raise CookieError from exc
     try:
         signed_token = read_chunked_cookie(request, 'keycloak_auth')
         if not signed_token:
@@ -835,6 +1040,59 @@ async def saas_user_auth_from_cookie(request: Request) -> SaasUserAuth | None:
         return await saas_user_auth_from_signed_token(signed_token)
     except Exception as exc:
         raise CookieError from exc
+
+
+async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth:
+    """Build a ``SaasUserAuth`` from the small OAuth v2 JWT cookie.
+
+    The cookie payload is ``{user_id, access_token_expires_at, accepted_tos}``.
+    Tokens are NOT carried in the cookie; they are resolved lazily from the
+    ``oauth_tokens`` table by ``get_access_token`` / ``get_provider_tokens``.
+    """
+    from storage.encrypt_utils import get_jwt_service
+
+    decoded = get_jwt_service().verify_jws_token(signed_token)
+    user_id = decoded.get('user_id')
+    if not user_id:
+        raise AuthError('OAuth v2 cookie missing user_id')
+
+    accepted_tos = decoded.get('accepted_tos')
+
+    # access_token_expires_at may be None (never expires) or an epoch int.
+    ate = decoded.get('access_token_expires_at')
+    access_token_expires_at: datetime | None = None
+    if ate is not None:
+        try:
+            access_token_expires_at = datetime.fromtimestamp(int(ate), tz=timezone.utc)
+        except (TypeError, ValueError, OSError):
+            access_token_expires_at = None
+
+    # Email is sourced from the local User row (set lazily by get_user_email),
+    # so we do not need it in the cookie payload.
+    user = await UserStore.get_user_by_id(user_id)
+    email = user.email if user else None
+    email_verified = user.email_verified if user else None
+
+    if email:
+        authz_type = await UserAuthorizationStore.get_authorization_type(email, None)
+        if authz_type == UserAuthorizationType.BLACKLIST:
+            logger.warning(
+                f'Blocked authentication attempt for existing user with email: {email}'
+            )
+            raise AuthError(
+                'Access denied: Your email domain is not allowed to access this service'
+            )
+
+    return SaasUserAuth(
+        user_id=user_id,
+        refresh_token=SecretStr(''),
+        email=email,
+        email_verified=email_verified,
+        accepted_tos=accepted_tos,
+        auth_type=AuthType.COOKIE,
+        oauth_v2_cookie=True,
+        access_token_expires_at=access_token_expires_at,
+    )
 
 
 async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
