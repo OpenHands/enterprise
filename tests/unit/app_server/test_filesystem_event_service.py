@@ -4,11 +4,12 @@ This module tests the filesystem-based implementation of EventService,
 focusing on search functionality.
 """
 
+import asyncio
 import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -771,6 +772,78 @@ class TestEventIndex:
         assert [event.timestamp for event in result] == sorted(
             event.timestamp for event in result
         )
+
+    async def _arrange_export_batches(
+        self, service: FilesystemEventService, monkeypatch
+    ) -> tuple[UUID, list[Event], list[int]]:
+        """Save 7 events with a batch size of 3 and spy on the batch loads."""
+        from openhands.app_server.event import event_service_base
+
+        monkeypatch.setattr(event_service_base, '_export_batch_size', lambda: 3)
+
+        conversation_id = uuid4()
+        events = []
+        for _ in range(7):
+            event = create_token_event()
+            events.append(event)
+            await service.save_event(conversation_id, event)
+            await asyncio.sleep(0.01)
+        # Build the index up front so only the export's own loads are recorded.
+        await service.search_events(conversation_id, limit=1)
+
+        call_sizes: list[int] = []
+        original = service._load_events_from_paths
+
+        async def spy(paths: list[Path]) -> list[Event | None]:
+            call_sizes.append(len(paths))
+            return await original(paths)
+
+        monkeypatch.setattr(service, '_load_events_from_paths', spy)
+        return conversation_id, events, call_sizes
+
+    @pytest.mark.asyncio
+    async def test_iter_events_for_export_loads_events_in_batches(
+        self, service: FilesystemEventService, monkeypatch
+    ):
+        """Export loads events in chunks, not all at once, and keeps timestamp order.
+
+        With a batch size of 3 and 7 events, _load_events_from_paths should be
+        called 3 times (3 + 3 + 1), never with more than 3 paths at a time.
+        """
+        conversation_id, events, call_sizes = await self._arrange_export_batches(
+            service, monkeypatch
+        )
+
+        result = [
+            event async for event in service.iter_events_for_export(conversation_id)
+        ]
+
+        assert call_sizes == [3, 3, 1]
+        assert [event.id for event in result] == [event.id for event in events]
+
+    @pytest.mark.asyncio
+    async def test_iter_events_for_export_prefetches_only_one_batch_ahead(
+        self, service: FilesystemEventService, monkeypatch
+    ):
+        """Export is lazy: only the next batch is in flight while one is consumed.
+
+        After the first event is yielded, batch 1 has been loaded and batch 2
+        has been started, but batch 3 must not be fetched until batch 2 is
+        consumed. Closing the generator early cancels the pending prefetch.
+        """
+        conversation_id, _, call_sizes = await self._arrange_export_batches(
+            service, monkeypatch
+        )
+
+        gen = service.iter_events_for_export(conversation_id)
+        await anext(gen)
+        # Let the prefetch task for batch 2 start.
+        await asyncio.sleep(0)
+        assert call_sizes == [3, 3]
+
+        await gen.aclose()
+        await asyncio.sleep(0)
+        assert call_sizes == [3, 3]
 
     @pytest.mark.asyncio
     async def test_rebuild_loads_events_in_batches(
