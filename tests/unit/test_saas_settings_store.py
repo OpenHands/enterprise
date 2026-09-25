@@ -499,17 +499,14 @@ async def test_ensure_api_key_generates_new_key_when_verification_fails():
 
 @pytest.fixture
 def org_with_multiple_members_fixture(session_maker):
-    """Set up an organization with multiple members for testing LLM settings propagation.
-
-    Uses sync session to avoid UUID conversion issues with async SQLite.
-    """
+    """Set up an organization with multiple members for testing LLM settings propagation."""
     from storage.encrypt_utils import decrypt_value
     from storage.org import Org
     from storage.org_member import OrgMember
     from storage.role import Role
     from storage.user import User
 
-    # Use realistic UUIDs that work well with SQLite
+    # Fixed UUIDs keep the assertions below readable.
     org_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081')
     admin_user_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5082')
     member1_user_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5083')
@@ -1711,9 +1708,10 @@ async def test_mcp_config_is_encrypted_at_rest(
 async def test_load_migrates_detached_legacy_mcp_config(
     async_session_maker, org_with_multiple_members_fixture
 ):
-    """A v5 settings row can load a separately stored v4 MCP fragment."""
+    """A current-schema settings row can load a separately stored v4 MCP fragment."""
     from sqlalchemy import select
 
+    from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
     from storage.org_member import OrgMember
 
     admin_user_id = org_with_multiple_members_fixture['admin_user_id']
@@ -1743,7 +1741,7 @@ async def test_load_migrates_detached_legacy_mcp_config(
         loaded = await store.load()
 
     assert loaded is not None
-    assert loaded.agent_settings.schema_version == 5
+    assert loaded.agent_settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     server = loaded.agent_settings.mcp_config['shttp']
     assert server.url == 'https://example.com/mcp'
     assert server.timeout == 60
@@ -2073,7 +2071,6 @@ async def test_llm_profiles_are_encrypted_at_rest(
 
     async with async_session_maker() as session:
         # Bypass the ORM-level TypeDecorator by reading the raw cell.
-        # SQLite stores UUIDs hyphen-stripped, so normalize both sides.
         rows = (
             await session.execute(text('SELECT id, llm_profiles FROM "user"'))
         ).all()

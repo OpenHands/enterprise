@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 from pydantic import SecretStr
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import joinedload
 
 from openhands.app_server.settings.llm_profiles import LLMProfiles, resolve_profile_llm
@@ -108,6 +109,19 @@ def managed_llm_key_config_from_model(
     if not uses_managed_llm_key:
         return None
     return ManagedLlmKeyConfig(openhands_type=openhands_type)
+
+
+def _org_rotation_advisory_lock_key(org_id: str) -> int:
+    """Derive a stable signed 64-bit key for a per-org rotation advisory lock.
+
+    Managed-key rotation deletes and re-mints under a single deterministic
+    per-org alias, so two concurrent rotations for the same org must not
+    interleave (one rotation's delete would orphan the other's freshly-minted
+    key). Serializing on ``pg_advisory_xact_lock`` keyed by the org id prevents
+    that interleaving; the lock auto-releases at transaction end.
+    """
+    digest = hashlib.blake2b(org_id.encode('utf-8'), digest_size=8).digest()
+    return int.from_bytes(digest, 'big', signed=True)
 
 
 # ``Settings`` fields that are also ``Org`` columns. The save loop below copies
@@ -760,6 +774,10 @@ class SaasSettingsStore(SettingsStore):
             kwargs.pop('agent_settings', None)
             kwargs.pop('conversation_settings', None)
             kwargs.pop('user_consents_to_analytics', None)
+            # ``memory_context`` is written exclusively by the
+            # MemoryChangeCallbackProcessor; a normal settings save must not
+            # clobber it with the (possibly stale) value on the Settings object.
+            kwargs.pop('memory_context', None)
 
             # Get or create user_settings for this user
             user_settings_result = await session.execute(
@@ -1105,8 +1123,10 @@ class SaasSettingsStore(SettingsStore):
             await session.commit()
             return True
 
-    async def rotate_managed_llm_key(self) -> ManagedLlmKeyRotation:
-        """Force-rotate the managed LiteLLM/OpenHands key for this user/org.
+    async def rotate_managed_llm_key(
+        self, *, only_if_current: str | None = None
+    ) -> ManagedLlmKeyRotation:
+        """Rotate the managed LiteLLM/OpenHands key for this user/org.
 
         Centralizes the managed-key lifecycle so callers (e.g. the API-key
         refresh endpoint) don't re-implement it. The effective LLM config is
@@ -1115,17 +1135,33 @@ class SaasSettingsStore(SettingsStore):
         BYOK or org-level BYOK pointing at a third-party base_url — are
         rejected before any key is generated.
 
-        The new key is generated under the same deterministic alias as
-        ``_ensure_api_key`` / ``OrgStore._ensure_managed_llm_key_for_user``
-        (deleting any prior alias first to avoid orphaned keys) and carries
-        ``{'type': 'openhands'}`` metadata when the effective model is an
-        ``openhands/*`` model, matching ``verify_existing_key``'s contract.
+        Concurrency safety (enterprise#439). The mutation runs under a per-org
+        transaction advisory lock, so two rotations for the same org serialize
+        instead of interleaving. Within the lock the current key is re-read and
+        the shared alias is cleared (``delete_key_by_alias``) before the
+        replacement is minted under the same alias. The #439 root cause was this
+        by-alias delete running *unserialized*: an overlapping rotation wiped a
+        key another had just minted and handed to a sandbox, leaving an orphaned
+        token (``token_not_found_in_db`` 401). Under the advisory lock the delete
+        can no longer race a concurrent rotation's freshly-minted key, and
+        ``only_if_current`` (below) stops an overlapping refresh from rotating a
+        key already handed to a sandbox. LiteLLM enforces unique key aliases, so
+        the alias must be freed before minting; clearing by alias (rather than
+        only the specific previous key) also self-heals a divergent alias — e.g.
+        after a rotation whose LiteLLM key was minted but whose DB commit failed
+        — which would otherwise wedge every future rotation on a unique-alias
+        conflict.
+
+        ``only_if_current`` makes stale-key refresh idempotent: pass the key the
+        caller observed as stale, and if a concurrent rotation already replaced
+        it under the lock, this returns that fresh key instead of rotating again
+        (which would delete the key that rotation just handed to a sandbox).
+        Leave it ``None`` for an unconditional (forced) rotation.
 
         The replacement key is persisted on the acting member's row in the
         same session used to load it, so a member that disappears mid-rotation
         is reported explicitly (``MISSING_MEMBER``) rather than silently
-        swallowed. The previous key token is returned for best-effort cleanup
-        and is only exposed after a successful persist.
+        swallowed. The previous key token is returned for best-effort cleanup.
         """
         settings = await self.load()
         if settings is None:
@@ -1136,6 +1172,9 @@ class SaasSettingsStore(SettingsStore):
         if config is None:
             return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.NOT_MANAGED)
 
+        old_key: str | None = None
+        new_key: str | None = None
+        org_id_str: str | None = None
         async with a_session_maker() as session:
             result = await session.execute(
                 select(User)
@@ -1147,6 +1186,27 @@ class SaasSettingsStore(SettingsStore):
                 return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
 
             org_id = self._resolve_org_id(user)
+            org_id_str = str(org_id)
+
+            # Serialize managed-key rotation per org. The lock is held until the
+            # transaction ends (commit/rollback), covering the read of the
+            # current key through the persist of the new one.
+            await session.execute(
+                text('SELECT pg_advisory_xact_lock(:lock_key)'),
+                {'lock_key': _org_rotation_advisory_lock_key(org_id_str)},
+            )
+            # Re-read under the lock so a concurrent rotation's committed key is
+            # visible (READ COMMITTED); the rows above were loaded before it.
+            session.expire_all()
+            result = await session.execute(
+                select(User)
+                .options(joinedload(User.org_members))
+                .filter(User.id == uuid.UUID(self.user_id))
+            )
+            user = result.scalars().first()
+            if user is None:
+                return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
+
             org = await session.get(Org, org_id)
             if org is None:
                 return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
@@ -1165,21 +1225,55 @@ class SaasSettingsStore(SettingsStore):
             existing_key = org_member.llm_api_key if org_member._llm_api_key else None
             old_key = existing_key.get_secret_value() if existing_key else None
 
-            org_id_str = str(org_id)
-            # One managed key per (user, org) under the deterministic alias;
-            # delete the alias first so rotation never orphans a prior key.
+            # Idempotency: a concurrent rotation already replaced the key we were
+            # asked to refresh. Reuse it rather than rotating again (which would
+            # delete the key that rotation just handed to a sandbox).
+            if (
+                only_if_current is not None
+                and old_key is not None
+                and old_key != only_if_current
+            ):
+                logger.info(
+                    'saas_settings_store:rotate_managed_llm_key:skipped_concurrent',
+                    extra={'user_id': self.user_id, 'org_id': org_id_str},
+                )
+                return ManagedLlmKeyRotation(
+                    status=ManagedLlmKeyStatus.ROTATED,
+                    old_key=old_key,
+                    new_key=old_key,
+                    openhands_type=config.openhands_type,
+                )
+
+            # Delete-then-generate under the lock. LiteLLM requires unique key
+            # aliases, so the shared alias must be freed before the replacement
+            # is minted under the same alias. ``delete_key_by_alias`` is safe
+            # here because the per-org advisory lock serializes rotations (the
+            # #439 root cause was this by-alias delete running unserialized) and
+            # ``only_if_current`` above stops an overlapping refresh from
+            # deleting a key already handed to a sandbox. Clearing by alias
+            # (rather than only the specific previous key) also self-heals a
+            # divergent alias — e.g. after a rotation whose LiteLLM key was
+            # minted but whose DB commit failed — which would otherwise wedge
+            # every future rotation on a unique-alias conflict.
             key_alias = get_openhands_cloud_key_alias(self.user_id, org_id_str)
-            await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
-            new_key = await LiteLlmManager.generate_key(
+            try:
+                await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
+            except Exception:
+                logger.warning(
+                    'saas_settings_store:rotate_managed_llm_key:old_key_cleanup_failed',
+                    extra={'user_id': self.user_id, 'org_id': org_id_str},
+                    exc_info=True,
+                )
+
+            generated_key = await LiteLlmManager.generate_key(
                 self.user_id,
                 org_id_str,
                 key_alias,
                 {'type': 'openhands'} if config.openhands_type else None,
             )
+            new_key = generated_key
 
-            # Persist on the same member row we loaded, in the same session,
-            # before exposing the old token for cleanup.
-            org_member.llm_api_key = SecretStr(new_key)
+            org_member.llm_api_key = SecretStr(generated_key)
             org_member.has_custom_llm_api_key = False
             await session.commit()
 
@@ -1187,9 +1281,10 @@ class SaasSettingsStore(SettingsStore):
                 'saas_settings_store:rotate_managed_llm_key:rotated',
                 extra={'user_id': self.user_id, 'org_id': org_id_str},
             )
-            return ManagedLlmKeyRotation(
-                status=ManagedLlmKeyStatus.ROTATED,
-                old_key=old_key,
-                new_key=new_key,
-                openhands_type=config.openhands_type,
-            )
+
+        return ManagedLlmKeyRotation(
+            status=ManagedLlmKeyStatus.ROTATED,
+            old_key=old_key,
+            new_key=new_key,
+            openhands_type=config.openhands_type,
+        )

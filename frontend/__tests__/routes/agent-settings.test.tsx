@@ -1,4 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -331,5 +336,93 @@ describe("AgentSettingsScreen — minimal generic ACP UX", () => {
 
     // coerceFieldValue throws ("must be at most 10") → error toast, no save.
     expect(saveSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("AgentSettingsScreen — Agent Context / memory toggle", () => {
+  const openHandsSettings = () => ({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    enable_memory_context: false,
+    agent_settings: {
+      ...MOCK_DEFAULT_USER_SETTINGS.agent_settings,
+      agent_kind: "openhands",
+      enable_sub_agents: false,
+    },
+  });
+
+  it("renders the Agent Context section with the memory toggle off by default", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(baseConfig);
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      openHandsSettings(),
+    );
+
+    renderAgentSettings();
+
+    await screen.findByTestId("agent-settings-screen");
+    await waitFor(() => {
+      const toggle = screen.getByTestId(
+        "agent-settings-enable-memory-context",
+      );
+      // Toggle is off → thumb is at the left position.
+      const visualTrack = toggle
+        .closest("label")
+        ?.querySelector("span > span");
+      expect(visualTrack).toHaveClass("translate-x-[2px]");
+    });
+  });
+
+  it("hydrates the memory toggle from saved settings", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(baseConfig);
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+      ...openHandsSettings(),
+      enable_memory_context: true,
+    });
+
+    renderAgentSettings();
+
+    await screen.findByTestId("agent-settings-screen");
+    // The ToggleSwitchVisual applies the "translate-x-[21px]" class when
+    // enabled and "translate-x-[2px]" when disabled. Check the visual state
+    // rather than the hidden checkbox's checked property.
+    await waitFor(() => {
+      const toggle = screen.getByTestId(
+        "agent-settings-enable-memory-context",
+      );
+      const visualTrack = toggle
+        .closest("label")
+        ?.querySelector("span > span");
+      expect(visualTrack).toHaveClass("translate-x-[21px]");
+    });
+  });
+
+  it("saves enable_memory_context as a top-level field when toggled on", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(baseConfig);
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      openHandsSettings(),
+    );
+    const saveSpy = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+
+    renderAgentSettings();
+
+    await screen.findByTestId("agent-settings-screen");
+    const toggle = screen.getByTestId(
+      "agent-settings-enable-memory-context",
+    );
+    // Use fireEvent on the hidden checkbox — userEvent's pointer-based click
+    // doesn't activate hidden checkboxes reliably in jsdom.
+    fireEvent.click(toggle);
+
+    const saveButton = await screen.findByTestId("agent-save-button");
+    await userEvent.click(saveButton);
+
+    await waitFor(() => {
+      expect(saveSpy).toHaveBeenCalledTimes(1);
+    });
+
+    expect(saveSpy.mock.calls[0][0]).toMatchObject({
+      enable_memory_context: true,
+    });
   });
 });

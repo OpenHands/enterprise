@@ -10,6 +10,7 @@ from openhands.app_server.integrations.jira_dc.config import (
 )
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.utils.slack_config import is_slack_configured
 from openhands.app_server.web_client.email_change_config import (
     is_email_change_enabled,
 )
@@ -116,16 +117,6 @@ def _get_github_app_slug() -> str | None:
     """
     slug = os.getenv('GITHUB_APP_SLUG', '').strip()
     return slug if slug else None
-
-
-def _get_slack_enabled() -> bool:
-    """Return whether Slack integration is fully configured for the web client."""
-    return (
-        os.getenv('SLACK_WEBHOOKS_ENABLED', 'false').lower() in ('true', '1')
-        and bool(os.getenv('SLACK_CLIENT_ID', '').strip())
-        and bool(os.getenv('SLACK_CLIENT_SECRET', '').strip())
-        and bool(os.getenv('SLACK_SIGNING_SECRET', '').strip())
-    )
 
 
 def _get_email_enabled() -> bool:
@@ -304,7 +295,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             for provider, host in ProviderHandler.PROVIDER_DOMAINS.items()
         }
     )
-    slack_enabled: bool = Field(default_factory=_get_slack_enabled)
+    slack_enabled: bool = Field(default_factory=is_slack_configured)
     email_enabled: bool = Field(default_factory=_get_email_enabled)
     email_change_enabled: bool = Field(default_factory=is_email_change_enabled)
     jira_dc_oauth_host: str | None = Field(default_factory=_get_jira_dc_oauth_host)

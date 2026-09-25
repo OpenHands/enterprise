@@ -8,6 +8,7 @@ import {
   SettingsNavRenderedItem,
 } from "#/hooks/use-settings-nav-items";
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
+import { organizationService } from "#/api/organization-service/organization-service.api";
 
 // Helper to find an item by path in rendered items
 const findItemByPath = (
@@ -632,6 +633,53 @@ describe("useSettingsNavItems", () => {
           findItemByPath(result.current, "/settings/secrets"),
         ).toBeDefined();
       });
+    });
+  });
+
+  describe("Your Budget visibility", () => {
+    const selectTeamOrg = (role: string) => {
+      mockConfig("saas");
+      mockMe.data = { role };
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-1";
+    };
+
+    it.each(["member", "admin", "owner"])(
+      "should show Your Budget to a %s in a team org without asking whether budgets are enabled",
+      async (role) => {
+        // Arrange
+        selectTeamOrg(role);
+        const getMyBudgetSpy = vi.spyOn(organizationService, "getMyBudget");
+
+        // Act
+        const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+        // Assert
+        await waitFor(() => {
+          expect(
+            findItemByPath(result.current, "/settings/your-budget"),
+          ).toBeDefined();
+        });
+        expect(getMyBudgetSpy).not.toHaveBeenCalled();
+      },
+    );
+
+    it("should hide Your Budget in a personal workspace", async () => {
+      // Arrange
+      selectTeamOrg("owner");
+      mockOrgTypeAndAccess.isTeamOrg = false;
+      mockOrgTypeAndAccess.isPersonalOrg = true;
+
+      // Act
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      // Assert
+      await waitFor(() => {
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
+      });
+      expect(
+        findItemByPath(result.current, "/settings/your-budget"),
+      ).toBeUndefined();
     });
   });
 });
