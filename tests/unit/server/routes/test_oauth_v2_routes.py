@@ -162,6 +162,107 @@ def test_login_missing_auth_url_400(client, jwt_svc):
     assert response.status_code == 400
 
 
+# ── idp-login / provider-type login redirects (OHE-3379) ────────────────
+
+
+def test_idp_login_redirects_to_first_idp(client, jwt_svc):
+    provider = _fake_provider(provider_id=7, category='enterprise_sso', is_idp=True)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_first_idp',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get(
+            '/oauth/idp-login',
+            params={'redirect_url': '/dashboard'},
+            follow_redirects=False,
+        )
+    assert response.status_code == 302
+    location = response.headers['location']
+    assert location.endswith('/oauth/7/login?redirect_url=%2Fdashboard')
+
+
+def test_idp_login_no_idp_configured_404(client, jwt_svc):
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_first_idp',
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        response = client.get('/oauth/idp-login', follow_redirects=False)
+    assert response.status_code == 404
+
+
+def test_idp_login_forwards_mode_link(client, jwt_svc):
+    provider = _fake_provider(provider_id=3, is_idp=True)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_first_idp',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get(
+            '/oauth/idp-login',
+            params={'mode': 'link', 'redirect_url': '/settings'},
+            follow_redirects=False,
+        )
+    assert response.status_code == 302
+    location = response.headers['location']
+    assert location.startswith('https://')
+    assert '/oauth/3/login' in location
+    assert 'mode=link' in location
+    assert 'redirect_url=%2Fsettings' in location
+
+
+def test_provider_type_login_redirects_to_first_match(client, jwt_svc):
+    provider = _fake_provider(provider_id=11, category='github', is_idp=False)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_first_by_category',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get('/oauth/github-login', follow_redirects=False)
+    assert response.status_code == 302
+    location = response.headers['location']
+    assert location.endswith('/oauth/11/login')
+
+
+def test_provider_type_login_no_match_404(client, jwt_svc):
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_first_by_category',
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        response = client.get('/oauth/gitlab-login', follow_redirects=False)
+    assert response.status_code == 404
+
+
+def test_provider_type_login_unknown_type_404(client, jwt_svc):
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_first_by_category',
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        response = client.get('/oauth/nonexistent-login', follow_redirects=False)
+    assert response.status_code == 404
+
+
 # ── providers list ───────────────────────────────────────────────────────
 
 

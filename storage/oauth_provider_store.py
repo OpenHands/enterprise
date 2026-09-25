@@ -41,9 +41,37 @@ class OAuthProviderStore:
     async def get_idp_providers(self) -> list[OAuthProvider]:
         async with a_session_maker() as session:
             result = await session.execute(
-                select(OAuthProvider).where(OAuthProvider.is_idp.is_(True))
+                select(OAuthProvider)
+                .where(OAuthProvider.is_idp.is_(True))
+                .order_by(OAuthProvider.id)
             )
             return list(result.scalars().all())
+
+    async def get_first_idp(self) -> OAuthProvider | None:
+        """Return the first IDP provider (lowest ``id``), or ``None``."""
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OAuthProvider)
+                .where(OAuthProvider.is_idp.is_(True))
+                .order_by(OAuthProvider.id)
+                .limit(1)
+            )
+            return result.scalars().one_or_none()
+
+    async def get_first_by_category(self, category: str) -> OAuthProvider | None:
+        """Return the first provider matching ``provider_category`` (lowest ``id``).
+
+        ``category`` is the raw string value (e.g. ``'github'``) so callers do not
+        need the ``ProviderType`` enum. Returns ``None`` when no match exists.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OAuthProvider)
+                .where(OAuthProvider.provider_category == category)
+                .order_by(OAuthProvider.id)
+                .limit(1)
+            )
+            return result.scalars().one_or_none()
 
     async def get_git_providers(self) -> list[OAuthProvider]:
         async with a_session_maker() as session:
@@ -125,9 +153,29 @@ class _ScopedProviderStore:
 
     async def get_idp_providers(self) -> list[OAuthProvider]:
         result = await self._session.execute(
-            select(OAuthProvider).where(OAuthProvider.is_idp.is_(True))
+            select(OAuthProvider)
+            .where(OAuthProvider.is_idp.is_(True))
+            .order_by(OAuthProvider.id)
         )
         return list(result.scalars().all())
+
+    async def get_first_idp(self) -> OAuthProvider | None:
+        result = await self._session.execute(
+            select(OAuthProvider)
+            .where(OAuthProvider.is_idp.is_(True))
+            .order_by(OAuthProvider.id)
+            .limit(1)
+        )
+        return result.scalars().one_or_none()
+
+    async def get_first_by_category(self, category: str) -> OAuthProvider | None:
+        result = await self._session.execute(
+            select(OAuthProvider)
+            .where(OAuthProvider.provider_category == category)
+            .order_by(OAuthProvider.id)
+            .limit(1)
+        )
+        return result.scalars().one_or_none()
 
     async def get_git_providers(self) -> list[OAuthProvider]:
         result = await self._session.execute(

@@ -279,6 +279,72 @@ def _set_oauth_v2_cookie(
 # ── routes ────────────────────────────────────────────────────────────────
 
 
+def _login_redirect_url(
+    request: Request, provider_id: int, redirect_url: str, mode: str
+) -> str:
+    """Build the canonical ``/oauth/{provider_id}/login`` URL, forwarding the
+    ``redirect_url`` and ``mode`` query params so the underlying login flow
+    receives them."""
+    web_url = get_web_url(request)
+    target = f'{web_url}/oauth/{provider_id}/login'
+    params: dict[str, str] = {}
+    if redirect_url:
+        params['redirect_url'] = redirect_url
+    if mode and mode != 'login':
+        params['mode'] = mode
+    if params:
+        target = f'{target}?{urlencode(params)}'
+    return target
+
+
+@oauth_v2_router.get('/idp-login')
+async def oauth_v2_idp_login(
+    request: Request,
+    redirect_url: str = '',
+    mode: str = 'login',
+):
+    """Redirect to ``/oauth/<id>/login`` of the first available IDP provider.
+
+    Convenience entry point so callers do not need to know the concrete OAuth
+    provider ID. Returns ``404`` when no IDP provider is configured.
+    """
+    provider = await OAuthProviderStore().get_first_idp()
+    if provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='No IDP OAuth provider is configured',
+        )
+    return RedirectResponse(
+        _login_redirect_url(request, provider.id, redirect_url, mode),
+        status_code=302,
+    )
+
+
+@oauth_v2_router.get('/{provider_type}-login')
+async def oauth_v2_provider_type_login(
+    request: Request,
+    provider_type: str,
+    redirect_url: str = '',
+    mode: str = 'login',
+):
+    """Redirect to ``/oauth/<id>/login`` of the first provider of a given type.
+
+    ``provider_type`` is the ``provider_category`` value (e.g. ``github``) taken
+    from the URL segment before ``-login`` — e.g. ``/oauth/github-login``.
+    Returns ``404`` when no matching provider exists.
+    """
+    provider = await OAuthProviderStore().get_first_by_category(provider_type)
+    if provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'No OAuth provider found for type {provider_type!r}',
+        )
+    return RedirectResponse(
+        _login_redirect_url(request, provider.id, redirect_url, mode),
+        status_code=302,
+    )
+
+
 @oauth_v2_router.get('/{provider_id}/login')
 async def oauth_v2_login(
     request: Request,
