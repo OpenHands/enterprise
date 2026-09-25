@@ -705,26 +705,21 @@ module org_budgets {
       (a, u) => {
         val info = snapshot.members.get(u)
         val has_base = baselines.has(u)
-        if (not(has_base) and sg.enabled and not(new_ids.contains(u)))
-          // Recovered, not skipped: a known member holding no baseline is anchored to
-          // live cumulative spend and its cap is written normally.
-          { ...a, base_missing: true }
-        else {
-          val baseline = if (has_base) baselines.get(u) else info.spend
-          val ov = opt_of(st.overrides, u)
-          val eff = effective_limit(ov, sg.default_user_monthly_limit)
-          // The allowance is clamped at zero, so the cap never lands below the
-          // member's cycle baseline -- such a cap is exceeded the moment it is written.
-          val cap =
-            if (is_disabled_for(ov)) None
-            else match eff { | None => None | Some(l) => Some(baseline + max(l, 0)) }
-          { ll: apply_member_write(a.ll, st.write_mode, u, cap),
-            active: a.active.put(u, baseline),
-            exp: a.exp.put(u, cap),
-            below: a.below or (match cap { | None => false | Some(c) => c < baseline }),
-            base_missing: a.base_missing,
-            user_err: a.user_err or st.write_mode == WriteRaises }
-        }
+        val baseline = if (has_base) baselines.get(u) else info.spend
+        val ov = opt_of(st.overrides, u)
+        val eff = effective_limit(ov, sg.default_user_monthly_limit)
+        // The allowance is clamped at zero, so the cap never lands below the
+        // member's cycle baseline -- such a cap is exceeded the moment it is written.
+        val cap =
+          if (is_disabled_for(ov)) None
+          else match eff { | None => None | Some(l) => Some(baseline + max(l, 0)) }
+        { ll: apply_member_write(a.ll, st.write_mode, u, cap),
+          active: a.active.put(u, baseline),
+          exp: a.exp.put(u, cap),
+          below: a.below or (match cap { | None => false | Some(c) => c < baseline }),
+          base_missing: a.base_missing or
+            (not(has_base) and sg.enabled and not(new_ids.contains(u))),
+          user_err: a.user_err or st.write_mode == WriteRaises }
       })
 
     // Baselines for members outside the governed set survive only if they already
@@ -738,7 +733,7 @@ module org_budgets {
 
     val rb = get_financial_snapshot({ ...st, litellm: acc.ll }, sg1, false, false)
     val errors =
-      team_err or acc.user_err or acc.base_missing or missing != Set() or
+      team_err or acc.user_err or missing != Set() or
       (match rb.snap {
         | None => true
         | Some(r) => readback_mismatch(r, exp_team, acc.exp)
