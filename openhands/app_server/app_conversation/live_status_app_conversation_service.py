@@ -308,7 +308,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         default_factory=ConversationSecretEnricher
     )
     app_mode: str | None = None
-    export_max_events: int = 10000
+    export_max_events: int = 0
     export_lock_ttl_seconds: int = 3600
     export_lock_refresh_interval_seconds: int = 30
     export_lock_required: bool | None = None
@@ -3206,6 +3206,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def export_conversation(self, conversation_id: UUID) -> bytes:
         """Download a conversation trajectory as a zip file.
 
+        The whole zip is buffered in memory before it is returned, so this is
+        only suitable for small conversations. Large exports should go through
+        ``open_conversation_export``, which streams the zip instead.
+
         Args:
             conversation_id: The UUID of the conversation to download.
 
@@ -3247,6 +3251,7 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
     )
     export_max_events: int = Field(
         default=0,
+        ge=0,
         description=(
             'The maximum number of events allowed in a conversation export '
             '(0 disables the limit)'

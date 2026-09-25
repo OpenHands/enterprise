@@ -55,6 +55,19 @@ def _index_rebuild_batch_size() -> int:
         return 200
 
 
+def _export_batch_size() -> int:
+    """Number of events to load per batch during a trajectory export.
+
+    Bounds transient memory: the export prefetches one batch while yielding
+    the current one, so at most two batches of event objects are alive at
+    once, regardless of conversation size.
+    """
+    try:
+        return max(1, int(os.getenv('EVENT_EXPORT_BATCH_SIZE', '200')))
+    except ValueError:
+        return 200
+
+
 @dataclass
 class EventServiceBase(EventService, ABC):
     """Event Service for getting events - the only check on permissions for events is
@@ -330,30 +343,47 @@ class EventServiceBase(EventService, ABC):
     ) -> AsyncGenerator[Event, None]:
         """Iterate all events once in timestamp order for trajectory export.
 
-        Loads events in batches so at most one batch of event objects is alive
-        at a time, regardless of conversation size.
+        Loads events in batches and prefetches the next batch while the current
+        one is yielded, so reads stay in flight while the consumer works and at
+        most two batches of event objects are alive at a time, regardless of
+        conversation size.
         """
         conversation_path = await self.get_conversation_path(conversation_id)
         index = await self._get_or_rebuild_index(conversation_path)
         entries = self._sort_index(index, EventSortOrder.TIMESTAMP)
-        batch_size = _index_rebuild_batch_size()
-        for i in range(0, len(entries), batch_size):
-            batch = entries[i : i + batch_size]
+        batch_size = _export_batch_size()
+        batches = [
+            entries[i : i + batch_size] for i in range(0, len(entries), batch_size)
+        ]
+
+        def load_batch(batch: list[IndexEntry]) -> asyncio.Task[list[Event | None]]:
             paths = [
                 self._event_id_to_path(conversation_path, entry[0]) for entry in batch
             ]
-            loaded = await self._load_events_from_paths(paths)
-            by_id = {
-                event.id.replace('-', '')
-                if isinstance(event.id, str)
-                else event.id.hex: event
-                for event in loaded
-                if event is not None
-            }  # type: ignore[union-attr]
-            for entry in batch:
-                event = by_id.get(entry[0])
-                if event is not None:
-                    yield event
+            return asyncio.create_task(self._load_events_from_paths(paths))
+
+        next_load: asyncio.Task[list[Event | None]] | None = None
+        try:
+            for n, batch in enumerate(batches):
+                loaded = await (
+                    next_load if next_load is not None else load_batch(batch)
+                )
+                next_load = load_batch(batches[n + 1]) if n + 1 < len(batches) else None
+                by_id = {
+                    event.id.replace('-', '')
+                    if isinstance(event.id, str)
+                    else event.id.hex: event
+                    for event in loaded
+                    if event is not None
+                }  # type: ignore[union-attr]
+                for entry in batch:
+                    event = by_id.get(entry[0])
+                    if event is not None:
+                        yield event
+        finally:
+            # Consumer stopped early: do not leave a prefetch running.
+            if next_load is not None:
+                next_load.cancel()
 
     async def count_events(
         self,

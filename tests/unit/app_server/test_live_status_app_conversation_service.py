@@ -2983,6 +2983,7 @@ class TestLiveStatusAppConversationService:
             return_value={'id': str(mock_event2.id), 'type': 'observation'}
         )
 
+        self.service.export_max_events = 10000
         self.mock_event_service.count_events = AsyncMock(return_value=2)
         self.mock_event_service.iter_events_for_export = Mock(
             return_value=_async_iter([mock_event1, mock_event2])
@@ -3109,6 +3110,7 @@ class TestLiveStatusAppConversationService:
             return_value=mock_conversation_info
         )
 
+        self.service.export_max_events = 10000
         self.mock_event_service.count_events = AsyncMock(return_value=0)
         self.mock_event_service.iter_events_for_export = Mock(
             return_value=_async_iter([])
@@ -3306,6 +3308,7 @@ class TestLiveStatusAppConversationService:
         self.mock_app_conversation_info_service.get_app_conversation_info = AsyncMock(
             return_value=mock_conversation_info
         )
+        self.service.export_max_events = 10000
         self.mock_event_service.count_events = AsyncMock(return_value=1)
         self.mock_event_service.iter_events_for_export = Mock(
             return_value=_async_iter([mock_event])
@@ -3349,24 +3352,29 @@ class TestLiveStatusAppConversationService:
         mock_conversation_info.id = conversation_id
         mock_conversation_info.model_dump_json = Mock(return_value='{}')
 
-        mock_event = Mock(spec=Event)
-        mock_event.id = uuid4()
-        mock_event.model_dump = Mock(return_value={'id': str(mock_event.id)})
+        mock_events = []
+        for _ in range(300):
+            mock_event = Mock(spec=Event)
+            mock_event.id = uuid4()
+            mock_event.model_dump = Mock(return_value={'id': str(mock_event.id)})
+            mock_events.append(mock_event)
 
         self.service.export_max_events = 0
         self.mock_app_conversation_info_service.get_app_conversation_info = AsyncMock(
             return_value=mock_conversation_info
         )
-        self.mock_event_service.count_events = AsyncMock(return_value=50_000)
+        self.mock_event_service.count_events = AsyncMock(return_value=len(mock_events))
         self.mock_event_service.iter_events_for_export = Mock(
-            return_value=_async_iter([mock_event])
+            return_value=_async_iter(mock_events)
         )
 
         result = await self.service.export_conversation(conversation_id)
 
         with zipfile.ZipFile(io.BytesIO(result), 'r') as zipf:
             event_files = [f for f in zipf.namelist() if f.startswith('event_')]
-            assert len(event_files) == 1
+            assert len(event_files) == len(mock_events)
+            exported_ids = [json.loads(zipf.read(f))['id'] for f in sorted(event_files)]
+            assert exported_ids == [str(event.id) for event in mock_events]
         self.mock_event_service.count_events.assert_not_awaited()
 
     def test_injector_export_limit_disabled_by_default(self):
@@ -3374,6 +3382,11 @@ class TestLiveStatusAppConversationService:
         injector = LiveStatusAppConversationServiceInjector()
 
         assert injector.export_max_events == 0
+
+    def test_injector_rejects_negative_export_limit(self):
+        """Test a negative export limit is rejected rather than treated as no cap."""
+        with pytest.raises(ValidationError):
+            LiveStatusAppConversationServiceInjector(export_max_events=-1)
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
