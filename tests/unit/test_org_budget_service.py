@@ -2820,12 +2820,10 @@ def test_cycle_boundaries_land_on_the_day_the_month_holds(
 async def test_user_budget_row_rejects_personal_org_without_creating_settings(
     async_session_maker, personal_org
 ):
-    # get_user_budget_row is the one budget entry point that never calls
-    # _reject_personal_org: it goes straight to _get_or_create_settings, so reading a
-    # user row for a personal workspace writes the very settings row migration 148
-    # exists to delete. Its only route reaches it after upsert_user_override has
-    # already rejected personal orgs, so today this is a missing guard rather than a
-    # live leak -- nothing stops the next caller from reaching it unguarded.
+    # get_user_budget_row guards with _reject_personal_org (added by #413) and now
+    # reads through _get_settings_for_read, which never inserts. Either alone keeps
+    # the settings row migration 148 exists to delete from ever being written for a
+    # personal workspace; pin both so a future refactor cannot reintroduce the leak.
     async with async_session_maker() as session:
         service = OrgBudgetService(session)
         with patch.object(
@@ -2845,6 +2843,71 @@ async def test_user_budget_row_rejects_personal_org_without_creating_settings(
         )
 
     assert row_error.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_get_reconciliation_state_does_not_create_settings_for_personal_org(
+    async_session_maker, personal_org
+):
+    # get_reconciliation_state is the one read entry point with no _reject_personal_org
+    # guard: its only route reaches it after delete_user_override has already rejected
+    # personal orgs, so today this is a missing guard rather than a live leak. Reading
+    # through _get_settings_for_read means an unguarded read still cannot write the
+    # settings row a personal workspace must not have -- pin the remaining case here.
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        state = await service.get_reconciliation_state(personal_org.id)
+
+        result = await session.execute(
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == personal_org.id)
+        )
+
+    assert state == 'inactive'
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_reads_do_not_create_settings_for_unconfigured_org(
+    async_session_maker, budget_org
+):
+    # The root cause the split addresses: a read must never write a settings row, for
+    # any org, not just a personal workspace. An org that has not configured budgets
+    # has no settings row; reading its state or a user row must leave it that way so
+    # the row is only ever created by a genuine write (update/override/maintenance).
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        with patch.object(
+            service,
+            '_get_financial_snapshot',
+            AsyncMock(
+                return_value=BudgetFinancialSnapshotResult(
+                    snapshot=_snapshot(), status='live'
+                )
+            ),
+        ):
+            state = await service.get_budget_state(budget_org.id)
+            reconciliation = await service.get_reconciliation_state(budget_org.id)
+            row = await service.get_user_budget_row(budget_org.id, uuid4())
+
+        result = await session.execute(
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == budget_org.id)
+        )
+
+    # The reads still answer with defaults for an org that has no settings row.
+    assert state['settings'].enabled is False
+    # The transient defaults row must carry what a freshly created row would, so a
+    # read on an unconfigured org reports zero/empty baselines (not None/garbage).
+    # cycle_start_spend has teeth: it feeds current_spend, so a wrong default would
+    # misreport spend for exactly the unconfigured orgs this read path now serves.
+    assert state['settings'].cycle_start_spend == 0.0
+    assert state['settings'].user_cycle_start_spend == {}
+    assert state['settings'].litellm_last_member_spend == {}
+    assert state['settings'].litellm_known_member_ids == []
+    assert [t.percentage for t in state['thresholds']] == [80, 90, 100]
+    assert reconciliation == 'inactive'
+    assert row is None
+    # ...and none of them created the row.
     assert result.scalar_one_or_none() is None
 
 
@@ -4167,96 +4230,73 @@ async def test_non_unique_integrity_error_is_not_swallowed_by_the_recovery_read(
 
 
 @pytest.mark.asyncio
-async def test_enabling_budget_requires_a_positive_monthly_limit(
-    async_session_maker, budget_org
-):
-    """An org must never run with budgets on and no cap: there is nothing to enforce."""
+async def test_first_ui_save_preserves_default_alerts(async_session_maker, budget_org):
+    from server.routes.orgs import _build_budget_response
+
     async with async_session_maker() as session:
         service = OrgBudgetService(session)
-
-        with patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock:
-            with pytest.raises(HTTPException) as error:
-                await service.update_budget_settings(
-                    budget_org.id,
-                    OrgBudgetSettingsUpdate(enabled=True),
-                )
-
-    assert error.value.status_code == status.HTTP_400_BAD_REQUEST
-    assert error.value.detail == 'monthly_limit is required when budgets are enabled'
-    sync_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_delete_user_override_is_a_noop_when_no_override_exists(
-    async_session_maker, budget_org
-):
-    """Nothing changed, so the proxy's caps are already right -- no resync."""
-    async with async_session_maker() as session:
-        service = OrgBudgetService(session)
-
-        with patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock:
-            await service.delete_user_override(budget_org.id, uuid4())
-
-    sync_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_first_settings_write_creates_the_row_with_default_thresholds(
-    async_session_maker, budget_org
-):
-    """The defaults a never-configured org gets on its first write."""
-    async with async_session_maker() as session:
-        service = OrgBudgetService(session)
-
         with (
-            patch.object(
-                service, '_sync_litellm_budgets', AsyncMock(return_value=None)
-            ),
             patch.object(
                 service,
                 '_get_financial_snapshot',
                 AsyncMock(
                     return_value=BudgetFinancialSnapshotResult(
-                        snapshot=None, status='unavailable'
+                        snapshot=_snapshot(), status='live'
                     )
                 ),
             ),
             patch.object(
-                service, '_build_user_budget_rows', AsyncMock(return_value=([], 0))
+                service, '_sync_litellm_budgets', AsyncMock(return_value=_snapshot())
             ),
         ):
+            initial = _build_budget_response(
+                await service.get_budget_state(budget_org.id)
+            )
             await service.update_budget_settings(
                 budget_org.id,
-                OrgBudgetSettingsUpdate(default_user_monthly_limit=5),
+                OrgBudgetSettingsUpdate(
+                    enabled=True,
+                    monthly_limit=100,
+                    reset_day=1,
+                    thresholds=[
+                        OrgBudgetThresholdUpdate(
+                            percentage=t.percentage,
+                            email_enabled=t.email_enabled,
+                            slack_enabled=t.slack_enabled,
+                        )
+                        for t in initial.thresholds
+                    ],
+                ),
             )
-        await session.commit()
-
-    async with async_session_maker() as session:
-        created = (
-            await session.execute(
-                select(OrgBudgetSettings).where(
-                    OrgBudgetSettings.org_id == budget_org.id
-                )
-            )
-        ).scalar_one()
-        thresholds = (
-            (
-                await session.execute(
-                    select(OrgBudgetThreshold).where(
-                        OrgBudgetThreshold.org_id == budget_org.id
-                    )
-                )
-            )
-            .scalars()
-            .all()
+            await session.commit()
+            saved = await service.get_budget_state(budget_org.id)
+        assert sorted(t.percentage for t in saved['thresholds']) == sorted(
+            percentage for percentage, _, _ in DEFAULT_THRESHOLDS
         )
 
-    assert created.reset_day == 1
-    assert created.enabled is False
-    assert created.default_user_monthly_limit == 5
-    assert sorted(
-        (t.percentage, t.email_enabled, t.slack_enabled) for t in thresholds
-    ) == sorted(DEFAULT_THRESHOLDS)
+
+@pytest.mark.asyncio
+async def test_read_preserves_intentionally_empty_thresholds(
+    async_session_maker, budget_org
+):
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        await service._get_or_create_settings(budget_org.id)
+        await service.store.replace_thresholds(
+            budget_org.id, await service.store.get_thresholds(budget_org.id), []
+        )
+        await session.commit()
+        with patch.object(
+            service,
+            '_get_financial_snapshot',
+            AsyncMock(
+                return_value=BudgetFinancialSnapshotResult(
+                    snapshot=_snapshot(), status='live'
+                )
+            ),
+        ):
+            result = await service.get_budget_state(budget_org.id)
+        assert result['thresholds'] == []
 
 
 @pytest.mark.asyncio
@@ -4478,3 +4518,96 @@ async def test_slack_alert_reports_delivery_outcome(
         else:
             client.chat_postMessage.assert_awaited_once()
             assert client.chat_postMessage.call_args.kwargs['channel'] == 'C_TEST'
+
+
+@pytest.mark.asyncio
+async def test_enabling_budget_requires_a_positive_monthly_limit(
+    async_session_maker, budget_org
+):
+    """An org must never run with budgets on and no cap: there is nothing to enforce."""
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+
+        with patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock:
+            with pytest.raises(HTTPException) as error:
+                await service.update_budget_settings(
+                    budget_org.id,
+                    OrgBudgetSettingsUpdate(enabled=True),
+                )
+
+    assert error.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert error.value.detail == 'monthly_limit is required when budgets are enabled'
+    sync_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_override_is_a_noop_when_no_override_exists(
+    async_session_maker, budget_org
+):
+    """Nothing changed, so the proxy's caps are already right -- no resync."""
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+
+        with patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock:
+            await service.delete_user_override(budget_org.id, uuid4())
+
+    sync_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_first_settings_write_creates_the_row_with_default_thresholds(
+    async_session_maker, budget_org
+):
+    """The defaults a never-configured org gets on its first write."""
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+
+        with (
+            patch.object(
+                service, '_sync_litellm_budgets', AsyncMock(return_value=None)
+            ),
+            patch.object(
+                service,
+                '_get_financial_snapshot',
+                AsyncMock(
+                    return_value=BudgetFinancialSnapshotResult(
+                        snapshot=None, status='unavailable'
+                    )
+                ),
+            ),
+            patch.object(
+                service, '_build_user_budget_rows', AsyncMock(return_value=([], 0))
+            ),
+        ):
+            await service.update_budget_settings(
+                budget_org.id,
+                OrgBudgetSettingsUpdate(default_user_monthly_limit=5),
+            )
+        await session.commit()
+
+    async with async_session_maker() as session:
+        created = (
+            await session.execute(
+                select(OrgBudgetSettings).where(
+                    OrgBudgetSettings.org_id == budget_org.id
+                )
+            )
+        ).scalar_one()
+        thresholds = (
+            (
+                await session.execute(
+                    select(OrgBudgetThreshold).where(
+                        OrgBudgetThreshold.org_id == budget_org.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert created.reset_day == 1
+    assert created.enabled is False
+    assert created.default_user_monthly_limit == 5
+    assert sorted(
+        (t.percentage, t.email_enabled, t.slack_enabled) for t in thresholds
+    ) == sorted(DEFAULT_THRESHOLDS)

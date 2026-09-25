@@ -10,7 +10,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException, Request, status
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, inspect, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -468,8 +468,20 @@ class OrgBudgetService:
         users_status: str | None = None,
     ):
         await self._reject_personal_org(org_id, 'get_budget_state')
-        settings = await self._get_or_create_settings(org_id)
+        settings = await self._get_settings_for_read(org_id)
         thresholds = await self._get_thresholds(org_id)
+        if inspect(settings).transient:
+            # Negative IDs identify defaults that have not been persisted yet.
+            thresholds = [
+                OrgBudgetThreshold(
+                    id=-percentage,
+                    org_id=org_id,
+                    percentage=percentage,
+                    email_enabled=email_enabled,
+                    slack_enabled=slack_enabled,
+                )
+                for percentage, email_enabled, slack_enabled in DEFAULT_THRESHOLDS
+            ]
         overrides = await self._get_overrides(org_id)
         cycle = self._current_cycle(settings)
 
@@ -944,12 +956,49 @@ class OrgBudgetService:
         )
 
     async def get_reconciliation_state(self, org_id: UUID) -> BudgetReconciliationState:
-        settings = await self._get_or_create_settings(org_id)
+        settings = await self._get_settings_for_read(org_id)
         if settings.litellm_last_sync_status == 'error':
             return 'degraded'
         if settings.enabled and settings.litellm_last_sync_status != 'success':
             return 'pending'
         return 'healthy' if settings.enabled else 'inactive'
+
+    def _default_settings(self, org_id: UUID) -> OrgBudgetSettings:
+        """A transient defaults row, never added to the session.
+
+        Read paths use this in place of the persisted row when an org has not
+        configured budgets yet, so reading cannot create the row. The column
+        defaults (``dict``/``list``/``0.0``) are only applied by Postgres at
+        INSERT, so a transient instance must set them explicitly to match what a
+        freshly created row would carry.
+        """
+        return OrgBudgetSettings(
+            org_id=org_id,
+            enabled=False,
+            reset_day=1,
+            monthly_limit=None,
+            default_user_monthly_limit=None,
+            cycle_start_at=_current_cycle_start(datetime.now(UTC), 1),
+            cycle_start_spend=0.0,
+            user_cycle_start_spend={},
+            litellm_last_member_spend={},
+            litellm_known_member_ids=[],
+        )
+
+    async def _get_settings_for_read(self, org_id: UUID) -> OrgBudgetSettings:
+        """Read settings without ever writing a row.
+
+        Returns the persisted (hydrated) row when it exists, otherwise a
+        transient defaults row. This is the read-only counterpart of
+        ``_get_or_create_settings``: because it never inserts, a read path cannot
+        silently create a settings row for a personal workspace -- or any org --
+        even if a caller forgets the ``_reject_personal_org`` guard.
+        """
+        settings = await self.store.get_settings(org_id)
+        if settings:
+            await self._hydrate_cycle_baselines(settings)
+            return settings
+        return self._default_settings(org_id)
 
     async def _get_or_create_settings(
         self, org_id: UUID, *, for_update: bool = False
@@ -1328,7 +1377,7 @@ class OrgBudgetService:
 
     async def get_user_budget_row(self, org_id: UUID, user_id: UUID) -> dict | None:
         await self._reject_personal_org(org_id, 'get_user_budget_row')
-        settings = await self._get_or_create_settings(org_id)
+        settings = await self._get_settings_for_read(org_id)
         overrides = await self._get_overrides(org_id)
         snapshot_result = await self._get_financial_snapshot(
             org_id, settings, allow_stale=True
