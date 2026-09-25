@@ -449,13 +449,31 @@ async def test_budget_operations_reject_personal_org_without_creating_settings(
                 personal_org.id,
                 OrgBudgetSettingsUpdate(enabled=True, monthly_limit=100),
             )
+        with pytest.raises(HTTPException) as row_error:
+            await service.get_user_budget_row(personal_org.id, uuid4())
+        with pytest.raises(HTTPException) as upsert_error:
+            await service.upsert_user_override(
+                personal_org.id, uuid4(), monthly_limit=10.0, is_disabled=False
+            )
+        with pytest.raises(HTTPException) as delete_error:
+            await service.delete_user_override(personal_org.id, uuid4())
 
         result = await session.execute(
             select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == personal_org.id)
         )
 
-    assert read_error.value.status_code == status.HTTP_400_BAD_REQUEST
-    assert update_error.value.status_code == status.HTTP_400_BAD_REQUEST
+    for error in (
+        read_error,
+        update_error,
+        row_error,
+        upsert_error,
+        delete_error,
+    ):
+        assert error.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert (
+            error.value.detail
+            == 'Organization budgets are not available for personal workspaces'
+        )
     assert result.scalar_one_or_none() is None
 
 
@@ -4500,3 +4518,96 @@ async def test_slack_alert_reports_delivery_outcome(
         else:
             client.chat_postMessage.assert_awaited_once()
             assert client.chat_postMessage.call_args.kwargs['channel'] == 'C_TEST'
+
+
+@pytest.mark.asyncio
+async def test_enabling_budget_requires_a_positive_monthly_limit(
+    async_session_maker, budget_org
+):
+    """An org must never run with budgets on and no cap: there is nothing to enforce."""
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+
+        with patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock:
+            with pytest.raises(HTTPException) as error:
+                await service.update_budget_settings(
+                    budget_org.id,
+                    OrgBudgetSettingsUpdate(enabled=True),
+                )
+
+    assert error.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert error.value.detail == 'monthly_limit is required when budgets are enabled'
+    sync_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_override_is_a_noop_when_no_override_exists(
+    async_session_maker, budget_org
+):
+    """Nothing changed, so the proxy's caps are already right -- no resync."""
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+
+        with patch.object(service, '_sync_litellm_budgets', AsyncMock()) as sync_mock:
+            await service.delete_user_override(budget_org.id, uuid4())
+
+    sync_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_first_settings_write_creates_the_row_with_default_thresholds(
+    async_session_maker, budget_org
+):
+    """The defaults a never-configured org gets on its first write."""
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+
+        with (
+            patch.object(
+                service, '_sync_litellm_budgets', AsyncMock(return_value=None)
+            ),
+            patch.object(
+                service,
+                '_get_financial_snapshot',
+                AsyncMock(
+                    return_value=BudgetFinancialSnapshotResult(
+                        snapshot=None, status='unavailable'
+                    )
+                ),
+            ),
+            patch.object(
+                service, '_build_user_budget_rows', AsyncMock(return_value=([], 0))
+            ),
+        ):
+            await service.update_budget_settings(
+                budget_org.id,
+                OrgBudgetSettingsUpdate(default_user_monthly_limit=5),
+            )
+        await session.commit()
+
+    async with async_session_maker() as session:
+        created = (
+            await session.execute(
+                select(OrgBudgetSettings).where(
+                    OrgBudgetSettings.org_id == budget_org.id
+                )
+            )
+        ).scalar_one()
+        thresholds = (
+            (
+                await session.execute(
+                    select(OrgBudgetThreshold).where(
+                        OrgBudgetThreshold.org_id == budget_org.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert created.reset_day == 1
+    assert created.enabled is False
+    assert created.default_user_monthly_limit == 5
+    assert sorted(
+        (t.percentage, t.email_enabled, t.slack_enabled) for t in thresholds
+    ) == sorted(DEFAULT_THRESHOLDS)
