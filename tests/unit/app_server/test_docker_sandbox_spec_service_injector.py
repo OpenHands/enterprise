@@ -371,36 +371,35 @@ class TestDockerSandboxSpecServiceInjector:
         'openhands.app_server.sandbox.docker_sandbox_spec_service._global_docker_client',
         None,
     )
-    @patch('docker.from_env')
-    def test_get_docker_client_creates_new_client(self, mock_from_env):
-        """Test get_docker_client creates new client when none exists."""
+    @patch(
+        'openhands.app_server.sandbox.docker_sandbox_spec_service._connect_to_docker'
+    )
+    def test_get_docker_client_creates_new_client(self, mock_connect_to_docker):
+        """Test get_docker_client connects when no client is cached."""
         mock_client = MagicMock()
-        mock_from_env.return_value = mock_client
+        mock_connect_to_docker.return_value = mock_client
 
         result = get_docker_client()
 
         assert result == mock_client
-        mock_from_env.assert_called_once()
+        mock_connect_to_docker.assert_called_once()
 
     @patch(
-        'openhands.app_server.sandbox.docker_sandbox_spec_service._global_docker_client'
+        'openhands.app_server.sandbox.docker_sandbox_spec_service._connect_to_docker'
     )
-    @patch('docker.from_env')
-    def test_get_docker_client_reuses_existing_client(
-        self, mock_from_env, mock_global_client
-    ):
-        """Test get_docker_client reuses existing client."""
+    def test_get_docker_client_reuses_existing_client(self, mock_connect_to_docker):
+        """Test get_docker_client reuses the cached client."""
         mock_client = MagicMock()
 
-        # Import and patch the global variable properly
-        import openhands.app_server.sandbox.docker_sandbox_spec_service as module
-
-        module._global_docker_client = mock_client
-
-        result = get_docker_client()
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_spec_service'
+            '._global_docker_client',
+            mock_client,
+        ):
+            result = get_docker_client()
 
         assert result == mock_client
-        mock_from_env.assert_not_called()
+        mock_connect_to_docker.assert_not_called()
 
     async def test_inject_yields_single_service(self, sample_specs, mock_state):
         """Test that inject method yields exactly one service."""
