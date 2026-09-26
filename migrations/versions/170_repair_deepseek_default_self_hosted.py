@@ -172,11 +172,17 @@ def upgrade() -> None:
     )
 
     # Step 2: restore org Default profiles baked by the bogus default.
+    # ``llm_profiles`` is an ``EncryptedJSON`` column whose impl is ``String``:
+    # the at-rest value is a JWE ciphertext string, not JSON. Declaring it as
+    # ``sa.String()`` (not ``sa.JSON()``) is critical on the write path — the
+    # JSON type's bind processor would JSON-encode the ciphertext string
+    # (wrapping it in quotes), storing ``"<ciphertext>"`` and making the column
+    # permanently undecryptable. ``agent_settings`` is genuine JSON.
     org = sa.table(
         'org',
         sa.column('id', sa.Uuid()),
         sa.column('agent_settings', sa.JSON()),
-        sa.column('llm_profiles', sa.JSON()),
+        sa.column('llm_profiles', sa.String()),
     )
     rows = bind.execute(
         sa.select(org.c.id, org.c.agent_settings, org.c.llm_profiles)
