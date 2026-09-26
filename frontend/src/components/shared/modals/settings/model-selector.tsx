@@ -16,6 +16,12 @@ import { useProviderModels } from "#/hooks/query/use-provider-models";
 import { useAppMode } from "#/hooks/use-app-mode";
 import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
 import { heroUiAutocompleteSelectorButtonClassName } from "#/ui/combobox-caret";
+import { FREE_MODEL_BADGE_LABEL } from "#/utils/format-model-name";
+import { isOpenHandsHostedDomain } from "#/utils/domain-gate";
+import { FreeOpenHandsModelsNote } from "#/components/shared/free-models-note";
+
+const freeModelBadgeClassName =
+  "shrink-0 rounded-full border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] leading-none text-warning";
 
 interface ModelSelectorProps {
   isDisabled?: boolean;
@@ -77,6 +83,22 @@ export function ModelSelector({
     [dropdownModels],
   );
 
+  // DB-driven free model names for the selected provider (mirrors `verified`:
+  // the frontend does not hardcode which models are free). Only surfaced on
+  // OpenHands-hosted domains — self-hosted installs never show free-model UI.
+  const showFreeModelUI = isOpenHandsHostedDomain();
+  const freeModelNames = React.useMemo(
+    () =>
+      showFreeModelUI
+        ? dropdownModels.filter((m) => m.free).map((m) => m.name)
+        : [],
+    [dropdownModels, showFreeModelUI],
+  );
+  const freeModelNameSet = React.useMemo(
+    () => new Set(freeModelNames),
+    [freeModelNames],
+  );
+
   // Truthful-but-gentle signal that the displayed model no longer exists in
   // the provider's model list (e.g. an admin removed it from a managed
   // proxy). Only shown when the list actually loaded non-empty — a fetch
@@ -136,6 +158,36 @@ export function ModelSelector({
     setSelectedProvider(null);
     setLitellmId(null);
   };
+
+  const isSelectedModelFree = Boolean(
+    selectedModel && freeModelNameSet.has(selectedModel),
+  );
+  const selectedModelMeasureRef = React.useRef<HTMLSpanElement>(null);
+  const [selectedModelTextWidth, setSelectedModelTextWidth] = React.useState(0);
+
+  React.useLayoutEffect(() => {
+    if (!isSelectedModelFree || !selectedModelMeasureRef.current) {
+      setSelectedModelTextWidth(0);
+      return undefined;
+    }
+
+    const measureSelectedModel = () => {
+      setSelectedModelTextWidth(
+        Math.ceil(
+          selectedModelMeasureRef.current?.getBoundingClientRect().width ?? 0,
+        ),
+      );
+    };
+    measureSelectedModel();
+
+    if (typeof ResizeObserver === "undefined") {
+      return undefined;
+    }
+
+    const observer = new ResizeObserver(measureSelectedModel);
+    observer.observe(selectedModelMeasureRef.current);
+    return () => observer.disconnect();
+  }, [isSelectedModelFree, selectedModel]);
 
   const { t } = useTranslation();
 
@@ -227,62 +279,97 @@ export function ModelSelector({
         <label className={cn("text-sm", labelClassName)}>
           {t(I18nKey.LLM$MODEL)}
         </label>
-        <Autocomplete
-          data-testid="llm-model-input"
-          isRequired
-          isVirtualized={false}
-          isLoading={isLoadingModels}
-          name="llm-model-input"
-          aria-label={t(I18nKey.LLM$MODEL)}
-          placeholder={t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER)}
-          isClearable={false}
-          onSelectionChange={(e) => {
-            if (e?.toString()) handleChangeModel(e.toString());
-          }}
-          isDisabled={isDisabled || !selectedProvider}
-          selectedKey={selectedModel}
-          defaultSelectedKey={selectedModel ?? undefined}
-          classNames={{
-            popoverContent: "bg-content1 rounded-xl",
-            selectorButton: heroUiAutocompleteSelectorButtonClassName,
-          }}
-          selectorButtonProps={{ disableRipple: true }}
-          inputProps={{
-            classNames: {
-              inputWrapper: formControlSettingsFieldClassName,
-            },
-          }}
-        >
-          <AutocompleteSection
-            title={
-              unverifiedModels.length > 0
-                ? t(I18nKey.MODEL_SELECTOR$VERIFIED)
-                : undefined
-            }
+        <div className="relative">
+          <Autocomplete
+            data-testid="llm-model-input"
+            isRequired
+            isVirtualized={false}
+            isLoading={isLoadingModels}
+            name="llm-model-input"
+            aria-label={t(I18nKey.LLM$MODEL)}
+            placeholder={t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER)}
+            isClearable={false}
+            onSelectionChange={(e) => {
+              if (e?.toString()) handleChangeModel(e.toString());
+            }}
+            isDisabled={isDisabled || !selectedProvider}
+            selectedKey={selectedModel}
+            defaultSelectedKey={selectedModel ?? undefined}
+            classNames={{
+              popoverContent: "bg-content1 rounded-xl",
+              selectorButton: heroUiAutocompleteSelectorButtonClassName,
+            }}
+            selectorButtonProps={{ disableRipple: true }}
+            inputProps={{
+              classNames: {
+                inputWrapper: formControlSettingsFieldClassName,
+              },
+            }}
           >
-            {verifiedModels.map((model) => (
-              <AutocompleteItem key={model.name}>{model.name}</AutocompleteItem>
-            ))}
-          </AutocompleteSection>
-          {unverifiedModels.length > 0 ? (
             <AutocompleteSection
               title={
-                verifiedModels.length > 0
-                  ? t(I18nKey.MODEL_SELECTOR$OTHERS)
+                unverifiedModels.length > 0
+                  ? t(I18nKey.MODEL_SELECTOR$VERIFIED)
                   : undefined
               }
             >
-              {unverifiedModels.map((model) => (
-                <AutocompleteItem
-                  data-testid={`model-item-${model.name}`}
-                  key={model.name}
-                >
-                  {model.name}
+              {verifiedModels.map((model) => (
+                <AutocompleteItem key={model.name} textValue={model.name}>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="truncate">{model.name}</span>
+                    {showFreeModelUI && model.free ? (
+                      <span className={freeModelBadgeClassName}>
+                        {FREE_MODEL_BADGE_LABEL}
+                      </span>
+                    ) : null}
+                  </span>
                 </AutocompleteItem>
               ))}
             </AutocompleteSection>
+            {unverifiedModels.length > 0 ? (
+              <AutocompleteSection
+                title={
+                  verifiedModels.length > 0
+                    ? t(I18nKey.MODEL_SELECTOR$OTHERS)
+                    : undefined
+                }
+              >
+                {unverifiedModels.map((model) => (
+                  <AutocompleteItem
+                    data-testid={`model-item-${model.name}`}
+                    key={model.name}
+                    textValue={model.name}
+                  >
+                    {model.name}
+                  </AutocompleteItem>
+                ))}
+              </AutocompleteSection>
+            ) : null}
+          </Autocomplete>
+          {isSelectedModelFree && selectedModel ? (
+            <>
+              <span
+                ref={selectedModelMeasureRef}
+                className="pointer-events-none absolute left-3 top-1/2 whitespace-pre text-sm opacity-0"
+                aria-hidden
+              >
+                {selectedModel}
+              </span>
+              <span
+                data-testid="selected-free-model-badge"
+                className={cn(
+                  freeModelBadgeClassName,
+                  "pointer-events-none absolute top-1/2 z-10 -translate-y-1/2",
+                )}
+                style={{
+                  left: `calc(0.75rem + ${selectedModelTextWidth}px + 0.5rem)`,
+                }}
+              >
+                {FREE_MODEL_BADGE_LABEL}
+              </span>
+            </>
           ) : null}
-        </Autocomplete>
+        </div>
         {modelsError && (
           <p data-testid="models-error" className="text-danger text-xs">
             {t(I18nKey.CONFIGURATION$ERROR_FETCH_MODELS)}
@@ -296,6 +383,15 @@ export function ModelSelector({
             {t(I18nKey.SETTINGS$MODEL_NO_LONGER_AVAILABLE)}
           </p>
         )}
+        {showFreeModelUI &&
+        selectedProvider === "openhands" &&
+        freeModelNames.length > 0 ? (
+          <FreeOpenHandsModelsNote
+            modelIds={freeModelNames.map(
+              (name) => `${selectedProvider}/${name}`,
+            )}
+          />
+        ) : null}
       </fieldset>
     </div>
   );

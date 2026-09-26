@@ -26,6 +26,7 @@ import { useAutoLogin } from "#/hooks/use-auto-login";
 import { useAuthCallback } from "#/hooks/use-auth-callback";
 import { useSyncPostHogConsent } from "#/hooks/use-sync-posthog-consent";
 import { useAutoSelectOrganization } from "#/hooks/use-auto-select-organization";
+import { useHydrateFreeModels } from "#/hooks/query/use-free-models";
 import { LOCAL_STORAGE_KEYS } from "#/utils/local-storage";
 import { EmailVerificationGuard } from "#/components/features/guards/email-verification-guard";
 import { OnboardingGuard } from "#/components/features/guards/onboarding-guard";
@@ -111,6 +112,11 @@ export default function MainApp() {
 
   // Auto-select the first organization when none is selected
   useAutoSelectOrganization();
+
+  // Hydrate the DB-driven free / default OpenHands model flags into the
+  // free-models store so leaf components (e.g. the model selector) can read
+  // them synchronously. The UI is additionally domain-gated at render sites.
+  useHydrateFreeModels();
 
   React.useEffect(() => {
     // Don't change language when on intermediate pages (TOS, profile questions)
