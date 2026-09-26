@@ -115,6 +115,41 @@ describe("V1ConversationService", () => {
     });
   });
 
+  describe("getVSCodeUrl", () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it("treats an unavailable editor capability as no URL", async () => {
+      (axios.get as Mock).mockRejectedValue({
+        isAxiosError: true,
+        response: { status: 410 },
+      });
+      vi.mocked(axios.isAxiosError).mockReturnValue(true);
+
+      await expect(
+        V1ConversationService.getVSCodeUrl(
+          "conv-123",
+          "http://localhost:54928/api/conversations/conv-123",
+          "test-api-key",
+        ),
+      ).resolves.toEqual({ vscode_url: null });
+    });
+
+    it("returns the V1 editor URL when the capability is available", async () => {
+      (axios.get as Mock).mockResolvedValue({ data: { url: "https://editor" } });
+
+      await expect(
+        V1ConversationService.getVSCodeUrl(
+          "conv-123",
+          "http://localhost:54928/api/conversations/conv-123",
+          "test-api-key",
+        ),
+      ).resolves.toEqual({ vscode_url: "https://editor" });
+    });
+  });
+
+
   describe("interruptConversation", () => {
     beforeEach(() => {
       vi.clearAllMocks();
