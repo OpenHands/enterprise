@@ -327,3 +327,78 @@ class TestOpenOrgCreationEnabled:
 
             importlib.reload(constants_module)
             assert constants_module.OPEN_ORG_CREATION_ENABLED is False
+
+
+class TestDefaultLlmSettings:
+    """Deployment default model/base URL across the direct route and ENABLE_LEGACY_LITELLM."""
+
+    @pytest.fixture
+    def constants(self):
+        import server.constants as constants_module
+
+        return constants_module
+
+    def _patch(self, constants, *, route, model, base_url, litellm):
+        return (
+            patch.object(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', route),
+            patch.object(constants, 'OPENHANDS_DEFAULT_LLM_MODEL', model),
+            patch.object(constants, 'OPENHANDS_DEFAULT_LLM_BASE_URL', base_url),
+            patch.object(constants, 'ENABLE_LEGACY_LITELLM', litellm),
+            patch.object(constants, 'LITELLM_DEFAULT_MODEL', 'litellm_proxy/m'),
+            patch.object(constants, 'LITE_LLM_API_URL', 'http://litellm:4000'),
+        )
+
+    @pytest.mark.parametrize('litellm', [True, False])
+    def test_direct_route_without_base_url_uses_provider_endpoint(
+        self, constants, litellm
+    ):
+        p = self._patch(
+            constants,
+            route='direct',
+            model='anthropic/claude-sonnet-4-5',
+            base_url=None,
+            litellm=litellm,
+        )
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            assert constants.should_use_direct_llm_defaults() is True
+            assert constants.get_default_llm_model() == 'anthropic/claude-sonnet-4-5'
+            assert constants.get_default_llm_base_url() is None
+
+    def test_direct_route_with_base_url(self, constants):
+        p = self._patch(
+            constants,
+            route='direct',
+            model='openai/llama',
+            base_url='http://vllm:8000/v1',
+            litellm=False,
+        )
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            assert constants.get_default_llm_model() == 'openai/llama'
+            assert constants.get_default_llm_base_url() == 'http://vllm:8000/v1'
+
+    def test_direct_route_requires_model(self, constants):
+        p = self._patch(
+            constants, route='direct', model=None, base_url='http://x', litellm=True
+        )
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            assert constants.should_use_direct_llm_defaults() is False
+            assert constants.get_default_llm_model() == 'litellm_proxy/m'
+            assert constants.get_default_llm_base_url() == 'http://litellm:4000'
+
+    def test_litellm_off_without_install_default_never_points_at_a_gateway(
+        self, constants
+    ):
+        from openhands.sdk.settings import default_agent_settings
+
+        p = self._patch(constants, route=None, model=None, base_url=None, litellm=False)
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            assert (
+                constants.get_default_llm_model() == default_agent_settings().llm.model
+            )
+            assert constants.get_default_llm_base_url() is None
+
+    def test_litellm_on_without_install_default_uses_gateway(self, constants):
+        p = self._patch(constants, route=None, model=None, base_url=None, litellm=True)
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            assert constants.get_default_llm_model() == 'litellm_proxy/m'
+            assert constants.get_default_llm_base_url() == 'http://litellm:4000'

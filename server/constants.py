@@ -207,11 +207,9 @@ def get_default_litellm_model():
 
 
 def should_use_direct_llm_defaults() -> bool:
-    """Whether defaults should point directly at an OpenAI-compatible endpoint."""
-    return (
-        OPENHANDS_LLM_PROVIDER_ROUTE == 'direct'
-        and bool(OPENHANDS_DEFAULT_LLM_MODEL)
-        and bool(OPENHANDS_DEFAULT_LLM_BASE_URL)
+    """Whether defaults should point directly at the provider, bypassing any gateway."""
+    return OPENHANDS_LLM_PROVIDER_ROUTE == 'direct' and bool(
+        OPENHANDS_DEFAULT_LLM_MODEL
     )
 
 
@@ -240,7 +238,8 @@ def uses_bundled_litellm_proxy() -> bool:
     The OpenHands SaaS proxy keeps the SDK's canonicalization instead.
     """
     return (
-        DEPLOYMENT_MODE == 'self_hosted'
+        ENABLE_LEGACY_LITELLM
+        and DEPLOYMENT_MODE == 'self_hosted'
         and not should_use_direct_llm_defaults()
         and bool(LITE_LLM_API_URL)
         and not is_openhands_proxy_base_url(LITE_LLM_API_URL)
@@ -276,15 +275,25 @@ def get_default_llm_model() -> str:
     """Return the deployment default LLM model."""
     if should_use_direct_llm_defaults() and OPENHANDS_DEFAULT_LLM_MODEL:
         return OPENHANDS_DEFAULT_LLM_MODEL
+    if not ENABLE_LEGACY_LITELLM:
+        from openhands.sdk.settings import default_agent_settings
+
+        # No gateway and no install default: the user brings their own key.
+        return default_agent_settings().llm.model
     if uses_bundled_litellm_proxy():
         return to_openhands_model(get_default_litellm_model())
     return get_default_litellm_model()
 
 
-def get_default_llm_base_url() -> str:
-    """Return the deployment default LLM base URL."""
-    if should_use_direct_llm_defaults() and OPENHANDS_DEFAULT_LLM_BASE_URL:
+def get_default_llm_base_url() -> str | None:
+    """Return the deployment default LLM base URL.
+
+    ``None`` lets the SDK use the model provider's own endpoint.
+    """
+    if should_use_direct_llm_defaults():
         return OPENHANDS_DEFAULT_LLM_BASE_URL
+    if not ENABLE_LEGACY_LITELLM:
+        return None
     return LITE_LLM_API_URL
 
 

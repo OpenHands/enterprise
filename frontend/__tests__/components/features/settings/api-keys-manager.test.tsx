@@ -170,4 +170,88 @@ describe("ApiKeysManager", () => {
       screen.queryByText("SETTINGS$LLM_API_KEY_PAYWALL_MESSAGE"),
     ).not.toBeInTheDocument();
   });
+
+  it("renders no managed LLM key section when enable_litellm is off", () => {
+    mockUseConfig.mockReturnValue({
+      data: {
+        app_mode: "oss",
+        feature_flags: {
+          enable_billing: false,
+          enable_byor_export: true,
+          enable_litellm: false,
+        },
+      } as never,
+    } as never);
+    mockUseLlmApiKey.mockReturnValue({
+      data: undefined,
+      error: null,
+      isLoading: false,
+      isPaymentRequired: false,
+    } as never);
+
+    renderComponent();
+
+    expect(
+      screen.queryByText("SETTINGS$LLM_API_KEY_DISABLED_MESSAGE"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("SETTINGS$LLM_API_KEY_PAYWALL_MESSAGE"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "SETTINGS$REFRESH_LLM_API_KEY" }),
+    ).not.toBeInTheDocument();
+    // The regular OpenHands API keys section still renders.
+    expect(
+      screen.getByText("SETTINGS$OPENHANDS_API_KEYS"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the managed LLM key section when enable_litellm is undefined", () => {
+    mockUseConfig.mockReturnValue({
+      data: {
+        app_mode: "oss",
+        feature_flags: {
+          enable_billing: false,
+          enable_byor_export: true,
+        },
+      } as never,
+    } as never);
+    mockUseLlmApiKey.mockReturnValue({
+      data: { key: "sk-byor-key" },
+      error: null,
+      isLoading: false,
+      isPaymentRequired: false,
+    } as never);
+
+    renderComponent();
+
+    expect(
+      screen.getByRole("button", { name: "SETTINGS$REFRESH_LLM_API_KEY" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the managed LLM key section when enable_litellm is explicitly true", () => {
+    mockUseConfig.mockReturnValue({
+      data: {
+        app_mode: "oss",
+        feature_flags: {
+          enable_billing: false,
+          enable_byor_export: true,
+          enable_litellm: true,
+        },
+      } as never,
+    } as never);
+    mockUseLlmApiKey.mockReturnValue({
+      data: { key: "sk-byor-key" },
+      error: null,
+      isLoading: false,
+      isPaymentRequired: false,
+    } as never);
+
+    renderComponent();
+
+    expect(
+      screen.getByRole("button", { name: "SETTINGS$REFRESH_LLM_API_KEY" }),
+    ).toBeInTheDocument();
+  });
 });
