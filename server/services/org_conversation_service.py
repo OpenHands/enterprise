@@ -1406,17 +1406,32 @@ class OrgConversationService:
             has_more = True
             user_rows = user_rows[:limit]
 
-        settings_result = await self.db_session.execute(
-            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
-        )
-        budget_settings = settings_result.scalar_one_or_none()
+        from storage.lite_llm_manager import is_litellm_enabled
 
-        overrides_result = await self.db_session.execute(
-            select(OrgUserBudgetOverride).where(OrgUserBudgetOverride.org_id == org_id)
-        )
-        override_map = {
-            override.user_id: override for override in overrides_result.scalars().all()
-        }
+        # Budgets are enforced through LiteLLM: with the gateway disabled
+        # deployment-wide, any stored budget row is stale and no longer
+        # enforced, so omit it from usage monitoring rather than implying
+        # enforcement that is not happening. Conversation/usage stats
+        # (spend_mtd/ytd/lifetime, conversation counts, etc.) are OHE's own
+        # tracking and are unaffected.
+        litellm_enabled = await is_litellm_enabled()
+        budget_settings = None
+        override_map: dict[UUID, OrgUserBudgetOverride] = {}
+        if litellm_enabled:
+            settings_result = await self.db_session.execute(
+                select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+            )
+            budget_settings = settings_result.scalar_one_or_none()
+
+            overrides_result = await self.db_session.execute(
+                select(OrgUserBudgetOverride).where(
+                    OrgUserBudgetOverride.org_id == org_id
+                )
+            )
+            override_map = {
+                override.user_id: override
+                for override in overrides_result.scalars().all()
+            }
 
         pr_rows_result = await self.db_session.execute(
             select(

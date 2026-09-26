@@ -59,6 +59,7 @@ class SaaSServerConfig(ServerConfig):
     posthog_client_key: str = os.environ.get('POSTHOG_CLIENT_KEY', '')
     github_client_id: str = os.environ.get('GITHUB_APP_CLIENT_ID', '')
     enable_billing = os.environ.get('ENABLE_BILLING', 'false') == 'true'
+    enable_litellm = os.environ.get('ENABLE_LITELLM', 'true').lower() in ('true', '1')
     hide_llm_settings = os.environ.get('HIDE_LLM_SETTINGS', 'false') == 'true'
     auth_url: str | None = os.environ.get('AUTH_URL')
     settings_store_class: str = 'storage.saas_settings_store.SaasSettingsStore'
@@ -164,6 +165,7 @@ class SaaSServerConfig(ServerConfig):
             'POSTHOG_CLIENT_KEY': self.posthog_client_key,
             'FEATURE_FLAGS': {
                 'ENABLE_BILLING': self.enable_billing,
+                'ENABLE_LITELLM': self.enable_litellm,
                 'HIDE_LLM_SETTINGS': self.hide_llm_settings,
                 'ENABLE_JIRA': self.enable_jira,
                 'ENABLE_JIRA_DC': self.enable_jira_dc,

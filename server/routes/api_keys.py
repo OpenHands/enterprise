@@ -206,6 +206,26 @@ class CurrentApiKeyResponse(BaseModel):
     auth_type: str
 
 
+async def _validate_litellm_enabled_for_managed_keys() -> None:
+    """Managed/BYOR LLM keys are issued by LiteLLM, so they are unavailable
+    whenever ``ENABLE_LITELLM`` is off. Regular OpenHands application API
+    keys (``create_api_key``/``list_api_keys``/``delete_api_key`` above,
+    and ``get_current_api_key``) are unaffected -- they never touch
+    LiteLLM.
+    """
+    from storage.lite_llm_manager import is_litellm_enabled
+
+    if not await is_litellm_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                'Managed LLM API keys require the LiteLLM integration, '
+                'which is disabled in this environment. Set '
+                'ENABLE_LITELLM=true to use this feature.'
+            ),
+        )
+
+
 def api_key_to_response(key: ApiKey) -> ApiKeyResponse:
     """Convert an ApiKey model to an ApiKeyResponse."""
     return ApiKeyResponse(
@@ -467,6 +487,7 @@ async def refresh_managed_llm_api_key(
     provider effective configs are rotated; BYOK/custom and non-managed configs
     are rejected before any key is generated.
     """
+    await _validate_litellm_enabled_for_managed_keys()
     logger.info(
         'Starting managed LLM API key refresh',
         extra={'user_id': user_id, 'org_id': str(effective_org_id)},
@@ -534,6 +555,7 @@ async def get_llm_api_key_for_byor(
     Returns 402 Payment Required if BYOR export is not enabled for the
     request's effective org.
     """
+    await _validate_litellm_enabled_for_managed_keys()
     try:
         if not await OrgService.check_byor_export_enabled(
             user_id, org_id=effective_org_id
@@ -606,6 +628,7 @@ async def refresh_llm_api_key_for_byor(
     Returns 402 Payment Required if BYOR export is not enabled for the
     request's effective org.
     """
+    await _validate_litellm_enabled_for_managed_keys()
     logger.info('Starting BYOR LLM API key refresh', extra={'user_id': user_id})
 
     try:
