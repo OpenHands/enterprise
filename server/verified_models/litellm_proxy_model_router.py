@@ -219,10 +219,29 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
             models_response.verified_models
         )
 
+    async def _litellm_enabled(self) -> bool:
+        """Whether this deployment may contact the LiteLLM gateway.
+
+        Lazy import to avoid a hard dependency on the enterprise ``storage``
+        package from this module's import path.
+        """
+        try:
+            from storage.lite_llm_manager import is_litellm_enabled
+        except ImportError:
+            return True
+        return await is_litellm_enabled()
+
     async def _get_models_response(
         self,
         verified_models: list[str] | None = None,
     ) -> ModelsResponse:
+        if not await self._litellm_enabled():
+            # LiteLLM disabled deployment-wide: the OpenHands/managed models
+            # (served through the bundled proxy) are hidden entirely rather
+            # than fetched -- only direct provider configurations (BYOK) are
+            # offered. Never touches the network.
+            return await self._union_with_catalogue(self._build_response([]))
+
         cls = LiteLLMProxyModelService
         response = cls._shared_response
         if (
