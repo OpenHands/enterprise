@@ -59,12 +59,6 @@ jobs:
             ⚠️ This PR contains **migrations**
 
       - name: Comment warning on PR
-        # The migration-sync warning comment is informational only. Fork PRs
-        # run with a read-only GITHUB_TOKEN that cannot post comments (403
-        # "Resource not accessible by integration"), which would otherwise
-        # fail this job and skip the apply-migrations job that depends on it.
-        # Don't let a comment-posting failure block the real migration checks.
-        continue-on-error: true
         uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5
         with:
           issue-number: ${{ github.event.pull_request.number }}

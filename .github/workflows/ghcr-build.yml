@@ -22,11 +22,6 @@ concurrency:
 
 jobs:
   # Builds and publishes the enterprise-server image.
-  # On fork PRs the read-only GITHUB_TOKEN cannot push to the org's ghcr.io
-  # package ("denied: installation not allowed to Write organization package"),
-  # so build-only (push: false) there — the image still compiles, so the
-  # required per-arch build checks report success instead of hanging at
-  # "Expected". Non-fork PRs and pushes build and publish as before.
   build_enterprise:
     name: Enterprise
     uses: ./.github/workflows/_build-image.yml
@@ -37,7 +32,6 @@ jobs:
       provenance: true
       sbom: true
       buildx-driver-opts: network=host
-      push: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
 
   update_pr_description:
     name: Update PR Description
