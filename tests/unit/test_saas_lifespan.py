@@ -1,13 +1,16 @@
 """Tests for SaasAppLifespanService."""
 
 import asyncio
+import logging
 import os
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.pool import NullPool
 
 from tests import postgres_testdb
@@ -104,7 +107,7 @@ async def test_aenter_migrates_before_anything_else_when_enabled(monkeypatch, fl
 
 @pytest.fixture
 def point_migrations_at(monkeypatch, postgres_server):
-    """Point the alembic subprocess at a database on the test server."""
+    """Point alembic at a database on the test server."""
 
     def _point(database: str) -> None:
         for key in list(os.environ):
@@ -131,40 +134,86 @@ def empty_database(postgres_server):
         postgres_testdb.drop_test_database(postgres_server, name)
 
 
-@pytest.mark.asyncio
-async def test_concurrent_startups_bring_an_empty_database_to_head(
-    point_migrations_at, empty_database, postgres_server
-):
-    """Two workers starting at once both succeed; the advisory lock serializes them."""
-    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
-
-    point_migrations_at(empty_database)
-    await asyncio.gather(
-        SaasAppLifespanService()._run_migrations(),
-        SaasAppLifespanService()._run_migrations(),
-    )
-
+def _assert_at_head_and_released(postgres_server, database: str) -> None:
     config = Config(str(postgres_testdb.ALEMBIC_INI))
     config.set_main_option('script_location', str(postgres_testdb.MIGRATIONS_DIR))
     heads = set(ScriptDirectory.from_config(config).get_heads())
-    engine = create_engine(postgres_server.sync_url(empty_database), poolclass=NullPool)
+    engine = create_engine(postgres_server.sync_url(database), poolclass=NullPool)
     try:
         with engine.connect() as conn:
             applied = set(
                 conn.execute(text('SELECT version_num FROM alembic_version')).scalars()
             )
+            other_connections = conn.execute(
+                text(
+                    'SELECT count(*) FROM pg_stat_activity '
+                    'WHERE datname = current_database() AND pid <> pg_backend_pid()'
+                )
+            ).scalar()
+            lock_free = conn.execute(
+                text('SELECT pg_try_advisory_lock(3617572382373537863)')
+            ).scalar()
     finally:
         engine.dispose()
     assert applied == heads
+    assert other_connections == 0
+    assert lock_free
 
 
 @pytest.mark.asyncio
-async def test_run_migrations_raises_when_alembic_fails(point_migrations_at):
+async def test_run_migrations_brings_an_empty_database_to_head(
+    point_migrations_at, empty_database, postgres_server
+):
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    point_migrations_at(empty_database)
+    root_handlers = list(logging.getLogger().handlers)
+
+    await SaasAppLifespanService()._run_migrations()
+
+    # A connection left open would keep the advisory lock and block other replicas.
+    _assert_at_head_and_released(postgres_server, empty_database)
+    # alembic.ini's logging config must not replace the app's.
+    assert logging.getLogger().handlers == root_handlers
+    assert not logging.getLogger('openhands').disabled
+
+
+@pytest.mark.asyncio
+async def test_app_and_another_replica_can_migrate_at_once(
+    point_migrations_at, empty_database, postgres_server
+):
+    """The advisory lock makes one wait for the other, then find head."""
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    point_migrations_at(empty_database)
+    other_replica = await asyncio.create_subprocess_exec(
+        sys.executable,
+        '-m',
+        'alembic',
+        '-c',
+        str(postgres_testdb.ALEMBIC_INI),
+        'upgrade',
+        'head',
+        cwd=postgres_testdb.REPO_ROOT,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+
+    _, returncode = await asyncio.gather(
+        SaasAppLifespanService()._run_migrations(), other_replica.wait()
+    )
+
+    assert returncode == 0
+    _assert_at_head_and_released(postgres_server, empty_database)
+
+
+@pytest.mark.asyncio
+async def test_run_migrations_raises_the_database_error(point_migrations_at):
     from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
 
     point_migrations_at('no_such_database')
 
-    with pytest.raises(RuntimeError, match='alembic upgrade head failed'):
+    with pytest.raises(DBAPIError, match='no_such_database'):
         await SaasAppLifespanService()._run_migrations()
 
 
