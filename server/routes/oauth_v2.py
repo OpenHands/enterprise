@@ -207,6 +207,14 @@ async def _resolve_or_create_user(provider: OAuthProvider, userinfo: dict) -> st
     ``sub``). If found, returns the linked user id. Otherwise creates the user
     and links it. Phase 1 additive behavior; the real user-mgmt migration
     (Phase 3) backfills from Keycloak.
+
+    IDP swap-over seeding (ALL-5978): when the sub lookup misses, and the
+    new IDP reports ``email_verified`` is true, attempt an opted-in email
+    match via ``UserStore.get_user_by_email_opted_in``. On a unique hit,
+    link the new IDP's ``sub`` to the existing ``User`` and self-clear the
+    ``allow_match_by_email`` flag so the window is exactly one login wide.
+    Duplicate emails (>1 opted-in user) never auto-link — the caller gets a
+    409 so an operator can resolve manually.
     """
     subject = userinfo.get('sub') or userinfo.get('id') or userinfo.get('user_id')
     if not subject:
@@ -220,9 +228,43 @@ async def _resolve_or_create_user(provider: OAuthProvider, userinfo: dict) -> st
     if existing is not None:
         return str(existing.user_id)
 
+    email = userinfo.get('email')
+    email_verified = userinfo.get('email_verified')
+    if email and email_verified:
+        dup_count = await UserStore.count_opted_in_users_with_email(email)
+        if dup_count > 1:
+            logger.warning(
+                'oauth_v2:email_match_skipped_duplicate email=%s count=%d',
+                email,
+                dup_count,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    'Multiple users share this email and have '
+                    'allow_match_by_email enabled; manual resolution required.'
+                ),
+            )
+        matched = await UserStore.get_user_by_email_opted_in(email)
+        if matched is not None:
+            await link_store.link(
+                oauth_provider_id=provider.id,
+                user_id=matched.id,
+                external_subject_id=subject,
+                external_email=email,
+            )
+            await UserStore.clear_allow_match_by_email(str(matched.id))
+            logger.info(
+                'oauth_v2:email_match_linked user_id=%s provider=%s subject=%s',
+                matched.id,
+                provider.id,
+                subject,
+            )
+            return str(matched.id)
+
     user_info_dict = {
-        'email': userinfo.get('email'),
-        'email_verified': userinfo.get('email_verified'),
+        'email': email,
+        'email_verified': email_verified,
     }
     user = await UserStore.create_user(subject, user_info_dict)
     if user is None:
