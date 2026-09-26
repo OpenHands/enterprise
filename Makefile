@@ -283,7 +283,8 @@ prepare-local-frontend:
 	@$(MAKE) -s build-agent-canvas
 
 # Start (or reuse) a local PostgreSQL container and migrate it to head. Run this
-# once before `make run`; migrations are never applied automatically on startup.
+# once before `make run`; the app only migrates on startup when
+# RUN_MIGRATIONS_ON_STARTUP=true.
 local-db: check-docker
 	@echo "$(YELLOW)Starting local PostgreSQL ($(LOCAL_DB_CONTAINER))...$(RESET)"
 	@if [ -n "$$(docker ps -aq -f name=^$(LOCAL_DB_CONTAINER)$$)" ]; then \
