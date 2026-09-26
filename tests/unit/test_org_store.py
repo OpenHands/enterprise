@@ -2229,6 +2229,36 @@ class TestUsesManagedDefaultLlm:
         with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
             assert OrgStore._uses_managed_default_llm(org) is False
 
+    @pytest.mark.parametrize(
+        'proxy_url',
+        [
+            None,
+            'http://openhands-litellm:4000',
+            'http://oh-main-litellm.openhands.svc.cluster.local:4000',
+        ],
+    )
+    def test_bundled_proxy_route_is_managed_without_its_url_env(self, proxy_url):
+        # With LiteLLM off the chart no longer sets LITE_LLM_API_URL.
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {'model': 'litellm_proxy/claude-sonnet-4-5', 'base_url': proxy_url}
+        }
+        with patch(
+            'storage.org_store.LITE_LLM_API_URL', 'https://llm-proxy.app.all-hands.dev'
+        ):
+            assert OrgStore._uses_managed_default_llm(org) is True
+
+    def test_external_litellm_proxy_is_not_managed(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {
+                'model': 'litellm_proxy/claude-sonnet-4-5',
+                'base_url': 'https://litellm.customer.example.com',
+            }
+        }
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
 
 @pytest.mark.asyncio
 async def test_validate_org_version_bumps_without_clobbering_byok(async_session_maker):
@@ -2306,3 +2336,133 @@ async def test_validate_org_version_repair_failure_does_not_brick(async_session_
 
     assert result is not None
     assert result.org_version == ORG_SETTINGS_VERSION
+
+
+_GATEWAY_ERA_LLM = {
+    'model': 'litellm_proxy/claude-sonnet-4-5',
+    'base_url': 'http://oh-main-litellm.openhands.svc.cluster.local:4000',
+}
+
+
+def _gateway_off(direct_model: str | None, direct_key: str | None = None):
+    """Patch a LiteLLM-off deployment, optionally with a direct install default."""
+    return (
+        patch('storage.lite_llm_manager.ENABLE_LITELLM', False),
+        patch('server.constants.ENABLE_LITELLM', False),
+        patch(
+            'server.constants.OPENHANDS_LLM_PROVIDER_ROUTE',
+            'direct' if direct_model else None,
+        ),
+        patch('server.constants.OPENHANDS_DEFAULT_LLM_MODEL', direct_model),
+        patch('server.constants.OPENHANDS_DEFAULT_LLM_BASE_URL', None),
+        patch('server.constants.OPENHANDS_DEFAULT_LLM_API_KEY', direct_key),
+    )
+
+
+async def _current_org_on_gateway_default(async_session_maker) -> uuid.UUID:
+    async with async_session_maker() as session:
+        org = Org(
+            name='gateway-era-org',
+            org_version=ORG_SETTINGS_VERSION,
+            agent_settings={'llm': dict(_GATEWAY_ERA_LLM)},
+        )
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        return org.id
+
+
+@pytest.mark.asyncio
+async def test_gateway_off_moves_org_to_install_default_and_shares_its_key(
+    async_session_maker,
+):
+    org_id = await _current_org_on_gateway_default(async_session_maker)
+    p = _gateway_off('anthropic/claude-x', 'sk-install')
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+    ):
+        first = await OrgStore.get_org_by_id(org_id)
+        with patch.object(
+            OrgStore, '_update_org_kwargs', wraps=OrgStore._update_org_kwargs
+        ) as update:
+            second = await OrgStore.get_org_by_id(org_id)
+
+    assert first is not None and second is not None
+    assert first.agent_settings['llm']['model'] == 'anthropic/claude-x'
+    assert first.agent_settings['llm'].get('base_url') is None
+    assert first.llm_api_key.get_secret_value() == 'sk-install'
+    update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gateway_off_without_install_default_uses_sdk_default(
+    async_session_maker,
+):
+    from openhands.sdk.settings import default_agent_settings
+
+    org_id = await _current_org_on_gateway_default(async_session_maker)
+    p = _gateway_off(None)
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.agent_settings['llm']['model'] == default_agent_settings().llm.model
+    assert result.agent_settings['llm'].get('base_url') is None
+    assert result.llm_api_key is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_on_leaves_current_org_on_gateway_default(async_session_maker):
+    org_id = await _current_org_on_gateway_default(async_session_maker)
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.agent_settings['llm'] == _GATEWAY_ERA_LLM
+    assert result.llm_api_key is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_off_keeps_byok_org(async_session_maker):
+    async with async_session_maker() as session:
+        org = Org(
+            name='byok-org',
+            org_version=ORG_SETTINGS_VERSION,
+            agent_settings={
+                'llm': {'model': 'openai/gpt-5', 'base_url': 'https://api.openai.com'}
+            },
+        )
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        org_id = org.id
+
+    p = _gateway_off('anthropic/claude-x', 'sk-install')
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.agent_settings['llm']['model'] == 'openai/gpt-5'
+    assert result.llm_api_key is None

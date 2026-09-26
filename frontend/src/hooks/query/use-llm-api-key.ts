@@ -19,16 +19,20 @@ export function useLlmApiKey() {
   const { data: config } = useConfig();
   const { organizationId } = useSelectedOrganizationId();
 
+  // `undefined` means the flag isn't set on this deployment; treat that as ON.
+  const litellmEnabled = config?.feature_flags?.enable_litellm ?? true;
+
   const query = useQuery({
     queryKey: [LLM_API_KEY_QUERY_KEY, organizationId],
     // On SaaS the BYOR key is scoped to the selected organization, so wait
     // for one to be selected. Otherwise fetch whenever the deployment has
     // explicitly enabled BYOR export (e.g. self-hosted installs without
-    // billing).
+    // billing). The byor endpoints 403 outright when LiteLLM is off.
     enabled:
-      config?.app_mode === "saas"
+      litellmEnabled &&
+      (config?.app_mode === "saas"
         ? !!organizationId
-        : !!config?.feature_flags?.enable_byor_export,
+        : !!config?.feature_flags?.enable_byor_export),
     queryFn: async () => {
       const { data } =
         await openHands.get<LlmApiKeyResponse>("/api/keys/llm/byor");

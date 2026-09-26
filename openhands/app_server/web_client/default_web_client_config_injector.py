@@ -332,6 +332,11 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         from openhands.app_server.config import get_global_config
 
         config = get_global_config()
+        # Structured OH_WEB_CLIENT_FEATURE_FLAGS_* env builds feature_flags without
+        # reading ENABLE_LITELLM, so check the env var here too.
+        enable_litellm = self.feature_flags.enable_litellm and _env_flag_enabled(
+            'ENABLE_LITELLM', 'true'
+        )
         # enable_billing is a registered default flag (ENABLE_BILLING): the
         # database overlay wins, the env var baked into self.feature_flags at
         # init is the fallback.
@@ -339,7 +344,14 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             update={
                 'enable_billing': await _resolve_flag(
                     'ENABLE_BILLING', self.feature_flags.enable_billing
-                )
+                ),
+                'enable_litellm': enable_litellm,
+                # LiteLLM off means BYOK is the only LLM source; force it on
+                # regardless of OH_ALLOW_USER_LLM_CONFIGURATION.
+                'allow_user_llm_configuration': (
+                    self.feature_flags.allow_user_llm_configuration
+                    or not enable_litellm
+                ),
             }
         )
         result = WebClientConfig(
