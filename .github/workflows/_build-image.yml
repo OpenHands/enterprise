@@ -43,6 +43,11 @@ on:
         required: false
         type: string
         default: ""
+      push:
+        description: Whether to push the built image to the registry. Set to false to build-only (e.g. on fork PRs whose read-only GITHUB_TOKEN cannot write org packages), so required build checks still report success.
+        required: false
+        type: boolean
+        default: true
 
 env:
   RELEVANT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -64,6 +69,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
       - name: Login to GHCR
+        if: ${{ inputs.push }}
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
         with:
           registry: ghcr.io
@@ -80,23 +86,38 @@ jobs:
           image: ${{ inputs.image }}
           ref-name: ${{ env.RELEVANT_REF_NAME }}
           suffix: -${{ matrix.arch }}
+      - name: Compute registry cache config
+        # Registry cache (type=registry) reads and writes to the org's ghcr.io
+        # package, which a fork PR's read-only GITHUB_TOKEN cannot access. Only
+        # configure it when we are pushing (non-fork). Build-only runs skip the
+        # cache entirely — slower, but the build still compiles and the required
+        # per-arch checks report success.
+        id: cache
+        if: ${{ inputs.push }}
+        shell: bash
+        run: |
+          {
+            printf 'cache-from<<%s\n' 'EOF'
+            printf 'type=registry,ref=%s:buildcache-%s\n' "${{ inputs.image }}" "${{ steps.meta.outputs.version }}"
+            printf 'type=registry,ref=%s:buildcache-main-%s\n' "${{ inputs.image }}" "${{ matrix.arch }}"
+            printf '%s\n' 'EOF'
+            printf 'cache-to=%s\n' "type=registry,ref=${{ inputs.image }}:buildcache-${{ steps.meta.outputs.version }},mode=max"
+          } >> "$GITHUB_OUTPUT"
       - name: Build and push
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
           target: ${{ inputs.target }}
-          push: true
+          push: ${{ inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/${{ matrix.arch }}
           build-args: |
             OPENHANDS_BUILD_VERSION=${{ env.RELEVANT_REF_NAME }}
             ${{ inputs.extra-build-args }}
-          cache-from: |
-            type=registry,ref=${{ inputs.image }}:buildcache-${{ steps.meta.outputs.version }}
-            type=registry,ref=${{ inputs.image }}:buildcache-main-${{ matrix.arch }}
-          cache-to: type=registry,ref=${{ inputs.image }}:buildcache-${{ steps.meta.outputs.version }},mode=max
+          cache-from: ${{ steps.cache.outputs.cache-from }}
+          cache-to: ${{ steps.cache.outputs.cache-to }}
           provenance: ${{ inputs.provenance }}
           sbom: ${{ inputs.sbom }}
 
@@ -104,6 +125,9 @@ jobs:
     name: Merge manifest
     runs-on: ubuntu-22.04
     needs: build
+    # Merging requires the arch images to exist in the registry, which only
+    # happens when push is enabled. Skip on build-only runs (e.g. fork PRs).
+    if: ${{ inputs.push }}
     permissions:
       # This job checks out the repo for the merge action, so it needs contents
       # read as well — declaring only `packages` denies it, and checkout of a

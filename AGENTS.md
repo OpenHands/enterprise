@@ -469,3 +469,12 @@ Called by `workspace.get_llm()` in the SDK to retrieve LLM config with the API k
 - `.github/workflows/issue-opened.yml` has a second issue-opened job that auto-applies `good first issue` after the duplicate check completes.
 - The duplicate check is used only as a veto/guardrail for `good first issue` automation: duplicate or overlapping-scope issues should not be auto-labeled.
 - The OpenHands classifier logic for newcomer suitability lives in `scripts/issue_good_first_issue_check_openhands.py`, with focused unit coverage in `tests/unit/test_issue_good_first_issue_check_openhands.py`.
+
+## enterprise repo — migration & CI conventions
+
+- Migration numbering: revisions are sequential integers as strings. Filename prefix MUST match revision. scripts/check_enterprise_migration_integrity.py + tests/unit/test_migration_graph.py + test_enterprise_migration_integrity.py enforce unique revisions, single linear head, no shared parents, prefix==revision, PostgreSQL-only. Run check_enterprise_migration_integrity.py before pushing.
+- Collision pitfall: a migration PR branching off older main collides if main later merges the same number -> "Revision N present more than once" / duplicate head, failing Budget regressions (alembic upgrade head) and apply-migrations. Fix: rebase onto main, renumber to next free revision, set down_revision to new head, rename file + test, update test path/module refs.
+- Fork PR CI limits (fork = juanmichelini/enterprise): check-sync comment step 403s (read-only token) -> made continue-on-error:true; ghcr-build/Enterprise denied write org package -> added if: !fork guard. Both are repo-wide fork issues, not PR-specific.
+- Pre-commit: dev_config/python/.pre-commit-config.yaml (ruff 0.12.5), run with --config ./dev_config/python/.pre-commit-config.yaml.
+- Local pytest: conftest pulls server deps (keycloak, asyncpg, google-cloud-storage); use --noconftest for pure-logic migration tests.
+- Push: fork remote named "fork"; force-push after rebase: git push --force-with-lease fork <branch>.
