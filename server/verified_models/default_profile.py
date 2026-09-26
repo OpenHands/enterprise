@@ -39,7 +39,10 @@ def uses_deployment_default_profile(profiles: LLMProfiles) -> bool:
 
 
 async def get_openhands_default_model_name(db_session: AsyncSession) -> str | None:
-    if _uses_deployment_default():
+    from storage.lite_llm_manager import is_litellm_enabled
+
+    # OpenHands-managed models are served by the LiteLLM gateway.
+    if _uses_deployment_default() or not await is_litellm_enabled():
         return None
     result = await db_session.execute(
         select(StoredVerifiedModel.model_name)

@@ -34,6 +34,7 @@ from server.constants import (
     LITE_LLM_API_KEY,
     LITE_LLM_API_URL,
     get_default_litellm_model,
+    get_default_llm_model,
     to_openhands_model,
 )
 
@@ -234,7 +235,10 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
             # (served through the bundled proxy) are hidden entirely rather
             # than fetched -- only direct provider configurations (BYOK) are
             # offered. Never touches the network.
-            return await self._union_with_catalogue(self._build_response([]))
+            direct_only = self._build_response([]).model_copy(
+                update={'default_model': get_default_llm_model()}
+            )
+            return await self._union_with_catalogue(direct_only)
 
         cls = LiteLLMProxyModelService
         response = cls._shared_response
