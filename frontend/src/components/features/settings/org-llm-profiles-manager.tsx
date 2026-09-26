@@ -4,6 +4,7 @@ import { BrandButton } from "#/components/features/settings/brand-button";
 import { OrgRenameProfileModal } from "#/components/features/settings/org-rename-profile-modal";
 import { OrgDeleteProfileModal } from "#/components/features/settings/org-delete-profile-modal";
 import { ProfilesBody } from "#/components/features/settings/profiles-body";
+import { ProviderConnectionsManager } from "#/components/features/settings/provider-connections/provider-connections-manager";
 import { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
 import { useOrgLlmProfiles } from "#/hooks/query/use-org-llm-profiles";
 import { useActivateOrgLlmProfile } from "#/hooks/mutation/use-org-llm-profile-mutations";
@@ -80,6 +81,12 @@ export function OrgLlmProfilesManager({
           canManage={canManage}
         />
       </div>
+
+      <ProviderConnectionsManager
+        orgId={orgId}
+        canManage={canManage}
+        profiles={profiles}
+      />
 
       <OrgRenameProfileModal
         orgId={orgId}

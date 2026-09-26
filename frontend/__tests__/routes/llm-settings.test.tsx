@@ -3420,4 +3420,76 @@ describe("LlmSettingsScreen", () => {
       expect(screen.getByTestId("base-url-input")).toBeInTheDocument();
     });
   });
+
+  describe("provider connections (org-defaults)", () => {
+    const sampleConnection = {
+      id: "conn-1",
+      display_name: "Shared OpenAI key",
+      provider: "openai",
+      base_url: "https://api.openai.com",
+      created_at: 1,
+      updated_at: 1,
+      api_key_set: true,
+    };
+
+    const useConnectionsHandler = (
+      connections: unknown[] = [sampleConnection],
+    ) =>
+      http.get("/api/organizations/:orgId/provider-connections", () =>
+        HttpResponse.json({ connections }),
+      );
+
+    it("shows the provider connection selector when connections exist", async () => {
+      server.use(useConnectionsHandler());
+
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        view: "create",
+      });
+
+      await screen.findByTestId("llm-settings-form-basic");
+      expect(
+        await screen.findByTestId("llm-provider-connection-input"),
+      ).toBeInTheDocument();
+    });
+
+    it("hides the selector when there are no connections (create form)", async () => {
+      server.use(useConnectionsHandler([]));
+
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        view: "create",
+      });
+
+      await screen.findByTestId("llm-settings-form-basic");
+      // The empty list resolves quickly; give the query a tick to settle,
+      // then assert the selector never appears.
+      await waitFor(() => {
+        expect(
+          screen.queryByTestId("llm-provider-connection-input"),
+        ).not.toBeInTheDocument();
+      });
+    });
+
+    it("hides inline API key and base URL inputs when a connection is linked", async () => {
+      server.use(useConnectionsHandler());
+
+      // Edit a profile already linked to conn-1 so the selector renders the
+      // linked state and the inline credential inputs disappear.
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        view: "form",
+        profile: { provider_connection_id: "conn-1", base_url: null },
+      });
+
+      await screen.findByTestId("llm-settings-form-basic");
+      expect(
+        await screen.findByTestId("llm-provider-connection-input"),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+    });
+  });
 });

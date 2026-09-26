@@ -38,6 +38,18 @@ vi.mock("#/hooks/mutation/use-org-llm-profile-mutations", () => ({
   }),
 }));
 
+// Provider connections live in a sub-manager rendered by OrgLlmProfilesManager.
+// Mock the query so the list section renders without a QueryClient provider.
+const connectionsState: {
+  data: unknown[] | undefined;
+  isLoading: boolean;
+  error: Error | null;
+} = { data: undefined, isLoading: false, error: null };
+
+vi.mock("#/hooks/query/use-provider-connections", () => ({
+  useProviderConnections: () => connectionsState,
+}));
+
 const sampleProfiles: ProfilesList = {
   profiles: [
     {
@@ -79,6 +91,9 @@ beforeEach(() => {
   profilesState.data = sampleProfiles;
   profilesState.isLoading = false;
   profilesState.error = null;
+  connectionsState.data = [];
+  connectionsState.isLoading = false;
+  connectionsState.error = null;
   activateMock.mockReset().mockResolvedValue(undefined);
   deleteMock.mockReset().mockResolvedValue(undefined);
   renameMock.mockReset().mockResolvedValue(undefined);

@@ -23,6 +23,12 @@ export const ORGANIZATION_APP_SETTINGS_KEYS = {
     ["organization-app-settings", organizationId] as const,
 } as const;
 
+export const PROVIDER_CONNECTIONS_QUERY_KEYS = {
+  all: ["provider-connections"] as const,
+  byOrg: (organizationId: string | null | undefined) =>
+    ["provider-connections", organizationId] as const,
+} as const;
+
 /** Cache configuration shared across all config-related queries */
 export const CONFIG_CACHE_OPTIONS = {
   staleTime: 1000 * 60 * 5, // 5 minutes
