@@ -249,6 +249,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),
         enable_super_admin=_env_flag_enabled('ENABLE_SUPER_ADMIN'),
         enable_oauth_v2_login=_env_flag_enabled('ENABLE_OAUTH_V2_LOGIN'),
+        enable_litellm=_env_flag_enabled('ENABLE_LEGACY_LITELLM', 'true'),
     )
 
 
