@@ -58,6 +58,13 @@ class WebClientFeatureFlags(BaseModel):
     # /login page. Defaults to False so existing installs keep the legacy
     # login path until they opt in.
     enable_oauth_v2_login: bool = False
+    # Deployment-wide switch for the bundled/external LiteLLM gateway.
+    # Defaults to True for backward compatibility with existing installs.
+    # When False, the frontend must hide every feature that depends on
+    # LiteLLM (Budgets, managed/OpenHands models, managed LLM key
+    # create/refresh) and show a "Please enable LiteLLM to use this
+    # feature" placeholder instead. Set from the ENABLE_LEGACY_LITELLM env var.
+    enable_litellm: bool = True
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')

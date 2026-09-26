@@ -120,6 +120,13 @@ LITE_LLM_API_URL = os.environ.get(
 )
 LITE_LLM_TEAM_ID = os.environ.get('LITE_LLM_TEAM_ID', None)
 LITE_LLM_API_KEY = os.environ.get('LITE_LLM_API_KEY', None)
+
+# Deployment-wide LiteLLM gateway switch; default true keeps existing installs unchanged.
+ENABLE_LEGACY_LITELLM = os.environ.get('ENABLE_LEGACY_LITELLM', 'true').lower() in (
+    'true',
+    '1',
+)
+
 # Timeout in seconds for BYOR key verification requests to LiteLLM
 BYOR_KEY_VERIFICATION_TIMEOUT = 5.0
 SUBSCRIPTION_PRICE_DATA = {
