@@ -2121,6 +2121,74 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
     assert member.llm_api_key.get_secret_value() == 'fresh-rotated-key'
 
 
+@pytest.mark.asyncio
+async def test_ensure_managed_key_skips_when_litellm_disabled(mock_litellm_api):
+    """With ENABLE_LITELLM off, no verify/rotate/generate call is attempted.
+
+    Regression: an org-defaults save previously tried to mint a key
+    unconditionally for any managed (openhands/*) default -- which is
+    virtually every existing org -- raising ``ValueError`` out of
+    ``LiteLlmManager.generate_key`` and surfacing as an opaque 500
+    (enterprise#474).
+    """
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    managed_url = 'https://llm-proxy.app.all-hands.dev'
+
+    member = MagicMock(spec=OrgMember)
+    member.llm_api_key = SecretStr('existing-managed-key')
+
+    updated_org = MagicMock(spec=Org)
+    updated_org.id = org_id
+    updated_org.agent_settings = OpenHandsAgentSettings(
+        llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+    ).model_dump(mode='json')
+
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(
+                return_value=MagicMock(first=MagicMock(return_value=member))
+            )
+        )
+    )
+
+    with (
+        patch('storage.org_store.LITE_LLM_API_URL', managed_url),
+        patch(
+            'storage.org_store.is_litellm_enabled',
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
+            new=AsyncMock(),
+        ) as mock_verify_existing,
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_key',
+            new=AsyncMock(),
+        ) as mock_verify,
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.generate_key',
+            new=AsyncMock(),
+        ) as mock_generate,
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
+            new=AsyncMock(),
+        ) as mock_delete,
+    ):
+        result = await OrgStore._ensure_managed_llm_key_for_user(
+            session=mock_session,
+            updated_org=updated_org,
+            user_id=str(user_id),
+        )
+
+    assert result is None
+    mock_verify_existing.assert_not_awaited()
+    mock_verify.assert_not_awaited()
+    mock_generate.assert_not_awaited()
+    mock_delete.assert_not_awaited()
+
+
 class TestUsesManagedDefaultLlm:
     def test_managed_proxy_base_url_is_managed(self):
         org = MagicMock(spec=Org)

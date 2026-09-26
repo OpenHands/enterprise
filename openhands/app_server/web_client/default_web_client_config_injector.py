@@ -220,6 +220,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
         enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),
+        enable_litellm=_env_flag_enabled('ENABLE_LITELLM', 'true'),
     )
 
 

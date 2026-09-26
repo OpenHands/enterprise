@@ -83,9 +83,19 @@ class OrgMember(Base):
         return SecretStr(decrypted)
 
     @llm_api_key.setter
-    def llm_api_key(self, value: str | SecretStr):
+    def llm_api_key(self, value: str | SecretStr | None):
         raw = value.get_secret_value() if isinstance(value, SecretStr) else value
-        self._llm_api_key = encrypt_value(raw)
+        # ``_llm_api_key`` is NOT NULL, so a caller passing None (e.g. a newly
+        # provisioned member with no LLM key yet -- see ENABLE_LITELLM=false
+        # provisioning) must still get a real ciphertext. Encrypting the raw
+        # ``None`` "succeeds" (JWE happily serializes ``{"v": null}``) but the
+        # decrypted round-trip is a Python ``None`` wrapped in ``SecretStr``,
+        # and ``SecretStr(None)`` blows up on ``bool()``/``len()`` (pydantic
+        # calls ``len(self._secret_value)`` unconditionally) wherever a caller
+        # later treats this as a normal "is a key set" check. Normalize to the
+        # same empty-string sentinel ``has_real_api_key``/``llm_api_key_is_set``
+        # already treat as "no key".
+        self._llm_api_key = encrypt_value(raw or '')
 
     @property
     def llm_api_key_for_byor(self) -> SecretStr | None:

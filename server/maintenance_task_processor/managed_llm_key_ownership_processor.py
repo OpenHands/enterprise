@@ -55,6 +55,27 @@ class ManagedLlmKeyOwnershipProcessor(MaintenanceTaskProcessor):
         skipped = 0
         errors: list[dict[str, str]] = []
 
+        from storage.lite_llm_manager import is_litellm_enabled
+
+        if not await is_litellm_enabled():
+            # LiteLLM is disabled deployment-wide: there is no gateway to
+            # verify or repair managed-key ownership against. Without this
+            # guard every target would otherwise fail individually (each
+            # ``verify_existing_key_strict``/``generate_key`` call raises)
+            # and get logged as a repair error, which is noisy and pointless
+            # busywork rather than an actual failure.
+            logger.info(
+                'managed_llm_key_ownership_repair_skipped_litellm_disabled',
+                extra={'target_count': len(self.targets)},
+            )
+            return {
+                'verified': 0,
+                'repaired': 0,
+                'skipped': len(self.targets),
+                'error_count': 0,
+                'errors': [],
+            }
+
         async with a_session_maker() as session:
             for target in self.targets:
                 try:
