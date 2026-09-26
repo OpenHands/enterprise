@@ -25,17 +25,6 @@ from server.verified_models.verified_model_models import (
 from storage.base import Base
 
 
-class LiteLLMSyncError(RuntimeError):
-    """Raised when LiteLLM free-model allowlist propagation fails.
-
-    The verified-model mutation is already committed by the time propagation
-    runs, so this error does not roll the DB back. It lets the admin layer
-    *surface* the partial failure (instead of silently acknowledging a
-    billing/access change that did not propagate) so the operator can retry or
-    reconcile — e.g. by re-saving the model, which re-runs propagation.
-    """
-
-
 class StoredVerifiedModel(Base):
     """A verified LLM model available in the model selector.
 
@@ -177,49 +166,6 @@ class VerifiedModelService:
         )
         return result.scalars().first()
 
-    async def _list_openhands_enabled_free_model_names(self) -> list[str]:
-        result = await self.db_session.execute(
-            select(StoredVerifiedModel.model_name)
-            .where(
-                and_(
-                    StoredVerifiedModel.provider == 'openhands',
-                    StoredVerifiedModel.is_enabled.is_(True),
-                    StoredVerifiedModel.is_free.is_(True),
-                )
-            )
-            .order_by(StoredVerifiedModel.model_name)
-        )
-        return list(result.scalars().all())
-
-    async def _sync_litellm_free_model_allowlists(
-        self, previous_free_models: list[str]
-    ) -> None:
-        """Propagate the OpenHands free-model set to LiteLLM team allowlists.
-
-        Raises :class:`LiteLLMSyncError` when propagation fails so the admin
-        layer can surface the partial failure instead of silently acknowledging
-        a billing/access change that did not propagate. The DB mutation is
-        already committed before this runs, so the caller cannot roll it back;
-        the recovery path is to retry (re-save the model) or reconcile LiteLLM
-        out-of-band.
-        """
-        try:
-            from storage.lite_llm_manager import LiteLlmManager
-
-            await LiteLlmManager.sync_free_model_allowlists(
-                self.db_session, previous_free_models=previous_free_models
-            )
-        except Exception as exc:
-            logger.warning(
-                'Failed to sync LiteLLM free-model allowlists',
-                exc_info=True,
-            )
-            raise LiteLLMSyncError(
-                'Verified model saved, but LiteLLM free-model allowlist '
-                'propagation failed. Retry by re-saving the model or '
-                'reconcile the LiteLLM team allowlists out-of-band.'
-            ) from exc
-
     async def _clear_default_for_provider(
         self, provider: str, except_id: int | None = None
     ) -> None:
@@ -275,12 +221,6 @@ class VerifiedModelService:
         if existing:
             raise ValueError(f'Model {provider}/{model_name} already exists')
 
-        sync_free_allowlists = provider == 'openhands' and is_enabled and is_free
-        previous_free_models = (
-            await self._list_openhands_enabled_free_model_names()
-            if sync_free_allowlists
-            else []
-        )
         if is_default:
             await self._clear_default_for_provider(provider)
 
@@ -295,8 +235,6 @@ class VerifiedModelService:
         self.db_session.add(model)
         await self.db_session.commit()
         await self.db_session.refresh(model)
-        if sync_free_allowlists:
-            await self._sync_litellm_free_model_allowlists(previous_free_models)
         logger.info(f'Created verified model: {provider}/{model_name}')
         return verified_model(model)
 
@@ -334,15 +272,6 @@ class VerifiedModelService:
         if not model:
             return None
 
-        sync_free_allowlists = provider == 'openhands' and (
-            is_enabled is not None or is_free is not None
-        )
-        previous_free_models = (
-            await self._list_openhands_enabled_free_model_names()
-            if sync_free_allowlists
-            else []
-        )
-
         if is_enabled is not None:
             model.is_enabled = is_enabled
         if is_verified is not None:
@@ -356,8 +285,6 @@ class VerifiedModelService:
 
         await self.db_session.commit()
         await self.db_session.refresh(model)
-        if sync_free_allowlists:
-            await self._sync_litellm_free_model_allowlists(previous_free_models)
         logger.info(f'Updated verified model: {provider}/{model_name}')
         return verified_model(model)
 
@@ -382,18 +309,8 @@ class VerifiedModelService:
         if not model:
             raise ValueError('Unknown model')
 
-        sync_free_allowlists = (
-            provider == 'openhands' and model.is_enabled and model.is_free
-        )
-        previous_free_models = (
-            await self._list_openhands_enabled_free_model_names()
-            if sync_free_allowlists
-            else []
-        )
         await self.db_session.delete(model)
         await self.db_session.commit()
-        if sync_free_allowlists:
-            await self._sync_litellm_free_model_allowlists(previous_free_models)
         logger.info(f'Deleted verified model: {provider}/{model_name}')
 
 
