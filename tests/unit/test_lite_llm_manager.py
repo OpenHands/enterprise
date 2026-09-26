@@ -418,61 +418,30 @@ class TestIsBillingEnabled:
 
 
 class TestIsLitellmEnabled:
-    """Runtime resolution of the ENABLE_LITELLM deployment flag.
-
-    Mirrors ``TestIsBillingEnabled``: delegates to the feature flag
-    service's fault-tolerant ``resolve``; only an import failure falls back
-    to the import-time env snapshot (``ENABLE_LITELLM`` module constant,
-    which defaults to True).
-    """
+    """``is_litellm_enabled`` reflects the ``ENABLE_LITELLM`` env var only."""
 
     @pytest.mark.asyncio
-    async def test_passes_through_resolve_true(self):
+    @pytest.mark.parametrize('value', [True, False])
+    async def test_returns_env_value(self, value):
         from storage import lite_llm_manager as module
 
-        with patch(
-            'server.services.feature_flag_service.feature_flag_service.resolve',
-            new_callable=AsyncMock,
-            return_value=True,
-        ):
-            assert await module.is_litellm_enabled() is True
+        with patch.object(module, 'ENABLE_LITELLM', value):
+            assert await module.is_litellm_enabled() is value
 
     @pytest.mark.asyncio
-    async def test_passes_through_resolve_false(self):
-        from storage import lite_llm_manager as module
-
-        with patch(
-            'server.services.feature_flag_service.feature_flag_service.resolve',
-            new_callable=AsyncMock,
-            return_value=False,
-        ):
-            assert await module.is_litellm_enabled() is False
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_env_snapshot_on_import_error(self):
+    async def test_ignores_database_flag(self):
         from storage import lite_llm_manager as module
 
         with (
-            patch(
-                'builtins.__import__',
-                side_effect=ImportError('no enterprise service'),
-            ),
             patch.object(module, 'ENABLE_LITELLM', True),
+            patch(
+                'server.services.feature_flag_service.feature_flag_service.resolve',
+                new_callable=AsyncMock,
+                return_value=False,
+            ) as resolve,
         ):
             assert await module.is_litellm_enabled() is True
-
-    @pytest.mark.asyncio
-    async def test_env_snapshot_false_on_import_error(self):
-        from storage import lite_llm_manager as module
-
-        with (
-            patch(
-                'builtins.__import__',
-                side_effect=ImportError('no enterprise service'),
-            ),
-            patch.object(module, 'ENABLE_LITELLM', False),
-        ):
-            assert await module.is_litellm_enabled() is False
+        resolve.assert_not_called()
 
 
 class TestLitellmDisabledNeverContactsGateway:

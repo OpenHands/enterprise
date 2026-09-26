@@ -1220,13 +1220,7 @@ async def get_org_members_financial(
 
 
 async def _validate_litellm_enabled_for_budgets() -> None:
-    """Budgets are enforced through the LiteLLM gateway, so the feature is
-    unavailable whenever ``ENABLE_LITELLM`` is off.
-
-    Mirrors ``billing.validate_billing_enabled``'s default-flag pattern (DB
-    row first, then the registered env-var default, both via the
-    fault-tolerant ``resolve``).
-    """
+    """Budgets are enforced through LiteLLM; unavailable when ``ENABLE_LITELLM`` is off."""
     from storage.lite_llm_manager import is_litellm_enabled
 
     if not await is_litellm_enabled():
@@ -1234,8 +1228,7 @@ async def _validate_litellm_enabled_for_budgets() -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
                 'Budgets require the LiteLLM integration, which is disabled '
-                'in this environment. Enable the ENABLE_LITELLM feature flag '
-                '(or the ENABLE_LITELLM environment variable) to use budgets.'
+                'in this environment. Set ENABLE_LITELLM=true to use budgets.'
             ),
         )
 

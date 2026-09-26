@@ -212,8 +212,6 @@ async def _validate_litellm_enabled_for_managed_keys() -> None:
     keys (``create_api_key``/``list_api_keys``/``delete_api_key`` above,
     and ``get_current_api_key``) are unaffected -- they never touch
     LiteLLM.
-
-    Mirrors ``billing.validate_billing_enabled``'s default-flag pattern.
     """
     from storage.lite_llm_manager import is_litellm_enabled
 
@@ -222,9 +220,8 @@ async def _validate_litellm_enabled_for_managed_keys() -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
                 'Managed LLM API keys require the LiteLLM integration, '
-                'which is disabled in this environment. Enable the '
-                'ENABLE_LITELLM feature flag (or the ENABLE_LITELLM '
-                'environment variable) to use this feature.'
+                'which is disabled in this environment. Set '
+                'ENABLE_LITELLM=true to use this feature.'
             ),
         )
 

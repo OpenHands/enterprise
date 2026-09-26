@@ -178,6 +178,28 @@ class TestGetFeatureFlags:
             result = _get_feature_flags()
             assert result.enable_billing is False
 
+    @pytest.mark.parametrize(
+        'value,expected',
+        [('true', True), ('1', True), ('TRUE', True), ('false', False), ('0', False)],
+    )
+    def test_enable_litellm_env_values(self, value, expected):
+        """ENABLE_LITELLM accepts 'true' and '1' (older Helm charts use '1')."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_LITELLM': value}):
+            assert _get_feature_flags().enable_litellm is expected
+
+    def test_enable_litellm_defaults_true(self):
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        env = {k: v for k, v in os.environ.items() if k != 'ENABLE_LITELLM'}
+        with patch.dict(os.environ, env, clear=True):
+            assert _get_feature_flags().enable_litellm is True
+
     def test_hide_llm_settings_true_when_env_var_true(self):
         """When HIDE_LLM_SETTINGS is 'true', hide_llm_settings flag is True."""
         from openhands.app_server.web_client.default_web_client_config_injector import (

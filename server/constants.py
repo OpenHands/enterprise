@@ -109,12 +109,7 @@ LITE_LLM_API_URL = os.environ.get(
 LITE_LLM_TEAM_ID = os.environ.get('LITE_LLM_TEAM_ID', None)
 LITE_LLM_API_KEY = os.environ.get('LITE_LLM_API_KEY', None)
 
-# Deployment-wide switch for the bundled/external LiteLLM gateway. Defaults to
-# true for backward compatibility with existing installs. This is only the
-# import-time env snapshot fallback (mirrors the ENABLE_BILLING pattern in
-# storage.lite_llm_manager) for callers that cannot await the feature flag
-# service's DB-backed ``ENABLE_LITELLM`` row; prefer
-# ``storage.lite_llm_manager.is_litellm_enabled()`` at runtime.
+# Deployment-wide LiteLLM gateway switch; default true keeps existing installs unchanged.
 ENABLE_LITELLM = os.environ.get('ENABLE_LITELLM', 'true').lower() in ('true', '1')
 
 # Timeout in seconds for BYOR key verification requests to LiteLLM

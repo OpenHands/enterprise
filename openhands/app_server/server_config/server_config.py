@@ -12,7 +12,7 @@ class ServerConfig(ServerConfigInterface):
     posthog_client_key = 'phc_3ESMmY9SgqEAGBB6sMGK5ayYHkeUuknH2vP6FmWH9RA'
     github_client_id = os.environ.get('GITHUB_APP_CLIENT_ID', '')
     enable_billing = os.environ.get('ENABLE_BILLING', 'false') == 'true'
-    enable_litellm = os.environ.get('ENABLE_LITELLM', 'true') == 'true'
+    enable_litellm = os.environ.get('ENABLE_LITELLM', 'true').lower() in ('true', '1')
     hide_llm_settings = os.environ.get('HIDE_LLM_SETTINGS', 'false') == 'true'
     # This config is used to hide the microagent management page from the users for now. We will remove this once we release the new microagent management page.
     settings_store_class: str = (

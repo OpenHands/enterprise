@@ -50,9 +50,7 @@ class WebClientFeatureFlags(BaseModel):
     # When False, the frontend must hide every feature that depends on
     # LiteLLM (Budgets, managed/OpenHands models, managed LLM key
     # create/refresh) and show a "Please enable LiteLLM to use this
-    # feature" placeholder instead. Mirrors the DB-backed ENABLE_LITELLM
-    # feature flag; re-resolved against the DB on every request the same
-    # way ``enable_billing`` is (see ``get_web_client_config``).
+    # feature" placeholder instead. Set from the ENABLE_LITELLM env var.
     enable_litellm: bool = True
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.

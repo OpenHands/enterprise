@@ -14,6 +14,7 @@ from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.http_session import httpx_verify_option
 from server.auth.token_manager import TokenManager
 from server.constants import (
+    ENABLE_LITELLM,
     LITE_LLM_API_KEY,
     LITE_LLM_API_URL,
     LITE_LLM_TEAM_ID,
@@ -44,13 +45,6 @@ UNLIMITED_BUDGET_SETTING = 1000000000.0
 # package path) or evaluation fails.
 ENABLE_BILLING = os.environ.get('ENABLE_BILLING', 'false').lower() in ('true', '1')
 
-# Import-time snapshot of the ENABLE_LITELLM env var (defaults to True for
-# backward compatibility). Mirrors ENABLE_BILLING above: the DB-managed flag
-# (``is_litellm_enabled``) is authoritative at runtime; this snapshot is only
-# the emergency fallback for the handful of call sites that cannot await it
-# (e.g. module import time).
-ENABLE_LITELLM = os.environ.get('ENABLE_LITELLM', 'true').lower() in ('true', '1')
-
 
 async def _is_billing_enabled() -> bool:
     """Resolve the ENABLE_BILLING default flag at runtime.
@@ -70,22 +64,8 @@ async def _is_billing_enabled() -> bool:
 
 
 async def is_litellm_enabled() -> bool:
-    """Resolve the ENABLE_LITELLM deployment flag at runtime.
-
-    This is the single source of truth for "may this process talk to the
-    LiteLLM gateway right now?" -- every network-touching ``LiteLlmManager``
-    method calls this first and no-ops (returning a safe default: ``None``,
-    ``False``, ``[]``, or ``{}`` depending on the method's existing contract
-    for "LiteLLM not configured") when it resolves to ``False``. Follows the
-    same DB-row-wins / env-var-fallback / fault-tolerant pattern as
-    ``_is_billing_enabled``.
-    """
-    try:
-        from server.services.feature_flag_service import feature_flag_service
-
-        return await feature_flag_service.resolve('ENABLE_LITELLM')
-    except ImportError:
-        return ENABLE_LITELLM
+    """Whether this deployment may contact the LiteLLM gateway (``ENABLE_LITELLM``)."""
+    return ENABLE_LITELLM
 
 
 def _get_default_initial_budget(billing_enabled: bool) -> float | None:
