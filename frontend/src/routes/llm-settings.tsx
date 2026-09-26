@@ -46,18 +46,27 @@ import {
 import { LlmProfilesManager } from "#/components/features/settings/llm-profiles-manager";
 import { OrgLlmProfilesManager } from "#/components/features/settings/org-llm-profiles-manager";
 import { ProfileNameInput } from "#/components/features/settings/profile-name-input";
+import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
 import { Typography } from "#/ui/typography";
 import { providerModelsQueryOptions } from "#/hooks/query/use-provider-models";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { useAppMode } from "#/hooks/use-app-mode";
 import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
+import { useProviderConnections } from "#/hooks/query/use-provider-connections";
+
+/** Form-values key for the shared provider connection a profile links to. */
+export const LLM_PROVIDER_CONNECTION_KEY = "llm.provider_connection_id";
+
+/** Dropdown sentinel for "no provider connection" (an inline key is used). */
+const NO_PROVIDER_CONNECTION = "__none__";
 
 // auth_type/subscription_vendor (SDK 1.29.0) are inert in this form and not BYOK-gated; exclude so they don't leak into Basic.
 const LLM_EXCLUDED_KEYS = new Set([
   "llm.model",
   "llm.api_key",
   "llm.base_url",
+  LLM_PROVIDER_CONNECTION_KEY,
   "llm.auth_type",
   "llm.subscription_vendor",
 ]);
@@ -206,6 +215,17 @@ export function LlmSettingsScreen({
   const allowUserLlmConfiguration =
     config?.feature_flags?.allow_user_llm_configuration !== false;
 
+  // Provider connections are org-scoped; only the org-defaults form can link a
+  // profile to one. The query is disabled without an org, so in OSS / personal
+  // scope this is just an empty list and the selector stays hidden.
+  const { data: providerConnections } = useProviderConnections(organizationId);
+  const connectionOptions = providerConnections ?? [];
+  // Show the selector for any org member who can edit profiles — once at least
+  // one connection exists, or the edited profile is already linked (even to an
+  // orphaned id, so it can be unlinked). Managed (no-BYOK) installs skip it.
+  const showProviderConnection =
+    scope === "org" && canManageProfilesForScope && allowUserLlmConfiguration;
+
   React.useEffect(() => {
     // An open profile form owns the provider selection (blank for create,
     // profile-derived for edit) — don't let the active settings override it.
@@ -338,6 +358,58 @@ export function LlmSettingsScreen({
           ? editingProfile.api_key_set
           : settings?.llm_api_key_set;
 
+      // A profile linked to a provider connection reads its api_key / base_url
+      // from that connection (resolved read-at-use), so the inline key + base
+      // URL inputs are hidden. Include the linked case in showConnectionSelector
+      // so a profile pointing at an orphaned connection (its only connection
+      // deleted, or the list still loading) still exposes a control to unlink.
+      const connectionValue =
+        typeof values[LLM_PROVIDER_CONNECTION_KEY] === "string"
+          ? values[LLM_PROVIDER_CONNECTION_KEY]
+          : "";
+      const isLinkedToConnection = Boolean(connectionValue);
+      const isOrphanedLink =
+        isLinkedToConnection &&
+        !connectionOptions.some((c) => c.id === connectionValue);
+      const showConnectionSelector =
+        showProviderConnection &&
+        (isLinkedToConnection || connectionOptions.length > 0);
+
+      const renderConnectionSelector = () => (
+        <SettingsDropdownInput
+          testId="llm-provider-connection-input"
+          name={LLM_PROVIDER_CONNECTION_KEY}
+          label={t(I18nKey.SETTINGS$PROVIDER_CONNECTION_SELECT_LABEL)}
+          showOptionalTag
+          items={[
+            {
+              key: NO_PROVIDER_CONNECTION,
+              label: t(I18nKey.SETTINGS$PROVIDER_CONNECTION_NONE),
+            },
+            ...connectionOptions.map((connection) => ({
+              key: connection.id,
+              label: connection.display_name,
+            })),
+            // Surface an orphaned link as its own option so the dropdown
+            // reflects it and the user can clear it.
+            ...(isOrphanedLink
+              ? [{ key: connectionValue, label: connectionValue }]
+              : []),
+          ]}
+          selectedKey={connectionValue || NO_PROVIDER_CONNECTION}
+          isClearable={false}
+          isDisabled={isDisabled}
+          onSelectionChange={(selectedKey) => {
+            const next =
+              typeof selectedKey === "string" &&
+              selectedKey !== NO_PROVIDER_CONNECTION
+                ? selectedKey
+                : "";
+            onChange(LLM_PROVIDER_CONNECTION_KEY, next);
+          }}
+        />
+      );
+
       const renderApiKeyInput = (testId: string, helpTestId: string) => {
         // Managed installs: the admin owns provider keys on the bundled
         // proxy; users never enter one.
@@ -346,6 +418,11 @@ export function LlmSettingsScreen({
         }
 
         if (shouldUseOpenHandsKey) {
+          return null;
+        }
+
+        // A linked connection supplies the key; don't collect an inline one.
+        if (isLinkedToConnection) {
           return null;
         }
 
@@ -427,6 +504,8 @@ export function LlmSettingsScreen({
                 <OpenHandsApiKeyHelp testId="openhands-api-key-help" />
               ) : null}
 
+              {showConnectionSelector ? renderConnectionSelector() : null}
+
               {/* A blank create form has no provider yet — rendering the key
                   input only to remove it when a managed provider is picked is
                   jarring, so wait until a provider is actually selected. */}
@@ -457,16 +536,22 @@ export function LlmSettingsScreen({
                 <OpenHandsApiKeyHelp testId="openhands-api-key-help-2" />
               ) : null}
 
-              <SettingsInput
-                testId="base-url-input"
-                label={t(I18nKey.SETTINGS$BASE_URL)}
-                type="text"
-                className="w-full"
-                value={baseUrlValue}
-                placeholder="https://api.openai.com"
-                onChange={(value) => onChange("llm.base_url", value)}
-                isDisabled={isDisabled}
-              />
+              {showConnectionSelector ? renderConnectionSelector() : null}
+
+              {/* A linked connection supplies the base URL; hide the inline
+                  field so the user isn't prompted to override it. */}
+              {isLinkedToConnection ? null : (
+                <SettingsInput
+                  testId="base-url-input"
+                  label={t(I18nKey.SETTINGS$BASE_URL)}
+                  type="text"
+                  className="w-full"
+                  value={baseUrlValue}
+                  placeholder="https://api.openai.com"
+                  onChange={(value) => onChange("llm.base_url", value)}
+                  isDisabled={isDisabled}
+                />
+              )}
 
               {renderApiKeyInput(
                 "llm-api-key-input",
@@ -489,6 +574,8 @@ export function LlmSettingsScreen({
       selectedProvider,
       settings?.llm_api_key_set,
       canManageProfilesForScope,
+      connectionOptions,
+      showProviderConnection,
       t,
     ],
   );
@@ -527,8 +614,26 @@ export function LlmSettingsScreen({
         delete llm.api_key;
       }
 
+      // A profile linked to a provider connection reads its api_key / base_url
+      // from that connection (resolved read-at-use), so never persist inline
+      // values for them — strip any the diff picked up and clear base_url.
+      const connectionValue =
+        typeof context.values[LLM_PROVIDER_CONNECTION_KEY] === "string"
+          ? context.values[LLM_PROVIDER_CONNECTION_KEY]
+          : "";
+      const isLinkedToConnection = Boolean(connectionValue);
+      if (isLinkedToConnection) {
+        delete llm.api_key;
+        llm.base_url = null;
+        agentSettings.llm = llm;
+      }
+
       if (context.view === "basic" && llm.model !== undefined) {
-        llm.base_url = getSchemaFieldDefaultValue(schema, "llm.base_url");
+        // Don't clobber a just-cleared base_url (linked connection) with the
+        // schema default — the connection owns the URL now.
+        if (!isLinkedToConnection) {
+          llm.base_url = getSchemaFieldDefaultValue(schema, "llm.base_url");
+        }
         agentSettings.llm = llm;
       }
 
@@ -545,6 +650,16 @@ export function LlmSettingsScreen({
               ? context.values["llm.base_url"].trim()
               : "";
           llm.base_url = baseUrlValue || null;
+        }
+        // Carry the form's provider_connection_id through even when it wasn't
+        // toggled dirty, so saving a linked (or just-unlinked) profile persists
+        // that link instead of snapshotting the active settings' value.
+        if (llm.provider_connection_id === undefined) {
+          const formConnection =
+            typeof context.values[LLM_PROVIDER_CONNECTION_KEY] === "string"
+              ? context.values[LLM_PROVIDER_CONNECTION_KEY]
+              : "";
+          llm.provider_connection_id = formConnection || null;
         }
         agentSettings.llm = llm;
       }
@@ -708,6 +823,7 @@ export function LlmSettingsScreen({
           "llm.model": "",
           "llm.api_key": "",
           "llm.base_url": "",
+          [LLM_PROVIDER_CONNECTION_KEY]: "",
         },
       };
     }
@@ -722,6 +838,10 @@ export function LlmSettingsScreen({
           "llm.api_key": "",
           "llm.base_url":
             editingProfile.base_url ?? fieldDefault("llm.base_url"),
+          // Hydrate the connection link from the profile so the dropdown
+          // reflects it on open and unlinking marks the field dirty.
+          [LLM_PROVIDER_CONNECTION_KEY]:
+            editingProfile.provider_connection_id ?? "",
         },
       };
     }
