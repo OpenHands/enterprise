@@ -10,9 +10,10 @@ from __future__ import annotations
 import asyncio
 import os
 import random
-import sys
 from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy.exc import DBAPIError, OperationalError
 
 from openhands.analytics import get_analytics_service, init_analytics_service
@@ -85,25 +86,15 @@ class SaasAppLifespanService(AppLifespanService):
         return self
 
     async def _run_migrations(self) -> None:
-        # Run alembic out of process: migrations/env.py reconfigures logging from
-        # alembic.ini and builds its own engine. Its advisory lock makes other
-        # workers and replicas wait, then find the database already at head.
+        # The advisory lock in migrations/env.py makes other workers and replicas
+        # wait, then find the database already at head.
+        config = Config(str(_REPO_ROOT / 'alembic.ini'))
+        config.set_main_option('script_location', str(_REPO_ROOT / 'migrations'))
+        # Keep the app's logging instead of loading the one in alembic.ini.
+        config.attributes['configure_logger'] = False
         logger.info('database_migrations_starting')
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            '-m',
-            'alembic',
-            '-c',
-            str(_REPO_ROOT / 'alembic.ini'),
-            'upgrade',
-            'head',
-            cwd=_REPO_ROOT,
-        )
-        returncode = await process.wait()
-        if returncode != 0:
-            raise RuntimeError(
-                f'alembic upgrade head failed with exit code {returncode}'
-            )
+        # env.py is synchronous, so keep it off the event loop.
+        await asyncio.to_thread(command.upgrade, config, 'head')
         logger.info('database_migrations_succeeded')
 
     async def _reconcile_org_condenser_defaults(self) -> None:
