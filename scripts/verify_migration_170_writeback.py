@@ -85,8 +85,8 @@ def main() -> int:
 
     # 1) Apply migrations up to 169 (NOT 170). 158/160 seed the deepseek row.
     print('[1] alembic upgrade 169 ...')
-    from alembic.config import Config
     from alembic import command
+    from alembic.config import Config
 
     cfg = Config('alembic.ini')
     cfg.set_main_option('sqlalchemy.url', _url())
@@ -96,7 +96,7 @@ def main() -> int:
     with eng.connect() as c:
         n = c.execute(
             text(
-                "SELECT count(*) FROM verified_models "
+                'SELECT count(*) FROM verified_models '
                 "WHERE provider='openhands' AND model_name='deepseek-v4-flash'"
             )
         ).scalar()
@@ -107,7 +107,11 @@ def main() -> int:
     org_restore = Org(
         name=f'restore-{uuid.uuid4().hex[:8]}',
         agent_settings={
-            'llm': {'model': BYOK_MODEL, 'api_key': BYOK_KEY, 'base_url': 'https://api.anthropic.com'}
+            'llm': {
+                'model': BYOK_MODEL,
+                'api_key': BYOK_KEY,
+                'base_url': 'https://api.anthropic.com',
+            }
         },
         llm_profiles=_profiles(MANAGED_DEFAULT),  # bogus baked Default + BYOK legacy
     )
@@ -135,7 +139,10 @@ def main() -> int:
         raw = c.execute(
             text('SELECT llm_profiles FROM org WHERE id=:i'), {'i': str(ids['restore'])}
         ).scalar()
-    print(f'[3] seeded orgs; raw llm_profiles[restore] is {len(raw)}-char ciphertext, valid JSON? ', end='')
+    print(
+        f'[3] seeded orgs; raw llm_profiles[restore] is {len(raw)}-char ciphertext, valid JSON? ',
+        end='',
+    )
     try:
         json.loads(raw)
         print('YES (unexpected!)')
@@ -150,7 +157,7 @@ def main() -> int:
     with eng.connect() as c:
         n = c.execute(
             text(
-                "SELECT count(*) FROM verified_models "
+                'SELECT count(*) FROM verified_models '
                 "WHERE provider='openhands' AND model_name='deepseek-v4-flash'"
             )
         ).scalar()
@@ -169,13 +176,23 @@ def main() -> int:
                 d = (dec or {}).get('profiles', {}).get('Default', {})
                 ok = d.get('model') == BYOK_MODEL and d.get('api_key') == BYOK_KEY
                 ok = ok and dec.get('active') == 'Default'
-                print(f'         expected Default restored to {BYOK_MODEL} -> {"PASS" if ok else "FAIL"}')
+                print(
+                    f'         expected Default restored to {BYOK_MODEL} -> {"PASS" if ok else "FAIL"}'
+                )
             elif bucket == 'strip':
-                ok = 'Default' not in (dec or {}).get('profiles', {}) and (dec or {}).get('active') is None
-                print(f'         expected phantom Default stripped -> {"PASS" if ok else "FAIL"}')
+                ok = (
+                    'Default' not in (dec or {}).get('profiles', {})
+                    and (dec or {}).get('active') is None
+                )
+                print(
+                    f'         expected phantom Default stripped -> {"PASS" if ok else "FAIL"}'
+                )
             elif bucket == 'noop':
                 d = (dec or {}).get('profiles', {}).get('Default', {})
-                ok = d.get('model') == 'anthropic/claude' and dec.get('active') == 'Default'
+                ok = (
+                    d.get('model') == 'anthropic/claude'
+                    and dec.get('active') == 'Default'
+                )
                 print(f'         expected untouched -> {"PASS" if ok else "FAIL"}')
             if not ok:
                 failures += 1
@@ -189,11 +206,15 @@ def main() -> int:
     with Session(eng) as s:
         orm_dec = s.get(Org, ids['restore']).llm_profiles
     roundtrip_ok = raw_dec == orm_dec
-    print(f'[7] raw-decrypt == ORM-decrypt (no write-back double-encoding): {"PASS" if roundtrip_ok else "FAIL"}')
+    print(
+        f'[7] raw-decrypt == ORM-decrypt (no write-back double-encoding): {"PASS" if roundtrip_ok else "FAIL"}'
+    )
     if not roundtrip_ok:
         failures += 1
 
-    print(f'\n=== {"ALL PASS" if failures == 0 else f"{failures} FAILURE(S)"} (driver={DB_DRIVER or "psycopg2"}) ===')
+    print(
+        f'\n=== {"ALL PASS" if failures == 0 else f"{failures} FAILURE(S)"} (driver={DB_DRIVER or "psycopg2"}) ==='
+    )
     return 1 if failures else 0
 
 
