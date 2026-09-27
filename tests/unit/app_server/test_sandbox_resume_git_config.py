@@ -1,7 +1,9 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
+from openhands.app_server.errors import SandboxError
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     ExposedUrl,
@@ -83,6 +85,61 @@ async def test_resume_without_saved_git_identity_does_not_schedule_restore():
         )
 
     db_session.commit.assert_awaited_once_with()
+    schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resume_missing_sandbox_is_404_without_commit_or_restore():
+    sandbox_service = AsyncMock()
+    sandbox_service.resume_sandbox.return_value = False
+    db_session = AsyncMock()
+
+    with (
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.asyncio.create_task'
+        ) as schedule,
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await resume_sandbox('sandbox-1', AsyncMock(), sandbox_service, db_session)
+
+    assert exc_info.value.status_code == 404
+    db_session.commit.assert_not_awaited()
+    schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('status_code', 'detail'),
+    [
+        (
+            409,
+            {
+                'code': 'runtime_not_resumable',
+                'current_status': 'paused',
+                'message': 'Runtime could not resume because status was paused',
+            },
+        ),
+        (502, 'Runtime API resume failed for sandbox sandbox-1'),
+    ],
+)
+async def test_resume_preserves_service_error_semantics(status_code, detail):
+    sandbox_service = AsyncMock()
+    sandbox_service.resume_sandbox.side_effect = SandboxError(
+        status_code=status_code, detail=detail
+    )
+    db_session = AsyncMock()
+
+    with (
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.asyncio.create_task'
+        ) as schedule,
+        pytest.raises(SandboxError) as exc_info,
+    ):
+        await resume_sandbox('sandbox-1', AsyncMock(), sandbox_service, db_session)
+
+    assert exc_info.value.status_code == status_code
+    assert exc_info.value.detail == detail
+    db_session.commit.assert_not_awaited()
     schedule.assert_not_called()
 
 

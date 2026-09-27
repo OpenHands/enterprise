@@ -1,0 +1,16 @@
+# Pods booted ahead of time. The app claims one per sandbox by naming this pool
+# (AGENT_SANDBOX_WARM_POOL), and the pool boots a replacement. With the pool
+# empty, a claim cold-starts a pod from the template instead.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: openhands-agent-server
+  namespace: openhands-sandboxes
+spec:
+  replicas: 2
+  sandboxTemplateRef:
+    name: openhands-agent-server
+  # Replace unclaimed pods as soon as the template changes. Claimed ones are
+  # never touched.
+  updateStrategy:
+    type: Recreate

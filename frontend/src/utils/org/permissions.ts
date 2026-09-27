@@ -10,6 +10,7 @@ type AddCreditsPermission = "add_credits";
 type ViewBillingPermission = "view_billing";
 
 type ManageSecretsPermission = "manage_secrets";
+type ManageOrgSecretsPermission = "manage_org_secrets";
 type ManageMCPPermission = "manage_mcp";
 type ManageIntegrationsPermission = "manage_integrations";
 type ManageIntegrationProvidersPermission = "manage_integration_providers";
@@ -31,6 +32,7 @@ export type PermissionKey =
   | AddCreditsPermission
   | ViewBillingPermission
   | ManageSecretsPermission
+  | ManageOrgSecretsPermission
   | ManageMCPPermission
   | ManageIntegrationsPermission
   | ManageIntegrationProvidersPermission
@@ -52,6 +54,7 @@ const memberPerms: PermissionKey[] = [
 ];
 
 const adminOnly: PermissionKey[] = [
+  "manage_org_secrets",
   "manage_integration_providers",
   "edit_llm_settings",
   "view_billing",

@@ -8,7 +8,7 @@ export function AdminDashboard() {
 
   if (!organizationId) {
     return (
-      <div className="p-8 text-center text-[#8C8C8C]">
+      <div className="p-8 text-center text-muted">
         Please select an organization to view Usage & Monitoring.
       </div>
     );

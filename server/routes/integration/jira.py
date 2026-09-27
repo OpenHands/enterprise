@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 from integrations.jira.jira_manager import JIRA_CLOUD_API_URL, JiraManager
 from integrations.models import Message, SourceType
 from integrations.utils import HOST_URL
+from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
@@ -268,6 +269,18 @@ async def _handle_workspace_link_creation(
             jira_user_id=jira_user_id,
             jira_workspace_id=workspace.id,
         )
+
+    # Analytics: jira integration enabled (best-effort, never blocks the flow)
+    try:
+        analytics = get_analytics_service()
+        if analytics:
+            ctx = await resolve_analytics_context(user_id)
+            analytics.track_jira_integration_enabled(
+                ctx=ctx,
+                workspace_name=target_workspace,
+            )
+    except Exception:
+        logger.exception('analytics:jira_integration_enabled:failed')
 
 
 async def _validate_workspace_update_permissions(user_id: str, target_workspace: str):

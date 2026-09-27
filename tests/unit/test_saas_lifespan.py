@@ -113,6 +113,7 @@ async def test_aenter_passes_env_vars_to_init():
         call_kwargs = mock_init.call_args
         assert call_kwargs.kwargs['api_key'] == 'test-key'
         assert call_kwargs.kwargs['host'] == 'https://test.posthog.com'
+        assert call_kwargs.kwargs['deployment_kind'] == 'remote'
 
 
 @pytest.mark.asyncio
@@ -134,6 +135,7 @@ async def test_aenter_disables_analytics_when_self_hosted():
         await svc.__aenter__()
 
         assert mock_init.call_args.kwargs['api_key'] == ''
+        assert mock_init.call_args.kwargs['deployment_kind'] == 'local'
 
 
 @pytest.mark.asyncio
