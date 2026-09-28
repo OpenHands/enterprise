@@ -613,7 +613,7 @@ async def test_load_canonicalizes_legacy_litellm_proxy_active_llm(
             .values(
                 agent_settings_diff={
                     'llm': {
-                        'model': 'litellm_proxy/claude-opus-4-8',
+                        'model': 'litellm_proxy/claude-opus-5',
                         'base_url': LITE_LLM_API_URL,
                     },
                 }
@@ -635,7 +635,7 @@ async def test_load_canonicalizes_legacy_litellm_proxy_active_llm(
         loaded = await store.load()
 
     assert loaded is not None
-    assert loaded.agent_settings.llm.model == 'openhands/claude-opus-4-8'
+    assert loaded.agent_settings.llm.model == 'openhands/claude-opus-5'
     assert loaded.agent_settings.llm.base_url is None
 
 
@@ -660,7 +660,7 @@ async def test_load_canonicalizes_legacy_litellm_proxy_llm_profiles(
                 llm_profiles={
                     'profiles': {
                         'legacy': {
-                            'model': 'litellm_proxy/claude-opus-4-8',
+                            'model': 'litellm_proxy/claude-opus-5',
                             'base_url': LITE_LLM_API_URL,
                         },
                         'custom': {
@@ -691,7 +691,7 @@ async def test_load_canonicalizes_legacy_litellm_proxy_llm_profiles(
     assert loaded.llm_profiles.active == 'legacy'
 
     legacy = loaded.llm_profiles.require('legacy')
-    assert legacy.model == 'openhands/claude-opus-4-8'
+    assert legacy.model == 'openhands/claude-opus-5'
     assert legacy.base_url is None
 
     custom = loaded.llm_profiles.require('custom')
