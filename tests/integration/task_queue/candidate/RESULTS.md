@@ -18,6 +18,8 @@ on the same host. Raw evidence is in `results/apscheduler.json` and
 | P3: killed mid-job, restarted after 10 s | `lost`. The run never finished, the next occurrence ran | not run |
 | P3: killed mid-job, left dead | `lost`. Same; the surviving replica kept the schedule | not run |
 | P4: schema through Alembic | Pass: `migrate` exited 0, no candidate tables, jobs ran as `poc_app` | not run |
+| P7: rolling deploy, stop `-t 10` | `lost`. Exit 0 after 0.4 s: the job was cancelled at SIGTERM; the next occurrence ran | not run |
+| P7: rolling deploy, stop `-t 60` | `lost`. Exit 0 after 0.7 s: same, the grace period went unused | not run |
 | P6: footprint | No extra workloads. About 35.5 MiB and under 0.4% CPU per replica, idle | not run |
 
 ## Setup
@@ -69,6 +71,23 @@ on the same host. Raw evidence is in `results/apscheduler.json` and
   `scheduler.shutdown()` doesn't wait for asyncio jobs. In a manual run,
   stopping replica-a mid-job left its run unfinished, the same outcome as a
   crash.
+
+## Graceful shutdown (P7)
+
+APScheduler 3.11 has no supported way to wait for asyncio jobs. `shutdown()`
+already defaults to `wait=True`, but `AsyncIOExecutor.shutdown()` cancels every
+pending job future regardless. Its source says: "There is no way to honor
+wait=True without converting this method into a coroutine method". So the
+candidate keeps the default. On SIGTERM, uvicorn runs the lifespan exit, the
+scheduler cancels the in-flight job (`CancelledError`), and the process exits 0
+within a second. The run is `lost` whatever the grace period. The claim row
+stays, so the other replica doesn't pick the run up either.
+
+The only documented executor that honors `wait=True` is `ThreadPoolExecutor`.
+Using it means turning the job into a synchronous function, and
+`shutdown(wait=True)` then blocks the event loop until the threads finish. I
+didn't test it. The harness's `POC_DRAIN` control shows what draining would
+give: `lost` (exit 137) at 10 s and `drained` at 60 s.
 
 ## P3 and the known ceiling
 
