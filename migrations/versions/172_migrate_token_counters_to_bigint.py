@@ -11,8 +11,8 @@ This migration alters every token counter column to ``BIGINT`` (64-bit,
 max ~9.2 quintillion). In PostgreSQL this is a safe in-place widening cast
 with no data loss, so no table rewrite or data backfill is needed.
 
-Revision ID: 171
-Revises: 170
+Revision ID: 172
+Revises: 171
 Create Date: 2026-09-28 00:00:00.000000
 """
 
@@ -21,8 +21,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '171'
-down_revision: str | None = '170'
+revision: str = '172'
+down_revision: str | None = '171'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
