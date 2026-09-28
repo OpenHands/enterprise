@@ -173,10 +173,15 @@ class V1ConversationService {
     // V1 API returns {url: '...'} instead of {vscode_url: '...'}
     // Map it to match the expected interface
     try {
-      const { data } = await axios.get<{ url: string | null }>(url, { headers });
+      const { data } = await axios.get<{ url: string | null }>(url, {
+        headers,
+      });
       return { vscode_url: data.url };
     } catch (error) {
-      if (axios.isAxiosError(error) && [404, 410].includes(error.response?.status ?? 0)) {
+      if (
+        axios.isAxiosError(error) &&
+        [404, 410].includes(error.response?.status ?? 0)
+      ) {
         return { vscode_url: null };
       }
       throw error;
