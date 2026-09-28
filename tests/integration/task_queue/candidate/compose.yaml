@@ -18,7 +18,11 @@ x-worker: &worker
   <<: *image
   command: celery -A tasks worker --loglevel=INFO --concurrency=2
   depends_on: *deps
-  environment: *env
+  environment:
+    <<: *env
+    # Unset by default: SIGTERM is a warm shutdown that waits for running tasks.
+    REMAP_SIGTERM: ${POC_REMAP_SIGTERM:-}
+    POC_SOFT_SHUTDOWN_SECONDS: ${POC_SOFT_SHUTDOWN_SECONDS:-0}
 
 services:
   redis:

@@ -14,6 +14,11 @@ app.conf.update(
     # Documented pairing with acks_late: don't reserve extra messages per process.
     worker_prefetch_multiplier=1,
     broker_connection_retry_on_startup=True,
+    # 0 (default) disables soft shutdown. Only used on cold shutdown, which
+    # SIGTERM triggers only with REMAP_SIGTERM=SIGQUIT (P7 variant).
+    worker_soft_shutdown_timeout=float(
+        os.environ.get('POC_SOFT_SHUTDOWN_SECONDS', '0')
+    ),
     beat_schedule={
         'tick': {'task': 'tasks.tick', 'schedule': timedelta(seconds=INTERVAL)}
     },

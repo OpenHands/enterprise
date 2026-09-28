@@ -113,3 +113,19 @@ still running), beat-b stayed up. Only the lock holder schedules, so the skew
 can't produce a second firing. The one case this run didn't exercise is a lock
 handover between Beats with different clocks. RedBeat keeps `last_run_at` in
 Redis, so a skewed successor could fire an occurrence early.
+
+## P7 — rolling deploy (SIGTERM, then SIGKILL at the grace deadline)
+
+| Variant | Grace | Outcome | Exit | Stop took |
+|---|---|---|---|---|
+| `celery` (default warm shutdown) | 10 s | `lost`: killed at the deadline mid-task | 137 | 11.5 s |
+| `celery` (default warm shutdown) | 60 s | **`drained`**: the worker finished the task, then exited | 0 | 27.7 s |
+| `celery-soft-shutdown` (`REMAP_SIGTERM=SIGQUIT`, `worker_soft_shutdown_timeout=5`) | 10 s | `lost` | 0 | 8.0 s |
+| `celery-soft-shutdown` | 60 s | `lost` | 0 | 8.4 s |
+
+The next occurrence ran in every case.
+
+**Shutdown notes.**
+- The default SIGTERM is a warm shutdown. The worker stops consuming and waits for running tasks with no time limit, so a grace period longer than the longest task drains it.
+- At the deadline, SIGKILL leaves the message unacked in Redis until the 1-hour visibility timeout. So within the window the run is lost, as in P3.
+- Soft shutdown waited 5 s, then went to a cold shutdown that terminated the task ("Initiating Soft Shutdown, terminating in 5.0 seconds", then "Cold shutdown"). The task was not re-run by the other worker within the test window. It either went back to the unacked set, or was only restored after the visibility timeout. That is worse than the default warm shutdown, so keep the default and set the grace period longer than the longest task.

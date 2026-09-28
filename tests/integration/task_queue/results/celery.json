@@ -90,5 +90,41 @@
         "memory": "79.34MiB"
       }
     }
+  },
+  "P7-grace-10s": {
+    "exit_code": 137,
+    "grace_seconds": 10,
+    "killed_at_deadline": true,
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T20:48:11Z",
+    "restarted_as_sole_runner": false,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "worker-b",
+        ""
+      ]
+    ],
+    "stop_took_seconds": 11.5,
+    "victim": "worker-b"
+  },
+  "P7-grace-60s": {
+    "exit_code": 0,
+    "grace_seconds": 60,
+    "killed_at_deadline": false,
+    "next_occurrence_ran": true,
+    "outcome": "drained",
+    "recorded_at": "2026-09-28T20:51:15Z",
+    "restarted_as_sole_runner": false,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "worker-b",
+        "worker-b"
+      ]
+    ],
+    "stop_took_seconds": 27.7,
+    "victim": "worker-b"
   }
 }

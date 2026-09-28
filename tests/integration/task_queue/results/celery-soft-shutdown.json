@@ -1,0 +1,38 @@
+{
+  "P7-grace-10s": {
+    "exit_code": 0,
+    "grace_seconds": 10,
+    "killed_at_deadline": false,
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T20:55:34Z",
+    "restarted_as_sole_runner": false,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "worker-a",
+        ""
+      ]
+    ],
+    "stop_took_seconds": 8.0,
+    "victim": "worker-a"
+  },
+  "P7-grace-60s": {
+    "exit_code": 0,
+    "grace_seconds": 60,
+    "killed_at_deadline": false,
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T20:59:48Z",
+    "restarted_as_sole_runner": false,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "worker-a",
+        ""
+      ]
+    ],
+    "stop_took_seconds": 8.4,
+    "victim": "worker-a"
+  }
+}
