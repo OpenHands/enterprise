@@ -1,0 +1,38 @@
+{
+  "P7-grace-10s": {
+    "exit_code": 0,
+    "grace_seconds": 10,
+    "killed_at_deadline": false,
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T20:47:39Z",
+    "restarted_as_sole_runner": false,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-a",
+        ""
+      ]
+    ],
+    "stop_took_seconds": 0.4,
+    "victim": "replica-a"
+  },
+  "P7-grace-60s": {
+    "exit_code": 0,
+    "grace_seconds": 60,
+    "killed_at_deadline": false,
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T20:51:38Z",
+    "restarted_as_sole_runner": false,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-b",
+        ""
+      ]
+    ],
+    "stop_took_seconds": 0.7,
+    "victim": "replica-b"
+  }
+}

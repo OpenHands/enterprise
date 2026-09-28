@@ -20,6 +20,9 @@ from poc_job import INTERVAL, JOB_SECONDS, finish_run, start_run
 
 EXECUTOR = os.environ.get('POC_DBOS_EXECUTOR', 'default')
 PEER_RECOVERY = os.environ.get('POC_DBOS_PEER_RECOVERY', '0').lower() in ('true', '1')
+# DBOS.destroy's documented drain: wait this long for active workflows. Set just
+# under the pod's termination grace period (50 s for a 60 s grace).
+SHUTDOWN_SECONDS = int(os.environ.get('POC_DBOS_SHUTDOWN_SECONDS', '50'))
 # ponytail: staleness stands in for liveness, which DBOS has no signal for without
 # Conductor. A live workflow older than this would be run a second time.
 STALE_AFTER = timedelta(seconds=JOB_SECONDS * 1.5)
@@ -83,7 +86,11 @@ async def lifespan(app: FastAPI):
     yield
     if task:
         task.cancel()
-    DBOS.destroy()
+    # Off the event loop: DBOS runs async workflows on the loop that called
+    # launch(), so a blocking destroy() here would freeze the workflows it waits on.
+    await asyncio.to_thread(
+        DBOS.destroy, workflow_completion_timeout_sec=SHUTDOWN_SECONDS
+    )
 
 
 app = FastAPI(lifespan=lifespan)

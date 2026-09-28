@@ -13,6 +13,8 @@ on the same host. Raw evidence is in `results/dbos*.json`.
 | P3: killed, left dead | **`lost`** | **`lost`** | `resumed` after 72.3 s |
 | P4: schema through Alembic | Pass. `migrate` exited 0; replicas ran as `poc_app` with `run_migrations: False` | not run | not run |
 | P6: footprint | No extra workloads. About 60 MiB and 1.1% CPU per idle replica | not run | not run |
+| P7: `stop -t 10` | `lost`. Exit 137 after 10.7 s | `lost`. Exit 137 after 10.6 s | not run |
+| P7: `stop -t 60` | `drained`. Exit 0 after 26.0 s | `drained`. Exit 0 after 26.2 s | not run |
 
 In every P3 run the next occurrence ran, and no occurrence finished twice.
 `resumed` means the killed run's `start_run` row was finished by the recovery,
@@ -49,8 +51,6 @@ with no second start row. The `start_run` step's checkpoint was replayed.
   not a random ID. Every replica in variant 1 shares it. A restarting replica
   therefore re-enqueues every PENDING `local` workflow, including ones another
   live replica is running.
-- Harness race: see "Harness issue" below. I worked around it with a
-  healthcheck override in `candidate/compose.yaml`.
 
 ## What P3 showed
 
@@ -99,12 +99,32 @@ with no second start row. The `start_run` step's checkpoint was replayed.
   assigned when using DBOS Conductor)". Without Conductor, those two pieces of
   advice work against each other.
 
+## Shutdown (P7)
+
+- Configured: the documented `DBOS.destroy(workflow_completion_timeout_sec=50)`
+  in the lifespan shutdown, set just under a 60 s termination grace period. It
+  is called through `asyncio.to_thread`. Nothing else was added.
+- Default, `workflow_completion_timeout_sec=0`: destroy returns at once. The
+  process exits 0 in under a second, and the workflow stays PENDING with its
+  `start_run` row unfinished (`results/dbos-no-drain.json`: `lost` at both
+  grace periods). Nothing recovers it unless a process with the same executor
+  ID starts, as in P3.
+- With a timeout, destroy first stops the queue and scheduler threads, so no
+  new work is taken. It then polls until active workflows finish or the timeout
+  expires. It does not cancel running workflows. After the timeout they are
+  left PENDING and can no longer checkpoint.
+- Gotcha: `launch()` called from the lifespan makes uvicorn's loop DBOS's
+  "main loop", so async workflows run on it. A plain, blocking
+  `DBOS.destroy(...)` there freezes the workflow it is waiting for. That run
+  waited the full 50 s, exited 0 after 51.5 s, and the job was `lost` at 60 s
+  grace (`results/dbos-sync-destroy.json`). Calling destroy off the loop fixes
+  it. The docs don't cover this, and 3.1.0 has no `destroy_async`.
+- `-t 10` is shorter than the remaining job, so SIGKILL leaves the workflow
+  PENDING, and P7 does not restart the replica. That result is `lost` in both
+  variants, the same as P3 `replaced`.
+
 ## Harness issue
 
-The shared Postgres healthcheck, `pg_isready -U poc -d poc`, uses the Unix
-socket. It passes against the entrypoint's temporary init server, which listens
-only on the socket. Under load, `migrate` then got "Connection refused" over
-TCP, which failed the first `restarted` runs of variants 2 and 3.
-`candidate/compose.yaml` overrides the check with `pg_isready -h 127.0.0.1`.
-That fix belongs in the harness `compose.yaml`. In variant 1, P1 ran before the
-override was added. The override only affects start-up readiness.
+The P3 variant runs first hit a Postgres readiness race: the Unix-socket
+`pg_isready` check passed during the init server. The harness now checks over
+TCP (9ec42e2d2), and the candidate's temporary override is removed.

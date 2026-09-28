@@ -12,14 +12,9 @@ x-app: &app
     POC_JOB_SECONDS: ${POC_JOB_SECONDS:-1}
     POC_DBOS_EXECUTOR: ${POC_DBOS_EXECUTOR:-default}
     POC_DBOS_PEER_RECOVERY: ${POC_DBOS_PEER_RECOVERY:-0}
+    POC_DBOS_SHUTDOWN_SECONDS: ${POC_DBOS_SHUTDOWN_SECONDS:-50}
 
 services:
-  # Harness race: pg_isready over the Unix socket passes against the entrypoint's
-  # temporary init server, so under load migrate connected before TCP was up.
-  # Over TCP it passes only once the real server listens.
-  postgres:
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U poc -d poc"]
   migrate:
     build: candidate
     image: tq-poc-dbos

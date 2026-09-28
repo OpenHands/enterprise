@@ -1,39 +1,11 @@
 {
-  "P3-replaced": {
-    "next_occurrence_ran": true,
-    "outcome": "lost",
-    "recorded_at": "2026-09-28T18:53:39Z",
-    "recovered_after_seconds": null,
-    "runs_for_occurrence": [
-      [
-        "1",
-        "replica-b",
-        ""
-      ]
-    ],
-    "victim": "replica-b"
-  },
-  "P3-restarted": {
-    "next_occurrence_ran": true,
-    "outcome": "resumed",
-    "recorded_at": "2026-09-28T18:57:33Z",
-    "recovered_after_seconds": 49.4,
-    "runs_for_occurrence": [
-      [
-        "1",
-        "replica-a",
-        "replica-b"
-      ]
-    ],
-    "victim": "replica-a"
-  },
-  "P7-grace-10s": {
+  "dbos-fixed-executor:P7-grace-10s": {
     "exit_code": 137,
     "grace_seconds": 10,
     "killed_at_deadline": true,
     "next_occurrence_ran": true,
     "outcome": "lost",
-    "recorded_at": "2026-09-28T20:57:48Z",
+    "recorded_at": "2026-09-28T20:47:47Z",
     "restarted_as_sole_runner": false,
     "runs_for_occurrence": [
       [
@@ -42,25 +14,61 @@
         ""
       ]
     ],
-    "stop_took_seconds": 10.6,
+    "stop_took_seconds": 10.3,
     "victim": "replica-a"
   },
-  "P7-grace-60s": {
+  "dbos-fixed-executor:P7-grace-60s": {
     "exit_code": 0,
     "grace_seconds": 60,
     "killed_at_deadline": false,
     "next_occurrence_ran": true,
-    "outcome": "drained",
-    "recorded_at": "2026-09-28T21:00:31Z",
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T20:52:29Z",
+    "restarted_as_sole_runner": false,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-a",
+        ""
+      ]
+    ],
+    "stop_took_seconds": 51.5,
+    "victim": "replica-a"
+  },
+  "dbos:P7-grace-10s": {
+    "exit_code": 137,
+    "grace_seconds": 10,
+    "killed_at_deadline": true,
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T20:47:47Z",
+    "restarted_as_sole_runner": false,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-a",
+        ""
+      ]
+    ],
+    "stop_took_seconds": 10.2,
+    "victim": "replica-a"
+  },
+  "dbos:P7-grace-60s": {
+    "exit_code": 0,
+    "grace_seconds": 60,
+    "killed_at_deadline": false,
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T20:52:29Z",
     "restarted_as_sole_runner": false,
     "runs_for_occurrence": [
       [
         "1",
         "replica-b",
-        "replica-b"
+        ""
       ]
     ],
-    "stop_took_seconds": 26.2,
+    "stop_took_seconds": 51.5,
     "victim": "replica-b"
   }
 }
