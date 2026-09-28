@@ -30,13 +30,11 @@ const DEFAULT_PROVIDER = "custom";
 
 interface ProviderConnectionModalProps {
   orgId: string | null | undefined;
-  /** When `null` the modal is closed; otherwise it edits that connection. */
+  /** The connection being edited; omitted on create. */
   connection?: ProviderConnection | null;
   /** When true the modal creates a new connection. */
   isCreate: boolean;
   onClose: () => void;
-  /** Called with the saved connection so a caller can select it (create flow). */
-  onSaved?: (connection: ProviderConnection) => void;
 }
 
 /**
@@ -51,7 +49,6 @@ export function ProviderConnectionModal({
   connection,
   isCreate,
   onClose,
-  onSaved,
 }: ProviderConnectionModalProps) {
   const { t } = useTranslation();
   const createConnection = useCreateProviderConnection(orgId);
@@ -63,7 +60,6 @@ export function ProviderConnectionModal({
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
 
-  const isOpen = isCreate || Boolean(connection);
   const keyAlreadySet = Boolean(connection?.api_key_set);
 
   useEffect(() => {
@@ -75,11 +71,12 @@ export function ProviderConnectionModal({
 
   const isPending = createConnection.isPending || updateConnection.isPending;
   const trimmedName = displayName.trim();
+  const trimmedProvider = provider?.trim() ?? "";
   const trimmedKey = apiKey.trim();
   // On create the key is required; on edit an empty key means "leave unchanged".
   const isValid =
     Boolean(trimmedName) &&
-    Boolean(provider?.trim()) &&
+    Boolean(trimmedProvider) &&
     (!isCreate || Boolean(trimmedKey));
 
   const selectedProviderMissing = Boolean(
@@ -95,8 +92,6 @@ export function ProviderConnectionModal({
     (candidate) => !candidate.verified,
   );
 
-  if (!isOpen) return null;
-
   const handleClose = () => {
     if (!isPending) onClose();
   };
@@ -109,7 +104,7 @@ export function ProviderConnectionModal({
       if (isCreate) {
         const created = await createConnection.mutateAsync({
           display_name: trimmedName,
-          provider: provider?.trim() || DEFAULT_PROVIDER,
+          provider: trimmedProvider,
           api_key: trimmedKey,
           base_url: trimmedBaseUrl || null,
         });
@@ -118,13 +113,12 @@ export function ProviderConnectionModal({
             name: created.display_name,
           }),
         );
-        onSaved?.(created);
       } else if (connection) {
         const updated = await updateConnection.mutateAsync({
           id: connection.id,
           request: {
             display_name: trimmedName,
-            provider: provider?.trim() || DEFAULT_PROVIDER,
+            provider: trimmedProvider,
             base_url: trimmedBaseUrl || null,
             // Omit the key entirely when left blank so the stored key is kept.
             ...(trimmedKey ? { api_key: trimmedKey } : {}),
@@ -135,7 +129,6 @@ export function ProviderConnectionModal({
             name: updated.display_name,
           }),
         );
-        onSaved?.(updated);
       }
       onClose();
     } catch (error) {

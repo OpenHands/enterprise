@@ -17,8 +17,6 @@ import { cn } from "#/utils/utils";
 
 interface ProviderConnectionsManagerProps {
   orgId: string | null | undefined;
-  /** Whether the current user may manage provider connections. */
-  canManage?: boolean;
   /** Profile summaries, used to count links per connection. */
   profiles?: ReadonlyArray<{
     provider_connection_id?: string | null;
@@ -26,14 +24,13 @@ interface ProviderConnectionsManagerProps {
 }
 
 /**
- * The provider connections list. The server returns `{ connections: [...] }`
- * with no key material — only an `api_key_set` flag — so this surface is safe
- * to render for any org member. Only users with edit permission get the
- * add/edit/delete controls.
+ * The provider connections list with add / edit / delete controls. The caller
+ * only mounts it for users who may manage org LLM profiles (owners/admins on
+ * a BYOK-enabled install); the server never returns key material, only an
+ * `api_key_set` flag.
  */
 export function ProviderConnectionsManager({
   orgId,
-  canManage = false,
   profiles = [],
 }: ProviderConnectionsManagerProps) {
   const { t } = useTranslation();
@@ -88,7 +85,6 @@ export function ProviderConnectionsManager({
             key={connection.id}
             connection={connection}
             linkedProfileCount={linkedCountById.get(connection.id) ?? 0}
-            canManage={canManage}
             onEdit={setEditTarget}
             onDelete={setDeleteTarget}
           />
@@ -106,17 +102,15 @@ export function ProviderConnectionsManager({
         <Typography.Text className="text-base font-medium">
           {t(I18nKey.SETTINGS$PROVIDER_CONNECTIONS_TITLE)}
         </Typography.Text>
-        {canManage ? (
-          <BrandButton
-            testId="add-provider-connection"
-            type="button"
-            variant="secondary"
-            className="h-fit"
-            onClick={() => setCreateOpen(true)}
-          >
-            {t(I18nKey.SETTINGS$PROVIDER_CONNECTION_ADD)}
-          </BrandButton>
-        ) : null}
+        <BrandButton
+          testId="add-provider-connection"
+          type="button"
+          variant="secondary"
+          className="h-fit"
+          onClick={() => setCreateOpen(true)}
+        >
+          {t(I18nKey.SETTINGS$PROVIDER_CONNECTION_ADD)}
+        </BrandButton>
       </div>
       <Typography.Paragraph className="text-sm text-[var(--oh-muted)]">
         {t(I18nKey.SETTINGS$PROVIDER_CONNECTIONS_SUBLINE)}
@@ -124,31 +118,27 @@ export function ProviderConnectionsManager({
 
       {renderBody()}
 
-      {canManage ? (
-        <>
-          {createOpen ? (
-            <ProviderConnectionModal
-              orgId={orgId}
-              isCreate
-              onClose={() => setCreateOpen(false)}
-            />
-          ) : null}
-          {editTarget ? (
-            <ProviderConnectionModal
-              orgId={orgId}
-              connection={editTarget}
-              isCreate={false}
-              onClose={() => setEditTarget(null)}
-            />
-          ) : null}
-          {deleteTarget ? (
-            <DeleteProviderConnectionModal
-              orgId={orgId}
-              connection={deleteTarget}
-              onClose={() => setDeleteTarget(null)}
-            />
-          ) : null}
-        </>
+      {createOpen ? (
+        <ProviderConnectionModal
+          orgId={orgId}
+          isCreate
+          onClose={() => setCreateOpen(false)}
+        />
+      ) : null}
+      {editTarget ? (
+        <ProviderConnectionModal
+          orgId={orgId}
+          connection={editTarget}
+          isCreate={false}
+          onClose={() => setEditTarget(null)}
+        />
+      ) : null}
+      {deleteTarget ? (
+        <DeleteProviderConnectionModal
+          orgId={orgId}
+          connection={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+        />
       ) : null}
     </section>
   );

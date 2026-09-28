@@ -15,6 +15,12 @@ import { I18nKey } from "#/i18n/declaration";
 interface OrgLlmProfilesManagerProps {
   orgId: string;
   canManage?: boolean;
+  /**
+   * Render the shared provider-connections section below the profiles. The
+   * caller decides (admin permission + BYOK allowed); off by default so
+   * members and managed installs never see it.
+   */
+  showProviderConnections?: boolean;
   onAddProfile?: () => void;
   onEditProfile?: (profile: LlmProfileSummary) => void;
 }
@@ -22,6 +28,7 @@ interface OrgLlmProfilesManagerProps {
 export function OrgLlmProfilesManager({
   orgId,
   canManage = true,
+  showProviderConnections = false,
   onAddProfile,
   onEditProfile,
 }: OrgLlmProfilesManagerProps) {
@@ -82,11 +89,9 @@ export function OrgLlmProfilesManager({
         />
       </div>
 
-      <ProviderConnectionsManager
-        orgId={orgId}
-        canManage={canManage}
-        profiles={profiles}
-      />
+      {showProviderConnections ? (
+        <ProviderConnectionsManager orgId={orgId} profiles={profiles} />
+      ) : null}
 
       <OrgRenameProfileModal
         orgId={orgId}

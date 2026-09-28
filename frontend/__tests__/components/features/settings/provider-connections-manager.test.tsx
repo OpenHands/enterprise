@@ -53,18 +53,12 @@ const sampleConnection: ProviderConnection = {
 };
 
 function renderManager({
-  canManage,
   profiles,
 }: {
-  canManage?: boolean;
   profiles?: ReadonlyArray<{ provider_connection_id?: string | null }>;
 } = {}) {
   return render(
-    <ProviderConnectionsManager
-      orgId="org-1"
-      canManage={canManage}
-      profiles={profiles}
-    />,
+    <ProviderConnectionsManager orgId="org-1" profiles={profiles} />,
   );
 }
 
@@ -78,19 +72,10 @@ beforeEach(() => {
 });
 
 describe("ProviderConnectionsManager", () => {
-  it("renders the connection list and hides management controls for viewers", () => {
-    renderManager({ canManage: false });
+  it("renders the connection list with Add / edit / delete controls", () => {
+    renderManager();
 
     expect(screen.getByText("OpenAI shared key")).toBeInTheDocument();
-    // Viewers never see Add / edit / delete affordances.
-    expect(screen.queryByTestId("add-provider-connection")).toBeNull();
-    expect(screen.queryByTestId("provider-connection-edit")).toBeNull();
-    expect(screen.queryByTestId("provider-connection-delete")).toBeNull();
-  });
-
-  it("shows Add / edit / delete controls when management is enabled", () => {
-    renderManager({ canManage: true });
-
     expect(screen.getByTestId("add-provider-connection")).toBeInTheDocument();
     expect(screen.getByTestId("provider-connection-edit")).toBeInTheDocument();
     expect(
@@ -104,7 +89,6 @@ describe("ProviderConnectionsManager", () => {
     // a mixed set of linked/unlinked profiles without crashing and still
     // renders the row.
     renderManager({
-      canManage: false,
       profiles: [
         { provider_connection_id: "conn-1" },
         { provider_connection_id: "conn-1" },
@@ -119,14 +103,14 @@ describe("ProviderConnectionsManager", () => {
 
   it("renders the empty state when there are no connections", () => {
     connectionsState.data = [];
-    renderManager({ canManage: true });
+    renderManager();
 
     expect(screen.queryByText("OpenAI shared key")).toBeNull();
     expect(screen.getByTestId("add-provider-connection")).toBeInTheDocument();
   });
 
   it("opens the create modal on Add", async () => {
-    renderManager({ canManage: true });
+    renderManager();
     const user = userEvent.setup();
 
     await user.click(screen.getByTestId("add-provider-connection"));
@@ -138,7 +122,7 @@ describe("ProviderConnectionsManager", () => {
   });
 
   it("opens the edit modal hydrated with the clicked connection", async () => {
-    renderManager({ canManage: true });
+    renderManager();
     const user = userEvent.setup();
 
     await user.click(screen.getByTestId("provider-connection-edit"));
@@ -151,7 +135,7 @@ describe("ProviderConnectionsManager", () => {
   });
 
   it("opens the delete confirmation modal on delete", async () => {
-    renderManager({ canManage: true });
+    renderManager();
     const user = userEvent.setup();
 
     await user.click(screen.getByTestId("provider-connection-delete"));
@@ -162,7 +146,7 @@ describe("ProviderConnectionsManager", () => {
   });
 
   it("deletes the connection on confirm", async () => {
-    renderManager({ canManage: true });
+    renderManager();
     const user = userEvent.setup();
 
     await user.click(screen.getByTestId("provider-connection-delete"));
