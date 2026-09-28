@@ -219,8 +219,7 @@ def create_template_database(server: PostgresServer) -> str:
 def _run_migrations(server: PostgresServer, database: str) -> None:
     # Run alembic out of process: importing ``migrations/env.py`` here would
     # reconfigure logging for the whole pytest session (alembic.ini sets the
-    # root logger to DEBUG) and cache an engine built from the ambient
-    # environment.
+    # root logger to DEBUG).
     env = {
         key: value
         for key, value in os.environ.items()
