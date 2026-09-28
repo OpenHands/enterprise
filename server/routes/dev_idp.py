@@ -1,29 +1,23 @@
-"""Development-only insecure IDP — email-only login for self-hosted/dev setups.
+"""Development-only insecure IDP — pretends to be a regular OAuth v2 IDP.
 
 This module provides a login path that does **not** depend on Keycloak or any
 external identity provider. It is intended for self-hosted / trial installs
 that have no real IDP configured yet.
 
-How it works:
+**Design**: the dev IDP plugs into the existing OAuth v2 flow as if it were a
+regular IDP provider. When no real IDP is configured in ``oauth_providers``
+and the deployment is self-hosted:
 
-* The user submits an email address (no password, no validation).
-* A deterministic ``user_id`` is derived from the email via
-  ``uuid.uuid5(NAMESPACE_DNS, email)`` (SHA-1 based, stable across logins).
-* If a ``User`` row already exists for that id (or for that email), it is
-  reused so settings survive across logins and across a later switch to a
-  real IDP (the existing ``allow_match_by_email`` / email-match mechanism
-  in ``oauth_v2._resolve_or_create_user`` handles the IDP swap-over).
-* The same small JWT cookie (``openhands_auth``) used by the OAuth v2 path
-  is set, so downstream middleware and ``SaasUserAuth`` treat the session
-  identically to an OAuth v2 cookie session.
+* ``OAuthProviderStore.get_first_idp()`` returns a synthetic ``DevIdpProvider``
+  sentinel (id = ``DEV_IDP_PROVIDER_ID``).
+* ``GET /oauth/idp-login`` redirects to ``/oauth/{DEV_IDP_PROVIDER_ID}/login``,
+  which is intercepted by this module to serve an HTML email-entry form.
+* The form ``POST``s to ``/oauth/{DEV_IDP_PROVIDER_ID}/callback``, which
+  completes the login (user creation, cookie, redirect) using the same
+  ``openhands_auth`` JWT cookie as the real OAuth v2 callback.
 
-Availability rules:
-
-* Only available when ``DEPLOYMENT_MODE == 'self_hosted'``.
-* Automatically disabled once a real IDP is configured in the
-  ``oauth_providers`` table (any row with ``is_idp = True``). At that point
-  the status endpoint returns ``{"enabled": false}`` and the login endpoint
-  returns ``404``.
+When a real IDP is configured, the sentinel is not returned and the dev IDP
+endpoints return ``404``.
 
 **This IDP is intentionally insecure.** It must never be enabled on cloud
 (``app.all-hands.dev``) or any deployment where security matters.
@@ -32,15 +26,16 @@ Availability rules:
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
-from pydantic import BaseModel, EmailStr
+from fastapi import APIRouter, Form, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import EmailStr
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.oauth_v2_refresh import (
-    COOKIE_MAX_AGE_CAP_SECONDS,
     create_oauth_v2_cookie_payload,
     sign_oauth_v2_cookie,
 )
@@ -50,13 +45,37 @@ from storage.default_org_service import DefaultOrgBootstrapService
 from storage.oauth_provider_store import OAuthProviderStore
 from storage.user_store import UserStore
 
-dev_idp_router = APIRouter(prefix='/api/dev-idp', tags=['Dev IDP'])
+dev_idp_router = APIRouter(prefix='/oauth', tags=['Dev IDP'])
+
+# Sentinel provider ID used by the dev IDP.  Negative so it can never collide
+# with a real DB row (Identity columns start at 1).
+DEV_IDP_PROVIDER_ID = -1
+DEV_IDP_CATEGORY = 'dev_idp'
 
 # Fixed namespace for deterministic user-id derivation from email.
-# Using a custom namespace instead of the well-known DNS namespace keeps
-# dev-IDP user ids from colliding with any uuid5(NAMESPACE_DNS, ...) that
-# an external system might independently derive.
 _DEV_IDP_NAMESPACE = uuid.UUID('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
+
+
+@dataclass(frozen=True)
+class DevIdpProvider:
+    """Sentinel that quacks like ``OAuthProvider`` for the OAuth v2 flow.
+
+    Returned by ``OAuthProviderStore.get_first_idp()`` when no real IDP is
+    configured on a self-hosted deployment. The OAuth v2 routes check
+    ``provider.id == DEV_IDP_PROVIDER_ID`` to intercept and redirect to the
+    dev IDP email-entry form instead of building an external OAuth URL.
+    """
+
+    id: int = DEV_IDP_PROVIDER_ID
+    provider_category: str = DEV_IDP_CATEGORY
+    display_name: str = 'Development IDP'
+    is_idp: bool = True
+    authorization_url: str | None = None
+    token_url: str | None = None
+    userinfo_url: str | None = None
+    scopes: list[str] | None = None
+    client_id: str = 'dev-idp'
+    client_secret: dict[str, str] | None = None
 
 
 def derive_dev_idp_user_id(email: str) -> str:
@@ -85,47 +104,148 @@ async def is_dev_idp_available() -> bool:
     return len(idp_providers) == 0
 
 
-@dev_idp_router.get('/status')
-async def dev_idp_status() -> JSONResponse:
-    """Return whether the dev IDP login path is available.
+async def get_dev_idp_if_available() -> DevIdpProvider | None:
+    """Return the dev IDP sentinel if available, else ``None``.
 
-    The frontend uses this to decide whether to show the email-only login
-    form on the login page.
+    Used by ``OAuthProviderStore.get_first_idp()`` and ``get_idp_providers()``
+    to make the dev IDP appear as a regular IDP when no real one is configured.
     """
-    enabled = await is_dev_idp_available()
-    return JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content={'enabled': enabled},
-    )
+    if await is_dev_idp_available():
+        return DevIdpProvider()
+    return None
 
 
-class DevIdpLoginRequest(BaseModel):
-    """Payload for ``POST /api/dev-idp/login``.
-
-    ``email`` is the only required field. ``redirect_url`` is optional and
-    defaults to ``/`` (the app root).
-    """
-
-    email: EmailStr
-    redirect_url: str = '/'
+def is_dev_idp_provider_id(provider_id: int) -> bool:
+    """Whether ``provider_id`` refers to the dev IDP sentinel."""
+    return provider_id == DEV_IDP_PROVIDER_ID
 
 
-@dev_idp_router.post('/login')
-async def dev_idp_login(request: Request, body: DevIdpLoginRequest):
-    """Log in via the development IDP (email-only, no password).
+# ── dev IDP login form (served as HTML so it works without frontend changes) ─
 
-    Derives a deterministic user id from the email, resolves or creates the
-    ``User`` row, auto-accepts TOS (dev mode), and sets the ``openhands_auth``
-    JWT cookie — the same cookie used by the OAuth v2 path.
 
-    Returns a JSON response with ``redirect_url`` so the frontend can
-    navigate the browser to the user's intended destination.
+_LOGIN_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenHands — Development Login</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #1a1a1a; color: #fff; display: flex; align-items: center;
+            justify-content: center; min-height: 100vh; margin: 0; }}
+    .card {{ background: #262626; border-radius: 12px; padding: 40px;
+             max-width: 400px; width: 100%; box-sizing: border-box; }}
+    h1 {{ font-size: 24px; font-weight: 500; margin: 0 0 8px; }}
+    p.desc {{ color: #a3a3a3; font-size: 14px; margin: 0 0 24px; }}
+    label {{ display: block; font-size: 14px; color: #a3a3a3; margin-bottom: 6px; }}
+    input {{ width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 6px;
+             border: 1px solid #404040; background: transparent; color: #fff;
+             font-size: 14px; outline: none; }}
+    input:focus {{ border-color: #6366f1; }}
+    button {{ width: 100%; margin-top: 20px; padding: 10px; border-radius: 6px;
+              border: none; background: #fff; color: #1a1a1a; font-size: 14px;
+              font-weight: 500; cursor: pointer; }}
+    button:hover {{ opacity: 0.9; }}
+    button:disabled {{ opacity: 0.5; cursor: not-allowed; }}
+    .warning {{ margin-top: 20px; padding: 12px; border-radius: 6px;
+                background: rgba(250, 204, 21, 0.1); border: 1px solid rgba(250, 204, 21, 0.3);
+                color: #facc15; font-size: 12px; line-height: 1.4; }}
+    .error {{ margin-top: 16px; padding: 10px; border-radius: 6px;
+              background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3);
+              color: #ef4444; font-size: 13px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Development Login</h1>
+    <p class="desc">Enter your email to sign in. No password required.</p>
+    <form method="POST" action="{callback_url}">
+      <input type="hidden" name="state" value="{state}">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" placeholder="you@example.com"
+             required autofocus>
+      <button type="submit">Sign In</button>
+    </form>
+    <div class="warning">
+      Development mode: authentication is not secure. Configure a real
+      identity provider for production use.
+    </div>
+  </div>
+</body>
+</html>"""
+
+
+@dev_idp_router.get(f'/{DEV_IDP_PROVIDER_ID}/login')
+async def dev_idp_login_form(
+    request: Request,
+    redirect_url: str = '',
+    mode: str = 'login',
+    state: str = '',
+):
+    """Serve the dev IDP email-entry HTML form.
+
+    This route intercepts ``/oauth/{DEV_IDP_PROVIDER_ID}/login`` (which the
+    OAuth v2 ``/oauth/idp-login`` redirect targets) and serves a self-contained
+    HTML page with an email input. The form POSTs to the callback endpoint.
+
+    Returns ``404`` if the dev IDP is not available (real IDP configured or
+    cloud deployment).
     """
     if not await is_dev_idp_available():
-        return _dev_idp_unavailable_error()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Development IDP is not available',
+        )
 
-    email = body.email.strip().lower()
-    user_id = derive_dev_idp_user_id(email)
+    # Build the callback URL, preserving redirect_url and mode.
+    web_url = get_web_url(request)
+    callback_url = f'{web_url}/oauth/{DEV_IDP_PROVIDER_ID}/callback'
+    params: dict[str, str] = {}
+    if redirect_url:
+        params['redirect_url'] = redirect_url
+    if mode and mode != 'login':
+        params['mode'] = mode
+    if params:
+        callback_url = f'{callback_url}?{urlencode(params)}'
+
+    # Pass through any state from the idp-login redirect.
+    state_value = state or ''
+
+    html = _LOGIN_HTML_TEMPLATE.format(
+        callback_url=callback_url,
+        state=state_value,
+    )
+    return HTMLResponse(content=html)
+
+
+# ── dev IDP callback (completes login, mirrors the OAuth v2 callback) ──────
+
+
+@dev_idp_router.post(f'/{DEV_IDP_PROVIDER_ID}/callback')
+async def dev_idp_callback(
+    request: Request,
+    email: EmailStr = Form(...),
+    state: str = Form(''),
+    redirect_url: str = '',
+    mode: str = 'login',
+):
+    """Complete the dev IDP login.
+
+    Receives the email from the HTML form, derives a deterministic user id,
+    resolves or creates the ``User`` row, auto-accepts TOS (dev mode), and
+    sets the ``openhands_auth`` JWT cookie — the same cookie used by the real
+    OAuth v2 callback. Redirects to the app (or onboarding/TOS page).
+
+    Returns ``404`` if the dev IDP is not available.
+    """
+    if not await is_dev_idp_available():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Development IDP is not available',
+        )
+
+    email_str = str(email).strip().lower()
+    user_id = derive_dev_idp_user_id(email_str)
 
     # Try to resolve an existing user — first by the derived id, then by
     # email. The email fallback handles users who were created by a real
@@ -133,7 +253,7 @@ async def dev_idp_login(request: Request, body: DevIdpLoginRequest):
     # are now logging in through the dev IDP.
     user = await UserStore.get_user_by_id(user_id)
     if user is None:
-        user_by_email = await UserStore.get_user_by_email(email)
+        user_by_email = await UserStore.get_user_by_email(email_str)
         if user_by_email is not None:
             user_id = str(user_by_email.id)
             user = user_by_email
@@ -141,16 +261,16 @@ async def dev_idp_login(request: Request, body: DevIdpLoginRequest):
     is_new_user = user is None
     if is_new_user:
         user_info = {
-            'email': email,
+            'email': email_str,
             'email_verified': True,
-            'preferred_username': email,
+            'preferred_username': email_str,
         }
         created = await UserStore.create_user(user_id, user_info)
         if created is None:
-            logger.error('dev_idp:failed_to_create_user', extra={'email': email})
-            return JSONResponse(
+            logger.error('dev_idp:failed_to_create_user', extra={'email': email_str})
+            raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={'error': 'Failed to create user'},
+                detail='Failed to create user',
             )
         user = created
         user_id = str(user.id)
@@ -159,10 +279,10 @@ async def dev_idp_login(request: Request, body: DevIdpLoginRequest):
 
     # Auto-accept TOS in dev mode — the dev IDP is for trial/dev only and
     # requiring TOS acceptance adds friction without security value.
-    # Also set analytics consent so the identify call is not a no-op.
     has_accepted_tos = user.accepted_tos is not None
     if not has_accepted_tos:
         await _accept_tos_for_dev_user(user_id)
+        has_accepted_tos = True
 
     await UserStore.record_login(user_id)
 
@@ -181,34 +301,31 @@ async def dev_idp_login(request: Request, body: DevIdpLoginRequest):
 
     # Best-effort analytics identify — never block login on analytics.
     try:
-        await _track_dev_idp_login(user_id, email)
+        await _track_dev_idp_login(user_id, email_str)
     except Exception:
         logger.exception('dev_idp:analytics_failed', stack_info=True)
 
     web_url = get_web_url(request)
-    redirect_url = body.redirect_url or '/'
+    final_redirect_url = redirect_url or '/'
 
     # Check onboarding redirect (self-hosted: only the first owner/super-admin).
     should_onboard = await _should_redirect_to_onboarding_dev(user_id, user)
     if should_onboard:
         from server.routes.auth import _build_onboarding_redirect
 
-        redirect_url = _build_onboarding_redirect(redirect_url, web_url)
+        final_redirect_url = _build_onboarding_redirect(final_redirect_url, web_url)
     else:
         from server.routes.auth import _build_cross_app_redirect_url
 
-        redirect_url = _build_cross_app_redirect_url(redirect_url, web_url)
+        final_redirect_url = _build_cross_app_redirect_url(final_redirect_url, web_url)
 
-    response = JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content={'redirect_url': redirect_url},
-    )
+    response = RedirectResponse(final_redirect_url, status_code=302)
 
     _set_dev_idp_cookie(
         request=request,
         response=response,
         user_id=user_id,
-        accepted_tos=True,
+        accepted_tos=has_accepted_tos,
         secure=web_url.startswith('https'),
     )
 
@@ -219,9 +336,78 @@ async def dev_idp_login(request: Request, body: DevIdpLoginRequest):
     return response
 
 
+# Also support GET on the callback for convenience (e.g. direct testing).
+@dev_idp_router.get(f'/{DEV_IDP_PROVIDER_ID}/callback')
+async def dev_idp_callback_get(
+    request: Request,
+    email: str = '',
+    redirect_url: str = '',
+    mode: str = 'login',
+):
+    """GET variant of the dev IDP callback for direct testing.
+
+    Allows ``GET /oauth/-1/callback?email=dev@example.com`` for quick
+    browser-based testing without rendering the form.
+    """
+    if not email:
+        # Redirect to the login form.
+        web_url = get_web_url(request)
+        form_url = f'{web_url}/oauth/{DEV_IDP_PROVIDER_ID}/login'
+        params: dict[str, str] = {}
+        if redirect_url:
+            params['redirect_url'] = redirect_url
+        if params:
+            form_url = f'{form_url}?{urlencode(params)}'
+        return RedirectResponse(form_url, status_code=302)
+
+    # Reuse the POST handler logic by calling it directly.
+    from pydantic import EmailStr as _EmailStr
+
+    # Validate email format.
+    try:
+        validated = _EmailStr(email)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Invalid email format',
+        )
+
+    return await dev_idp_callback(
+        request=request,
+        email=validated,
+        state='',
+        redirect_url=redirect_url,
+        mode=mode,
+    )
+
+
+# ── status endpoint (for config injection) ─────────────────────────────────
+
+
+def _dev_idp_status_router() -> APIRouter:
+    """Create a separate router for the status endpoint at /api/dev-idp/status."""
+    router = APIRouter(prefix='/api/dev-idp', tags=['Dev IDP'])
+
+    @router.get('/status')
+    async def dev_idp_status() -> JSONResponse:
+        enabled = await is_dev_idp_available()
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={'enabled': enabled},
+        )
+
+    return router
+
+
+dev_idp_status_router = _dev_idp_status_router()
+
+
+# ── helpers ────────────────────────────────────────────────────────────────
+
+
 def _set_dev_idp_cookie(
     request: Request,
-    response: JSONResponse | RedirectResponse,
+    response: RedirectResponse,
     user_id: str,
     accepted_tos: bool,
     secure: bool,
@@ -232,6 +418,8 @@ def _set_dev_idp_cookie(
     token expiry (the dev IDP has no external token to refresh). The cookie
     carries only ``user_id``, ``accepted_tos``, and ``iat``.
     """
+    from server.auth.oauth_v2_refresh import COOKIE_MAX_AGE_CAP_SECONDS
+
     max_age_seconds = COOKIE_MAX_AGE_CAP_SECONDS
     payload = create_oauth_v2_cookie_payload(
         user_id,
@@ -247,19 +435,6 @@ def _set_dev_idp_cookie(
         secure=secure,
         httponly=True,
         samesite=get_cookie_samesite(),
-    )
-
-
-def _dev_idp_unavailable_error() -> JSONResponse:
-    return JSONResponse(
-        status_code=status.HTTP_404_NOT_FOUND,
-        content={
-            'error': (
-                'Development IDP is not available. '
-                'It is only enabled on self-hosted deployments with no '
-                'real IDP configured.'
-            )
-        },
     )
 
 
