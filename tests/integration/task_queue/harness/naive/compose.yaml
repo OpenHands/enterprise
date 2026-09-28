@@ -12,6 +12,7 @@ x-app: &app
     POC_INTERVAL_SECONDS: ${POC_INTERVAL_SECONDS:-10}
     POC_JOB_SECONDS: ${POC_JOB_SECONDS:-1}
     POC_GUARD: ${POC_GUARD:-0}
+    POC_DRAIN: ${POC_DRAIN:-0}
 
 services:
   migrate:

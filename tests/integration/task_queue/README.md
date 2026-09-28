@@ -21,7 +21,8 @@ occurrences.
 
 Without a `candidate/` directory, the tests run the harness's negative control,
 `harness/naive`: an in-process loop with no coordination. Set `POC_GUARD=1` to
-add the run-once guard, and `TQ_RESULTS_NAME` to record that run separately:
+add the run-once guard, `POC_DRAIN=1` to wait for running jobs on shutdown (the P7
+positive control), and `TQ_RESULTS_NAME` to record a run separately:
 
 ```bash
 uv run --no-sync python -m pytest tests/integration/task_queue \
@@ -38,6 +39,7 @@ POC_GUARD=1 TQ_RESULTS_NAME=naive-guarded uv run --no-sync python -m pytest \
 | P2 — clock skew | same | As P1, with the skew service's clock 2 s ahead (libfaketime) and a 0.5 s job, so a plain lock is already released when the other replica fires |
 | P3 — replica dies mid-job | `test_p3_replica_crash.py` | 60-second schedule, 30-second job; kill the replica running it. Records `lost`, `retried` or `resumed`. `restarted` brings the same service back after 10 s; `replaced` leaves it dead. Fails only if the occurrence completes twice or the schedule stops |
 | P4 — schema through Alembic | `test_p4_schema.py` | The `migrate` service applies the candidate's schema with Alembic and exits 0; replicas then run jobs as `poc_app`, a role without CREATE, so any runtime DDL fails; every table in `expected_tables` exists |
+| P7 — rolling deploy | `test_p7_rolling_deploy.py` | 60-second schedule, 30-second job; stop the replica running it with `docker compose stop -t 10` and `-t 60` (SIGTERM, then SIGKILL at the deadline). Records `drained` (the stopping replica finished it), `retried`, `resumed` or `lost`, the exit code (137 = killed at the deadline), and how long the stop took. A sole job runner is started again, as a one-replica Deployment would. Fails only if the occurrence completes twice or the schedule stops |
 | P6 — footprint | `test_p6_footprint.py` | Records workloads beyond the app replicas, and idle memory and CPU per service. No pass criterion |
 
 Evidence goes to `results/<name>.json`, and container logs to

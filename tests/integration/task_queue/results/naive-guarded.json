@@ -84,5 +84,41 @@
         "memory": "35.53MiB"
       }
     }
+  },
+  "P7-grace-10s": {
+    "exit_code": 0,
+    "grace_seconds": 10,
+    "killed_at_deadline": false,
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T20:36:36Z",
+    "restarted_as_sole_runner": false,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-a",
+        ""
+      ]
+    ],
+    "stop_took_seconds": 0.5,
+    "victim": "replica-a"
+  },
+  "P7-grace-60s": {
+    "exit_code": 0,
+    "grace_seconds": 60,
+    "killed_at_deadline": false,
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T20:40:37Z",
+    "restarted_as_sole_runner": false,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-a",
+        ""
+      ]
+    ],
+    "stop_took_seconds": 1.4,
+    "victim": "replica-a"
   }
 }
