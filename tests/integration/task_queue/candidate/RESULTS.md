@@ -15,6 +15,8 @@ The raw evidence is in `results/supercronic.json` and
 | P3: killed mid-job, left dead | **Fail**, outcome `lost`, `next_occurrence_ran: false`. With the only scheduler dead, the schedule stops | not run |
 | P4: schema through Alembic | Pass. `migrate` exited 0, there is no candidate schema, and jobs ran as `poc_app` | not run |
 | P6: footprint | 1 extra workload (`cron`), 8.1 MiB and 0% CPU when idle. Replicas use about 28 MiB each | not run |
+| P7: rolling stop, `-t 10` | Pass, outcome `lost`. SIGKILLed at the deadline (exit 137, stop took 10.3 s). The restarted container ran the next occurrence | not run |
+| P7: rolling stop, `-t 60` | Pass, outcome `drained`. The job finished, then Supercronic exited 0 (stop took 26.9 s) | not run |
 
 ## Setup
 
@@ -66,6 +68,16 @@ multi-replica candidates but guarantees a failure for a single-scheduler one.
 The finding still holds: availability depends entirely on the orchestrator
 restarting the one pod. While it is down, any occurrences that fall in that
 window are skipped, not caught up.
+
+## Shutdown (P7)
+
+This is the default setup. Supercronic has no flag that changes shutdown:
+`-help` lists none, and `-overlapping` only affects scheduling. On SIGTERM it
+stops starting new jobs, waits for the running ones, then exits 0. With a
+10 s grace period, the 30 s job was SIGKILLed along with the container and
+lost. With 60 s, it drained. The grace period is the only knob. Set Compose
+`stop_grace_period` or Kubernetes `terminationGracePeriodSeconds` above the
+longest job, or accept that a deploy can drop the run in progress.
 
 ## Desk-research claims
 
