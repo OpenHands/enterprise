@@ -140,3 +140,14 @@ look the same. The docs' 10-minute cron would push recovery to about 10 minutes.
   a starting worker prunes stale workers and `worker_id` becomes NULL. So jobs
   are still found after their worker has been pruned. Recovery time depends on
   how often the retry task runs; the documented 10-minute cron is slow.
+
+## P5 — Kubernetes (kind), 2-replica Deployment
+
+| Check | Result |
+|---|---|
+| P1 once per occurrence | Pass (12, no doubles, none missed) |
+| P3 pod force-deleted, replaced under a new name | `retried` on the surviving pod, through the stalled-job retry |
+| P7 `rollout restart`, 10 s grace | `retried` |
+| P7 `rollout restart`, 60 s grace | `drained` |
+
+No occurrence completed twice and the schedule continued in every case. Kubernetes' new pod names change nothing for Procrastinate: recovery keys on the stalled worker's heartbeat, not on its identity.
