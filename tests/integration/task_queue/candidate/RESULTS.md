@@ -9,7 +9,7 @@ RedBeat 2.4.2 for the second variant. Run on Docker (OrbStack, ARM64),
 | Check | `candidate/` (one Beat) | `candidate_redbeat/` (beat-a + beat-b, RedBeat) |
 |---|---|---|
 | P1 — once per occurrence | Pass: 12 occurrences, no doubles, none missed | Pass: 12 occurrences, no doubles, none missed |
-| P2 — clock skew (+2 s) | Skipped: single scheduler | **Not a valid run.** Recorded as pass, but beat-b crashed on startup under libfaketime (see Harness issue), so only beat-a scheduled |
+| P2 — clock skew (+2 s) | Skipped: single scheduler | Pass: 12 occurrences, no doubles, none missed. beat-b (clock +2 s, confirmed in its log timestamps) held the lock and sent all 12; beat-a stood by. Rerun after the harness's libfaketime fix |
 | P3 — worker killed mid-job, restarted | `lost` (victim worker-a); next occurrence ran | `lost` (victim worker-a); next occurrence ran |
 | P3 — worker killed mid-job, left dead | `lost` (victim worker-a); next occurrence ran | `lost` (victim worker-b); next occurrence ran. First attempt hit the harness's old Postgres healthcheck race (`migrate` exit 1); rerun after rebasing onto the fix |
 | P4 — schema through Alembic | Pass: no tables, `migrate` is a no-op, exit 0 | Pass: same |
@@ -104,13 +104,12 @@ the pod would restart and re-create the static entries from `beat_schedule`.
   same pod, and is lost when the pod is deleted or rescheduled. These tests ran
   with no AOF and no RDB, which matches the pod-replacement case.
 
-## Harness issue
+## Note on P2
 
-libfaketime 0.9.10 in `tq-poc-base` breaks Python 3.12's `time.sleep`:
-`LD_PRELOAD=/usr/local/lib/libfaketime.so.1 FAKETIME=+2s FAKETIME_DONT_FAKE_MONOTONIC=1 python -c "import time; time.sleep(0.1)"`
-raises `OSError: [Errno 22] Invalid argument` (with or without
-`FAKETIME_DONT_FAKE_MONOTONIC`). Celery Beat sleeps with `time.sleep`, so
-beat-b crashed right after starting and P2 ran with beat-a only. The naive
-control uses `asyncio.sleep` and doesn't hit this. P2 also can't catch the
-problem, because `measured_clock_offset_seconds` only covers job services, and
-here the skewed service is a scheduler.
+The first P2 run was invalid: with `FAKETIME_DONT_FAKE_MONOTONIC=1`, libfaketime
+made Python's `time.sleep` raise `OSError: [Errno 22]`, so beat-b crashed on
+start. After the harness fix (`"0"`, plus a check that the skewed service is
+still running), beat-b stayed up. Only the lock holder schedules, so the skew
+can't produce a second firing. The one case this run didn't exercise is a lock
+handover between Beats with different clocks. RedBeat keeps `last_run_at` in
+Redis, so a skewed successor could fire an occurrence early.

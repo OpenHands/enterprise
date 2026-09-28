@@ -17,13 +17,14 @@
     },
     "missing": [],
     "occurrences": 12,
-    "recorded_at": "2026-09-28T19:00:08Z",
+    "recorded_at": "2026-09-28T19:26:03Z",
     "replicas_seen": [
       "worker-a",
       "worker-b"
     ],
     "skew": "+2s",
-    "skewed_service": "beat-b"
+    "skewed_service": "beat-b",
+    "skewed_service_running": true
   },
   "P3-replaced": {
     "next_occurrence_ran": true,
