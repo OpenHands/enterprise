@@ -41,3 +41,19 @@ async def test_catalog_is_not_found_on_an_sdk_without_one(monkeypatch):
         await get_tool_catalog(user_id='user')
 
     assert excinfo.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_catalog_skips_usability_probes_when_the_sdk_allows(monkeypatch):
+    calls = []
+
+    def list_tool_catalog(*, check_usable=True):
+        calls.append(check_usable)
+        return [_Entry(name='terminal', usable=False)]
+
+    monkeypatch.setattr(registry, 'list_tool_catalog', list_tool_catalog, raising=False)
+
+    response = await get_tool_catalog(user_id='user')
+
+    assert calls == [False]
+    assert response == {'tools': [{'name': 'terminal', 'usable': True}]}

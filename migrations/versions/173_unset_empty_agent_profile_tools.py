@@ -1,12 +1,10 @@
 """Store agent profiles' empty ``tools`` as unset.
 
-Cloud launched every agent profile with the standard toolset, whatever its
-``tools`` said. Launches now honour ``tools``, where ``[]`` means a bare agent,
-so the rows saved as ``[]`` so far are rewritten to ``null`` to keep launching
-with the standard set.
+``[]`` selects no tools while ``null`` selects the standard set; existing
+``[]`` rows were saved meaning the standard set.
 
-Revision ID: 172
-Revises: 171
+Revision ID: 173
+Revises: 172
 Create Date: 2026-09-28 00:00:00.000000
 """
 
@@ -16,8 +14,8 @@ from typing import Any, Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '172'
-down_revision: str | None = '171'
+revision: str = '173'
+down_revision: str | None = '172'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -58,5 +56,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # ``null`` and the old ``[]`` launched the same way on cloud.
     pass

@@ -2812,6 +2812,37 @@ class TestLiveStatusAppConversationService:
         assert 'terminal' not in names
         assert len([n for n in names if n in {'switch_llm', 'SwitchLLMTool'}]) == 1
 
+    @pytest.mark.parametrize('agent_type', [AgentType.DEFAULT, AgentType.PLAN])
+    @pytest.mark.asyncio
+    async def test_build_request_resolves_a_selected_switch_llm_once(self, agent_type):
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                tools=[Tool(name='terminal'), Tool(name='switch_llm')],
+            ),
+            agent_type=agent_type,
+        )
+
+        spec_names = [t.name for t in result.agent.tools]
+        names = spec_names + list(result.agent.include_default_tools)
+        assert len([n for n in names if n in {'switch_llm', 'SwitchLLMTool'}]) == 1
+        assert 'switch_llm' not in spec_names
+
+    @pytest.mark.asyncio
+    async def test_build_request_keeps_a_parameterised_builtin_over_its_default(self):
+        finish = Tool(name='finish', params={'response_schema': {'type': 'object'}})
+
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                tools=[Tool(name='terminal'), finish],
+            )
+        )
+
+        assert [t.name for t in result.agent.tools] == ['terminal', 'FinishTool']
+        assert result.agent.tools[1].params == finish.params
+        assert 'FinishTool' not in result.agent.include_default_tools
+
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
     )
@@ -2851,7 +2882,7 @@ class TestLiveStatusAppConversationService:
     )
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
+        return_value=[Tool(name='task_tool_set')],
     )
     @pytest.mark.asyncio
     async def test_build_request_passes_enable_sub_agents_true(

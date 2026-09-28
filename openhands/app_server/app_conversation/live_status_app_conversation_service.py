@@ -137,6 +137,7 @@ from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
+from openhands.sdk.tool import defaults as tool_defaults
 from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES, SwitchLLMTool
 from openhands.sdk.tool.defaults import SUB_AGENT_TOOL_NAME
 from openhands.sdk.utils.redact import (
@@ -160,11 +161,57 @@ _logger = logging.getLogger(__name__)
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
 
 
+def _canonical_tool_name(name: str) -> str:
+    canonical = getattr(tool_defaults, 'canonical_tool_name', None)
+    if canonical is not None:
+        return canonical(name)
+    return getattr(BUILT_IN_TOOL_CLASSES.get(name), 'name', name)
+
+
 def _selects_tool(tools: Sequence[Tool], name: str) -> bool:
-    """Whether ``tools`` selects ``name``, a built-in by class or tool name."""
-    return any(
-        getattr(BUILT_IN_TOOL_CLASSES.get(tool.name), 'name', tool.name) == name
-        for tool in tools
+    canonical = _canonical_tool_name(name)
+    return any(_canonical_tool_name(tool.name) == canonical for tool in tools)
+
+
+def _with_builtin_class_names(tools: Sequence[Tool]) -> list[Tool]:
+    """Spell built-ins by class name, the only spelling every SDK resolves."""
+    class_names = {
+        getattr(cls, 'name'): cls_name
+        for cls_name, cls in BUILT_IN_TOOL_CLASSES.items()
+    }
+    specs = []
+    for tool in tools:
+        class_name = class_names.get(_canonical_tool_name(tool.name))
+        specs.append(
+            tool.model_copy(update={'name': class_name}) if class_name else tool
+        )
+    return specs
+
+
+def _without_duplicate_tools(agent: Agent) -> Agent:
+    """Keep one spec per tool across ``tools`` and ``include_default_tools``."""
+    defaults = {
+        _canonical_tool_name(name): name for name in agent.include_default_tools
+    }
+    include_default_tools = list(agent.include_default_tools)
+    tools: list[Tool] = []
+    seen: set[str] = set()
+    for tool in agent.tools:
+        canonical = _canonical_tool_name(tool.name)
+        if canonical in seen:
+            continue
+        if canonical in defaults:
+            if not tool.params:
+                continue
+            include_default_tools.remove(defaults[canonical])
+        seen.add(canonical)
+        tools.append(tool)
+    if tools == list(agent.tools) and include_default_tools == list(
+        agent.include_default_tools
+    ):
+        return agent
+    return agent.model_copy(
+        update={'tools': tools, 'include_default_tools': include_default_tools}
     )
 
 
@@ -2271,10 +2318,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     enable_sub_agents=user.agent_settings.enable_sub_agents,
                 )
             else:
-                tools = list(profile_tools)
-            if _selects_tool(tools, SUB_AGENT_TOOL_NAME) or (
-                profile_tools is None and user.agent_settings.enable_sub_agents
-            ):
+                tools = _with_builtin_class_names(profile_tools)
+            if _selects_tool(tools, SUB_AGENT_TOOL_NAME):
                 agent_definitions = list(get_registered_agent_definitions())
 
         # --- build AgentSettings and create agent ---------------------------
@@ -2299,7 +2344,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'agent_context': AgentContext(**agent_context_kwargs),
             }
         )
-        agent = configured_agent_settings.create_agent()
+        agent = _without_duplicate_tools(configured_agent_settings.create_agent())
 
         agent = self._apply_server_agent_overrides(
             agent,
