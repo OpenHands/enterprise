@@ -61,20 +61,6 @@ _ProfileNames: TypeAlias = list[str]
 _ProfileSummaries: TypeAlias = list[dict[str, Any]]
 
 
-def _unset_legacy_empty_tools(raw: Any) -> Any:
-    """Treat a stored pre-v3 ``tools: []`` as unset."""
-    # Cloud launched those with the standard set; the SDK reads [] as bare.
-    if (
-        isinstance(raw, dict)
-        and raw.get('agent_kind', 'openhands') == 'openhands'
-        and raw.get('tools') == []
-        and isinstance(raw.get('schema_version'), int)
-        and raw['schema_version'] < 3
-    ):
-        return {**raw, 'tools': None}
-    return raw
-
-
 class AgentProfiles(BaseModel):
     """Id-keyed collection of ``AgentProfile``\\ s + an org-default active pointer.
 
@@ -114,7 +100,7 @@ class AgentProfiles(BaseModel):
         valid: dict[str, Any] = {}
         for key, raw in value.items():
             try:
-                valid[key] = validate_agent_profile(_unset_legacy_empty_tools(raw))
+                valid[key] = validate_agent_profile(raw)
             except Exception as exc:  # noqa: BLE001 - schema drift is non-fatal
                 logger.warning('Skipping invalid agent profile %r: %s', key, exc)
         return valid

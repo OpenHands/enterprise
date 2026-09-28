@@ -460,7 +460,7 @@ async def materialize_agent_profile(
             mcp_config=mcp_config,
             available_skills=None,
             cipher=None,
-            **cloud_resolve_kwargs(),
+            **cloud_resolve_kwargs(resolve_agent_profile_dry_run),
         )
     except Exception as exc:
         # The dry-run is contractually total, but SDK contract drift (e.g. a

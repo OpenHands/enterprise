@@ -137,7 +137,7 @@ from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
-from openhands.sdk.tool.builtins import SwitchLLMTool
+from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES, SwitchLLMTool
 from openhands.sdk.tool.defaults import SUB_AGENT_TOOL_NAME
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
@@ -158,6 +158,14 @@ _conversation_info_type_adapter = TypeAdapter(list[ConversationInfo | None])
 _logger = logging.getLogger(__name__)
 
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
+
+
+def _selects_tool(tools: Sequence[Tool], name: str) -> bool:
+    """Whether ``tools`` selects ``name``, a built-in by class or tool name."""
+    return any(
+        getattr(BUILT_IN_TOOL_CLASSES.get(tool.name), 'name', tool.name) == name
+        for tool in tools
+    )
 
 
 def _resolve_title_llm_profile(user: UserInfo) -> str | None:
@@ -2253,10 +2261,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             if project_dir:
                 plan_path = self._compute_plan_path(project_dir, git_provider)
             tools = get_planning_tools(plan_path=plan_path)
-            if profile_tools and any(
-                tool.name in (SwitchLLMTool.name, SwitchLLMTool.__name__)
-                for tool in profile_tools
-            ):
+            if profile_tools and _selects_tool(profile_tools, SwitchLLMTool.name):
                 tools.append(Tool(name=SwitchLLMTool.__name__))
         else:
             register_builtins_agents(enable_browser=True)
@@ -2267,18 +2272,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
             else:
                 tools = list(profile_tools)
-            tool_names = {tool.name for tool in tools}
-            if SUB_AGENT_TOOL_NAME in tool_names or (
+            if _selects_tool(tools, SUB_AGENT_TOOL_NAME) or (
                 profile_tools is None and user.agent_settings.enable_sub_agents
             ):
                 agent_definitions = list(get_registered_agent_definitions())
-                if profile_tools is not None:
-                    # A sub-agent may not reach tools the profile left out.
-                    agent_definitions = [
-                        definition
-                        for definition in agent_definitions
-                        if set(definition.tools) <= tool_names
-                    ]
 
         # --- build AgentSettings and create agent ---------------------------
         # When enterprise persistent memory is enabled, stamp load_memory=True

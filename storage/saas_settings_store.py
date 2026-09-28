@@ -308,7 +308,7 @@ class SaasSettingsStore(SettingsStore):
                 mcp_config=mcp_config,
                 available_skills=None,
                 cipher=None,
-                **cloud_resolve_kwargs(),
+                **cloud_resolve_kwargs(resolve_agent_profile),
             )
 
             # Apply the cloud managed-key / base-url overlay to the resolved LLM

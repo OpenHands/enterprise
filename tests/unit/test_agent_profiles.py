@@ -142,26 +142,18 @@ class TestAgentProfilesContainer:
         )
         assert store.list_summaries() == []
 
-    @pytest.mark.parametrize('schema_version', [1, 2])
-    def test_legacy_empty_tools_load_as_the_standard_set(self, schema_version):
-        profile_id = str(uuid.uuid4())
-        store = AgentProfiles.model_validate(
-            {
-                'profiles': {
-                    profile_id: {
-                        'schema_version': schema_version,
-                        'id': profile_id,
-                        'name': 'mine',
-                        'revision': 3,
-                        'llm_profile_ref': 'gpt',
-                        'tools': [],
-                    }
-                },
-                'active': None,
-            }
-        )
 
-        assert store.load('mine').tools is None
+def test_cloud_resolve_kwargs_follow_the_given_resolver():
+    from storage.agent_profile_resolution import cloud_resolve_kwargs
+
+    def with_browser(profile, *, browser_available=False):
+        return None
+
+    def without_browser(profile):
+        return None
+
+    assert cloud_resolve_kwargs(with_browser) == {'browser_available': True}
+    assert cloud_resolve_kwargs(without_browser) == {}
 
 
 def test_load_agent_profiles_defaults_empty_and_degrades():
@@ -1105,7 +1097,6 @@ class TestPersistedVsResolvedSettingsView:
 
         with (
             self._store_patches(async_session_maker),
-            patch('storage.agent_profile_resolution.resolve_agent_profile', resolver),
             patch('storage.saas_settings_store.resolve_agent_profile', resolver),
         ):
             store = SaasSettingsStore(str(USER_ID), effective_org_id=org_id)

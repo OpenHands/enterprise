@@ -2816,7 +2816,7 @@ class TestLiveStatusAppConversationService:
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
     )
     @pytest.mark.asyncio
-    async def test_build_request_drops_sub_agents_needing_unselected_tools(
+    async def test_build_request_leaves_sub_agent_scoping_to_the_selected_tool_set(
         self, mock_definitions
     ):
         from openhands.sdk.subagent.schema import AgentDefinition
@@ -2828,16 +2828,20 @@ class TestLiveStatusAppConversationService:
             name='web-researcher', description='browses', tools=['browser_tool_set']
         )
         mock_definitions.return_value = [runner, researcher]
+        task_tool_set = Tool(
+            name='task_tool_set', params={'restrict_to_parent_tools': True}
+        )
 
         result = await self._build_request_with_agent_settings(
             OpenHandsAgentSettings(
                 llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
-                tools=[Tool(name='terminal'), Tool(name='task_tool_set')],
+                tools=[Tool(name='terminal'), task_tool_set],
                 enable_switch_llm_tool=False,
             )
         )
 
-        assert result.agent_definitions == [runner]
+        assert result.agent_definitions == [runner, researcher]
+        assert task_tool_set in result.agent.tools
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
