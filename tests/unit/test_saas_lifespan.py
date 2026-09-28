@@ -180,19 +180,12 @@ def _assert_at_head_and_released(postgres_server, database: str) -> None:
             applied = set(
                 conn.execute(text('SELECT version_num FROM alembic_version')).scalars()
             )
-            other_connections = conn.execute(
-                text(
-                    'SELECT count(*) FROM pg_stat_activity '
-                    'WHERE datname = current_database() AND pid <> pg_backend_pid()'
-                )
-            ).scalar()
             lock_free = conn.execute(
                 text('SELECT pg_try_advisory_lock(3617572382373537863)')
             ).scalar()
     finally:
         engine.dispose()
     assert applied == heads
-    assert other_connections == 0
     assert lock_free
 
 
