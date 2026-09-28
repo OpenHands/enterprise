@@ -27,12 +27,12 @@ from uuid import UUID
 
 from fastapi import Request
 from sqlalchemy import (
+    BigInteger,
     ColumnElement,
     DateTime,
     Float,
     ForeignKey,
     Identity,
-    Integer,
     Select,
     String,
     func,
@@ -164,15 +164,15 @@ class StoredConversationMetadata(Base):
 
     # Cost and token metrics
     accumulated_cost: Mapped[float | None] = mapped_column(default=0.0)
-    prompt_tokens: Mapped[int | None] = mapped_column(default=0)
-    completion_tokens: Mapped[int | None] = mapped_column(default=0)
-    total_tokens: Mapped[int | None] = mapped_column(default=0)
+    prompt_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    completion_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    total_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
     max_budget_per_task: Mapped[float | None] = mapped_column(nullable=True)
-    cache_read_tokens: Mapped[int | None] = mapped_column(default=0)
-    cache_write_tokens: Mapped[int | None] = mapped_column(default=0)
-    reasoning_tokens: Mapped[int | None] = mapped_column(default=0)
-    context_window: Mapped[int | None] = mapped_column(default=0)
-    per_turn_token: Mapped[int | None] = mapped_column(default=0)
+    cache_read_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    cache_write_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    reasoning_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    context_window: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    per_turn_token: Mapped[int | None] = mapped_column(BigInteger, default=0)
 
     # LLM model used for the conversation
     llm_model: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -215,8 +215,8 @@ class StoredConversationCostEvent(Base):
     # Attribution is nullable for rows written before these columns existed.
     usage_id: Mapped[str | None] = mapped_column(String, nullable=True)
     llm_model: Mapped[str | None] = mapped_column(String, nullable=True)
-    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 @dataclass
