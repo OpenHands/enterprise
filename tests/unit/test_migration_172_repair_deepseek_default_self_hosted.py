@@ -10,14 +10,14 @@ MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
     / 'migrations'
     / 'versions'
-    / '171_repair_deepseek_default_self_hosted.py'
+    / '172_repair_deepseek_default_self_hosted.py'
 )
-spec = spec_from_file_location('migration_171', MIGRATION_PATH)
+spec = spec_from_file_location('migration_172', MIGRATION_PATH)
 assert spec is not None and spec.loader is not None
-migration_171 = module_from_spec(spec)
-spec.loader.exec_module(migration_171)
+migration_172 = module_from_spec(spec)
+spec.loader.exec_module(migration_172)
 
-DEFAULT_MODEL = migration_171._MANAGED_DEFAULT  # 'openhands/deepseek-v4-flash'
+DEFAULT_MODEL = migration_172._MANAGED_DEFAULT  # 'openhands/deepseek-v4-flash'
 
 
 def _encrypt(payload: dict) -> str:
@@ -84,8 +84,8 @@ class _Bind:
 def _run(monkeypatch, org_rows, verified_rows=(), web_host='openhands.example.com'):
     bind = _Bind(org_rows, verified_rows)
     monkeypatch.setenv('WEB_HOST', web_host)
-    monkeypatch.setattr(migration_171, 'op', SimpleNamespace(get_bind=lambda: bind))
-    migration_171.upgrade()
+    monkeypatch.setattr(migration_172, 'op', SimpleNamespace(get_bind=lambda: bind))
+    migration_172.upgrade()
     return bind
 
 
@@ -101,29 +101,29 @@ def _delete_writes(bind):
 
 
 def test_classify_noop_when_no_default():
-    assert migration_171._classify({'profiles': {}}, None) == 'noop'
+    assert migration_172._classify({'profiles': {}}, None) == 'noop'
 
 
 def test_classify_noop_when_concrete_default():
     assert (
-        migration_171._classify(_profiles('anthropic/claude'), 'anthropic/claude')
+        migration_172._classify(_profiles('anthropic/claude'), 'anthropic/claude')
         == 'noop'
     )
 
 
 def test_classify_restore_when_bogus_default_and_byok_legacy():
     assert (
-        migration_171._classify(_profiles(DEFAULT_MODEL), 'anthropic/claude')
+        migration_172._classify(_profiles(DEFAULT_MODEL), 'anthropic/claude')
         == 'restore'
     )
 
 
 def test_classify_strip_when_bogus_default_and_no_legacy():
-    assert migration_171._classify(_profiles(DEFAULT_MODEL), None) == 'strip'
+    assert migration_172._classify(_profiles(DEFAULT_MODEL), None) == 'strip'
 
 
 def test_classify_review_when_bogus_default_and_managed_legacy():
-    assert migration_171._classify(_profiles(DEFAULT_MODEL), DEFAULT_MODEL) == 'review'
+    assert migration_172._classify(_profiles(DEFAULT_MODEL), DEFAULT_MODEL) == 'review'
 
 
 # ── WEB_HOST gate ────────────────────────────────────────────────────────────
