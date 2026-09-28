@@ -7,7 +7,7 @@
 # `python -m sync.<job>` and `alembic upgrade head` all run from /app.
 # Python dependencies are installed with uv from the committed uv.lock.
 ARG OPENHANDS_BUILD_VERSION=dev
-FROM node:26.9-trixie-slim AS frontend-builder
+FROM node:26.10.0-trixie-slim AS frontend-builder
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ RUN npm ci
 COPY frontend ./
 RUN npm run build
 
-FROM python:3.13.7-slim-trixie AS base
+FROM python:3.13.13-slim-trixie AS base
 FROM base AS backend-builder
 
 WORKDIR /app
@@ -65,18 +65,17 @@ ENV INIT_GIT_IN_EMPTY_WORKSPACE=1
 RUN mkdir -p $FILE_STORE_PATH
 RUN mkdir -p $WORKSPACE_BASE
 
-# System packages, Node.js v20+ and npm (which includes npx), and security
-# updates for packages with available fixes.
+# System packages, Node.js (includes npm/npx), and security updates for all
+# packages with available fixes. Applying an unfiltered `apt-get upgrade` (rather
+# than a curated list) ensures Debian security advisories are picked up without
+# the list going stale each time a new CVE lands -- notably the full perl stack
+# pulled in transitively by `git`, plus libpcre2, libc, gzip, libssh2 and the
+# CPython runtime libraries.
 RUN apt-get update -y \
     && apt-get install -y curl git ssh sudo jq gettext \
-    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_26.x | bash - \
     && apt-get install -y nodejs \
     && apt-get upgrade -y \
-        libc-bin \
-        libc6 \
-        libgnutls30 \
-        libsqlite3-0 \
-        perl-base \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -101,8 +100,8 @@ ENV VIRTUAL_ENV=/app/.venv \
 COPY --chown=openhands:openhands --chmod=770 --from=backend-builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
 
 # Pin the system pip to a known-good version (reproducible builds) and fix
-# CVE-2025-8869.
-ARG PIP_VERSION=26.0.1
+# CVE-2025-8869, CVE-2026-13346, CVE-2026-3219, CVE-2026-6357, CVE-2026-8643.
+ARG PIP_VERSION=26.2.0
 USER root
 RUN /usr/local/bin/python3 -m pip install --no-cache-dir "pip==${PIP_VERSION}" --break-system-packages
 USER openhands
