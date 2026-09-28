@@ -9,17 +9,17 @@ import {
 /**
  * Provider connections are org-scoped (the
  * `/api/organizations/{orgId}/provider-connections` CRUD routes). The query is
- * disabled until an org is bound; there it returns no data so the connections
- * UI hides itself rather than firing an unaddressable request.
+ * disabled until an org is bound, so callers that pass `null` (personal scope,
+ * members, managed installs) never fire the request.
  *
- * The org list route wraps results as `{ connections: [...] }`; the service
+ * The org list route wraps results as `{ connections: [...] }`; this hook
  * unwraps that so callers see a flat `ProviderConnection[]`.
  */
 export function useProviderConnections(orgId: string | null | undefined) {
   const { data: userIsAuthenticated } = useIsAuthed();
 
   return useQuery({
-    queryKey: [...PROVIDER_CONNECTIONS_QUERY_KEYS.all, orgId],
+    queryKey: PROVIDER_CONNECTIONS_QUERY_KEYS.byOrg(orgId),
     queryFn: async () => {
       const { connections } = await OrgProviderConnectionsService.list(orgId!);
       return connections;

@@ -215,16 +215,17 @@ export function LlmSettingsScreen({
   const allowUserLlmConfiguration =
     config?.feature_flags?.allow_user_llm_configuration !== false;
 
-  // Provider connections are org-scoped; only the org-defaults form can link a
-  // profile to one. The query is disabled without an org, so in OSS / personal
-  // scope this is just an empty list and the selector stays hidden.
-  const { data: providerConnections } = useProviderConnections(organizationId);
-  const connectionOptions = providerConnections ?? [];
-  // Show the selector for any org member who can edit profiles — once at least
-  // one connection exists, or the edited profile is already linked (even to an
-  // orphaned id, so it can be unlinked). Managed (no-BYOK) installs skip it.
+  // Provider connections are org-scoped and admin-managed: only the
+  // org-defaults form links a profile to one, only users who can edit org
+  // profiles see them, and managed (no-BYOK) installs — which already hide the
+  // inline API key / base URL inputs — skip the whole feature.
   const showProviderConnection =
     scope === "org" && canManageProfilesForScope && allowUserLlmConfiguration;
+  // Gated on the same flag so personal scope / members never fetch the list.
+  const { data: providerConnections } = useProviderConnections(
+    showProviderConnection ? organizationId : null,
+  );
+  const connectionOptions = providerConnections ?? [];
 
   React.useEffect(() => {
     // An open profile form owns the provider selection (blank for create,
@@ -637,6 +638,16 @@ export function LlmSettingsScreen({
         agentSettings.llm = llm;
       }
 
+      // The form owns the link. `provider_connection_id` is a MAJOR-prominence
+      // field, so the basic-view payload resets it to null (see
+      // buildSdkSettingsPayloadForView), and edit hydrates it without marking
+      // it dirty. Persist the form's value explicitly whenever the selector is
+      // in play so a linked profile stays linked and an unlinked one clears it.
+      if (showProviderConnection) {
+        llm.provider_connection_id = connectionValue || null;
+        agentSettings.llm = llm;
+      }
+
       // Edit hydrates from the profile without marking fields dirty, so a
       // diff-only save would snapshot the *active* settings over the profile.
       // Persist the form's model/base_url explicitly when they aren't dirty.
@@ -650,16 +661,6 @@ export function LlmSettingsScreen({
               ? context.values["llm.base_url"].trim()
               : "";
           llm.base_url = baseUrlValue || null;
-        }
-        // Carry the form's provider_connection_id through even when it wasn't
-        // toggled dirty, so saving a linked (or just-unlinked) profile persists
-        // that link instead of snapshotting the active settings' value.
-        if (llm.provider_connection_id === undefined) {
-          const formConnection =
-            typeof context.values[LLM_PROVIDER_CONNECTION_KEY] === "string"
-              ? context.values[LLM_PROVIDER_CONNECTION_KEY]
-              : "";
-          llm.provider_connection_id = formConnection || null;
         }
         agentSettings.llm = llm;
       }
@@ -681,7 +682,14 @@ export function LlmSettingsScreen({
 
       return { agent_settings_diff: agentSettings };
     },
-    [isSaasMode, profileFormMode, schema, scope, selectedProvider],
+    [
+      isSaasMode,
+      profileFormMode,
+      schema,
+      scope,
+      selectedProvider,
+      showProviderConnection,
+    ],
   );
 
   const handleSaveSuccess = React.useCallback(async () => {
@@ -857,6 +865,7 @@ export function LlmSettingsScreen({
         <OrgLlmProfilesManager
           orgId={organizationId}
           canManage={canManageProfilesForScope}
+          showProviderConnections={showProviderConnection}
           onAddProfile={
             canManageProfilesForScope ? () => openForm(null) : undefined
           }

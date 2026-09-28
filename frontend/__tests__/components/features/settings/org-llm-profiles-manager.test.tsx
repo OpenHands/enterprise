@@ -70,10 +70,12 @@ const sampleProfiles: ProfilesList = {
 
 function renderManager({
   canManage,
+  showProviderConnections,
   onAddProfile,
   onEditProfile,
 }: {
   canManage?: boolean;
+  showProviderConnections?: boolean;
   onAddProfile?: () => void;
   onEditProfile?: (profile: LlmProfileSummary) => void;
 } = {}) {
@@ -81,6 +83,7 @@ function renderManager({
     <OrgLlmProfilesManager
       orgId="org-1"
       canManage={canManage}
+      showProviderConnections={showProviderConnections}
       onAddProfile={onAddProfile}
       onEditProfile={onEditProfile}
     />,
@@ -123,5 +126,18 @@ describe("OrgLlmProfilesManager", () => {
     expect(
       screen.queryByTestId("profile-menu-trigger"),
     ).not.toBeInTheDocument();
+  });
+
+  it("only renders the provider connections section when asked to", () => {
+    const { unmount } = renderManager({ canManage: true });
+    expect(
+      screen.queryByTestId("provider-connections-manager"),
+    ).not.toBeInTheDocument();
+    unmount();
+
+    renderManager({ canManage: true, showProviderConnections: true });
+    expect(
+      screen.getByTestId("provider-connections-manager"),
+    ).toBeInTheDocument();
   });
 });

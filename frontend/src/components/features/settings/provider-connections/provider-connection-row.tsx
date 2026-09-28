@@ -14,8 +14,6 @@ interface ProviderConnectionRowProps {
   connection: ProviderConnection;
   /** Number of LLM profiles linked to this connection. */
   linkedProfileCount: number;
-  /** When false, the edit/delete actions are hidden (view-only). */
-  canManage?: boolean;
   onEdit: (connection: ProviderConnection) => void;
   onDelete: (connection: ProviderConnection) => void;
 }
@@ -23,7 +21,6 @@ interface ProviderConnectionRowProps {
 export function ProviderConnectionRow({
   connection,
   linkedProfileCount,
-  canManage = false,
   onEdit,
   onDelete,
 }: ProviderConnectionRowProps) {
@@ -51,28 +48,26 @@ export function ProviderConnectionRow({
         </span>
         <KeyStatusIcon isSet={connection.api_key_set} />
       </div>
-      {canManage ? (
-        <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            data-testid="provider-connection-edit"
-            aria-label={t(I18nKey.SETTINGS$PROVIDER_CONNECTION_EDIT_TITLE)}
-            className={settingsListIconActionButtonClassName}
-            onClick={() => onEdit(connection)}
-          >
-            <EditIcon width={16} height={16} />
-          </button>
-          <button
-            type="button"
-            data-testid="provider-connection-delete"
-            aria-label={t(I18nKey.SETTINGS$PROVIDER_CONNECTION_DELETE_TITLE)}
-            className={settingsListIconActionButtonClassName}
-            onClick={() => onDelete(connection)}
-          >
-            <DeleteIcon width={16} height={16} />
-          </button>
-        </div>
-      ) : null}
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          data-testid="provider-connection-edit"
+          aria-label={t(I18nKey.SETTINGS$PROVIDER_CONNECTION_EDIT_TITLE)}
+          className={settingsListIconActionButtonClassName}
+          onClick={() => onEdit(connection)}
+        >
+          <EditIcon width={16} height={16} />
+        </button>
+        <button
+          type="button"
+          data-testid="provider-connection-delete"
+          aria-label={t(I18nKey.SETTINGS$PROVIDER_CONNECTION_DELETE_TITLE)}
+          className={settingsListIconActionButtonClassName}
+          onClick={() => onDelete(connection)}
+        >
+          <DeleteIcon width={16} height={16} />
+        </button>
+      </div>
     </div>
   );
 }
