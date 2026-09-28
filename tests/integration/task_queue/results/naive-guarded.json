@@ -1,0 +1,89 @@
+{
+  "P1": {
+    "doubles": [],
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-28T18:24:00Z",
+    "replicas_seen": [
+      "replica-a",
+      "replica-b"
+    ]
+  },
+  "P2": {
+    "doubles": [],
+    "measured_clock_offset_seconds": {
+      "replica-a": "0.00",
+      "replica-b": "2.00"
+    },
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-28T18:26:08Z",
+    "replicas_seen": [
+      "replica-a",
+      "replica-b"
+    ],
+    "skew": "+2s",
+    "skewed_service": "replica-b"
+  },
+  "P3-replaced": {
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T18:35:37Z",
+    "recovered_after_seconds": null,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-b",
+        ""
+      ]
+    ],
+    "victim": "replica-b"
+  },
+  "P3-restarted": {
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T18:31:50Z",
+    "recovered_after_seconds": null,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-a",
+        ""
+      ]
+    ],
+    "victim": "replica-a"
+  },
+  "P4": {
+    "alembic_version": [],
+    "candidate_tables": [
+      "public.alembic_version"
+    ],
+    "migrate_exit_code": [
+      0
+    ],
+    "missing_expected_tables": [],
+    "recorded_at": "2026-09-28T18:27:22Z"
+  },
+  "P6": {
+    "app_services": [
+      "replica-a",
+      "replica-b"
+    ],
+    "extra_workloads": [],
+    "recorded_at": "2026-09-28T18:28:02Z",
+    "usage": {
+      "postgres": {
+        "cpu": "1.33%",
+        "memory": "18.95MiB"
+      },
+      "replica-a": {
+        "cpu": "0.11%",
+        "memory": "35.41MiB"
+      },
+      "replica-b": {
+        "cpu": "0.45%",
+        "memory": "35.53MiB"
+      }
+    }
+  }
+}

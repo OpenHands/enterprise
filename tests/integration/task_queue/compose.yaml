@@ -1,0 +1,16 @@
+# Shared stack. Each candidate adds its own services with a second file:
+#   docker compose -f compose.yaml -f <candidate>/compose.yaml up
+# Paths in both files resolve relative to this directory.
+services:
+  postgres:
+    image: postgres@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297 # 16.10-alpine
+    environment:
+      POSTGRES_USER: poc
+      POSTGRES_PASSWORD: poc
+      POSTGRES_DB: poc
+    volumes:
+      - ./harness/initdb.sql:/docker-entrypoint-initdb.d/00-harness.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U poc -d poc"]
+      interval: 1s
+      retries: 30
