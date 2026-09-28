@@ -962,6 +962,7 @@ class TestDockerSandboxService:
         mock_container.name = 'oh-test-test_container_id'
         mock_container.status = 'running'
         mock_container.image.tags = ['test-image:latest']
+        mock_container.labels = _labels('test-image:latest')
         mock_container.attrs = {
             'Created': '2024-01-15T10:30:00.000000000Z',
             'Config': {'Env': ['OH_SESSION_API_KEYS_0=test_session_key']},
@@ -1011,6 +1012,7 @@ class TestDockerSandboxService:
         mock_container.name = 'oh-test-test_container_id'
         mock_container.status = 'running'
         mock_container.image.tags = ['test-image:latest']
+        mock_container.labels = _labels('test-image:latest')
         mock_container.attrs = {
             'Created': '2024-01-15T10:30:00.000000000Z',
             'Config': {'Env': ['OH_SESSION_API_KEYS_0=test_session_key']},
