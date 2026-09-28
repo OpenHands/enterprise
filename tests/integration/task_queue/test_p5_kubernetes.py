@@ -23,6 +23,9 @@ POSTGRES = (
 )
 IMAGE = f'tq-poc-{MANIFEST["name"]}:p5'
 K8S = MANIFEST.get('k8s', {})
+# Workload kind: Deployment (new pod names on replacement) or StatefulSet (stable names).
+KIND = os.environ.get('TQ_K8S_KIND', 'Deployment')
+WORKLOAD = 'statefulset/app' if KIND == 'StatefulSet' else 'deploy/app'
 # Variant env, e.g. TQ_K8S_ENV='POC_DBOS_EXECUTOR=hostname'.
 EXTRA_ENV = dict(
     kv.split('=', 1) for kv in os.environ.get('TQ_K8S_ENV', '').split(',') if kv
@@ -180,33 +183,50 @@ def manifests(
             },
         },
     ]
-    app = {
-        'apiVersion': 'apps/v1',
-        'kind': 'Deployment',
-        'metadata': {'name': 'app', 'namespace': ns},
-        'spec': {
-            'replicas': 2,
-            'selector': {'matchLabels': {'app': 'app'}},
-            'strategy': {
-                'type': 'RollingUpdate',
-                'rollingUpdate': {'maxSurge': 1, 'maxUnavailable': 0},
-            },
-            'template': {
-                'metadata': {'labels': {'app': 'app'}},
-                'spec': {
-                    'terminationGracePeriodSeconds': grace,
-                    'containers': [
-                        {
-                            'name': 'app',
-                            'image': IMAGE,
-                            'imagePullPolicy': 'Never',
-                            'command': K8S['command'],
-                            'env': env_list(app_env),
-                        }
-                    ],
-                },
+    spec = {
+        'replicas': 2,
+        'selector': {'matchLabels': {'app': 'app'}},
+        'template': {
+            'metadata': {'labels': {'app': 'app'}},
+            'spec': {
+                'terminationGracePeriodSeconds': grace,
+                'containers': [
+                    {
+                        'name': 'app',
+                        'image': IMAGE,
+                        'imagePullPolicy': 'Never',
+                        'command': K8S['command'],
+                        'env': env_list(app_env),
+                    }
+                ],
             },
         },
+    }
+    if KIND == 'StatefulSet':
+        # Stable pod names (app-0, app-1): a replaced pod returns under the same name.
+        spec |= {
+            'serviceName': 'app',
+            'podManagementPolicy': 'Parallel',
+            'updateStrategy': {'type': 'RollingUpdate'},
+        }
+        docs.append(
+            {
+                'apiVersion': 'v1',
+                'kind': 'Service',
+                'metadata': {'name': 'app', 'namespace': ns},
+                'spec': {'clusterIP': 'None', 'selector': {'app': 'app'}},
+            }
+        )
+    else:
+        spec['strategy'] = {
+            'type': 'RollingUpdate',
+            'rollingUpdate': {'maxSurge': 1, 'maxUnavailable': 0},
+        }
+    app = {
+        'apiVersion': 'apps/v1',
+        'kind': KIND,
+        'metadata': {'name': 'app', 'namespace': ns},
+        'spec': spec,
     }
     return '\n---\n'.join(json.dumps(d) for d in docs), json.dumps(app)
 
@@ -232,7 +252,7 @@ class Cluster:
             self.ns,
             'rollout',
             'status',
-            'deploy/app',
+            WORKLOAD,
             '--timeout=300s',
         )
 
@@ -264,6 +284,19 @@ class Cluster:
                 return rows
             time.sleep(poll)
         raise TimeoutError(f'no rows after {timeout}s: {query}')
+
+    def uid(self, pod: str) -> str:
+        out = self.kubectl(
+            'get', 'pod', pod, '-o', 'jsonpath={.metadata.uid}', check=False
+        )
+        return out.strip()
+
+    def wait_gone(self, pod: str, uid: str, timeout: float = 300) -> str:
+        """Database time once this incarnation of the pod no longer exists."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and self.uid(pod) == uid:
+            time.sleep(0.5)
+        return self.sql('SELECT now()')[0][0]
 
     def pods(self) -> list[str]:
         return (
@@ -301,15 +334,20 @@ def cluster(request):
         run('kubectl', 'delete', 'namespace', c.ns, '--wait=false', check=False)
 
 
-def outcome(c: Cluster, slot: str, run_id: str, victim: str) -> tuple[str, list]:
+def outcome(
+    c: Cluster, slot: str, run_id: str, victim: str, gone_at: str
+) -> tuple[str, list]:
     rows = c.sql(
-        f"SELECT id, replica, finished_by FROM poc_job_runs WHERE slot = '{slot}' ORDER BY id"
+        f"SELECT id, replica, finished_by, finished_at > '{gone_at}' "
+        f"FROM poc_job_runs WHERE slot = '{slot}' ORDER BY id"
     )
     finished = [r for r in rows if r[2]]
     if not finished:
         return 'lost', rows
     if finished[0][0] == run_id and finished[0][2] == victim:
-        return 'drained', rows
+        # A StatefulSet pod returns under the same name: finishing after the old
+        # incarnation was gone means the new one resumed it.
+        return ('resumed' if finished[0][3] == 't' else 'drained'), rows
     if [r[0] for r in finished] == [run_id] and len(rows) == 1:
         return 'resumed', rows
     return 'retried', rows
@@ -351,6 +389,7 @@ def write(check: str, data: dict) -> None:
     results[check] = {
         **data,
         'extra_env': EXTRA_ENV,
+        'workload_kind': KIND,
         'recorded_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
     }
     path.write_text(json.dumps(results, indent=2, sort_keys=True) + '\n')
@@ -375,9 +414,11 @@ def test_p5_pod_force_deleted(cluster):
     c = cluster(interval=60, job_seconds=30)
     run_id, slot, victim = in_flight(c, timeout=120)
     killed = time.monotonic()
+    uid = c.uid(victim)
     c.kubectl('delete', 'pod', victim, '--grace-period=0', '--force')
+    gone_at = c.wait_gone(victim, uid)
     next_ran = settle(c, slot, timeout=180)
-    result, rows = outcome(c, slot, run_id, victim)
+    result, rows = outcome(c, slot, run_id, victim, gone_at)
     finished = [r for r in rows if r[2]]
     write(
         'P5-P3-force-deleted',
@@ -398,11 +439,13 @@ def test_p5_rollout_restart(cluster, grace):
     c = cluster(interval=60, job_seconds=30, grace=grace)
     run_id, slot, victim = in_flight(c, timeout=120)
     started = time.monotonic()
-    c.kubectl('rollout', 'restart', 'deploy/app')
-    c.kubectl('rollout', 'status', 'deploy/app', f'--timeout={grace * 2 + 180}s')
+    uid = c.uid(victim)
+    c.kubectl('rollout', 'restart', WORKLOAD)
+    gone_at = c.wait_gone(victim, uid, timeout=grace * 2 + 180)
+    c.kubectl('rollout', 'status', WORKLOAD, f'--timeout={grace * 2 + 180}s')
     rollout_seconds = round(time.monotonic() - started, 1)
     next_ran = settle(c, slot, timeout=180)
-    result, rows = outcome(c, slot, run_id, victim)
+    result, rows = outcome(c, slot, run_id, victim, gone_at)
     finished = [r for r in rows if r[2]]
     doubles = c.sql(
         'SELECT slot, count(*) FROM poc_job_runs WHERE finished_at IS NOT NULL '
