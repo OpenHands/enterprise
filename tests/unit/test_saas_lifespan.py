@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import sys
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -121,6 +122,7 @@ def point_migrations_at(monkeypatch, postgres_server):
         # Migrations branch on these, so pin them as the test template does.
         monkeypatch.setenv('WEB_HOST', '')
         monkeypatch.delenv('STRIPE_API_KEY', raising=False)
+        monkeypatch.delenv('CREATE_DATABASE_IF_MISSING', raising=False)
 
     return _point
 
@@ -132,6 +134,40 @@ def empty_database(postgres_server):
         yield name
     finally:
         postgres_testdb.drop_test_database(postgres_server, name)
+
+
+@pytest.fixture
+def missing_database(postgres_server):
+    """A name with no database behind it. The capital and hyphen need quoting."""
+    name = f'{postgres_testdb.TEST_DB_PREFIX}Missing-{uuid.uuid4().hex[:12]}'
+    try:
+        yield name
+    finally:
+        engine = create_engine(
+            postgres_server.sync_url(postgres_testdb.ADMIN_DB),
+            isolation_level='AUTOCOMMIT',
+            poolclass=NullPool,
+        )
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        finally:
+            engine.dispose()
+
+
+async def _upgrade_in_another_process() -> asyncio.subprocess.Process:
+    return await asyncio.create_subprocess_exec(
+        sys.executable,
+        '-m',
+        'alembic',
+        '-c',
+        str(postgres_testdb.ALEMBIC_INI),
+        'upgrade',
+        'head',
+        cwd=postgres_testdb.REPO_ROOT,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
 
 
 def _assert_at_head_and_released(postgres_server, database: str) -> None:
@@ -186,18 +222,7 @@ async def test_app_and_another_replica_can_migrate_at_once(
     from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
 
     point_migrations_at(empty_database)
-    other_replica = await asyncio.create_subprocess_exec(
-        sys.executable,
-        '-m',
-        'alembic',
-        '-c',
-        str(postgres_testdb.ALEMBIC_INI),
-        'upgrade',
-        'head',
-        cwd=postgres_testdb.REPO_ROOT,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
+    other_replica = await _upgrade_in_another_process()
 
     _, returncode = await asyncio.gather(
         SaasAppLifespanService()._run_migrations(), other_replica.wait()
@@ -205,6 +230,43 @@ async def test_app_and_another_replica_can_migrate_at_once(
 
     assert returncode == 0
     _assert_at_head_and_released(postgres_server, empty_database)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag', ['true', '1'])
+async def test_run_migrations_creates_a_missing_database(
+    monkeypatch, point_migrations_at, missing_database, postgres_server, flag
+):
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    point_migrations_at(missing_database)
+    monkeypatch.setenv('CREATE_DATABASE_IF_MISSING', flag)
+
+    await SaasAppLifespanService()._run_migrations()
+    # This run finds the database. It would hang if the first run still held
+    # the create lock.
+    await SaasAppLifespanService()._run_migrations()
+
+    _assert_at_head_and_released(postgres_server, missing_database)
+
+
+@pytest.mark.asyncio
+async def test_app_and_another_replica_can_create_the_database_at_once(
+    monkeypatch, point_migrations_at, missing_database, postgres_server
+):
+    """The create lock makes one wait for the other, then find the database."""
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    point_migrations_at(missing_database)
+    monkeypatch.setenv('CREATE_DATABASE_IF_MISSING', 'true')
+    other_replica = await _upgrade_in_another_process()
+
+    _, returncode = await asyncio.gather(
+        SaasAppLifespanService()._run_migrations(), other_replica.wait()
+    )
+
+    assert returncode == 0
+    _assert_at_head_and_released(postgres_server, missing_database)
 
 
 @pytest.mark.asyncio

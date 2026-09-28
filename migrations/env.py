@@ -40,9 +40,19 @@ GCP_DB_INSTANCE = os.getenv('GCP_DB_INSTANCE')
 GCP_PROJECT = os.getenv('GCP_PROJECT')
 GCP_REGION = os.getenv('GCP_REGION')
 
+# Create DB_NAME before migrating if it does not exist. The database user needs
+# the CREATEDB privilege.
+CREATE_DATABASE_IF_MISSING = os.getenv(
+    'CREATE_DATABASE_IF_MISSING', 'false'
+).lower() in ('true', '1')
+# CREATE DATABASE runs from here. Every PostgreSQL server has this database.
+MAINTENANCE_DB_NAME = 'postgres'
+
+logger = logging.getLogger('alembic.env')
+
 
 @contextmanager
-def migration_engine() -> Iterator[Engine]:
+def migration_engine(database: str = DB_NAME) -> Iterator[Engine]:
     """Yield an engine for one migration run, then close everything it opened.
 
     The app can run migrations inside its own process on startup, so nothing may
@@ -59,7 +69,7 @@ def migration_engine() -> Iterator[Engine]:
                 'pg8000',
                 user=DB_USER,
                 password=DB_PASS.strip(),
-                db=DB_NAME,
+                db=database,
             )
 
         engine = create_engine(
@@ -67,7 +77,7 @@ def migration_engine() -> Iterator[Engine]:
         )
     else:
         scheme = f'postgresql+{DB_DRIVER}' if DB_DRIVER else 'postgresql'
-        url = f'{scheme}://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
+        url = f'{scheme}://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{database}'
         if DB_DRIVER != 'pg8000':
             url += build_db_url_query(DB_SSL_MODE)
         engine = create_engine(
@@ -83,6 +93,28 @@ def migration_engine() -> Iterator[Engine]:
         engine.dispose()
         if connector is not None:
             connector.close()
+
+
+def create_database_if_missing() -> None:
+    """Create DB_NAME if it does not exist yet."""
+    with (
+        migration_engine(MAINTENANCE_DB_NAME) as engine,
+        engine.connect() as connection,
+    ):
+        # CREATE DATABASE cannot run inside a transaction.
+        connection.execution_options(isolation_level='AUTOCOMMIT')
+        # Replicas that start together take turns, so only the first one creates
+        # the database. Lock number is the md5 hash of
+        # 'openhands_enterprise_create_database'.
+        connection.execute(text('SELECT pg_advisory_lock(1655053006352720504)'))
+        exists = connection.execute(
+            text('SELECT 1 FROM pg_database WHERE datname = :name'),
+            {'name': DB_NAME},
+        ).scalar()
+        if not exists:
+            logger.info('Creating database %s', DB_NAME)
+            name = connection.dialect.identifier_preparer.quote(DB_NAME)
+            connection.exec_driver_sql(f'CREATE DATABASE {name}')
 
 
 # this is the Alembic Config object, which provides
@@ -132,6 +164,9 @@ def run_migrations_online() -> None:
     In this scenario we need to create an Engine
     and associate a connection with the context.
     """
+    if CREATE_DATABASE_IF_MISSING:
+        create_database_if_missing()
+
     with migration_engine() as engine, engine.connect() as connection:
         context.configure(
             connection=connection,

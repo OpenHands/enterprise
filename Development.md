@@ -88,6 +88,10 @@ The app does not apply migrations on startup unless `RUN_MIGRATIONS_ON_STARTUP=t
 each server process runs `alembic upgrade head` before it serves requests, and a failed migration stops the
 process from starting. Several workers or replicas can start at once: an advisory lock makes them take turns.
 
+Set `CREATE_DATABASE_IF_MISSING=true` (or `1`) to have the migrations create `DB_NAME` first if it does not
+exist. This works both on startup and with `alembic upgrade head`. The migrations connect to the `postgres`
+database to create it, so the database user needs the `CREATEDB` privilege.
+
 To run the SaaS/enterprise server (`saas_server:app`, what Kubernetes deploys) use `make start-saas-backend` or
 `make run-saas`; it needs the SaaS environment (Postgres, Keycloak, ...) described in
 [dev_config/local_saas/README.md](./dev_config/local_saas/README.md).
