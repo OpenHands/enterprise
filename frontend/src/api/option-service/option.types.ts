@@ -93,10 +93,6 @@ export interface WebClientConfig {
   jira_dc_service_account_managed?: boolean;
   /** Non-secret service-account email when managed by OHE/KOTS. */
   jira_dc_service_account_email?: string | null;
-  /** Whether the development-only insecure IDP (email-only login) is
-   *  available. True only on self-hosted deployments with no real IDP
-   *  configured. The frontend shows an email-only login form when true. */
-  dev_idp_enabled?: boolean;
   /** Non-secret Jira DC service-account env config error, if any. */
   jira_dc_service_account_config_error?: string | null;
   /** False when the install links Jira Cloud users by email match instead of
