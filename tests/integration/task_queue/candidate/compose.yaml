@@ -1,0 +1,60 @@
+# Celery + one Celery Beat, Redis broker. App replicas schedule nothing.
+x-image: &image
+  build: candidate
+  image: tq-poc-celery
+
+x-env: &env
+  POC_DATABASE_URL: postgresql://poc_app:poc_app@postgres/poc
+  POC_INTERVAL_SECONDS: ${POC_INTERVAL_SECONDS:-10}
+  POC_JOB_SECONDS: ${POC_JOB_SECONDS:-1}
+
+x-deps: &deps
+  migrate:
+    condition: service_completed_successfully
+  redis:
+    condition: service_healthy
+
+x-worker: &worker
+  <<: *image
+  command: celery -A tasks worker --loglevel=INFO --concurrency=2
+  depends_on: *deps
+  environment: *env
+
+services:
+  redis:
+    # Same Redis as the chart's bitnami subchart (appVersion 7.4.1), persistence off.
+    image: redis@sha256:c1e88455c85225310bbea54816e9c3f4b5295815e6dbf80c34d40afc6df28275 # 7.4.1-alpine
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      retries: 30
+  migrate:
+    <<: *image
+    command: alembic -c /harness/alembic.ini upgrade head
+    environment:
+      POC_MIGRATE_URL: postgresql://poc:poc@postgres/poc
+    depends_on:
+      postgres:
+        condition: service_healthy
+  replica-a: &replica
+    <<: *image
+    hostname: replica-a
+    command: uvicorn app:app --host 0.0.0.0 --port 8000
+    depends_on: *deps
+    environment: *env
+  replica-b:
+    <<: *replica
+    hostname: replica-b
+  worker-a:
+    <<: *worker
+    hostname: worker-a
+  worker-b:
+    <<: *worker
+    hostname: worker-b
+  beat:
+    <<: *image
+    hostname: beat
+    command: celery -A tasks beat --loglevel=INFO --schedule=/tmp/celerybeat-schedule
+    depends_on: *deps
+    environment: *env

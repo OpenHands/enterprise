@@ -1,0 +1,7 @@
+{
+  "name": "celery-redbeat",
+  "app_services": ["replica-a", "replica-b"],
+  "job_services": ["worker-a", "worker-b"],
+  "skew_service": "beat-b",
+  "expected_tables": []
+}

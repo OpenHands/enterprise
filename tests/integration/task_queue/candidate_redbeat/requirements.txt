@@ -1,0 +1,2 @@
+celery-redbeat==2.4.2
+tenacity==9.1.4
