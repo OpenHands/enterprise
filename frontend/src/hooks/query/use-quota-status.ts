@@ -5,9 +5,10 @@ export const QUOTA_QUERY_KEYS = {
   status: ["quota", "status"] as const,
 };
 
-export const useQuotaStatus = () =>
+export const useQuotaStatus = (options?: { enabled?: boolean }) =>
   useQuery({
     queryKey: QUOTA_QUERY_KEYS.status,
     queryFn: quotaService.getStatus,
     refetchInterval: 60_000, // refresh every minute so the countdown stays live
+    enabled: options?.enabled,
   });

@@ -825,7 +825,7 @@ class TestGithubV1CallbackProcessor:
     @patch('openhands.app_server.config.get_sandbox_service')
     @patch('openhands.app_server.config.get_app_conversation_info_service')
     @patch('integrations.github.github_v1_callback_processor._logger')
-    async def test_budget_exceeded_error_logs_info_and_sends_friendly_message(
+    async def test_budget_exceeded_personal_workspace_shows_credits_message(
         self,
         mock_logger,
         mock_get_app_conversation_info_service,
@@ -837,8 +837,9 @@ class TestGithubV1CallbackProcessor:
         mock_app_conversation_info,
         mock_sandbox_info,
     ):
-        """Test that budget exceeded errors are logged at INFO level and user gets friendly message."""
+        """Test that budget exceeded errors for personal workspaces show credits message."""
         conversation_id = uuid4()
+        user_id = uuid4()  # Same as org_id for personal workspace
 
         mock_httpx_client = await _setup_happy_path_services(
             mock_get_app_conversation_info_service,
@@ -862,7 +863,14 @@ class TestGithubV1CallbackProcessor:
             patch(
                 'integrations.github.github_v1_callback_processor.Github'
             ) as mock_github,
+            patch(
+                'server.utils.conversation_utils.get_conversation_org_context',
+                new_callable=AsyncMock,
+            ) as mock_get_org_context,
         ):
+            # Mock personal workspace: org_id == user_id
+            mock_get_org_context.return_value = (user_id, user_id)
+
             mock_integration = MagicMock()
             mock_github_integration.return_value = mock_integration
             mock_integration.get_access_token.return_value.token = 'test_token'
@@ -891,12 +899,108 @@ class TestGithubV1CallbackProcessor:
         budget_log_found = any('Budget exceeded' in call for call in info_calls)
         assert budget_log_found, f'Expected budget exceeded log, got: {info_calls}'
 
-        # Verify user-friendly message was posted to GitHub
+        # Verify credits message was posted to GitHub (personal workspace)
         mock_issue.create_comment.assert_called_once()
         call_args = mock_issue.create_comment.call_args
         posted_comment = call_args[1].get('body') or call_args[0][0]
         assert 'OpenHands encountered an error' in posted_comment
-        assert 'LLM budget has been exceeded' in posted_comment
-        assert 'please re-fill' in posted_comment
+        assert 'OpenHands credits' in posted_comment  # Personal workspace message
+        # Should NOT contain the raw error message
+        assert 'litellm.BadRequestError' not in posted_comment
+
+    @patch(
+        'integrations.github.github_v1_callback_processor.GITHUB_APP_CLIENT_ID',
+        'test_client_id',
+    )
+    @patch(
+        'integrations.github.github_v1_callback_processor.GITHUB_APP_PRIVATE_KEY',
+        'test_private_key',
+    )
+    @patch('openhands.app_server.config.get_httpx_client')
+    @patch('openhands.app_server.config.get_sandbox_service')
+    @patch('openhands.app_server.config.get_app_conversation_info_service')
+    @patch('integrations.github.github_v1_callback_processor._logger')
+    async def test_budget_exceeded_org_workspace_shows_org_budget_message(
+        self,
+        mock_logger,
+        mock_get_app_conversation_info_service,
+        mock_get_sandbox_service,
+        mock_get_httpx_client,
+        github_callback_processor,
+        conversation_state_update_event,
+        event_callback,
+        mock_app_conversation_info,
+        mock_sandbox_info,
+    ):
+        """Test that budget exceeded errors for org workspaces show org budget message."""
+        conversation_id = uuid4()
+        org_id = uuid4()
+        user_id = uuid4()  # Different from org_id for multi-user org
+
+        mock_httpx_client = await _setup_happy_path_services(
+            mock_get_app_conversation_info_service,
+            mock_get_sandbox_service,
+            mock_get_httpx_client,
+            mock_app_conversation_info,
+            mock_sandbox_info,
+        )
+        # Simulate a budget exceeded error from the agent server
+        budget_error_msg = (
+            'HTTP 500 error: {"detail":"Internal Server Error",'
+            '"exception":"litellm.BadRequestError: Litellm_proxyException - '
+            'Budget has been exceeded! Current cost: 12.65, Max budget: 12.62"}'
+        )
+        mock_httpx_client.get.side_effect = Exception(budget_error_msg)
+
+        with (
+            patch(
+                'integrations.github.github_v1_callback_processor.GithubIntegration'
+            ) as mock_github_integration,
+            patch(
+                'integrations.github.github_v1_callback_processor.Github'
+            ) as mock_github,
+            patch(
+                'server.utils.conversation_utils.get_conversation_org_context',
+                new_callable=AsyncMock,
+            ) as mock_get_org_context,
+        ):
+            # Mock multi-user org: org_id != user_id
+            mock_get_org_context.return_value = (org_id, user_id)
+
+            mock_integration = MagicMock()
+            mock_github_integration.return_value = mock_integration
+            mock_integration.get_access_token.return_value.token = 'test_token'
+
+            mock_gh = MagicMock()
+            mock_github.return_value.__enter__.return_value = mock_gh
+            mock_repo = MagicMock()
+            mock_issue = MagicMock()
+            mock_repo.get_issue.return_value = mock_issue
+            mock_gh.get_repo.return_value = mock_repo
+
+            result = await github_callback_processor(
+                conversation_id=conversation_id,
+                callback=event_callback,
+                event=conversation_state_update_event,
+            )
+
+        assert result is not None
+        assert result.status == EventCallbackResultStatus.ERROR
+
+        # Verify exception was NOT called (budget exceeded uses info instead)
+        mock_logger.exception.assert_not_called()
+
+        # Verify budget exceeded info log was called
+        info_calls = [str(call) for call in mock_logger.info.call_args_list]
+        budget_log_found = any('Budget exceeded' in call for call in info_calls)
+        assert budget_log_found, f'Expected budget exceeded log, got: {info_calls}'
+
+        # Verify org budget message was posted to GitHub (multi-user org)
+        mock_issue.create_comment.assert_called_once()
+        call_args = mock_issue.create_comment.call_args
+        posted_comment = call_args[1].get('body') or call_args[0][0]
+        assert 'OpenHands encountered an error' in posted_comment
+        assert 'budget' in posted_comment.lower()  # Org budget message
+        assert 'exceeded' in posted_comment.lower()
         # Should NOT contain the raw error message
         assert 'litellm.BadRequestError' not in posted_comment

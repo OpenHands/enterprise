@@ -58,7 +58,7 @@ repos:
             lxml,
             "openhands-sdk==1.39.1",
             "openhands-tools==1.39.1",
-            "sqlalchemy>=2.0",
+            "sqlalchemy==2.0.48",
             "stripe==11.6.0",
             "pygithub==2.6.1",
           ]

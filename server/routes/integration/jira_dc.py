@@ -33,6 +33,7 @@ from integrations.jira_dc.jira_dc_user_token import (
     get_user_jira_dc_token,
 )
 from integrations.models import Message, SourceType
+from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.config import depends_jwt_service
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.user_auth.user_auth import get_user_auth
@@ -362,6 +363,20 @@ async def _handle_workspace_link_creation(
             jira_dc_user_id=jira_dc_user_id,
             jira_dc_workspace_id=workspace.id,
         )
+
+    # Analytics: jira integration enabled (best-effort, never blocks the flow)
+    # Mirrors the Jira Cloud handler so Jira Data Center users are counted
+    # under the HubSpot enabled_integrations property once the cron is off.
+    try:
+        analytics = get_analytics_service()
+        if analytics:
+            ctx = await resolve_analytics_context(user_id)
+            analytics.track_jira_integration_enabled(
+                ctx=ctx,
+                workspace_name=target_workspace,
+            )
+    except Exception:
+        logger.exception('analytics:jira_dc_integration_enabled:failed')
 
 
 async def _validate_workspace_update_permissions(user_id: str, target_workspace: str):

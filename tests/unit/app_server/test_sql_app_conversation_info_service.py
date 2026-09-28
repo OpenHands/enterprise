@@ -2,7 +2,7 @@
 
 This module tests the SQL implementation of AppConversationInfoService,
 focusing on basic CRUD operations, search functionality, filtering, pagination,
-and batch operations using SQLite as a mock database.
+and batch operations against the test database.
 """
 
 from datetime import datetime, timezone
@@ -1409,3 +1409,88 @@ class TestCreatedAtPreservation:
         stored = await service.get_app_conversation_info(conversation_id)
         assert stored is not None
         assert stored.created_at == created_at
+
+
+class TestTagsContainsFilter:
+    """Test suite for tags__contains filter parameter."""
+
+    @staticmethod
+    def _conversation(title: str, tags: dict[str, str]) -> AppConversationInfo:
+        return AppConversationInfo(
+            id=uuid4(),
+            created_by_user_id=None,
+            sandbox_id='sandbox_tags',
+            title=title,
+            tags=tags,
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_by_tag(
+        self,
+        service: SQLAppConversationInfoService,
+    ):
+        """Test searching conversations by an exact tag key/value match."""
+        # Arrange
+        env_a = self._conversation('Env A', {'environmenturl': 'https://env/a'})
+        env_b = self._conversation('Env B', {'environmenturl': 'https://env/b'})
+        untagged = self._conversation('Untagged', {})
+        for info in (env_a, env_b, untagged):
+            await service.save_app_conversation_info(info)
+
+        # Act
+        page = await service.search_app_conversation_info(
+            tags__contains={'environmenturl': 'https://env/a'}
+        )
+
+        # Assert
+        assert [item.id for item in page.items] == [env_a.id]
+
+    @pytest.mark.asyncio
+    async def test_search_requires_all_tags_to_match(
+        self,
+        service: SQLAppConversationInfoService,
+    ):
+        """Test that multiple tag pairs are combined with AND semantics."""
+        # Arrange
+        both = self._conversation('Both', {'team': 'platform', 'stage': 'prod'})
+        team_only = self._conversation('Team only', {'team': 'platform'})
+        other_stage = self._conversation(
+            'Other stage', {'team': 'platform', 'stage': 'dev'}
+        )
+        for info in (both, team_only, other_stage):
+            await service.save_app_conversation_info(info)
+
+        # Act
+        page = await service.search_app_conversation_info(
+            tags__contains={'team': 'platform', 'stage': 'prod'}
+        )
+
+        # Assert
+        assert [item.id for item in page.items] == [both.id]
+
+    @pytest.mark.asyncio
+    async def test_count_by_tag(
+        self,
+        service: SQLAppConversationInfoService,
+    ):
+        """Test counting conversations by tag."""
+        # Arrange
+        for info in (
+            self._conversation('One', {'team': 'platform'}),
+            self._conversation('Two', {'team': 'platform'}),
+            self._conversation('Three', {'team': 'growth'}),
+            self._conversation('Four', {}),
+        ):
+            await service.save_app_conversation_info(info)
+
+        # Act
+        matching = await service.count_app_conversation_info(
+            tags__contains={'team': 'platform'}
+        )
+        missing = await service.count_app_conversation_info(
+            tags__contains={'team': 'unknown'}
+        )
+
+        # Assert
+        assert matching == 2
+        assert missing == 0

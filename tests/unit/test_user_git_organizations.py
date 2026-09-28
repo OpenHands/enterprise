@@ -46,29 +46,14 @@ async def test_raises_403_when_no_provider_tokens():
 
 
 @pytest.mark.asyncio
-async def test_raises_400_when_provider_unsupported():
-    """An active provider with no organizations concept surfaces a 400."""
-    # Arrange
-    from server.routes.users_v1 import get_current_user_git_organizations
-
-    user_context = _make_user_context(
-        provider_tokens=MappingProxyType(
-            {ProviderType.AZURE_DEVOPS: ProviderToken(token=SecretStr('az-token'))}
-        )
-    )
-
-    # Act
-    with pytest.raises(HTTPException) as excinfo:
-        await get_current_user_git_organizations(user_context=user_context)
-
-    # Assert
-    assert excinfo.value.status_code == status.HTTP_400_BAD_REQUEST
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'provider, service_method, service_return',
     [
+        (
+            ProviderType.AZURE_DEVOPS,
+            'get_installations',
+            ['test-organization'],
+        ),
         (
             ProviderType.GITHUB,
             'get_organizations_from_installations',
@@ -90,7 +75,7 @@ async def test_raises_400_when_provider_unsupported():
             ['PROJ'],
         ),
     ],
-    ids=['github', 'gitlab', 'bitbucket', 'bitbucket_data_center'],
+    ids=['azure_devops', 'github', 'gitlab', 'bitbucket', 'bitbucket_data_center'],
 )
 async def test_returns_organizations_for_supported_provider(
     provider, service_method, service_return

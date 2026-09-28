@@ -18,10 +18,7 @@ import ArrowDownIcon from "#/icons/u-arrow-down.svg?react";
 import PrIcon from "#/icons/u-pr.svg?react";
 import CodeBranchIcon from "#/icons/u-code-branch.svg?react";
 import { I18nKey } from "#/i18n/declaration";
-import { CONTEXT_MENU_ICON_TEXT_CLASSNAME } from "#/utils/constants";
 
-const contextMenuListItemClassName =
-  "cursor-pointer p-0 h-auto hover:bg-transparent !w-auto whitespace-nowrap";
 interface GitToolsSubmenuProps {
   onClose: () => void;
 }
@@ -57,55 +54,35 @@ export function GitToolsSubmenu({ onClose }: GitToolsSubmenuProps) {
   };
 
   return (
-    <ContextMenu
-      testId="git-tools-submenu"
-      className="text-white bg-tertiary rounded-[6px] py-[6px] px-1 flex flex-col gap-2 w-max"
-    >
-      <ContextMenuListItem
-        testId="git-pull-button"
-        onClick={onGitPull}
-        className={contextMenuListItemClassName}
-      >
+    <ContextMenu testId="git-tools-submenu" className="w-max">
+      <ContextMenuListItem testId="git-pull-button" onClick={onGitPull}>
         <ToolsContextMenuIconText
           icon={<ArrowDownIcon width={16} height={16} />}
           text={t(I18nKey.COMMON$GIT_PULL)}
-          className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
         />
       </ContextMenuListItem>
 
-      <ContextMenuListItem
-        testId="git-push-button"
-        onClick={onGitPush}
-        className={contextMenuListItemClassName}
-      >
+      <ContextMenuListItem testId="git-push-button" onClick={onGitPush}>
         <ToolsContextMenuIconText
           icon={<ArrowUpIcon width={16} height={16} />}
           text={t(I18nKey.COMMON$GIT_PUSH)}
-          className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
         />
       </ContextMenuListItem>
 
-      <ContextMenuListItem
-        testId="create-pr-button"
-        onClick={onCreatePR}
-        className={contextMenuListItemClassName}
-      >
+      <ContextMenuListItem testId="create-pr-button" onClick={onCreatePR}>
         <ToolsContextMenuIconText
           icon={<PrIcon width={16} height={16} />}
           text={t(I18nKey.COMMON$CREATE_PR)}
-          className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
         />
       </ContextMenuListItem>
 
       <ContextMenuListItem
         testId="create-new-branch-button"
         onClick={onCreateNewBranch}
-        className={contextMenuListItemClassName}
       >
         <ToolsContextMenuIconText
           icon={<CodeBranchIcon width={16} height={16} />}
           text={t(I18nKey.COMMON$CREATE_NEW_BRANCH)}
-          className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
         />
       </ContextMenuListItem>
     </ContextMenu>

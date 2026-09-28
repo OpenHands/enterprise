@@ -9,6 +9,7 @@ const mockNavItem = {
   to: "/settings/test",
   icon: <span data-testid="test-icon">Icon</span>,
   text: I18nKey.SETTINGS$NAV_API_KEYS,
+  subtitle: "SETTINGS$PAGE_API_KEYS_SUBLINE",
 };
 
 const renderSettingsNavLink = (
@@ -61,6 +62,7 @@ describe("SettingsNavLink", () => {
       to: "/settings/secrets",
       icon: <span>Icon</span>,
       text: I18nKey.SETTINGS$NAV_SECRETS,
+      subtitle: "SETTINGS$PAGE_SECRETS_SUBLINE",
     };
 
     // Act

@@ -24,7 +24,7 @@ def _make_mock_event_service(search_return=None, batch_get_return=None):
 
 
 @pytest.fixture
-def test_client():
+def test_client(app_db_session):
     """Create a test client with the actual event router and mocked dependencies.
 
     We override check_session_api_key to bypass auth checks.

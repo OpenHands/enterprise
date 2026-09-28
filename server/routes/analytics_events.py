@@ -65,7 +65,7 @@ class CreatePrButtonClickedEvent(BaseModel):
 
 
 class CanvasAuthenticatedEvent(BaseModel):
-    """A signed-in user successfully reached the Agent Canvas application."""
+    """Canvas has authenticated against the main app cookie session."""
 
     event_type: Literal['canvas_authenticated']
     client_version: str = Field(min_length=1, max_length=64)

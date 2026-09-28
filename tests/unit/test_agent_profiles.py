@@ -4,7 +4,7 @@ Covers the ``AgentProfiles`` container (SDK ``AgentProfileStoreProtocol``
 conformance), the flat ``/api/agent-profiles`` router, the LLM-profile FK guard
 wired into ``org_profiles``, and ``SaasSettingsStore._resolve_active_agent_profile``.
 Mirrors the harness in ``test_org_profiles.py``: handlers are called directly
-(``Depends`` resolved as kwargs) against a real SQLite Org row.
+(``Depends`` resolved as kwargs) against a real Org row.
 """
 
 import uuid
@@ -184,7 +184,7 @@ def test_member_mcp_config_migrates_legacy_wrapper_and_scalar_auth():
     assert auth.to_http_headers() == {'Authorization': 'Bearer legacy-token'}
 
 
-# ── Router integration (real Org row over SQLite) ──────────────────────────
+# ── Router integration (real Org row) ──────────────────────────────────────
 
 
 @pytest.fixture

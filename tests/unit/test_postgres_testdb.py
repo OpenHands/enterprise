@@ -93,9 +93,6 @@ def test_foreign_keys_are_enforced(engine: Engine):
     # violation as a ProgrammingError, where asyncpg reports IntegrityError.
     with pytest.raises(DatabaseError), engine.begin() as conn:
         conn.execute(
-            text(
-                'INSERT INTO "user" (id, current_org_id, is_disabled) '
-                'VALUES (:id, :org_id, false)'
-            ),
+            text('INSERT INTO "user" (id, current_org_id) VALUES (:id, :org_id)'),
             {'id': str(uuid.uuid4()), 'org_id': str(uuid.uuid4())},
         )
