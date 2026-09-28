@@ -1178,6 +1178,133 @@ async def test_get_user_orgs_paginated_ordering(async_session_maker, mock_litell
     assert orgs[2].name == 'Zebra Org'
 
 
+@pytest.mark.asyncio
+async def test_get_user_orgs_paginated_filters_by_exact_name(
+    async_session_maker, mock_litellm_api
+):
+    """
+    GIVEN: User is a member of organizations named 'Acme' and 'Acme Corp'
+    WHEN: get_user_orgs_paginated is called with name='Acme'
+    THEN: Only the organization whose name matches exactly is returned
+    """
+    # Arrange
+    user_id = uuid.uuid4()
+
+    async with async_session_maker() as session:
+        org1 = Org(name='Acme')
+        org2 = Org(name='Acme Corp')
+        session.add_all([org1, org2])
+        await session.flush()
+
+        user = User(id=user_id, current_org_id=org1.id)
+        role = Role(id=1, name='member', rank=2)
+        session.add_all([user, role])
+        await session.flush()
+
+        member1 = OrgMember(
+            org_id=org1.id, user_id=user_id, role_id=1, llm_api_key='key1'
+        )
+        member2 = OrgMember(
+            org_id=org2.id, user_id=user_id, role_id=1, llm_api_key='key2'
+        )
+        session.add_all([member1, member2])
+        await session.commit()
+
+    # Act
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        orgs, next_page_id = await OrgStore.get_user_orgs_paginated(
+            user_id=user_id, name='Acme'
+        )
+
+    # Assert
+    assert [org.name for org in orgs] == ['Acme']
+    assert next_page_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_user_orgs_paginated_name_filter_is_case_sensitive(
+    async_session_maker, mock_litellm_api
+):
+    """
+    GIVEN: User is a member of an organization named 'Acme'
+    WHEN: get_user_orgs_paginated is called with name='acme'
+    THEN: No organizations are returned
+    """
+    # Arrange
+    user_id = uuid.uuid4()
+
+    async with async_session_maker() as session:
+        org = Org(name='Acme')
+        session.add(org)
+        await session.flush()
+
+        user = User(id=user_id, current_org_id=org.id)
+        role = Role(id=1, name='member', rank=2)
+        session.add_all([user, role])
+        await session.flush()
+
+        member = OrgMember(
+            org_id=org.id, user_id=user_id, role_id=1, llm_api_key='key1'
+        )
+        session.add(member)
+        await session.commit()
+
+    # Act
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        orgs, next_page_id = await OrgStore.get_user_orgs_paginated(
+            user_id=user_id, name='acme'
+        )
+
+    # Assert
+    assert orgs == []
+    assert next_page_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_user_orgs_paginated_name_filter_excludes_non_member_orgs(
+    async_session_maker, mock_litellm_api
+):
+    """
+    GIVEN: An organization named 'Other Org' exists but the user is not a member
+    WHEN: get_user_orgs_paginated is called with name='Other Org'
+    THEN: No organizations are returned
+    """
+    # Arrange
+    user_id = uuid.uuid4()
+    other_user_id = uuid.uuid4()
+
+    async with async_session_maker() as session:
+        own_org = Org(name='My Org')
+        other_org = Org(name='Other Org')
+        session.add_all([own_org, other_org])
+        await session.flush()
+
+        user = User(id=user_id, current_org_id=own_org.id)
+        other_user = User(id=other_user_id, current_org_id=other_org.id)
+        role = Role(id=1, name='member', rank=2)
+        session.add_all([user, other_user, role])
+        await session.flush()
+
+        member = OrgMember(
+            org_id=own_org.id, user_id=user_id, role_id=1, llm_api_key='key1'
+        )
+        other_member = OrgMember(
+            org_id=other_org.id, user_id=other_user_id, role_id=1, llm_api_key='key2'
+        )
+        session.add_all([member, other_member])
+        await session.commit()
+
+    # Act
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        orgs, next_page_id = await OrgStore.get_user_orgs_paginated(
+            user_id=user_id, name='Other Org'
+        )
+
+    # Assert
+    assert orgs == []
+    assert next_page_id is None
+
+
 def test_orphaned_user_error_contains_user_ids():
     """
     GIVEN: OrphanedUserError is created with a list of user IDs
@@ -1199,9 +1326,6 @@ def test_orphaned_user_error_contains_user_ids():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_sole_org_requester_is_deleted(
     async_session_maker, mock_litellm_api
 ):
@@ -1274,9 +1398,6 @@ async def test_delete_org_cascade_sole_org_requester_is_deleted(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_keeps_user_with_alternative_org(
     async_session_maker, mock_litellm_api
 ):
@@ -1339,9 +1460,6 @@ async def test_delete_org_cascade_keeps_user_with_alternative_org(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_raises_for_non_requester_orphans(
     async_session_maker, mock_litellm_api
 ):
@@ -1434,8 +1552,6 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
     With passive_deletes=True on the relationship, SQLAlchemy defers to the
     database's CASCADE constraint instead of trying to nullify the foreign key.
 
-    Note: SQLite doesn't enforce CASCADE by default, so we only verify that
-    the deletion succeeds. In production (PostgreSQL), CASCADE handles cleanup.
     """
     from datetime import datetime, timedelta
 
@@ -1496,10 +1612,12 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
         session.delete(org)
         session.commit()  # Success indicates passive_deletes=True is working
 
-    # Assert - Organization should be deleted
+    # Assert - the org is gone, and CASCADE took the invitation with it
     with session_maker() as session:
         deleted_org = session.query(Org).filter(Org.id == org_id).first()
         assert deleted_org is None
+        remaining = session.query(OrgInvitation).filter_by(org_id=org_id).count()
+        assert remaining == 0
 
 
 # =============================================================================
@@ -1675,7 +1793,7 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
     org_id = uuid.uuid4()
     admin_user_id = uuid.uuid4()
     member_user_id = uuid.uuid4()
-    managed_url = 'https://litellm.example.com'
+    managed_url = 'https://llm-proxy.app.all-hands.dev'
 
     async with async_session_maker() as session:
         role = Role(name='member', rank=2)
@@ -1901,7 +2019,7 @@ async def test_ensure_managed_key_returns_existing_when_owner_and_auth_valid(
     """When the key is registered AND passes auth verification, return it."""
     user_id = uuid.uuid4()
     org_id = uuid.uuid4()
-    managed_url = 'http://test.url'
+    managed_url = 'https://llm-proxy.app.all-hands.dev'
 
     member = MagicMock(spec=OrgMember)
     member.llm_api_key = SecretStr('existing-managed-key')
@@ -1954,7 +2072,7 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
     """When the key is registered but fails auth verification, rotate it."""
     user_id = uuid.uuid4()
     org_id = uuid.uuid4()
-    managed_url = 'http://test.url'
+    managed_url = 'https://llm-proxy.app.all-hands.dev'
 
     member = MagicMock(spec=OrgMember)
     member.llm_api_key = SecretStr('stale-managed-key')

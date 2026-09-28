@@ -12,17 +12,7 @@ import CircuitIcon from "#/icons/u-circuit.svg?react";
 import SettingsIcon from "#/icons/settings.svg?react";
 import CheckIcon from "#/icons/checkmark.svg?react";
 import { cn } from "#/utils/utils";
-import { CONTEXT_MENU_ICON_TEXT_CLASSNAME } from "#/utils/constants";
 import type { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
-
-const itemClassName = cn(
-  "cursor-pointer p-0 h-auto hover:bg-transparent",
-  CONTEXT_MENU_ICON_TEXT_CLASSNAME,
-);
-
-// Profile rows are two lines (name + model), so they need auto height —
-// unlike `itemClassName`, which keeps the single-line Settings link compact.
-const profileItemClassName = "cursor-pointer p-0 h-auto hover:bg-transparent";
 
 interface SwitchProfileContextMenuProps {
   profiles: LlmProfileSummary[];
@@ -75,20 +65,19 @@ export function SwitchProfileContextMenu({
             key={profile.name}
             testId={`switch-profile-option-${profile.name}`}
             onClick={(event) => handleSelect(event, profile.name)}
-            className={profileItemClassName}
+            className={cn(
+              "h-auto items-start",
+              isActive && "bg-[var(--oh-interactive-hover)]",
+            )}
             ariaCurrent={isActive ? "true" : undefined}
           >
-            {/* Two lines: the profile name, with its provider/model beneath
-                (matches agent-canvas). Full model also in the title tooltip. */}
+            {/* Two lines: the profile name, with its provider/model beneath. */}
             <div
               title={profile.model ?? undefined}
-              className={cn(
-                "flex flex-col gap-0.5 p-2 rounded",
-                isActive ? "bg-[#5C5D62]" : "hover:bg-[#5C5D62]",
-              )}
+              className="flex min-w-0 w-full flex-col gap-0.5"
             >
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
+                <div className="flex min-w-0 items-center gap-2">
                   <CircuitIcon width={16} height={16} className="shrink-0" />
                   <span className="truncate">{profile.name}</span>
                 </div>
@@ -97,7 +86,7 @@ export function SwitchProfileContextMenu({
                 )}
               </div>
               {profile.model && (
-                <span className="block truncate text-xs leading-4 text-gray-400 pl-6">
+                <span className="block truncate pl-6 text-xs leading-4 text-[var(--oh-muted)]">
                   {profile.model}
                 </span>
               )}
@@ -110,12 +99,12 @@ export function SwitchProfileContextMenu({
         to="/settings"
         onClick={onClose}
         data-testid="switch-profile-open-settings"
-        className={cn("block", itemClassName)}
+        className="block"
       >
         <ToolsContextMenuIconText
           icon={<SettingsIcon width={16} height={16} />}
           text={t(I18nKey.MODEL$OPEN_SETTINGS)}
-          className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
+          className="px-2 py-2"
         />
       </Link>
     </ContextMenu>

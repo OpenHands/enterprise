@@ -1,0 +1,60 @@
+name: Budget tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  budgets:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: regression
+            name: Budget regressions
+          - suite: known-issues
+            name: Budget known issues (informational)
+    env:
+      BUDGET_LITELLM_IMAGE: ghcr.io/berriai/litellm-database:1.100.1@sha256:fc44cf7f72786e636dc4dc1032b4e431818abfec9d54b8e04284fdea7ef03e2a
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.32'
+          enable-cache: true
+      - run: uv sync --locked --all-groups --python 3.13
+      - name: Record candidate
+        run: |
+          mkdir -p .pr
+          git rev-parse HEAD > .pr/budget-candidate.txt
+          echo "$BUDGET_LITELLM_IMAGE" >> .pr/budget-candidate.txt
+      - name: Run budget tests
+        id: tests
+        continue-on-error: ${{ matrix.suite == 'known-issues' }}
+        run: uv run python -m tests.integration.budgets.run_readiness --suite "${{ matrix.suite }}"
+      - name: Highlight known failures
+        if: always() && matrix.suite == 'known-issues' && steps.tests.outcome == 'failure'
+        run: echo '::warning::Known budget issues still fail. See the per-test summary and JUnit artifact; this job does not block merging.'
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: budget-${{ matrix.suite }}
+          path: |
+            .pr/budget-${{ matrix.suite }}.xml
+            .pr/budget-candidate.txt
+          include-hidden-files: true

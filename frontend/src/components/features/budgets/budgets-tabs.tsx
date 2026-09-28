@@ -1,21 +1,40 @@
 /* eslint-disable i18next/no-literal-string */
 import React from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
   EmailIcon,
   HashIcon,
   SearchIcon,
   SlackIcon,
-  TrashIcon,
 } from "#/components/shared/icons/inline-icons";
+import { BrandButton } from "#/components/features/settings/brand-button";
+import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
+import EditIcon from "#/icons/u-edit.svg?react";
+import DeleteIcon from "#/icons/u-delete.svg?react";
+import { I18nKey } from "#/i18n/declaration";
 import {
-  Avatar,
   PillBadge,
   SpendMeter,
   StatusPill,
-  Toggle,
   UserProgressBar,
 } from "./budgets-components";
+import { cn } from "#/utils/utils";
+import {
+  formControlFieldClassName,
+  formControlInlineInputClassName,
+  formControlShellClassName,
+} from "#/utils/form-control-classes";
+import {
+  settingsListContainerClassName,
+  settingsListDividerClassName,
+  settingsListIconActionButtonClassName,
+  settingsListRowClassName,
+  settingsListTableCellClassName,
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+  settingsListTableRowClassName,
+} from "#/utils/settings-list-classes";
 
 export type BudgetThreshold = {
   percentage: number;
@@ -39,10 +58,24 @@ export type BudgetUserRow = {
   statusColor: "green" | "yellow" | "red";
 };
 
+const BILLING_CYCLE_ITEMS = [
+  { key: "1st", label: "1st of each month" },
+  { key: "15th", label: "15th of each month" },
+];
+
+const STATUS_FILTER_ITEMS = [
+  { key: "all", label: "All statuses" },
+  { key: "over80", label: "Over 80%" },
+  { key: "over90", label: "Over 90%" },
+  { key: "overCap", label: "Over cap" },
+  { key: "onTrack", label: "On track" },
+  { key: "noCap", label: "No cap" },
+  { key: "disabled", label: "Disabled" },
+];
+
 interface OrganizationBudgetTabProps {
-  orgBudgetEnabled: boolean;
-  onToggleOrgBudget: (value: boolean) => void;
   currentSpend: number | null;
+  currentMonthlyLimit: number | null;
   monthlyLimitValue: number | null;
   cycleLabel: string;
   percentage: number | null;
@@ -59,12 +92,15 @@ interface OrganizationBudgetTabProps {
   reconciliationError: string | null;
   desiredTeamMaxBudget: number | null;
   appliedTeamMaxBudget: number | null;
+  cycleStartSpend: number | null;
   unmappedSpend: number | null;
   unmappedMemberCount: number | null;
   monthlyLimit: string;
   onMonthlyLimitChange: (value: string) => void;
   billingCycle: string;
   onBillingCycleChange: (value: string) => void;
+  nextReset: Date;
+  resetDayChanged: boolean;
   thresholds: BudgetThreshold[];
   onAddThreshold: () => void;
   onDeleteThreshold: (index: number) => void;
@@ -72,18 +108,17 @@ interface OrganizationBudgetTabProps {
   onToggleSlack: (index: number) => void;
   emailIntegrationEnabled: boolean;
   slackIntegrationEnabled: boolean;
+  slackConnected: boolean;
   slackChannel: string;
   onSlackChannelChange: (value: string) => void;
-  onReset: () => void;
   onSave: () => void;
   isSaving: boolean;
   isMonthlyLimitValid: boolean;
 }
 
 export function OrganizationBudgetTab({
-  orgBudgetEnabled,
-  onToggleOrgBudget,
   currentSpend,
+  currentMonthlyLimit,
   monthlyLimitValue,
   cycleLabel,
   percentage,
@@ -95,12 +130,15 @@ export function OrganizationBudgetTab({
   reconciliationError,
   desiredTeamMaxBudget,
   appliedTeamMaxBudget,
+  cycleStartSpend,
   unmappedSpend,
   unmappedMemberCount,
   monthlyLimit,
   onMonthlyLimitChange,
   billingCycle,
   onBillingCycleChange,
+  nextReset,
+  resetDayChanged,
   thresholds,
   onAddThreshold,
   onDeleteThreshold,
@@ -108,13 +146,14 @@ export function OrganizationBudgetTab({
   onToggleSlack,
   emailIntegrationEnabled,
   slackIntegrationEnabled,
+  slackConnected,
   slackChannel,
   onSlackChannelChange,
-  onReset,
   onSave,
   isSaving,
   isMonthlyLimitValid,
 }: OrganizationBudgetTabProps) {
+  const { t, i18n } = useTranslation();
   const observedAtLabel = spendObservedAt
     ? new Date(spendObservedAt).toLocaleString()
     : null;
@@ -131,38 +170,31 @@ export function OrganizationBudgetTab({
       "Pending — the desired policy has not yet been verified in LiteLLM.",
     healthy: "Healthy — LiteLLM has verified the desired budget policy.",
     degraded:
-      "Degraded — the desired policy is saved, but LiteLLM is enforcing different or incomplete state.",
+      "Degraded — The last budget update could not be completed or verified. Review the applied limits below and retry.",
     failed:
       "Failed — the applied LiteLLM policy could not be read or verified.",
   }[reconciliationState];
 
   return (
-    <div className="bg-[#151D2A] border border-[#262626] rounded-lg p-6">
-      <div className="flex items-start justify-between mb-6">
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-medium text-white mb-1">
+          <h2 className="text-lg font-medium text-foreground mb-1">
             Organization monthly budget
           </h2>
-          <p className="text-sm text-[#8C8C8C]">
-            Track total spend across your org and get alerted before you hit
-            your cap.
+          <p className="text-sm text-muted">
+            {emailIntegrationEnabled || slackConnected
+              ? "Track total spend across your org and get alerted before you hit your cap."
+              : "Track total spend across your organization against its monthly cap."}
           </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-[#8C8C8C]">Enable budget</span>
-          <Toggle
-            enabled={orgBudgetEnabled}
-            onChange={onToggleOrgBudget}
-            label="Enable organization budget"
-          />
         </div>
       </div>
 
-      <div className="mb-6">
+      <div className="rounded-lg border border-border-subtle bg-base-secondary p-6">
         <div
           className={`mb-4 rounded-lg border px-4 py-3 text-sm ${
             spendStatus === "live"
-              ? "border-[#262626] bg-[#0B0F17] text-[#8C8C8C]"
+              ? "border-[var(--oh-border)] bg-tertiary text-muted"
               : "border-amber-500/30 bg-amber-500/10 text-amber-300"
           }`}
         >
@@ -200,6 +232,19 @@ export function OrganizationBudgetTab({
           )}
           {reconciliationError ? ` ${reconciliationError}` : ""}
         </div>
+        {desiredTeamMaxBudget !== null && (
+          <p className="mb-4 text-xs text-[var(--oh-muted)]">
+            {cycleStartSpend !== null && cycleStartSpend > 0
+              ? t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND, {
+                  cap: `$${desiredTeamMaxBudget.toLocaleString()}`,
+                  priorSpend: `$${cycleStartSpend.toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}`,
+                })
+              : t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER)}
+          </p>
+        )}
         {syncStatus === "error" && !reconciliationError && (
           <div
             role="alert"
@@ -210,7 +255,7 @@ export function OrganizationBudgetTab({
             {syncError ? ` ${syncError}` : ""}
           </div>
         )}
-        <p className="mb-4 text-xs text-[#6B6B6B]">
+        <p className="mb-4 text-xs text-[var(--oh-muted)]">
           Includes app, automation, and SDK requests routed through this
           deployment&apos;s LiteLLM proxy. Requests sent directly to an external
           provider are outside this budget.
@@ -228,9 +273,9 @@ export function OrganizationBudgetTab({
                 })} of this cycle's spend is attributed to them.`}
           </div>
         )}
-        <div className="flex items-baseline justify-between mb-3">
+        <div className="mb-3 flex items-baseline justify-between">
           <div>
-            <span className="text-3xl font-bold text-white">
+            <span className="text-3xl font-bold text-foreground">
               {currentSpend === null
                 ? "—"
                 : `$${currentSpend.toLocaleString("en-US", {
@@ -238,35 +283,35 @@ export function OrganizationBudgetTab({
                     maximumFractionDigits: 2,
                   })}`}
             </span>
-            <span className="text-[#8C8C8C] ml-2">
-              {monthlyLimitValue
-                ? `of $${monthlyLimitValue.toLocaleString()} spent in ${cycleLabel}`
+            <span className="ml-2 text-muted">
+              {currentMonthlyLimit
+                ? `of $${currentMonthlyLimit.toLocaleString()} spent in ${cycleLabel}`
                 : `spent in ${cycleLabel}`}
             </span>
           </div>
-          <span className="text-xl font-semibold text-yellow-400">
-            {monthlyLimitValue && percentage !== null
+          <span className="text-xl font-semibold text-logo">
+            {currentMonthlyLimit && percentage !== null
               ? `${percentage.toFixed(1)}%`
               : "—"}
           </span>
         </div>
         {percentage === null ? (
-          <div className="h-3 rounded-full bg-[#0B0F17]" />
+          <div className="h-3 rounded-full bg-tertiary" />
         ) : (
           <SpendMeter percentage={percentage} />
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-4 mb-6">
+      <div className="grid grid-cols-2 gap-4">
         <div>
           <label
             htmlFor="org-monthly-limit"
-            className="block text-sm text-[#8C8C8C] mb-2"
+            className="mb-2 block text-sm text-white"
           >
             Monthly limit
           </label>
-          <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6B6B6B]">
+          <div className={cn(formControlShellClassName, "w-full")}>
+            <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
               $
             </span>
             <input
@@ -274,207 +319,211 @@ export function OrganizationBudgetTab({
               type="number"
               value={monthlyLimit}
               onChange={(event) => onMonthlyLimitChange(event.target.value)}
-              className="w-full pl-7 pr-4 py-2 bg-[#0B0F17] border border-[#262626] rounded-lg text-white focus:outline-none focus:border-blue-500"
+              className={cn(formControlInlineInputClassName, "text-white")}
             />
           </div>
         </div>
-        <div>
-          <label
-            htmlFor="org-billing-cycle"
-            className="block text-sm text-[#8C8C8C] mb-2"
-          >
-            Billing cycle resets
-          </label>
-          <select
-            id="org-billing-cycle"
-            value={billingCycle}
-            onChange={(event) => onBillingCycleChange(event.target.value)}
-            className="w-full px-4 py-2 bg-[#0B0F17] border border-[#262626] rounded-lg text-white focus:outline-none focus:border-blue-500"
-          >
-            <option value="1st">1st of each month</option>
-            <option value="15th">15th of each month</option>
-          </select>
-        </div>
+        <SettingsDropdownInput
+          testId="org-billing-cycle"
+          name="org-billing-cycle"
+          label="Billing cycle resets"
+          items={BILLING_CYCLE_ITEMS}
+          selectedKey={billingCycle}
+          isClearable={false}
+          onSelectionChange={(key) => {
+            if (key != null) onBillingCycleChange(String(key));
+          }}
+        />
       </div>
 
-      <div className="mb-6">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <h3 className="text-sm font-medium text-white mb-1">
-              Alert thresholds
-            </h3>
-            <p className="text-xs text-[#6B6B6B]">
-              Add one or more thresholds. Each can email admins, post to Slack,
-              or both.
-            </p>
-            {(!emailIntegrationEnabled || !slackIntegrationEnabled) && (
-              <div className="mt-2 space-y-1 text-xs text-amber-400">
-                {!emailIntegrationEnabled && (
-                  <p>
-                    Email alerts require RESEND_API_KEY or SMTP_* env vars set
-                    in the deployment environment and a restart.
-                  </p>
-                )}
-                {!slackIntegrationEnabled && (
-                  <p>
-                    Slack alerts require the Slack app to be configured in the
-                    deployment (SLACK_* env vars). After a restart, connect it
-                    in{" "}
-                    <Link
-                      to="/settings/integrations"
-                      className="underline underline-offset-2"
-                    >
-                      Settings → Integrations
-                    </Link>
-                    .
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={onAddThreshold}
-            className="px-3 py-1.5 text-sm text-blue-400 border border-blue-400/30 rounded-lg hover:bg-blue-500/10 transition-colors"
-          >
-            + Add threshold
-          </button>
-        </div>
-
-        <div className="space-y-3">
-          {thresholds.map((threshold, index) => {
-            const thresholdAmount = monthlyLimitValue
-              ? (monthlyLimitValue * threshold.percentage) / 100
-              : null;
-            return (
-              <div
-                key={threshold.percentage}
-                className="flex items-center gap-4 p-3 bg-[#0B0F17] rounded-lg border border-[#262626]"
-              >
-                <div className="w-16">
-                  <span className="text-white font-medium">
-                    {threshold.percentage}%
-                  </span>
-                </div>
-                <div className="w-28">
-                  <span className="text-[#8C8C8C] text-sm">
-                    {thresholdAmount !== null
-                      ? `Triggers at $${thresholdAmount.toLocaleString()}`
-                      : "Set a monthly limit to calculate"}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 flex-1">
-                  <button
-                    type="button"
-                    onClick={() => onToggleEmail(index)}
-                    disabled={!emailIntegrationEnabled}
-                    className="flex items-center gap-1.5 disabled:cursor-not-allowed"
-                    title={
-                      emailIntegrationEnabled
-                        ? "Email org admins"
-                        : "Email alerts require RESEND_API_KEY or SMTP_* env vars in deployment (restart required)"
-                    }
-                  >
-                    <PillBadge
-                      active={
-                        emailIntegrationEnabled && threshold.email_enabled
-                      }
-                      icon={<EmailIcon />}
-                      label="Email org admins"
-                      disabled={!emailIntegrationEnabled}
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onToggleSlack(index)}
-                    disabled={!slackIntegrationEnabled}
-                    className="flex items-center gap-1.5 disabled:cursor-not-allowed"
-                    title={
-                      slackIntegrationEnabled
-                        ? "Post to Slack"
-                        : "Slack integration must be configured in deployment (restart required)"
-                    }
-                  >
-                    <PillBadge
-                      active={
-                        slackIntegrationEnabled && threshold.slack_enabled
-                      }
-                      icon={<SlackIcon />}
-                      label="# Post to Slack"
-                      disabled={!slackIntegrationEnabled}
-                    />
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onDeleteThreshold(index)}
-                  aria-label={`Delete ${threshold.percentage}% threshold`}
-                  className="p-1.5 text-[#6B6B6B] hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                >
-                  <TrashIcon />
-                </button>
-              </div>
-            );
+      <div className="space-y-1 text-sm text-muted" aria-live="polite">
+        <p>
+          {t("SETTINGS$BUDGETS_NEXT_RESET", {
+            date: nextReset.toLocaleDateString(i18n.language, {
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+              timeZone: "UTC",
+            }),
           })}
-        </div>
-      </div>
-
-      <div className="mb-6 p-4 bg-[#0B0F17] rounded-lg border border-[#262626]">
-        <label
-          htmlFor="slack-channel"
-          className="block text-sm text-[#8C8C8C] mb-2"
-        >
-          Slack channel
-        </label>
-        <div className="relative">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6B6B6B]">
-            <HashIcon />
-          </span>
-          <input
-            id="slack-channel"
-            type="text"
-            value={slackChannel}
-            onChange={(event) => {
-              if (!slackIntegrationEnabled) return;
-              onSlackChannelChange(event.target.value);
-            }}
-            disabled={!slackIntegrationEnabled}
-            placeholder={
-              slackIntegrationEnabled
-                ? "#budget-alerts"
-                : "Connect Slack to set a channel"
-            }
-            className="w-full pl-9 pr-4 py-2 bg-[#151D2A] border border-[#262626] rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-60 disabled:cursor-not-allowed"
-          />
-        </div>
-        {slackIntegrationEnabled ? (
-          <p className="text-xs text-[#6B6B6B] mt-2">
-            Used by any threshold with &apos;Post to Slack&apos; enabled.
-          </p>
-        ) : (
-          <p className="text-xs text-amber-400 mt-2">
-            Slack alerts are disabled. Please integrate Slack to select a
-            channel.
-          </p>
+        </p>
+        {resetDayChanged && (
+          <p>{t("SETTINGS$BUDGETS_RESET_DAY_CHANGE_HELPER")}</p>
         )}
       </div>
 
-      <div className="flex justify-end gap-3">
-        <button
+      {(emailIntegrationEnabled || slackIntegrationEnabled) && (
+        <>
+          <div>
+            <div className="flex items-center justify-between mb-3 gap-4">
+              <div>
+                <h3 className="text-sm font-medium text-foreground mb-1">
+                  Alert thresholds
+                </h3>
+                <p className="text-xs text-[var(--oh-muted)]">
+                  Notify organization admins when spending reaches a threshold
+                  using the available channels below.
+                </p>
+              </div>
+              <BrandButton
+                type="button"
+                variant="secondary"
+                onClick={onAddThreshold}
+                isDisabled={!emailIntegrationEnabled && !slackConnected}
+                className="shrink-0 whitespace-nowrap"
+              >
+                + Add threshold
+              </BrandButton>
+            </div>
+
+            <div
+              className={cn(
+                settingsListContainerClassName,
+                settingsListDividerClassName,
+              )}
+            >
+              {thresholds.map((threshold, index) => {
+                const thresholdAmount = monthlyLimitValue
+                  ? (monthlyLimitValue * threshold.percentage) / 100
+                  : null;
+                return (
+                  <div
+                    key={threshold.percentage}
+                    className={cn(
+                      settingsListRowClassName,
+                      "h-auto min-h-12 gap-4 py-3",
+                    )}
+                  >
+                    <div className="w-16 shrink-0">
+                      <span className="text-foreground font-medium">
+                        {threshold.percentage}%
+                      </span>
+                    </div>
+                    <div className="w-28 shrink-0">
+                      <span className="text-muted text-sm">
+                        {thresholdAmount !== null
+                          ? `Triggers at $${thresholdAmount.toLocaleString()}`
+                          : "Set a monthly limit to calculate"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      {emailIntegrationEnabled && (
+                        <button
+                          type="button"
+                          onClick={() => onToggleEmail(index)}
+                          aria-label="Email org admins"
+                          aria-pressed={threshold.email_enabled}
+                          title="Email org admins"
+                        >
+                          <PillBadge
+                            active={threshold.email_enabled}
+                            icon={<EmailIcon />}
+                            label="Email org admins"
+                          />
+                        </button>
+                      )}
+                      {slackIntegrationEnabled && (
+                        <button
+                          type="button"
+                          onClick={() => onToggleSlack(index)}
+                          aria-label="# Post to Slack"
+                          aria-pressed={
+                            slackConnected && threshold.slack_enabled
+                          }
+                          disabled={!slackConnected}
+                          className="disabled:cursor-not-allowed"
+                          title={
+                            slackConnected
+                              ? "Post to Slack"
+                              : "Connect Slack to enable alerts"
+                          }
+                        >
+                          <PillBadge
+                            active={slackConnected && threshold.slack_enabled}
+                            icon={<SlackIcon />}
+                            label="# Post to Slack"
+                            disabled={!slackConnected}
+                          />
+                        </button>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteThreshold(index)}
+                      disabled={!emailIntegrationEnabled && !slackConnected}
+                      aria-label={`Delete ${threshold.percentage}% threshold`}
+                      className={cn(
+                        settingsListIconActionButtonClassName,
+                        "disabled:cursor-not-allowed disabled:opacity-50",
+                      )}
+                    >
+                      <DeleteIcon width={16} height={16} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {slackIntegrationEnabled && (
+            <div>
+              <label
+                htmlFor="slack-channel"
+                className="mb-2 block text-sm text-white"
+              >
+                Slack channel
+              </label>
+              <div className={cn(formControlShellClassName, "w-full")}>
+                <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
+                  <HashIcon />
+                </span>
+                <input
+                  id="slack-channel"
+                  type="text"
+                  value={slackChannel}
+                  onChange={(event) => {
+                    if (!slackConnected) return;
+                    onSlackChannelChange(event.target.value);
+                  }}
+                  disabled={!slackConnected}
+                  placeholder={
+                    slackConnected
+                      ? "#budget-alerts"
+                      : "Connect Slack to set a channel"
+                  }
+                  className={cn(formControlInlineInputClassName, "text-white")}
+                />
+              </div>
+              {slackConnected ? (
+                <p className="text-xs text-[var(--oh-muted)] mt-2">
+                  Used by any threshold with &apos;Post to Slack&apos; enabled.
+                </p>
+              ) : (
+                <p className="text-xs text-muted mt-2">
+                  <Link
+                    to="/settings/integrations"
+                    className="underline underline-offset-2"
+                  >
+                    Connect Slack in Settings → Integrations
+                  </Link>{" "}
+                  to enable alerts. Ask your administrator to check the
+                  workspace configuration if Slack is already connected.
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="flex justify-start gap-3">
+        <BrandButton
           type="button"
-          onClick={onReset}
-          className="px-4 py-2 text-sm text-[#8C8C8C] bg-[#0B0F17] border border-[#262626] rounded-lg hover:bg-[#1E1E1E] transition-colors"
-        >
-          Reset
-        </button>
-        <button
-          type="button"
+          variant="primary"
           onClick={onSave}
-          disabled={isSaving || !isMonthlyLimitValid}
-          className="px-4 py-2 text-sm text-white bg-blue-500 rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-60"
+          isDisabled={isSaving || !isMonthlyLimitValid}
         >
           Save changes
-        </button>
+        </BrandButton>
       </div>
     </div>
   );
@@ -495,36 +544,34 @@ export function DefaultBudgetsTab({
   onSave,
   isSaving,
 }: DefaultBudgetsTabProps) {
+  const { t } = useTranslation();
   return (
-    <div className="bg-[#151D2A] border border-[#262626] rounded-lg p-6">
-      <div className="mb-6">
-        <h2 className="text-lg font-medium text-white mb-1">
-          Default budget for new users
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-medium text-foreground mb-1">
+          {t(I18nKey.SETTINGS$BUDGETS_DEFAULT_FOR_USERS)}
         </h2>
-        <p className="text-sm text-[#8C8C8C]">
-          Applied automatically when a user joins your organization. Existing
-          users keep their current budgets.
+        <p className="text-sm text-muted">
+          {t(I18nKey.SETTINGS$BUDGETS_DEFAULT_FOR_USERS_DESCRIPTION)}
         </p>
       </div>
 
       <div className="grid grid-cols-2 gap-6">
         <div>
-          <div className="block text-sm text-[#8C8C8C] mb-2">
-            Budget cadence
-          </div>
-          <div className="px-4 py-2 bg-[#0B0F17] border border-[#262626] rounded-lg text-sm text-white">
+          <div className="block text-sm text-white mb-2">Budget cadence</div>
+          <div className={cn(formControlFieldClassName, "flex items-center")}>
             Monthly
           </div>
         </div>
         <div>
           <label
             htmlFor="default-budget-amount"
-            className="block text-sm text-[#8C8C8C] mb-2"
+            className="mb-2 block text-sm text-white"
           >
             Default amount
           </label>
-          <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6B6B6B]">
+          <div className={cn(formControlShellClassName, "w-full")}>
+            <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
               $
             </span>
             <input
@@ -532,30 +579,30 @@ export function DefaultBudgetsTab({
               type="number"
               value={defaultAmount}
               onChange={(event) => onDefaultAmountChange(event.target.value)}
-              className="w-full pl-7 pr-4 py-2 bg-[#0B0F17] border border-[#262626] rounded-lg text-white focus:outline-none focus:border-blue-500"
+              className={cn(formControlInlineInputClassName, "text-white")}
             />
           </div>
         </div>
       </div>
 
-      <div className="mt-6">
-        <div className="block text-sm text-[#8C8C8C] mb-2">Preview</div>
-        <div className="p-4 bg-[#0B0F17] rounded-lg border border-[#262626]">
-          <p className="text-sm text-[#8C8C8C]">
-            {`New users get up to $${defaultAmountLabel} per month before requiring an increase.`}
-          </p>
-        </div>
+      <div>
+        <div className="block text-sm text-white mb-2">Preview</div>
+        <p className="text-sm text-muted">
+          {t(I18nKey.SETTINGS$BUDGETS_DEFAULT_PREVIEW, {
+            amount: `$${defaultAmountLabel}`,
+          })}
+        </p>
       </div>
 
-      <div className="flex justify-end mt-6">
-        <button
+      <div className="flex justify-start">
+        <BrandButton
           type="button"
+          variant="primary"
           onClick={onSave}
-          disabled={isSaving}
-          className="px-4 py-2 text-sm text-white bg-blue-500 rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-60"
+          isDisabled={isSaving}
         >
           Save default
-        </button>
+        </BrandButton>
       </div>
     </div>
   );
@@ -589,7 +636,7 @@ interface UserOverridesTabProps {
 
 function UserBudgetUsage({ user }: { user: BudgetUserRow }) {
   if (user.usage === null) {
-    return <div className="text-sm text-[#8C8C8C]">Unavailable</div>;
+    return <div className="text-sm text-muted">Unavailable</div>;
   }
 
   if (user.hasLimit) {
@@ -600,7 +647,7 @@ function UserBudgetUsage({ user }: { user: BudgetUserRow }) {
           max={user.maxUsage}
           status={user.statusColor}
         />
-        <div className="mt-1 text-xs text-[#6B6B6B]">
+        <div className="mt-1 text-xs text-[var(--oh-muted)]">
           {`$${user.usage.toLocaleString("en-US", {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2,
@@ -614,7 +661,7 @@ function UserBudgetUsage({ user }: { user: BudgetUserRow }) {
   }
 
   return (
-    <div className="text-sm text-[#8C8C8C]">
+    <div className="text-sm text-muted">
       {`$${user.usage.toLocaleString("en-US", {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
@@ -649,22 +696,20 @@ export function UserOverridesTab({
   onPageChange,
 }: UserOverridesTabProps) {
   return (
-    <div className="bg-[#151D2A] border border-[#262626] rounded-lg p-6">
-      <div className="flex items-start justify-between mb-6">
-        <div>
-          <h2 className="text-lg font-medium text-white mb-1">
-            User budget overrides
-          </h2>
-          <p className="text-sm text-[#8C8C8C]">
-            Override the default for individual users — increase, decrease, or
-            disable.
-          </p>
-        </div>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-medium text-foreground mb-1">
+          User budget overrides
+        </h2>
+        <p className="text-sm text-muted">
+          Override the default for individual users — increase, decrease, or
+          disable.
+        </p>
       </div>
 
-      <div className="flex gap-4 mb-6">
-        <div className="relative flex-1">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6B6B6B]">
+      <div className="flex gap-4 items-end">
+        <div className={cn(formControlShellClassName, "flex-1")}>
+          <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
             <SearchIcon />
           </span>
           <input
@@ -672,41 +717,42 @@ export function UserOverridesTab({
             placeholder="Search users by name or email..."
             value={searchQuery}
             onChange={(event) => onSearchChange(event.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-[#0B0F17] border border-[#262626] rounded-lg text-white placeholder-[#6B6B6B] focus:outline-none focus:border-blue-500"
+            className={cn(formControlInlineInputClassName, "text-white")}
           />
         </div>
-        <select
-          value={statusFilter}
-          onChange={(event) => onStatusFilterChange(event.target.value)}
-          className="px-4 py-2 bg-[#0B0F17] border border-[#262626] rounded-lg text-white focus:outline-none focus:border-blue-500"
-        >
-          <option value="all">All statuses</option>
-          <option value="over80">Over 80%</option>
-          <option value="over90">Over 90%</option>
-          <option value="overCap">Over cap</option>
-          <option value="onTrack">On track</option>
-          <option value="noCap">No cap</option>
-          <option value="disabled">Disabled</option>
-        </select>
+        <div className="w-52 shrink-0">
+          <SettingsDropdownInput
+            testId="budget-status-filter"
+            name="budget-status-filter"
+            items={STATUS_FILTER_ITEMS}
+            selectedKey={statusFilter}
+            isClearable={false}
+            onSelectionChange={(key) => {
+              onStatusFilterChange(key != null ? String(key) : "all");
+            }}
+          />
+        </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-[#262626]">
-              <th className="px-4 py-3 text-left text-xs font-medium text-[#6B6B6B] uppercase tracking-wider">
-                User
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-[#6B6B6B] uppercase tracking-wider">
-                Budget
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-[#6B6B6B] uppercase tracking-wider">
-                Usage
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-[#6B6B6B] uppercase tracking-wider">
-                Status
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-[#6B6B6B] uppercase tracking-wider">
+      <div
+        className={cn(
+          settingsListContainerClassName,
+          "min-w-0 overflow-x-auto",
+        )}
+      >
+        <table className="w-full min-w-max">
+          <thead className={settingsListTableHeadClassName}>
+            <tr>
+              <th className={settingsListTableHeaderCellClassName}>User</th>
+              <th className={settingsListTableHeaderCellClassName}>Budget</th>
+              <th className={settingsListTableHeaderCellClassName}>Usage</th>
+              <th className={settingsListTableHeaderCellClassName}>Status</th>
+              <th
+                className={cn(
+                  settingsListTableHeaderCellClassName,
+                  "text-right",
+                )}
+              >
                 Actions
               </th>
             </tr>
@@ -724,98 +770,135 @@ export function UserOverridesTab({
               return (
                 <tr
                   key={user.user_id}
-                  className="border-b border-[#262626] hover:bg-[#1E1E1E]/50 transition-colors"
+                  className={settingsListTableRowClassName}
                 >
-                  <td className="px-4 py-4">
-                    <div className="flex items-center gap-3">
-                      <Avatar name={user.name} />
-                      <div>
-                        <div className="text-white font-medium">
-                          {user.name}
-                        </div>
-                        <div className="text-sm text-[#6B6B6B]">
-                          {user.email || "-"}
-                        </div>
+                  <td
+                    className={cn(
+                      settingsListTableCellClassName,
+                      "h-auto py-3",
+                    )}
+                  >
+                    <div>
+                      <div className="text-foreground font-medium">
+                        {user.name}
+                      </div>
+                      <div className="text-sm text-[var(--oh-muted)]">
+                        {user.email || "-"}
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-4">
+                  <td
+                    className={cn(
+                      settingsListTableCellClassName,
+                      "h-auto py-3",
+                    )}
+                  >
                     {isEditing ? (
                       <div className="space-y-2">
                         <div className="flex items-center gap-2">
-                          <span className="text-[#6B6B6B]">$</span>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={overrideAmount}
-                            onChange={(event) =>
-                              onOverrideAmountChange(event.target.value)
-                            }
-                            disabled={overrideDisabled}
-                            className="w-28 px-2 py-1 bg-[#0B0F17] border border-[#262626] rounded text-white focus:outline-none focus:border-blue-500 disabled:opacity-60"
-                          />
-                          <span className="text-xs text-[#6B6B6B]">
+                          <div
+                            className={cn(formControlShellClassName, "w-28")}
+                          >
+                            <span
+                              className="ml-3 shrink-0 text-tertiary-alt"
+                              aria-hidden
+                            >
+                              $
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={overrideAmount}
+                              onChange={(event) =>
+                                onOverrideAmountChange(event.target.value)
+                              }
+                              disabled={overrideDisabled}
+                              className={cn(
+                                formControlInlineInputClassName,
+                                "text-white",
+                              )}
+                            />
+                          </div>
+                          <span className="text-xs text-[var(--oh-muted)]">
                             / month
                           </span>
                         </div>
-                        <label className="flex items-center gap-2 text-xs text-[#8C8C8C]">
+                        <label className="flex items-center gap-2 text-xs text-muted">
                           <input
                             type="checkbox"
                             checked={overrideDisabled}
                             onChange={(event) =>
                               onOverrideDisabledChange(event.target.checked)
                             }
-                            className="accent-blue-500"
+                            className="accent-primary"
                           />
                           Disable budget for this user
                         </label>
                       </div>
                     ) : (
                       <>
-                        <div className="text-white">{user.budgetLabel}</div>
-                        <div className="flex items-center gap-1.5 text-xs text-[#6B6B6B]">
+                        <div className="text-foreground">
+                          {user.budgetLabel}
+                        </div>
+                        <div className="flex items-center gap-1.5 text-xs text-[var(--oh-muted)]">
                           {user.is_override && (
-                            <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-primary" />
                           )}
                           {user.budgetNote}
                         </div>
                       </>
                     )}
                   </td>
-                  <td className="px-4 py-4 min-w-[180px]">
+                  <td
+                    className={cn(
+                      settingsListTableCellClassName,
+                      "h-auto py-3 min-w-[180px]",
+                    )}
+                  >
                     <UserBudgetUsage user={user} />
                   </td>
-                  <td className="px-4 py-4">
+                  <td
+                    className={cn(
+                      settingsListTableCellClassName,
+                      "h-auto py-3",
+                    )}
+                  >
                     <StatusPill status={user.status} />
                   </td>
-                  <td className="px-4 py-4 text-right">
+                  <td
+                    className={cn(
+                      settingsListTableCellClassName,
+                      "h-auto py-3 text-right",
+                    )}
+                  >
                     {isEditing ? (
                       <div className="flex items-center justify-end gap-2">
-                        <button
+                        <BrandButton
                           type="button"
+                          variant="primary"
                           onClick={() => onSaveOverride(user.user_id)}
-                          disabled={!canSaveOverride || isSavingOverride}
-                          className="px-3 py-1.5 text-sm text-white bg-blue-500 rounded hover:bg-blue-600 transition-colors disabled:opacity-60"
+                          isDisabled={!canSaveOverride || isSavingOverride}
                         >
                           Save
-                        </button>
-                        <button
+                        </BrandButton>
+                        <BrandButton
                           type="button"
+                          variant="secondary"
                           onClick={onCancelEditing}
-                          className="px-3 py-1.5 text-sm text-[#8C8C8C] hover:text-white hover:bg-[#262626] rounded transition-colors"
                         >
                           Cancel
-                        </button>
+                        </BrandButton>
                       </div>
                     ) : (
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="ml-auto flex w-fit items-center justify-end gap-0.5">
                         <button
                           type="button"
                           onClick={() => onStartEditing(user)}
-                          className="px-3 py-1.5 text-sm text-[#8C8C8C] hover:text-white hover:bg-[#262626] rounded transition-colors"
+                          aria-label={`Edit budget for ${user.name}`}
+                          className={settingsListIconActionButtonClassName}
                         >
-                          Edit
+                          <EditIcon width={16} height={16} />
                         </button>
                         {user.is_override && (
                           <button
@@ -823,9 +906,12 @@ export function UserOverridesTab({
                             onClick={() => onRemoveOverride(user.user_id)}
                             disabled={isDeletingOverride}
                             aria-label={`Remove override for ${user.name}`}
-                            className="p-1.5 text-[#6B6B6B] hover:text-red-400 hover:bg-red-500/10 rounded transition-colors disabled:opacity-60"
+                            className={cn(
+                              settingsListIconActionButtonClassName,
+                              "disabled:opacity-60",
+                            )}
                           >
-                            <TrashIcon />
+                            <DeleteIcon width={16} height={16} />
                           </button>
                         )}
                       </div>
@@ -839,34 +925,34 @@ export function UserOverridesTab({
       </div>
 
       {usersTotal > 0 && (
-        <div className="mt-4 flex flex-col gap-3 text-sm text-[#6B6B6B] sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 text-sm text-[var(--oh-muted)] sm:flex-row sm:items-center sm:justify-between">
           <span>{`Showing ${usersStart}-${usersEnd} of ${usersTotal}`}</span>
           <div className="flex items-center gap-2">
-            <button
+            <BrandButton
               type="button"
+              variant="secondary"
               onClick={() => onPageChange(Math.max(1, usersPage - 1))}
-              disabled={usersPage <= 1 || isLoading}
-              className="px-3 py-1.5 text-sm text-[#8C8C8C] hover:text-white hover:bg-[#262626] rounded transition-colors disabled:opacity-60"
+              isDisabled={usersPage <= 1 || isLoading}
             >
               Previous
-            </button>
-            <span className="text-xs text-[#6B6B6B]">
+            </BrandButton>
+            <span className="text-xs text-[var(--oh-muted)]">
               {`${usersPage} / ${totalPages}`}
             </span>
-            <button
+            <BrandButton
               type="button"
+              variant="secondary"
               onClick={() => onPageChange(Math.min(totalPages, usersPage + 1))}
-              disabled={usersPage >= totalPages || isLoading}
-              className="px-3 py-1.5 text-sm text-[#8C8C8C] hover:text-white hover:bg-[#262626] rounded transition-colors disabled:opacity-60"
+              isDisabled={usersPage >= totalPages || isLoading}
             >
               Next
-            </button>
+            </BrandButton>
           </div>
         </div>
       )}
 
       {userRows.length === 0 && (
-        <div className="py-12 text-center text-[#6B6B6B]">
+        <div className="py-12 text-center text-[var(--oh-muted)]">
           No users found matching your criteria.
         </div>
       )}

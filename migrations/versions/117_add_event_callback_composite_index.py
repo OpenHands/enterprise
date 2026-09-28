@@ -14,10 +14,6 @@ here. event_callback is small, so a plain transactional CREATE INDEX completes
 in well under a second; the brief lock on writes during the build is acceptable
 and is consistent with every other migration in this chain.
 
-The OSS app_server chain creates the equivalent index in
-openhands/app_server/app_lifespan/alembic/versions/010.py. Both use IF NOT
-EXISTS so they are safe to coexist across deployment modes.
-
 Revision ID: 117
 Revises: 116
 Create Date: 2026-06-04

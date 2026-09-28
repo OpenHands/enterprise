@@ -4,6 +4,11 @@ import { ProfileRow } from "#/components/features/settings/profile-row";
 import { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
 import { I18nKey } from "#/i18n/declaration";
 import { Typography } from "#/ui/typography";
+import {
+  settingsListContainerClassName,
+  settingsListDividerClassName,
+} from "#/utils/settings-list-classes";
+import { cn } from "#/utils/utils";
 
 interface ProfilesBodyProps {
   isLoading: boolean;
@@ -48,13 +53,18 @@ export function ProfilesBody({
   }
   if (profiles.length === 0) {
     return (
-      <Typography.Paragraph className="text-sm text-gray-400 italic">
+      <Typography.Paragraph className="text-sm text-[var(--oh-muted)] italic">
         {t(I18nKey.SETTINGS$PROFILES_EMPTY)}
       </Typography.Paragraph>
     );
   }
   return (
-    <div className="border border-tertiary rounded-md divide-y divide-tertiary">
+    <div
+      className={cn(
+        settingsListContainerClassName,
+        settingsListDividerClassName,
+      )}
+    >
       {profiles.map((profile) => (
         <ProfileRow
           key={profile.name}

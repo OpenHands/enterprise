@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Identity, Integer
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Identity, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from storage.base import Base
@@ -23,6 +23,7 @@ class OrgBudgetThreshold(Base):
     last_triggered_cycle_start: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    delivery_state: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

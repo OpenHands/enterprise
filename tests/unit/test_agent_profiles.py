@@ -4,7 +4,7 @@ Covers the ``AgentProfiles`` container (SDK ``AgentProfileStoreProtocol``
 conformance), the flat ``/api/agent-profiles`` router, the LLM-profile FK guard
 wired into ``org_profiles``, and ``SaasSettingsStore._resolve_active_agent_profile``.
 Mirrors the harness in ``test_org_profiles.py``: handlers are called directly
-(``Depends`` resolved as kwargs) against a real SQLite Org row.
+(``Depends`` resolved as kwargs) against a real Org row.
 """
 
 import uuid
@@ -184,7 +184,7 @@ def test_member_mcp_config_migrates_legacy_wrapper_and_scalar_auth():
     assert auth.to_http_headers() == {'Authorization': 'Bearer legacy-token'}
 
 
-# ── Router integration (real Org row over SQLite) ──────────────────────────
+# ── Router integration (real Org row) ──────────────────────────────────────
 
 
 @pytest.fixture
@@ -768,7 +768,7 @@ class TestResolveActiveAgentProfile:
         org.llm_profiles = {
             'profiles': {
                 'Default': {
-                    'model': 'litellm_proxy/claude-opus-4-8',
+                    'model': 'litellm_proxy/claude-opus-5',
                     'base_url': LITE_LLM_API_URL,
                     'api_key': 'orgkey',
                 }
@@ -781,7 +781,7 @@ class TestResolveActiveAgentProfile:
         result = store._resolve_active_agent_profile(org, member, {}, None)
         assert result is not None
         dump, _resolved_id, _revision = result
-        assert dump['llm']['model'] == 'openhands/claude-opus-4-8'
+        assert dump['llm']['model'] == 'openhands/claude-opus-5'
         assert dump['llm'].get('base_url') is None
 
     def test_override_id_wins_over_member_pointer(self):
