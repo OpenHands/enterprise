@@ -143,6 +143,13 @@ export default function AgentSettingsScreen() {
     setToolConcurrency(initialToolConcurrency);
   }, [initialToolConcurrency]);
 
+  // ── Memory context (OpenHands mode) ──────────────────────────────────────
+  const initialMemoryEnabled = !!settings?.enable_memory_context;
+  const [memoryOverride, setMemoryOverride] = useState<boolean | undefined>(
+    undefined,
+  );
+  const isMemoryEnabled = memoryOverride ?? initialMemoryEnabled;
+
   // ── ACP (ACP mode) ───────────────────────────────────────────────────────
   const [agentType, setAgentType] = useState<"openhands" | "acp">("openhands");
   const [commandText, setCommandText] = useState("");
@@ -215,8 +222,10 @@ export default function AgentSettingsScreen() {
 
   const subAgentsDirty = isSubAgentsEnabled !== initialSubAgentsEnabled;
   const toolConcurrencyDirty = toolConcurrency !== initialToolConcurrency;
+  const memoryDirty = isMemoryEnabled !== initialMemoryEnabled;
   const settingsDirty =
-    isDirty || (!isAcp && (subAgentsDirty || toolConcurrencyDirty));
+    isDirty ||
+    (!isAcp && (subAgentsDirty || toolConcurrencyDirty || memoryDirty));
   const credentialsDirty = isAcp && credentialForm.isDirty;
   const canSave = settingsDirty || credentialsDirty;
   const isSavingAny = isPending || credentialForm.isSaving;
@@ -273,19 +282,23 @@ export default function AgentSettingsScreen() {
       }
     }
 
-    saveSettings(
-      { agent_settings_diff: agentSettingsDiff },
-      {
-        onError: (error) => {
-          const message = retrieveAxiosErrorMessage(error as AxiosError);
-          displayErrorToast(message || t(I18nKey.ERROR$GENERIC));
-        },
-        onSuccess: () => {
-          displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
-          setIsDirty(false);
-        },
+    const settingsPayload: Record<string, unknown> = {
+      agent_settings_diff: agentSettingsDiff,
+    };
+    if (memoryDirty) {
+      settingsPayload.enable_memory_context = isMemoryEnabled;
+    }
+
+    saveSettings(settingsPayload, {
+      onError: (error) => {
+        const message = retrieveAxiosErrorMessage(error as AxiosError);
+        displayErrorToast(message || t(I18nKey.ERROR$GENERIC));
       },
-    );
+      onSuccess: () => {
+        displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
+        setIsDirty(false);
+      },
+    });
   };
 
   // ── Loading ───────────────────────────────────────────────────────────────
@@ -383,6 +396,35 @@ export default function AgentSettingsScreen() {
             />
           </section>
         ) : null}
+
+        {/* Agent Context: persistent memory toggle (OpenHands mode) */}
+        {!isAcp && (
+          <div className="border-t border-[var(--oh-border)] pt-6 mt-2">
+            <h3 className="text-lg font-medium mb-2">
+              {t(I18nKey.SETTINGS$AGENT_CONTEXT)}
+            </h3>
+            <p className="mb-4 text-sm leading-5 text-muted">
+              {t(I18nKey.SETTINGS$AGENT_CONTEXT_DESCRIPTION)}
+            </p>
+            <div className={cn("mt-2", formControlSwitchFieldClassName)}>
+              <SettingsSwitch
+                testId="agent-settings-enable-memory-context"
+                defaultIsToggled={initialMemoryEnabled}
+                onToggle={setMemoryOverride}
+              >
+                {t(I18nKey.SETTINGS$ENABLE_MEMORY_CONTEXT)}
+              </SettingsSwitch>
+              <Typography.Paragraph
+                className={cn(
+                  formControlSwitchDescriptionClassName,
+                  "text-xs leading-5 text-[var(--oh-muted)]",
+                )}
+              >
+                {t(I18nKey.SETTINGS$ENABLE_MEMORY_CONTEXT_HELPER)}
+              </Typography.Paragraph>
+            </div>
+          </div>
+        )}
 
         {/* ACP: preset, command, model, credentials */}
         {isAcp && (

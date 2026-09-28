@@ -36,8 +36,11 @@ from tests.integration.budgets.services import (
 )
 
 LITELLM_IMAGE = os.environ.get(
-    'BUDGET_LITELLM_IMAGE', 'docker.litellm.ai/berriai/litellm:v1.94.0'
+    'BUDGET_LITELLM_IMAGE',
+    'ghcr.io/berriai/litellm-database:1.100.1@sha256:'
+    'fc44cf7f72786e636dc4dc1032b4e431818abfec9d54b8e04284fdea7ef03e2a',
 )
+AUTH_CACHE_TTL = int(os.environ.get('BUDGET_AUTH_CACHE_TTL', '0'))
 MASTER_KEY = 'sk-budget-test-master-key'
 BOOTSTRAP_TEAM_ID = 'budget-test-bootstrap-team'
 
@@ -95,6 +98,7 @@ def _write_litellm_config(path: Path, provider_port: int) -> None:
 general_settings:
   master_key: {MASTER_KEY}
   proxy_batch_write_at: 1
+  user_api_key_cache_ttl: {AUTH_CACHE_TTL}
 
 litellm_settings:
   telemetry: false
@@ -306,7 +310,10 @@ async def budget_http(
     for route in app.routes:
         if isinstance(route, APIRoute) and '/budgets' in route.path:
             for dependency in route.dependant.dependencies:
-                if dependency.call and dependency.name == 'user_id':
+                if dependency.call and dependency.name in {
+                    'user_id',
+                    'current_user_id',
+                }:
                     app.dependency_overrides[dependency.call] = identity
                 elif dependency.call and dependency.name is None:
                     app.dependency_overrides[dependency.call] = context

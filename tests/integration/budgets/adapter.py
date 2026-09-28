@@ -89,16 +89,26 @@ class BudgetTestAdapter:
     async def financial_data(self) -> dict[str, Any]:
         return await LiteLlmManager.get_team_members_financial_data(str(self.org_id))
 
-    async def wait_for_spend(self, expected_team_spend: float) -> dict[str, Any]:
+    async def wait_for_spend(
+        self,
+        expected_team_spend: float,
+        *,
+        expected_member_spend: dict[UUID, float] | None = None,
+    ) -> dict[str, Any]:
         deadline = asyncio.get_running_loop().time() + 20
         while True:
             financial_data = await self.financial_data()
-            if financial_data['team_spend'] == expected_team_spend:
+            members_match = all(
+                financial_data['members'].get(str(user_id), {}).get('spend') == spend
+                for user_id, spend in (expected_member_spend or {}).items()
+            )
+            if financial_data['team_spend'] == expected_team_spend and members_match:
                 return financial_data
             if asyncio.get_running_loop().time() >= deadline:
                 raise AssertionError(
                     f'expected team spend {expected_team_spend}, got '
-                    f'{financial_data["team_spend"]}'
+                    f'{financial_data["team_spend"]}; expected member spend '
+                    f'{expected_member_spend}, got {financial_data["members"]}'
                 )
             await asyncio.sleep(0.1)
 

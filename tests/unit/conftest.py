@@ -36,6 +36,9 @@ from storage.daily_conversation_usage import DailyConversationUsage  # noqa: F40
 from storage.device_code import DeviceCode  # noqa: F401
 from storage.feedback import Feedback
 from storage.github_app_installation import GithubAppInstallation
+from storage.oauth_provider import OAuthProvider  # noqa: F401
+from storage.oauth_provider_user import OAuthProviderUser  # noqa: F401
+from storage.oauth_token import OAuthToken  # noqa: F401
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings  # noqa: F401
 from storage.org_budget_threshold import OrgBudgetThreshold  # noqa: F401

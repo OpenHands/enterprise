@@ -27,7 +27,7 @@ jobs:
           - suite: known-issues
             name: Budget known issues (informational)
     env:
-      BUDGET_LITELLM_IMAGE: docker.litellm.ai/berriai/litellm:v1.94.0
+      BUDGET_LITELLM_IMAGE: ghcr.io/berriai/litellm-database:1.100.1@sha256:fc44cf7f72786e636dc4dc1032b4e431818abfec9d54b8e04284fdea7ef03e2a
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6

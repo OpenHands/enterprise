@@ -17,6 +17,11 @@ failures together. Customer-specific 1finity rollout remains separate.
 - Verify enforcement failure/recovery (OHE-3268 / PR359), and coordinated
   reconciliation/rollover (OHE-3259 / PR403). Review the final implementation
   chosen from overlapping PRs rather than assuming all branches must merge.
+  PR359's emergency team block requires uncached native authorization and an
+  available `/team/block` endpoint. When neither endpoint works, an edit must be
+  rejected before changing policy, with previous settings retained and an honest
+  verification result. Existing keys can continue under those previous limits;
+  stopping inference during a management outage is outside this contract.
 - Run the full backend gate below, including fault and concurrency probes.
   No skipped or expected-failure contract counts as passing readiness.
 - Run separate browser/API/actual-agent E2E tests: change settings, use a real
@@ -50,7 +55,9 @@ This runs every `test_*.py` and `probe_*.py` serially and writes
 `.pr/budget-all.xml`. Any failure, skip or xfail prevents success.
 Collection alone is available with `--collect-only` and is not validation.
 Set `BUDGET_LITELLM_IMAGE` to the exact release image under evaluation; the
-compatibility default remains v1.94.0. The automatic regression command is:
+default matches the Cloud chart’s digest-pinned 1.100.1 image and authorization
+cache TTL 0. Set `BUDGET_AUTH_CACHE_TTL` explicitly when testing a different
+deployment configuration. The automatic regression command is:
 
 ```bash
 uv run python -m tests.integration.budgets.run_readiness --suite regression

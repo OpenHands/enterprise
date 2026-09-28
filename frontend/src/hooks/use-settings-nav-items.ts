@@ -17,7 +17,6 @@ import { usePermission } from "./organizations/use-permissions";
 import { useOrgTypeAndAccess } from "./use-org-type-and-access";
 import { useSettings } from "./query/use-settings";
 import { useQuotaStatus } from "./query/use-quota-status";
-import { useMyBudget } from "./query/use-my-budget";
 import { I18nKey } from "#/i18n/declaration";
 
 // Rendered navigation item types
@@ -35,6 +34,7 @@ export type SettingsNavRenderedItem =
 const SECTION_HEADERS: Partial<Record<SettingsNavSection, I18nKey>> = {
   org: I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
   personal: I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER,
+  user: I18nKey.USER$ACCOUNT_SETTINGS,
 };
 
 const SECTION_CHIPS: Partial<Record<SettingsNavSection, I18nKey>> = {
@@ -61,13 +61,6 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
   // Every role has its own budget; personal workspaces have none.
   const canHaveOwnBudget = isSaasMode && isTeamOrg && !!organizationId;
-  // This hook is mounted on every page (user menu), so only ask whether
-  // budgets are enabled — never read spend from here.
-  const { data: myBudget } = useMyBudget({
-    includeSpend: false,
-    enabled: canHaveOwnBudget,
-    staleTime: 5 * 60_000,
-  });
 
   const shouldHideBilling = isBillingHidden(
     config,
@@ -126,8 +119,8 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     items = items.filter((item) => !ADMIN_ONLY_SETTINGS_PATHS.has(item.to));
   }
 
-  // Everyone in a team org sees their own budget once the org enables budgets
-  if (canHaveOwnBudget && myBudget?.enabled) {
+  // Everyone in a team org has their own budget; personal workspaces do not.
+  if (canHaveOwnBudget) {
     items = [...items, YOUR_BUDGET_NAV_ITEM];
   }
 
@@ -185,7 +178,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
         renderedItems.push({ type: "divider" });
       }
 
-      // Add section header for org and personal sections (admins/owners only)
+      // Add section header for org, personal and user sections (admins/owners only)
       if (showSectionHeaders && SECTION_HEADERS[itemSection]) {
         renderedItems.push({
           type: "header",

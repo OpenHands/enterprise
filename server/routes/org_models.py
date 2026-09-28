@@ -851,6 +851,9 @@ class OrgMyBudgetResponse(BaseModel):
 
 
 class OrgBudgetSettingsResponse(BaseModel):
+    email_alerts_available: bool
+    slack_integration_configured: bool
+    slack_workspace_connected: bool
     enabled: bool
     monthly_limit: float | None = None
     litellm_last_sync_at: datetime | None = None

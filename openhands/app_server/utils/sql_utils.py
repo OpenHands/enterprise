@@ -58,7 +58,9 @@ class StoredSecretStr(TypeDecorator):
             return token
         return None
 
-    def process_result_param(self, value, dialect):
+    # `process_result_value` is SQLAlchemy's read hook. The other decorators in
+    # this module name it `process_result_param`, which SQLAlchemy never calls.
+    def process_result_value(self, value, dialect):
         if value is not None:
             from openhands.app_server.config import get_global_config
 

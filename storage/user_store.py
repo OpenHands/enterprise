@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Optional
 from uuid import UUID
 
+import sqlalchemy as sa
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -802,6 +803,125 @@ class UserStore:
                     return None
             finally:
                 await UserStore._release_user_creation_lock(user_id)
+
+    @staticmethod
+    async def get_user_by_email_opted_in(email: str) -> Optional[User]:
+        """Get a user by email who has opted in to one-time email-match seeding.
+
+        Filters on ``User.email == email.lower().strip()`` AND
+        ``User.allow_match_by_email == True``. Returns the matched ``User`` or
+        ``None``.
+
+        Callers must guard against duplicates (see
+        :meth:`count_opted_in_users_with_email`): ``User.email`` has no unique
+        constraint, so more than one opted-in user can share an email. When the
+        count is > 1 the caller must refuse to auto-link and surface a
+        manual-resolution outcome instead of calling this method and picking
+        ``.first()``.
+        """
+        if not email:
+            return None
+
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User)
+                .options(selectinload(User.org_members))
+                .filter(
+                    User.email == email.lower().strip(),
+                    User.allow_match_by_email.is_(True),
+                )
+            )
+            return result.scalars().first()
+
+    @staticmethod
+    async def count_opted_in_users_with_email(email: str) -> int:
+        """Count users with ``allow_match_by_email`` set that share ``email``.
+
+        Defense-in-depth for the duplicate-email guard: ``User.email`` has no
+        unique constraint, so the bulk-set operation and the match-time check
+        both use this to refuse auto-linking when > 1 opted-in user has the
+        same email.
+        """
+        if not email:
+            return 0
+
+        async with a_session_maker() as session:
+            return await session.scalar(
+                select(func.count())
+                .select_from(User)
+                .where(
+                    User.email == email.lower().strip(),
+                    User.allow_match_by_email.is_(True),
+                )
+            )
+
+    @staticmethod
+    async def clear_allow_match_by_email(user_id: str) -> None:
+        """Self-clear the one-time ``allow_match_by_email`` flag.
+
+        Called after a successful email-match link so the seeding window is
+        exactly one login wide per user. Subsequent logins resolve via the
+        ``oauth_provider_users`` ``sub`` lookup only.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User).filter(User.id == uuid.UUID(user_id))
+            )
+            user = result.scalars().first()
+            if user is None:
+                logger.warning(
+                    'clear_allow_match_by_email:user_not_found',
+                    extra={'user_id': user_id},
+                )
+                return
+            user.allow_match_by_email = False
+            await session.commit()
+            logger.info(
+                'clear_allow_match_by_email:cleared',
+                extra={'user_id': user_id},
+            )
+
+    @staticmethod
+    async def bulk_set_allow_match_by_email(value: bool = True) -> dict:
+        """Bulk-set ``allow_match_by_email`` on all users.
+
+        Used at the IDP swap-over moment by an operator. Returns a dict with
+        ``updated`` (count of rows touched) and ``duplicate_emails`` (a list of
+        emails that appear on more than one user row, so the operator can
+        resolve them before users log in).
+
+        The duplicate-email list is informational here (the match-time guard
+        in :meth:`get_user_by_email_opted_in` /
+        :meth:`count_opted_in_users_with_email` is the hard defense), but
+        surfacing it at bulk-set time lets an operator clean up *before* the
+        one-login-wide window opens.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User.email, func.count(User.id))
+                .where(User.email.isnot(None))
+                .group_by(User.email)
+                .having(func.count(User.id) > 1)
+            )
+            duplicate_emails = [row[0] for row in result.all()]
+
+            update_result = await session.execute(
+                sa.update(User).values(allow_match_by_email=value)
+            )
+            await session.commit()
+
+            logger.info(
+                'bulk_set_allow_match_by_email:done',
+                extra={
+                    'value': value,
+                    'updated': update_result.rowcount,
+                    'duplicate_email_count': len(duplicate_emails),
+                },
+            )
+            return {
+                'updated': update_result.rowcount,
+                'duplicate_emails': duplicate_emails,
+            }
 
     @staticmethod
     async def get_user_by_email(email: str) -> Optional[User]:
