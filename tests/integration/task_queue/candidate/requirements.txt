@@ -1,0 +1,9 @@
+# Procrastinate and the dependencies it adds over tq-poc-base, pinned.
+procrastinate==3.10.0
+asgiref==3.12.1
+attrs==26.1.0
+croniter==6.2.4
+packaging==26.3
+psycopg-pool==3.3.3
+python-dateutil==2.9.0.post0
+six==1.17.0
