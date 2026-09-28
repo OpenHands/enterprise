@@ -64,6 +64,7 @@ async def test_skips_unmanaged_provisioning(provision_case, async_session_maker,
         async with async_session_maker() as session:
             settings = await OrgBudgetStore(session).get_settings(org_id)
             settings.enabled = False
+            settings.default_user_monthly_limit = None
             await session.commit()
     with patch.object(
         LiteLlmManager, '_get_team_members_financial_data', AsyncMock()
@@ -74,15 +75,17 @@ async def test_skips_unmanaged_provisioning(provision_case, async_session_maker,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('enabled', [True, False])
 @pytest.mark.parametrize('override', [None, 'limit', 'disabled'])
 async def test_new_member_uses_policy_and_replaces_stale_baseline(
-    provision_case, async_session_maker, override
+    provision_case, async_session_maker, override, enabled
 ):
     org_id, user_id = provision_case
     cap = 2 if override == 'limit' else 1
     async with async_session_maker() as session:
         store = OrgBudgetStore(session)
         settings = await store.get_settings(org_id)
+        settings.enabled = enabled
         settings.user_cycle_start_spend = {str(user_id): 7}
         await store.record_cycle_baselines(
             org_id,

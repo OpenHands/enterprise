@@ -68,22 +68,64 @@ async def test_budget_form_save_preserves_spend(
 
 
 @pytest.mark.asyncio
-@pytest.mark.budget_known_issue('OHE-3319')
+@pytest.mark.parametrize(
+    'failure_path', [None, '/team/update', '/team/member_update', '/team/info']
+)
 async def test_disable_api_succeeds_and_retry_is_healthy(
-    budget_adapter: BudgetTestAdapter, budget_http: httpx.AsyncClient
+    budget_adapter: BudgetTestAdapter,
+    budget_http: httpx.AsyncClient,
+    failure_path: str | None,
 ) -> None:
     adapter = budget_adapter
-    await adapter.configure_budget(5, 3)
-    await adapter.set_override(adapter.user_ids[0], 2)
+    first_user, second_user = adapter.user_ids
+    await adapter.configure_budget(2, 3)
+    await adapter.set_override(first_user, 1)
+    for user in adapter.user_ids:
+        assert (await adapter.send_request(user)).status_code == 200
+    await adapter.wait_for_spend(
+        2, expected_member_spend={first_user: 1, second_user: 1}
+    )
     url = f'/api/organizations/{adapter.org_id}/budgets'
-    responses = [
-        await budget_http.patch(url, json={'enabled': False}) for _ in range(2)
-    ]
-    readback = await budget_http.get(url)
+    before = (await budget_http.get(url)).json()
+    provider_calls = await adapter.provider_calls()
+    for user in adapter.user_ids:
+        assert (await adapter.send_request(user)).status_code in {401, 403, 429}
+    assert await adapter.provider_calls() == provider_calls
+
+    if failure_path:
+        await adapter.fail_next_management_call(failure_path, count=20)
+        failed = await budget_http.patch(url, json={'enabled': False})
+        assert failed.status_code == 503, failed.text
+        assert failed.json()['enabled'] is False
+        assert failed.json()['reconciliation_state'] in {'degraded', 'failed'}
+        assert (await adapter.send_request(second_user)).status_code in {401, 403, 429}
+        assert await adapter.provider_calls() == provider_calls
+        await adapter.reset_faults()
+
+    for _ in range(2):
+        response = await budget_http.patch(url, json={'enabled': False})
+        assert response.status_code == 200, response.text
+        after = response.json()
+        assert after['enabled'] is False
+        assert after['reconciliation_state'] == 'inactive'
+        assert after['budget_policy_matches'] is True
+        assert after['current_spend'] == before['current_spend'] == 2
+        assert after['cycle_start_at'] == before['cycle_start_at']
+
     native = await adapter.financial_data()
     assert native['team_max_budget'] is None
-    assert native['members'][str(adapter.user_ids[0])]['max_budget'] == 2
-    assert [r.status_code for r in responses] == [200, 200], [r.text for r in responses]
+    assert native['members'][str(first_user)]['max_budget'] == 1
+    assert native['members'][str(second_user)]['max_budget'] == 3
+    assert native['team_spend'] == 2
+    assert (await adapter.send_request(first_user)).status_code in {401, 403, 429}
+    assert await adapter.provider_calls() == provider_calls
+    assert (await adapter.send_request(second_user)).status_code == 200
+    assert await adapter.provider_calls() == provider_calls + 1
+    await adapter.wait_for_spend(
+        3, expected_member_spend={first_user: 1, second_user: 2}
+    )
+    readback = await budget_http.get(url)
     assert readback.status_code == 200
     assert readback.json()['enabled'] is False
-    assert readback.json()['reconciliation_state'] in {'healthy', 'inactive'}
+    assert readback.json()['reconciliation_state'] == 'inactive'
+    assert readback.json()['current_spend'] == 3

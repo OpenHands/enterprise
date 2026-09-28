@@ -75,6 +75,7 @@ const STATUS_FILTER_ITEMS = [
 
 interface OrganizationBudgetTabProps {
   currentSpend: number | null;
+  currentMonthlyLimit: number | null;
   monthlyLimitValue: number | null;
   cycleLabel: string;
   percentage: number | null;
@@ -117,6 +118,7 @@ interface OrganizationBudgetTabProps {
 
 export function OrganizationBudgetTab({
   currentSpend,
+  currentMonthlyLimit,
   monthlyLimitValue,
   cycleLabel,
   percentage,
@@ -168,7 +170,7 @@ export function OrganizationBudgetTab({
       "Pending — the desired policy has not yet been verified in LiteLLM.",
     healthy: "Healthy — LiteLLM has verified the desired budget policy.",
     degraded:
-      "Degraded — the desired policy is saved, but LiteLLM is enforcing different or incomplete state.",
+      "Degraded — The last budget update could not be completed or verified. Review the applied limits below and retry.",
     failed:
       "Failed — the applied LiteLLM policy could not be read or verified.",
   }[reconciliationState];
@@ -282,13 +284,13 @@ export function OrganizationBudgetTab({
                   })}`}
             </span>
             <span className="ml-2 text-muted">
-              {monthlyLimitValue
-                ? `of $${monthlyLimitValue.toLocaleString()} spent in ${cycleLabel}`
+              {currentMonthlyLimit
+                ? `of $${currentMonthlyLimit.toLocaleString()} spent in ${cycleLabel}`
                 : `spent in ${cycleLabel}`}
             </span>
           </div>
           <span className="text-xl font-semibold text-logo">
-            {monthlyLimitValue && percentage !== null
+            {currentMonthlyLimit && percentage !== null
               ? `${percentage.toFixed(1)}%`
               : "—"}
           </span>

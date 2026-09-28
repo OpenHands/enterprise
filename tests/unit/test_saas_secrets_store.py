@@ -583,3 +583,152 @@ class TestSaasSecretsStoreOrgSharedMerge:
         names = [name for name, _ in personal_list]
         assert 'PERSONAL' in names
         assert 'SHARED' not in names
+
+    @pytest.mark.asyncio
+    @patch(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        new_callable=AsyncMock,
+    )
+    async def test_load_personal_excludes_shared(
+        self, mock_get_user, secrets_store, mock_user
+    ):
+        """load_personal() returns only personal secrets, not org-shared."""
+        mock_get_user.return_value = mock_user
+        org_id = mock_user.current_org_id
+
+        # Store a personal secret
+        personal = Secrets(
+            custom_secrets=MappingProxyType(
+                {
+                    'PERSONAL': CustomSecret.from_value(
+                        {'secret': 'val', 'description': 'mine'}
+                    ),
+                }
+            )
+        )
+        await secrets_store.store(personal)
+
+        # Insert an org-shared secret (description must be encrypted, as
+        # store() would write it, because load()/_decrypt_kwargs decrypts it).
+        async with secrets_store.a_session_maker() as session:
+            shared = StoredCustomSecrets(
+                keycloak_user_id='admin-user-id',
+                org_id=org_id,
+                secret_name='SHARED',
+                secret_value=secrets_store._jwt_svc.encrypt_value('shared_val'),
+                description=secrets_store._jwt_svc.encrypt_value('org-wide'),
+                is_org_shared=True,
+            )
+            session.add(shared)
+            await session.commit()
+
+        loaded = await secrets_store.load_personal()
+        assert loaded is not None
+        assert 'PERSONAL' in loaded.custom_secrets
+        assert loaded.custom_secrets['PERSONAL'].secret.get_secret_value() == 'val'
+        assert 'SHARED' not in loaded.custom_secrets
+        # load() (merged) still surfaces SHARED — load_personal must not.
+        merged = await secrets_store.load()
+        assert merged is not None
+        assert 'SHARED' in merged.custom_secrets
+
+    @pytest.mark.asyncio
+    @patch(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        new_callable=AsyncMock,
+    )
+    async def test_store_after_load_personal_does_not_duplicate_shared(
+        self, mock_get_user, secrets_store, mock_user
+    ):
+        """Reproduces the duplicate-shared-secret bug.
+
+        Before the fix, the write path did load() (merged personal + shared),
+        then store() re-inserted every secret in that dict as a personal row
+        — so a shared secret named SHARED gained a personal duplicate SHARED_2
+        every time the user wrote any secret. With load_personal(), the dict
+        handed to store() contains only personal secrets, so no duplicate is
+        created.
+        """
+        mock_get_user.return_value = mock_user
+        org_id = mock_user.current_org_id
+
+        # Insert an org-shared secret (description must be encrypted, as
+        # store() would write it, because load()/_decrypt_kwargs decrypts it).
+        async with secrets_store.a_session_maker() as session:
+            shared = StoredCustomSecrets(
+                keycloak_user_id='admin-user-id',
+                org_id=org_id,
+                secret_name='SHARED',
+                secret_value=secrets_store._jwt_svc.encrypt_value('shared_val'),
+                description=secrets_store._jwt_svc.encrypt_value('org-wide'),
+                is_org_shared=True,
+            )
+            session.add(shared)
+            await session.commit()
+
+        # Simulate the create_custom_secret write path: load_personal -> add
+        # a personal secret -> store. This used to create SHARED_2.
+        existing = await secrets_store.load_personal()
+        custom_secrets = dict(existing.custom_secrets) if existing else {}
+        custom_secrets['MY_SECRET'] = CustomSecret.from_value(
+            {'secret': 'my_val', 'description': ''}
+        )
+        await secrets_store.store(
+            Secrets(custom_secrets=MappingProxyType(custom_secrets))
+        )
+
+        from sqlalchemy import select
+
+        async with secrets_store.a_session_maker() as session:
+            result = await session.execute(
+                select(StoredCustomSecrets).filter(
+                    StoredCustomSecrets.org_id == org_id,
+                )
+            )
+            rows = result.scalars().all()
+
+        names_shared = {r.secret_name for r in rows if r.is_org_shared}
+        names_personal = {r.secret_name for r in rows if not r.is_org_shared}
+        # The shared secret is untouched — still exactly one SHARED row.
+        assert names_shared == {'SHARED'}
+        # No personal duplicate of the shared secret was created.
+        assert 'SHARED_2' not in names_personal
+        assert 'SHARED' not in names_personal
+        # The user's new secret was stored.
+        assert 'MY_SECRET' in names_personal
+
+    @pytest.mark.asyncio
+    @patch(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        new_callable=AsyncMock,
+    )
+    async def test_load_personal_returns_decrypted_values(
+        self, mock_get_user, secrets_store, mock_user
+    ):
+        """load_personal() must return decrypted secret values, like load()."""
+        mock_get_user.return_value = mock_user
+
+        personal = Secrets(
+            custom_secrets=MappingProxyType(
+                {
+                    'MY_SECRET': CustomSecret.from_value(
+                        {'secret': 'plaintext_val', 'description': 'desc'}
+                    ),
+                }
+            )
+        )
+        await secrets_store.store(personal)
+
+        loaded = await secrets_store.load_personal()
+        assert loaded is not None
+        assert (
+            loaded.custom_secrets['MY_SECRET'].secret.get_secret_value()
+            == 'plaintext_val'
+        )
+        assert loaded.custom_secrets['MY_SECRET'].description == 'desc'
+
+    @pytest.mark.asyncio
+    async def test_load_personal_empty_user_id(self, secrets_store):
+        """load_personal() returns None when user_id is empty, like load()."""
+        secrets_store.user_id = ''
+        assert await secrets_store.load_personal() is None

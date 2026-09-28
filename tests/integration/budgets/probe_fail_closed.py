@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import httpx
 import pytest
 
 from tests.integration.budgets.adapter import BudgetAdapterFactory, BudgetTestAdapter
@@ -86,22 +87,95 @@ async def test_unverified_budget_policy_fails_closed_before_provider(
 
 
 @pytest.mark.asyncio
-@pytest.mark.budget_known_issue('OHE-3268')
-async def test_unverified_policy_fails_closed_when_both_block_endpoints_fail(
+@pytest.mark.parametrize(
+    'change,org_enabled',
+    [
+        (change, enabled)
+        for enabled in (True, False)
+        for change in ('organization', 'default', 'override', 'delete')
+        if enabled or change != 'organization'
+    ],
+)
+@pytest.mark.parametrize('readback_available', [True, False])
+async def test_edit_is_rejected_when_both_block_endpoints_fail(
     budget_adapter: BudgetTestAdapter,
+    budget_http: httpx.AsyncClient,
+    change: str,
+    readback_available: bool,
+    org_enabled: bool,
 ) -> None:
-    await budget_adapter.configure_budget(5.0, 3.0)
-    first = await budget_adapter.send_request(budget_adapter.user_ids[0])
+    adapter = budget_adapter
+    await adapter.configure_budget(5.0, 3.0)
+    user = adapter.user_ids[0]
+    await adapter.set_override(user, 2)
+    if not org_enabled:
+        await adapter.disable_budget()
+    first = await adapter.send_request(user)
     assert first.status_code == 200, first.text
-    await budget_adapter.wait_for_spend(1.0)
+    await adapter.wait_for_spend(1, expected_member_spend={user: 1})
+    url = f'/api/organizations/{adapter.org_id}/budgets'
+    before = (await budget_http.get(url)).json()
 
-    await budget_adapter.fail_next_management_call('/team/update', count=20)
-    await budget_adapter.fail_next_management_call('/team/block', count=20)
-    degraded = await budget_adapter.set_organization_limit(4.0)
-    assert degraded['settings'].litellm_last_sync_status == 'error'
-    assert 'admission_fallback_failed' in degraded['settings'].litellm_last_sync_error
+    await adapter.reset_faults()
+    await adapter.fail_next_management_call('/team/update', count=20)
+    await adapter.fail_next_management_call('/team/block', count=20)
+    if not readback_available:
+        await adapter.fail_next_management_call('/team/info', count=20)
+    method, endpoint, payload = {
+        'organization': (
+            'PATCH',
+            url,
+            {
+                'monthly_limit': 4,
+                'reset_day': 15,
+                'thresholds': [
+                    {'percentage': 80, 'email_enabled': False, 'slack_enabled': False}
+                ],
+            },
+        ),
+        'default': ('PATCH', url, {'default_user_monthly_limit': 1}),
+        'override': (
+            'PUT',
+            f'{url}/overrides/{user}',
+            {'monthly_limit': 1, 'is_disabled': False},
+        ),
+        'delete': ('DELETE', f'{url}/overrides/{user}', None),
+    }[change]
+    response = await budget_http.request(method, endpoint, json=payload)
+    assert response.status_code == 503, response.text
+    detail = response.json()['detail']
+    assert detail['code'] == 'budget_change_rejected'
+    assert detail['previous_policy_verified'] is readback_available
+    async with httpx.AsyncClient() as client:
+        paths = (await client.get(f'{adapter.proxy_url}/test/requests')).json()['paths']
+    assert '/team/member_update' not in paths
+    assert '/team/member_add' not in paths
 
-    provider_calls = await budget_adapter.provider_calls()
-    response = await budget_adapter.send_request(budget_adapter.user_ids[0])
-    assert response.status_code in {401, 403, 429, 503}, response.text
-    assert await budget_adapter.provider_calls() == provider_calls
+    calls = await adapter.provider_calls()
+    assert (await adapter.send_request(user)).status_code == 200
+    assert await adapter.provider_calls() == calls + 1
+    await adapter.reset_faults()
+    native = await adapter.wait_for_spend(2, expected_member_spend={user: 2})
+    assert native['team_max_budget'] == (5 if org_enabled else None)
+    assert native['members'][str(user)]['max_budget'] == 2
+    assert (await adapter.send_request(user)).status_code in {401, 403, 429}
+    assert await adapter.provider_calls() == calls + 1
+    after = (await budget_http.get(url)).json()
+    for field in [
+        'enabled',
+        'monthly_limit',
+        'default_user_monthly_limit',
+        'reset_day',
+        'cycle_start_at',
+        'cycle_end_at',
+        'thresholds',
+    ]:
+        assert after[field] == before[field], field
+    assert after['current_spend'] == 2
+    assert after['litellm_last_sync_status'] == 'error'
+
+    recovered = await budget_http.request(method, endpoint, json=payload)
+    assert recovered.status_code in {200, 204}, recovered.text
+    after_retry = (await budget_http.get(url)).json()
+    assert after_retry['current_spend'] == 2
+    assert after_retry['cycle_start_at'] == before['cycle_start_at']

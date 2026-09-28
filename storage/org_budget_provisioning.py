@@ -41,12 +41,19 @@ async def provision_budget_member(
     async with a_session_maker() as session:
         store = OrgBudgetStore(session)
         settings = await store.get_settings(org_uuid)
-        if settings is None or not settings.enabled:
+        if settings is None:
             return False
         existing_member = (
             await session.get(OrgMember, (org_uuid, user_uuid)) is not None
         )
         override = await store.get_override(org_uuid, user_uuid)
+        if (
+            not settings.enabled
+            and settings.default_user_monthly_limit is None
+            and override is None
+            and settings.litellm_last_sync_status not in {'pending', 'success', 'error'}
+        ):
+            return False
         limit = settings.default_user_monthly_limit
         if override is not None:
             limit = None if override.is_disabled else override.monthly_limit
@@ -112,7 +119,6 @@ async def provision_budget_member(
             current_limit = None if override.is_disabled else override.monthly_limit
         if (
             current is None
-            or not current.enabled
             or current.cycle_start_at != cycle_start
             or current_limit != limit
         ):
