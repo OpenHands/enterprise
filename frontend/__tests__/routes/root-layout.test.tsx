@@ -31,10 +31,6 @@ vi.mock("#/hooks/use-migrate-user-consent", () => ({
   }),
 }));
 
-vi.mock("#/hooks/use-reo-tracking", () => ({
-  useReoTracking: () => {},
-}));
-
 vi.mock("#/hooks/use-sync-posthog-consent", () => ({
   useSyncPostHogConsent: () => {},
 }));
@@ -390,6 +386,17 @@ describe("MainApp", () => {
   });
 
   describe("Re-authentication with stored login method", () => {
+    const stubStoredLoginMethod = (method: string) => {
+      vi.stubGlobal("localStorage", {
+        getItem: vi.fn((key: string) =>
+          key === "openhands_login_method" ? method : null,
+        ),
+        setItem: vi.fn(),
+        removeItem: vi.fn(),
+        clear: vi.fn(),
+      });
+    };
+
     it("should show ReauthModal instead of redirecting to /login when login method exists", async () => {
       // Arrange - user is unauthenticated but has a stored login method
       vi.spyOn(AuthService, "authenticate").mockRejectedValue({
@@ -448,6 +455,57 @@ describe("MainApp", () => {
         },
         { timeout: 2000 },
       );
+    });
+
+    it("should not render the app content while the session is expired", async () => {
+      // Arrange - session expired (401) with a stored login method
+      vi.spyOn(AuthService, "authenticate").mockRejectedValue({
+        response: { status: 401 },
+        isAxiosError: true,
+      });
+      stubStoredLoginMethod("github");
+
+      // Act
+      renderWithLoginStub(RouterStubWithLogin, ["/"]);
+
+      // Assert - only the re-auth modal is shown; the app tree (and every
+      // polling hook under it) is not mounted
+      await screen.findByText("AUTH$LOGGING_BACK_IN");
+      expect(screen.queryByTestId("root-layout")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("outlet-content")).not.toBeInTheDocument();
+    });
+
+    it("should keep the app content hidden while the session is being re-verified", async () => {
+      // Arrange - first auth check answers 401; the re-verification triggered
+      // by a later 401 stays in flight
+      vi.spyOn(AuthService, "authenticate")
+        .mockRejectedValueOnce({
+          response: { status: 401 },
+          isAxiosError: true,
+        })
+        .mockReturnValueOnce(new Promise(() => {}));
+      stubStoredLoginMethod("github");
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <RouterStubWithLogin initialEntries={["/"]} />
+        </QueryClientProvider>,
+      );
+      await screen.findByText("AUTH$LOGGING_BACK_IN");
+
+      // Act - another 401 invalidates the auth query, putting it back in flight
+      // (not awaited: the refetch stays pending by design)
+      queryClient.invalidateQueries({ queryKey: ["user", "authenticated"] });
+
+      // Assert - the gate latches instead of remounting the app tree
+      await waitFor(() => {
+        expect(AuthService.authenticate).toHaveBeenCalledTimes(2);
+      });
+      expect(screen.getByText("AUTH$LOGGING_BACK_IN")).toBeInTheDocument();
+      expect(screen.queryByTestId("root-layout")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("outlet-content")).not.toBeInTheDocument();
     });
   });
 

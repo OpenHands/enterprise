@@ -125,11 +125,9 @@ async def test_set_title_callback_processor_fetches_title_from_conversation():
     assert httpx_client.calls[0][0] == expected_url
     assert httpx_client.calls[0][1] == {'X-Session-API-Key': session_api_key}
 
-    app_conversation_info_service.save_app_conversation_info.assert_called_once()
-    saved_info = app_conversation_info_service.save_app_conversation_info.call_args[0][
-        0
-    ]
-    assert saved_info.title == 'Generated Title'
+    app_conversation_info_service.update_title.assert_awaited_once_with(
+        conversation_id, 'Generated Title'
+    )
 
     assert callback.status == EventCallbackStatus.DISABLED
     event_callback_service.save_event_callback.assert_called_once()
@@ -346,7 +344,7 @@ async def test_set_title_callback_processor_no_title_yet_returns_none():
 
     assert result is None
 
-    app_conversation_info_service.save_app_conversation_info.assert_not_called()
+    app_conversation_info_service.update_title.assert_not_called()
     event_callback_service.save_event_callback.assert_not_called()
     assert callback.status == EventCallbackStatus.ACTIVE
 
@@ -432,6 +430,6 @@ async def test_set_title_callback_processor_request_errors_return_none():
     assert result is None
     assert len(httpx_client.calls) == 4
     assert logger_warning.call_count == 4
-    app_conversation_info_service.save_app_conversation_info.assert_not_called()
+    app_conversation_info_service.update_title.assert_not_called()
     event_callback_service.save_event_callback.assert_not_called()
     assert callback.status == EventCallbackStatus.ACTIVE

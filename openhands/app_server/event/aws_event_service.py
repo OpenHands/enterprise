@@ -19,7 +19,12 @@ from pydantic import Field
 
 from openhands.app_server.config import get_app_conversation_info_service
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
-from openhands.app_server.event.event_service_base import EventServiceBase
+from openhands.app_server.event.event_service_base import (
+    INDEX_FILENAME,
+    INDEX_STALE_FILENAME,
+    EventServiceBase,
+    Index,
+)
 from openhands.app_server.services.injector import InjectorState
 from openhands.sdk import Event
 
@@ -106,6 +111,65 @@ class AwsEventService(EventServiceBase):
             continuation_token = response.get('NextContinuationToken')
             if not continuation_token:
                 return paths
+
+    def _index_path(self, conversation_path: Path) -> Path:
+        return conversation_path / INDEX_FILENAME
+
+    def _index_stale_path(self, conversation_path: Path) -> Path:
+        return conversation_path / INDEX_STALE_FILENAME
+
+    def _index_exists(self, path: Path) -> bool:
+        try:
+            self.s3_client.head_object(Bucket=self.bucket_name, Key=str(path))
+            return True
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] in ('404', 'NoSuchKey'):
+                return False
+            raise
+
+    def _load_index(self, path: Path) -> Index | None:
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=str(path))
+            with response['Body'] as stream:
+                json_data = stream.read().decode('utf-8')
+            data = json.loads(json_data)
+            if not isinstance(data, list):
+                return None
+            return data
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] in ('404', 'NoSuchKey'):
+                return None
+            _logger.exception('Error reading index from %s', path, stack_info=True)
+            return None
+        except (json.JSONDecodeError, ValueError, KeyError):
+            _logger.warning('Malformed index at %s; will rebuild', path)
+            return None
+
+    def _store_index(self, path: Path, index: Index) -> None:
+        data = json.dumps(index)
+        self.s3_client.put_object(
+            Bucket=self.bucket_name,
+            Key=str(path),
+            Body=data.encode('utf-8'),
+        )
+
+    def _invalidate_index(self, conversation_path: Path) -> None:
+        """Rename index.json -> index_stale.json via copy+delete (S3 has no atomic rename)."""
+        index_path = self._index_path(conversation_path)
+        if not self._index_exists(index_path):
+            return  # already stale/absent
+        stale_path = self._index_stale_path(conversation_path)
+        # Copy then delete. A concurrent reader may briefly see both files;
+        # the reader rule prefers index.json when present, so this is safe.
+        self.s3_client.copy_object(
+            Bucket=self.bucket_name,
+            CopySource={'Bucket': self.bucket_name, 'Key': str(index_path)},
+            Key=str(stale_path),
+        )
+        self.s3_client.delete_object(
+            Bucket=self.bucket_name,
+            Key=str(index_path),
+        )
 
 
 def _get_default_aws_endpoint_url() -> str | None:

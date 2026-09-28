@@ -5,6 +5,10 @@ export interface QuotaStatus {
   used_today: number;
   remaining: number | null;
   reset_at: string;
+  work_email: string | null;
+  work_email_verified: boolean;
+  latest_request_status: string | null;
+  latest_request_requested_limit: number | null;
 }
 
 export const quotaService = {

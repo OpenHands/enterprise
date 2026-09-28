@@ -26,6 +26,7 @@ class AppConversationInfoService(ABC):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 100,
@@ -42,6 +43,7 @@ class AppConversationInfoService(ABC):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
     ) -> int:
         """Count sandboxed conversations."""
 
@@ -137,6 +139,22 @@ class AppConversationInfoService(ABC):
         Args:
             conversation_id: The ID of the conversation to update
             execution_status: The new execution status value
+        """
+
+    @abstractmethod
+    async def update_title(
+        self,
+        conversation_id: UUID,
+        title: str,
+    ) -> None:
+        """Update only the title of a conversation.
+
+        Unlike ``save_app_conversation_info`` this must not rewrite any other
+        column, so it cannot revert concurrent updates (e.g. statistics).
+
+        Args:
+            conversation_id: The ID of the conversation to update
+            title: The new title
         """
 
 

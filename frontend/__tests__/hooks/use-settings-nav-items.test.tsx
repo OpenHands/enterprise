@@ -8,6 +8,7 @@ import {
   SettingsNavRenderedItem,
 } from "#/hooks/use-settings-nav-items";
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
+import { organizationService } from "#/api/organization-service/organization-service.api";
 
 // Helper to find an item by path in rendered items
 const findItemByPath = (
@@ -142,8 +143,9 @@ describe("useSettingsNavItems", () => {
     const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
 
     await waitFor(() => {
-      // Members should not see billing, org, or org-members routes
+      // Members should not see billing, credits, org, or org-members routes
       expect(findItemByPath(result.current, "/settings/billing")).toBeUndefined();
+      expect(findItemByPath(result.current, "/settings/credits")).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/org")).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/org-members")).toBeUndefined();
       // Personal LLM/Condenser/Verification routes are hidden in SaaS;
@@ -209,6 +211,9 @@ describe("useSettingsNavItems", () => {
       ).toBeDefined();
       expect(
         findItemByPath(result.current, "/settings/org-members"),
+      ).toBeDefined();
+      expect(
+        findItemByPath(result.current, "/settings/credits"),
       ).toBeDefined();
       expect(
         findItemByPath(result.current, "/settings/usage-monitoring"),
@@ -324,6 +329,10 @@ describe("useSettingsNavItems", () => {
       expect(
         findItemByPath(result.current, "/settings/billing"),
       ).toBeUndefined();
+      // Credits replaces billing for team orgs
+      expect(
+        findItemByPath(result.current, "/settings/credits"),
+      ).toBeDefined();
     });
 
     it("should show billing route for personal org", async () => {
@@ -347,6 +356,9 @@ describe("useSettingsNavItems", () => {
       expect(
         findItemByPath(result.current, "/settings/billing"),
       ).toBeDefined();
+      expect(
+        findItemByPath(result.current, "/settings/credits"),
+      ).toBeUndefined();
     });
   });
 
@@ -530,6 +542,29 @@ describe("useSettingsNavItems", () => {
       });
     });
 
+    it("adds a This org chip on the personal settings header for team-org admins", async () => {
+      mockConfig("saas");
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.isPersonalOrg = false;
+      mockOrgTypeAndAccess.organizationId = "org-123";
+      mockMe.data = { role: "admin" };
+
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      await waitFor(() => {
+        const personalHeader = result.current.find(
+          (item) =>
+            item.type === "header" &&
+            item.text === "SETTINGS$PERSONAL_SETTINGS_HEADER",
+        );
+        expect(personalHeader).toEqual({
+          type: "header",
+          text: "SETTINGS$PERSONAL_SETTINGS_HEADER",
+          chip: "SETTINGS$THIS_ORG_CHIP",
+        });
+      });
+    });
+
     it("hides personal LLM/Condenser/Verification for any user in a non-personal org (team-org member)", async () => {
       mockConfig("saas");
       mockOrgTypeAndAccess.isTeamOrg = true;
@@ -598,6 +633,53 @@ describe("useSettingsNavItems", () => {
           findItemByPath(result.current, "/settings/secrets"),
         ).toBeDefined();
       });
+    });
+  });
+
+  describe("Your Budget visibility", () => {
+    const selectTeamOrg = (role: string) => {
+      mockConfig("saas");
+      mockMe.data = { role };
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-1";
+    };
+
+    it.each(["member", "admin", "owner"])(
+      "should show Your Budget to a %s in a team org without asking whether budgets are enabled",
+      async (role) => {
+        // Arrange
+        selectTeamOrg(role);
+        const getMyBudgetSpy = vi.spyOn(organizationService, "getMyBudget");
+
+        // Act
+        const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+        // Assert
+        await waitFor(() => {
+          expect(
+            findItemByPath(result.current, "/settings/your-budget"),
+          ).toBeDefined();
+        });
+        expect(getMyBudgetSpy).not.toHaveBeenCalled();
+      },
+    );
+
+    it("should hide Your Budget in a personal workspace", async () => {
+      // Arrange
+      selectTeamOrg("owner");
+      mockOrgTypeAndAccess.isTeamOrg = false;
+      mockOrgTypeAndAccess.isPersonalOrg = true;
+
+      // Act
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      // Assert
+      await waitFor(() => {
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
+      });
+      expect(
+        findItemByPath(result.current, "/settings/your-budget"),
+      ).toBeUndefined();
     });
   });
 });

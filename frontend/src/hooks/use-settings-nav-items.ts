@@ -2,6 +2,7 @@ import { useConfig } from "#/hooks/query/use-config";
 import {
   SAAS_NAV_ITEMS,
   OSS_NAV_ITEMS,
+  YOUR_BUDGET_NAV_ITEM,
   SettingsNavItem,
   SettingsNavSection,
 } from "#/constants/settings-nav";
@@ -26,13 +27,18 @@ export type SettingsNavRenderedItem =
       disabled?: boolean;
       disabledAgentName?: string;
     }
-  | { type: "header"; text: I18nKey }
+  | { type: "header"; text: I18nKey; chip?: I18nKey }
   | { type: "divider" };
 
 // Section header text mapping
 const SECTION_HEADERS: Partial<Record<SettingsNavSection, I18nKey>> = {
   org: I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
   personal: I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER,
+  user: I18nKey.USER$ACCOUNT_SETTINGS,
+};
+
+const SECTION_CHIPS: Partial<Record<SettingsNavSection, I18nKey>> = {
+  personal: I18nKey.SETTINGS$THIS_ORG_CHIP,
 };
 
 /**
@@ -52,6 +58,9 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const userRole: OrganizationUserRole = user?.role ?? "member";
   const { hasPermission } = usePermission(userRole);
   const { isPersonalOrg, isTeamOrg, organizationId } = useOrgTypeAndAccess();
+
+  // Every role has its own budget; personal workspaces have none.
+  const canHaveOwnBudget = isSaasMode && isTeamOrg && !!organizationId;
 
   const shouldHideBilling = isBillingHidden(
     config,
@@ -81,6 +90,11 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     items = items.filter((item) => item.to !== "/settings/billing");
   }
 
+  // Credits is the team-org counterpart to personal Billing
+  if (shouldHideBilling || !organizationId || !isTeamOrg) {
+    items = items.filter((item) => item.to !== "/settings/credits");
+  }
+
   // Hide org routes for personal orgs, missing permissions, or no org selected
   if (!hasPermission("view_billing") || !organizationId || isPersonalOrg) {
     items = items.filter((item) => item.to !== "/settings/org");
@@ -103,6 +117,11 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   // Hide admin-only settings pages for non-admins/owners or personal orgs
   if (!isAdminOrOwner || !organizationId || isPersonalOrg) {
     items = items.filter((item) => !ADMIN_ONLY_SETTINGS_PATHS.has(item.to));
+  }
+
+  // Everyone in a team org has their own budget; personal workspaces do not.
+  if (canHaveOwnBudget) {
+    items = [...items, YOUR_BUDGET_NAV_ITEM];
   }
 
   const PERSONAL_LLM_PATHS = new Set([
@@ -159,11 +178,12 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
         renderedItems.push({ type: "divider" });
       }
 
-      // Add section header for org and personal sections (admins/owners only)
+      // Add section header for org, personal and user sections (admins/owners only)
       if (showSectionHeaders && SECTION_HEADERS[itemSection]) {
         renderedItems.push({
           type: "header",
           text: SECTION_HEADERS[itemSection]!,
+          chip: SECTION_CHIPS[itemSection],
         });
       }
 

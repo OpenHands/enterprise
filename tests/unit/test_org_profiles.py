@@ -1,0 +1,1348 @@
+"""Unit and integration tests for organization LLM profiles router."""
+
+import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastapi import HTTPException
+from sqlalchemy import select
+
+from openhands.app_server.settings.llm_profiles import (
+    MAX_PROFILES_PER_USER,
+    LLMProfiles,
+    StrictLLM,
+)
+from openhands.app_server.utils.llm import MASKED_API_KEY
+from server.verified_models.verified_model_service import StoredVerifiedModel
+from storage.org import Org
+from storage.org_member import OrgMember
+from storage.role import Role
+from storage.saas_settings_store import SaasSettingsStore
+from storage.user import User
+
+# Mock the database module before importing the router — matches the
+# test_saas_settings_store.py pattern so module-level imports don't try to
+# touch a real engine.
+with patch('storage.database.a_session_maker'):
+    from server.routes.org_profiles import (
+        ProfileListResponse,
+        ProfileMutationResponse,
+        RenameProfileRequest,
+        SaveProfileRequest,
+        _load_profiles,
+        activate_profile,
+        delete_profile,
+        get_openhands_default_model_name,
+        get_profile,
+        list_profiles,
+        rename_profile,
+        save_profile,
+    )
+
+
+@pytest.fixture
+def sample_org():
+    """Create a sample org for testing."""
+    org = MagicMock(spec=Org)
+    org.id = uuid.uuid4()
+    org.llm_profiles = None
+    org.agent_settings = {'llm': {'model': 'gpt-4', 'api_key': 'test-key'}}
+    return org
+
+
+@pytest.fixture
+def org_with_profiles():
+    """Create an org with existing profiles."""
+    org = MagicMock(spec=Org)
+    org.id = uuid.uuid4()
+    org.llm_profiles = {
+        'profiles': {
+            'my-profile': {'model': 'claude-3', 'api_key': 'claude-key'},
+            'backup': {'model': 'gpt-4o', 'api_key': 'openai-key'},
+        },
+        'active': 'my-profile',
+    }
+    org.agent_settings = {'llm': {'model': 'gpt-4', 'api_key': 'test-key'}}
+    return org
+
+
+class TestLoadProfiles:
+    """Test the _load_profiles helper function."""
+
+    def test_load_profiles_empty(self, sample_org):
+        """Test loading profiles when org has none."""
+        profiles = _load_profiles(sample_org)
+        assert isinstance(profiles, LLMProfiles)
+        assert profiles.active is None
+        assert len(profiles.summaries()) == 0
+
+    def test_load_profiles_with_data(self, org_with_profiles):
+        """Test loading profiles when org has existing profiles."""
+        profiles = _load_profiles(org_with_profiles)
+        assert isinstance(profiles, LLMProfiles)
+        assert profiles.active == 'my-profile'
+        summaries = profiles.summaries()
+        assert len(summaries) == 2
+        names = [s['name'] for s in summaries]
+        assert 'my-profile' in names
+        assert 'backup' in names
+
+    def test_load_profiles_invalid_data(self, sample_org):
+        """Test loading profiles when org has invalid data."""
+        sample_org.llm_profiles = {'invalid': 'data'}
+        profiles = _load_profiles(sample_org)
+        # Should return empty profiles on parse error
+        assert isinstance(profiles, LLMProfiles)
+
+
+class TestProfileListResponse:
+    """Test ProfileListResponse model."""
+
+    def test_empty_list(self):
+        """Test empty profile list response."""
+        response = ProfileListResponse(profiles=[], active_profile=None)
+        assert response.profiles == []
+        assert response.active_profile is None
+
+    def test_with_profiles(self):
+        """Test profile list response with data."""
+        from server.routes.org_profiles import ProfileInfo
+
+        profiles = [
+            ProfileInfo(name='test', model='gpt-4', base_url=None, api_key_set=True),
+        ]
+        response = ProfileListResponse(profiles=profiles, active_profile='test')
+        assert len(response.profiles) == 1
+        assert response.active_profile == 'test'
+
+
+class TestProfileMutationResponse:
+    """Test ProfileMutationResponse model."""
+
+    def test_create_response(self):
+        """Test creating a mutation response."""
+        response = ProfileMutationResponse(
+            name='new-profile', message="Profile 'new-profile' saved"
+        )
+        assert response.name == 'new-profile'
+        assert 'saved' in response.message
+
+
+class TestSaveProfileRequest:
+    """Test SaveProfileRequest model."""
+
+    def test_default_values(self):
+        """Test default values for save request."""
+        request = SaveProfileRequest()
+        assert request.include_secrets is True
+        assert request.llm is None
+
+    def test_with_llm(self):
+        """Test save request with LLM config."""
+        request = SaveProfileRequest(
+            include_secrets=False, llm=StrictLLM(model='gpt-4')
+        )
+        assert request.include_secrets is False
+        assert request.llm is not None
+        assert request.llm.model == 'gpt-4'
+
+
+class TestRenameProfileRequest:
+    """Test RenameProfileRequest model."""
+
+    def test_valid_name(self):
+        """Test valid rename request."""
+        request = RenameProfileRequest(new_name='new-name')
+        assert request.new_name == 'new-name'
+
+    def test_name_validation(self):
+        """Test name length validation."""
+        # Should accept reasonable names
+        request = RenameProfileRequest(new_name='a' * 64)
+        assert len(request.new_name) == 64
+
+        # Should reject empty names (min_length=1)
+        with pytest.raises(ValueError):
+            RenameProfileRequest(new_name='')
+
+        # Should reject too-long names (max_length=64, matching the SDK's
+        # PROFILE_NAME_PATTERN enforced by rename_llm_profile).
+        with pytest.raises(ValueError):
+            RenameProfileRequest(new_name='a' * 65)
+
+    def test_name_pattern_validation(self):
+        """new_name must satisfy PROFILE_NAME_PATTERN, matching what
+        rename_llm_profile actually enforces (else this 422s deep in the
+        handler instead of at the request-schema boundary)."""
+        with pytest.raises(ValueError):
+            RenameProfileRequest(new_name='has a space')
+        with pytest.raises(ValueError):
+            RenameProfileRequest(new_name='has/slash')
+
+
+# ── Integration tests ──────────────────────────────────────────────────────
+#
+# Exercise the route handlers end-to-end against a real Org +
+# OrgMember row. They verify the new ``SELECT FOR UPDATE`` transaction helper
+# round-trips correctly, the activate handler writes both the org marker and
+# the member diff atomically, and the exception-to-HTTP mapping for the
+# 404/409 paths.
+
+ORG_ID = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081')
+ADMIN_USER_ID = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5082')
+
+
+@pytest.fixture
+def seeded_org(session_maker):
+    """Create a personal-org-shaped row with one admin member."""
+    with session_maker() as session:
+        session.add(Role(id=10, name='member', rank=3))
+        session.add(
+            Org(
+                id=ORG_ID,
+                name='profile-test-org',
+                org_version=1,
+                enable_proactive_conversation_starters=True,
+            )
+        )
+        session.add(
+            User(
+                id=ADMIN_USER_ID,
+                current_org_id=ORG_ID,
+                user_consents_to_analytics=True,
+            )
+        )
+        session.add(
+            OrgMember(
+                org_id=ORG_ID,
+                user_id=ADMIN_USER_ID,
+                role_id=10,
+                llm_api_key='initial-key',
+                agent_settings_diff={
+                    'llm': {'model': 'before-activate', 'base_url': None},
+                },
+                conversation_settings_diff={},
+                status='active',
+            )
+        )
+        session.commit()
+    return {'org_id': ORG_ID, 'admin_user_id': ADMIN_USER_ID}
+
+
+@pytest.fixture
+def patch_route_db(async_session_maker, seeded_org):
+    """Wire the router's db session + OrgService.get_org_by_id to the test
+    database fixture so direct handler calls hit the real schema. ``get_org_by_id``
+    is patched (rather than seeding the full membership graph) because its
+    inner OrgMemberStore call opens sessions outside ``async_session_maker``.
+    """
+    org_id = seeded_org['org_id']
+
+    async def _fake_get_org(org_id, user_id):  # noqa: ARG001
+        async with async_session_maker() as session:
+            result = await session.execute(select(Org).where(Org.id == org_id))
+            return result.scalars().first()
+
+    with (
+        patch(
+            'server.routes.org_profiles.a_session_maker',
+            async_session_maker,
+        ),
+        patch(
+            'server.routes.org_profiles.OrgService.get_org_by_id',
+            side_effect=_fake_get_org,
+        ),
+    ):
+        yield org_id
+
+
+async def _read_org(async_session_maker, org_id):
+    async with async_session_maker() as session:
+        result = await session.execute(select(Org).where(Org.id == org_id))
+        return result.scalars().first()
+
+
+async def _read_member(async_session_maker, org_id, user_id):
+    # ``user_id`` accepts either str or UUID — coerce so the uuid column gets a UUID.
+    user_uuid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(user_id)
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id, OrgMember.user_id == user_uuid
+            )
+        )
+        return result.scalars().first()
+
+
+class TestProfileLifecycleIntegration:
+    """Round-trip CRUD against a real Org row."""
+
+    @pytest.mark.asyncio
+    async def test_save_then_list_persists_profile(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        await save_profile(
+            org_id=org_id,
+            name='work',
+            request=SaveProfileRequest(
+                llm=StrictLLM(model='anthropic/claude-3-5-sonnet')
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+        assert [p.name for p in listing.profiles] == ['work']
+        assert listing.profiles[0].model == 'anthropic/claude-3-5-sonnet'
+        assert listing.active_profile is None
+
+    @pytest.mark.asyncio
+    async def test_default_model_resolver_ignores_disabled_rows(
+        self, async_session_maker
+    ):
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='disabled-default',
+                    provider='openhands',
+                    is_enabled=False,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+            assert await get_openhands_default_model_name(session) is None
+
+    @pytest.mark.asyncio
+    async def test_default_profile_lists_current_verified_default_without_rewrite(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org is not None
+            org.llm_profiles = {
+                'profiles': {
+                    'Default': {'model': 'openhands/stale-default'},
+                    'Pinned': {'model': 'anthropic/claude-3-5-sonnet'},
+                },
+                'active': 'Default',
+            }
+            session.add(
+                StoredVerifiedModel(
+                    model_name='gpt-5.2',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+        models = {profile.name: profile.model for profile in listing.profiles}
+        assert models['Default'] == 'openhands/gpt-5.2'
+        assert models['Pinned'] == 'anthropic/claude-3-5-sonnet'
+
+        async with async_session_maker() as session:
+            old_default = (
+                await session.execute(
+                    select(StoredVerifiedModel).where(
+                        StoredVerifiedModel.model_name == 'gpt-5.2'
+                    )
+                )
+            ).scalar_one()
+            old_default.is_default = False
+            session.add(
+                StoredVerifiedModel(
+                    model_name='minimax-m2.5',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+        models = {profile.name: profile.model for profile in listing.profiles}
+        assert models['Default'] == 'openhands/minimax-m2.5'
+        assert models['Pinned'] == 'anthropic/claude-3-5-sonnet'
+
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org is not None
+            assert org.llm_profiles['profiles']['Default']['model'] == (
+                'openhands/stale-default'
+            )
+
+    @pytest.mark.asyncio
+    async def test_default_profile_ignores_disabled_verified_default(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org is not None
+            org.llm_profiles = {
+                'profiles': {
+                    'Pinned': {'model': 'anthropic/claude-3-5-sonnet'},
+                },
+                'active': None,
+            }
+            session.add(
+                StoredVerifiedModel(
+                    model_name='gpt-5.2',
+                    provider='openhands',
+                    is_enabled=False,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+        models = {profile.name: profile.model for profile in listing.profiles}
+        assert 'Default' not in models
+        assert models['Pinned'] == 'anthropic/claude-3-5-sonnet'
+
+    @pytest.mark.asyncio
+    async def test_default_profile_cleared_when_db_default_disabled(
+        self, async_session_maker, patch_route_db
+    ):
+        """A persisted ``Default`` whose DB row is disabled must not linger.
+
+        Starts with a live OpenHands DB default (so ``Default`` materializes)
+        and a concrete user profile, then disables the only default row. The
+        logical ``Default`` pointer has no target, so it must disappear from
+        the listing and the stored snapshot must not be rewritten — while the
+        concrete user profile survives.
+        """
+        org_id = patch_route_db
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org is not None
+            org.llm_profiles = {
+                'profiles': {
+                    'Default': {'model': 'openhands/stale-default'},
+                    'Pinned': {'model': 'anthropic/claude-3-5-sonnet'},
+                },
+                'active': 'Default',
+            }
+            session.add(
+                StoredVerifiedModel(
+                    model_name='gpt-5.2',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        # With a live default, Default materializes to the concrete DB model.
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+        models = {profile.name: profile.model for profile in listing.profiles}
+        assert models['Default'] == 'openhands/gpt-5.2'
+        assert models['Pinned'] == 'anthropic/claude-3-5-sonnet'
+
+        # Disable the only enabled OpenHands default row.
+        async with async_session_maker() as session:
+            row = (
+                await session.execute(
+                    select(StoredVerifiedModel).where(
+                        StoredVerifiedModel.model_name == 'gpt-5.2'
+                    )
+                )
+            ).scalar_one()
+            row.is_enabled = False
+            await session.commit()
+
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+        models = {profile.name: profile.model for profile in listing.profiles}
+        # The logical Default is gone (no target), but the concrete user
+        # profile is preserved, and active no longer points at a stale model.
+        assert 'Default' not in models
+        assert models['Pinned'] == 'anthropic/claude-3-5-sonnet'
+        assert listing.active_profile != 'Default'
+
+        # The stored snapshot is not rewritten — only the live view dropped it.
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org is not None
+            assert (
+                org.llm_profiles['profiles']['Default']['model']
+                == 'openhands/stale-default'
+            )
+
+    @pytest.mark.asyncio
+    async def test_activating_default_uses_current_verified_default(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org is not None
+            org.llm_profiles = {
+                'profiles': {'Default': {'model': 'openhands/stale-default'}},
+                'active': 'Default',
+            }
+            session.add(
+                StoredVerifiedModel(
+                    model_name='minimax-m2.5',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        # Activating the managed ``Default`` mints a managed key for the member
+        # (the profile is managed even though the org's default
+        # ``agent_settings.llm`` is not), so stub the LiteLLM manager.
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            await activate_profile(
+                org_id=org_id, name='Default', user_id=str(ADMIN_USER_ID)
+            )
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.agent_settings_diff['llm']['model'] == 'openhands/minimax-m2.5'
+
+    async def test_list_includes_provider_connection_id(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        await save_profile(
+            org_id=org_id,
+            name='linked',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='openai/gpt-4o',
+                    provider_connection_id='conn-1',
+                )
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+
+        assert [p.name for p in listing.profiles] == ['linked']
+        assert listing.profiles[0].provider_connection_id == 'conn-1'
+
+    @pytest.mark.asyncio
+    async def test_get_profile_returns_details_without_secret(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        await save_profile(
+            org_id=org_id,
+            name='work',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='anthropic/claude-3-5-sonnet',
+                    api_key='secret-value',
+                )
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        detail = await get_profile(
+            org_id=org_id, name='work', user_id=str(ADMIN_USER_ID)
+        )
+        assert detail.name == 'work'
+        assert detail.llm['model'] == 'anthropic/claude-3-5-sonnet'
+        # ``expose_secrets=False`` on the response masks the secret rather
+        # than dropping it (so the response shape is stable). Just confirm
+        # the raw value never leaks back.
+        assert detail.llm.get('api_key') != 'secret-value'
+
+    @pytest.mark.asyncio
+    async def test_delete_removes_profile_and_repeat_returns_404(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        await save_profile(
+            org_id=org_id,
+            name='gone',
+            request=SaveProfileRequest(llm=StrictLLM(model='openai/gpt-4o')),
+            user_id=str(ADMIN_USER_ID),
+        )
+        await delete_profile(org_id=org_id, name='gone', user_id=str(ADMIN_USER_ID))
+
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+        assert listing.profiles == []
+
+        with pytest.raises(HTTPException) as exc:
+            await delete_profile(org_id=org_id, name='gone', user_id=str(ADMIN_USER_ID))
+        assert exc.value.status_code == 404
+
+
+class TestProfileErrorPaths:
+    """Exception-to-HTTP mapping for the mutating endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_save_raises_409_at_profile_limit(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        # Fill to the cap, then attempt a new name.
+        for i in range(MAX_PROFILES_PER_USER):
+            await save_profile(
+                org_id=org_id,
+                name=f'p{i}',
+                request=SaveProfileRequest(llm=StrictLLM(model=f'openai/m-{i}')),
+                user_id=str(ADMIN_USER_ID),
+            )
+
+        with pytest.raises(HTTPException) as exc:
+            await save_profile(
+                org_id=org_id,
+                name='overflow',
+                request=SaveProfileRequest(llm=StrictLLM(model='openai/m-x')),
+                user_id=str(ADMIN_USER_ID),
+            )
+        assert exc.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_rename_raises_409_on_name_collision(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        for name in ('a', 'b'):
+            await save_profile(
+                org_id=org_id,
+                name=name,
+                request=SaveProfileRequest(llm=StrictLLM(model=f'openai/{name}')),
+                user_id=str(ADMIN_USER_ID),
+            )
+
+        with pytest.raises(HTTPException) as exc:
+            await rename_profile(
+                org_id=org_id,
+                name='a',
+                request=RenameProfileRequest(new_name='b'),
+                user_id=str(ADMIN_USER_ID),
+            )
+        assert exc.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_activate_raises_404_for_unknown_profile(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        with pytest.raises(HTTPException) as exc:
+            await activate_profile(
+                org_id=org_id, name='missing', user_id=str(ADMIN_USER_ID)
+            )
+        assert exc.value.status_code == 404
+
+
+async def _set_org_agent_settings(async_session_maker, org_id, agent_settings):
+    async with async_session_maker() as session:
+        result = await session.execute(select(Org).where(Org.id == org_id))
+        org = result.scalars().first()
+        org.agent_settings = agent_settings
+        await session.commit()
+
+
+class TestSaveApiKeyPreservation:
+    """No-new-key saves must not clobber a profile's stored api_key."""
+
+    @pytest.mark.asyncio
+    async def test_managed_profile_does_not_persist_api_key(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        await save_profile(
+            org_id=org_id,
+            name='managed',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='openhands/gemini-3-pro-preview',
+                    api_key='sk-managed-key',
+                ),
+                include_secrets=True,
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        org = await _read_org(async_session_maker, org_id)
+        assert _load_profiles(org).require('managed').api_key is None
+
+    @pytest.mark.asyncio
+    async def test_snapshot_save_with_preserve_flag_keeps_existing_key(
+        self, async_session_maker, patch_route_db
+    ):
+        """The UI edit-save snapshots org defaults (active key included);
+        the flag keeps the profile's own key while the snapshot's model lands.
+        """
+        org_id = patch_route_db
+        await _set_org_agent_settings(
+            async_session_maker,
+            org_id,
+            {'llm': {'model': 'openai/gpt-4o', 'api_key': 'org-active-key'}},
+        )
+        await save_profile(
+            org_id=org_id,
+            name='work',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='anthropic/claude-3-5-sonnet', api_key='profile-key'
+                )
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        await save_profile(
+            org_id=org_id,
+            name='work',
+            request=SaveProfileRequest(preserve_existing_api_key=True),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        org = await _read_org(async_session_maker, org_id)
+        saved = _load_profiles(org).get('work')
+        assert saved.model == 'openai/gpt-4o'
+        assert saved.api_key.get_secret_value() == 'profile-key'
+
+    @pytest.mark.asyncio
+    async def test_snapshot_save_without_flag_keeps_snapshot_key(
+        self, async_session_maker, patch_route_db
+    ):
+        """Counter-test: a plain snapshot save still captures the org key."""
+        org_id = patch_route_db
+        await _set_org_agent_settings(
+            async_session_maker,
+            org_id,
+            {'llm': {'model': 'openai/gpt-4o', 'api_key': 'org-active-key'}},
+        )
+        await save_profile(
+            org_id=org_id,
+            name='work',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='anthropic/claude-3-5-sonnet', api_key='profile-key'
+                )
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        await save_profile(
+            org_id=org_id,
+            name='work',
+            request=SaveProfileRequest(),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        org = await _read_org(async_session_maker, org_id)
+        saved = _load_profiles(org).get('work')
+        assert saved.api_key.get_secret_value() == 'org-active-key'
+
+    @pytest.mark.asyncio
+    async def test_snapshot_save_with_preserve_flag_keeps_profile_keyless(
+        self, async_session_maker, patch_route_db
+    ):
+        """A keyless profile must not silently inherit the org's active key."""
+        org_id = patch_route_db
+        await _set_org_agent_settings(
+            async_session_maker,
+            org_id,
+            {'llm': {'model': 'openai/gpt-4o', 'api_key': 'org-active-key'}},
+        )
+        await save_profile(
+            org_id=org_id,
+            name='keyless',
+            request=SaveProfileRequest(llm=StrictLLM(model='openai/gpt-4o')),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        await save_profile(
+            org_id=org_id,
+            name='keyless',
+            request=SaveProfileRequest(preserve_existing_api_key=True),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        org = await _read_org(async_session_maker, org_id)
+        assert _load_profiles(org).get('keyless').api_key is None
+
+    @pytest.mark.asyncio
+    async def test_explicit_llm_without_key_preserves_stored_key(
+        self, async_session_maker, patch_route_db
+    ):
+        """GET→edit→POST round-trips null the key; the update must keep the
+        stored one (parity with the personal profiles route)."""
+        org_id = patch_route_db
+        await save_profile(
+            org_id=org_id,
+            name='work',
+            request=SaveProfileRequest(
+                llm=StrictLLM(model='openai/gpt-4o', api_key='stored-key')
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        await save_profile(
+            org_id=org_id,
+            name='work',
+            request=SaveProfileRequest(
+                llm=StrictLLM(model='anthropic/claude-3-5-sonnet')
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        org = await _read_org(async_session_maker, org_id)
+        saved = _load_profiles(org).get('work')
+        assert saved.model == 'anthropic/claude-3-5-sonnet'
+        assert saved.api_key.get_secret_value() == 'stored-key'
+
+    @pytest.mark.asyncio
+    async def test_explicit_llm_with_new_key_replaces_stored_key(
+        self, async_session_maker, patch_route_db
+    ):
+        """Counter-test: an intentionally supplied key still wins."""
+        org_id = patch_route_db
+        await save_profile(
+            org_id=org_id,
+            name='work',
+            request=SaveProfileRequest(
+                llm=StrictLLM(model='openai/gpt-4o', api_key='old-key')
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        await save_profile(
+            org_id=org_id,
+            name='work',
+            request=SaveProfileRequest(
+                llm=StrictLLM(model='openai/gpt-4o', api_key='new-key')
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        org = await _read_org(async_session_maker, org_id)
+        assert _load_profiles(org).get('work').api_key.get_secret_value() == 'new-key'
+
+
+class TestActivateTransactionAtomicity:
+    """Activate must commit the org marker and the member diff together."""
+
+    @pytest.mark.asyncio
+    async def test_writes_org_active_and_member_diff_together(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        await save_profile(
+            org_id=org_id,
+            name='work',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='anthropic/claude-3-5-sonnet',
+                    base_url='https://api.anthropic.com/v1',
+                    api_key='activate-key',
+                )
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        await activate_profile(org_id=org_id, name='work', user_id=str(ADMIN_USER_ID))
+
+        org = await _read_org(async_session_maker, org_id)
+        assert org is not None
+        assert _load_profiles(org).active == 'work'
+
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member is not None
+        assert (
+            member.agent_settings_diff['llm']['model'] == 'anthropic/claude-3-5-sonnet'
+        )
+
+    @pytest.mark.asyncio
+    async def test_member_lookup_failure_rolls_back_org_active(
+        self, async_session_maker, patch_route_db
+    ):
+        """If the member row vanishes between perm-check and the same-session
+        member read, the helper must roll back the org-side update so we
+        don't end up with the org marker advanced without the member diff
+        applied.
+        """
+        org_id = patch_route_db
+        await save_profile(
+            org_id=org_id,
+            name='work',
+            request=SaveProfileRequest(llm=StrictLLM(model='openai/gpt-4o')),
+            user_id=str(ADMIN_USER_ID),
+        )
+        # Sanity: no active profile yet.
+        org_before = await _read_org(async_session_maker, org_id)
+        assert _load_profiles(org_before).active is None
+
+        # Drop the member row so the in-transaction lookup raises 404.
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(OrgMember).where(OrgMember.org_id == org_id)
+            )
+            member = result.scalars().first()
+            await session.delete(member)
+            await session.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            await activate_profile(
+                org_id=org_id, name='work', user_id=str(ADMIN_USER_ID)
+            )
+        assert exc.value.status_code == 404
+
+        org_after = await _read_org(async_session_maker, org_id)
+        # No commit happened → org.active stays None.
+        assert _load_profiles(org_after).active is None
+
+    @pytest.mark.asyncio
+    async def test_activate_masks_key_in_diff_and_persists_real_key_encrypted(
+        self, async_session_maker, patch_route_db
+    ):
+        """A per-profile key must never be stored raw in the plain-JSON
+        ``agent_settings_diff`` column, and it must actually take effect: the
+        effective key resolves from the encrypted ``_llm_api_key`` column (via
+        ``has_custom_llm_api_key``), not from the diff.
+        """
+        org_id = patch_route_db
+        await save_profile(
+            org_id=org_id,
+            name='byor',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='anthropic/claude-3-5-sonnet',
+                    base_url='https://api.anthropic.com/v1',
+                    api_key='byor-secret',
+                )
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        await activate_profile(org_id=org_id, name='byor', user_id=str(ADMIN_USER_ID))
+
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member is not None
+        # The raw key never lands in the unencrypted diff column.
+        assert member.agent_settings_diff['llm']['api_key'] == MASKED_API_KEY
+        assert 'byor-secret' not in str(member.agent_settings_diff)
+        # A non-managed (BYOR) key takes effect via the encrypted member store.
+        assert member.has_custom_llm_api_key is True
+        assert member.llm_api_key.get_secret_value() == 'byor-secret'
+
+
+class TestActivateReplacesStaleCustomKey:
+    """Activating a managed profile after a BYOR one must repopulate the shared
+    _llm_api_key slot with a fresh managed key, not keep the stale dummy."""
+
+    @pytest.mark.asyncio
+    async def test_switching_to_managed_default_replaces_stale_custom_key(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+
+        await _set_org_agent_settings(
+            async_session_maker,
+            org_id,
+            {'llm': {'model': 'openhands/deepseek-v4-flash', 'base_url': None}},
+        )
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        # 1. Activate a BYOR profile with a dummy key.
+        await save_profile(
+            org_id=org_id,
+            name='TestModel',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='anthropic/claude-3-5-sonnet',
+                    base_url='https://api.anthropic.com/v1',
+                    api_key='dummy-broken-key',
+                )
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+        await activate_profile(
+            org_id=org_id, name='TestModel', user_id=str(ADMIN_USER_ID)
+        )
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is True
+        assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
+
+        # 2. Switch back to managed Default. LiteLLM lookups are
+        #    inconclusive-aware (verify_existing_key/verify_key return True on
+        #    no-key / non-auth-failure), so mock both True — the force-rotate
+        #    path must still replace the "valid"-looking dummy.
+        with (
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager.verify_key',
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
+                new=AsyncMock(),
+            ),
+            patch(
+                'storage.lite_llm_manager.LiteLlmManager.generate_key',
+                new=AsyncMock(return_value='fresh-managed-key'),
+            ),
+        ):
+            await activate_profile(
+                org_id=org_id, name='Default', user_id=str(ADMIN_USER_ID)
+            )
+
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is False
+        assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
+        assert member.llm_api_key.get_secret_value() != 'dummy-broken-key'
+        org = await _read_org(async_session_maker, org_id)
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'fresh-managed-key'
+
+
+class TestE2EStaleDefault401Repro:
+    """E2E: after BYOR->managed switch-back, the launch-time effective key is
+    not the stale dummy."""
+
+    @pytest.mark.asyncio
+    async def test_stale_dummy_not_effective_after_switch_back(
+        self, async_session_maker, patch_route_db
+    ):
+        from unittest.mock import AsyncMock
+
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        await _set_org_agent_settings(
+            async_session_maker,
+            org_id,
+            {'llm': {'model': 'openhands/deepseek-v4-flash', 'base_url': None}},
+        )
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            # 1. Activate BYOR TestModel with a dummy key.
+            await save_profile(
+                org_id=org_id,
+                name='TestModel',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='anthropic/claude-3-5-sonnet',
+                        base_url='https://api.anthropic.com/v1',
+                        api_key='dummy-broken-key',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(org_id=org_id, name='TestModel', user_id=user_id)
+            member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+            assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
+
+            # 2. Switch back to the managed Default.
+            await activate_profile(org_id=org_id, name='Default', user_id=user_id)
+            member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+
+            # 3. Resolve the effective key the way load() does at launch.
+            org = await _read_org(async_session_maker, org_id)
+            effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+            assert effective is not None
+            eff_raw = (
+                effective.get_secret_value()
+                if hasattr(effective, 'get_secret_value')
+                else effective
+            )
+            assert eff_raw != 'dummy-broken-key', (
+                'stale dummy key still effective at conversation launch!'
+            )
+            assert eff_raw == 'fresh-managed-key'
+
+
+class TestSwitchBackWithStaleOrgDefault:
+    """Rotation must fire even when the org default agent_settings.llm is still
+    pinned to the stale BYOR profile (classification comes from the activated
+    profile's LLM, not the org default)."""
+
+    @pytest.mark.asyncio
+    async def test_switch_back_rotates_when_org_default_is_stale_byor(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            # 1. Activate a BYOR TestModel with a dummy key.
+            await save_profile(
+                org_id=org_id,
+                name='TestModel',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='dummymodel',
+                        base_url='dummymodel',
+                        api_key='dummy-broken-key',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(org_id=org_id, name='TestModel', user_id=user_id)
+            member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+            assert member.has_custom_llm_api_key is True
+            assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
+
+            # 2. Mirror prod: org default agent_settings.llm stays pinned to
+            #    the stale BYOR profile (profile switches don't rewrite it).
+            await _set_org_agent_settings(
+                async_session_maker,
+                org_id,
+                {'llm': {'model': 'dummymodel', 'base_url': 'dummymodel'}},
+            )
+
+            # 3. Switch back to managed Default.
+            await activate_profile(org_id=org_id, name='Default', user_id=user_id)
+
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is False
+        assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
+        assert member.llm_api_key.get_secret_value() != 'dummy-broken-key'
+        org = await _read_org(async_session_maker, org_id)
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'fresh-managed-key'
+
+
+class TestSwitchBackManagedProfileWithNonDefaultProxyUrl:
+    """A managed profile whose base_url is an all-hands.dev proxy URL that
+    isn't byte-identical to LITE_LLM_API_URL is still recognized as managed and
+    gets its stale key rotated (canonical detector)."""
+
+    @pytest.mark.asyncio
+    async def test_managed_profile_with_non_default_proxy_url_rotates_stale_key(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            # 1. Activate a BYOR profile with a dummy key.
+            await save_profile(
+                org_id=org_id,
+                name='TestModel',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='dummymodel',
+                        base_url='dummymodel',
+                        api_key='dummy-broken-key',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(org_id=org_id, name='TestModel', user_id=user_id)
+            member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+            assert member.has_custom_llm_api_key is True
+            assert member.llm_api_key.get_secret_value() == 'dummy-broken-key'
+
+            # 2. Org default stays pinned to the stale BYOR profile.
+            await _set_org_agent_settings(
+                async_session_maker,
+                org_id,
+                {'llm': {'model': 'dummymodel', 'base_url': 'dummymodel'}},
+            )
+
+            # 3. Save + activate a keyless managed profile whose base_url is an
+            #    all-hands.dev proxy URL not byte-identical to LITE_LLM_API_URL.
+            await save_profile(
+                org_id=org_id,
+                name='StagingManaged',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='openhands/deepseek-v4-flash',
+                        base_url='https://llm-proxy.staging.all-hands.dev',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(
+                org_id=org_id, name='StagingManaged', user_id=user_id
+            )
+
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is False
+        assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
+        assert member.llm_api_key.get_secret_value() != 'dummy-broken-key'
+        org = await _read_org(async_session_maker, org_id)
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'fresh-managed-key'
+
+
+class TestSwitchBackClearsStaleOrgLevelKey:
+    """A stale org-level _llm_api_key (set when a BYOR profile was the org
+    default) shadows the rotated member key at launch, so switch-back to a
+    managed profile must clear it."""
+
+    @pytest.mark.asyncio
+    async def test_switch_back_clears_stale_org_llm_api_key(
+        self, async_session_maker, patch_route_db
+    ):
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        async with async_session_maker() as session:
+            session.add(
+                StoredVerifiedModel(
+                    model_name='deepseek-v4-flash',
+                    provider='openhands',
+                    is_enabled=True,
+                    is_verified=True,
+                    is_free=True,
+                    is_default=True,
+                )
+            )
+            await session.commit()
+
+        with patch.multiple(
+            'storage.lite_llm_manager.LiteLlmManager',
+            verify_existing_key=AsyncMock(return_value=True),
+            verify_key=AsyncMock(return_value=True),
+            delete_key_by_alias=AsyncMock(),
+            generate_key=AsyncMock(return_value='fresh-managed-key'),
+        ):
+            # 1. Activate a BYOR TestModel with a dummy key.
+            await save_profile(
+                org_id=org_id,
+                name='TestModel',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='dummymodel',
+                        base_url='dummymodel',
+                        api_key='dummymodel',
+                    )
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(org_id=org_id, name='TestModel', user_id=user_id)
+
+            # 2. Mirror prod: BYOR default saved via the org-defaults path, so
+            #    both agent_settings.llm and the org-level _llm_api_key hold the
+            #    dummy. The member slot is rotated by activate, but the org-level
+            #    key persists until switch-back repairs it.
+            await _set_org_agent_settings(
+                async_session_maker,
+                org_id,
+                {'llm': {'model': 'dummymodel', 'base_url': 'dummymodel'}},
+            )
+            async with async_session_maker() as session:
+                org = (
+                    await session.execute(select(Org).where(Org.id == org_id))
+                ).scalar_one()
+                org.llm_api_key = 'dummymodel'
+                await session.commit()
+
+            org = await _read_org(async_session_maker, org_id)
+            assert org.llm_api_key is not None
+            assert org.llm_api_key.get_secret_value() == 'dummymodel'
+
+            # 3. Switch back to managed Default.
+            await activate_profile(org_id=org_id, name='Default', user_id=user_id)
+
+        org = await _read_org(async_session_maker, org_id)
+        assert org.llm_api_key is None, (
+            'stale org-level BYOR key survived the switch-back — it would '
+            'shadow the member managed key at launch (#421)'
+        )
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is False
+        assert member.llm_api_key.get_secret_value() == 'fresh-managed-key'
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'fresh-managed-key'
+        assert effective.get_secret_value() != 'dummymodel'

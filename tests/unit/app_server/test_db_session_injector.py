@@ -3,7 +3,7 @@
 This module tests the database service implementation, focusing on:
 - Session management and reuse within request contexts
 - Configuration processing from environment variables
-- Connection string generation for different database types (GCP, PostgreSQL, SQLite)
+- Connection string generation for different database types (GCP, PostgreSQL)
 - Engine creation and caching behavior
 """
 
@@ -15,29 +15,31 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import Engine
-from sqlalchemy.ext.asyncio.engine import AsyncEngine
 from sqlalchemy.orm import sessionmaker
 
-# Mock the storage.database module to avoid import-time engine creation
+# Mock the storage.database module and the database drivers while importing the
+# module under test, to avoid import-time engine creation and driver imports.
+# The real modules are put back afterwards: they are shared with the rest of the
+# suite, and leaving stubs in sys.modules would break later tests in this worker.
 mock_storage_database = MagicMock()
 mock_storage_database.sessionmaker = sessionmaker
-sys.modules['storage.database'] = mock_storage_database
-
-# Mock database drivers to avoid import errors
-sys.modules['pg8000'] = MagicMock()
-sys.modules['asyncpg'] = MagicMock()
-sys.modules['google.cloud.sql.connector'] = MagicMock()
-
-# Import after mocking to avoid import-time issues
-from openhands.app_server.services.db_session_injector import (  # noqa: E402
-    DbSessionInjector,
-)
-from openhands.db.ssl import (  # noqa: E402
-    build_asyncpg_connect_args,
-    build_db_url_query,
-    build_pg8000_connect_args,
-)
+with patch.dict(
+    sys.modules,
+    {
+        'storage.database': mock_storage_database,
+        'pg8000': MagicMock(),
+        'asyncpg': MagicMock(),
+        'google.cloud.sql.connector': MagicMock(),
+    },
+):
+    from openhands.app_server.services.db_session_injector import (
+        DbSessionInjector,
+    )
+    from openhands.db.ssl import (
+        build_asyncpg_connect_args,
+        build_db_url_query,
+        build_pg8000_connect_args,
+    )
 
 
 class MockRequest:
@@ -56,7 +58,23 @@ def temp_persistence_dir():
 
 @pytest.fixture
 def basic_db_session_injector(temp_persistence_dir):
-    """Create a basic DbSessionInjector instance for testing."""
+    """Create a basic DbSessionInjector instance for testing.
+
+    Engine construction is lazy, so the host never has to be reachable.
+    """
+    return DbSessionInjector(
+        persistence_dir=temp_persistence_dir,
+        host='localhost',
+        port=5432,
+        name='test_db',
+        user='test_user',
+        password=SecretStr('test_password'),
+    )
+
+
+@pytest.fixture
+def unconfigured_db_session_injector(temp_persistence_dir):
+    """Create a DbSessionInjector with no database configured."""
     return DbSessionInjector(persistence_dir=temp_persistence_dir)
 
 
@@ -187,24 +205,18 @@ class TestDbSessionInjectorConfiguration:
 class TestDbSessionInjectorConnections:
     """Test database connection string generation and engine creation."""
 
-    def test_sqlite_connection_fallback(self, basic_db_session_injector):
-        """Test SQLite connection when no host is defined."""
-        engine = basic_db_session_injector.get_db_engine()
-
-        assert isinstance(engine, Engine)
-        expected_url = (
-            f'sqlite:///{basic_db_session_injector.persistence_dir}/openhands.db'
-        )
-        assert str(engine.url) == expected_url
+    def test_raises_when_no_host_configured(self, unconfigured_db_session_injector):
+        """Test an unconfigured database fails instead of falling back."""
+        with pytest.raises(RuntimeError, match='No database configured'):
+            unconfigured_db_session_injector.get_db_engine()
 
     @pytest.mark.asyncio
-    async def test_sqlite_async_connection_fallback(self, basic_db_session_injector):
-        """Test SQLite async connection when no host is defined."""
-        engine = await basic_db_session_injector.get_async_db_engine()
-
-        assert isinstance(engine, AsyncEngine)
-        expected_url = f'sqlite+aiosqlite:///{basic_db_session_injector.persistence_dir}/openhands.db'
-        assert str(engine.url) == expected_url
+    async def test_async_raises_when_no_host_configured(
+        self, unconfigured_db_session_injector
+    ):
+        """Test an unconfigured database fails instead of falling back."""
+        with pytest.raises(RuntimeError, match='No database configured'):
+            await unconfigured_db_session_injector.get_async_db_engine()
 
     def test_postgres_connection_with_host(self, postgres_db_session_injector):
         """Test PostgreSQL connection when host is defined."""

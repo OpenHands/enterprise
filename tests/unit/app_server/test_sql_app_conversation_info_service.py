@@ -2,7 +2,7 @@
 
 This module tests the SQL implementation of AppConversationInfoService,
 focusing on basic CRUD operations, search functionality, filtering, pagination,
-and batch operations using SQLite as a mock database.
+and batch operations against the test database.
 """
 
 from datetime import datetime, timezone
@@ -10,8 +10,7 @@ from typing import AsyncGenerator
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
@@ -23,32 +22,13 @@ from openhands.app_server.app_conversation.sql_app_conversation_info_service imp
 )
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
-from openhands.app_server.utils.sql_utils import Base
-from openhands.sdk.llm import MetricsSnapshot, TokenUsage
+from openhands.sdk import ConversationStats
+from openhands.sdk.llm import Metrics, MetricsSnapshot, TokenUsage
 
 # Note: org_id column exists but foreign key constraint is not enforced in tests
 
 # Note: MetricsSnapshot from SDK is not available in test environment
 # We'll use None for metrics field in tests since it's optional
-
-
-@pytest.fixture
-async def async_engine():
-    """Create an async SQLite engine for testing."""
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-        echo=False,
-    )
-
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield engine
-
-    await engine.dispose()
 
 
 @pytest.fixture
@@ -559,6 +539,58 @@ class TestSQLAppConversationInfoService:
 
         # Verify other fields remain unchanged
         assert retrieved_info.sandbox_id == sample_conversation_info.sandbox_id
+
+    @pytest.mark.asyncio
+    async def test_update_title_keeps_concurrently_updated_columns(
+        self,
+        service: SQLAppConversationInfoService,
+        sample_conversation_info: AppConversationInfo,
+    ):
+        """Test that update_title only touches the title column."""
+        # Arrange: persist the conversation, then let a concurrent writer
+        # advance the statistics after that snapshot was taken.
+        await service.save_app_conversation_info(sample_conversation_info)
+        stats = ConversationStats(
+            usage_to_metrics={
+                'agent': Metrics(
+                    model_name='gpt-4',
+                    accumulated_cost=2.5,
+                    accumulated_token_usage=TokenUsage(
+                        prompt_tokens=100, completion_tokens=50
+                    ),
+                )
+            }
+        )
+        await service.update_conversation_statistics(sample_conversation_info.id, stats)
+
+        # Act
+        await service.update_title(sample_conversation_info.id, 'New Title')
+
+        # Assert
+        retrieved_info = await service.get_app_conversation_info(
+            sample_conversation_info.id
+        )
+        assert retrieved_info is not None
+        assert retrieved_info.title == 'New Title'
+        assert retrieved_info.metrics is not None
+        assert retrieved_info.metrics.accumulated_cost == 2.5
+        assert retrieved_info.metrics.accumulated_token_usage is not None
+        assert retrieved_info.metrics.accumulated_token_usage.prompt_tokens == 100
+        assert retrieved_info.llm_model == sample_conversation_info.llm_model
+
+    @pytest.mark.asyncio
+    async def test_update_title_unknown_conversation_is_noop(
+        self, service: SQLAppConversationInfoService
+    ):
+        """Test that update_title on a missing conversation does not raise."""
+        # Arrange
+        missing_id = uuid4()
+
+        # Act
+        await service.update_title(missing_id, 'New Title')
+
+        # Assert
+        assert await service.get_app_conversation_info(missing_id) is None
 
     @pytest.mark.asyncio
     async def test_search_with_invalid_page_id(
@@ -1377,3 +1409,88 @@ class TestCreatedAtPreservation:
         stored = await service.get_app_conversation_info(conversation_id)
         assert stored is not None
         assert stored.created_at == created_at
+
+
+class TestTagsContainsFilter:
+    """Test suite for tags__contains filter parameter."""
+
+    @staticmethod
+    def _conversation(title: str, tags: dict[str, str]) -> AppConversationInfo:
+        return AppConversationInfo(
+            id=uuid4(),
+            created_by_user_id=None,
+            sandbox_id='sandbox_tags',
+            title=title,
+            tags=tags,
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_by_tag(
+        self,
+        service: SQLAppConversationInfoService,
+    ):
+        """Test searching conversations by an exact tag key/value match."""
+        # Arrange
+        env_a = self._conversation('Env A', {'environmenturl': 'https://env/a'})
+        env_b = self._conversation('Env B', {'environmenturl': 'https://env/b'})
+        untagged = self._conversation('Untagged', {})
+        for info in (env_a, env_b, untagged):
+            await service.save_app_conversation_info(info)
+
+        # Act
+        page = await service.search_app_conversation_info(
+            tags__contains={'environmenturl': 'https://env/a'}
+        )
+
+        # Assert
+        assert [item.id for item in page.items] == [env_a.id]
+
+    @pytest.mark.asyncio
+    async def test_search_requires_all_tags_to_match(
+        self,
+        service: SQLAppConversationInfoService,
+    ):
+        """Test that multiple tag pairs are combined with AND semantics."""
+        # Arrange
+        both = self._conversation('Both', {'team': 'platform', 'stage': 'prod'})
+        team_only = self._conversation('Team only', {'team': 'platform'})
+        other_stage = self._conversation(
+            'Other stage', {'team': 'platform', 'stage': 'dev'}
+        )
+        for info in (both, team_only, other_stage):
+            await service.save_app_conversation_info(info)
+
+        # Act
+        page = await service.search_app_conversation_info(
+            tags__contains={'team': 'platform', 'stage': 'prod'}
+        )
+
+        # Assert
+        assert [item.id for item in page.items] == [both.id]
+
+    @pytest.mark.asyncio
+    async def test_count_by_tag(
+        self,
+        service: SQLAppConversationInfoService,
+    ):
+        """Test counting conversations by tag."""
+        # Arrange
+        for info in (
+            self._conversation('One', {'team': 'platform'}),
+            self._conversation('Two', {'team': 'platform'}),
+            self._conversation('Three', {'team': 'growth'}),
+            self._conversation('Four', {}),
+        ):
+            await service.save_app_conversation_info(info)
+
+        # Act
+        matching = await service.count_app_conversation_info(
+            tags__contains={'team': 'platform'}
+        )
+        missing = await service.count_app_conversation_info(
+            tags__contains={'team': 'unknown'}
+        )
+
+        # Assert
+        assert matching == 2
+        assert missing == 0

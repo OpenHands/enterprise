@@ -21,15 +21,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The app image is a stage of this same build (`openhands-app`), so one build
-  # produces the one image we publish — nothing else is pushed.
+  # Builds and publishes the enterprise-server image.
   build_enterprise:
     name: Enterprise
     uses: ./.github/workflows/_build-image.yml
     with:
       image: ghcr.io/openhands/enterprise-server
       dockerfile: containers/app/Dockerfile
-      target: enterprise
+      target: enterprise-server
       provenance: true
       sbom: true
       buildx-driver-opts: network=host

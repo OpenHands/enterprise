@@ -1,10 +1,24 @@
 # Development Guide
 
 This guide is for people working on OpenHands and editing the source code.
-If you wish to contribute your changes, check out the
-[CONTRIBUTING.md](https://github.com/OpenHands/OpenHands/blob/main/CONTRIBUTING.md)
-on how to clone and setup the project initially before moving on. Otherwise,
-you can clone the OpenHands project directly.
+For contribution guidelines, see the [contributing section on our website](https://www.openhands.dev/contact).
+Otherwise, you can clone the OpenHands project directly.
+
+## Repository Layout
+
+The Python backend is laid out exactly as it is deployed in the Docker image (`/app`):
+
+- `openhands/` — the OpenHands app server (`openhands.server.listen:app`, `openhands/app_server/`)
+- `server/`, `storage/`, `integrations/`, `sync/`, `analytics/`, `utils/` — the SaaS/enterprise modules that extend it
+- `saas_server.py` — the FastAPI app that Kubernetes runs (`uvicorn saas_server:app`); `run_maintenance_tasks.py`
+  and `run_budget_maintenance.py` are CronJob entrypoints; `run_budget_preflight.py` is the upgrade preflight /
+  post-upgrade gate hook entrypoint
+- `migrations/` and `alembic.ini` — Alembic database migrations (PostgreSQL only)
+- `tests/unit/` — unit tests for all of the above
+- `frontend/` — the React frontend
+
+See [docs/architecture](./docs/architecture/README.md) for how the SaaS server layers on the app server, and
+[dev_config/local_saas/README.md](./dev_config/local_saas/README.md) for running the SaaS server locally.
 
 ## Choose Your Setup
 
@@ -27,7 +41,7 @@ You'll need the following installed:
 
 - **Python 3.12** — `brew install python@3.12` (see the [official Homebrew Python docs](https://docs.brew.sh/Homebrew-and-Python) for details). Make sure `python3.12` is available in your PATH (the `make build` step will verify this).
 - **Node.js >= 22** — `brew install node`
-- **Poetry >= 1.8** — `brew install poetry`
+- **uv** — `brew install uv` (see the [uv installation docs](https://docs.astral.sh/uv/getting-started/installation/) for other options)
 - **Docker Desktop** — `brew install --cask docker`
   - After installing, open Docker Desktop → **Settings → Advanced** → Enable **"Allow the default Docker socket to be used"**
 
@@ -55,6 +69,9 @@ See [our documentation](https://docs.openhands.dev/openhands/usage/llms/llms) fo
 ### 4. Run the Application
 
 ```bash
+# Start a local PostgreSQL and migrate it (once per machine)
+make local-db
+
 # Run both backend and frontend
 make run
 
@@ -63,7 +80,14 @@ make start-backend  # Backend only on port 3000
 make start-frontend # Frontend only on port 3001
 ```
 
-These targets serve the current OpenHands V1 API by default. In the codebase, `make start-backend` runs `openhands.server.listen:app`, and that app includes the `openhands/app_server` V1 routes unless `ENABLE_V1=0`.
+`make start-backend` runs `openhands.server.listen:app`, which serves the `openhands/app_server` V1 API
+unless `ENABLE_V1=0`. It needs PostgreSQL: `make local-db` starts one in a container and applies the
+migrations, or set `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS` to point at your own. Migrations are
+never applied automatically on startup.
+
+To run the SaaS/enterprise server (`saas_server:app`, what Kubernetes deploys) use `make start-saas-backend` or
+`make run-saas`; it needs the SaaS environment (Postgres, Keycloak, ...) described in
+[dev_config/local_saas/README.md](./dev_config/local_saas/README.md).
 
 ---
 
@@ -92,10 +116,10 @@ sudo apt install -y python3.12 python3.12-dev python3.12-venv
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 
-# Install Poetry
-curl -sSL https://install.python-poetry.org | python3 -
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Add Poetry to your PATH
+# Add uv to your PATH (the installer puts it in ~/.local/bin)
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 
@@ -125,6 +149,9 @@ See the [macOS section above](#3-configure-the-language-model) for guidance: con
 ### 4. Run the Application
 
 ```bash
+# Start a local PostgreSQL and migrate it (once per machine)
+make local-db
+
 # Run both backend and frontend
 make run
 
@@ -158,7 +185,7 @@ After installation, restart your computer and open Ubuntu.
 
 ### 2. Install Prerequisites (in WSL Ubuntu)
 
-Follow [Step 1 from the Linux setup](#1-install-prerequisites-1) to install system dependencies, Python 3.12, Node.js, and Poetry. Skip the Docker installation — Docker is provided through Docker Desktop below.
+Follow [Step 1 from the Linux setup](#1-install-prerequisites-1) to install system dependencies, Python 3.12, Node.js, and uv. Skip the Docker installation — Docker is provided through Docker Desktop below.
 
 ### 3. Configure Docker for WSL2
 
@@ -183,6 +210,9 @@ See the [macOS section above](#3-configure-the-language-model) for the current V
 ### 6. Run the Application
 
 ```bash
+# Start a local PostgreSQL and migrate it (once per machine)
+make local-db
+
 # Run both backend and frontend
 make run
 
@@ -220,14 +250,6 @@ make docker-dev
 
 For more details, see the [dev container documentation](./containers/dev/README.md).
 
-### Alternative: Docker Run
-
-If you just want to run OpenHands without setting up a dev environment:
-
-```bash
-make docker-run
-```
-
 If you don't have `make` installed, run:
 
 ```bash
@@ -247,10 +269,10 @@ If you want to develop without system admin/sudo access to upgrade/install `Pyth
 curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
 bash Miniforge3-$(uname)-$(uname -m).sh
 
-# Install Python 3.12, nodejs, and poetry
+# Install Python 3.12, nodejs, and uv
 mamba install python=3.12
 mamba install conda-forge::nodejs
-mamba install conda-forge::poetry
+mamba install conda-forge::uv
 ```
 
 ---
@@ -264,7 +286,7 @@ You can use OpenHands to develop and improve OpenHands itself!
 ```bash
 export INSTALL_DOCKER=0
 export RUNTIME=local
-make build && make run
+make build && make local-db && make run
 ```
 
 Access the interface at:
@@ -297,15 +319,22 @@ Logs will be saved to `logs/llm/CURRENT_DATE/` for troubleshooting.
 ### Unit Tests
 
 ```bash
-poetry run pytest ./tests/unit/test_*.py
+uv run pytest ./tests/unit
 ```
+
+The suite covers the app server (`openhands/`) and the SaaS modules (`server/`, `storage/`, ...); the database
+fixtures live in `tests/unit/conftest.py`.
+
+Tests that touch the database run against real PostgreSQL. The first such test starts a `postgres:16` container,
+migrates a template database with `alembic upgrade head`, and then hands every individual test its own clone of
+that template. Docker has to be running; nothing else is needed. The container is removed when the run ends.
 
 ---
 
 ## Adding Dependencies
 
-1. Add your dependency in `pyproject.toml` or use `poetry add xxx`
-2. Update the lock file: `poetry lock --no-update`
+1. Add your dependency with `uv add xxx` (or edit `pyproject.toml` by hand)
+2. Update the lock file if you edited by hand: `uv lock`
 
 ---
 
@@ -320,8 +349,8 @@ make help
 ## Key Documentation Resources
 
 - [/README.md](./README.md): Main project overview, features, and basic setup instructions
+- [/docs/architecture/README.md](./docs/architecture/README.md): How the SaaS server extends the app server (auth, integrations)
 - [/Development.md](./Development.md) (this file): Comprehensive guide for developers working on OpenHands
-- [/CONTRIBUTING.md](./CONTRIBUTING.md): Guidelines for contributing to the project, including code style and PR process
 - [DOC_STYLE_GUIDE.md](https://github.com/OpenHands/docs/blob/main/openhands/DOC_STYLE_GUIDE.md): Standards for writing and maintaining project documentation
 - [/openhands/app_server/README.md](./openhands/app_server/README.md): Current V1 application server implementation and REST API modules
 - [/frontend/README.md](./frontend/README.md): Frontend React application setup and development guide

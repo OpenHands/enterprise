@@ -1,10 +1,10 @@
 import React, { useMemo, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { useNavigate } from "react-router";
-import { FaTrash, FaEye, FaEyeSlash, FaCopy } from "react-icons/fa6";
 import { I18nKey } from "#/i18n/declaration";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { LoadingSpinner } from "#/components/shared/loading-spinner";
+import { EyeIcon, EyeOffIcon } from "#/components/shared/icons/inline-icons";
 import { ApiKey, CreateApiKeyResponse } from "#/api/api-keys";
 import {
   displayErrorToast,
@@ -18,6 +18,23 @@ import { useApiKeys } from "#/hooks/query/use-api-keys";
 import { useLlmApiKey } from "#/hooks/query/use-llm-api-key";
 import { useRefreshLlmApiKey } from "#/hooks/mutation/use-refresh-llm-api-key";
 import { useOrganizations } from "#/hooks/query/use-organizations";
+import { useConfig } from "#/hooks/query/use-config";
+import {
+  settingsListIconActionButtonClassName,
+  settingsListScrollContainerClassName,
+  settingsListTableCellClassName,
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+  settingsListTableRowClassName,
+} from "#/utils/settings-list-classes";
+import {
+  formControlInlineInputClassName,
+  formControlShellClassName,
+} from "#/utils/form-control-classes";
+import { cn } from "#/utils/utils";
+import CopyIcon from "#/icons/copy.svg?react";
+import RefreshIcon from "#/icons/u-refresh.svg?react";
+import DeleteIcon from "#/icons/u-delete.svg?react";
 
 interface LlmApiKeyManagerProps {
   llmApiKey: { key: string | null } | undefined;
@@ -26,9 +43,8 @@ interface LlmApiKeyManagerProps {
   refreshLlmApiKey: ReturnType<typeof useRefreshLlmApiKey>;
 }
 
-function LlmApiKeyPaywall() {
+function LlmApiKeyDisabled() {
   const { t } = useTranslation();
-  const navigate = useNavigate();
 
   return (
     <div className="border-b border-gray-200 pb-6 mb-6 flex flex-col gap-6">
@@ -37,6 +53,24 @@ function LlmApiKeyPaywall() {
       </h3>
       <div className="bg-base-tertiary rounded-md p-4 flex flex-col gap-4">
         <p className="text-sm text-gray-300">
+          {t(I18nKey.SETTINGS$LLM_API_KEY_DISABLED_MESSAGE)}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function LlmApiKeyPaywall() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+
+  return (
+    <div className="flex flex-col gap-6">
+      <h3 className="text-lg font-medium text-white">
+        {t(I18nKey.SETTINGS$LLM_API_KEY)}
+      </h3>
+      <div className="bg-base-secondary border border-[var(--oh-border)] rounded-lg p-4 flex flex-col gap-4">
+        <p className="text-sm leading-5 text-muted">
           {t(I18nKey.SETTINGS$LLM_API_KEY_PAYWALL_MESSAGE)}
         </p>
         <div>
@@ -78,80 +112,79 @@ function LlmApiKeyManager({
     return null;
   }
 
+  let keyDisplay = t(I18nKey.API$NO_KEY_AVAILABLE);
+  if (llmApiKey.key) {
+    keyDisplay = showLlmApiKey ? llmApiKey.key : "•".repeat(20);
+  }
+
   return (
-    <div className="border-b border-gray-200 pb-6 mb-6 flex flex-col gap-6">
-      <h3 className="text-xl font-medium text-white">
-        {t(I18nKey.SETTINGS$LLM_API_KEY)}
-      </h3>
-      <div className="flex items-center justify-between">
-        <BrandButton
-          type="button"
-          variant="primary"
-          onClick={handleRefreshLlmApiKey}
-          isDisabled={refreshLlmApiKey.isPending}
-        >
-          {refreshLlmApiKey.isPending ? (
-            <LoadingSpinner size="small" />
-          ) : (
-            t(I18nKey.SETTINGS$REFRESH_LLM_API_KEY)
-          )}
-        </BrandButton>
-      </div>
-      <div>
-        <p className="text-sm text-gray-300 mb-2">
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <h3 className="text-lg font-medium text-white">
+          {t(I18nKey.SETTINGS$LLM_API_KEY)}
+        </h3>
+        <p className="text-sm leading-5 text-muted">
           {t(I18nKey.SETTINGS$LLM_API_KEY_DESCRIPTION)}
         </p>
-        <div className="flex items-center gap-2">
-          <div className="flex-1 bg-base-tertiary rounded-md py-2 flex items-center">
-            <div className="flex-1">
-              {llmApiKey.key ? (
-                <div className="flex items-center">
-                  {showLlmApiKey ? (
-                    <span className="text-white font-mono">
-                      {llmApiKey.key}
-                    </span>
-                  ) : (
-                    <span className="text-white">{"•".repeat(20)}</span>
-                  )}
-                </div>
-              ) : (
-                <span className="text-white">
-                  {t(I18nKey.API$NO_KEY_AVAILABLE)}
-                </span>
-              )}
-            </div>
-            <div className="flex items-center">
-              {llmApiKey.key && (
-                <button
-                  type="button"
-                  className="text-white hover:text-gray-300 mr-2 cursor-pointer"
-                  aria-label={showLlmApiKey ? "Hide API key" : "Show API key"}
-                  title={showLlmApiKey ? "Hide API key" : "Show API key"}
-                  onClick={() => setShowLlmApiKey(!showLlmApiKey)}
-                >
-                  {showLlmApiKey ? (
-                    <FaEyeSlash size={20} />
-                  ) : (
-                    <FaEye size={20} />
-                  )}
-                </button>
-              )}
-              <button
-                type="button"
-                className="text-white hover:text-gray-300 mr-2 cursor-pointer"
-                aria-label="Copy API key"
-                title="Copy API key"
-                onClick={() => {
-                  if (llmApiKey.key) {
-                    navigator.clipboard.writeText(llmApiKey.key);
-                    displaySuccessToast(t(I18nKey.SETTINGS$API_KEY_COPIED));
-                  }
-                }}
-              >
-                <FaCopy size={20} />
-              </button>
-            </div>
-          </div>
+      </div>
+      <div className={cn(formControlShellClassName, "pr-1.5")}>
+        <div
+          className={cn(
+            formControlInlineInputClassName,
+            "font-mono text-white truncate",
+          )}
+          title={showLlmApiKey && llmApiKey.key ? llmApiKey.key : undefined}
+        >
+          {keyDisplay}
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          {llmApiKey.key && (
+            <button
+              type="button"
+              className={settingsListIconActionButtonClassName}
+              aria-label={
+                showLlmApiKey
+                  ? t(I18nKey.EXPANDABLE_MESSAGE$HIDE_DETAILS)
+                  : t(I18nKey.EXPANDABLE_MESSAGE$SHOW_DETAILS)
+              }
+              title={
+                showLlmApiKey
+                  ? t(I18nKey.EXPANDABLE_MESSAGE$HIDE_DETAILS)
+                  : t(I18nKey.EXPANDABLE_MESSAGE$SHOW_DETAILS)
+              }
+              onClick={() => setShowLlmApiKey(!showLlmApiKey)}
+            >
+              {showLlmApiKey ? <EyeOffIcon /> : <EyeIcon />}
+            </button>
+          )}
+          <button
+            type="button"
+            className={settingsListIconActionButtonClassName}
+            aria-label={t(I18nKey.SETTINGS$REFRESH_LLM_API_KEY)}
+            title={t(I18nKey.SETTINGS$REFRESH_LLM_API_KEY)}
+            disabled={refreshLlmApiKey.isPending}
+            onClick={handleRefreshLlmApiKey}
+          >
+            {refreshLlmApiKey.isPending ? (
+              <LoadingSpinner size="small" />
+            ) : (
+              <RefreshIcon width={16} height={16} />
+            )}
+          </button>
+          <button
+            type="button"
+            className={settingsListIconActionButtonClassName}
+            aria-label={t(I18nKey.BUTTON$COPY)}
+            title={t(I18nKey.BUTTON$COPY)}
+            onClick={() => {
+              if (llmApiKey.key) {
+                navigator.clipboard.writeText(llmApiKey.key);
+                displaySuccessToast(t(I18nKey.SETTINGS$API_KEY_COPIED));
+              }
+            }}
+          >
+            <CopyIcon width={16} height={16} />
+          </button>
         </div>
       </div>
     </div>
@@ -172,12 +205,29 @@ const getApiKeyStatus = (key: ApiKey): ApiKeyStatus => {
 };
 
 const STATUS_BADGE_CLASSES: Record<ApiKeyStatus, string> = {
-  active: "bg-green-500/20 text-green-300",
-  pending: "bg-yellow-500/20 text-yellow-300",
-  expired: "bg-red-500/20 text-red-300",
+  active: "bg-green-500/15 text-green-400",
+  pending: "bg-yellow-500/15 text-yellow-400",
+  expired: "bg-red-500/15 text-red-400",
 };
 
-function ApiKeyStatusBadge({ status }: { status: ApiKeyStatus }) {
+function formatApiKeyDate(dateString: string | null) {
+  if (!dateString) return "—";
+  return new Date(dateString).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function ApiKeyStatusBadge({
+  status,
+  notBefore,
+  expiresAt,
+}: {
+  status: ApiKeyStatus;
+  notBefore: string | null;
+  expiresAt: string | null;
+}) {
   const { t } = useTranslation();
   const labelKey = {
     active: I18nKey.SETTINGS$API_KEY_STATUS_ACTIVE,
@@ -185,11 +235,31 @@ function ApiKeyStatusBadge({ status }: { status: ApiKeyStatus }) {
     expired: I18nKey.SETTINGS$API_KEY_STATUS_EXPIRED,
   }[status];
 
+  const windowParts: string[] = [];
+  if (notBefore) {
+    windowParts.push(
+      `${t(I18nKey.SETTINGS$API_KEY_NOT_BEFORE)}: ${formatApiKeyDate(notBefore)}`,
+    );
+  }
+  if (expiresAt) {
+    windowParts.push(
+      `${t(I18nKey.SETTINGS$API_KEY_EXPIRES_AT)}: ${formatApiKeyDate(expiresAt)}`,
+    );
+  }
+
   return (
     <span
-      className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${STATUS_BADGE_CLASSES[status]}`}
+      className={cn(
+        "inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap",
+        STATUS_BADGE_CLASSES[status],
+      )}
+      title={windowParts.length > 0 ? windowParts.join(" · ") : undefined}
     >
       {t(labelKey)}
+      {/* Keep window labels in the accessibility tree for tests/screen readers */}
+      {windowParts.length > 0 && (
+        <span className="sr-only"> {windowParts.join(" ")}</span>
+      )}
     </span>
   );
 }
@@ -212,7 +282,7 @@ function ApiKeyScopeBadge({
     // Unbound key -- usable against any org via X-Org-Id.
     return (
       <span
-        className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-blue-500/20 text-blue-300"
+        className="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap bg-blue-500/15 text-blue-400"
         title={t(I18nKey.SETTINGS$API_KEY_ORG_ALL_ORGS_DESCRIPTION)}
       >
         {t(I18nKey.SETTINGS$API_KEY_SCOPE_ALL_ORGS)}
@@ -223,7 +293,7 @@ function ApiKeyScopeBadge({
   // when the org is no longer in the user's membership list).
   return (
     <span
-      className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-tertiary text-gray-300"
+      className="inline-flex max-w-full items-center truncate rounded-md px-2 py-0.5 text-xs font-medium bg-[var(--oh-surface-raised)] text-[var(--oh-muted)]"
       title={t(I18nKey.SETTINGS$API_KEY_SCOPE_BOUND_TITLE)}
     >
       {orgLabel}
@@ -264,11 +334,6 @@ function ApiKeysTable({ apiKeys, isLoading, onDeleteKey }: ApiKeysTableProps) {
     );
   };
 
-  const formatDate = (dateString: string | null) => {
-    if (!dateString) return "—";
-    return new Date(dateString).toLocaleString();
-  };
-
   if (isLoading) {
     return (
       <div className="flex justify-center p-4">
@@ -282,26 +347,31 @@ function ApiKeysTable({ apiKeys, isLoading, onDeleteKey }: ApiKeysTableProps) {
   }
 
   return (
-    <div className="border border-tertiary rounded-md overflow-hidden">
-      <table className="w-full">
-        <thead className="bg-base-tertiary">
+    <div className={settingsListScrollContainerClassName}>
+      <table className="w-full min-w-full table-fixed">
+        <thead className={settingsListTableHeadClassName}>
           <tr>
-            <th className="text-left p-3 text-sm font-medium">
+            <th className={cn(settingsListTableHeaderCellClassName, "w-[22%]")}>
               {t(I18nKey.SETTINGS$NAME)}
             </th>
-            <th className="text-left p-3 text-sm font-medium">
+            <th className={cn(settingsListTableHeaderCellClassName, "w-[16%]")}>
               {t(I18nKey.SETTINGS$CREATED_AT)}
             </th>
-            <th className="text-left p-3 text-sm font-medium">
+            <th className={cn(settingsListTableHeaderCellClassName, "w-[16%]")}>
               {t(I18nKey.SETTINGS$LAST_USED)}
             </th>
-            <th className="text-left p-3 text-sm font-medium">
+            <th className={cn(settingsListTableHeaderCellClassName, "w-[14%]")}>
               {t(I18nKey.SETTINGS$API_KEY_STATUS)}
             </th>
-            <th className="text-left p-3 text-sm font-medium">
+            <th className={cn(settingsListTableHeaderCellClassName, "w-[22%]")}>
               {t(I18nKey.SETTINGS$API_KEY_SCOPE)}
             </th>
-            <th className="text-right p-3 text-sm font-medium">
+            <th
+              className={cn(
+                settingsListTableHeaderCellClassName,
+                "w-[10%] text-right",
+              )}
+            >
               {t(I18nKey.SETTINGS$ACTIONS)}
             </th>
           </tr>
@@ -312,52 +382,60 @@ function ApiKeysTable({ apiKeys, isLoading, onDeleteKey }: ApiKeysTableProps) {
             const dimmed =
               status === "expired" || status === "pending" ? "opacity-60" : "";
             return (
-              <tr key={key.id} className={`border-t border-tertiary ${dimmed}`}>
+              <tr
+                key={key.id}
+                className={cn(settingsListTableRowClassName, dimmed)}
+              >
                 <td
-                  className="p-3 text-sm truncate max-w-[160px]"
+                  className={cn(
+                    settingsListTableCellClassName,
+                    "truncate text-content-2",
+                  )}
                   title={key.name}
                 >
                   {key.name}
                 </td>
-                <td className="p-3 text-sm">{formatDate(key.created_at)}</td>
-                <td className="p-3 text-sm">{formatDate(key.last_used_at)}</td>
-                <td className="p-3 text-sm">
-                  <div className="flex flex-col gap-1">
-                    <ApiKeyStatusBadge status={status} />
-                    {key.not_before && (
-                      <span
-                        className="text-xs text-gray-400"
-                        title={t(I18nKey.SETTINGS$API_KEY_NOT_BEFORE)}
-                      >
-                        {t(I18nKey.SETTINGS$API_KEY_NOT_BEFORE)}:{" "}
-                        {formatDate(key.not_before)}
-                      </span>
-                    )}
-                    {key.expires_at && (
-                      <span
-                        className="text-xs text-gray-400"
-                        title={t(I18nKey.SETTINGS$API_KEY_EXPIRES_AT)}
-                      >
-                        {t(I18nKey.SETTINGS$API_KEY_EXPIRES_AT)}:{" "}
-                        {formatDate(key.expires_at)}
-                      </span>
-                    )}
-                  </div>
+                <td
+                  className={cn(
+                    settingsListTableCellClassName,
+                    "whitespace-nowrap text-content-2",
+                  )}
+                  title={key.created_at ?? undefined}
+                >
+                  {formatApiKeyDate(key.created_at)}
                 </td>
-                <td className="p-3 text-sm">
+                <td
+                  className={cn(
+                    settingsListTableCellClassName,
+                    "whitespace-nowrap text-content-2",
+                  )}
+                  title={key.last_used_at ?? undefined}
+                >
+                  {formatApiKeyDate(key.last_used_at)}
+                </td>
+                <td className={settingsListTableCellClassName}>
+                  <ApiKeyStatusBadge
+                    status={status}
+                    notBefore={key.not_before}
+                    expiresAt={key.expires_at}
+                  />
+                </td>
+                <td className={cn(settingsListTableCellClassName, "min-w-0")}>
                   <ApiKeyScopeBadge
                     orgId={key.org_id}
                     orgLabel={resolveOrgLabel(key.org_id)}
                   />
                 </td>
-                <td className="p-3 text-right">
+                <td
+                  className={cn(settingsListTableCellClassName, "text-right")}
+                >
                   <button
                     type="button"
                     onClick={() => onDeleteKey(key)}
                     aria-label={`Delete ${key.name}`}
-                    className="cursor-pointer"
+                    className={settingsListIconActionButtonClassName}
                   >
-                    <FaTrash size={16} />
+                    <DeleteIcon width={16} height={16} />
                   </button>
                 </td>
               </tr>
@@ -371,6 +449,7 @@ function ApiKeysTable({ apiKeys, isLoading, onDeleteKey }: ApiKeysTableProps) {
 
 export function ApiKeysManager() {
   const { t } = useTranslation();
+  const { data: config } = useConfig();
   const { data: apiKeys = [], isLoading, error } = useApiKeys();
   const {
     data: llmApiKey,
@@ -384,6 +463,17 @@ export function ApiKeysManager() {
   const [newlyCreatedKey, setNewlyCreatedKey] =
     useState<CreateApiKeyResponse | null>(null);
   const [showNewKeyModal, setShowNewKeyModal] = useState(false);
+
+  // LLM API key export is available when:
+  //  - billing is enabled (the SaaS buy-credits / org-flagged path), OR
+  //  - the deployment set ENABLE_BYOR_EXPORT (self-hosted installs that don't
+  //    run Stripe but still want the managed LLM key exposed).
+  // When neither holds, the API keys page shows a "disabled" message instead
+  // of the buy-credits paywall, since there is no way for the user to enable
+  // export on a non-billing deployment.
+  const billingEnabled = !!config?.feature_flags?.enable_billing;
+  const byorExportEnabled = !!config?.feature_flags?.enable_byor_export;
+  const llmKeyExportAvailable = billingEnabled || byorExportEnabled;
 
   // Display error toast if the query fails (but not for payment required)
   if (error && !isPaymentRequired) {
@@ -418,50 +508,57 @@ export function ApiKeysManager() {
   return (
     <>
       <div className="flex flex-col gap-6">
-        <LlmApiKeyManager
-          llmApiKey={llmApiKey}
-          isLoadingLlmKey={isLoadingLlmKey}
-          isPaymentRequired={isPaymentRequired}
-          refreshLlmApiKey={refreshLlmApiKey}
-        />
-
-        <h3 className="text-xl font-medium text-white">
-          {t(I18nKey.SETTINGS$OPENHANDS_API_KEYS)}
-        </h3>
-
-        <div className="flex items-center justify-between">
-          <BrandButton
-            type="button"
-            variant="primary"
-            onClick={() => setCreateModalOpen(true)}
-          >
-            {t(I18nKey.SETTINGS$CREATE_API_KEY)}
-          </BrandButton>
-        </div>
-
-        <p className="text-sm text-gray-300">
-          <Trans
-            i18nKey={I18nKey.SETTINGS$API_KEYS_DESCRIPTION}
-            components={{
-              a: (
-                <a
-                  href="https://docs.all-hands.dev/usage/cloud/cloud-api"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-400 hover:underline"
-                >
-                  API documentation
-                </a>
-              ),
-            }}
+        {llmKeyExportAvailable ? (
+          <LlmApiKeyManager
+            llmApiKey={llmApiKey}
+            isLoadingLlmKey={isLoadingLlmKey}
+            isPaymentRequired={isPaymentRequired}
+            refreshLlmApiKey={refreshLlmApiKey}
           />
-        </p>
+        ) : (
+          <LlmApiKeyDisabled />
+        )}
 
-        <ApiKeysTable
-          apiKeys={apiKeys}
-          isLoading={isLoading}
-          onDeleteKey={handleDeleteKey}
-        />
+        <div className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex min-w-0 flex-col gap-1">
+              <h3 className="text-lg font-medium text-white">
+                {t(I18nKey.SETTINGS$OPENHANDS_API_KEYS)}
+              </h3>
+              <p className="text-sm leading-5 text-muted">
+                <Trans
+                  i18nKey={I18nKey.SETTINGS$API_KEYS_DESCRIPTION}
+                  components={{
+                    a: (
+                      <a
+                        href="https://docs.all-hands.dev/usage/cloud/cloud-api"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-400 hover:underline"
+                      >
+                        API documentation
+                      </a>
+                    ),
+                  }}
+                />
+              </p>
+            </div>
+            <BrandButton
+              type="button"
+              variant="primary"
+              className="shrink-0 whitespace-nowrap"
+              onClick={() => setCreateModalOpen(true)}
+            >
+              {t(I18nKey.SETTINGS$CREATE_API_KEY)}
+            </BrandButton>
+          </div>
+
+          <ApiKeysTable
+            apiKeys={apiKeys}
+            isLoading={isLoading}
+            onDeleteKey={handleDeleteKey}
+          />
+        </div>
       </div>
 
       {/* Create API Key Modal */}

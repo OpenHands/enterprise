@@ -23,7 +23,7 @@ interface MCPServerConfig {
   env?: Record<string, string>;
 }
 
-function withExplicitMcpAuthClear(
+export function withExplicitMcpAuthClear(
   serialized: NonNullable<ReturnType<typeof toSdkMcpConfig>>,
   server: MCPSSEServer | MCPSHTTPServer,
 ) {
@@ -45,7 +45,7 @@ function withExplicitMcpAuthClear(
   };
 }
 
-function updatedRemoteServer(
+export function updatedRemoteServer(
   current: string | MCPSSEServer | MCPSHTTPServer,
   server: MCPServerConfig,
 ): MCPSSEServer | MCPSHTTPServer {

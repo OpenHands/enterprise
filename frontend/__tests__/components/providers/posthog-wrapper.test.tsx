@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { PostHogWrapper } from "#/components/providers/posthog-wrapper";
 import OptionService from "#/api/option-service/option-service.api";
+import { queryClient } from "#/query-client-config";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 
 // Mock PostHogProvider to capture the options passed to it
 const mockPostHogProvider = vi.fn();
@@ -15,6 +17,7 @@ vi.mock("posthog-js/react", () => ({
 describe("PostHogWrapper", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    queryClient.clear();
     // Reset URL hash
     window.location.hash = "";
     // Clear sessionStorage
@@ -158,6 +161,40 @@ describe("PostHogWrapper", () => {
     );
   });
 
+  it("should stamp deployment_kind on every PostHog event", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "saas",
+        posthog_client_key: "configured-posthog-key",
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          deployment_mode: "cloud",
+        },
+      }),
+    );
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child");
+
+    const [{ options }] = mockPostHogProvider.mock.calls[0];
+    const event = options.before_send({
+      event: "test_event",
+      properties: { custom: "value" },
+    });
+
+    expect(event.properties).toEqual(
+      expect.objectContaining({
+        custom: "value",
+        deployment_kind: "remote",
+      }),
+    );
+  });
+
   it("should initialize without bootstrap when neither hash nor sessionStorage has IDs", async () => {
     render(
       <PostHogWrapper>
@@ -174,5 +211,30 @@ describe("PostHogWrapper", () => {
         }),
       }),
     );
+  });
+
+  it("should not initialize PostHog in self-hosted Enterprise", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "saas",
+        posthog_client_key: "configured-posthog-key",
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          deployment_mode: "self_hosted",
+        },
+      }),
+    );
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child" />
+      </PostHogWrapper>,
+    );
+
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["web-client-config"] });
+    });
+
+    expect(mockPostHogProvider).not.toHaveBeenCalled();
   });
 });

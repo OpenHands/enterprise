@@ -1,4 +1,5 @@
 /* eslint-disable i18next/no-literal-string */
+import { parseDateAsUTC } from "#/utils/format-time-delta";
 
 export const TIME_WINDOWS = [
   { label: "7d", value: "7d" },
@@ -40,7 +41,7 @@ export const formatShortDate = (dateStr: string) => {
 };
 
 export const formatDateTime = (dateStr: string) => {
-  const date = new Date(dateStr);
+  const date = parseDateAsUTC(dateStr);
   return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",

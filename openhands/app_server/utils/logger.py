@@ -436,7 +436,6 @@ LOQUACIOUS_LOGGERS = [
     'socketio',
     'socketio.client',
     'socketio.server',
-    'aiosqlite',
     'alembic.runtime.plugins',
     'sqlalchemy.orm.mapper.Mapper',
     'lmnr',

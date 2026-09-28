@@ -190,6 +190,24 @@ async def test_list_profiles_returns_saved_profiles(test_client, settings_store)
     assert names == {'my-gpt4', 'my-claude'}
 
 
+@pytest.mark.asyncio
+async def test_list_profiles_returns_provider_connection_id(
+    test_client, settings_store
+):
+    settings = _base_settings()
+    settings.llm_profiles.save(
+        'shared-key-profile',
+        LLM(model='openai/gpt-4o', provider_connection_id='conn-1'),
+    )
+    await _seed(settings_store, settings)
+
+    response = test_client.get('/api/v1/settings/profiles')
+
+    assert response.status_code == 200
+    [profile] = response.json()['profiles']
+    assert profile['provider_connection_id'] == 'conn-1'
+
+
 # ── GET /profiles/{name} ─────────────────────────────────────────
 
 

@@ -210,6 +210,43 @@ class TestToLLMModelsHiddenCanonical:
 
         assert all(not m.hidden and m.canonical is None for m in models)
 
+    def test_free_flag_set_from_free_models(self):
+        response = ModelsResponse(
+            models=['openhands/free-model', 'openhands/paid-model'],
+            verified_models=['free-model', 'paid-model'],
+            verified_providers=['openhands'],
+            default_model='openhands/free-model',
+            free_models=['openhands/free-model'],
+        )
+
+        by_name = {m.name: m for m in _to_llm_models(response)}
+
+        assert by_name['free-model'].free is True
+        assert by_name['paid-model'].free is False
+
+    def test_free_defaults_false_without_free_models(self):
+        response = ModelsResponse(
+            models=['openhands/real-model'],
+            verified_models=['real-model'],
+            verified_providers=['openhands'],
+            default_model='openhands/real-model',
+        )
+
+        assert all(m.free is False for m in _to_llm_models(response))
+
+    def test_default_flag_set_from_default_model(self):
+        response = ModelsResponse(
+            models=['openhands/default-model', 'openhands/other-model'],
+            verified_models=['default-model', 'other-model'],
+            verified_providers=['openhands'],
+            default_model='openhands/default-model',
+        )
+
+        by_name = {m.name: m for m in _to_llm_models(response)}
+
+        assert by_name['default-model'].default is True
+        assert by_name['other-model'].default is False
+
 
 class TestDefaultLLMModelServiceSearchProviders:
     """Test suite for DefaultLLMModelService.search_providers."""

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockUseConfig = vi.fn();
 const mockUseIsAuthed = vi.fn();
 const mockGetLoginMethod = vi.fn();
+const mockUseIsOnIntermediatePage = vi.fn();
 
 vi.mock("#/hooks/query/use-config", () => ({
   useConfig: () => mockUseConfig(),
@@ -27,7 +28,7 @@ vi.mock("#/utils/local-storage", () => ({
 
 
 vi.mock("#/hooks/use-is-on-intermediate-page", () => ({
-  useIsOnIntermediatePage: () => true,
+  useIsOnIntermediatePage: () => mockUseIsOnIntermediatePage(),
 }));
 
 import { useAutoLogin } from "#/hooks/use-auto-login";
@@ -56,6 +57,7 @@ describe("useAutoLogin", () => {
     });
 
     mockGetLoginMethod.mockReturnValue("github");
+    mockUseIsOnIntermediatePage.mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -69,5 +71,26 @@ describe("useAutoLogin", () => {
     await waitFor(() => {
       expect(window.location.href).toBe(acceptTosUrl);
     });
+  });
+
+  it("should redirect to the Azure DevOps identity provider when that login method is stored", async () => {
+    // Arrange - expired session on an app page for a user who logged in with Azure DevOps
+    const appUrl =
+      "https://ohpr-13306-497.staging.all-hands.dev/conversations/abc";
+    vi.stubGlobal("location", { href: appUrl });
+    mockUseIsOnIntermediatePage.mockReturnValue(false);
+    mockGetLoginMethod.mockReturnValue("azure_devops");
+
+    // Act
+    renderHook(() => useAutoLogin());
+
+    // Assert - the browser is sent to the Azure DevOps login, not left on the page
+    await waitFor(() => {
+      expect(window.location.href).not.toBe(appUrl);
+    });
+    const redirect = new URL(window.location.href);
+    expect(redirect.hostname).toBe("ohpr-13306-497.auth.staging.all-hands.dev");
+    expect(redirect.searchParams.get("kc_idp_hint")).toBe("azure_devops");
+    expect(redirect.searchParams.get("login_method")).toBe("azure_devops");
   });
 });

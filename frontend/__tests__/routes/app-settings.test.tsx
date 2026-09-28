@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 import userEvent from "@testing-library/user-event";
 import AppSettingsScreen, { clientLoader } from "#/routes/app-settings";
 import SettingsService from "#/api/settings-service/settings-service.api";
@@ -21,13 +22,18 @@ afterEach(() => {
 });
 
 const renderAppSettingsScreen = () =>
-  render(<AppSettingsScreen />, {
-    wrapper: ({ children }) => (
-      <QueryClientProvider client={new QueryClient()}>
-        {children}
-      </QueryClientProvider>
-    ),
-  });
+  render(
+    <MemoryRouter>
+      <AppSettingsScreen />
+    </MemoryRouter>,
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={new QueryClient()}>
+          {children}
+        </QueryClientProvider>
+      ),
+    },
+  );
 
 describe("clientLoader permission checks", () => {
   it("should export a clientLoader for route protection", () => {
@@ -80,9 +86,15 @@ describe("Content", () => {
     });
   });
 
-  it("should render the analytics toggle as checked and disabled in SaaS", async () => {
+  it("should render the analytics toggle as checked and disabled in managed Cloud", async () => {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-      createMockWebClientConfig({ app_mode: "saas" }),
+      createMockWebClientConfig({
+        app_mode: "saas",
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          deployment_mode: "cloud",
+        },
+      }),
     );
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
       ...MOCK_DEFAULT_USER_SETTINGS,
@@ -99,6 +111,26 @@ describe("Content", () => {
 
     await userEvent.click(analytics);
     expect(submit).toBeDisabled();
+  });
+
+  it("should hide the analytics toggle in self-hosted Enterprise", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "saas",
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          deployment_mode: "self_hosted",
+        },
+      }),
+    );
+
+    renderAppSettingsScreen();
+
+    await screen.findByTestId("enable-sound-notifications-switch");
+
+    expect(
+      screen.queryByTestId("enable-analytics-switch"),
+    ).not.toBeInTheDocument();
   });
 
   it("should render the language options", async () => {
@@ -156,10 +188,20 @@ describe("Form submission", () => {
     );
   });
 
-  it("should not submit analytics consent from SaaS app settings", async () => {
+  it("should not handle analytics consent from self-hosted Enterprise settings", async () => {
     const saveSettingsSpy = vi.spyOn(SettingsService, "saveSettings");
+    const handleCaptureConsentSpy = vi.spyOn(
+      CaptureConsent,
+      "handleCaptureConsent",
+    );
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-      createMockWebClientConfig({ app_mode: "saas" }),
+      createMockWebClientConfig({
+        app_mode: "saas",
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          deployment_mode: "self_hosted",
+        },
+      }),
     );
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
       ...MOCK_DEFAULT_USER_SETTINGS,
@@ -181,6 +223,7 @@ describe("Form submission", () => {
         user_consents_to_analytics: expect.anything(),
       }),
     );
+    expect(handleCaptureConsentSpy).not.toHaveBeenCalled();
   });
 
   it("should only enable the submit button when there are changes", async () => {
