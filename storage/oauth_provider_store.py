@@ -38,6 +38,19 @@ class OAuthProviderStore:
             )
             return list(result.scalars().all())
 
+    async def _has_real_idp(self) -> bool:
+        """Whether any real IDP provider exists in ``oauth_providers``.
+
+        Queries the DB directly without the dev IDP sentinel fallback so it
+        is safe to call from ``is_dev_idp_available()`` (which would otherwise
+        recurse through ``get_idp_providers`` → ``get_dev_idp_if_available``).
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OAuthProvider.id).where(OAuthProvider.is_idp.is_(True)).limit(1)
+            )
+            return result.scalar_one_or_none() is not None
+
     async def get_idp_providers(self) -> list:
         """Return all IDP providers, including the dev IDP sentinel if active.
 

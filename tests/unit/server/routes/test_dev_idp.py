@@ -135,9 +135,9 @@ class TestIsDevIdpAvailable:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
         ):
             import asyncio
@@ -146,14 +146,12 @@ class TestIsDevIdpAvailable:
         assert result is True
 
     def test_self_hosted_with_idp(self):
-        fake_provider = MagicMock()
-        fake_provider.is_idp = True
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[fake_provider],
+                return_value=True,
             ),
         ):
             import asyncio
@@ -173,9 +171,9 @@ class TestGetFirstIdp:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
             patch.object(
                 OAuthProviderStore,
@@ -207,9 +205,9 @@ class TestIdpLoginRedirect:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
             patch(
                 'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
@@ -243,9 +241,9 @@ class TestDevIdpLoginForm:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
         ):
             response = client.get(f'/oauth/{DEV_IDP_PROVIDER_ID}/login')
@@ -263,9 +261,9 @@ class TestDevIdpLoginForm:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
         ):
             response = client.get(f'/oauth/{DEV_IDP_PROVIDER_ID}/login')
@@ -288,9 +286,9 @@ class TestDevIdpCallback:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
         ):
             response = client.post(
@@ -307,9 +305,9 @@ class TestDevIdpCallback:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
             patch(
                 'server.routes.dev_idp.UserStore.get_user_by_id',
@@ -365,9 +363,9 @@ class TestDevIdpCallback:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
             patch(
                 'server.routes.dev_idp.UserStore.get_user_by_id',
@@ -417,9 +415,9 @@ class TestDevIdpCallback:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
             patch(
                 'server.routes.dev_idp.UserStore.get_user_by_id',
@@ -470,9 +468,9 @@ class TestDevIdpCallback:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
             patch(
                 'server.routes.dev_idp.UserStore.get_user_by_id',
@@ -533,9 +531,9 @@ class TestDevIdpCallback:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
             patch(
                 'server.routes.dev_idp.UserStore.get_user_by_id',
@@ -573,9 +571,9 @@ class TestDevIdpCallback:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
             patch(
                 'server.routes.dev_idp.UserStore.get_user_by_id',
@@ -609,9 +607,9 @@ class TestDevIdpCallbackGet:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
         ):
             response = client.get(
@@ -630,9 +628,9 @@ class TestDevIdpStatus:
         with (
             patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=False,
             ),
         ):
             response = client.get('/api/dev-idp/status')

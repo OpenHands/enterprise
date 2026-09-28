@@ -97,11 +97,14 @@ async def is_dev_idp_available() -> bool:
     * No real IDP is configured in ``oauth_providers`` (no row with
       ``is_idp = True``). Once an admin configures a real IDP, the dev
       IDP is disabled.
+
+    Uses ``_has_real_idp()`` (direct DB query) instead of
+    ``get_idp_providers()`` to avoid infinite recursion: ``get_idp_providers``
+    calls ``get_dev_idp_if_available`` → ``is_dev_idp_available``.
     """
     if DEPLOYMENT_MODE != 'self_hosted':
         return False
-    idp_providers = await OAuthProviderStore().get_idp_providers()
-    return len(idp_providers) == 0
+    return not await OAuthProviderStore()._has_real_idp()
 
 
 async def get_dev_idp_if_available() -> DevIdpProvider | None:
