@@ -24,6 +24,9 @@ and the actor is `async def` and awaits `stub_job`.
 | P4: schema through Alembic | Pass. `migrate` exited 0 with no revisions, and no candidate tables | Pass. Same |
 | P6: extra workloads | `redis`, `scheduler`, `worker-a`, `worker-b` | `redis`, `worker-a`, `worker-b` |
 | P6: idle memory | redis 11 MiB, scheduler 28 MiB, about 41 MiB per worker, about 40 MiB per replica | redis 7 MiB, about 42 MiB per worker, 42 to 44 MiB per replica |
+| P7: rolling deploy, 10 s grace | `retried`. Killed at the deadline (exit 137, stop took 10.5 s). Another worker ran it again and finished | `lost` within the test window. Killed at the deadline (exit 137, stop took 10.5 s) |
+| P7: rolling deploy, 60 s grace | `drained`. Exit 0, stop took 29.0 s | `drained`. Exit 0, stop took 28.9 s |
+| P7: the next occurrence still ran | Yes, both cases | Yes, both cases |
 
 ## Setup
 
@@ -73,6 +76,27 @@ about 6.5 minutes after the kill and finished once on the surviving worker.
 The expected outcome is therefore `retried`, after a delay somewhere between
 about 1 minute and many minutes. The job must be idempotent, because the first
 attempt may have done partial work. The schedule kept running in every case.
+
+## Graceful shutdown (P7)
+
+I used the defaults and configured nothing. `dramatiq` runs as PID 1, since
+the compose `command` has no shell wrapper. On SIGTERM it stops fetching,
+waits for in-flight actors, and puts prefetched messages that haven't started
+back on the queue. The wait is bounded by `--worker-shutdown-timeout`, which
+defaults to 600000 ms (10 minutes). That default is longer than any grace
+period, so the pod's grace period is what actually limits the wait.
+
+- **60 s grace:** the 30 s job finished, and the worker acked it and exited 0.
+  The result is `drained`.
+- **10 s grace:** SIGKILL arrives while the job is still running. The message
+  is still unacked in the dead worker's ack set, so it is redelivered the same
+  way as in P3: after the heartbeat timeout plus random maintenance. That was
+  inside the window for 3a (`retried`) and outside it for 3b (`lost` in the
+  window, not lost for good).
+
+In production, set the pod's `terminationGracePeriodSeconds` above the longest
+job. Lowering `--worker-shutdown-timeout` would not help. The process would
+exit sooner, but the message would still wait for maintenance to put it back.
 
 ## 3b: a replica dying between `claim` and `send`
 
