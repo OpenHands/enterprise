@@ -52,9 +52,14 @@ async def lifespan(_: FastAPI):
             )
         )
         yield
+        # Cancel = graceful stop: no new jobs, wait for running ones
+        # (shutdown_graceful_timeout defaults to None). No timeout here, unlike the
+        # docs example's wait_for(10), which closes the pool under running jobs. At
+        # the deploy's SIGKILL the job stays `doing` and the stalled-job retry
+        # re-queues it; a finite graceful timeout would mark it `aborted` instead.
         worker.cancel()
-        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
-            await asyncio.wait_for(worker, timeout=10)
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker
 
 
 api = FastAPI(lifespan=lifespan)

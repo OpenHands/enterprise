@@ -4,7 +4,7 @@ Procrastinate 3.10.0 (latest on PyPI, released 2026-09-23), Postgres as the only
 broker. The worker runs inside each FastAPI replica. Run on Docker (OrbStack,
 ARM64) on 2026-09-28, with other candidates running on the same host. Raw
 evidence is in `results/procrastinate.json` and
-`results/procrastinate-no-stalled-retry.json`.
+`results/procrastinate-no-stalled-retry.json`. P7 was run on 2026-09-28, after the shutdown fix below.
 
 | Check | `candidate/` (with stalled-job retry) | `candidate_no_stalled_retry/` |
 |---|---|---|
@@ -14,6 +14,8 @@ evidence is in `results/procrastinate.json` and
 | P3: killed mid-job, left dead | `retried` after 88.9 s, on replica-a. Next occurrence ran | `lost`. Next occurrence ran |
 | P4: schema through Alembic | Pass. `migrate` exited 0; replicas ran jobs as `poc_app` | not run |
 | P6: footprint | No extra workloads. About 37 MiB and under 0.5% CPU per replica, idle | not run |
+| P7: rolling deploy, `stop -t 10` | `retried`. Exit 137 (SIGKILL at the deadline); stop took 10.2 s; the job was retried on replica-b | not run |
+| P7: rolling deploy, `stop -t 60` | `drained`. Exit 0; stop took 24.4 s; replica-a finished its own run | not run |
 
 The first P3-restarted run errored before the test started because `migrate`
 could not connect to Postgres (see harness issues below). A rerun of that test
@@ -44,6 +46,37 @@ alone passed, and that rerun is the result shown.
   `retry_job()`, with `queueing_lock`), set to run every minute instead of the
   docs' every 10 minutes. `POC_STALLED_RETRY=0` turns it off for the comparison
   variant, which reuses the same image.
+
+## Graceful shutdown (P7)
+
+On SIGTERM, uvicorn runs the lifespan shutdown, which cancels the worker task.
+Procrastinate treats that cancel as a graceful stop. It stops fetching jobs,
+waits for running jobs up to `shutdown_graceful_timeout` (default `None`, meaning
+no limit), then unregisters the worker. I kept that default, and the lifespan
+waits for the worker with no timeout of its own.
+
+- **Grace period long enough:** the job finishes and the replica exits 0
+  (`drained`).
+- **SIGKILL at the deadline:** the job stays `doing` and its worker row stays in
+  place. After 30 s without a heartbeat, the stalled-job retry re-queues it on
+  the other replica (`retried`). Without the retry task, this job is lost, as in
+  P3.
+
+I avoided two other setups:
+
+- **The docs' FastAPI example**, which waits with `asyncio.wait_for(worker,
+  timeout=10)`. After 10 s the lifespan gives up and closes the connection pool
+  while the job is still running. The worker then fails to record the job's
+  status (`AppNotOpen`), so the job stays `doing` and is only recovered by the
+  stalled-job retry. A first P7 run with that pattern gave `retried` for both
+  grace periods, including a clean exit 0 after 10.7 s at `-t 60`. See
+  `results/procrastinate-docs-wait10.json`.
+- **A finite `shutdown_graceful_timeout`.** When it expires, the job is marked
+  `aborted`. `get_stalled_jobs` only looks at jobs in `doing`, so the stalled-job
+  retry never sees it, and the occurrence is lost unless the task also has a
+  `retry` policy. Procrastinate retries shutdown-aborted jobs only when the task
+  has one. Leaving the timeout unset and letting the orchestrator's SIGKILL do
+  the cut-off keeps every cut-off job recoverable.
 
 ## Stall threshold
 
