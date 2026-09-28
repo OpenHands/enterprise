@@ -137,7 +137,6 @@ from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
-from openhands.sdk.tool.builtins import SwitchLLMTool
 from openhands.sdk.tool.defaults import SUB_AGENT_TOOL_NAME
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
@@ -2251,21 +2250,27 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         else:
             register_builtins_agents(enable_browser=True)
             selected_tools = user.agent_settings.tools
-            if selected_tools is None:
+            # Settings persisted before ``tools`` defaulted to None carry [].
+            if not selected_tools:
                 tools = get_default_tools(
                     enable_browser=True,
                     enable_sub_agents=user.agent_settings.enable_sub_agents,
                 )
             else:
-                # An active agent profile resolves to a concrete list. Rebuilding
-                # the default set here would discard the user's tool selection.
                 tools = list(selected_tools)
-            # Delegation needs the sub-agent definitions registered, whether it
-            # was asked for by the switch or by selecting the tool set.
-            if user.agent_settings.enable_sub_agents or any(
-                tool.name == SUB_AGENT_TOOL_NAME for tool in tools
+            tool_names = {tool.name for tool in tools}
+            if (
+                user.agent_settings.enable_sub_agents
+                or SUB_AGENT_TOOL_NAME in tool_names
             ):
                 agent_definitions = list(get_registered_agent_definitions())
+                if selected_tools:
+                    # A sub-agent may not reach tools the selection left out.
+                    agent_definitions = [
+                        definition
+                        for definition in agent_definitions
+                        if set(definition.tools) <= tool_names
+                    ]
 
         # --- build AgentSettings and create agent ---------------------------
         # When enterprise persistent memory is enabled, stamp load_memory=True
@@ -2290,29 +2295,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             }
         )
         agent = configured_agent_settings.create_agent()
-
-        # SaaS profiles live on the user/org record, not the sandbox
-        # filesystem, so we attach the agent's built-in switch_llm tool
-        # ourselves rather than relying on create_agent()'s gating. Enabled
-        # whenever there are at least two valid saved profiles (a switch needs
-        # a target).
-        valid_profile_names = [
-            name
-            for name in user.llm_profiles.profiles
-            if PROFILE_NAME_REGEX.match(name)
-        ]
-        if (
-            len(valid_profile_names) >= 2
-            and SwitchLLMTool.__name__ not in agent.include_default_tools
-        ):
-            agent = agent.model_copy(
-                update={
-                    'include_default_tools': [
-                        *agent.include_default_tools,
-                        SwitchLLMTool.__name__,
-                    ]
-                }
-            )
 
         agent = self._apply_server_agent_overrides(
             agent,

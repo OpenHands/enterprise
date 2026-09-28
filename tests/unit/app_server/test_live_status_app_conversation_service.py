@@ -1858,15 +1858,11 @@ class TestLiveStatusAppConversationService:
     )
     @pytest.mark.asyncio
     async def test_build_request_honours_a_profiles_tool_selection(self, mock_tools):
-        """A resolved profile's tools reach the launch instead of the default set.
-
-        Without this the agent-profile tool picker is inert on cloud: the
-        selection is resolved, carried into `agent_settings`, and then thrown
-        away here.
-        """
+        """A resolved profile's tools reach the launch instead of the default set."""
         self.mock_user.agent_settings = OpenHandsAgentSettings(
             llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
             tools=[Tool(name='glob'), Tool(name='grep')],
+            enable_switch_llm_tool=False,
         )
         self.mock_user_context.get_user_info.return_value = self.mock_user
 
@@ -1904,11 +1900,7 @@ class TestLiveStatusAppConversationService:
     async def test_build_request_registers_sub_agents_for_a_selected_tool_set(
         self, _mock_tools, mock_definitions
     ):
-        """Selecting the delegation tool set still registers the sub-agents.
-
-        The profile path pins `enable_sub_agents` off — the selection in
-        `tools` is what asks for delegation now.
-        """
+        """Selecting the delegation tool set registers the sub-agents."""
         self.mock_user.agent_settings = OpenHandsAgentSettings(
             llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
             tools=[Tool(name='terminal'), Tool(name='task_tool_set')],
@@ -2696,6 +2688,111 @@ class TestLiveStatusAppConversationService:
         suffix = result.agent.agent_context.system_message_suffix
         assert 'Existing integration instructions.' in suffix
         assert '<GIT_WORKSPACE_CONTEXT>' not in suffix
+
+    async def _build_request_with_agent_settings(self, agent_settings):
+        self.mock_user.agent_settings = agent_settings
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+        self.service._load_skills_and_update_agent = AsyncMock(
+            side_effect=lambda agent, **_: agent
+        )
+        return await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=None,
+        )
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[Tool(name='terminal'), Tool(name='browser_tool_set')],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_treats_legacy_empty_tools_as_default_set(
+        self, mock_tools
+    ):
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')), tools=[]
+            )
+        )
+
+        mock_tools.assert_called_once_with(enable_browser=True, enable_sub_agents=False)
+        tool_names = [t.name for t in result.agent.tools]
+        assert 'terminal' in tool_names
+        assert 'browser_tool_set' in tool_names
+
+    @pytest.mark.asyncio
+    async def test_build_request_keeps_switch_llm_off_when_deselected(self):
+        profiles = LLMProfiles()
+        profiles.save('One', LLM(model='openai/gpt-4o'))
+        profiles.save('Two', LLM(model='anthropic/claude-haiku-3-5'))
+        self.mock_user.llm_profiles = profiles
+
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                tools=[Tool(name='terminal')],
+                enable_switch_llm_tool=False,
+            )
+        )
+
+        names = {t.name for t in result.agent.tools} | set(
+            result.agent.include_default_tools
+        )
+        assert not names & {'switch_llm', 'SwitchLLMTool'}
+
+    @pytest.mark.asyncio
+    async def test_build_request_offers_switch_llm_once(self):
+        profiles = LLMProfiles()
+        profiles.save('One', LLM(model='openai/gpt-4o'))
+        profiles.save('Two', LLM(model='anthropic/claude-haiku-3-5'))
+        self.mock_user.llm_profiles = profiles
+
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                tools=[Tool(name='terminal')],
+            )
+        )
+
+        names = [t.name for t in result.agent.tools] + list(
+            result.agent.include_default_tools
+        )
+        assert len([n for n in names if n in {'switch_llm', 'SwitchLLMTool'}]) == 1
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_drops_sub_agents_needing_unselected_tools(
+        self, mock_definitions
+    ):
+        from openhands.sdk.subagent.schema import AgentDefinition
+
+        runner = AgentDefinition(
+            name='bash-runner', description='runs bash', tools=['terminal']
+        )
+        researcher = AgentDefinition(
+            name='web-researcher', description='browses', tools=['browser_tool_set']
+        )
+        mock_definitions.return_value = [runner, researcher]
+
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                tools=[Tool(name='terminal'), Tool(name='task_tool_set')],
+                enable_switch_llm_tool=False,
+            )
+        )
+
+        assert result.agent_definitions == [runner]
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
