@@ -8,6 +8,7 @@ Mirrors the harness in ``test_org_profiles.py``: handlers are called directly
 """
 
 import uuid
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -140,6 +141,27 @@ class TestAgentProfilesContainer:
             {'profiles': {'bad': {'agent_kind': 'nonsense'}}, 'active': None}
         )
         assert store.list_summaries() == []
+
+    @pytest.mark.parametrize('schema_version', [1, 2])
+    def test_legacy_empty_tools_load_as_the_standard_set(self, schema_version):
+        profile_id = str(uuid.uuid4())
+        store = AgentProfiles.model_validate(
+            {
+                'profiles': {
+                    profile_id: {
+                        'schema_version': schema_version,
+                        'id': profile_id,
+                        'name': 'mine',
+                        'revision': 3,
+                        'llm_profile_ref': 'gpt',
+                        'tools': [],
+                    }
+                },
+                'active': None,
+            }
+        )
+
+        assert store.load('mine').tools is None
 
 
 def test_load_agent_profiles_defaults_empty_and_degrades():
@@ -1072,15 +1094,25 @@ class TestPersistedVsResolvedSettingsView:
         org_id = patch_agent_routes
         await self._setup_active_profile(async_session_maker, org_id, ['a'])
 
+        from openhands.sdk.profiles import resolve_agent_profile
         from storage.saas_settings_store import SaasSettingsStore
 
-        with self._store_patches(async_session_maker):
+        seen: dict[str, Any] = {}
+
+        def resolver(profile, *, browser_available=False, **kwargs):
+            seen['browser_available'] = browser_available
+            return resolve_agent_profile(profile, **kwargs)
+
+        with (
+            self._store_patches(async_session_maker),
+            patch('storage.agent_profile_resolution.resolve_agent_profile', resolver),
+            patch('storage.saas_settings_store.resolve_agent_profile', resolver),
+        ):
             store = SaasSettingsStore(str(USER_ID), effective_org_id=org_id)
             settings = await store.load(resolve_agent_profile=True)
 
         assert settings is not None
-        tools = settings.agent_settings.tools
-        assert tools is None or 'browser_tool_set' in {t.name for t in tools}
+        assert seen == {'browser_available': True}
 
     @pytest.mark.asyncio
     async def test_resolver_crash_falls_back_to_composed_settings(

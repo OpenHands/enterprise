@@ -1864,6 +1864,7 @@ class TestLiveStatusAppConversationService:
             tools=[Tool(name='glob'), Tool(name='grep')],
             enable_switch_llm_tool=False,
         )
+        self.mock_user.active_agent_profile_id = 'profile-1'
         self.mock_user_context.get_user_info.return_value = self.mock_user
 
         real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
@@ -1906,6 +1907,7 @@ class TestLiveStatusAppConversationService:
             tools=[Tool(name='terminal'), Tool(name='task_tool_set')],
             enable_sub_agents=False,
         )
+        self.mock_user.active_agent_profile_id = 'profile-1'
         self.mock_user_context.get_user_info.return_value = self.mock_user
 
         real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
@@ -2689,8 +2691,11 @@ class TestLiveStatusAppConversationService:
         assert 'Existing integration instructions.' in suffix
         assert '<GIT_WORKSPACE_CONTEXT>' not in suffix
 
-    async def _build_request_with_agent_settings(self, agent_settings):
+    async def _build_request_with_agent_settings(
+        self, agent_settings, *, from_profile=True, **kwargs
+    ):
         self.mock_user.agent_settings = agent_settings
+        self.mock_user.active_agent_profile_id = 'profile-1' if from_profile else None
         self.mock_user_context.get_user_info.return_value = self.mock_user
         real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
         self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
@@ -2707,6 +2712,7 @@ class TestLiveStatusAppConversationService:
             git_provider=None,
             working_dir='/test/dir',
             remote_workspace=None,
+            **kwargs,
         )
 
     @patch(
@@ -2714,13 +2720,14 @@ class TestLiveStatusAppConversationService:
         return_value=[Tool(name='terminal'), Tool(name='browser_tool_set')],
     )
     @pytest.mark.asyncio
-    async def test_build_request_treats_legacy_empty_tools_as_default_set(
+    async def test_build_request_without_a_profile_launches_the_default_set(
         self, mock_tools
     ):
         result = await self._build_request_with_agent_settings(
             OpenHandsAgentSettings(
                 llm=LLM(model='gpt-4', api_key=SecretStr('test-key')), tools=[]
-            )
+            ),
+            from_profile=False,
         )
 
         mock_tools.assert_called_once_with(enable_browser=True, enable_sub_agents=False)
@@ -2765,6 +2772,44 @@ class TestLiveStatusAppConversationService:
         names = [t.name for t in result.agent.tools] + list(
             result.agent.include_default_tools
         )
+        assert len([n for n in names if n in {'switch_llm', 'SwitchLLMTool'}]) == 1
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[Tool(name='terminal'), Tool(name='task_tool_set')],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_without_a_profile_keeps_the_sub_agents_switch(
+        self, mock_tools
+    ):
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                tools=[Tool(name='terminal'), Tool(name='file_editor')],
+                enable_sub_agents=True,
+            ),
+            from_profile=False,
+        )
+
+        mock_tools.assert_called_once_with(enable_browser=True, enable_sub_agents=True)
+        assert 'task_tool_set' in [t.name for t in result.agent.tools]
+        assert result.agent_definitions
+
+    @pytest.mark.asyncio
+    async def test_plan_launch_keeps_a_profiles_switch_llm(self):
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                tools=[Tool(name='terminal'), Tool(name='switch_llm')],
+                enable_switch_llm_tool=False,
+            ),
+            agent_type=AgentType.PLAN,
+        )
+
+        names = [t.name for t in result.agent.tools] + list(
+            result.agent.include_default_tools
+        )
+        assert 'terminal' not in names
         assert len([n for n in names if n in {'switch_llm', 'SwitchLLMTool'}]) == 1
 
     @patch(

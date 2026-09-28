@@ -125,7 +125,7 @@ from openhands.app_server.utils.redis_lock import (
     refresh_lock_periodically,
     try_acquire_redis_lock,
 )
-from openhands.sdk import Agent, AgentContext, LocalWorkspace
+from openhands.sdk import Agent, AgentContext, LocalWorkspace, Tool
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
@@ -137,6 +137,7 @@ from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
+from openhands.sdk.tool.builtins import SwitchLLMTool
 from openhands.sdk.tool.defaults import SUB_AGENT_TOOL_NAME
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
@@ -2242,30 +2243,37 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         # --- tools ----------------------------------------------------------
         agent_definitions: list[Any] = []
+        profile_tools = (
+            user.agent_settings.tools
+            if getattr(user, 'active_agent_profile_id', None)
+            else None
+        )
         if agent_type == AgentType.PLAN:
             plan_path = None
             if project_dir:
                 plan_path = self._compute_plan_path(project_dir, git_provider)
             tools = get_planning_tools(plan_path=plan_path)
+            if profile_tools and any(
+                tool.name in (SwitchLLMTool.name, SwitchLLMTool.__name__)
+                for tool in profile_tools
+            ):
+                tools.append(Tool(name=SwitchLLMTool.__name__))
         else:
             register_builtins_agents(enable_browser=True)
-            selected_tools = user.agent_settings.tools
-            # Settings persisted before ``tools`` defaulted to None carry [].
-            if not selected_tools:
+            if profile_tools is None:
                 tools = get_default_tools(
                     enable_browser=True,
                     enable_sub_agents=user.agent_settings.enable_sub_agents,
                 )
             else:
-                tools = list(selected_tools)
+                tools = list(profile_tools)
             tool_names = {tool.name for tool in tools}
-            if (
-                user.agent_settings.enable_sub_agents
-                or SUB_AGENT_TOOL_NAME in tool_names
+            if SUB_AGENT_TOOL_NAME in tool_names or (
+                profile_tools is None and user.agent_settings.enable_sub_agents
             ):
                 agent_definitions = list(get_registered_agent_definitions())
-                if selected_tools:
-                    # A sub-agent may not reach tools the selection left out.
+                if profile_tools is not None:
+                    # A sub-agent may not reach tools the profile left out.
                     agent_definitions = [
                         definition
                         for definition in agent_definitions
