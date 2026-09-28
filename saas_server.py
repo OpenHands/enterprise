@@ -71,6 +71,7 @@ from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
 from server.routes.super_admins import super_admin_router  # noqa: E402
+from server.routes.tool_catalog import router as tool_catalog_router  # noqa: E402
 from server.routes.user_app_settings import user_app_settings_router  # noqa: E402
 from server.routes.user_provisioning import (  # noqa: E402
     user_provisioning_router,
@@ -195,6 +196,9 @@ base_app.include_router(
 base_app.include_router(
     agent_profiles_router
 )  # Add flat /api/agent-profiles routes for org Agent Profiles
+base_app.include_router(
+    tool_catalog_router
+)  # Add /api/tools/catalog for the agent-profile tool picker
 base_app.include_router(
     verified_models_router
 )  # Add routes for verified models management
