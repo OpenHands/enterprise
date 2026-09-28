@@ -1,8 +1,8 @@
-"""Real-Postgres integration test for migration 170's write-back path.
+"""Real-Postgres integration test for migration 171's write-back path.
 
 Exercises the exact scenario the reviewer flagged: an org whose ``llm_profiles``
 was materialized with the bogus ``openhands/deepseek-v4-flash`` Default while
-158/160's verified_models row was live, then migration 170 repairs it, then the
+158/160's verified_models row was live, then migration 171 repairs it, then the
 ORM (what the app does) decrypts ``org.llm_profiles`` and loads the expected
 Default.
 
@@ -12,8 +12,8 @@ EncryptedJSON encrypt/decrypt, and the real postgres dialect result_processor
 (psycopg2 and pg8000).
 
 Usage:
-  DB_PORT=5433 DB_DRIVER=''  uv run python3 scripts/verify_migration_170_writeback.py   # psycopg2
-  DB_PORT=5433 DB_DRIVER=pg8000 uv run python3 scripts/verify_migration_170_writeback.py  # pg8000
+  DB_PORT=5433 DB_DRIVER=''  uv run python3 scripts/verify_migration_171_writeback.py   # psycopg2
+  DB_PORT=5433 DB_DRIVER=pg8000 uv run python3 scripts/verify_migration_171_writeback.py  # pg8000
 """
 
 import json
@@ -30,14 +30,14 @@ from sqlalchemy.orm import Session
 from storage.encrypt_utils import decrypt_value
 from storage.org import Org
 
-# Self-hosted: WEB_HOST unset -> 170 runs, 158/160 seed the deepseek row.
+# Self-hosted: WEB_HOST unset -> 171 runs, 158/160 seed the deepseek row.
 os.environ.pop('WEB_HOST', None)
 
 # Stable encryption key: get_default_encryption_keys() derives a deterministic
 # key from JWT_SECRET; without it, fallback keys aren't stable across calls and
-# decrypt fails. Migration 170 itself calls encrypt_value/decrypt_value, so this
+# decrypt fails. Migration 171 itself calls encrypt_value/decrypt_value, so this
 # must be set before alembic runs too.
-os.environ.setdefault('JWT_SECRET', 'migration-170-writeback-test-secret')
+os.environ.setdefault('JWT_SECRET', 'migration-171-writeback-test-secret')
 
 # alembic env.py re-derives the URL from these env vars (not sqlalchemy.url),
 # so export them for both the alembic command and our own engine.
@@ -83,14 +83,14 @@ def main() -> int:
 
     print(f'\n=== driver={DB_DRIVER or "psycopg2"} ===')
 
-    # 1) Apply migrations up to 169 (NOT 170). 158/160 seed the deepseek row.
+    # 1) Apply migrations up to 170 (NOT 171). 158/160 seed the deepseek row.
     print('[1] alembic upgrade 169 ...')
     from alembic import command
     from alembic.config import Config
 
     cfg = Config('alembic.ini')
     cfg.set_main_option('sqlalchemy.url', _url())
-    command.upgrade(cfg, '169')
+    command.upgrade(cfg, '170')
 
     # 2) Confirm the bogus verified_models row is present.
     with eng.connect() as c:
@@ -100,7 +100,7 @@ def main() -> int:
                 "WHERE provider='openhands' AND model_name='deepseek-v4-flash'"
             )
         ).scalar()
-    print(f'[2] deepseek verified_models rows before 170: {n}')
+    print(f'[2] deepseek verified_models rows before 171: {n}')
     assert n == 1, 'precondition: 158/160 should have seeded the deepseek row'
 
     # 3) Seed three orgs with REAL encrypted llm_profiles (via ORM bind).
@@ -149,8 +149,8 @@ def main() -> int:
     except Exception:
         print('NO (ciphertext, as expected)')
 
-    # 4) Run migration 170 against the pre-seeded corrupted orgs.
-    print('[4] alembic upgrade head (run migration 170) ...')
+    # 4) Run migration 171 against the pre-seeded corrupted orgs.
+    print('[4] alembic upgrade head (run migration 171) ...')
     command.upgrade(cfg, 'head')
 
     # 5) Verify deepseek verified_models row deleted.
@@ -161,8 +161,8 @@ def main() -> int:
                 "WHERE provider='openhands' AND model_name='deepseek-v4-flash'"
             )
         ).scalar()
-    print(f'[5] deepseek verified_models rows after 170: {n}')
-    assert n == 0, '170 should have deleted the deepseek verified_models row'
+    print(f'[5] deepseek verified_models rows after 171: {n}')
+    assert n == 0, '171 should have deleted the deepseek verified_models row'
 
     # 6) Verify the write-back: ORM read (app's path) decrypts + loads expected Default.
     failures = 0
