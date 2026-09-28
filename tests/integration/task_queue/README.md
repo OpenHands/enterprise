@@ -40,6 +40,7 @@ POC_GUARD=1 TQ_RESULTS_NAME=naive-guarded uv run --no-sync python -m pytest \
 | P3 — replica dies mid-job | `test_p3_replica_crash.py` | 60-second schedule, 30-second job; kill the replica running it. Records `lost`, `retried` or `resumed`. `restarted` brings the same service back after 10 s; `replaced` leaves it dead. Fails only if the occurrence completes twice or the schedule stops |
 | P4 — schema through Alembic | `test_p4_schema.py` | The `migrate` service applies the candidate's schema with Alembic and exits 0; replicas then run jobs as `poc_app`, a role without CREATE, so any runtime DDL fails; every table in `expected_tables` exists |
 | P7 — rolling deploy | `test_p7_rolling_deploy.py` | 60-second schedule, 30-second job; stop the replica running it with `docker compose stop -t 10` and `-t 60` (SIGTERM, then SIGKILL at the deadline). Records `drained` (the stopping replica finished it), `retried`, `resumed` or `lost`, the exit code (137 = killed at the deadline), and how long the stop took. A sole job runner is started again, as a one-replica Deployment would. Fails only if the occurrence completes twice or the schedule stops |
+| P5 — Kubernetes | `test_p5_kubernetes.py` | Needs a running kind cluster (`TQ_KIND_NODE`, default `openhands-local-kind-control-plane`); run with `-k test_p5`. Each test gets its own namespace: Postgres, the Alembic migrate Job, and a 2-replica Deployment (`maxSurge: 1`, `maxUnavailable: 0`) using `manifest.json` `k8s.command` and `k8s.env`, plus `TQ_K8S_ENV` variants. Repeats P1; P3 as a force-deleted pod that the Deployment replaces under a new name; and P7 as `kubectl rollout restart` with `terminationGracePeriodSeconds` 10 and 60 |
 | P6 — footprint | `test_p6_footprint.py` | Records workloads beyond the app replicas, and idle memory and CPU per service. No pass criterion |
 
 Evidence goes to `results/<name>.json`, and container logs to
@@ -72,6 +73,7 @@ A candidate branch adds `candidate/` with:
   - `job_services`: services whose hostname appears in `poc_job_runs.replica`
   - `skew_service`: the service to skew in P2, or `null` for a single scheduler
   - `expected_tables`: `schema.table` names P4 checks for
+  - `k8s` (for P5): `command`, the app container's command, and `env`, extra environment
 - The scheduling code, calling `harness/poc_job.py`:
   - `stub_job(job, slot)` for one run.
   - `start_run` and `finish_run` as two steps, for durable workflows.

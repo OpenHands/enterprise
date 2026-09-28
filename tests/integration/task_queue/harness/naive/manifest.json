@@ -1,7 +1,24 @@
 {
   "name": "naive",
-  "app_services": ["replica-a", "replica-b"],
-  "job_services": ["replica-a", "replica-b"],
+  "app_services": [
+    "replica-a",
+    "replica-b"
+  ],
+  "job_services": [
+    "replica-a",
+    "replica-b"
+  ],
   "skew_service": "replica-b",
-  "expected_tables": []
+  "expected_tables": [],
+  "k8s": {
+    "command": [
+      "uvicorn",
+      "app:app",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8000"
+    ],
+    "env": {}
+  }
 }

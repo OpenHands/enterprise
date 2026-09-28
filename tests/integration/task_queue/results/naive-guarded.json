@@ -63,6 +63,15 @@
     "missing_expected_tables": [],
     "recorded_at": "2026-09-28T18:27:22Z"
   },
+  "P5-P1": {
+    "doubles": [],
+    "extra_env": {
+      "POC_GUARD": "1"
+    },
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-28T22:30:10Z"
+  },
   "P6": {
     "app_services": [
       "replica-a",
