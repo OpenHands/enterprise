@@ -107,6 +107,7 @@ export default function LoginPage() {
           hasDuplicatedEmail={hasDuplicatedEmail}
           recaptchaBlocked={recaptchaBlocked}
           hasInvitation={hasInvitation}
+          devIdpEnabled={config.data?.dev_idp_enabled}
           buildOAuthStateData={buildOAuthStateData}
         />
       </main>

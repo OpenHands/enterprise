@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FaUserShield } from "react-icons/fa";
 import { I18nKey } from "#/i18n/declaration";
@@ -14,6 +15,7 @@ import { useRecaptcha } from "#/hooks/use-recaptcha";
 import { useConfig } from "#/hooks/query/use-config";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
 import { cn } from "#/utils/utils";
+import AuthService from "#/api/auth-service/auth-service.api";
 import { LoginCTA } from "./login-cta";
 import { useAppMode } from "#/hooks/use-app-mode";
 
@@ -26,6 +28,7 @@ export interface LoginContentProps {
   hasDuplicatedEmail?: boolean;
   recaptchaBlocked?: boolean;
   hasInvitation?: boolean;
+  devIdpEnabled?: boolean;
   buildOAuthStateData?: (
     baseStateData: Record<string, string>,
   ) => Record<string, string>;
@@ -40,11 +43,14 @@ export function LoginContent({
   hasDuplicatedEmail = false,
   recaptchaBlocked = false,
   hasInvitation = false,
+  devIdpEnabled = false,
   buildOAuthStateData,
 }: LoginContentProps) {
   const { t } = useTranslation();
   const { data: config } = useConfig();
   const { isEnterpriseCloud } = useAppMode();
+  const [devIdpEmail, setDevIdpEmail] = useState("");
+  const [devIdpLoading, setDevIdpLoading] = useState(false);
 
   // reCAPTCHA - only need token generation, verification happens at backend callback
   const { isReady: recaptchaReady, executeRecaptcha } = useRecaptcha({
@@ -150,6 +156,23 @@ export function LoginContent({
     }
   };
 
+  const handleDevIdpLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!devIdpEmail.trim() || devIdpLoading) return;
+    setDevIdpLoading(true);
+    try {
+      const returnTo =
+        new URLSearchParams(window.location.search).get("returnTo") ||
+        new URLSearchParams(window.location.search).get("redirect") ||
+        "/";
+      const result = await AuthService.devIdpLogin(devIdpEmail, returnTo);
+      window.location.href = result.redirect_url;
+    } catch {
+      displayErrorToast(t(I18nKey.AUTH$DEV_IDP_LOGIN_ERROR));
+      setDevIdpLoading(false);
+    }
+  };
+
   const showGithub =
     providersConfigured &&
     providersConfigured.length > 0 &&
@@ -238,11 +261,45 @@ export function LoginContent({
         )}
 
         <div className="flex flex-col items-center gap-3">
-          {noProvidersConfigured ? (
+          {devIdpEnabled && (
+            <form
+              onSubmit={handleDevIdpLogin}
+              className="flex flex-col items-center gap-3 w-full max-w-[301.5px]"
+              data-testid="dev-idp-login-form"
+            >
+              <p className="text-sm text-muted-foreground text-center">
+                {t(I18nKey.AUTH$DEV_IDP_DESCRIPTION)}
+              </p>
+              <input
+                type="email"
+                required
+                value={devIdpEmail}
+                onChange={(e) => setDevIdpEmail(e.target.value)}
+                placeholder={t(I18nKey.AUTH$DEV_IDP_EMAIL_PLACEHOLDER)}
+                aria-label={t(I18nKey.AUTH$DEV_IDP_EMAIL_LABEL)}
+                className="w-full h-10 rounded px-3 bg-transparent border border-white/20 text-white placeholder:text-white/40 focus:outline-none focus:border-white/40"
+                disabled={devIdpLoading}
+              />
+              <button
+                type="submit"
+                disabled={devIdpLoading || !devIdpEmail.trim()}
+                className={`${buttonBaseClasses} bg-white text-[#1a1a1a] disabled:opacity-50`}
+              >
+                <span className={buttonLabelClasses}>
+                  {devIdpLoading ? "..." : t(I18nKey.AUTH$DEV_IDP_LOGIN_BUTTON)}
+                </span>
+              </button>
+              <p className="text-xs text-yellow-400/80 text-center max-w-[280px]">
+                {t(I18nKey.AUTH$DEV_IDP_WARNING)}
+              </p>
+            </form>
+          )}
+          {!devIdpEnabled && noProvidersConfigured && (
             <div className="text-center p-4 text-muted-foreground">
               {t(I18nKey.AUTH$NO_PROVIDERS_CONFIGURED)}
             </div>
-          ) : (
+          )}
+          {!devIdpEnabled && !noProvidersConfigured && (
             <>
               {showGithub && (
                 <button

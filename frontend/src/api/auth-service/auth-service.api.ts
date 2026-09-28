@@ -47,6 +47,26 @@ class AuthService {
       appMode === "saas" ? "/api/logout" : "/api/unset-provider-tokens";
     await openHands.post(endpoint);
   }
+
+  /**
+   * Log in via the development IDP (email-only, no password).
+   *
+   * Only available on self-hosted deployments with no real IDP configured.
+   * Returns a redirect URL the browser should navigate to.
+   * @param email The user's email address
+   * @param redirectUrl Optional URL to redirect to after login (defaults to "/")
+   * @returns The redirect URL to navigate to after login
+   */
+  static async devIdpLogin(
+    email: string,
+    redirectUrl?: string,
+  ): Promise<{ redirect_url: string }> {
+    const { data } = await openHands.post<{ redirect_url: string }>(
+      "/api/dev-idp/login",
+      { email, redirect_url: redirectUrl ?? "/" },
+    );
+    return data;
+  }
 }
 
 export default AuthService;

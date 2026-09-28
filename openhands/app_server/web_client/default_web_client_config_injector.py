@@ -266,6 +266,22 @@ async def _resolve_flag(key: str, env_fallback: bool) -> bool:
     return await feature_flag_service.resolve(key)
 
 
+async def _resolve_dev_idp_enabled() -> bool:
+    """Whether the dev-only insecure IDP (email login) is available.
+
+    Delegates to ``server.routes.dev_idp.is_dev_idp_available`` so the config
+    endpoint and the route itself share the exact same availability logic.
+    Best-effort: any error (e.g. the SaaS modules are not installed in an OSS
+    context) defaults to ``False`` so the config endpoint never breaks.
+    """
+    try:
+        from server.routes.dev_idp import is_dev_idp_available
+
+        return await is_dev_idp_available()
+    except Exception:
+        return False
+
+
 class DefaultWebClientConfigInjector(WebClientConfigInjector):
     posthog_client_key: str = Field(default_factory=_get_posthog_client_key)
     feature_flags: WebClientFeatureFlags = Field(default_factory=_get_feature_flags)
@@ -309,6 +325,9 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         default_factory=_get_jira_dc_service_account_config_error
     )
     jira_oauth_enabled: bool = Field(default_factory=_get_jira_oauth_enabled)
+    # Dev IDP is resolved at request time in get_web_client_config (it depends
+    # on whether a real IDP is configured in the DB). Defaults to False.
+    dev_idp_enabled: bool = False
     acp_providers: list[ACPProviderConfig] = Field(
         default_factory=lambda: [
             ACPProviderConfig(
@@ -367,5 +386,6 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             ),
             jira_oauth_enabled=self.jira_oauth_enabled,
             acp_providers=self.acp_providers,
+            dev_idp_enabled=await _resolve_dev_idp_enabled(),
         )
         return result
