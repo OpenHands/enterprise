@@ -7,7 +7,7 @@
 # `python -m sync.<job>` and `alembic upgrade head` all run from /app.
 # Python dependencies are installed with uv from the committed uv.lock.
 ARG OPENHANDS_BUILD_VERSION=dev
-FROM node:25.9-trixie-slim AS frontend-builder
+FROM node:26.10.0-trixie-slim AS frontend-builder
 
 WORKDIR /app
 
@@ -73,7 +73,7 @@ RUN mkdir -p $WORKSPACE_BASE
 # CPython runtime libraries.
 RUN apt-get update -y \
     && apt-get install -y curl git ssh sudo jq gettext \
-    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_26.x | bash - \
     && apt-get install -y nodejs \
     && apt-get upgrade -y \
     && apt-get clean \
