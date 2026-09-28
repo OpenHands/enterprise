@@ -20,8 +20,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '171'
-down_revision: str | None = '170'
+revision: str = '172'
+down_revision: str | None = '171'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
