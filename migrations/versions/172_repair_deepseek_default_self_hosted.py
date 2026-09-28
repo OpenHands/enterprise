@@ -1,7 +1,7 @@
 """Repair the deepseek default seeded onto self-hosted deployments.
 
-Revision ID: 171
-Revises: 170
+Revision ID: 172
+Revises: 171
 Create Date: 2026-09-01 00:00:00.000000
 
 Migrations 158 and 160 seeded the managed ``deepseek-v4-flash`` verified_models
@@ -38,8 +38,8 @@ from typing import Any
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '171'
-down_revision: str | None = '170'
+revision: str = '172'
+down_revision: str | None = '171'
 branch_labels: str | None = None
 depends_on: str | None = None
 
