@@ -31,6 +31,7 @@ from openhands.sdk.conversation.types import (
 from openhands.sdk.llm import MetricsSnapshot
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.profiles import LaunchedAgentProfile
+from openhands.sdk.tool import Tool
 
 __all__ = ['SandboxGroupingStrategy']
 
@@ -347,6 +348,23 @@ class AppConversationStartRequest(OpenHandsModel):
         description=(
             'List of plugins to load for this conversation. Plugins are loaded '
             'and their skills/MCP config are merged into the agent.'
+        ),
+    )
+
+    tools: list[Tool] | None = Field(
+        default=None,
+        description=(
+            "Optional per-request override of the agent's tool list. When "
+            'provided, this list REPLACES the tool set that would otherwise '
+            'be derived from `agent_type` / `agent_profile_id` and user '
+            'settings. Tool names must resolve to tools already registered '
+            'on the sandbox agent-server (see the built-in set: `terminal`, '
+            '`file_editor`, `task_tracker`, `browser_tool_set`, ...). The '
+            'runtime always adds `finish` and `think` regardless of this '
+            'list. An explicit empty list is a meaningful "narrow to '
+            'nothing extra" override and is distinguished from field '
+            'omission. Ignored (with a warning) for ACP agents, which own '
+            'their own tool protocol.'
         ),
     )
 
