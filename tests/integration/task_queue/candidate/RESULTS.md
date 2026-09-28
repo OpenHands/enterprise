@@ -128,3 +128,14 @@ with no second start row. The `start_run` step's checkpoint was replayed.
 The P3 variant runs first hit a Postgres readiness race: the Unix-socket
 `pg_isready` check passed during the init server. The harness now checks over
 TCP (9ec42e2d2), and the candidate's temporary override is removed.
+
+## P5 — Kubernetes (kind), 2-replica Deployment
+
+| Check | Default executor ID (`"local"`) | Per-pod executor ID (`POC_DBOS_EXECUTOR=hostname`) |
+|---|---|---|
+| P1 once per occurrence | Pass (12, no doubles, none missed) | Pass |
+| P3 pod force-deleted, replaced under a new name | `resumed` by the replacement pod | `lost` |
+| P7 `rollout restart`, 10 s grace | `resumed` | `lost` |
+| P7 `rollout restart`, 60 s grace | `drained` | `drained` |
+
+**The default executor ID re-runs in-flight workflows on every rollout.** In the 60 s rollout, the old pod was still running the workflow and finished it, while both new pods logged `Recovering 1 workflows` within a second of starting. Every replica shares the executor ID `"local"`, so a starting pod recovers every PENDING `local` workflow, including those a live pod is still executing. The stub's final step is idempotent, so the results table shows no double completion. A non-idempotent step would run twice concurrently. Without Conductor, the choice is between the shared ID (recovers dead pods' work, duplicates live pods' work on rollout) and per-pod IDs (no duplication, loses a replaced pod's work).

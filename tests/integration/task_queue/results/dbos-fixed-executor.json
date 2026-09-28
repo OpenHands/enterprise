@@ -27,6 +27,82 @@
     ],
     "victim": "replica-a"
   },
+  "P5-P1": {
+    "doubles": [],
+    "extra_env": {
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-28T22:37:01Z"
+  },
+  "P5-P3-force-deleted": {
+    "extra_env": {
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "pods_after": [
+      "app-c78996959-d9b4q",
+      "app-c78996959-fhx68"
+    ],
+    "recorded_at": "2026-09-28T22:41:06Z",
+    "runs_for_occurrence": [
+      [
+        "1",
+        "app-c78996959-ctd26",
+        ""
+      ]
+    ],
+    "seconds_observed": 180,
+    "victim": "app-c78996959-ctd26"
+  },
+  "P5-P7-rollout-grace-10s": {
+    "doubles_any_occurrence": [],
+    "extra_env": {
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "grace_seconds": 10,
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "pods_after": [
+      "app-69d4cb58cd-8v2r6",
+      "app-69d4cb58cd-g8s69"
+    ],
+    "recorded_at": "2026-09-28T22:46:13Z",
+    "rollout_seconds": 3.6,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "app-567667d857-dclz9",
+        ""
+      ]
+    ],
+    "victim": "app-567667d857-dclz9"
+  },
+  "P5-P7-rollout-grace-60s": {
+    "doubles_any_occurrence": [],
+    "extra_env": {
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "grace_seconds": 60,
+    "next_occurrence_ran": true,
+    "outcome": "drained",
+    "pods_after": [
+      "app-7694599b48-dfw6f",
+      "app-7694599b48-rg87g"
+    ],
+    "recorded_at": "2026-09-28T22:48:34Z",
+    "rollout_seconds": 2.6,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "app-6f4749484-bkt47",
+        "app-6f4749484-bkt47"
+      ]
+    ],
+    "victim": "app-6f4749484-bkt47"
+  },
   "P7-grace-10s": {
     "exit_code": 137,
     "grace_seconds": 10,

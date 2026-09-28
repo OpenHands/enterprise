@@ -1,7 +1,13 @@
 {
   "name": "dbos",
-  "app_services": ["replica-a", "replica-b"],
-  "job_services": ["replica-a", "replica-b"],
+  "app_services": [
+    "replica-a",
+    "replica-b"
+  ],
+  "job_services": [
+    "replica-a",
+    "replica-b"
+  ],
   "skew_service": "replica-b",
   "expected_tables": [
     "dbos.application_versions",
@@ -17,5 +23,16 @@
     "dbos.workflow_output",
     "dbos.workflow_schedules",
     "dbos.workflow_status"
-  ]
+  ],
+  "k8s": {
+    "command": [
+      "uvicorn",
+      "app:app",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8000"
+    ],
+    "env": {}
+  }
 }
