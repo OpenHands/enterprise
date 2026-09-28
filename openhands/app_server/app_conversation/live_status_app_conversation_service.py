@@ -137,6 +137,7 @@ from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
+from openhands.sdk.tool import ClientToolSpec
 from openhands.sdk.tool.builtins import SwitchLLMTool
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
@@ -566,6 +567,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     selected_repository=request.selected_repository,
                     selected_branch=request.selected_branch,
                     plugins=request.plugins,
+                    client_tools=request.client_tools,
                     api_secrets=request.secrets,
                     system_prompt=request.system_prompt,
                     disabled_skills=request.disabled_skills,
@@ -2063,6 +2065,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         selected_repository: str | None = None,
         selected_branch: str | None = None,
         plugins: list[PluginSpec] | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         system_prompt: str | None = None,
         disabled_skills: list[str] | None = None,
@@ -2095,6 +2098,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             selected_repository: Optional repository name
             selected_branch: Optional selected branch name
             plugins: Optional list of plugins to load
+            client_tools: Optional client-defined tools to register with the runtime.
             api_secrets: Optional secrets passed directly via the API.
                 These are merged with existing secrets (from database
                 and git providers), with API-provided secrets taking
@@ -2149,6 +2153,18 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     extra={
                         'user_id': user.id,
                         'conversation_id': str(conversation_id),
+                    },
+                )
+            if client_tools:
+                # Client tools are JSON-schema tools consumed by the Canvas event
+                # stream. ACP agents own their tool protocol, so OpenHands-only
+                # client tools are ignored on ACP launches.
+                _logger.warning(
+                    'app_conversation_start:client_tools_ignored_for_acp_agent',
+                    extra={
+                        'user_id': user.id,
+                        'conversation_id': str(conversation_id),
+                        'client_tool_names': [tool.name for tool in client_tools],
                     },
                 )
             acp_request = await self._build_acp_start_conversation_request(
@@ -2400,6 +2416,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 observability_tags, request_observability_tags
             )
         create_kwargs: dict[str, Any] = {'agent': agent, 'user_id': laminar_user_id}
+        if client_tools:
+            create_kwargs['client_tools'] = client_tools
         title_llm_profile = _resolve_title_llm_profile(user)
         if title_llm_profile:
             create_kwargs['title_llm_profile'] = title_llm_profile

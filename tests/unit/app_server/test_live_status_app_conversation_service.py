@@ -77,6 +77,7 @@ from openhands.sdk.settings import (
     ConversationSettings,
     OpenHandsAgentSettings,
 )
+from openhands.sdk.tool import ClientToolSpec
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 
@@ -2124,6 +2125,14 @@ class TestLiveStatusAppConversationService:
             return_value=(real_llm, mock_mcp_config)
         )
 
+        client_tools = [
+            ClientToolSpec(
+                name='automation_form_update',
+                description='Update the automation setup form.',
+                parameters={'type': 'object', 'properties': {}},
+            )
+        ]
+
         result = await self.service._build_start_conversation_request_for_user(
             user=self.mock_user,
             sandbox=self.mock_sandbox,
@@ -2136,6 +2145,7 @@ class TestLiveStatusAppConversationService:
             llm_model='gpt-4',
             remote_workspace=None,
             selected_repository='test/repo',
+            client_tools=client_tools,
         )
 
         assert isinstance(result, StartConversationRequest)
@@ -2152,6 +2162,7 @@ class TestLiveStatusAppConversationService:
         )
         # Workspace points to the repo subdirectory
         assert result.workspace.working_dir == '/test/dir/repo'
+        assert result.client_tools == client_tools
 
         self.service._setup_secrets_for_git_providers.assert_called_once_with(
             self.mock_user
@@ -3795,6 +3806,38 @@ class TestLiveStatusAppConversationService:
         )
         assert kwargs['system_prompt'] == 'You are a helper.'
         assert kwargs['disabled_skills'] == ['github']
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_forwards_client_tools(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """Client-defined tools from the App API reach the runtime request builder."""
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        client_tools = [
+            ClientToolSpec(
+                name='automation_form_update',
+                description='Update the automation setup form.',
+                parameters={'type': 'object', 'properties': {}},
+            )
+        ]
+        request = AppConversationStartRequest(client_tools=client_tools)
+
+        async for _ in self.service._start_app_conversation(request):
+            pass
+
+        kwargs = (
+            self.service._build_start_conversation_request_for_user.call_args.kwargs
+        )
+        assert kwargs['client_tools'] == client_tools
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'

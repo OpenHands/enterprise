@@ -31,6 +31,7 @@ from openhands.sdk.conversation.types import (
 from openhands.sdk.llm import MetricsSnapshot
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.profiles import LaunchedAgentProfile
+from openhands.sdk.tool import ClientToolSpec
 
 __all__ = ['SandboxGroupingStrategy']
 
@@ -347,6 +348,15 @@ class AppConversationStartRequest(OpenHandsModel):
         description=(
             'List of plugins to load for this conversation. Plugins are loaded '
             'and their skills/MCP config are merged into the agent.'
+        ),
+    )
+
+    client_tools: list[ClientToolSpec] | None = Field(
+        default=None,
+        description=(
+            'Client-defined tools to register with the runtime agent-server. '
+            'These tools are handled by the browser/client over the event stream '
+            'instead of by a server-side executor.'
         ),
     )
 
