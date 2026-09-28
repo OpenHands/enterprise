@@ -1,0 +1,78 @@
+{
+  "P1": {
+    "doubles": [],
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-28T18:50:31Z",
+    "replicas_seen": [
+      "cron"
+    ]
+  },
+  "P3-replaced": {
+    "next_occurrence_ran": false,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T19:00:36Z",
+    "recovered_after_seconds": null,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "cron",
+        ""
+      ]
+    ],
+    "victim": "cron"
+  },
+  "P3-restarted": {
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T18:55:02Z",
+    "recovered_after_seconds": null,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "cron",
+        ""
+      ]
+    ],
+    "victim": "cron"
+  },
+  "P4": {
+    "alembic_version": [],
+    "candidate_tables": [
+      "public.alembic_version"
+    ],
+    "migrate_exit_code": [
+      0
+    ],
+    "missing_expected_tables": [],
+    "recorded_at": "2026-09-28T19:00:52Z"
+  },
+  "P6": {
+    "app_services": [
+      "replica-a",
+      "replica-b"
+    ],
+    "extra_workloads": [
+      "cron"
+    ],
+    "recorded_at": "2026-09-28T19:01:43Z",
+    "usage": {
+      "cron": {
+        "cpu": "0.00%",
+        "memory": "8.129MiB"
+      },
+      "postgres": {
+        "cpu": "1.92%",
+        "memory": "18.82MiB"
+      },
+      "replica-a": {
+        "cpu": "0.15%",
+        "memory": "27.62MiB"
+      },
+      "replica-b": {
+        "cpu": "0.18%",
+        "memory": "27.62MiB"
+      }
+    }
+  }
+}

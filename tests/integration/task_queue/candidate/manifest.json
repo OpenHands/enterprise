@@ -1,0 +1,7 @@
+{
+  "name": "supercronic",
+  "app_services": ["replica-a", "replica-b"],
+  "job_services": ["cron"],
+  "skew_service": null,
+  "expected_tables": []
+}

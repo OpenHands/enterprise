@@ -1,0 +1,42 @@
+# Negative variant: two Supercronic containers with the same crontab. Supercronic
+# has no cross-replica coordination, so every occurrence is expected to run twice.
+x-image: &image
+  build: candidate
+  image: tq-poc-supercronic
+
+x-env: &env
+  POC_DATABASE_URL: postgresql://poc_app:poc_app@postgres/poc
+  POC_INTERVAL_SECONDS: ${POC_INTERVAL_SECONDS:-10}
+  POC_JOB_SECONDS: ${POC_JOB_SECONDS:-1}
+
+x-app: &app
+  <<: *image
+  command: uvicorn app:app --host 0.0.0.0 --port 8000
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+  environment: *env
+
+services:
+  migrate:
+    <<: *image
+    command: alembic -c /harness/alembic.ini upgrade head
+    environment:
+      POC_MIGRATE_URL: postgresql://poc:poc@postgres/poc
+    depends_on:
+      postgres:
+        condition: service_healthy
+  replica-a:
+    <<: *app
+    hostname: replica-a
+  replica-b:
+    <<: *app
+    hostname: replica-b
+  cron-a:
+    <<: *app
+    hostname: cron-a
+    command: /app/cron.sh
+  cron-b:
+    <<: *app
+    hostname: cron-b
+    command: /app/cron.sh
