@@ -1,1 +1,3 @@
 results/logs/
+# The repo ignores requirements.txt; these pin the POC images.
+!requirements.txt
