@@ -399,6 +399,29 @@ async def oauth_v2_login(
     Encodes an encrypted state blob (redirect URL, mode, nonce) and redirects
     the browser to the provider's authorization URL.
     """
+    # Dev IDP is handled by its own routes (registered before this router).
+    # If somehow reached here, redirect to the dev IDP login form.
+    from server.routes.dev_idp import DEV_IDP_PROVIDER_ID, is_dev_idp_available
+
+    if provider_id == DEV_IDP_PROVIDER_ID:
+        if not await is_dev_idp_available():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Development IDP is not available',
+            )
+        web_url = get_web_url(request)
+        target = f'{web_url}/oauth/{DEV_IDP_PROVIDER_ID}/login'
+        params: dict[str, str] = {}
+        if redirect_url:
+            params['redirect_url'] = redirect_url
+        if mode and mode != 'login':
+            params['mode'] = mode
+        if params:
+            from urllib.parse import urlencode
+
+            target = f'{target}?{urlencode(params)}'
+        return RedirectResponse(target, status_code=302)
+
     provider = await _get_provider(provider_id)
     auth_url = provider.authorization_url
     if not auth_url:
@@ -444,6 +467,15 @@ async def oauth_v2_callback(
     Exchanges the code, persists tokens, and either links the provider to the
     signed-in user (``link`` mode) or completes a login (``login`` mode).
     """
+    # Dev IDP callbacks are handled by dedicated routes.
+    from server.routes.dev_idp import DEV_IDP_PROVIDER_ID
+
+    if provider_id == DEV_IDP_PROVIDER_ID:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Development IDP callback must use POST with email field',
+        )
+
     if error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
