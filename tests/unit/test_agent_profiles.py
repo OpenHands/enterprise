@@ -403,6 +403,58 @@ class TestDeleteClearsAllMemberPointers:
         )
 
 
+class TestSaveAppliesLegacyToolSwitches:
+    @pytest.mark.asyncio
+    async def test_save_folds_switches_against_the_stored_profile(
+        self, patch_agent_routes, monkeypatch
+    ):
+        import openhands.sdk.profiles as sdk_profiles
+
+        org_id = patch_agent_routes
+        uid = str(USER_ID)
+        await save_agent_profile(
+            name='reviewer',
+            body={
+                'llm_profile_ref': 'Default',
+                'tools': [{'name': 'terminal'}, {'name': 'switch_llm'}],
+            },
+            effective_org_id=org_id,
+            user_id=uid,
+        )
+
+        seen: list[Any] = []
+
+        def apply_tool_switch_request(payload, stored=None):
+            seen.append(stored)
+            body = dict(payload)
+            if body.pop('enable_switch_llm_tool', True) is False:
+                body['tools'] = [t for t in body['tools'] if t['name'] != 'switch_llm']
+            return body
+
+        monkeypatch.setattr(
+            sdk_profiles,
+            'apply_tool_switch_request',
+            apply_tool_switch_request,
+            raising=False,
+        )
+        await save_agent_profile(
+            name='reviewer',
+            body={
+                'llm_profile_ref': 'Default',
+                'tools': [{'name': 'terminal'}, {'name': 'switch_llm'}],
+                'enable_switch_llm_tool': False,
+            },
+            effective_org_id=org_id,
+            user_id=uid,
+        )
+
+        assert [t.name for t in seen[0].tools] == ['terminal', 'switch_llm']
+        detail = await get_agent_profile(
+            name='reviewer', effective_org_id=org_id, user_id=uid
+        )
+        assert [t.name for t in detail.profile.tools] == ['terminal']
+
+
 class TestAgentProfileRouterErrors:
     @pytest.mark.asyncio
     async def test_get_missing_404(self, patch_agent_routes):

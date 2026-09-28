@@ -40,6 +40,7 @@ from openhands.app_server.settings.agent_profiles import (
     AgentProfiles,
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk import profiles as sdk_profiles
 from openhands.sdk.profiles import (
     AgentProfile,
     AgentProfileDiagnostics,
@@ -249,6 +250,13 @@ async def get_agent_profile(
     return AgentProfileDetailResponse(name=name, profile=profile)
 
 
+def _stored_profile(profiles: AgentProfiles, name: str) -> AgentProfile | None:
+    try:
+        return profiles.load(name)
+    except FileNotFoundError:
+        return None
+
+
 @router.post(
     '/{name}',
     response_model=AgentProfileMutationResponse,
@@ -273,6 +281,11 @@ async def save_agent_profile(
         profiles,
     ):
         try:
+            apply_tool_switch_request = getattr(
+                sdk_profiles, 'apply_tool_switch_request', None
+            )
+            if apply_tool_switch_request is not None:
+                body = apply_tool_switch_request(body, _stored_profile(profiles, name))
             profile = validate_agent_profile({**body, 'name': name})
         except ValidationError as e:
             raise HTTPException(
