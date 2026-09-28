@@ -7,25 +7,18 @@ Postgres picks one to run it. `candidate_unguarded/` runs the same image with
 
 ## Results
 
-**The harness suite has not run yet.** The base image doesn't build from a
-clean checkout (see "Harness issue" below), so every test errors in the
-`base_image` fixture before starting a stack. Fill this table in from
-`results/apscheduler.json` and `results/apscheduler-unguarded.json` once that
-is fixed.
+Run on 2026-09-28 on Docker (OrbStack, ARM64), with other candidates running
+on the same host. Raw evidence is in `results/apscheduler.json` and
+`results/apscheduler-unguarded.json`.
 
-| Check | `apscheduler` | `apscheduler-unguarded` (P1 only) |
+| Check | `apscheduler` (guarded) | `apscheduler-unguarded` |
 |---|---|---|
-| P1: once per occurrence | not run | not run (expected: doubles) |
-| P2: clock skew (+2 s on replica-b) | not run | n/a |
-| P3: killed mid-job, restarted | not run (expected: `lost`) | n/a |
-| P3: killed mid-job, left dead | not run (expected: `lost`) | n/a |
-| P4: schema through Alembic | not run | n/a |
-| P6: footprint | not run | n/a |
-
-A manual smoke run went through the harness compose files with the existing
-`tq-poc-base` image: 10-second interval, 3 occurrences. Each slot had one claim
-and one run, and the runs alternated between replica-a and replica-b. `migrate`
-exited 0, and the replicas ran as `poc_app` with no DDL.
+| P1: once per occurrence | Pass: 12 occurrences, no doubles, none missed, both replicas ran jobs | **Fails as intended:** all 12 occurrences ran on both replicas |
+| P2: clock skew (+2 s on replica-b) | Pass: no doubles, none missed. Measured offset +2.00 s. Only replica-b ran jobs | not run |
+| P3: killed mid-job, restarted after 10 s | `lost`. The run never finished, the next occurrence ran | not run |
+| P3: killed mid-job, left dead | `lost`. Same; the surviving replica kept the schedule | not run |
+| P4: schema through Alembic | Pass: `migrate` exited 0, no candidate tables, jobs ran as `poc_app` | not run |
+| P6: footprint | No extra workloads. About 35.5 MiB and under 0.4% CPU per replica, idle | not run |
 
 ## Setup
 
@@ -34,9 +27,9 @@ exited 0, and the replicas ran as `poc_app` with no DDL.
   schema. `migrations/` is empty.
 - The job is defined in code. Each replica calls `add_job` in the FastAPI
   lifespan and shuts the scheduler down on exit.
-- Trigger: `CronTrigger(second='*/{POC_INTERVAL_SECONDS}', timezone='UTC')`.
-  With an interval of 60, `*/60` means second 0 only, so the job fires on the
-  wall-clock minute. This only works for intervals that divide 60.
+- Trigger: `CronTrigger(second='0,10,20,30,40,50')` for 10 s, or `second='0'`
+  for 60 s, in UTC. The list is built from `POC_INTERVAL_SECONDS`, so it only
+  works for intervals that divide 60.
 - Guard code: 2 lines in the job (`if GUARD and not await claim(...): return`),
   plus the harness's 10-line `claim()` and the `poc_job_claims` table. In
   production that table needs an Alembic migration and a retention policy.
@@ -58,13 +51,22 @@ exited 0, and the replicas ran as `poc_app` with no DDL.
 
 ## Gotchas
 
+- `CronTrigger(second='*/60')` raises `ValueError: the step value (60) is
+  higher than the total range of the expression (59)` when the app starts. The
+  first full run used `*/{INTERVAL}`: P1 and P2 passed at 10 s, but both P3
+  cases failed because neither replica booted at 60 s. An explicit list of
+  seconds fixed it.
+- Under a fixed skew, the replica whose clock is ahead fires first every time,
+  so it wins every claim. In P2 replica-b ran all 12 occurrences. The guard
+  keeps runs correct but doesn't spread work across replicas.
+
 - 3.x doesn't pass the scheduled run time to the job function. It appears only
   in the executor log line and in `EVENT_JOB_SUBMITTED` events. So the slot comes
   from `slot_for()`, which works as long as replica clocks are within half an
   interval of each other.
 - A graceful stop (SIGTERM) also loses the in-flight run. Uvicorn cancels the
   running coroutine (`CancelledError` inside `finish_run`), and
-  `scheduler.shutdown()` doesn't wait for asyncio jobs. In the smoke run,
+  `scheduler.shutdown()` doesn't wait for asyncio jobs. In a manual run,
   stopping replica-a mid-job left its run unfinished, the same outcome as a
   crash.
 
@@ -72,10 +74,11 @@ exited 0, and the replicas ran as `poc_app` with no DDL.
 
 A crash between `claim()` and `finish_run` loses that occurrence. The claim row
 stays, so no replica can run the occurrence again, and nothing retries it. P3
-should record `lost` for both the restarted and the replaced case, with
+records `lost` for both the restarted and the replaced case, with
 `next_occurrence_ran: true`, because the surviving replica keeps its own
-schedule. Recovering lost runs would need a lease with expiry on the claim, or
-a real queue.
+schedule. P3 confirmed it: `lost` in both cases, `next_occurrence_ran: true`, and
+one unfinished run row for the killed occurrence. Recovering lost runs would
+need a lease with expiry on the claim, or a real queue.
 
 ## Desk research
 
@@ -89,11 +92,6 @@ a real queue.
 
 ## Harness issue
 
-`harness/Dockerfile` runs `COPY requirements.txt`, but `harness/requirements.txt`
-isn't in commit 18cbd4248. The repo `.gitignore` (line 28, `requirements.txt`)
-ignores it, so it was never added. In a fresh worktree, `docker build harness`
-fails with `"/requirements.txt": not found`, and conftest's `base_image` fixture
-errors out every test. The existing `tq-poc-base` image contains the file:
-alembic 1.16.5, fastapi 0.118.0, psycopg[binary] 3.2.10, sqlalchemy 2.0.43,
-uvicorn 0.37.0. The fix belongs in the harness: force-add the file, or add a
-`!` exception to the ignore rule.
+The base commit didn't track `harness/requirements.txt`, because the repo
+`.gitignore` ignores `requirements.txt`. The base image couldn't build. This is
+fixed on the base branch, which these results were run against.

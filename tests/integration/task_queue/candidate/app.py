@@ -29,7 +29,8 @@ async def lifespan(app: FastAPI):
     scheduler = AsyncIOScheduler(timezone='UTC')
     scheduler.add_job(
         tick,
-        CronTrigger(second=f'*/{INTERVAL}', timezone='UTC'),  # INTERVAL divides 60
+        # '0,10,...' not '*/N': CronTrigger rejects '*/60'. INTERVAL must divide 60.
+        CronTrigger(second=','.join(map(str, range(0, 60, INTERVAL))), timezone='UTC'),
         id='tick',
         # Under half an interval, so a late run still rounds to its own slot.
         misfire_grace_time=max(1, INTERVAL // 2 - 1),

@@ -1,0 +1,73 @@
+{
+  "P1": {
+    "doubles": [
+      [
+        "1790622520",
+        "2",
+        "replica-a,replica-b"
+      ],
+      [
+        "1790622530",
+        "2",
+        "replica-a,replica-b"
+      ],
+      [
+        "1790622540",
+        "2",
+        "replica-b,replica-a"
+      ],
+      [
+        "1790622550",
+        "2",
+        "replica-a,replica-b"
+      ],
+      [
+        "1790622560",
+        "2",
+        "replica-a,replica-b"
+      ],
+      [
+        "1790622570",
+        "2",
+        "replica-a,replica-b"
+      ],
+      [
+        "1790622580",
+        "2",
+        "replica-b,replica-a"
+      ],
+      [
+        "1790622590",
+        "2",
+        "replica-a,replica-b"
+      ],
+      [
+        "1790622600",
+        "2",
+        "replica-a,replica-b"
+      ],
+      [
+        "1790622610",
+        "2",
+        "replica-b,replica-a"
+      ],
+      [
+        "1790622620",
+        "2",
+        "replica-b,replica-a"
+      ],
+      [
+        "1790622630",
+        "2",
+        "replica-a,replica-b"
+      ]
+    ],
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-28T19:10:30Z",
+    "replicas_seen": [
+      "replica-a",
+      "replica-b"
+    ]
+  }
+}
