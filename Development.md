@@ -82,8 +82,11 @@ make start-frontend # Frontend only on port 3001
 
 `make start-backend` runs `openhands.server.listen:app`, which serves the `openhands/app_server` V1 API
 unless `ENABLE_V1=0`. It needs PostgreSQL: `make local-db` starts one in a container and applies the
-migrations, or set `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS` to point at your own. Migrations are
-never applied automatically on startup.
+migrations, or set `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS` to point at your own.
+
+The app does not apply migrations on startup unless `RUN_MIGRATIONS_ON_STARTUP=true` (or `1`). With it set,
+each server process runs `alembic upgrade head` before it serves requests, and a failed migration stops the
+process from starting. Several workers or replicas can start at once: an advisory lock makes them take turns.
 
 To run the SaaS/enterprise server (`saas_server:app`, what Kubernetes deploys) use `make start-saas-backend` or
 `make run-saas`; it needs the SaaS environment (Postgres, Keycloak, ...) described in
