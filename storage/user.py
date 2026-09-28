@@ -72,6 +72,15 @@ class User(Base):
     # callback on every successful file_editor edit; read at conversation start
     # to seed the sandbox's memory file before the agent runs.
     memory_context: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    # One-time identity-seeding flag for IDP swap-over (OHE-3293 / ALL-5978).
+    # When True, the v2 login resolver may use ``email`` as a one-time hint to
+    # bind a new IDP's ``sub`` to this existing User via ``oauth_provider_users``.
+    # The flag is self-cleared on a successful link, so the email-match window
+    # is exactly one login wide per user. Off by default; bulk-set by an
+    # operator at the swap-over moment.
+    allow_match_by_email: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
 
     # Relationships
     # Instance-level super-role relationship, not an org-scoped membership role.
