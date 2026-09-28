@@ -1,0 +1,4 @@
+apscheduler==3.11.3
+dramatiq[redis]==2.2.1
+redis==8.1.0
+tzlocal==5.4.4

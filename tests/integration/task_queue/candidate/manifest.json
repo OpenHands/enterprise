@@ -1,0 +1,7 @@
+{
+  "name": "dramatiq-single",
+  "app_services": ["replica-a", "replica-b"],
+  "job_services": ["worker-a", "worker-b"],
+  "skew_service": null,
+  "expected_tables": []
+}

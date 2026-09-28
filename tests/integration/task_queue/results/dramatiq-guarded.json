@@ -1,0 +1,106 @@
+{
+  "P1": {
+    "doubles": [],
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-28T19:02:23Z",
+    "replicas_seen": [
+      "worker-a",
+      "worker-b"
+    ]
+  },
+  "P2": {
+    "doubles": [],
+    "measured_clock_offset_seconds": {
+      "worker-a": "0.00",
+      "worker-b": "0.00"
+    },
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-28T19:29:39Z",
+    "replicas_seen": [
+      "worker-a",
+      "worker-b"
+    ],
+    "skew": "+2s",
+    "skewed_service": "replica-b",
+    "skewed_service_running": true
+  },
+  "P3-replaced": {
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T19:12:37Z",
+    "recovered_after_seconds": null,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "worker-a",
+        ""
+      ]
+    ],
+    "victim": "worker-a"
+  },
+  "P3-restarted": {
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T19:09:08Z",
+    "recovered_after_seconds": null,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "worker-b",
+        ""
+      ]
+    ],
+    "victim": "worker-b"
+  },
+  "P4": {
+    "alembic_version": [],
+    "candidate_tables": [
+      "public.alembic_version"
+    ],
+    "migrate_exit_code": [
+      0
+    ],
+    "missing_expected_tables": [],
+    "recorded_at": "2026-09-28T19:13:02Z"
+  },
+  "P6": {
+    "app_services": [
+      "replica-a",
+      "replica-b"
+    ],
+    "extra_workloads": [
+      "redis",
+      "worker-a",
+      "worker-b"
+    ],
+    "recorded_at": "2026-09-28T19:14:03Z",
+    "usage": {
+      "postgres": {
+        "cpu": "1.37%",
+        "memory": "19.21MiB"
+      },
+      "redis": {
+        "cpu": "1.33%",
+        "memory": "6.84MiB"
+      },
+      "replica-a": {
+        "cpu": "0.10%",
+        "memory": "44.11MiB"
+      },
+      "replica-b": {
+        "cpu": "0.12%",
+        "memory": "41.71MiB"
+      },
+      "worker-a": {
+        "cpu": "0.15%",
+        "memory": "42.57MiB"
+      },
+      "worker-b": {
+        "cpu": "0.16%",
+        "memory": "41.11MiB"
+      }
+    }
+  }
+}
