@@ -53,6 +53,9 @@ def test_p2_clock_skew(stack, record):
     )
     wait_for_occurrences(s)
     report = occurrence_report(s)
+    # A skewed scheduler that crashed leaves the other one scheduling alone,
+    # which would pass for the wrong reason.
+    running = s.compose('ps', '--status', 'running', '--services').split()
     # Replica clock minus database clock at start, per replica: evidence the skew applied.
     measured = dict(
         s.sql(
@@ -67,7 +70,9 @@ def test_p2_clock_skew(stack, record):
             'skewed_service': MANIFEST['skew_service'],
             'skew': '+2s',
             'measured_clock_offset_seconds': measured,
+            'skewed_service_running': MANIFEST['skew_service'] in running,
         },
     )
+    assert MANIFEST['skew_service'] in running, f'{MANIFEST["skew_service"]} crashed'
     assert not report['doubles'], report
     assert not report['missing'], report

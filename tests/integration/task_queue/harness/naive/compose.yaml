@@ -33,4 +33,4 @@ services:
       <<: *app-env
       LD_PRELOAD: ${POC_FAKETIME_PRELOAD:-}
       FAKETIME: ${POC_SKEW:-+0s}
-      FAKETIME_DONT_FAKE_MONOTONIC: "1"
+      FAKETIME_DONT_FAKE_MONOTONIC: "0"

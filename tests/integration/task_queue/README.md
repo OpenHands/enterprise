@@ -55,7 +55,9 @@ A candidate branch adds `candidate/` with:
     as `POC_DATABASE_URL=postgresql://poc_app:poc_app@postgres/poc` and passing
     through `POC_INTERVAL_SECONDS` and `POC_JOB_SECONDS`.
   - On the service named by `skew_service`: `LD_PRELOAD: ${POC_FAKETIME_PRELOAD:-}`,
-    `FAKETIME: ${POC_SKEW:-+0s}` and `FAKETIME_DONT_FAKE_MONOTONIC: "1"`.
+    `FAKETIME: ${POC_SKEW:-+0s}` and `FAKETIME_DONT_FAKE_MONOTONIC: "0"`. Keep it `"0"`: with `"1"`,
+    libfaketime makes `time.sleep` fail with `OSError: [Errno 22]`. A constant offset on
+    the monotonic clock changes no intervals.
   - Any broker or extra workload the candidate needs, with pinned images.
 - `Dockerfile` — `FROM tq-poc-base` (built from `harness/`), plus the
   candidate's pinned `requirements.txt`. Candidate libraries stay out of the
