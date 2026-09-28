@@ -1,0 +1,106 @@
+{
+  "P1": {
+    "doubles": [],
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-28T18:52:11Z",
+    "replicas_seen": [
+      "replica-a",
+      "replica-b"
+    ]
+  },
+  "P2": {
+    "doubles": [],
+    "measured_clock_offset_seconds": {
+      "replica-a": "0.00",
+      "replica-b": "2.00"
+    },
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-28T18:54:40Z",
+    "replicas_seen": [
+      "replica-a",
+      "replica-b"
+    ],
+    "skew": "+2s",
+    "skewed_service": "replica-b"
+  },
+  "P3-replaced": {
+    "next_occurrence_ran": true,
+    "outcome": "lost",
+    "recorded_at": "2026-09-28T19:01:36Z",
+    "recovered_after_seconds": null,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-b",
+        ""
+      ]
+    ],
+    "victim": "replica-b"
+  },
+  "P3-restarted": {
+    "next_occurrence_ran": true,
+    "outcome": "resumed",
+    "recorded_at": "2026-09-28T18:57:31Z",
+    "recovered_after_seconds": 48.6,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-b",
+        "replica-a"
+      ]
+    ],
+    "victim": "replica-b"
+  },
+  "P4": {
+    "alembic_version": [
+      [
+        "0001"
+      ]
+    ],
+    "candidate_tables": [
+      "dbos.application_versions",
+      "dbos.dbos_migrations",
+      "dbos.event_dispatch_kv",
+      "dbos.notifications",
+      "dbos.operation_outputs",
+      "dbos.queues",
+      "dbos.streams",
+      "dbos.workflow_events",
+      "dbos.workflow_events_history",
+      "dbos.workflow_input",
+      "dbos.workflow_output",
+      "dbos.workflow_schedules",
+      "dbos.workflow_status",
+      "public.alembic_version"
+    ],
+    "migrate_exit_code": [
+      0
+    ],
+    "missing_expected_tables": [],
+    "recorded_at": "2026-09-28T19:02:12Z"
+  },
+  "P6": {
+    "app_services": [
+      "replica-a",
+      "replica-b"
+    ],
+    "extra_workloads": [],
+    "recorded_at": "2026-09-28T19:03:23Z",
+    "usage": {
+      "postgres": {
+        "cpu": "4.97%",
+        "memory": "46.32MiB"
+      },
+      "replica-a": {
+        "cpu": "1.09%",
+        "memory": "60.41MiB"
+      },
+      "replica-b": {
+        "cpu": "1.21%",
+        "memory": "60.53MiB"
+      }
+    }
+  }
+}

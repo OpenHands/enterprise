@@ -1,0 +1,30 @@
+{
+  "P3-replaced": {
+    "next_occurrence_ran": true,
+    "outcome": "resumed",
+    "recorded_at": "2026-09-28T18:53:35Z",
+    "recovered_after_seconds": 72.3,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-b",
+        "replica-a"
+      ]
+    ],
+    "victim": "replica-b"
+  },
+  "P3-restarted": {
+    "next_occurrence_ran": true,
+    "outcome": "resumed",
+    "recorded_at": "2026-09-28T18:57:33Z",
+    "recovered_after_seconds": 48.8,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-b",
+        "replica-a"
+      ]
+    ],
+    "victim": "replica-b"
+  }
+}
