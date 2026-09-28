@@ -55,6 +55,7 @@ from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.routes.org_models import OrgNotFoundError
 from storage.agent_profile_resolution import (
     OrgLLMProfileLoader,
+    cloud_resolve_kwargs,
     load_agent_profiles,
     load_llm_profiles,
     member_mcp_config,
@@ -459,6 +460,7 @@ async def materialize_agent_profile(
             mcp_config=mcp_config,
             available_skills=None,
             cipher=None,
+            **cloud_resolve_kwargs(),
         )
     except Exception as exc:
         # The dry-run is contractually total, but SDK contract drift (e.g. a

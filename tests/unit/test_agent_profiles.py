@@ -1066,6 +1066,23 @@ class TestPersistedVsResolvedSettingsView:
                 await store.store(settings)
 
     @pytest.mark.asyncio
+    async def test_resolved_default_tools_keep_the_browser(
+        self, async_session_maker, patch_agent_routes
+    ):
+        org_id = patch_agent_routes
+        await self._setup_active_profile(async_session_maker, org_id, ['a'])
+
+        from storage.saas_settings_store import SaasSettingsStore
+
+        with self._store_patches(async_session_maker):
+            store = SaasSettingsStore(str(USER_ID), effective_org_id=org_id)
+            settings = await store.load(resolve_agent_profile=True)
+
+        assert settings is not None
+        tools = settings.agent_settings.tools
+        assert tools is None or 'browser_tool_set' in {t.name for t in tools}
+
+    @pytest.mark.asyncio
     async def test_resolver_crash_falls_back_to_composed_settings(
         self, async_session_maker, patch_agent_routes
     ):
