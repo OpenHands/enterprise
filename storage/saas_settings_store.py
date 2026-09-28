@@ -1090,8 +1090,11 @@ class SaasSettingsStore(SettingsStore):
 
         # Missing or stale managed key: rotate. rotate_managed_llm_key() rejects
         # non-managed / BYOK configs (non-ROTATED status), so this never mints a
-        # key for a config that should not have one.
-        rotation = await self.rotate_managed_llm_key()
+        # key for a config that should not have one. Pass only_if_current so an
+        # overlapping refresh from another sandbox that already rotated the key
+        # is reused instead of rotated again — otherwise two sandboxes could
+        # keep resetting each other's freshly-minted key in a loop (#439).
+        rotation = await self.rotate_managed_llm_key(only_if_current=current)
         if rotation.status != ManagedLlmKeyStatus.ROTATED or not rotation.new_key:
             return None
 

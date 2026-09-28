@@ -66,13 +66,17 @@ async def test_rotates_when_current_key_is_stale():
             SaasSettingsStore,
             'rotate_managed_llm_key',
             new=AsyncMock(return_value=rotation),
-        ),
+        ) as rotate,
         patch.object(LiteLlmManager, 'delete_key', new=AsyncMock()) as delete,
     ):
         result = await store.resolve_valid_managed_llm_key()
 
     assert result == 'new-key'
     delete.assert_awaited_once_with('old-key')
+    # The stale key we observed is passed as only_if_current so a concurrent
+    # refresh that already rotated it is reused instead of rotated again — this
+    # is what stops two sandboxes from resetting each other's key in a loop.
+    rotate.assert_awaited_once_with(only_if_current='old-key')
 
 
 @pytest.mark.asyncio
@@ -152,10 +156,12 @@ async def test_returns_none_for_non_managed_config():
             SaasSettingsStore,
             'rotate_managed_llm_key',
             new=AsyncMock(return_value=rotation),
-        ),
+        ) as rotate,
         patch.object(LiteLlmManager, 'delete_key', new=AsyncMock()) as delete,
     ):
         result = await store.resolve_valid_managed_llm_key()
 
     assert result is None
     delete.assert_not_awaited()
+    # No current key to protect: rotate unconditionally (only_if_current=None).
+    rotate.assert_awaited_once_with(only_if_current=None)
