@@ -189,3 +189,13 @@ The cause is blocking the event loop that sends heartbeats, not async itself or 
 | Capped: fail the job after 3 attempts (`POC_STALLED_MAX_ATTEMPTS=3`) | 4 (first run plus 3 retries), then `failed` | no | 4 | 36 of 36 |
 
 The documented recipe has no attempt limit, so a job that crashes its worker is retried forever and restarts a worker every minute. With two replicas the schedule survived; with one replica, or several poison jobs, it would stall. Cap it in the retry task: when `job.attempts` reaches N, `finish_job(job, status=FAILED)` instead of `retry_job(job)`.
+
+### P11 re-run — one replica, and a repeat of the capped case
+
+| Variant | Poison attempts | Still retrying at the end | Restarts | Ticks run |
+|---|---|---|---|---|
+| One replica, uncapped | 6 | yes | 6 | 34 of 36 |
+| One replica, capped at 3 (`candidate_supervised_single/`) | 4, then `failed` | no | 4 | 36 of 36 |
+| Two replicas, capped at 3 (repeat) | 4, then `failed` | no | 4 | 36 of 36 |
+
+Even with one replica the uncapped loop doesn't stall the schedule: the supervised worker restarts in seconds, so only 2 short occurrences were missed. It does restart the worker about every minute indefinitely, killing any other running job each time. The cap removes that.
