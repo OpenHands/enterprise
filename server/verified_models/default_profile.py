@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.llm import LLM
-from server.constants import is_bundled_proxy_base_url
+from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_url
+from server import constants
 
 from .verified_model_service import StoredVerifiedModel
 
@@ -16,7 +17,30 @@ DEFAULT_LLM_PROFILE_NAME = 'Default'
 _OPENHANDS_PROVIDER = 'openhands'
 
 
+def _uses_deployment_default() -> bool:
+    return constants.DEPLOYMENT_MODE == 'self_hosted' and (
+        constants.uses_bundled_litellm_proxy()
+        or constants.should_use_direct_llm_defaults()
+    )
+
+
+def uses_deployment_default_profile(profiles: LLMProfiles) -> bool:
+    existing = profiles.get(DEFAULT_LLM_PROFILE_NAME)
+    return _uses_deployment_default() and (
+        existing is None
+        or (
+            is_openhands_model(existing.model)
+            and (
+                not existing.base_url or is_openhands_proxy_base_url(existing.base_url)
+            )
+            and not getattr(existing, 'provider_connection_id', None)
+        )
+    )
+
+
 async def get_openhands_default_model_name(db_session: AsyncSession) -> str | None:
+    if _uses_deployment_default():
+        return None
     result = await db_session.execute(
         select(StoredVerifiedModel.model_name)
         .where(
@@ -32,6 +56,31 @@ async def get_openhands_default_model_name(db_session: AsyncSession) -> str | No
 def materialize_default_llm_profile(
     profiles: LLMProfiles, model_name: str | None
 ) -> LLMProfiles:
+    existing = profiles.get(DEFAULT_LLM_PROFILE_NAME)
+    if _uses_deployment_default():
+        # Keep concrete profiles; repair only a missing or cloud-managed default.
+        if not uses_deployment_default_profile(profiles):
+            return profiles
+        deployment_llm = LLM(
+            model=constants.get_default_llm_model(),
+            base_url=constants.get_default_llm_base_url(),
+            api_key=constants.get_default_llm_api_key(),
+        )
+        profiles.profiles[DEFAULT_LLM_PROFILE_NAME] = (
+            existing.model_copy(
+                update={
+                    'model': deployment_llm.model,
+                    'base_url': deployment_llm.base_url,
+                    'api_key': deployment_llm.api_key,
+                }
+            )
+            if existing is not None
+            else deployment_llm
+        )
+        if profiles.active is None:
+            profiles.active = DEFAULT_LLM_PROFILE_NAME
+        return profiles
+
     if not model_name:
         # No enabled OpenHands DB default. The logical ``Default`` profile is a
         # live pointer to the managed OpenHands default, so when it currently
@@ -48,7 +97,7 @@ def materialize_default_llm_profile(
             and is_openhands_model(existing.model)
             # A self-hosted default seeded from LITELLM_DEFAULT_MODEL keeps
             # the bundled proxy base_url: a concrete route, not a DB pointer.
-            and not is_bundled_proxy_base_url(existing.base_url)
+            and not constants.is_bundled_proxy_base_url(existing.base_url)
         ):
             profiles.profiles.pop(DEFAULT_LLM_PROFILE_NAME, None)
             # The logical pointer is gone; ``active`` must not keep pointing

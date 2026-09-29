@@ -2429,6 +2429,104 @@ async def test_load_resolves_active_default_profile_from_verified_model_default(
     assert org.llm_profiles['profiles']['Default']['model'] == 'openhands/stale-default'
 
 
+@pytest.mark.parametrize('route', ['proxy', 'direct'])
+@pytest.mark.parametrize('stored_default', [None, 'openhands/stale-default'])
+async def test_self_hosted_default_ignores_cloud_catalogue(
+    async_session_maker,
+    org_with_multiple_members_fixture,
+    monkeypatch,
+    route,
+    stored_default,
+):
+    from sqlalchemy import select
+
+    from server import constants
+    from server.routes import org_profiles
+    from server.verified_models.verified_model_service import StoredVerifiedModel
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+    monkeypatch.setattr(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', route)
+    monkeypatch.setattr(constants, 'LITE_LLM_API_URL', 'http://litellm.test:4000')
+    monkeypatch.setattr(constants, 'LITELLM_DEFAULT_MODEL', 'litellm_proxy/local-model')
+    monkeypatch.setattr(constants, 'OPENHANDS_DEFAULT_LLM_MODEL', 'openai/direct-model')
+    monkeypatch.setattr(
+        constants, 'OPENHANDS_DEFAULT_LLM_BASE_URL', 'https://llm.example.com/v1'
+    )
+    monkeypatch.setattr(constants, 'OPENHANDS_DEFAULT_LLM_API_KEY', 'test-direct-key')
+    fixture = org_with_multiple_members_fixture
+    org_id, user_id = fixture['org_id'], fixture['admin_user_id']
+    async with async_session_maker() as session:
+        org = await session.get(Org, org_id)
+        org.llm_profiles = (
+            {'profiles': {'Default': {'model': stored_default}}, 'active': 'Default'}
+            if stored_default
+            else None
+        )
+        original_profiles = org.llm_profiles
+        org.agent_settings = {
+            'llm': {'model': 'openhands/stale-default', 'base_url': None}
+        }
+        org.llm_api_key = None
+        member = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == org_id, OrgMember.user_id == user_id
+                )
+            )
+        ).scalar_one()
+        member.agent_settings_diff = {
+            'llm': {'model': 'openhands/stale-default', 'base_url': None}
+        }
+        member.llm_api_key = None
+        session.add(
+            StoredVerifiedModel(
+                model_name='cloud-only-model',
+                provider='openhands',
+                is_enabled=True,
+                is_verified=True,
+                is_default=True,
+            )
+        )
+        await session.commit()
+
+    expected_model = (
+        'openai/direct-model' if route == 'direct' else 'openhands/local-model'
+    )
+    expected_url = (
+        'https://llm.example.com/v1'
+        if route == 'direct'
+        else 'http://litellm.test:4000'
+    )
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('server.routes.org_profiles.a_session_maker', async_session_maker),
+        patch('storage.org_member_store.a_session_maker', async_session_maker),
+    ):
+        for _ in range(2):
+            loaded = await SaasSettingsStore(str(user_id)).load()
+            assert loaded.agent_settings.llm.model == expected_model
+            assert loaded.agent_settings.llm.base_url == expected_url
+            assert loaded.llm_profiles.require('Default').model == expected_model
+            if route == 'direct':
+                assert (
+                    loaded.agent_settings.llm.api_key.get_secret_value()
+                    == 'test-direct-key'
+                )
+        detail = await org_profiles.get_profile(org_id, 'Default', str(user_id))
+        assert detail.llm['model'] == expected_model
+        assert detail.llm['base_url'] == expected_url
+        assert 'test-direct-key' not in str(detail.model_dump())
+
+    if original_profiles is not None:
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org.llm_profiles == original_profiles
+
+
 @pytest.mark.asyncio
 async def test_partial_store_preserves_malformed_legacy_member_mcp_config(
     session_maker, async_session_maker, org_with_multiple_members_fixture
