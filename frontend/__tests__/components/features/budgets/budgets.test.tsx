@@ -6,6 +6,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { AxiosError } from "axios";
 import { Budgets } from "#/components/features/budgets/budgets";
 import { organizationService } from "#/api/organization-service/organization-service.api";
+import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
 vi.mock("#/api/organization-service/organization-service.api", () => ({
   organizationService: {
@@ -677,5 +678,77 @@ describe("Budgets", () => {
     expect(
       screen.queryByText(/keep their current budgets/i),
     ).not.toBeInTheDocument();
+  });
+
+  it("confirms a successful organization budget save", async () => {
+    const user = userEvent.setup();
+    const successToastSpy = vi.spyOn(ToastHandlers, "displaySuccessToast");
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(successToastSpy).toHaveBeenCalledWith("SETTINGS$SAVED"),
+    );
+  });
+
+  it("confirms a successful default budget save", async () => {
+    const user = userEvent.setup();
+    const successToastSpy = vi.spyOn(ToastHandlers, "displaySuccessToast");
+    await renderBudgets();
+    await user.click(
+      screen.getByRole("button", { name: "Default budget for users" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save default" }));
+
+    await waitFor(() =>
+      expect(successToastSpy).toHaveBeenCalledWith("SETTINGS$SAVED"),
+    );
+  });
+
+  it("confirms a successful user override save", async () => {
+    const user = userEvent.setup();
+    const successToastSpy = vi.spyOn(ToastHandlers, "displaySuccessToast");
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await user.click(
+      screen.getByRole("button", { name: "Edit budget for User One" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(successToastSpy).toHaveBeenCalledWith("SETTINGS$SAVED"),
+    );
+  });
+
+  it("confirms a successful user override removal", async () => {
+    const user = userEvent.setup();
+    const successToastSpy = vi.spyOn(ToastHandlers, "displaySuccessToast");
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+
+    await user.click(screen.getByLabelText("Remove override for User One"));
+
+    await waitFor(() =>
+      expect(successToastSpy).toHaveBeenCalledWith("SETTINGS$SAVED"),
+    );
+  });
+
+  it("does not confirm a budget save that failed", async () => {
+    const user = userEvent.setup();
+    const successToastSpy = vi.spyOn(ToastHandlers, "displaySuccessToast");
+    vi.mocked(organizationService.updateBudgetSettings).mockRejectedValueOnce(
+      new Error("503"),
+    );
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(organizationService.getBudgetSettings).toHaveBeenCalledTimes(2),
+    );
+    expect(successToastSpy).not.toHaveBeenCalled();
   });
 });
