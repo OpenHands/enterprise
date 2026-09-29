@@ -184,3 +184,14 @@ Setup findings:
 - Relay only accepts keys it minted itself; a self-generated `dbos_…` key got HTTP 401.
 - `--no-auth` does not cover the executor WebSocket, which still returned 401.
 - So a Compose install needs a step that mints the key before the workers start, e.g. `relay apply --env-out`.
+
+### P5 — Deployment with per-pod executor IDs, connected to hosted DBOS Conductor (Pro trial)
+
+| Check | Result (without a control plane, same setup) |
+|---|---|
+| P1 once per occurrence | Pass (12, no doubles, none missed) |
+| P3 pod force-deleted | `resumed` by the other pod (was `lost`) |
+| P7 rollout, 10 s grace | `resumed` by a new pod (was `lost`) |
+| P7 rollout, 60 s grace | `drained` |
+
+Conductor needs the application registered in the DBOS Console under the name in the DBOS config (`tq-poc`). Before that, connections were rejected with `application tq-poc not found` (HTTP 400). A live pod logged `Recovering 1 workflows for executor <dead id>` about 60–70 s after the kill, the same behaviour as dbos-relay.

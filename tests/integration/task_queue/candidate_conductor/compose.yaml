@@ -1,0 +1,34 @@
+# DBOS with hosted DBOS Conductor (a DBOS Pro trial; app registered as tq-poc).
+# Conductor detects a silent executor and dispatches its workflows to a live
+# one, so replicas need no stable identity. Export the Conductor API key as
+# POC_DBOS_CONDUCTOR_KEY; no URL, so DBOS uses the hosted service.
+x-app: &app
+  build: candidate
+  image: tq-poc-dbos
+  command: uvicorn app:app --host 0.0.0.0 --port 8000
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+  environment: &app-env
+    POC_DATABASE_URL: postgresql://poc_app:poc_app@postgres/poc
+    POC_INTERVAL_SECONDS: ${POC_INTERVAL_SECONDS:-10}
+    POC_JOB_SECONDS: ${POC_JOB_SECONDS:-1}
+    POC_DBOS_SHUTDOWN_SECONDS: ${POC_DBOS_SHUTDOWN_SECONDS:-50}
+    POC_DBOS_CONDUCTOR_KEY: ${POC_DBOS_CONDUCTOR_KEY:?set POC_DBOS_CONDUCTOR_KEY}
+
+services:
+  migrate:
+    build: candidate
+    image: tq-poc-dbos
+    command: alembic -c /harness/alembic.ini upgrade head
+    environment:
+      POC_MIGRATE_URL: postgresql://poc:poc@postgres/poc
+    depends_on:
+      postgres:
+        condition: service_healthy
+  replica-a:
+    <<: *app
+    hostname: replica-a
+  replica-b:
+    <<: *app
+    hostname: replica-b

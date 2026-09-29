@@ -1,0 +1,89 @@
+{
+  "P5-P1": {
+    "doubles": [],
+    "extra_env": {
+      "POC_DBOS_CONDUCTOR_KEY": "<redacted>",
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-29T00:44:21Z",
+    "workload_kind": "Deployment"
+  },
+  "P5-P3-force-deleted": {
+    "extra_env": {
+      "POC_DBOS_CONDUCTOR_KEY": "<redacted>",
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "next_occurrence_ran": true,
+    "outcome": "resumed",
+    "pods_after": [
+      "app-b4644bff8-n885m",
+      "app-b4644bff8-qlhqn"
+    ],
+    "recorded_at": "2026-09-29T00:46:42Z",
+    "runs_for_occurrence": [
+      [
+        "1",
+        "app-b4644bff8-ktbr7",
+        "app-b4644bff8-qlhqn",
+        "t"
+      ]
+    ],
+    "seconds_observed": 96,
+    "victim": "app-b4644bff8-ktbr7",
+    "workload_kind": "Deployment"
+  },
+  "P5-P7-rollout-grace-10s": {
+    "doubles_any_occurrence": [],
+    "extra_env": {
+      "POC_DBOS_CONDUCTOR_KEY": "<redacted>",
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "grace_seconds": 10,
+    "next_occurrence_ran": true,
+    "outcome": "resumed",
+    "pods_after": [
+      "app-d58b85bb8-6z2pt",
+      "app-d58b85bb8-pmgfn"
+    ],
+    "recorded_at": "2026-09-29T00:50:02Z",
+    "rollout_seconds": 22.5,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "app-79c7df6ff6-czlkz",
+        "app-d58b85bb8-6z2pt",
+        "t"
+      ]
+    ],
+    "victim": "app-79c7df6ff6-czlkz",
+    "workload_kind": "Deployment"
+  },
+  "P5-P7-rollout-grace-60s": {
+    "doubles_any_occurrence": [],
+    "extra_env": {
+      "POC_DBOS_CONDUCTOR_KEY": "<redacted>",
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "grace_seconds": 60,
+    "next_occurrence_ran": true,
+    "outcome": "drained",
+    "pods_after": [
+      "app-5f458856db-j8856",
+      "app-5f458856db-l2824"
+    ],
+    "recorded_at": "2026-09-29T00:52:31Z",
+    "rollout_seconds": 27.4,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "app-776f448cfc-jl8db",
+        "app-776f448cfc-jl8db",
+        "f"
+      ]
+    ],
+    "victim": "app-776f448cfc-jl8db",
+    "workload_kind": "Deployment"
+  }
+}
