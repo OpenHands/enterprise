@@ -1866,8 +1866,9 @@ class LiteLlmManager:
         - ``master_key_health_status`` (int) or ``master_key_health_error``
           (str): probe of ``/health`` with the configured LiteLLM master
           key. A 200 means the master key still authenticates against
-          LiteLLM; a 401 is the smoking gun for master-key drift across
-          an upgrade (H5 in CS-35).
+          LiteLLM; a 401 means the master key configured on this
+          app-server no longer matches the one LiteLLM is running with
+          (typically drift across an upgrade).
         """
         out: dict[str, Any] = {}
         if not LITE_LLM_API_URL:

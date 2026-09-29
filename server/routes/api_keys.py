@@ -181,10 +181,9 @@ class ManagedLlmApiKeyRefreshResponse(BaseModel):
     # Populated only when the freshly-minted key fails ``verify_key``. Absent
     # on the happy path (verify succeeds) so a green response stays a boolean.
     # On failure carries the ``LiteLlmManager.diagnose_state`` output plus a
-    # ``new_key_verifies=false`` marker, so a curl caller sees the smoking gun
-    # in the response body without needing to grep logs. Distinguishes
-    # app-server-side bugs from LiteLLM-side systemic failures (master-key
-    # drift, LiteLLM down, DB unreachable) — see CS-35 hypotheses H4/H5/H6.
+    # ``new_key_verifies=false`` marker, so a curl caller sees in the response
+    # body — without needing to grep logs — whether the failure is app-server-
+    # side or LiteLLM-side (master-key drift, LiteLLM down, DB unreachable).
     diagnostics: dict[str, Any] | None = None
 
 
@@ -512,8 +511,7 @@ async def refresh_managed_llm_api_key(
         # failure (master-key drift, DB unreachable, schema mismatch) in
         # the act. Emit the diagnostic in the response body so a curl caller
         # sees it, and as a structured log line so support-bundle triage
-        # picks it up without needing to correlate a user report. See CS-35
-        # hypotheses H4/H5/H6.
+        # picks it up without needing to correlate a user report.
         diagnostics: dict[str, Any] | None = None
         if rotation.new_key is not None:
             new_key_verifies = await LiteLlmManager.verify_key(

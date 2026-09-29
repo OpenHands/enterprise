@@ -4418,13 +4418,13 @@ class TestDiagnoseState:
         monkeypatch.setattr(httpx.AsyncClient, '__init__', _init)
 
     @pytest.mark.asyncio
-    async def test_all_green_when_livelinees_readiness_and_master_key_all_200(
+    async def test_all_green_when_liveliness_readiness_and_master_key_all_200(
         self, monkeypatch
     ):
         """Happy path: LiteLLM is up, DB reachable, master key still works.
         If this is what diagnose_state reports while ``verify_key`` still
-        fails, the fault is in the verify path or key metadata (H3/H6) —
-        NOT LiteLLM-side (H4/H5).
+        fails, the fault is in the app-server verify path or in the key
+        metadata — not in LiteLLM itself.
         """
         seen_paths = []
 
@@ -4451,12 +4451,14 @@ class TestDiagnoseState:
         ]
 
     @pytest.mark.asyncio
-    async def test_master_key_401_is_the_smoking_gun_for_h5(self, monkeypatch):
-        """Master-key drift: unauth probes green, master-key probe 401. This
-        is the exact H5 signature we want the endpoint to expose to a curl
-        caller. If we see this in a Philipp-style bundle, the master key
-        env var no longer matches what LiteLLM was signed with — no amount
-        of app-server rotation will fix it.
+    async def test_master_key_401_with_healthy_unauth_probes_indicates_drift(
+        self, monkeypatch
+    ):
+        """Master-key drift signature: unauth probes green, master-key probe
+        401. When we see this in a support bundle, the master key configured
+        on the app-server no longer matches what LiteLLM is running with —
+        no amount of app-server rotation will fix it until they are
+        reconciled.
         """
 
         def handler(request):

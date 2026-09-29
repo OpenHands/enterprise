@@ -1114,9 +1114,9 @@ class TestRefreshManagedLlmApiKey:
         assert result.diagnostics is not None
         assert result.diagnostics['new_key_verifies'] is False
         health = result.diagnostics['litellm_health']
-        # The _patched_route default stub simulates a master-key drift (H5):
+        # The _patched_route default stub simulates a master-key drift:
         # both unauth probes green, master-key probe 401. That is exactly
-        # the shape we want a real Philipp-style bundle to expose.
+        # the shape we want a real customer support bundle to expose.
         assert health['liveliness_status'] == 200
         assert health['readiness_status'] == 200
         assert health['master_key_health_status'] == 401
