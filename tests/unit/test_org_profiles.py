@@ -1346,3 +1346,83 @@ class TestSwitchBackClearsStaleOrgLevelKey:
         assert effective is not None
         assert effective.get_secret_value() == 'fresh-managed-key'
         assert effective.get_secret_value() != 'dummymodel'
+
+
+class TestActivateLinkedProviderConnectionIsByok:
+    """A profile linked to a provider connection is BYOR by construction: the
+    connection always carries a real, user-supplied key. The managed-key
+    classifier (which keys off ``base_url == LITE_LLM_API_URL``) must not run on
+    a connection-resolved config — otherwise the connection's key is silently
+    swapped for a deployment-managed key on SaaS while the raw key is sent to a
+    proxy on self-hosted (#559)."""
+
+    @pytest.mark.asyncio
+    async def test_linked_profile_uses_connection_key_not_managed(
+        self, async_session_maker, patch_route_db
+    ):
+        from server.constants import LITE_LLM_API_URL
+        from server.routes.org_provider_connections import (
+            ProviderConnectionCreateRequest,
+            create_provider_connection,
+        )
+
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        async def _fake_get_org(org_id, user_id):  # noqa: ARG001
+            async with async_session_maker() as session:
+                result = await session.execute(select(Org).where(Org.id == org_id))
+                return result.scalars().first()
+
+        # ``patch_route_db`` wires the profiles router; also point the
+        # provider-connections router's session + org lookup at the test db so
+        # ``create_provider_connection`` persists against the same org row.
+        with (
+            patch(
+                'server.routes.org_provider_connections.a_session_maker',
+                async_session_maker,
+            ),
+            patch(
+                'server.routes.org_provider_connections.OrgService.get_org_by_id',
+                side_effect=_fake_get_org,
+            ),
+        ):
+            # A connection whose base_url is the managed proxy URL. With the
+            # bug, activating a linked profile classified this as "managed" and
+            # ignored the connection's real key in favor of a deployment-managed
+            # key.
+            created = await create_provider_connection(
+                org_id=org_id,
+                request=ProviderConnectionCreateRequest(
+                    display_name='Shared proxy',
+                    api_key='sk-connection-real-key',
+                    base_url=LITE_LLM_API_URL,
+                ),
+                user_id=user_id,
+            )
+
+            await save_profile(
+                org_id=org_id,
+                name='linked',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='anthropic/claude-3-5-sonnet',
+                        provider_connection_id=created.id,
+                    ),
+                ),
+                user_id=user_id,
+            )
+
+            await activate_profile(org_id=org_id, name='linked', user_id=user_id)
+
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is True, (
+            'a linked provider connection is BYOR — its key must be used, not a '
+            'managed key (#559)'
+        )
+        assert member.llm_api_key.get_secret_value() == 'sk-connection-real-key'
+
+        org = await _read_org(async_session_maker, org_id)
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'sk-connection-real-key'
