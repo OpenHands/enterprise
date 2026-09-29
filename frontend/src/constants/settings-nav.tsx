@@ -104,6 +104,15 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "personal",
   },
   {
+    // The Agent Profiles library lives in agent-canvas, which unlists it when
+    // deployed next to this app and leaves the entry to this shell.
+    icon: <RobotIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/canvas/settings/agents",
+    text: "SETTINGS$NAV_AGENT_PROFILES",
+    subtitle: "SETTINGS$PAGE_AGENT_PROFILES_SUBLINE",
+    section: "personal",
+  },
+  {
     icon: <CircuitIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings",
     text: "COMMON$LANGUAGE_MODEL_LLM",
