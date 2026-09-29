@@ -56,38 +56,38 @@ def test_is_interactive_login_model():
     assert not guard.is_interactive_login_model('')
 
 
-def test_guard_blocks_chatgpt_device_login(installed_guard):
+def test_guard_blocks_chatgpt_device_login(installed_guard, monkeypatch):
     from litellm.llms.chatgpt.authenticator import Authenticator
 
     def _fail(self):  # pragma: no cover - must never run
         raise AssertionError('interactive device login was triggered')
 
     # If the guard did NOT neutralize get_access_token, this would be reached.
-    Authenticator._login_device_code = _fail  # type: ignore[method-assign]
+    monkeypatch.setattr(Authenticator, '_login_device_code', _fail)
 
     _model, provider, _key, _base = litellm.get_llm_provider('chatgpt/gpt-5-codex')
     assert provider == 'chatgpt'
 
 
-def test_guard_blocks_github_copilot_device_login(installed_guard):
+def test_guard_blocks_github_copilot_device_login(installed_guard, monkeypatch):
     from litellm.llms.github_copilot.authenticator import Authenticator
 
     def _fail(self, *args, **kwargs):  # pragma: no cover - must never run
         raise AssertionError('interactive device login was triggered')
 
-    Authenticator._login = _fail  # type: ignore[method-assign]
+    monkeypatch.setattr(Authenticator, '_login', _fail)
 
     _model, provider, _key, _base = litellm.get_llm_provider('github_copilot/gpt-4o')
     assert provider == 'github_copilot'
 
 
-def test_guard_covers_get_api_base(installed_guard):
+def test_guard_covers_get_api_base(installed_guard, monkeypatch):
     from litellm.llms.chatgpt.authenticator import Authenticator
 
     def _fail(self):  # pragma: no cover - must never run
         raise AssertionError('interactive device login was triggered')
 
-    Authenticator._login_device_code = _fail  # type: ignore[method-assign]
+    monkeypatch.setattr(Authenticator, '_login_device_code', _fail)
 
     # get_api_base() internally resolves the provider; it must not block either.
     litellm.get_api_base(model='chatgpt/gpt-5-codex', optional_params={})
