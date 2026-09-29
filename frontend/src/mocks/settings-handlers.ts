@@ -89,21 +89,6 @@ const MOCK_AGENT_SETTINGS_SCHEMA: NonNullable<
       label: "General",
       fields: [
         {
-          key: "enable_sub_agents",
-          label: "Enable sub-agents",
-          description:
-            "Allow the agent to delegate work to specialized built-in sub-agents.",
-          section: "general",
-          section_label: "General",
-          value_type: "boolean",
-          default: false,
-          choices: [],
-          depends_on: [],
-          prominence: "major",
-          secret: false,
-          required: false,
-        },
-        {
           key: "tool_concurrency_limit",
           label: "Parallel tool calls",
           description:
@@ -438,7 +423,6 @@ export const MOCK_DEFAULT_USER_SETTINGS: Settings = {
       api_key: null,
       model: DEFAULT_MODEL,
     },
-    enable_sub_agents: false,
     tool_concurrency_limit: 1,
     mcp_config: MOCK_MCP_CONFIG,
   },

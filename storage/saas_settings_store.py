@@ -34,7 +34,6 @@ from server.verified_models.default_profile import (
 )
 from storage.agent_profile_resolution import (
     OrgLLMProfileLoader,
-    cloud_resolve_kwargs,
     load_agent_profiles,
     load_llm_profiles,
 )
@@ -308,7 +307,7 @@ class SaasSettingsStore(SettingsStore):
                 mcp_config=mcp_config,
                 available_skills=None,
                 cipher=None,
-                **cloud_resolve_kwargs(resolve_agent_profile),
+                browser_available=True,
             )
 
             # Apply the cloud managed-key / base-url overlay to the resolved LLM

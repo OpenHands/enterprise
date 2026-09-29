@@ -143,19 +143,6 @@ class TestAgentProfilesContainer:
         assert store.list_summaries() == []
 
 
-def test_cloud_resolve_kwargs_follow_the_given_resolver():
-    from storage.agent_profile_resolution import cloud_resolve_kwargs
-
-    def with_browser(profile, *, browser_available=False):
-        return None
-
-    def without_browser(profile):
-        return None
-
-    assert cloud_resolve_kwargs(with_browser) == {'browser_available': True}
-    assert cloud_resolve_kwargs(without_browser) == {}
-
-
 def test_load_agent_profiles_defaults_empty_and_degrades():
     org = MagicMock(spec=Org)
     org.id = ORG_ID
@@ -401,58 +388,6 @@ class TestDeleteClearsAllMemberPointers:
         assert other_member.active_agent_profile_id is None, (
             "other member's pointer must be cleared too"
         )
-
-
-class TestSaveAppliesLegacyToolSwitches:
-    @pytest.mark.asyncio
-    async def test_save_folds_switches_against_the_stored_profile(
-        self, patch_agent_routes, monkeypatch
-    ):
-        import openhands.sdk.profiles as sdk_profiles
-
-        org_id = patch_agent_routes
-        uid = str(USER_ID)
-        await save_agent_profile(
-            name='reviewer',
-            body={
-                'llm_profile_ref': 'Default',
-                'tools': [{'name': 'terminal'}, {'name': 'switch_llm'}],
-            },
-            effective_org_id=org_id,
-            user_id=uid,
-        )
-
-        seen: list[Any] = []
-
-        def apply_tool_switch_request(payload, stored=None):
-            seen.append(stored)
-            body = dict(payload)
-            if body.pop('enable_switch_llm_tool', True) is False:
-                body['tools'] = [t for t in body['tools'] if t['name'] != 'switch_llm']
-            return body
-
-        monkeypatch.setattr(
-            sdk_profiles,
-            'apply_tool_switch_request',
-            apply_tool_switch_request,
-            raising=False,
-        )
-        await save_agent_profile(
-            name='reviewer',
-            body={
-                'llm_profile_ref': 'Default',
-                'tools': [{'name': 'terminal'}, {'name': 'switch_llm'}],
-                'enable_switch_llm_tool': False,
-            },
-            effective_org_id=org_id,
-            user_id=uid,
-        )
-
-        assert [t.name for t in seen[0].tools] == ['terminal', 'switch_llm']
-        detail = await get_agent_profile(
-            name='reviewer', effective_org_id=org_id, user_id=uid
-        )
-        assert [t.name for t in detail.profile.tools] == ['terminal']
 
 
 class TestAgentProfileRouterErrors:
@@ -1093,15 +1028,15 @@ class TestPersistedVsResolvedSettingsView:
             settings = await store.load()
             assert settings is not None
             settings.agent_settings = settings.agent_settings.model_copy(
-                update={'enable_sub_agents': True}
+                update={'tool_concurrency_limit': 4}
             )
             await store.store(settings)
 
         member = await _read_member(async_session_maker, org_id, USER_ID)
-        assert member.agent_settings_diff.get('enable_sub_agents') is True
+        assert member.agent_settings_diff.get('tool_concurrency_limit') == 4
 
         org = await _read_org_raw(async_session_maker, org_id)
-        assert (org.agent_settings or {}).get('enable_sub_agents') is not True
+        assert (org.agent_settings or {}).get('tool_concurrency_limit') != 4
 
     @pytest.mark.asyncio
     async def test_resolved_load_is_launch_view_and_store_refuses_it(

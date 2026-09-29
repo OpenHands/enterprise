@@ -14,7 +14,7 @@ import { useAgentSettingsSchema } from "#/hooks/query/use-agent-settings-schema"
 import { useConfig } from "#/hooks/query/use-config";
 import { useSettings } from "#/hooks/query/use-settings";
 import { I18nKey } from "#/i18n/declaration";
-import { SettingsFieldSchema, SettingsValue } from "#/types/settings";
+import { SettingsValue } from "#/types/settings";
 import { Typography } from "#/ui/typography";
 import {
   displayErrorToast,
@@ -22,10 +22,6 @@ import {
 } from "#/utils/custom-toast-handlers";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
-import {
-  resolveSchemaFieldDescription,
-  resolveSchemaFieldLabel,
-} from "#/utils/sdk-settings-field-metadata";
 import {
   coerceFieldValue,
   getAgentSettingValue,
@@ -40,25 +36,10 @@ import {
 import { cn } from "#/utils/utils";
 import type { ACPProviderConfig } from "#/api/option-service/option.types";
 
-const ENABLE_SUB_AGENTS_FIELD_KEY = "enable_sub_agents";
 const TOOL_CONCURRENCY_FIELD_KEY = "tool_concurrency_limit";
 const CUSTOM_PRESET = "custom";
 const CUSTOM_MODEL_KEY = "__custom__";
 const EMPTY_ACP_PROVIDERS: ACPProviderConfig[] = [];
-
-function findEnableSubAgentsField(
-  fields: SettingsFieldSchema[] | undefined,
-): SettingsFieldSchema | undefined {
-  return fields?.find((field) => field.key === ENABLE_SUB_AGENTS_FIELD_KEY);
-}
-
-function getEnableSubAgentsValue(
-  settingsValue: unknown,
-  field: SettingsFieldSchema | undefined,
-) {
-  if (typeof settingsValue === "boolean") return settingsValue;
-  return field?.default === true;
-}
 
 function toStringArray(value: unknown): string[] {
   return Array.isArray(value)
@@ -102,26 +83,10 @@ export default function AgentSettingsScreen() {
   const isAcpEnabled = !!config?.feature_flags?.enable_acp;
   const acpProviders = config?.acp_providers ?? EMPTY_ACP_PROVIDERS;
 
-  // ── Sub-agents (OpenHands mode) ──────────────────────────────────────────
   const fields = useMemo(
     () => schema?.sections.flatMap((section) => section.fields),
     [schema],
   );
-  const subAgentsField = findEnableSubAgentsField(fields);
-  const initialSubAgentsEnabled = useMemo(
-    () =>
-      getEnableSubAgentsValue(
-        settings?.agent_settings?.[ENABLE_SUB_AGENTS_FIELD_KEY],
-        subAgentsField,
-      ),
-    [subAgentsField, settings?.agent_settings],
-  );
-  const [isSubAgentsEnabled, setIsSubAgentsEnabled] = useState(
-    initialSubAgentsEnabled,
-  );
-  useEffect(() => {
-    setIsSubAgentsEnabled(initialSubAgentsEnabled);
-  }, [initialSubAgentsEnabled]);
 
   // ── Parallel tool calls (OpenHands mode) ─────────────────────────────────
   // Surfaced only when the backend schema exposes the field, so older
@@ -220,12 +185,10 @@ export default function AgentSettingsScreen() {
     selectedProvider,
   );
 
-  const subAgentsDirty = isSubAgentsEnabled !== initialSubAgentsEnabled;
   const toolConcurrencyDirty = toolConcurrency !== initialToolConcurrency;
   const memoryDirty = isMemoryEnabled !== initialMemoryEnabled;
   const settingsDirty =
-    isDirty ||
-    (!isAcp && (subAgentsDirty || toolConcurrencyDirty || memoryDirty));
+    isDirty || (!isAcp && (toolConcurrencyDirty || memoryDirty));
   const credentialsDirty = isAcp && credentialForm.isDirty;
   const canSave = settingsDirty || credentialsDirty;
   const isSavingAny = isPending || credentialForm.isSaving;
@@ -259,8 +222,7 @@ export default function AgentSettingsScreen() {
       // Agent-kind flip: backend resets to defaults, send kind alone.
       agentSettingsDiff = { agent_kind: "openhands" };
     } else {
-      // Sub-agents toggle and/or parallel tool calls.
-      agentSettingsDiff = { enable_sub_agents: isSubAgentsEnabled };
+      agentSettingsDiff = {};
 
       if (toolConcurrencyField) {
         let coerced: SettingsValue;
@@ -339,49 +301,6 @@ export default function AgentSettingsScreen() {
                 setIsDirty(true);
               }}
             />
-          </section>
-        )}
-
-        {/* OpenHands: sub-agents toggle */}
-        {!isAcp && (
-          <section className="grid gap-4 xl:grid-cols-2">
-            {subAgentsField ? (
-              <div className={formControlSwitchFieldClassName}>
-                <SettingsSwitch
-                  testId="agent-settings-enable-sub-agents"
-                  isToggled={isSubAgentsEnabled}
-                  onToggle={setIsSubAgentsEnabled}
-                >
-                  {resolveSchemaFieldLabel(
-                    t,
-                    subAgentsField.key,
-                    subAgentsField.label,
-                  )}
-                </SettingsSwitch>
-                {resolveSchemaFieldDescription(
-                  t,
-                  subAgentsField.key,
-                  subAgentsField.description,
-                ) ? (
-                  <Typography.Paragraph
-                    className={cn(
-                      formControlSwitchDescriptionClassName,
-                      "text-tertiary-alt text-xs leading-5",
-                    )}
-                  >
-                    {resolveSchemaFieldDescription(
-                      t,
-                      subAgentsField.key,
-                      subAgentsField.description,
-                    )}
-                  </Typography.Paragraph>
-                ) : null}
-              </div>
-            ) : (
-              <Typography.Paragraph className="text-tertiary-alt">
-                {t(I18nKey.SETTINGS$SDK_SCHEMA_UNAVAILABLE)}
-              </Typography.Paragraph>
-            )}
           </section>
         )}
 

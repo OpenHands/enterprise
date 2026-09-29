@@ -120,7 +120,8 @@ def test_get_agent_settings_schema_includes_critic_verification_fields(test_clie
     section_keys = [s['key'] for s in schema['sections']]
     general_section = next(s for s in schema['sections'] if s['key'] == 'general')
     general_field_keys = [f['key'] for f in general_section['fields']]
-    assert 'enable_sub_agents' in general_field_keys
+    assert 'enable_sub_agents' not in general_field_keys
+    assert 'enable_switch_llm_tool' not in general_field_keys
     assert 'verification' in section_keys
     section = next(s for s in schema['sections'] if s['key'] == 'verification')
     field_keys = [f['key'] for f in section['fields']]

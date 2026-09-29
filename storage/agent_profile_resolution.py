@@ -12,9 +12,7 @@ Used by the ``/api/agent-profiles`` router, the LLM-profile FK guard in
 
 from __future__ import annotations
 
-import inspect
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
@@ -29,14 +27,6 @@ if TYPE_CHECKING:
     from openhands.sdk.utils.cipher import Cipher
     from storage.org import Org
     from storage.org_member import OrgMember
-
-
-def cloud_resolve_kwargs(resolver: Callable[..., Any]) -> dict[str, Any]:
-    """Kwargs for ``resolver`` on cloud sandboxes, which always ship a browser."""
-    # SDK releases before the tool catalog take no ``browser_available``.
-    if 'browser_available' in inspect.signature(resolver).parameters:
-        return {'browser_available': True}
-    return {}
 
 
 def load_agent_profiles(org: Org) -> AgentProfiles:

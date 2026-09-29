@@ -1862,7 +1862,6 @@ class TestLiveStatusAppConversationService:
         self.mock_user.agent_settings = OpenHandsAgentSettings(
             llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
             tools=[Tool(name='glob'), Tool(name='grep')],
-            enable_switch_llm_tool=False,
         )
         self.mock_user.active_agent_profile_id = 'profile-1'
         self.mock_user_context.get_user_info.return_value = self.mock_user
@@ -1905,7 +1904,6 @@ class TestLiveStatusAppConversationService:
         self.mock_user.agent_settings = OpenHandsAgentSettings(
             llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
             tools=[Tool(name='terminal'), Tool(name='task_tool_set')],
-            enable_sub_agents=False,
         )
         self.mock_user.active_agent_profile_id = 'profile-1'
         self.mock_user_context.get_user_info.return_value = self.mock_user
@@ -2730,10 +2728,11 @@ class TestLiveStatusAppConversationService:
             from_profile=False,
         )
 
-        mock_tools.assert_called_once_with(enable_browser=True, enable_sub_agents=False)
+        mock_tools.assert_called_once_with(enable_browser=True)
         tool_names = [t.name for t in result.agent.tools]
         assert 'terminal' in tool_names
         assert 'browser_tool_set' in tool_names
+        assert 'SwitchLLMTool' in result.agent.include_default_tools
 
     @pytest.mark.asyncio
     async def test_build_request_keeps_switch_llm_off_when_deselected(self):
@@ -2746,7 +2745,6 @@ class TestLiveStatusAppConversationService:
             OpenHandsAgentSettings(
                 llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
                 tools=[Tool(name='terminal')],
-                enable_switch_llm_tool=False,
             )
         )
 
@@ -2755,45 +2753,25 @@ class TestLiveStatusAppConversationService:
         )
         assert not names & {'switch_llm', 'SwitchLLMTool'}
 
-    @pytest.mark.asyncio
-    async def test_build_request_offers_switch_llm_once(self):
-        profiles = LLMProfiles()
-        profiles.save('One', LLM(model='openai/gpt-4o'))
-        profiles.save('Two', LLM(model='anthropic/claude-haiku-3-5'))
-        self.mock_user.llm_profiles = profiles
-
-        result = await self._build_request_with_agent_settings(
-            OpenHandsAgentSettings(
-                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
-                tools=[Tool(name='terminal')],
-            )
-        )
-
-        names = [t.name for t in result.agent.tools] + list(
-            result.agent.include_default_tools
-        )
-        assert len([n for n in names if n in {'switch_llm', 'SwitchLLMTool'}]) == 1
-
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[Tool(name='terminal'), Tool(name='task_tool_set')],
+        return_value=[Tool(name='terminal')],
     )
     @pytest.mark.asyncio
-    async def test_build_request_without_a_profile_keeps_the_sub_agents_switch(
+    async def test_build_request_without_a_profile_ignores_settings_tools(
         self, mock_tools
     ):
         result = await self._build_request_with_agent_settings(
             OpenHandsAgentSettings(
                 llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
-                tools=[Tool(name='terminal'), Tool(name='file_editor')],
-                enable_sub_agents=True,
+                tools=[Tool(name='terminal'), Tool(name='task_tool_set')],
             ),
             from_profile=False,
         )
 
-        mock_tools.assert_called_once_with(enable_browser=True, enable_sub_agents=True)
-        assert 'task_tool_set' in [t.name for t in result.agent.tools]
-        assert result.agent_definitions
+        mock_tools.assert_called_once_with(enable_browser=True)
+        assert 'task_tool_set' not in [t.name for t in result.agent.tools]
+        assert result.agent_definitions == []
 
     @pytest.mark.asyncio
     async def test_plan_launch_keeps_a_profiles_switch_llm(self):
@@ -2801,7 +2779,6 @@ class TestLiveStatusAppConversationService:
             OpenHandsAgentSettings(
                 llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
                 tools=[Tool(name='terminal'), Tool(name='switch_llm')],
-                enable_switch_llm_tool=False,
             ),
             agent_type=AgentType.PLAN,
         )
@@ -2867,7 +2844,6 @@ class TestLiveStatusAppConversationService:
             OpenHandsAgentSettings(
                 llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
                 tools=[Tool(name='terminal'), task_tool_set],
-                enable_switch_llm_tool=False,
             )
         )
 
@@ -2882,70 +2858,17 @@ class TestLiveStatusAppConversationService:
     )
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[Tool(name='task_tool_set')],
-    )
-    @pytest.mark.asyncio
-    async def test_build_request_passes_enable_sub_agents_true(
-        self, mock_tools, mock_register_builtins, mock_get_agent_definitions
-    ):
-        """Built-in sub-agents are registered when the user setting is on."""
-        from openhands.sdk.settings import OpenHandsAgentSettings
-        from openhands.sdk.subagent.schema import AgentDefinition
-
-        agent_definition = AgentDefinition(
-            name='general-purpose',
-            description='General-purpose subagent',
-            tools=['terminal'],
-        )
-        mock_get_agent_definitions.return_value = [agent_definition]
-
-        agent_settings = OpenHandsAgentSettings(
-            llm={'model': 'gpt-4', 'api_key': 'test-key'},
-            enable_sub_agents=True,
-        )
-        self.mock_user.agent_settings = agent_settings
-        self.mock_user_context.get_user_info.return_value = self.mock_user
-
-        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
-        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
-        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
-
-        result = await self.service._build_start_conversation_request_for_user(
-            user=self.mock_user,
-            sandbox=self.mock_sandbox,
-            conversation_id=uuid4(),
-            initial_message=None,
-            system_message_suffix=None,
-            git_provider=None,
-            working_dir='/test/dir',
-            remote_workspace=None,
-        )
-
-        mock_register_builtins.assert_called_once_with(enable_browser=True)
-        mock_get_agent_definitions.assert_called_once_with()
-        mock_tools.assert_called_once_with(enable_browser=True, enable_sub_agents=True)
-        assert result.agent_definitions == [agent_definition]
-
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
-    )
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.register_builtins_agents'
-    )
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
         return_value=[],
     )
     @pytest.mark.asyncio
-    async def test_build_request_passes_enable_sub_agents_false(
+    async def test_build_request_without_a_profile_forwards_no_sub_agents(
         self, mock_tools, mock_register_builtins, mock_get_agent_definitions
     ):
-        """Built-in sub-agents are registered but not forwarded when disabled."""
+        """Built-in sub-agents are registered but not forwarded without a profile."""
         from openhands.sdk.settings import OpenHandsAgentSettings
 
         agent_settings = OpenHandsAgentSettings(
             llm={'model': 'gpt-4', 'api_key': 'test-key'},
-            enable_sub_agents=False,
         )
         self.mock_user.agent_settings = agent_settings
         self.mock_user_context.get_user_info.return_value = self.mock_user
@@ -2967,7 +2890,7 @@ class TestLiveStatusAppConversationService:
 
         mock_register_builtins.assert_called_once_with(enable_browser=True)
         mock_get_agent_definitions.assert_not_called()
-        mock_tools.assert_called_once_with(enable_browser=True, enable_sub_agents=False)
+        mock_tools.assert_called_once_with(enable_browser=True)
         assert result.agent_definitions == []
 
     @patch(
