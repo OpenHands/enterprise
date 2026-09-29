@@ -363,10 +363,17 @@ function getPostHogHandoff(): PostHogHandoff | undefined {
 }
 
 function registerWebsiteAttribution(
-  posthog: { register: (properties: WebsiteHandoffAttribution) => void },
+  posthog: {
+    register: (properties: WebsiteHandoffAttribution) => void;
+    register_for_session?: (properties: WebsiteHandoffAttribution) => void;
+  },
   attribution?: WebsiteHandoffAttribution,
 ): void {
   if (!attribution || Object.keys(attribution).length === 0) return;
+  if (posthog.register_for_session) {
+    posthog.register_for_session(attribution);
+    return;
+  }
   posthog.register(attribution);
 }
 

@@ -237,8 +237,9 @@ describe("PostHogWrapper", () => {
     );
 
     const register = vi.fn();
-    props.options.loaded({ register });
-    expect(register).toHaveBeenCalledWith({
+    const register_for_session = vi.fn();
+    props.options.loaded({ register, register_for_session });
+    expect(register_for_session).toHaveBeenCalledWith({
       utm_source: "newsletter",
       utm_medium: "email",
       utm_campaign: "launch",
@@ -247,6 +248,7 @@ describe("PostHogWrapper", () => {
       cta_surface: "homepage_hero",
       referring_domain_category: "search",
     });
+    expect(register).not.toHaveBeenCalled();
     expect(
       JSON.parse(sessionStorage.getItem("posthog_bootstrap") ?? "{}"),
     ).toMatchObject({
