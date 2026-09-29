@@ -54,5 +54,6 @@ def test_p9_blocking_job(stack, record):
             'seconds_observed': round(time.monotonic() - started),
         },
     )
+    # Any second start is a re-run of the same occurrence, concurrent or not.
+    assert len(rows) == 1, f'occurrence started {len(rows)} times: {rows}'
     assert int(overlap) == 0, f'job re-run while still running: {rows}'
-    assert len(finished) <= 1, f'job completed more than once: {rows}'
