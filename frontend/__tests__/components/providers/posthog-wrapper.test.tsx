@@ -356,6 +356,35 @@ describe("PostHogWrapper", () => {
     expect(window.location.hash).toBe("#section=top");
   });
 
+  it.each(["#pricing", "#/settings/app"])(
+    "should preserve raw hash %s when removing a query handoff",
+    async (hash) => {
+      const encoded = encodeHandoff({
+        v: 1,
+        exp: Date.now() + 60_000,
+        nonce: `enterprise-query-${hash}`,
+        distinct_id: "docs-anon-id",
+        session_id: "docs-session-id",
+      });
+      window.history.replaceState(
+        null,
+        "",
+        `/?keep=1&oh_ph_handoff=${encoded}${hash}`,
+      );
+
+      render(
+        <PostHogWrapper>
+          <div data-testid="child" />
+        </PostHogWrapper>,
+      );
+
+      await screen.findByTestId("child");
+
+      expect(window.location.search).toBe("?keep=1");
+      expect(window.location.hash).toBe(hash);
+    },
+  );
+
   it("should initialize PostHog with health monitoring config (web vitals, error tracking, network timing)", async () => {
     render(
       <PostHogWrapper>

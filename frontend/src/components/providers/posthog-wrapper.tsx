@@ -215,6 +215,11 @@ function removeHandoffFromUrl(
   searchParams: URLSearchParams,
   hashParams: URLSearchParams,
 ): void {
+  const hashHadHandoffParams =
+    hashParams.has(POSTHOG_HANDOFF_PARAM) ||
+    hashParams.has("distinct_id") ||
+    hashParams.has("session_id");
+
   for (const params of [searchParams, hashParams]) {
     params.delete(POSTHOG_HANDOFF_PARAM);
     params.delete("distinct_id");
@@ -223,10 +228,14 @@ function removeHandoffFromUrl(
 
   const nextSearch = searchParams.toString();
   const nextHash = hashParams.toString();
+  let nextHashFragment = window.location.hash;
+  if (hashHadHandoffParams) {
+    nextHashFragment = nextHash ? `#${nextHash}` : "";
+  }
   window.history.replaceState(
     null,
     "",
-    `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${nextHash ? `#${nextHash}` : ""}`,
+    `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${nextHashFragment}`,
   );
 }
 
