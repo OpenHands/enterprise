@@ -139,3 +139,14 @@ TCP (9ec42e2d2), and the candidate's temporary override is removed.
 | P7 `rollout restart`, 60 s grace | `drained` | `drained` |
 
 **The default executor ID re-runs in-flight workflows on every rollout.** In the 60 s rollout, the old pod was still running the workflow and finished it, while both new pods logged `Recovering 1 workflows` within a second of starting. Every replica shares the executor ID `"local"`, so a starting pod recovers every PENDING `local` workflow, including those a live pod is still executing. The stub's final step is idempotent, so the results table shows no double completion. A non-idempotent step would run twice concurrently. Without Conductor, the choice is between the shared ID (recovers dead pods' work, duplicates live pods' work on rollout) and per-pod IDs (no duplication, loses a replaced pod's work).
+
+### P5 — StatefulSet with per-pod executor IDs (`TQ_K8S_KIND=StatefulSet`, `POC_DBOS_EXECUTOR=hostname`)
+
+| Check | Result |
+|---|---|
+| P1 once per occurrence | Pass (12, no doubles, none missed) |
+| P3 `app-0` force-deleted | `resumed`: the returning `app-0` logged `Recovering 1 workflows`, re-enqueued it, and `app-1` finished it |
+| P7 rollout, 10 s grace | `resumed` by the returning `app-1` |
+| P7 rollout, 60 s grace | `drained` by the old `app-0` |
+
+Only the pod returning under the same name recovered anything; every other start logged `No workflows to recover`. Stable pod names give DBOS both properties without Conductor: no duplication (the IDs are unique) and no loss (a replaced pod returns with its ID). The cost is the StatefulSet's rollout semantics: pods update one at a time with no surge, a pod that never becomes Ready blocks the rollout, and scaling down strands the removed ordinal's workflows. On Compose the equivalent is one named service per worker with a fixed executor ID.

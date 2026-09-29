@@ -1,0 +1,85 @@
+{
+  "P5-P1": {
+    "doubles": [],
+    "extra_env": {
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-28T23:51:41Z",
+    "workload_kind": "StatefulSet"
+  },
+  "P5-P3-force-deleted": {
+    "extra_env": {
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "next_occurrence_ran": true,
+    "outcome": "resumed",
+    "pods_after": [
+      "app-0",
+      "app-1"
+    ],
+    "recorded_at": "2026-09-28T23:54:33Z",
+    "runs_for_occurrence": [
+      [
+        "1",
+        "app-0",
+        "app-1",
+        "t"
+      ]
+    ],
+    "seconds_observed": 88,
+    "victim": "app-0",
+    "workload_kind": "StatefulSet"
+  },
+  "P5-P7-rollout-grace-10s": {
+    "doubles_any_occurrence": [],
+    "extra_env": {
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "grace_seconds": 10,
+    "next_occurrence_ran": true,
+    "outcome": "resumed",
+    "pods_after": [
+      "app-0",
+      "app-1"
+    ],
+    "recorded_at": "2026-09-28T23:57:31Z",
+    "rollout_seconds": 29.2,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "app-1",
+        "app-1",
+        "t"
+      ]
+    ],
+    "victim": "app-1",
+    "workload_kind": "StatefulSet"
+  },
+  "P5-P7-rollout-grace-60s": {
+    "doubles_any_occurrence": [],
+    "extra_env": {
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "grace_seconds": 60,
+    "next_occurrence_ran": true,
+    "outcome": "drained",
+    "pods_after": [
+      "app-0",
+      "app-1"
+    ],
+    "recorded_at": "2026-09-29T00:00:35Z",
+    "rollout_seconds": 29.3,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "app-0",
+        "app-0",
+        "f"
+      ]
+    ],
+    "victim": "app-0",
+    "workload_kind": "StatefulSet"
+  }
+}
