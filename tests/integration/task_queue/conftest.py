@@ -68,11 +68,14 @@ class Stack:
         return [line.split('\t') for line in out.splitlines() if line]
 
     def wait_for(self, query: str, timeout: float, poll: float = 1) -> list[list[str]]:
-        """Poll until the query returns a row."""
+        """Poll until the query returns a row. Retries while Postgres is down (P10)."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if rows := self.sql(query):
-                return rows
+            try:
+                if rows := self.sql(query):
+                    return rows
+            except RuntimeError:
+                pass
             time.sleep(poll)
         raise TimeoutError(f'no rows after {timeout}s: {query}')
 
