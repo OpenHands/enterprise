@@ -37,9 +37,11 @@ config: DBOSConfig = {
 }
 if EXECUTOR == 'hostname':
     config['executor_id'] = socket.gethostname()
+# A key alone connects to DBOS's hosted Conductor; a URL too points at a self-hosted one.
+if os.environ.get('POC_DBOS_CONDUCTOR_KEY'):
+    config['conductor_key'] = os.environ['POC_DBOS_CONDUCTOR_KEY']
 if os.environ.get('POC_DBOS_CONDUCTOR_URL'):
     config['conductor_url'] = os.environ['POC_DBOS_CONDUCTOR_URL']
-    config['conductor_key'] = os.environ['POC_DBOS_CONDUCTOR_KEY']
 DBOS(config=config)
 
 

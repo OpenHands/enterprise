@@ -1,0 +1,93 @@
+{
+  "P5-P1": {
+    "doubles": [],
+    "extra_env": {
+      "POC_DBOS_CONDUCTOR_KEY": "<redacted>",
+      "POC_DBOS_CONDUCTOR_URL": "ws://relay.dbos-relay.svc.cluster.local:8090",
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-29T00:16:50Z",
+    "workload_kind": "Deployment"
+  },
+  "P5-P3-force-deleted": {
+    "extra_env": {
+      "POC_DBOS_CONDUCTOR_KEY": "<redacted>",
+      "POC_DBOS_CONDUCTOR_URL": "ws://relay.dbos-relay.svc.cluster.local:8090",
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "next_occurrence_ran": true,
+    "outcome": "resumed",
+    "pods_after": [
+      "app-6787766f6d-ntgjv",
+      "app-6787766f6d-nznp9"
+    ],
+    "recorded_at": "2026-09-29T00:19:40Z",
+    "runs_for_occurrence": [
+      [
+        "1",
+        "app-6787766f6d-m6nfq",
+        "app-6787766f6d-ntgjv",
+        "t"
+      ]
+    ],
+    "seconds_observed": 93,
+    "victim": "app-6787766f6d-m6nfq",
+    "workload_kind": "Deployment"
+  },
+  "P5-P7-rollout-grace-10s": {
+    "doubles_any_occurrence": [],
+    "extra_env": {
+      "POC_DBOS_CONDUCTOR_KEY": "<redacted>",
+      "POC_DBOS_CONDUCTOR_URL": "ws://relay.dbos-relay.svc.cluster.local:8090",
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "grace_seconds": 10,
+    "next_occurrence_ran": true,
+    "outcome": "resumed",
+    "pods_after": [
+      "app-8f5f688b6-6sbbg",
+      "app-8f5f688b6-sgq9v"
+    ],
+    "recorded_at": "2026-09-29T00:22:51Z",
+    "rollout_seconds": 15.1,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "app-655f7f9454-9nzh7",
+        "app-8f5f688b6-6sbbg",
+        "t"
+      ]
+    ],
+    "victim": "app-655f7f9454-9nzh7",
+    "workload_kind": "Deployment"
+  },
+  "P5-P7-rollout-grace-60s": {
+    "doubles_any_occurrence": [],
+    "extra_env": {
+      "POC_DBOS_CONDUCTOR_KEY": "<redacted>",
+      "POC_DBOS_CONDUCTOR_URL": "ws://relay.dbos-relay.svc.cluster.local:8090",
+      "POC_DBOS_EXECUTOR": "hostname"
+    },
+    "grace_seconds": 60,
+    "next_occurrence_ran": true,
+    "outcome": "drained",
+    "pods_after": [
+      "app-6c78c75c77-drrrt",
+      "app-6c78c75c77-g2jb7"
+    ],
+    "recorded_at": "2026-09-29T00:25:34Z",
+    "rollout_seconds": 26.2,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "app-7b86f89567-62rjr",
+        "app-7b86f89567-62rjr",
+        "f"
+      ]
+    ],
+    "victim": "app-7b86f89567-62rjr",
+    "workload_kind": "Deployment"
+  }
+}

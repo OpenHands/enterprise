@@ -150,3 +150,18 @@ TCP (9ec42e2d2), and the candidate's temporary override is removed.
 | P7 rollout, 60 s grace | `drained` by the old `app-0` |
 
 Only the pod returning under the same name recovered anything; every other start logged `No workflows to recover`. Stable pod names give DBOS both properties without Conductor: no duplication (the IDs are unique) and no loss (a replaced pod returns with its ID). The cost is the StatefulSet's rollout semantics: pods update one at a time with no surge, a pod that never becomes Ready blocks the rollout, and scaling down strands the removed ordinal's workflows. On Compose the equivalent is one named service per worker with a fixed executor ID.
+
+### P5 — Deployment with per-pod executor IDs, connected to dbos-relay v0.4.0
+
+[dbos-relay](https://github.com/abn/dbos-relay) is an open-source, MIT-licensed control plane implementing the Conductor protocol. It ran in its own namespace in embedded SQLite mode.
+
+| Check | Result (without a control plane, same setup) |
+|---|---|
+| P1 once per occurrence | Pass (12, no doubles, none missed) |
+| P3 pod force-deleted | `resumed` by the other pod (was `lost`) |
+| P7 rollout, 10 s grace | `resumed` by a new pod (was `lost`) |
+| P7 rollout, 60 s grace | `drained` |
+
+Relay's log shows the mechanism. It starts a 60 s disconnect timer, logs "executor grace period expired, marked dead", dispatches recovery to a live peer, and logs "recovery confirmed". The peer then logs `Recovering 1 workflows for executor <id>`. With a control plane attached, DBOS assigns each process a random executor ID, so identity no longer matters.
+
+Test-setup caveat: every test namespace shared one Relay, so some recoveries went to a peer in another namespace, which found nothing to recover. No result was affected; a real install runs one Relay per application.
