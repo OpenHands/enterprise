@@ -9,6 +9,27 @@
       "replica-b"
     ]
   },
+  "P10": {
+    "doubles_any_occurrence": [],
+    "next_occurrence_ran": false,
+    "occurrence_finished": true,
+    "outcome": "finished",
+    "recorded_at": "2026-09-29T01:24:26Z",
+    "restart_seconds": 0.5,
+    "runner": "replica-a",
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-a",
+        "replica-a"
+      ]
+    ],
+    "services_running_after": [
+      "postgres",
+      "replica-a",
+      "replica-b"
+    ]
+  },
   "P2": {
     "doubles": [],
     "measured_clock_offset_seconds": {

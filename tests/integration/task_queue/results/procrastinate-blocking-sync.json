@@ -1,0 +1,20 @@
+{
+  "P9": {
+    "completions_for_occurrence": 1,
+    "concurrent_second_starts": 0,
+    "first_runner": "replica-a",
+    "job_seconds": 100,
+    "recorded_at": "2026-09-29T01:24:02Z",
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-a",
+        "2026-09-29 01:21:21.516645+00",
+        "2026-09-29 01:23:01.553047+00",
+        "replica-a"
+      ]
+    ],
+    "seconds_observed": 155,
+    "starts_for_occurrence": 1
+  }
+}

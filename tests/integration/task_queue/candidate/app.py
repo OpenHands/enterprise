@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import procrastinate
 from fastapi import FastAPI
-from poc_job import DSN, INTERVAL, stub_job
+from poc_job import DSN, INTERVAL, run_stub, stub_job
 
 # Worker defaults: heartbeat every 10 s, a worker is stalled after 30 s without one.
 # The retry task uses the same 30 s, i.e. three missed heartbeats, so a slow but
@@ -22,10 +22,23 @@ app = procrastinate.App(connector=procrastinate.PsycopgConnector(conninfo=DSN))
 CRON = '* * * * *' if INTERVAL == 60 else f'* * * * * */{INTERVAL}'
 
 
-@app.periodic(cron=CRON)
-@app.task(name='tick')
-async def tick(timestamp: int) -> None:
-    await stub_job('tick', datetime.fromtimestamp(timestamp, UTC))
+# P9 variant: a sync task runs in Procrastinate's worker thread, so blocking work
+# inside it cannot starve the event loop that sends heartbeats.
+SYNC_TASK = os.environ.get('POC_SYNC_TASK', '0').lower() in ('true', '1')
+
+if SYNC_TASK:
+
+    @app.periodic(cron=CRON)
+    @app.task(name='tick')
+    def tick(timestamp: int) -> None:
+        run_stub('tick', datetime.fromtimestamp(timestamp, UTC))
+
+else:
+
+    @app.periodic(cron=CRON)
+    @app.task(name='tick')
+    async def tick(timestamp: int) -> None:
+        await stub_job('tick', datetime.fromtimestamp(timestamp, UTC))
 
 
 if STALLED_RETRY:
