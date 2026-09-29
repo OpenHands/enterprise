@@ -601,7 +601,7 @@ export function DefaultBudgetsTab({
           onClick={onSave}
           isDisabled={isSaving}
         >
-          Save default
+          Update default
         </BrandButton>
       </div>
     </div>
