@@ -141,6 +141,7 @@ from openhands.sdk.tool.defaults import (
     SUB_AGENT_TOOL_NAME,
     SWITCH_LLM_TOOL_NAME,
     canonical_tool_name,
+    launch_tool_specs,
 )
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
@@ -148,10 +149,7 @@ from openhands.sdk.utils.redact import (
     sanitize_config,
 )
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
-from openhands.tools.preset.default import (
-    get_default_tools,
-    register_builtins_agents,
-)
+from openhands.tools.preset.default import register_builtins_agents
 from openhands.tools.preset.planning import (
     format_plan_structure,
     get_planning_tools,
@@ -2264,13 +2262,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 tools.append(Tool(name=SWITCH_LLM_TOOL_NAME))
         else:
             register_builtins_agents(enable_browser=True)
-            if profile_tools is None:
-                tools = [
-                    *get_default_tools(enable_browser=True),
-                    Tool(name=SWITCH_LLM_TOOL_NAME),
-                ]
-            else:
-                tools = list(profile_tools)
+            tools = launch_tool_specs(profile_tools, browser_available=True)
             if _selects_tool(tools, SUB_AGENT_TOOL_NAME):
                 agent_definitions = list(get_registered_agent_definitions())
 
