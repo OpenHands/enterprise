@@ -170,10 +170,6 @@ async def _agent_profiles_transaction(
     re-entrant no-op ``lock()``.
 
     The collection is written back ONLY when the caller actually changed it.
-    Loading is best-effort (``_skip_invalid_profiles`` drops entries that fail
-    to validate, e.g. after schema drift), so an unconditional write-back would
-    let a mutation-free call such as ``/activate`` silently erase a stored
-    profile it merely failed to parse.
     """
     await _get_org(org_id, user_id)
     async with a_session_maker() as session:
