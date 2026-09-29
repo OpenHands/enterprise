@@ -1,0 +1,6 @@
+# Where the sandboxes, their template and warm pool live. The app makes its
+# SandboxClaims here (AGENT_SANDBOX_NAMESPACE).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openhands-sandboxes

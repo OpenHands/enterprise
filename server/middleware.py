@@ -19,31 +19,62 @@ from server.auth.cookie_chunking import delete_chunked_cookie, read_chunked_cook
 from server.auth.gitlab_sync import schedule_gitlab_repo_sync
 from server.auth.saas_user_auth import SaasUserAuth, token_manager
 from server.routes.auth import set_response_cookie
+from server.routes.oauth_v2 import _set_oauth_v2_cookie
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite
+
+# The small JWT cookie set by the OAuth v2 login flow (Phase 2).
+OAUTH_V2_COOKIE_NAME = 'openhands_auth'
 
 
 class SetAuthCookieMiddleware:
     """
-    Update the auth cookie with the current authentication state if it was refreshed before sending response to user.
-    Deleting invalid cookies is handled by CookieError using FastAPIs standard error handling mechanism
+    Dual-cookie auth middleware (Phase 2).
+
+    Reads both the new ``openhands_auth`` JWT cookie (new logins) and the old
+    ``keycloak_auth`` chunked cookie (existing sessions). New logins produce
+    the JWT cookie via the v2 routes; old sessions keep working until their
+    cookies naturally expire. When an IDP token refreshes, the JWT cookie is
+    re-minted (the old cookie is untouched). No forced re-login.
     """
 
     async def __call__(self, request: Request, call_next: Callable):
+        v2_cookie = request.cookies.get(OAUTH_V2_COOKIE_NAME)
         keycloak_auth_cookie = read_chunked_cookie(request, 'keycloak_auth')
-        logger.debug('request_with_cookie', extra={'cookie': keycloak_auth_cookie})
+        logger.debug(
+            'request_with_cookie',
+            extra={
+                'openhands_auth': bool(v2_cookie),
+                'keycloak_auth': bool(keycloak_auth_cookie),
+            },
+        )
         try:
             if self._should_attach(request):
                 self._check_tos(request)
 
             response: Response = await call_next(request)
-            if not keycloak_auth_cookie:
-                return response
             user_auth = self._get_user_auth(request)
             if not user_auth or user_auth.auth_type != AuthType.COOKIE:
                 return response
-            if user_auth.refreshed:
-                if user_auth.access_token is None:
-                    return response
+
+            # OAuth v2 cookie: re-mint the small JWT cookie when the IDP
+            # access token was refreshed. The old ``keycloak_auth`` cookie is
+            # never touched on this path.
+            if user_auth.oauth_v2_cookie and user_auth.refreshed:
+                self._remint_v2_cookie(request, response, user_auth)
+                # On re-authentication (token refresh), kick off background
+                # sync for GitLab repos, mirroring the legacy path.
+                user_id = await user_auth.get_user_id()
+                if user_id:
+                    schedule_gitlab_repo_sync(user_id)
+                return response
+
+            # Legacy ``keycloak_auth`` cookie path: re-set the chunked cookie
+            # only if a refresh happened and the cookie was present.
+            if (
+                keycloak_auth_cookie
+                and user_auth.refreshed
+                and user_auth.access_token is not None
+            ):
                 set_response_cookie(
                     request=request,
                     response=response,
@@ -52,8 +83,6 @@ class SetAuthCookieMiddleware:
                     secure=False if request.url.hostname == 'localhost' else True,
                     accepted_tos=user_auth.accepted_tos or False,
                 )
-
-                # On re-authentication (token refresh), kick off background sync for GitLab repos
                 user_id = await user_auth.get_user_id()
                 if user_id:
                     schedule_gitlab_repo_sync(user_id)
@@ -86,24 +115,25 @@ class SetAuthCookieMiddleware:
             )
         except AuthError as e:
             logger.warning('auth_error', exc_info=True)
-            # Only attempt a Keycloak logout when this looked like a cookie
-            # session going bad. Bearer-token auth failures (e.g., a
-            # ``BearerTokenError`` from a transient Keycloak refresh
-            # failure) must NOT revoke the user's offline session — that
-            # would brick every subsequent API-key call until the user
-            # logs back in through the browser. The API key's lifecycle is
-            # managed via key mint/delete, not via per-request refresh
-            # outcomes. See ``_logout`` for the defense-in-depth check.
+            # Only attempt a Keycloak logout when this looked like a legacy
+            # cookie session going bad. Bearer-token auth failures and v2
+            # cookie failures must not revoke the user's offline session.
             if keycloak_auth_cookie:
                 try:
                     await self._logout(request)
                 except Exception as logout_error:
                     logger.debug(str(logout_error))
 
-            # Send a response that deletes the auth cookie if needed
+            # Send a response that deletes the auth cookie(s) if present.
             response = JSONResponse(
                 {'error': str(e) or e.__class__.__name__}, status.HTTP_401_UNAUTHORIZED
             )
+            if v2_cookie:
+                response.delete_cookie(
+                    OAUTH_V2_COOKIE_NAME,
+                    domain=get_cookie_domain(),
+                    samesite=get_cookie_samesite(),
+                )
             if keycloak_auth_cookie:
                 delete_chunked_cookie(
                     response,
@@ -113,6 +143,22 @@ class SetAuthCookieMiddleware:
                 )
             return response
 
+    def _remint_v2_cookie(
+        self, request: Request, response: Response, user_auth: SaasUserAuth
+    ) -> None:
+        """Re-mint the ``openhands_auth`` JWT cookie after an IDP refresh."""
+        user_id = user_auth.user_id
+        if not user_id:
+            return
+        _set_oauth_v2_cookie(
+            request=request,
+            response=response,
+            user_id=user_id,
+            access_token_expires_at=user_auth.access_token_expires_at,
+            accepted_tos=bool(user_auth.accepted_tos),
+            refresh_token_expires_at=user_auth.idp_refresh_token_expires_at,
+        )
+
     def _get_user_auth(self, request: Request) -> SaasUserAuth | None:
         user_auth: UserAuth | None = getattr(request.state, 'user_auth', None)
         if user_auth is None:
@@ -120,6 +166,7 @@ class SetAuthCookieMiddleware:
         return cast(SaasUserAuth, user_auth)
 
     def _check_tos(self, request: Request):
+        v2_cookie = request.cookies.get(OAUTH_V2_COOKIE_NAME)
         keycloak_auth_cookie = read_chunked_cookie(request, 'keycloak_auth')
         auth_header = request.headers.get('Authorization')
         mcp_auth_header = request.headers.get('X-Session-API-Key')
@@ -127,7 +174,8 @@ class SetAuthCookieMiddleware:
         api_key_cookie = request.cookies.get('api_key')
         accepted_tos: bool | None = False
         if (
-            keycloak_auth_cookie is None
+            v2_cookie is None
+            and keycloak_auth_cookie is None
             and (auth_header is None or not auth_header.startswith('Bearer '))
             and mcp_auth_header is None
             and api_auth_header is None
@@ -135,11 +183,12 @@ class SetAuthCookieMiddleware:
         ):
             raise NoCredentialsError
 
-        if keycloak_auth_cookie:
+        if v2_cookie or keycloak_auth_cookie:
             try:
                 from storage.encrypt_utils import get_jwt_service
 
-                decoded = get_jwt_service().verify_jws_token(keycloak_auth_cookie)
+                signed = v2_cookie or keycloak_auth_cookie
+                decoded = get_jwt_service().verify_jws_token(signed)
                 accepted_tos = decoded.get('accepted_tos')
             except (jwt.InvalidTokenError, ValueError):
                 logger.warning('Invalid JWT signature detected')
@@ -188,7 +237,8 @@ class SetAuthCookieMiddleware:
         if path in ignore_paths:
             return False
 
-        # Allow public access to shared conversations and events
+        # Shared conversations and events: authentication is optional there
+        # (see server/sharing), so the middleware never blocks them.
         if path.startswith('/api/shared-conversations') or path.startswith(
             '/api/shared-events'
         ):
@@ -210,21 +260,24 @@ class SetAuthCookieMiddleware:
         # Log out of keycloak - this prevents issues where you did not log in with the idp you believe you used.
         #
         # IMPORTANT: only terminate the Keycloak session when the request
-        # carried a *cookie* (browser session). For bearer-token (API
-        # key) requests, ``user_auth.refresh_token`` is the user's stored
-        # *offline_token* loaded from ``OfflineTokenStore``. Calling
-        # ``token_manager.logout`` with that value asks Keycloak to
-        # revoke the offline session, which permanently breaks every API
-        # key minted for the user until they re-authenticate through the
-        # browser (``/keycloak/callback`` rewrites the offline_token).
-        # A single transient Keycloak hiccup that surfaces as
-        # ``BearerTokenError`` must not be allowed to cause this damage.
+        # carried a legacy ``keycloak_auth`` *cookie* (browser session). For
+        # bearer-token (API key) requests, ``user_auth.refresh_token`` is the
+        # user's stored *offline_token* loaded from ``OfflineTokenStore``.
+        # Calling ``token_manager.logout`` with that value asks Keycloak to
+        # revoke the offline session, which permanently breaks every API key
+        # minted for the user until they re-authenticate through the browser
+        # (``/keycloak/callback`` rewrites the offline_token). A single
+        # transient Keycloak hiccup that surfaces as ``BearerTokenError`` must
+        # not be allowed to cause this damage. OAuth v2 cookie sessions
+        # (``openhands_auth``) have no Keycloak session to terminate — their
+        # IDP session is managed by the IDP directly — so they are skipped too.
         try:
             user_auth = cast(SaasUserAuth, await get_user_auth(request))
             if (
                 user_auth
                 and user_auth.refresh_token
                 and user_auth.auth_type == AuthType.COOKIE
+                and not getattr(user_auth, 'oauth_v2_cookie', False)
             ):
                 await token_manager.logout(user_auth.refresh_token.get_secret_value())
         except Exception:

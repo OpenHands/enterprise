@@ -17,6 +17,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
     OPENHANDS_LLM_PROXY_BASE_URL,
     canonicalize_openhands_llm_payload,
 )
+from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 from server import constants
 from server.routes import org_models
 from server.routes.org_models import OrgDefaultsSettingsResponse
@@ -158,7 +159,8 @@ class TestCanonicalizeStoredLLM:
     def test_other_llms_are_untouched(self, bundled_proxy, payload):
         assert constants.canonicalize_bundled_proxy_llm(payload) == payload
 
-    def test_saas_canonicalization_is_unchanged(self, saas_proxy):
+    def test_saas_canonicalization_is_unchanged(self, saas_proxy, monkeypatch):
+        monkeypatch.setitem(VERIFIED_MODELS, 'openhands', ['claude-opus-4-8'])
         payload = {
             'model': 'litellm_proxy/claude-opus-4-8',
             'base_url': OPENHANDS_LLM_PROXY_BASE_URL,

@@ -30786,23 +30786,6 @@
     "uk": "Деталі використання оцінюються за вашими розмовами й можуть дещо відрізнятися від загальної суми бюджету.",
     "ca": "Els detalls d'ús s'estimen a partir de les teves converses i poden diferir lleugerament del total del pressupost."
   },
-  "SETTINGS$YOUR_BUDGET_NOT_ENABLED": {
-    "en": "Your organization has not enabled budgets.",
-    "ja": "組織で予算が有効になっていません。",
-    "zh-CN": "您的组织尚未启用预算。",
-    "zh-TW": "您的組織尚未啟用預算。",
-    "ko-KR": "조직에서 예산을 사용하도록 설정하지 않았습니다.",
-    "no": "Organisasjonen din har ikke aktivert budsjetter.",
-    "it": "La tua organizzazione non ha abilitato i budget.",
-    "pt": "Sua organização não ativou orçamentos.",
-    "es": "Tu organización no ha habilitado los presupuestos.",
-    "ar": "لم تقم مؤسستك بتفعيل الميزانيات.",
-    "fr": "Votre organisation n'a pas activé les budgets.",
-    "tr": "Kuruluşunuz bütçeleri etkinleştirmedi.",
-    "de": "Ihre Organisation hat Budgets nicht aktiviert.",
-    "uk": "Ваша організація не ввімкнула бюджети.",
-    "ca": "La teva organització no ha habilitat els pressupostos."
-  },
   "SETTINGS$YOUR_BUDGET_LOAD_ERROR": {
     "en": "Unable to load your budget right now.",
     "ja": "現在、予算を読み込めません。",

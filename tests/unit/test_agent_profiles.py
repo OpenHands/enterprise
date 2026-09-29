@@ -807,7 +807,7 @@ class TestResolveActiveAgentProfile:
         org.llm_profiles = {
             'profiles': {
                 'Default': {
-                    'model': 'litellm_proxy/claude-opus-4-8',
+                    'model': 'litellm_proxy/claude-opus-5',
                     'base_url': LITE_LLM_API_URL,
                     'api_key': 'orgkey',
                 }
@@ -820,7 +820,7 @@ class TestResolveActiveAgentProfile:
         result = store._resolve_active_agent_profile(org, member, {}, None)
         assert result is not None
         dump, _resolved_id, _revision = result
-        assert dump['llm']['model'] == 'openhands/claude-opus-4-8'
+        assert dump['llm']['model'] == 'openhands/claude-opus-5'
         assert dump['llm'].get('base_url') is None
 
     def test_override_id_wins_over_member_pointer(self):

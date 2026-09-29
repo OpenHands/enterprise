@@ -1,6 +1,5 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
 import type {
   OrgMyBudget,
   OrgMyUsageStats,
@@ -322,8 +321,8 @@ function RecentUsageList({
     <ul className="flex flex-col gap-0.5" data-testid="your-budget-recent">
       {items.map((item) => (
         <li key={item.conversation_id}>
-          <Link
-            to={`/conversations/${item.conversation_id}`}
+          <a
+            href={`/canvas/conversations/${item.conversation_id}`}
             className="flex items-center gap-3 rounded-md px-3 py-2.5 hover:bg-[var(--oh-interactive-hover-low)]"
           >
             <div className="min-w-0 flex-1">
@@ -340,7 +339,7 @@ function RecentUsageList({
             <span className="shrink-0 text-sm font-medium text-foreground">
               {formatCost(item.accumulated_cost)}
             </span>
-          </Link>
+          </a>
         </li>
       ))}
     </ul>
@@ -459,15 +458,11 @@ export function YourBudget() {
       </p>
     );
   } else if (!isLoading && budget) {
-    content = budget.enabled ? (
+    content = (
       <>
         <BudgetSummary budget={budget} />
         <UsageBreakdown timeWindow={timeWindow} />
       </>
-    ) : (
-      <p className="text-sm text-muted" data-testid="your-budget-not-enabled">
-        {t(I18nKey.SETTINGS$YOUR_BUDGET_NOT_ENABLED)}
-      </p>
     );
   }
 
@@ -485,7 +480,7 @@ export function YourBudget() {
             })}
           </p>
         </header>
-        {budget?.enabled && (
+        {budget && (
           <div
             className="inline-flex shrink-0 rounded-lg border border-border-subtle bg-base-secondary p-0.5"
             data-testid="your-budget-period-selector"

@@ -1,8 +1,9 @@
 """SQL implementation of SharedConversationInfoService.
 
 This implementation provides read-only access to shared conversations:
-- Direct database access without user permission checks
-- Filters only conversations marked as shared (currently public)
+- Direct database access without the per-user conversation filters
+- Serves conversations marked public, plus automation-triggered conversations
+  in an org the (optional) authenticated viewer is a member of
 - Full async/await support using SQL async db_sessions
 """
 
@@ -15,16 +16,21 @@ from typing import AsyncGenerator
 from uuid import UUID
 
 from fastapi import Request
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.utils import utc_now
+from openhands.app_server.app_conversation.app_conversation_models import (
+    ConversationTrigger,
+)
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
     StoredConversationMetadata,
 )
+from openhands.app_server.errors import AuthError as AppAuthError
 from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.services.injector import InjectorState
 from openhands.sdk.llm import MetricsSnapshot, TokenUsage
+from server.auth.auth_error import AuthError as SaasAuthError
 from server.sharing.shared_conversation_info_service import (
     SharedConversationInfoService,
     SharedConversationInfoServiceInjector,
@@ -32,6 +38,7 @@ from server.sharing.shared_conversation_info_service import (
 from server.sharing.shared_conversation_models import (
     SharedConversation,
 )
+from storage.org_member import OrgMember
 from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
 
 logger = logging.getLogger(__name__)
@@ -42,12 +49,15 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
     """SQL implementation of SharedConversationInfoService for shared conversations only."""
 
     db_session: AsyncSession
+    # Authenticated caller, if any. Anonymous viewers only see public
+    # conversations; org members also see their org's automation conversations.
+    viewer_user_id: UUID | None = None
 
     async def get_shared_conversation_info(
         self, conversation_id: UUID
     ) -> SharedConversation | None:
-        """Get a single public conversation info, returning None if missing or not shared."""
-        query = self._public_select_with_saas_metadata().where(
+        """Get a single conversation shared with the viewer, returning None if missing or not shared."""
+        query = self._visible_select_with_saas_metadata().where(
             StoredConversationMetadata.conversation_id == str(conversation_id)
         )
 
@@ -60,12 +70,15 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
         stored, saas_metadata = row
         return self._to_shared_conversation(stored, saas_metadata=saas_metadata)
 
-    def _public_select_with_saas_metadata(self):
-        """Create a select query that returns public conversations with SAAS metadata.
+    def _visible_select_with_saas_metadata(self):
+        """Create a select query that returns conversations visible to the viewer.
 
-        This joins with conversation_metadata_saas to retrieve the user_id needed
-        for constructing the correct event storage path. Uses LEFT OUTER JOIN to
-        support conversations that may not have SAAS metadata (e.g., in tests).
+        A conversation is visible when it is public or, for an authenticated
+        viewer, when it was triggered by an automation in an org the viewer is
+        a member of. This joins with conversation_metadata_saas to retrieve the
+        user_id needed for constructing the correct event storage path (and the
+        org_id for the membership check). Uses LEFT OUTER JOIN to support
+        conversations that may not have SAAS metadata (e.g., in tests).
         """
         query = (
             select(StoredConversationMetadata, StoredConversationMetadataSaas)
@@ -75,9 +88,19 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
                 == StoredConversationMetadataSaas.conversation_id,
             )
             .where(StoredConversationMetadata.conversation_version == 'V1')
-            .where(StoredConversationMetadata.public == True)  # noqa: E712
         )
-        return query
+        is_public = StoredConversationMetadata.public == True  # noqa: E712
+        if self.viewer_user_id is None:
+            return query.where(is_public)
+
+        viewer_org_ids = select(OrgMember.org_id).where(
+            OrgMember.user_id == self.viewer_user_id
+        )
+        is_org_automation = and_(
+            StoredConversationMetadata.trigger == ConversationTrigger.AUTOMATION.value,
+            StoredConversationMetadataSaas.org_id.in_(viewer_org_ids),
+        )
+        return query.where(or_(is_public, is_org_automation))
 
     def _to_shared_conversation(
         self,
@@ -163,6 +186,38 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
         return value
 
 
+async def resolve_viewer_user_id(
+    state: InjectorState, request: Request | None
+) -> UUID | None:
+    """Best-effort identity of the caller of a sharing endpoint.
+
+    Authentication is optional on the sharing endpoints. ``None`` means an
+    anonymous viewer, who only sees public conversations. Any failure to
+    establish the identity degrades to anonymous instead of failing the
+    request, so public share links keep working and a resolution error can
+    never widen access.
+    """
+    if request is None:
+        return None
+    # Define inline to prevent circular lookup
+    from openhands.app_server.config import get_user_context
+
+    try:
+        async with get_user_context(state, request) as user_context:
+            user_id = await user_context.get_user_id()
+        return UUID(user_id) if user_id else None
+    except (AppAuthError, SaasAuthError):
+        # No, invalid or expired credentials.
+        return None
+    except Exception:
+        logger.warning(
+            'Could not resolve the shared-conversation viewer; '
+            'serving public conversations only',
+            exc_info=True,
+        )
+        return None
+
+
 class SQLSharedConversationInfoServiceInjector(SharedConversationInfoServiceInjector):
     async def inject(
         self, state: InjectorState, request: Request | None = None
@@ -171,5 +226,8 @@ class SQLSharedConversationInfoServiceInjector(SharedConversationInfoServiceInje
         from openhands.app_server.config import get_db_session
 
         async with get_db_session(state, request) as db_session:
-            service = SQLSharedConversationInfoService(db_session=db_session)
+            service = SQLSharedConversationInfoService(
+                db_session=db_session,
+                viewer_user_id=await resolve_viewer_user_id(state, request),
+            )
             yield service

@@ -104,6 +104,60 @@
             "cwd": "${workspaceFolder}"
         },
         {
+            // Alembic migrations must run with the same persistence dir as the
+            // SaaS Server config, otherwise encrypted columns (e.g. the
+            // `oauth_providers.client_secret` seeded by migration 168) get
+            // encrypted with a different `.keys` file than the server decrypts
+            // with, producing "Failed to decrypt value with any known key" at
+            // runtime. `envFile` supplies secrets (DB_PASS, KEYCLOAK_CLIENT_SECRET,
+            // *_APP_CLIENT_SECRET) that seeding reads from the environment.
+            "name": "Alembic: upgrade head",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "alembic",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "upgrade",
+                "head"
+            ],
+            "env": {
+                "FILE_STORE_PATH": "${env:HOME}/.openhands-state",
+                "OH_PERSISTENCE_DIR": "${env:HOME}/.openhands-state",
+                "DB_HOST": "localhost",
+                "DB_PORT": "5432",
+                "DB_NAME": "openhands",
+                "DB_USER": "postgres",
+                "KEYCLOAK_CLIENT_ID": "allhands",
+                "KEYCLOAK_REALM_NAME": "allhands",
+                "KEYCLOAK_SERVER_URL": "https://auth.staging.all-hands.dev"
+            },
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Alembic: downgrade -1",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "alembic",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+                "downgrade",
+                "-1"
+            ],
+            "env": {
+                "FILE_STORE_PATH": "${env:HOME}/.openhands-state",
+                "OH_PERSISTENCE_DIR": "${env:HOME}/.openhands-state",
+                "DB_HOST": "localhost",
+                "DB_PORT": "5432",
+                "DB_NAME": "openhands",
+                "DB_USER": "postgres"
+            },
+            "envFile": "${workspaceFolder}/.env",
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}"
+        },
+        {
             "name": "Frontend Tests (npm test)",
             "command": "npm test",
             "request": "launch",
