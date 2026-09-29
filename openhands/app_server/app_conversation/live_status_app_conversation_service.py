@@ -136,7 +136,7 @@ from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings
-from openhands.sdk.subagent import get_registered_agent_definitions
+from openhands.sdk.subagent import AgentDefinition, get_registered_agent_definitions
 from openhands.sdk.tool.defaults import (
     SUB_AGENT_TOOL_NAME,
     SWITCH_LLM_TOOL_NAME,
@@ -163,6 +163,18 @@ _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
 
 def _selects_tool(tools: Sequence[Tool], name: str) -> bool:
     return any(canonical_tool_name(tool.name) == name for tool in tools)
+
+
+def _sub_agents_within(
+    definitions: Sequence[AgentDefinition], tools: Sequence[Tool]
+) -> list[AgentDefinition]:
+    """Keep the sub-agents whose tools the parent agent also has."""
+    parent = {canonical_tool_name(tool.name) for tool in tools}
+    return [
+        definition
+        for definition in definitions
+        if {canonical_tool_name(name) for name in definition.tools} <= parent
+    ]
 
 
 def _resolve_title_llm_profile(user: UserInfo) -> str | None:
@@ -2248,25 +2260,23 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         # --- tools ----------------------------------------------------------
         agent_definitions: list[Any] = []
-        profile_tools = (
-            user.agent_settings.tools
-            if getattr(user, 'active_agent_profile_id', None)
-            else None
-        )
+        selected_tools = user.agent_settings.tools
         if agent_type == AgentType.PLAN:
             plan_path = None
             if project_dir:
                 plan_path = self._compute_plan_path(project_dir, git_provider)
             tools = get_planning_tools(plan_path=plan_path)
-            if profile_tools is None or _selects_tool(
-                profile_tools, SWITCH_LLM_TOOL_NAME
+            if selected_tools is None or _selects_tool(
+                selected_tools, SWITCH_LLM_TOOL_NAME
             ):
                 tools.append(Tool(name=SWITCH_LLM_TOOL_NAME))
         else:
             register_builtins_agents(enable_browser=True)
-            tools = launch_tool_specs(profile_tools, browser_available=True)
+            tools = launch_tool_specs(selected_tools, browser_available=True)
             if _selects_tool(tools, SUB_AGENT_TOOL_NAME):
-                agent_definitions = list(get_registered_agent_definitions())
+                agent_definitions = _sub_agents_within(
+                    get_registered_agent_definitions(), tools
+                )
 
         # --- build AgentSettings and create agent ---------------------------
         # When enterprise persistent memory is enabled, stamp load_memory=True

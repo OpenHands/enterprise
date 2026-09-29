@@ -76,7 +76,9 @@ from openhands.sdk.settings import (
     ACP_PROVIDERS,
     ConversationSettings,
     OpenHandsAgentSettings,
+    validate_agent_settings,
 )
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
@@ -2630,7 +2632,7 @@ class TestLiveStatusAppConversationService:
     async def test_build_request_without_a_profile_launches_the_default_set(self):
         result = await self._build_request_with_agent_settings(
             OpenHandsAgentSettings(
-                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')), tools=[]
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')), tools=None
             ),
             from_profile=False,
         )
@@ -2660,17 +2662,54 @@ class TestLiveStatusAppConversationService:
         assert not names & {'switch_llm', 'SwitchLLMTool'}
 
     @pytest.mark.asyncio
-    async def test_build_request_without_a_profile_ignores_settings_tools(self):
-        result = await self._build_request_with_agent_settings(
-            OpenHandsAgentSettings(
-                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
-                tools=[Tool(name='terminal'), Tool(name='task_tool_set')],
-            ),
-            from_profile=False,
+    async def test_build_request_without_a_profile_honours_settings_tools(self):
+        runner = AgentDefinition(
+            name='bash-runner', description='runs bash', tools=['terminal']
+        )
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions',
+            return_value=[runner],
+        ):
+            result = await self._build_request_with_agent_settings(
+                OpenHandsAgentSettings(
+                    llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                    tools=[Tool(name='terminal'), Tool(name='task_tool_set')],
+                ),
+                from_profile=False,
+            )
+
+        names = [t.name for t in result.agent.tools] + list(
+            result.agent.include_default_tools
+        )
+        assert 'task_tool_set' in names
+        assert 'file_editor' not in names
+        assert not set(names) & {'switch_llm', 'SwitchLLMTool'}
+        assert result.agent_definitions == [runner]
+
+    @pytest.mark.parametrize('agent_type', [AgentType.DEFAULT, AgentType.PLAN])
+    @pytest.mark.asyncio
+    async def test_launch_honours_migrated_tool_switches(self, agent_type):
+        agent_settings = validate_agent_settings(
+            {
+                'schema_version': 6,
+                'agent_kind': 'openhands',
+                'llm': {'model': 'gpt-4', 'api_key': 'test-key'},
+                'tools': None,
+                'enable_sub_agents': True,
+                'enable_switch_llm_tool': False,
+            }
         )
 
-        assert 'task_tool_set' not in [t.name for t in result.agent.tools]
-        assert result.agent_definitions == []
+        result = await self._build_request_with_agent_settings(
+            agent_settings, from_profile=False, agent_type=agent_type
+        )
+
+        names = [t.name for t in result.agent.tools] + list(
+            result.agent.include_default_tools
+        )
+        assert not set(names) & {'switch_llm', 'SwitchLLMTool'}
+        if agent_type == AgentType.DEFAULT:
+            assert 'task_tool_set' in names
 
     @pytest.mark.asyncio
     async def test_plan_launch_keeps_a_profiles_switch_llm(self):
@@ -2739,11 +2778,9 @@ class TestLiveStatusAppConversationService:
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
     )
     @pytest.mark.asyncio
-    async def test_build_request_leaves_sub_agent_scoping_to_the_selected_tool_set(
+    async def test_build_request_forwards_only_sub_agents_within_the_parent_tools(
         self, mock_definitions
     ):
-        from openhands.sdk.subagent.schema import AgentDefinition
-
         runner = AgentDefinition(
             name='bash-runner', description='runs bash', tools=['terminal']
         )
@@ -2751,9 +2788,7 @@ class TestLiveStatusAppConversationService:
             name='web-researcher', description='browses', tools=['browser_tool_set']
         )
         mock_definitions.return_value = [runner, researcher]
-        task_tool_set = Tool(
-            name='task_tool_set', params={'restrict_to_parent_tools': True}
-        )
+        task_tool_set = Tool(name='task_tool_set')
 
         result = await self._build_request_with_agent_settings(
             OpenHandsAgentSettings(
@@ -2762,7 +2797,7 @@ class TestLiveStatusAppConversationService:
             )
         )
 
-        assert result.agent_definitions == [runner, researcher]
+        assert result.agent_definitions == [runner]
         assert task_tool_set in result.agent.tools
 
     @patch(
@@ -2772,10 +2807,9 @@ class TestLiveStatusAppConversationService:
         'openhands.app_server.app_conversation.live_status_app_conversation_service.register_builtins_agents'
     )
     @pytest.mark.asyncio
-    async def test_build_request_without_a_profile_forwards_no_sub_agents(
+    async def test_build_request_with_default_tools_forwards_no_sub_agents(
         self, mock_register_builtins, mock_get_agent_definitions
     ):
-        """Built-in sub-agents are registered but not forwarded without a profile."""
         from openhands.sdk.settings import OpenHandsAgentSettings
 
         agent_settings = OpenHandsAgentSettings(

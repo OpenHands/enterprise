@@ -19,13 +19,14 @@ def _profiles(**profiles):
     return {'profiles': profiles, 'active': None}
 
 
-def _run_upgrade(monkeypatch, rows):
+def _run_upgrade(monkeypatch, rows, raw_rows=None):
     from storage import encrypt_utils
 
     stored = {
         org_id: encrypt_utils.encrypt_value(json.dumps(value))
         for org_id, value in rows.items()
     }
+    stored.update(raw_rows or {})
     updates = {}
 
     class Result:
@@ -74,3 +75,32 @@ def test_upgrade_keeps_an_empty_tools_list_saved_at_schema_3(monkeypatch):
     )
 
     assert updates == {}
+
+
+def test_upgrade_treats_a_non_integer_schema_version_as_legacy(monkeypatch):
+    updates = _run_upgrade(
+        monkeypatch,
+        {
+            'org-a': _profiles(
+                null={'name': 'null', 'tools': [], 'schema_version': None},
+                text={'name': 'text', 'tools': [], 'schema_version': '2'},
+            )
+        },
+    )
+
+    assert updates == {
+        'org-a': _profiles(
+            null={'name': 'null', 'tools': None, 'schema_version': None},
+            text={'name': 'text', 'tools': None, 'schema_version': '2'},
+        )
+    }
+
+
+def test_upgrade_skips_an_unreadable_row_and_migrates_the_rest(monkeypatch):
+    updates = _run_upgrade(
+        monkeypatch,
+        {'org-good': _profiles(bare={'name': 'bare', 'tools': []})},
+        raw_rows={'org-bad': 'not-a-ciphertext'},
+    )
+
+    assert updates == {'org-good': _profiles(bare={'name': 'bare', 'tools': None})}
