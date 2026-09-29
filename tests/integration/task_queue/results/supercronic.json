@@ -8,6 +8,28 @@
       "cron"
     ]
   },
+  "P10": {
+    "doubles_any_occurrence": [],
+    "next_occurrence_ran": true,
+    "occurrence_finished": true,
+    "outcome": "finished",
+    "recorded_at": "2026-09-29T15:37:31Z",
+    "restart_seconds": 0.9,
+    "runner": "cron",
+    "runs_for_occurrence": [
+      [
+        "1",
+        "cron",
+        "cron"
+      ]
+    ],
+    "services_running_after": [
+      "cron",
+      "postgres",
+      "replica-a",
+      "replica-b"
+    ]
+  },
   "P3-replaced": {
     "next_occurrence_ran": false,
     "outcome": "lost",

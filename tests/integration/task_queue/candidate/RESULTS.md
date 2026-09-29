@@ -101,3 +101,12 @@ longest job, or accept that a deploy can drop the run in progress.
 - Not in the desk research: when Supercronic runs as PID 1 it also reaps zombie
   processes (the log says `reaping dead processes`), so no init wrapper is
   needed.
+
+## P10: Postgres restarted mid-job (2026-09-29)
+
+Pass. The running job finished, the next occurrence ran, and nothing ran twice;
+every service was still running afterwards (Postgres was down for about 1 s).
+The stub opens a new connection for each database call, so it reconnected on
+its own; a real job holding one connection across the restart would fail that
+run, and nothing retries it. There is no worker connection to lose, so the
+schedule doesn't depend on the database staying up.
