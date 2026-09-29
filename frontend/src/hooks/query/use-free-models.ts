@@ -5,6 +5,9 @@ import type { LLMModel } from "#/api/config-service/config-service.types";
 import type { FreeModelSet } from "#/utils/format-model-name";
 import { useFreeModelsStore } from "#/stores/free-models-store";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
+import { useIsAuthed } from "#/hooks/query/use-is-authed";
+import { useConfig } from "#/hooks/query/use-config";
+import { useIsOnIntermediatePage } from "#/hooks/use-is-on-intermediate-page";
 
 /**
  * Provider whose models carry free / default metadata. Both are
@@ -57,6 +60,18 @@ async function fetchAllOpenHandsModels(
  */
 const useOpenHandsModels = () => {
   const { organizationId } = useOrgTypeAndAccess();
+  const { data: userIsAuthenticated } = useIsAuthed();
+  const { data: config } = useConfig();
+  const isOnIntermediatePage = useIsOnIntermediatePage();
+
+  // The /config/models/search endpoint is auth-protected, and the query cache
+  // invalidates the auth query on any non-auth-query 401 (see
+  // query-client-config.ts handle401Error). Firing this query before the
+  // session / org context is established races the post-login handshake and
+  // can 401 — which would invalidate the auth query and log the user straight
+  // back out. Gate exactly like useSettings so the request only goes out once
+  // the session is known-good and (for SaaS) the org is selected.
+  const isOss = config?.app_mode === "oss";
 
   return useQuery({
     queryKey: [
@@ -67,8 +82,16 @@ const useOpenHandsModels = () => {
       organizationId ?? null,
     ],
     queryFn: async () => fetchAllOpenHandsModels(null, new Set(), 0),
+    enabled:
+      !isOnIntermediatePage &&
+      !!userIsAuthenticated &&
+      (isOss || !!organizationId),
+    retry: false,
     staleTime: 1000 * 60 * 5,
     gcTime: 1000 * 60 * 15,
+    meta: {
+      disableToast: true,
+    },
   });
 };
 
