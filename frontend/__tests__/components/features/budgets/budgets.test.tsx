@@ -654,6 +654,27 @@ describe("Budgets", () => {
     expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
   });
 
+  it("updates the default budget with the entered amount", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+    await user.click(
+      screen.getByRole("button", { name: "Default budget for users" }),
+    );
+    const input = screen.getByLabelText("Default amount");
+    await user.clear(input);
+    await user.type(input, "300");
+
+    await user.click(screen.getByRole("button", { name: "Update default" }));
+
+    await waitFor(() => {
+      expect(organizationService.updateBudgetSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: { default_user_monthly_limit: 300 },
+        }),
+      );
+    });
+  });
+
   it("describes the default budget as applying to users without an override", async () => {
     const user = userEvent.setup();
     await renderBudgets();
