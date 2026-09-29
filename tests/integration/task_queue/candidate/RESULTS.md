@@ -114,3 +114,12 @@ need a lease with expiry on the claim, or a real queue.
 The base commit didn't track `harness/requirements.txt`, because the repo
 `.gitignore` ignores `requirements.txt`. The base image couldn't build. This is
 fixed on the base branch, which these results were run against.
+
+## P10: Postgres restarted mid-job (2026-09-29)
+
+Pass. The running job finished, the next occurrence ran, and nothing ran twice;
+every service was still running afterwards (Postgres was down for about 1 s).
+The stub opens a new connection for each database call, so it reconnected on
+its own; a real job holding one connection across the restart would fail that
+run, and nothing retries it. There is no worker connection to lose, so the
+schedule doesn't depend on the database staying up.
