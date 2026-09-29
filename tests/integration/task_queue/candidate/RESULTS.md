@@ -165,3 +165,22 @@ Only the pod returning under the same name recovered anything; every other start
 Relay's log shows the mechanism. It starts a 60 s disconnect timer, logs "executor grace period expired, marked dead", dispatches recovery to a live peer, and logs "recovery confirmed". The peer then logs `Recovering 1 workflows for executor <id>`. With a control plane attached, DBOS assigns each process a random executor ID, so identity no longer matters.
 
 Test-setup caveat: every test namespace shared one Relay, so some recoveries went to a peer in another namespace, which found nothing to recover. No result was affected; a real install runs one Relay per application.
+
+### Compose — two replicas connected to dbos-relay (`TQ_CANDIDATE=candidate_relay`)
+
+Relay ran as one long-lived container on the host (`relay serve --embedded`, v0.4.0 pinned by digest). The replicas connect through `host.docker.internal`, with a key minted by `relay apikey create`.
+
+| Check | Result (DBOS alone on Compose) |
+|---|---|
+| P1 once per occurrence | Pass (12, no doubles, none missed) |
+| P3 killed container left down | `resumed` by the other replica after 92 s (was `lost`) |
+| P3 killed container restarted | `resumed` by the other replica after 92 s |
+| P7 10 s grace | `resumed` by the other replica, victim killed at the deadline (was `lost`) |
+| P7 60 s grace | `drained` |
+
+Recovery takes Relay's 60 s disconnect grace period plus the rest of the job.
+
+Setup findings:
+- Relay only accepts keys it minted itself; a self-generated `dbos_…` key got HTTP 401.
+- `--no-auth` does not cover the executor WebSocket, which still returned 401.
+- So a Compose install needs a step that mints the key before the workers start, e.g. `relay apply --env-out`.

@@ -1,0 +1,27 @@
+{
+  "name": "dbos-relay-compose",
+  "app_services": [
+    "replica-a",
+    "replica-b"
+  ],
+  "job_services": [
+    "replica-a",
+    "replica-b"
+  ],
+  "skew_service": null,
+  "expected_tables": [
+    "dbos.application_versions",
+    "dbos.dbos_migrations",
+    "dbos.event_dispatch_kv",
+    "dbos.notifications",
+    "dbos.operation_outputs",
+    "dbos.queues",
+    "dbos.streams",
+    "dbos.workflow_events",
+    "dbos.workflow_events_history",
+    "dbos.workflow_input",
+    "dbos.workflow_output",
+    "dbos.workflow_schedules",
+    "dbos.workflow_status"
+  ]
+}

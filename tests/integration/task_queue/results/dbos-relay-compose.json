@@ -1,0 +1,76 @@
+{
+  "P1": {
+    "doubles": [],
+    "missing": [],
+    "occurrences": 12,
+    "recorded_at": "2026-09-29T00:34:40Z",
+    "replicas_seen": [
+      "replica-a",
+      "replica-b"
+    ]
+  },
+  "P3-replaced": {
+    "next_occurrence_ran": true,
+    "outcome": "resumed",
+    "recorded_at": "2026-09-29T00:40:41Z",
+    "recovered_after_seconds": 91.7,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-a",
+        "replica-b"
+      ]
+    ],
+    "victim": "replica-a"
+  },
+  "P3-restarted": {
+    "next_occurrence_ran": true,
+    "outcome": "resumed",
+    "recorded_at": "2026-09-29T00:37:41Z",
+    "recovered_after_seconds": 92.0,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-b",
+        "replica-a"
+      ]
+    ],
+    "victim": "replica-b"
+  },
+  "P7-grace-10s": {
+    "exit_code": 137,
+    "grace_seconds": 10,
+    "killed_at_deadline": true,
+    "next_occurrence_ran": true,
+    "outcome": "resumed",
+    "recorded_at": "2026-09-29T00:43:49Z",
+    "restarted_as_sole_runner": false,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-a",
+        "replica-b"
+      ]
+    ],
+    "stop_took_seconds": 10.8,
+    "victim": "replica-a"
+  },
+  "P7-grace-60s": {
+    "exit_code": 0,
+    "grace_seconds": 60,
+    "killed_at_deadline": false,
+    "next_occurrence_ran": true,
+    "outcome": "drained",
+    "recorded_at": "2026-09-29T00:46:36Z",
+    "restarted_as_sole_runner": false,
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-a",
+        "replica-a"
+      ]
+    ],
+    "stop_took_seconds": 27.2,
+    "victim": "replica-a"
+  }
+}
