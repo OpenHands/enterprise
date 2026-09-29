@@ -5,6 +5,8 @@ Variants (env):
                                       hostname sets it per replica, as a StatefulSet would.
   POC_DBOS_PEER_RECOVERY=1            a replica also resumes other executors' stale
                                       PENDING workflows (list_workflows + resume_workflow).
+  POC_DBOS_CONDUCTOR_URL/_KEY         connect to a Conductor-protocol control plane
+                                      (here the open-source dbos-relay) for recovery.
 """
 
 import asyncio
@@ -35,6 +37,9 @@ config: DBOSConfig = {
 }
 if EXECUTOR == 'hostname':
     config['executor_id'] = socket.gethostname()
+if os.environ.get('POC_DBOS_CONDUCTOR_URL'):
+    config['conductor_url'] = os.environ['POC_DBOS_CONDUCTOR_URL']
+    config['conductor_key'] = os.environ['POC_DBOS_CONDUCTOR_KEY']
 DBOS(config=config)
 
 
