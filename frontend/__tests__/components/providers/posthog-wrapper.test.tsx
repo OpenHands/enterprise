@@ -74,7 +74,7 @@ describe("PostHogWrapper", () => {
     expect(window.location.hash).toBe("");
   });
 
-  it("should persist bootstrap IDs to sessionStorage for OAuth survival", async () => {
+  it("should persist legacy bootstrap IDs to sessionStorage as a flat Canvas-compatible shape", async () => {
     window.location.hash = "distinct_id=user-123&session_id=session-456";
 
     render(
@@ -95,6 +95,12 @@ describe("PostHogWrapper", () => {
         }),
       }),
     );
+    expect(
+      JSON.parse(sessionStorage.getItem("posthog_bootstrap") ?? "{}"),
+    ).toEqual({
+      distinctID: "user-123",
+      sessionID: "session-456",
+    });
   });
 
   it("should read bootstrap IDs from sessionStorage when hash is absent (post-OAuth)", async () => {
@@ -215,6 +221,19 @@ describe("PostHogWrapper", () => {
       cta_id: "hero-cloud",
       cta_surface: "homepage_hero",
       referring_domain_category: "search",
+    });
+    expect(
+      JSON.parse(sessionStorage.getItem("posthog_bootstrap") ?? "{}"),
+    ).toMatchObject({
+      bootstrap: {
+        distinctID: "website-anon-id",
+        sessionID: "website-session-id",
+      },
+      attribution: {
+        utm_source: "newsletter",
+        cta_surface: "homepage_hero",
+      },
+      nonce: "enterprise-structured",
     });
     expect(window.location.hash).toBe("");
   });

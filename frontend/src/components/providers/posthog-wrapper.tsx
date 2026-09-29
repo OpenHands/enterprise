@@ -66,6 +66,10 @@ type StoredHandoff = PostHogHandoff & {
   nonce?: string;
 };
 
+type UrlHandoff = PostHogHandoff & {
+  storageValue: StoredHandoff | BootstrapConfig;
+};
+
 function safeSessionStorage(): Storage | null {
   try {
     return window.sessionStorage;
@@ -187,7 +191,7 @@ function removeHandoffFromUrl(
   );
 }
 
-function parseStructuredHandoff(encoded: string): StoredHandoff | undefined {
+function parseStructuredHandoff(encoded: string): UrlHandoff | undefined {
   try {
     const parsed: unknown = JSON.parse(base64UrlDecode(encoded));
     if (typeof parsed !== "object" || parsed === null) return undefined;
@@ -204,7 +208,7 @@ function parseStructuredHandoff(encoded: string): StoredHandoff | undefined {
     if (typeof candidate.session_id !== "string" || !candidate.session_id)
       return undefined;
 
-    const handoff = {
+    const storageValue: StoredHandoff = {
       bootstrap: {
         distinctID: candidate.distinct_id.slice(0, 256),
         sessionID: candidate.session_id.slice(0, 256),
@@ -214,7 +218,11 @@ function parseStructuredHandoff(encoded: string): StoredHandoff | undefined {
       nonce: candidate.nonce,
     };
     markHandoffNonceConsumed(candidate.nonce, candidate.exp);
-    return handoff;
+    return {
+      bootstrap: storageValue.bootstrap,
+      attribution: storageValue.attribution,
+      storageValue,
+    };
   } catch {
     return undefined;
   }
@@ -232,17 +240,20 @@ function getHandoffFromUrl(): PostHogHandoff | null | undefined {
     hashParams.get("session_id") ?? searchParams.get("session_id");
   if (!structured && !(distinctID && sessionID)) return undefined;
 
-  const handoff = structured
-    ? parseStructuredHandoff(structured)
-    : {
-        bootstrap: { distinctID: distinctID ?? "", sessionID: sessionID ?? "" },
-      };
+  const legacyBootstrap =
+    distinctID && sessionID ? { distinctID, sessionID } : undefined;
+  let handoff: UrlHandoff | undefined;
+  if (structured) {
+    handoff = parseStructuredHandoff(structured);
+  } else if (legacyBootstrap) {
+    handoff = { bootstrap: legacyBootstrap, storageValue: legacyBootstrap };
+  }
 
   if (handoff) {
     try {
       safeSessionStorage()?.setItem(
         POSTHOG_BOOTSTRAP_KEY,
-        JSON.stringify(handoff),
+        JSON.stringify(handoff.storageValue),
       );
     } catch {
       // OAuth continuity is best effort when browser storage is unavailable.
