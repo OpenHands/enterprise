@@ -169,3 +169,14 @@ A blocked event loop sends no heartbeats. If the stalled-job retry runs on the o
 | Supervised (`candidate_supervised/`: exit the process when the worker stops, plus `restart: unless-stopped`) | Pass: both workers exited and were restarted, the job finished once, the schedule continued |
 
 Procrastinate's worker stops by design when its database connection fails, and relies on a supervisor to restart it, as the `procrastinate worker` CLI process does. An embedded worker must exit the process, or it goes silent.
+
+### P9 re-run — async implementations (3 runs each)
+
+| Async task setup | Occurrence started twice |
+|---|---|
+| Blocking code inside `async def`, 30 s stall threshold | 1 of 3 (2 of 8 across all runs) |
+| Truly non-blocking (`await`) | 0 of 3 |
+| Blocking work via `await asyncio.to_thread(...)` | 0 of 3 |
+| Blocking code inside `async def`, stall threshold 150 s | 0 of 3 |
+
+The cause is blocking the event loop that sends heartbeats, not async itself or Procrastinate's defaults. Truly async jobs, or sync calls wrapped in `asyncio.to_thread`, are safe. Raising the stall threshold also avoids it, but delays noticing a dead worker by the same amount.

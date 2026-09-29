@@ -1,0 +1,28 @@
+{
+  "P9": {
+    "completions_for_occurrence": 1,
+    "concurrent_second_starts": 0,
+    "first_runner": "replica-b",
+    "job_seconds": 100,
+    "mode": "1",
+    "recorded_at": "2026-09-29T01:43:04Z",
+    "runs_for_occurrence": [
+      [
+        "1",
+        "replica-b",
+        "2026-09-29 01:40:23.043772+00",
+        "2026-09-29 01:42:03.250355+00",
+        "replica-b"
+      ],
+      [
+        "3",
+        "replica-b",
+        "2026-09-29 01:42:03.285305+00",
+        "",
+        ""
+      ]
+    ],
+    "seconds_observed": 156,
+    "starts_for_occurrence": 2
+  }
+}

@@ -13,7 +13,9 @@ from poc_job import DSN, INTERVAL, run_stub, stub_job
 # The retry task uses the same 30 s, i.e. three missed heartbeats, so a slow but
 # live worker is not mistaken for a dead one.
 HEARTBEAT_SECONDS = 10
-STALLED_SECONDS = 30
+# P9 variant: raising this above the longest blocking stretch avoids false stalls,
+# but also delays detecting a worker that really died.
+STALLED_SECONDS = int(os.environ.get('POC_STALLED_SECONDS', '30'))
 STALLED_RETRY = os.environ.get('POC_STALLED_RETRY', '1').lower() in ('true', '1')
 
 app = procrastinate.App(connector=procrastinate.PsycopgConnector(conninfo=DSN))
