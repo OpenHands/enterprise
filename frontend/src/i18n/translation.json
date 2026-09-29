@@ -27913,6 +27913,23 @@
     "tr": "Kaydedildi. Geçerli belirteci korumak için boş bırakın",
     "uk": "Збережено. Залиште порожнім, щоб зберегти поточний токен"
   },
+  "PROJECT_MANAGEMENT$WEBHOOK_SECRET_SAVED_PLACEHOLDER": {
+    "en": "Saved — leave blank to keep the current secret",
+    "ja": "保存済み。現在のシークレットを保持するには空欄のままにしてください",
+    "zh-CN": "已保存；留空以保留当前秘密",
+    "zh-TW": "已儲存；留空以保留目前秘密",
+    "ko-KR": "저장됨. 현재 비밀을 유지하려면 비워 두세요.",
+    "no": "Lagret. La stå tomt for å beholde gjeldende hemmelighet",
+    "ar": "تم الحفظ. اتركه فارغًا للاحتفاظ بالسر الحالي",
+    "de": "Gespeichert. Leer lassen, um das aktuelle Geheimnis beizubehalten",
+    "fr": "Enregistré. Laissez vide pour conserver le secret actuel",
+    "it": "Salvato. Lascia vuoto per mantenere il segreto attuale",
+    "pt": "Salvo. Deixe em branco para manter o segredo atual",
+    "es": "Guardado. Déjalo en blanco para conservar el secreto actual",
+    "ca": "Desat. Deixa-ho en blanc per conservar el secret actual",
+    "tr": "Kaydedildi. Geçerli sırrı korumak için boş bırakın",
+    "uk": "Збережено. Залиште порожнім, щоб зберегти поточний секрет"
+  },
   "PROJECT_MANAGEMENT$JIRA_DC_REMOVE_ADMIN_TOKEN_LABEL": {
     "en": "Jira admin PAT",
     "ja": "Jira管理者PAT",
