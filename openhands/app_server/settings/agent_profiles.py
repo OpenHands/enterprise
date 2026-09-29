@@ -33,6 +33,8 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
     SerializationInfo,
     field_serializer,
     field_validator,
@@ -72,9 +74,9 @@ class AgentProfiles(BaseModel):
 
     Invariants (enforced on validate + assignment):
     - ``active`` is either ``None`` or a key (id) of ``profiles``.
-    - Individual profiles that fail to parse (schema drift) are dropped with a
-      warning rather than failing the whole ``Settings`` load — mirrors
-      ``LLMProfiles._skip_invalid_profiles``.
+    - Individual profiles that fail to parse (schema drift) are hidden with a
+      warning rather than failing the whole ``Settings`` load, and are written
+      back verbatim so a reader on an older schema never deletes them.
     """
 
     model_config = ConfigDict(validate_assignment=True)
@@ -83,6 +85,7 @@ class AgentProfiles(BaseModel):
     # ``LaunchedAgentProfile.agent_profile_id`` reference.
     profiles: dict[str, _AgentProfile] = Field(default_factory=dict)
     active: str | None = None
+    _unreadable_profiles: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     # ── Validation ─────────────────────────────────────────────────
 
@@ -105,9 +108,35 @@ class AgentProfiles(BaseModel):
                 logger.warning('Skipping invalid agent profile %r: %s', key, exc)
         return valid
 
+    @model_validator(mode='wrap')
+    @classmethod
+    def _keep_unreadable_profiles(
+        cls, data: Any, handler: ModelWrapValidatorHandler[AgentProfiles]
+    ) -> AgentProfiles:
+        unreadable: dict[str, Any] = {}
+        if isinstance(data, dict) and isinstance(data.get('profiles'), dict):
+            readable: dict[str, Any] = {}
+            for key, raw in data['profiles'].items():
+                try:
+                    readable[key] = validate_agent_profile(raw)
+                except Exception as exc:  # noqa: BLE001 - schema drift is non-fatal
+                    logger.warning('Skipping invalid agent profile %r: %s', key, exc)
+                    unreadable[key] = raw
+            data = {**data, 'profiles': readable}
+        model = handler(data)
+        if unreadable:
+            model._unreadable_profiles = unreadable
+            if isinstance(data, dict) and data.get('active') in unreadable:
+                object.__setattr__(model, 'active', data['active'])
+        return model
+
     @model_validator(mode='after')
     def _reconcile_active(self) -> AgentProfiles:
-        if self.active is not None and self.active not in self.profiles:
+        if (
+            self.active is not None
+            and self.active not in self.profiles
+            and self.active not in self._unreadable_profiles
+        ):
             # Bypass validate_assignment to avoid re-entering this validator.
             object.__setattr__(self, 'active', None)
         return self
@@ -231,6 +260,9 @@ class AgentProfiles(BaseModel):
         # today (secret-free since #4017), kept for parity with LLMProfiles'
         # write-back pattern.
         return {
-            pid: profile.model_dump(mode='json', context=info.context)
-            for pid, profile in profiles.items()
+            **self._unreadable_profiles,
+            **{
+                pid: profile.model_dump(mode='json', context=info.context)
+                for pid, profile in profiles.items()
+            },
         }

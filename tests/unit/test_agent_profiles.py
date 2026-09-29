@@ -1177,6 +1177,50 @@ class TestNoWriteBackWithoutMutation:
         assert invalid_id in org.agent_profiles['profiles']
 
     @pytest.mark.asyncio
+    async def test_save_keeps_a_newer_schema_profile_and_its_active_pointer(
+        self, async_session_maker, patch_agent_routes
+    ):
+        org_id = patch_agent_routes
+        uid = str(USER_ID)
+        await save_agent_profile(
+            name='reviewer',
+            body={'llm_profile_ref': 'Default'},
+            effective_org_id=org_id,
+            user_id=uid,
+        )
+        future_id = str(uuid.uuid4())
+        future = {
+            'id': future_id,
+            'name': 'future',
+            'agent_kind': 'openhands',
+            'schema_version': 99,
+        }
+        async with async_session_maker() as session:
+            org = (
+                (await session.execute(select(Org).where(Org.id == org_id)))
+                .scalars()
+                .first()
+            )
+            blob = dict(org.agent_profiles)
+            blob['profiles'] = {**blob['profiles'], future_id: future}
+            blob['active'] = future_id
+            org.agent_profiles = blob
+            await session.commit()
+
+        await save_agent_profile(
+            name='writer',
+            body={'llm_profile_ref': 'Default'},
+            effective_org_id=org_id,
+            user_id=uid,
+        )
+
+        org = await _read_org_raw(async_session_maker, org_id)
+        assert org.agent_profiles['profiles'][future_id] == future
+        assert org.agent_profiles['active'] == future_id
+        names = {p['name'] for p in org.agent_profiles['profiles'].values()}
+        assert names == {'reviewer', 'writer', 'future'}
+
+    @pytest.mark.asyncio
     async def test_materialize_survives_dry_run_crash(
         self, async_session_maker, patch_agent_routes
     ):
