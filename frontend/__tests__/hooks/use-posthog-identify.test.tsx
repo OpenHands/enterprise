@@ -131,7 +131,7 @@ describe("usePostHogIdentify", () => {
     expect(mockIdentify).toHaveBeenCalledTimes(1);
   });
 
-  it("should identify again when the SaaS account changes", async () => {
+  it("should reset before identifying again when the SaaS account changes", async () => {
     vi.mocked(useConfigModule.useConfig).mockReturnValue({
       data: { app_mode: "saas" },
     } as any);
@@ -155,10 +155,66 @@ describe("usePostHogIdentify", () => {
     rerender();
 
     await waitFor(() => {
+      expect(mockReset).toHaveBeenCalledTimes(1);
       expect(mockIdentify).toHaveBeenCalledWith("keycloak-456", {
         email: "other@example.com",
       });
     });
+    expect(mockReset.mock.invocationCallOrder[0]).toBeLessThan(
+      mockIdentify.mock.invocationCallOrder[1],
+    );
+  });
+
+  it("should reset before identifying again when the OSS git user changes", async () => {
+    vi.mocked(useConfigModule.useConfig).mockReturnValue({
+      data: { app_mode: "oss" },
+    } as any);
+    vi.mocked(useGitUserModule.useGitUser).mockReturnValue({
+      data: {
+        login: "devuser",
+        name: "Dev User",
+        email: "dev@example.com",
+        company: "Acme",
+      },
+    } as any);
+
+    const { rerender } = renderHook(() => usePostHogIdentify(), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => {
+      expect(mockIdentify).toHaveBeenCalledWith("devuser", {
+        company: "Acme",
+        name: "Dev User",
+        email: "dev@example.com",
+        user: "devuser",
+        mode: "oss",
+      });
+    });
+
+    vi.mocked(useGitUserModule.useGitUser).mockReturnValue({
+      data: {
+        login: "otherdev",
+        name: "Other Dev",
+        email: "other@example.com",
+        company: "Other Co",
+      },
+    } as any);
+    rerender();
+
+    await waitFor(() => {
+      expect(mockReset).toHaveBeenCalledTimes(1);
+      expect(mockIdentify).toHaveBeenCalledWith("otherdev", {
+        company: "Other Co",
+        name: "Other Dev",
+        email: "other@example.com",
+        user: "otherdev",
+        mode: "oss",
+      });
+    });
+    expect(mockReset.mock.invocationCallOrder[0]).toBeLessThan(
+      mockIdentify.mock.invocationCallOrder[1],
+    );
   });
 
   it("should not identify when analytics consent has not been given", () => {

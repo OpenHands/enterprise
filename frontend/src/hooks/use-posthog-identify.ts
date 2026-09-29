@@ -5,6 +5,23 @@ import { useMe } from "./query/use-me";
 import { useGitUser } from "./query/use-git-user";
 import { useSettings } from "./query/use-settings";
 
+type PostHogIdentityClient = {
+  identify: (distinctId: string, properties?: Record<string, unknown>) => void;
+  reset: () => void;
+};
+
+function identifyWithAccountChangeReset(
+  posthog: PostHogIdentityClient,
+  currentDistinctId: string | null,
+  distinctId: string,
+  properties: Record<string, unknown>,
+): string | null {
+  if (currentDistinctId === distinctId) return currentDistinctId;
+  if (currentDistinctId !== null) posthog.reset();
+  posthog.identify(distinctId, properties);
+  return distinctId;
+}
+
 /**
  * Identifies the current user to PostHog using the same distinct_id
  * that the server-side AnalyticsService uses (keycloak user_id in SaaS
@@ -46,21 +63,27 @@ export const usePostHogIdentify = () => {
     if (consent !== true) return;
 
     if (config?.app_mode === "saas" && me?.user_id) {
-      if (identifiedIdRef.current === me.user_id) return;
-      posthog.identify(me.user_id, {
-        email: me.email,
-      });
-      identifiedIdRef.current = me.user_id;
+      identifiedIdRef.current = identifyWithAccountChangeReset(
+        posthog,
+        identifiedIdRef.current,
+        me.user_id,
+        {
+          email: me.email,
+        },
+      );
     } else if (config?.app_mode === "oss" && gitUser) {
-      if (identifiedIdRef.current === gitUser.login) return;
-      posthog.identify(gitUser.login, {
-        company: gitUser.company,
-        name: gitUser.name,
-        email: gitUser.email,
-        user: gitUser.login,
-        mode: "oss",
-      });
-      identifiedIdRef.current = gitUser.login;
+      identifiedIdRef.current = identifyWithAccountChangeReset(
+        posthog,
+        identifiedIdRef.current,
+        gitUser.login,
+        {
+          company: gitUser.company,
+          name: gitUser.name,
+          email: gitUser.email,
+          user: gitUser.login,
+          mode: "oss",
+        },
+      );
     }
   }, [posthog, config?.app_mode, me, gitUser, consent, settings]);
 };
