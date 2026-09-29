@@ -146,23 +146,31 @@ describe("PostHogWrapper", () => {
     expect(sessionStorage.getItem("posthog_bootstrap")).toBeNull();
   });
 
-  it("should keep structured stored handoffs for adjacent same-origin apps", async () => {
+  it("should keep structured stored handoffs for Canvas but apply them only once in Enterprise", async () => {
     sessionStorage.setItem(
       "posthog_bootstrap",
       JSON.stringify({
         bootstrap: { distinctID: "user-123", sessionID: "session-456" },
         exp: Date.now() + 60_000,
+        nonce: "stored-once",
         attribution: { cta_surface: "docs_link" },
       }),
     );
 
-    render(
+    const firstView = render(
       <PostHogWrapper>
         <div data-testid="child" />
       </PostHogWrapper>,
     );
 
     await screen.findByTestId("child");
+    expect(mockPostHogProvider).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({
+          bootstrap: { distinctID: "user-123", sessionID: "session-456" },
+        }),
+      }),
+    );
 
     expect(
       JSON.parse(sessionStorage.getItem("posthog_bootstrap") ?? "{}"),
@@ -170,6 +178,23 @@ describe("PostHogWrapper", () => {
       bootstrap: { distinctID: "user-123", sessionID: "session-456" },
       attribution: { cta_surface: "docs_link" },
     });
+
+    firstView.unmount();
+    mockPostHogProvider.mockClear();
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child-again" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child-again");
+    expect(mockPostHogProvider).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({ bootstrap: undefined }),
+      }),
+    );
+    expect(sessionStorage.getItem("posthog_bootstrap")).not.toBeNull();
   });
 
   it("should initialize PostHog from structured website handoff and register attribution", async () => {
@@ -191,7 +216,7 @@ describe("PostHogWrapper", () => {
       },
     })}`;
 
-    render(
+    const firstView = render(
       <PostHogWrapper>
         <div data-testid="child" />
       </PostHogWrapper>,
@@ -236,6 +261,22 @@ describe("PostHogWrapper", () => {
       nonce: "enterprise-structured",
     });
     expect(window.location.hash).toBe("");
+
+    firstView.unmount();
+    mockPostHogProvider.mockClear();
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child-again" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child-again");
+    expect(mockPostHogProvider).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({ bootstrap: undefined }),
+      }),
+    );
   });
 
   it("stores consumed structured handoff nonces in a pruned bounded map", async () => {

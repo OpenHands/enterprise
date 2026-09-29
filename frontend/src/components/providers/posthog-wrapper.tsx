@@ -39,6 +39,7 @@ function addDeploymentKind(
 const POSTHOG_BOOTSTRAP_KEY = "posthog_bootstrap";
 const POSTHOG_HANDOFF_PARAM = "oh_ph_handoff";
 const CONSUMED_HANDOFF_NONCES_KEY = `${POSTHOG_BOOTSTRAP_KEY}:consumed_nonces`;
+const ENTERPRISE_APPLIED_HANDOFFS_KEY = `${POSTHOG_BOOTSTRAP_KEY}:enterprise_applied`;
 const MAX_CONSUMED_HANDOFF_NONCES = 100;
 const consumedHandoffNonces = new Set<string>();
 
@@ -135,12 +136,14 @@ function pruneConsumedNonceMap(
   );
 }
 
-function getConsumedNonceMap(): Record<string, number> {
-  const storage = safeLocalStorage();
+function getNonceMap(
+  storage: Storage | null,
+  key: string,
+): Record<string, number> {
   if (!storage) return {};
 
   try {
-    const stored = storage.getItem(CONSUMED_HANDOFF_NONCES_KEY);
+    const stored = storage.getItem(key);
     if (!stored) return {};
     const parsed: unknown = JSON.parse(stored);
     if (typeof parsed !== "object" || parsed === null) return {};
@@ -150,6 +153,24 @@ function getConsumedNonceMap(): Record<string, number> {
   }
 }
 
+function setNonceMap(
+  storage: Storage | null,
+  key: string,
+  nonces: Record<string, number>,
+): void {
+  if (!storage) return;
+
+  try {
+    storage.setItem(key, JSON.stringify(pruneConsumedNonceMap(nonces)));
+  } catch {
+    // Best effort only; in-memory and current-render guards still apply.
+  }
+}
+
+function getConsumedNonceMap(): Record<string, number> {
+  return getNonceMap(safeLocalStorage(), CONSUMED_HANDOFF_NONCES_KEY);
+}
+
 function isHandoffNonceConsumed(nonce: string): boolean {
   if (consumedHandoffNonces.has(nonce)) return true;
   return Object.prototype.hasOwnProperty.call(getConsumedNonceMap(), nonce);
@@ -157,19 +178,37 @@ function isHandoffNonceConsumed(nonce: string): boolean {
 
 function markHandoffNonceConsumed(nonce: string, exp: number): void {
   consumedHandoffNonces.add(nonce);
-  const storage = safeLocalStorage();
-  if (!storage) return;
+  setNonceMap(safeLocalStorage(), CONSUMED_HANDOFF_NONCES_KEY, {
+    ...getConsumedNonceMap(),
+    [nonce]: exp,
+  });
+}
 
-  try {
-    storage.setItem(
-      CONSUMED_HANDOFF_NONCES_KEY,
-      JSON.stringify(
-        pruneConsumedNonceMap({ ...getConsumedNonceMap(), [nonce]: exp }),
-      ),
-    );
-  } catch {
-    // In-memory replay protection still applies for this page lifetime.
-  }
+function getEnterpriseAppliedHandoffMap(): Record<string, number> {
+  return getNonceMap(safeSessionStorage(), ENTERPRISE_APPLIED_HANDOFFS_KEY);
+}
+
+function getStoredHandoffApplicationKey(handoff: StoredHandoff): string {
+  return (
+    handoff.nonce ??
+    JSON.stringify([handoff.bootstrap.distinctID, handoff.bootstrap.sessionID])
+  );
+}
+
+function isStoredHandoffAlreadyApplied(handoff: StoredHandoff): boolean {
+  return Object.prototype.hasOwnProperty.call(
+    getEnterpriseAppliedHandoffMap(),
+    getStoredHandoffApplicationKey(handoff),
+  );
+}
+
+function markStoredHandoffApplied(handoff: StoredHandoff): void {
+  const exp =
+    typeof handoff.exp === "number" ? handoff.exp : Number.MAX_SAFE_INTEGER;
+  setNonceMap(safeSessionStorage(), ENTERPRISE_APPLIED_HANDOFFS_KEY, {
+    ...getEnterpriseAppliedHandoffMap(),
+    [getStoredHandoffApplicationKey(handoff)]: exp,
+  });
 }
 
 function removeHandoffFromUrl(
@@ -218,6 +257,7 @@ function parseStructuredHandoff(encoded: string): UrlHandoff | undefined {
       nonce: candidate.nonce,
     };
     markHandoffNonceConsumed(candidate.nonce, candidate.exp);
+    markStoredHandoffApplied(storageValue);
     return {
       bootstrap: storageValue.bootstrap,
       attribution: storageValue.attribution,
@@ -295,6 +335,9 @@ function getStoredHandoff(): PostHogHandoff | undefined {
       storage.removeItem(POSTHOG_BOOTSTRAP_KEY);
       return undefined;
     }
+
+    if (isStoredHandoffAlreadyApplied(parsed)) return undefined;
+    markStoredHandoffApplied(parsed);
 
     // Keep valid handoffs for adjacent apps on the same origin, especially
     // Agent Canvas after the Cloud root redirects to /canvas.
