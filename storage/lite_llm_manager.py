@@ -1875,9 +1875,13 @@ class LiteLlmManager:
             out['config_error'] = 'LITE_LLM_API_URL not configured'
             return out
 
-        async def _probe(
-            path: str, headers: dict[str, str] | None = None
-        ) -> tuple[int | None, str | None]:
+        async def _record_probe(
+            prefix: str, path: str, headers: dict[str, str] | None = None
+        ) -> None:
+            """Record a probe outcome as ``<prefix>_status`` on success or
+            ``<prefix>_error`` on failure. Errors are truncated to bound
+            log/response growth on long stack traces.
+            """
             try:
                 async with httpx.AsyncClient(
                     verify=httpx_verify_option(),
@@ -1886,32 +1890,19 @@ class LiteLlmManager:
                     r = await client.get(
                         f'{LITE_LLM_API_URL}{path}', headers=headers or {}
                     )
-                    return r.status_code, None
+                    out[f'{prefix}_status'] = r.status_code
             except Exception as e:
-                # Truncate to avoid unbounded log/response growth on stack traces.
-                return None, f'{type(e).__name__}: {str(e)[:160]}'
+                out[f'{prefix}_error'] = f'{type(e).__name__}: {str(e)[:160]}'
 
-        status_code, err = await _probe('/health/liveliness')
-        if status_code is not None:
-            out['liveliness_status'] = status_code
-        else:
-            out['liveliness_error'] = err
-
-        status_code, err = await _probe('/health/readiness')
-        if status_code is not None:
-            out['readiness_status'] = status_code
-        else:
-            out['readiness_error'] = err
+        await _record_probe('liveliness', '/health/liveliness')
+        await _record_probe('readiness', '/health/readiness')
 
         if LITE_LLM_API_KEY:
-            status_code, err = await _probe(
+            await _record_probe(
+                'master_key_health',
                 '/health',
                 headers={'Authorization': f'Bearer {LITE_LLM_API_KEY}'},
             )
-            if status_code is not None:
-                out['master_key_health_status'] = status_code
-            else:
-                out['master_key_health_error'] = err
         else:
             out['master_key_health_error'] = 'LITE_LLM_API_KEY not configured'
 
