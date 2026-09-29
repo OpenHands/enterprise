@@ -125,12 +125,9 @@ router = APIRouter(
 def _reject_interactive_login_model_in_payload(payload: dict[str, Any]) -> None:
     """Reject a settings save whose LLM diff selects an interactive-login model.
 
-    chatgpt/ and github_copilot/ sign in through a browser device login a hosted
-    server cannot complete, which would wedge settings validation on save and on
-    every later read (OpenHands/enterprise#565). Only the incoming diff is
-    inspected, so an edit that does not touch the model is unaffected, and a bad
-    model is rejected before the merge builds an SDK LLM from it. No-op where the
-    enterprise guard module is absent (OSS).
+    Inspects only the incoming diff, so an edit that does not set the model is
+    unaffected, and rejects before the merge builds an SDK ``LLM`` from a bad
+    model. No-op in OSS builds, where the guard module is absent.
     """
     diff = payload.get('agent_settings_diff')
     model = (diff.get('llm') or {}).get('model') if isinstance(diff, dict) else None

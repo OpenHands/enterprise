@@ -70,9 +70,8 @@ INTERACTIVE_LOGIN_SAVE_ERROR = (
 def reject_interactive_login_model(model: str | None) -> None:
     """Raise ``ValueError`` if ``model`` targets an interactive-login provider.
 
-    For save-time validation on request paths, so a user cannot persist a model
-    whose credential login can never complete on a headless server and would
-    otherwise wedge every settings-validation path (OpenHands/enterprise#565).
+    Save-time counterpart to the runtime guard: stops a user from persisting a
+    model whose device login can never complete on a headless server (#565).
     """
     if is_interactive_login_model(model):
         raise ValueError(INTERACTIVE_LOGIN_SAVE_ERROR.format(model=model))

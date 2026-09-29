@@ -105,12 +105,10 @@ def _hide_personal_workspaces() -> bool:
 def _reject_org_interactive_login_model(
     agent_settings_diff: dict[str, Any] | None,
 ) -> None:
-    """Reject an org-default LLM whose model needs an interactive browser login.
+    """Reject an org-default save whose LLM diff selects an interactive-login model.
 
-    chatgpt/ and github_copilot/ can't complete their device login on a hosted
-    server and would wedge settings validation for every member of the org
-    (OpenHands/enterprise#565). Only the incoming diff is inspected, so an org
-    edit that does not touch the model is unaffected.
+    Inspects only the incoming diff, so an org edit that does not set the model is
+    unaffected.
     """
     model = (agent_settings_diff or {}).get('llm', {}).get('model')
     if is_interactive_login_model(model):
