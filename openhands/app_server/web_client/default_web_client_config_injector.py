@@ -59,6 +59,24 @@ def _get_auth_url() -> str | None:
     return url if url else None
 
 
+def _get_llm_proxy_base_url() -> str | None:
+    """Get LiteLLM proxy base URL from server constants.
+
+    Reads the resolved ``LITE_LLM_API_URL`` constant from ``server.constants``,
+    which itself reads the ``LITE_LLM_API_URL`` env var and falls back to the
+    SaaS default (``https://llm-proxy.app.all-hands.dev``). Returns ``None``
+    when the value is an empty string, so an OHE admin can opt out of
+    auto-discovery by exporting ``LITE_LLM_API_URL=``. Import is lazy so
+    ``openhands.app_server`` stays importable without ``server.constants``.
+    """
+    try:
+        from server.constants import LITE_LLM_API_URL
+    except Exception:
+        return None
+    value = (LITE_LLM_API_URL or '').strip()
+    return value if value else None
+
+
 def _get_maintenance_start_time() -> datetime | None:
     """Get maintenance start time from environment variable.
 
@@ -309,6 +327,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         default_factory=_get_jira_dc_service_account_config_error
     )
     jira_oauth_enabled: bool = Field(default_factory=_get_jira_oauth_enabled)
+    llm_proxy_base_url: str | None = Field(default_factory=_get_llm_proxy_base_url)
     acp_providers: list[ACPProviderConfig] = Field(
         default_factory=lambda: [
             ACPProviderConfig(
@@ -366,6 +385,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                 self.jira_dc_service_account_config_error
             ),
             jira_oauth_enabled=self.jira_oauth_enabled,
+            llm_proxy_base_url=self.llm_proxy_base_url,
             acp_providers=self.acp_providers,
         )
         return result

@@ -1103,3 +1103,78 @@ class TestSurfacedACPProviders:
         from openhands.sdk.settings import ACP_PROVIDERS
 
         assert set(SURFACED_ACP_PROVIDERS) <= set(ACP_PROVIDERS)
+
+
+class TestGetLlmProxyBaseUrl:
+    """Contract tests for the LiteLLM proxy base URL surfaced on WebClientConfig.
+
+    Discovery clients (Agent Canvas' provider=openhands form) read this value
+    to derive the LLM proxy URL from the user's OpenHands account URL, so a
+    silent regression here reintroduces the "type the LiteLLM URL by hand"
+    footgun that motivated issue #17810.
+    """
+
+    def test_returns_lite_llm_api_url_constant(self):
+        """SaaS default: the field mirrors LITE_LLM_API_URL exactly."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_llm_proxy_base_url,
+        )
+        from server import constants
+
+        with patch.object(
+            constants, 'LITE_LLM_API_URL', 'https://llm-proxy.app.all-hands.dev'
+        ):
+            assert _get_llm_proxy_base_url() == 'https://llm-proxy.app.all-hands.dev'
+
+    def test_returns_admin_override(self):
+        """OHE: the field mirrors whatever the admin configured, verbatim."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_llm_proxy_base_url,
+        )
+        from server import constants
+
+        with patch.object(
+            constants, 'LITE_LLM_API_URL', 'https://litellm.mycorp.example'
+        ):
+            assert _get_llm_proxy_base_url() == 'https://litellm.mycorp.example'
+
+    def test_returns_none_when_constant_is_empty(self):
+        """Explicit opt-out: an empty LITE_LLM_API_URL surfaces as null so the
+        discovery UI degrades to manual base_url entry instead of handing the
+        user an empty string."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_llm_proxy_base_url,
+        )
+        from server import constants
+
+        with patch.object(constants, 'LITE_LLM_API_URL', ''):
+            assert _get_llm_proxy_base_url() is None
+
+    def test_strips_surrounding_whitespace(self):
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_llm_proxy_base_url,
+        )
+        from server import constants
+
+        with patch.object(
+            constants, 'LITE_LLM_API_URL', '  https://llm-proxy.example  '
+        ):
+            assert _get_llm_proxy_base_url() == 'https://llm-proxy.example'
+
+    def test_default_injector_populates_field_from_constant(self):
+        """The SaaS default response must carry llm_proxy_base_url == LITE_LLM_API_URL.
+
+        This is the contract Agent Canvas relies on: given only the account
+        URL, the frontend must be able to read the proxy URL from
+        WebClientConfig without any additional configuration on SaaS.
+        """
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+        from server import constants
+
+        with patch.object(
+            constants, 'LITE_LLM_API_URL', 'https://llm-proxy.app.all-hands.dev'
+        ):
+            injector = DefaultWebClientConfigInjector()
+            assert injector.llm_proxy_base_url == constants.LITE_LLM_API_URL

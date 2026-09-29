@@ -107,3 +107,10 @@ class WebClientConfig(DiscriminatedUnionMixin):
     # Atlassian OAuth; drives direct-save + manual-webhook UI in the configure
     # flow instead of the OAuth redirect.
     jira_oauth_enabled: bool = True
+    # Base URL of the LiteLLM proxy this OpenHands account routes through.
+    # Sourced from LITE_LLM_API_URL. SaaS returns the built-in default; OHE
+    # returns whatever the admin configured. None when LITE_LLM_API_URL is
+    # explicitly unset (empty string), which signals to discovery clients
+    # that this install has no auto-configurable proxy and users must fall
+    # back to manual base_url entry.
+    llm_proxy_base_url: str | None = None
