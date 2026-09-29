@@ -388,7 +388,10 @@ def write(check: str, data: dict) -> None:
     results = json.loads(path.read_text()) if path.exists() else {}
     results[check] = {
         **data,
-        'extra_env': EXTRA_ENV,
+        # Never record credentials passed as variant env.
+        'extra_env': {
+            k: '<redacted>' if 'KEY' in k else v for k, v in EXTRA_ENV.items()
+        },
         'workload_kind': KIND,
         'recorded_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
     }
