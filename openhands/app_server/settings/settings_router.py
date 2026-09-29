@@ -122,6 +122,29 @@ router = APIRouter(
 )
 
 
+def _reject_interactive_login_model_in_payload(payload: dict[str, Any]) -> None:
+    """Reject a settings save whose LLM diff selects an interactive-login model.
+
+    chatgpt/ and github_copilot/ sign in through a browser device login a hosted
+    server cannot complete, which would wedge settings validation on save and on
+    every later read (OpenHands/enterprise#565). Only the incoming diff is
+    inspected, so an edit that does not touch the model is unaffected, and a bad
+    model is rejected before the merge builds an SDK LLM from it. No-op where the
+    enterprise guard module is absent (OSS).
+    """
+    diff = payload.get('agent_settings_diff')
+    model = (diff.get('llm') or {}).get('model') if isinstance(diff, dict) else None
+    if not model:
+        return
+    try:
+        from server.utils.litellm_interactive_login_guard import (  # type: ignore[import-not-found]
+            reject_interactive_login_model,
+        )
+    except ImportError:
+        return
+    reject_interactive_login_model(model)
+
+
 def _post_merge_llm_fixups(settings: Settings) -> None:
     """Apply LLM-specific fixups after merging settings.
 
@@ -377,6 +400,7 @@ async def store_settings(
         return cloud_analytics_consent_error
 
     try:
+        _reject_interactive_login_model_in_payload(payload)
         existing_settings = await settings_store.load()
         settings = existing_settings.model_copy() if existing_settings else Settings()
         settings.update(payload)

@@ -56,6 +56,22 @@ def test_is_interactive_login_model():
     assert not guard.is_interactive_login_model('')
 
 
+def test_reject_interactive_login_model():
+    for model in ('chatgpt/gpt-5-codex', 'github_copilot/gpt-4o', 'CHATGPT/gpt-5'):
+        with pytest.raises(ValueError) as excinfo:
+            guard.reject_interactive_login_model(model)
+        assert model in str(excinfo.value)
+
+    # Non-interactive providers and empty values are accepted (no raise).
+    for model in (
+        'anthropic/claude-sonnet-4-5',
+        'openhands/deepseek-v4-flash',
+        None,
+        '',
+    ):
+        guard.reject_interactive_login_model(model)
+
+
 def test_guard_blocks_chatgpt_device_login(installed_guard, monkeypatch):
     from litellm.llms.chatgpt.authenticator import Authenticator
 

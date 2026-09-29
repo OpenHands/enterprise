@@ -60,6 +60,24 @@ def is_interactive_login_model(model: str | None) -> bool:
     return provider in INTERACTIVE_LOGIN_PROVIDERS
 
 
+INTERACTIVE_LOGIN_SAVE_ERROR = (
+    'The model "{model}" signs in through an interactive browser device login '
+    'that a hosted server cannot complete, so it is not available here. Choose a '
+    'different provider or model.'
+)
+
+
+def reject_interactive_login_model(model: str | None) -> None:
+    """Raise ``ValueError`` if ``model`` targets an interactive-login provider.
+
+    For save-time validation on request paths, so a user cannot persist a model
+    whose credential login can never complete on a headless server and would
+    otherwise wedge every settings-validation path (OpenHands/enterprise#565).
+    """
+    if is_interactive_login_model(model):
+        raise ValueError(INTERACTIVE_LOGIN_SAVE_ERROR.format(model=model))
+
+
 def install_litellm_interactive_login_guard() -> None:
     """Disable LiteLLM interactive device-login flows for this process.
 

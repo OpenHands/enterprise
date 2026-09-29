@@ -273,6 +273,30 @@ async def test_store_settings_rejects_legacy_nested_payload_keys(test_client):
 
 
 @pytest.mark.asyncio
+async def test_store_settings_rejects_interactive_login_model(test_client):
+    # A chatgpt/ or github_copilot/ model can't complete its browser device login
+    # on a hosted server; it must be rejected before the merge builds an LLM from
+    # it (OpenHands/enterprise#565). Payload built as a raw dict so the test itself
+    # never constructs such an LLM.
+    response = test_client.post(
+        '/api/v1/settings',
+        json={'agent_settings_diff': {'llm': {'model': 'chatgpt/gpt-5-codex'}}},
+    )
+
+    assert response.status_code == 400
+    assert 'chatgpt/gpt-5-codex' in response.json()['error']
+
+
+@pytest.mark.asyncio
+async def test_store_settings_allows_edit_that_does_not_set_model(test_client):
+    # An edit whose diff does not touch the LLM model is never rejected, even for a
+    # user who may already have an interactive-login model persisted.
+    response = test_client.post('/api/v1/settings', json={'language': 'fr'})
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_saving_settings_with_frozen_secrets_store(test_client):
     """Regression: POSTing settings must not fail with `secrets_store`.
 
