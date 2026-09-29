@@ -2688,6 +2688,22 @@ class TestLiveStatusAppConversationService:
         assert 'terminal' not in names
         assert len([n for n in names if n in {'switch_llm', 'SwitchLLMTool'}]) == 1
 
+    @pytest.mark.parametrize('from_profile', [False, True])
+    @pytest.mark.asyncio
+    async def test_plan_launch_with_default_tools_keeps_switch_llm(self, from_profile):
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')), tools=None
+            ),
+            from_profile=from_profile,
+            agent_type=AgentType.PLAN,
+        )
+
+        names = [t.name for t in result.agent.tools] + list(
+            result.agent.include_default_tools
+        )
+        assert len([n for n in names if n in {'switch_llm', 'SwitchLLMTool'}]) == 1
+
     @pytest.mark.parametrize('agent_type', [AgentType.DEFAULT, AgentType.PLAN])
     @pytest.mark.asyncio
     async def test_build_request_resolves_a_selected_switch_llm_once(self, agent_type):

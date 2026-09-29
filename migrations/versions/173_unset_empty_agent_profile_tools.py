@@ -27,6 +27,7 @@ def _unset_empty_tools(agent_profiles: dict[str, Any]) -> bool:
             isinstance(profile, dict)
             and profile.get('agent_kind', 'openhands') == 'openhands'
             and profile.get('tools') == []
+            and profile.get('schema_version', 1) < 3
         ):
             profile['tools'] = None
             changed = True

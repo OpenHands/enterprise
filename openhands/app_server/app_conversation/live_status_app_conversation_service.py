@@ -2258,7 +2258,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             if project_dir:
                 plan_path = self._compute_plan_path(project_dir, git_provider)
             tools = get_planning_tools(plan_path=plan_path)
-            if profile_tools and _selects_tool(profile_tools, SWITCH_LLM_TOOL_NAME):
+            if profile_tools is None or _selects_tool(
+                profile_tools, SWITCH_LLM_TOOL_NAME
+            ):
                 tools.append(Tool(name=SWITCH_LLM_TOOL_NAME))
         else:
             register_builtins_agents(enable_browser=True)

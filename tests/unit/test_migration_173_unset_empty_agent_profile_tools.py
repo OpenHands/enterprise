@@ -65,3 +65,12 @@ def test_upgrade_unsets_only_empty_openhands_tools(monkeypatch):
             acp={'name': 'acp', 'agent_kind': 'acp', 'tools': []},
         )
     }
+
+
+def test_upgrade_keeps_an_empty_tools_list_saved_at_schema_3(monkeypatch):
+    updates = _run_upgrade(
+        monkeypatch,
+        {'org-a': _profiles(bare={'name': 'bare', 'tools': [], 'schema_version': 3})},
+    )
+
+    assert updates == {}
