@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from typing import Any, ClassVar
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, ValidationError, model_serializer
 
 from openhands.sdk import Action, Event, Observation
+
+_logger = logging.getLogger(__name__)
+_VALID_EVENT_SOURCES = frozenset({'agent', 'user', 'environment', 'hook'})
+_UNKNOWN_EVENT_KIND = 'UnknownEvent'
 
 
 class UnparsedAction(Action):
@@ -17,6 +22,10 @@ class UnparsedAction(Action):
     original_kind: str
     raw_payload: dict[str, Any]
 
+    @model_serializer(mode='plain')
+    def _serialize_raw_payload(self) -> dict[str, Any]:
+        return copy.deepcopy(self.raw_payload)
+
 
 class UnparsedObservation(Observation):
     """Fallback for observation payloads unknown to this server."""
@@ -25,6 +34,10 @@ class UnparsedObservation(Observation):
 
     original_kind: str
     raw_payload: dict[str, Any]
+
+    @model_serializer(mode='plain')
+    def _serialize_raw_payload(self) -> dict[str, Any]:
+        return copy.deepcopy(self.raw_payload)
 
 
 class UnparsedEvent(Event):
@@ -35,6 +48,10 @@ class UnparsedEvent(Event):
     original_kind: str
     raw_payload: dict[str, Any]
 
+    @model_serializer(mode='plain')
+    def _serialize_raw_payload(self) -> dict[str, Any]:
+        return copy.deepcopy(self.raw_payload)
+
 
 def parse_event_payload(payload: Any) -> Event:
     if isinstance(payload, Event):
@@ -43,7 +60,10 @@ def parse_event_payload(payload: Any) -> Event:
         return payload
 
     normalized = _normalize_event_payload(copy.deepcopy(payload))
-    return Event.model_validate(normalized)
+    try:
+        return Event.model_validate(normalized)
+    except (TypeError, ValueError, ValidationError) as exc:
+        return _fallback_unparsed_event(payload, exc)
 
 
 def parse_event_json(json_data: str | bytes) -> Event:
@@ -85,15 +105,31 @@ def _wrap_unknown_nested_schema(
     }
 
 
+def _fallback_unparsed_event(payload: dict[str, Any], exc: Exception) -> Event:
+    original_kind = payload.get('kind')
+    if not isinstance(original_kind, str):
+        original_kind = _UNKNOWN_EVENT_KIND
+    _logger.warning(
+        'event_parsing:falling_back_to_unparsed_event',
+        extra={
+            'event_kind': original_kind,
+            'error': str(exc),
+        },
+    )
+    return Event.model_validate(_unparsed_event_payload(payload, original_kind))
+
+
 def _unparsed_event_payload(
     payload: dict[str, Any], original_kind: str
 ) -> dict[str, Any]:
+    source = payload.get('source')
     result: dict[str, Any] = {
         'kind': 'UnparsedEvent',
+        'source': source if source in _VALID_EVENT_SOURCES else 'environment',
         'original_kind': original_kind,
         'raw_payload': payload,
     }
-    for field_name in ('id', 'timestamp', 'source', 'parent_id'):
+    for field_name in ('id', 'timestamp', 'parent_id'):
         if field_name in payload and payload[field_name] is not None:
             result[field_name] = payload[field_name]
     return result

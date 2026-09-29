@@ -10,6 +10,8 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 )
 from openhands.app_server.event.event_parsing import (
     UnparsedAction,
+    UnparsedEvent,
+    UnparsedObservation,
     parse_event_payload,
 )
 from openhands.app_server.event_callback.webhook_router import on_event
@@ -22,7 +24,11 @@ def _custom_action_event_payload() -> dict:
         'id': '11111111-1111-1111-1111-111111111111',
         'timestamp': '2026-01-01T00:00:00',
         'source': 'agent',
+        'parent_id': None,
         'thought': [],
+        'reasoning_content': None,
+        'thinking_blocks': [],
+        'responses_reasoning_item': None,
         'action': {
             'kind': 'ClientDefinedBrowserAction',
             'selector': '#submit',
@@ -35,13 +41,18 @@ def _custom_action_event_payload() -> dict:
             'name': 'client_browser',
             'arguments': '{}',
             'origin': 'completion',
+            'responses_item_id': None,
         },
         'llm_response_id': 'response_1',
+        'security_risk': 'UNKNOWN',
+        'critic_result': None,
+        'summary': None,
     }
 
 
 def test_parse_event_payload_preserves_unknown_action_payload():
-    event = parse_event_payload(_custom_action_event_payload())
+    payload = _custom_action_event_payload()
+    event = parse_event_payload(payload)
 
     assert isinstance(event, ActionEvent)
     assert isinstance(event.action, UnparsedAction)
@@ -51,11 +62,85 @@ def test_parse_event_payload_preserves_unknown_action_payload():
         'selector': '#submit',
         'operation': 'click',
     }
+    assert event.model_dump(mode='json') == payload
 
     round_tripped = parse_event_payload(event.model_dump(mode='json'))
     assert isinstance(round_tripped, ActionEvent)
     assert isinstance(round_tripped.action, UnparsedAction)
     assert round_tripped.action.raw_payload == event.action.raw_payload
+
+
+def test_unparsed_fallback_types_serialize_raw_payload():
+    raw_action = {'kind': 'ClientAction_custom', 'value': 1}
+    raw_observation = {'kind': 'ClientObservation_custom', 'value': 2}
+    raw_event = {'kind': 'FutureEvent', 'value': 3}
+
+    assert (
+        UnparsedAction(
+            original_kind='ClientAction_custom', raw_payload=raw_action
+        ).model_dump(mode='json')
+        == raw_action
+    )
+    assert (
+        UnparsedObservation(
+            original_kind='ClientObservation_custom', raw_payload=raw_observation
+        ).model_dump(mode='json')
+        == raw_observation
+    )
+    assert (
+        UnparsedEvent(
+            source='environment', original_kind='FutureEvent', raw_payload=raw_event
+        ).model_dump(mode='json')
+        == raw_event
+    )
+
+
+def test_parse_event_payload_falls_back_when_known_event_validation_fails():
+    payload = {
+        'kind': 'MessageEvent',
+        'id': '22222222-2222-2222-2222-222222222222',
+        'timestamp': '2026-01-01T00:00:00',
+        'source': 'agent',
+        'parent_id': None,
+        'llm_message': {
+            'role': 'assistant',
+            'content': [{'cache_prompt': False, 'type': 'text', 'text': 'hello'}],
+            'tool_calls': None,
+            'tool_call_id': None,
+            'name': None,
+            'reasoning_content': None,
+            'thinking_blocks': [],
+            'responses_reasoning_item': None,
+        },
+        'llm_response_id': None,
+        'activated_skills': [],
+        'extended_content': [],
+        'sender': None,
+        'critic_result': None,
+        'future_field': 'from a newer SDK',
+    }
+
+    with patch('openhands.app_server.event.event_parsing._logger') as logger:
+        event = parse_event_payload(payload)
+
+    assert isinstance(event, UnparsedEvent)
+    assert event.original_kind == 'MessageEvent'
+    assert event.raw_payload == payload
+    assert event.model_dump(mode='json') == payload
+    logger.warning.assert_called_once()
+    assert logger.warning.call_args.args[0] == (
+        'event_parsing:falling_back_to_unparsed_event'
+    )
+
+
+def test_parse_event_payload_preserves_unknown_top_level_event_without_source():
+    payload = {'kind': 'FutureEvent', 'future_field': 'value'}
+
+    event = parse_event_payload(payload)
+
+    assert isinstance(event, UnparsedEvent)
+    assert event.source == 'environment'
+    assert event.model_dump(mode='json') == payload
 
 
 @pytest.mark.asyncio

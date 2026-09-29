@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.models import (
@@ -2564,6 +2565,41 @@ class TestLiveStatusAppConversationService:
             'profile-skill',
             'request-skill',
         ]
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_rejects_client_tools_for_acp_agent_before_sandbox(
+        self,
+    ):
+        """ACP agents own their tool protocol, so client tools fail fast."""
+        from openhands.sdk.settings import ACPAgentSettings
+
+        self.mock_user.agent_settings = ACPAgentSettings(
+            acp_server='claude-code',
+            llm=LLM(model='claude-sonnet-4-5', api_key=None),
+            agent_context=None,
+        )
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        self.service._wait_for_sandbox_start = Mock()
+        request = AppConversationStartRequest(
+            client_tools=[
+                ClientToolSpec(
+                    name='automation_form_update',
+                    description='Update the automation setup form.',
+                    parameters={'type': 'object', 'properties': {}},
+                )
+            ]
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            async for _ in self.service._start_app_conversation(request):
+                pass
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == (
+            'client_tools are not supported for ACP agent launches'
+        )
+        self.service._wait_for_sandbox_start.assert_not_called()
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',

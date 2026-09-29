@@ -79,6 +79,28 @@ def test_app_conversation_start_request_accepts_client_tools():
     assert dumped['client_tools'] == [tool.model_dump(mode='json')]
 
 
+def test_app_conversation_start_request_rejects_duplicate_client_tool_names():
+    tool = ClientToolSpec(
+        name='automation_form_update',
+        description='Update the automation setup form.',
+        parameters={'type': 'object', 'properties': {}},
+    )
+
+    with pytest.raises(ValidationError, match='Duplicate client tool name'):
+        AppConversationStartRequest(client_tools=[tool, tool])
+
+
+def test_app_conversation_start_request_rejects_builtin_client_tool_name():
+    tool = ClientToolSpec(
+        name='terminal',
+        description='Collides with the built-in terminal tool.',
+        parameters={'type': 'object', 'properties': {}},
+    )
+
+    with pytest.raises(ValidationError, match='built-in tool'):
+        AppConversationStartRequest(client_tools=[tool])
+
+
 def test_app_conversation_update_request_includes_title_field():
     """Test that AppConversationUpdateRequest supports updating the title field.
 

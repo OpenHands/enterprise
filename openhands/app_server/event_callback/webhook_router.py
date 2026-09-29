@@ -20,7 +20,7 @@ from fastapi import (
 )
 from fastapi.security import APIKeyHeader
 from jwt import InvalidTokenError
-from pydantic import BaseModel, Field, SecretStr, ValidationError
+from pydantic import BaseModel, Field, SecretStr
 
 from openhands import tools  # type: ignore[attr-defined]
 from openhands.agent_server.models import ConversationInfo, Success
@@ -538,12 +538,7 @@ async def on_event(
     event_service: EventService = event_service_dependency,
 ) -> Success:
     """Webhook callback for when event stream events occur."""
-    try:
-        parsed_events = [parse_event_payload(event) for event in events]
-    except (TypeError, ValueError, ValidationError) as exc:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+    parsed_events = [parse_event_payload(event) for event in events]
 
     try:
         # Save events...

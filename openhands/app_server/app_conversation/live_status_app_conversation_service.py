@@ -12,7 +12,7 @@ from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import Request
+from fastapi import HTTPException, Request, status
 from pydantic import Field, SecretStr, TypeAdapter
 
 from openhands.agent_server.models import (
@@ -492,7 +492,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             resolve_agent_profile=True,
             override_agent_profile_id=request.agent_profile_id,
         )
-        validate_acp_provider_surfaced(user.agent_settings)
+        agent_settings = user.agent_settings
+        validate_acp_provider_surfaced(agent_settings)
+        if isinstance(agent_settings, ACPAgentSettings) and request.client_tools:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='client_tools are not supported for ACP agent launches',
+            )
 
         task = AppConversationStartTask(
             created_by_user_id=user_id,
@@ -2156,16 +2162,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     },
                 )
             if client_tools:
-                # Client tools are JSON-schema tools consumed by the Canvas event
-                # stream. ACP agents own their tool protocol, so OpenHands-only
-                # client tools are ignored on ACP launches.
-                _logger.warning(
-                    'app_conversation_start:client_tools_ignored_for_acp_agent',
-                    extra={
-                        'user_id': user.id,
-                        'conversation_id': str(conversation_id),
-                        'client_tool_names': [tool.name for tool in client_tools],
-                    },
+                raise ValueError(
+                    'client_tools are not supported for ACP agent launches'
                 )
             acp_request = await self._build_acp_start_conversation_request(
                 user=user,
