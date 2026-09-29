@@ -17,8 +17,10 @@ DSN = os.environ.get('POC_DATABASE_URL', 'postgresql://poc_app:poc_app@postgres/
 INTERVAL = int(os.environ.get('POC_INTERVAL_SECONDS', '10'))
 JOB_SECONDS = float(os.environ.get('POC_JOB_SECONDS', '1'))
 REPLICA = socket.gethostname()
-# P9: do the work with a blocking sleep, as sync code in an async job does today.
-BLOCKING = os.environ.get('POC_JOB_BLOCKING', '0').lower() in ('true', '1')
+# P9: how the job does its work. '0' awaits (non-blocking async); '1' blocks the
+# event loop, as sync code in an async job does today; 'thread' runs the same
+# blocking work via asyncio.to_thread, the async-safe way to call sync code.
+BLOCKING = os.environ.get('POC_JOB_BLOCKING', '0').lower()
 
 
 def slot_for(t: datetime | None = None) -> datetime:
@@ -57,8 +59,10 @@ async def start_run(job: str, slot: datetime) -> int:
 async def finish_run(run_id: int, seconds: float | None = None) -> None:
     """Do the 'work', then mark the run finished. Safe to repeat."""
     duration = JOB_SECONDS if seconds is None else seconds
-    if BLOCKING:
+    if BLOCKING in ('true', '1'):
         time.sleep(duration)  # noqa: ASYNC251 - deliberately blocks the event loop
+    elif BLOCKING == 'thread':
+        await asyncio.to_thread(time.sleep, duration)
     else:
         await asyncio.sleep(duration)
     async with await psycopg.AsyncConnection.connect(DSN, autocommit=True) as conn:

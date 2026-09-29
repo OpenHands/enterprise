@@ -7,16 +7,18 @@ The stub blocks for 100 s, over three times a 30 s stall threshold and longer
 than a once-a-minute recovery cycle.
 """
 
+import os
 import time
 
 JOB_SECONDS = 100
 
 
 def test_p9_blocking_job(stack, record):
+    # TQ_P9_MODE picks how the job works: 1 (blocks the loop), thread, or 0 (awaits).
     s = stack(
         POC_INTERVAL_SECONDS='60',
         POC_JOB_SECONDS=str(JOB_SECONDS),
-        POC_JOB_BLOCKING='1',
+        POC_JOB_BLOCKING=os.environ.get('TQ_P9_MODE', '1'),
     )
     run_id, slot, runner = s.wait_for(
         'SELECT id, slot, replica FROM poc_job_runs WHERE finished_at IS NULL '
@@ -46,6 +48,7 @@ def test_p9_blocking_job(stack, record):
         'P9',
         {
             'job_seconds': JOB_SECONDS,
+            'mode': os.environ.get('TQ_P9_MODE', '1'),
             'first_runner': runner,
             'starts_for_occurrence': len(rows),
             'completions_for_occurrence': len(finished),
