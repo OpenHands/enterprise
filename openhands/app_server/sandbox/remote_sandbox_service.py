@@ -1,9 +1,7 @@
 import asyncio
-import hashlib
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, AsyncGenerator
 from urllib.parse import urlparse
 from uuid import UUID
@@ -12,9 +10,7 @@ import base62
 import httpx
 from fastapi import Request
 from pydantic import Field
-from sqlalchemy import String, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Mapped, mapped_column
 
 from openhands.agent_server.models import (
     ConversationInfo,
@@ -53,6 +49,17 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     resolve_sandbox_spec,
 )
+from openhands.app_server.sandbox.sandbox_store import (
+    REMOTE_BACKEND,
+    StoredSandbox,
+    get_stored_sandbox,
+    get_stored_sandbox_by_session_api_key,
+    search_stored_sandboxes,
+    secure_select,
+)
+from openhands.app_server.sandbox.sandbox_store import (
+    hash_session_api_key as _hash_session_api_key,
+)
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.settings.settings_models import grouped_workspace_dir
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
@@ -60,7 +67,6 @@ from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
-from openhands.app_server.utils.sql_utils import Base, UtcDateTime
 from openhands.sdk.utils.paging import page_iterator
 
 _logger = logging.getLogger(__name__)
@@ -82,11 +88,6 @@ WORKER_1_PORT = 12000
 WORKER_2_PORT = 12001
 
 
-def _hash_session_api_key(session_api_key: str) -> str:
-    """Hash a session API key using SHA-256."""
-    return hashlib.sha256(session_api_key.encode()).hexdigest()
-
-
 def _runtime_api_error_detail(response: httpx.Response) -> str | None:
     """Return the runtime API's ``detail`` string from an error response, if any."""
     try:
@@ -98,37 +99,17 @@ def _runtime_api_error_detail(response: httpx.Response) -> str | None:
     return None
 
 
-class StoredRemoteSandbox(Base):
-    """Local storage for remote sandbox info.
-
-    The remote runtime API does not return some variables we need, and does not
-    return stopped runtimes in list operations, so we need a local copy. We use
-    the remote api as a source of truth on what is currently running, not what was
-    run historicallly."""
-
-    __tablename__ = 'v1_remote_sandbox'
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    created_by_user_id: Mapped[str | None] = mapped_column(
-        String, nullable=True, index=True
-    )
-    sandbox_spec_id: Mapped[str] = mapped_column(
-        String, index=True
-    )  # shadows runtime['image']
-    session_api_key_hash: Mapped[str | None] = mapped_column(
-        String, nullable=True, index=True
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        UtcDateTime, server_default=func.now(), index=True
-    )
-
-
 @dataclass
 class RemoteSandboxService(SandboxService):
     """Sandbox service that uses HTTP to communicate with a remote runtime API.
 
     This service adapts the legacy RemoteRuntime HTTP protocol to work with
     the new Sandbox interface.
+
+    The runtime API does not return some fields the app needs, and does not
+    list stopped runtimes, so each sandbox also has a row in the shared
+    sandbox table (see ``sandbox_store``). The runtime API is the source of
+    truth for what is running now.
     """
 
     sandbox_spec_service: SandboxSpecService
@@ -174,7 +155,7 @@ class RemoteSandboxService(SandboxService):
         raise last_exc  # type: ignore[misc]  # unreachable; keeps mypy happy
 
     def _to_sandbox_info(
-        self, stored: StoredRemoteSandbox, runtime: dict[str, Any] | None = None
+        self, stored: StoredSandbox, runtime: dict[str, Any] | None = None
     ):
         status = self._get_sandbox_status_from_runtime(runtime)
 
@@ -248,19 +229,10 @@ class RemoteSandboxService(SandboxService):
 
         return SandboxStatus.MISSING
 
-    async def _secure_select(self):
-        query = select(StoredRemoteSandbox)
-        user_id = await self.user_context.get_user_id()
-        if user_id:
-            query = query.where(StoredRemoteSandbox.created_by_user_id == user_id)
-        return query
-
-    async def _get_stored_sandbox(self, sandbox_id: str) -> StoredRemoteSandbox | None:
-        stmt = await self._secure_select()
-        stmt = stmt.where(StoredRemoteSandbox.id == sandbox_id)
-        result = await self.db_session.execute(stmt)
-        stored_sandbox = result.scalar_one_or_none()
-        return stored_sandbox
+    async def _get_stored_sandbox(self, sandbox_id: str) -> StoredSandbox | None:
+        return await get_stored_sandbox(
+            self.db_session, self.user_context, REMOTE_BACKEND, sandbox_id
+        )
 
     async def _get_runtime(self, sandbox_id: str) -> dict[str, Any]:
         response = await self._send_runtime_api_request(
@@ -331,35 +303,10 @@ class RemoteSandboxService(SandboxService):
         page_id: str | None = None,
         limit: int = 100,
     ) -> SandboxPage:
-        stmt = await self._secure_select()
-
-        # Handle pagination
-        if page_id is not None:
-            # Parse page_id to get offset or cursor
-            try:
-                offset = int(page_id)
-                stmt = stmt.offset(offset)
-            except ValueError:
-                # If page_id is not a valid integer, start from beginning
-                offset = 0
-        else:
-            offset = 0
-
-        # Apply limit and get one extra to check if there are more results
-        stmt = stmt.limit(limit + 1).order_by(StoredRemoteSandbox.created_at.desc())
-
-        result = await self.db_session.execute(stmt)
-        stored_sandboxes = result.scalars().all()
-
-        # Check if there are more results
-        has_more = len(stored_sandboxes) > limit
-        if has_more:
-            stored_sandboxes = stored_sandboxes[:limit]
-
-        # Calculate next page ID
-        next_page_id = None
-        if has_more:
-            next_page_id = str(offset + limit)
+        page = await search_stored_sandboxes(
+            self.db_session, self.user_context, REMOTE_BACKEND, page_id, limit
+        )
+        stored_sandboxes = page.items
 
         # Batch fetch runtime data for all sandboxes
         sandbox_ids = [stored_sandbox.id for stored_sandbox in stored_sandboxes]
@@ -371,7 +318,7 @@ class RemoteSandboxService(SandboxService):
             for stored_sandbox in stored_sandboxes
         ]
 
-        return SandboxPage(items=items, next_page_id=next_page_id)
+        return SandboxPage(items=items, next_page_id=page.next_page_id)
 
     async def get_sandbox(self, sandbox_id: str) -> SandboxInfo | None:
         """Get a single sandbox by checking its corresponding runtime."""
@@ -393,14 +340,9 @@ class RemoteSandboxService(SandboxService):
         self, session_api_key: str
     ) -> SandboxInfo | None:
         """Get a single sandbox by session API key using the stored hash."""
-        session_api_key_hash = _hash_session_api_key(session_api_key)
-
-        stmt = await self._secure_select()
-        stmt = stmt.where(
-            StoredRemoteSandbox.session_api_key_hash == session_api_key_hash
+        stored_sandbox = await get_stored_sandbox_by_session_api_key(
+            self.db_session, self.user_context, REMOTE_BACKEND, session_api_key
         )
-        result = await self.db_session.execute(stmt)
-        stored_sandbox = result.scalar_one_or_none()
 
         if stored_sandbox is None:
             return None
@@ -415,7 +357,7 @@ class RemoteSandboxService(SandboxService):
             )
             return self._to_sandbox_info(stored_sandbox, None)
 
-    async def _get_user_running_sandboxes(self) -> list[StoredRemoteSandbox]:
+    async def _get_user_running_sandboxes(self) -> list[StoredSandbox]:
         """Return the DB records for sandboxes that are actually running right now.
 
         Calls the runtime /list endpoint (which returns all running sessions across
@@ -431,9 +373,9 @@ class RemoteSandboxService(SandboxService):
             if 'session_id' in runtime
         }
 
-        query = await self._secure_select()
-        query = query.filter(StoredRemoteSandbox.id.in_(running_session_ids)).order_by(
-            StoredRemoteSandbox.created_at.asc()
+        query = await secure_select(self.user_context, REMOTE_BACKEND)
+        query = query.filter(StoredSandbox.id.in_(running_session_ids)).order_by(
+            StoredSandbox.created_at.asc()
         )
         result = await self.db_session.execute(query)
         return list(result.scalars().all())
@@ -442,14 +384,9 @@ class RemoteSandboxService(SandboxService):
         self, session_api_key: str
     ) -> SandboxRecord | None:
         """Get persisted sandbox identity by session API key — DB lookup only, no runtime call."""
-        session_api_key_hash = _hash_session_api_key(session_api_key)
-
-        stmt = await self._secure_select()
-        stmt = stmt.where(
-            StoredRemoteSandbox.session_api_key_hash == session_api_key_hash
+        stored_sandbox = await get_stored_sandbox_by_session_api_key(
+            self.db_session, self.user_context, REMOTE_BACKEND, session_api_key
         )
-        result = await self.db_session.execute(stmt)
-        stored_sandbox = result.scalar_one_or_none()
 
         if stored_sandbox is None:
             return None
@@ -483,8 +420,9 @@ class RemoteSandboxService(SandboxService):
             user_id = await self.user_context.get_user_id()
 
             # Store the sandbox
-            stored_sandbox = StoredRemoteSandbox(
+            stored_sandbox = StoredSandbox(
                 id=sandbox_id,
+                backend=REMOTE_BACKEND,
                 created_by_user_id=user_id,
                 sandbox_spec_id=sandbox_spec.id,
                 created_at=utc_now(),
@@ -807,7 +745,7 @@ class RemoteSandboxService(SandboxService):
 
     async def _resolve_archive_path(
         self,
-        stored_sandbox: StoredRemoteSandbox,
+        stored_sandbox: StoredSandbox,
         conversation_id: str | None,
         workspace_path: str | None,
     ) -> str:
@@ -839,7 +777,7 @@ class RemoteSandboxService(SandboxService):
 
     async def _archive_workspace(
         self,
-        stored_sandbox: StoredRemoteSandbox,
+        stored_sandbox: StoredSandbox,
         conversation_id: str | None,
         runtime_data: dict,
         workspace_path: str | None,
@@ -978,8 +916,8 @@ class RemoteSandboxService(SandboxService):
         """
         if not sandbox_ids:
             return []
-        query = await self._secure_select()
-        query = query.filter(StoredRemoteSandbox.id.in_(sandbox_ids))
+        query = await secure_select(self.user_context, REMOTE_BACKEND)
+        query = query.filter(StoredSandbox.id.in_(sandbox_ids))
         stored_remote_sandboxes = await self.db_session.execute(query)
         stored_remote_sandboxes_by_id = {
             stored_remote_sandbox[0].id: stored_remote_sandbox[0]
