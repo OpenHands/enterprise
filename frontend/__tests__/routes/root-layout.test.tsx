@@ -384,19 +384,15 @@ describe("MainApp", () => {
       );
     });
 
-    it("should preserve root query parameters in returnTo when redirecting to login", async () => {
-      renderWithLoginStub(RouterStubWithDeviceVerify, [
-        "/?oh_ph_handoff=encoded-handoff",
-      ]);
+    it("should preserve neutral root query parameters in returnTo when redirecting to login", async () => {
+      renderWithLoginStub(RouterStubWithDeviceVerify, ["/?utm_source=docs"]);
 
       await waitFor(
         () => {
           expect(screen.getByTestId("login-page")).toBeInTheDocument();
           const returnToElement = screen.getByTestId("return-to-param");
           expect(returnToElement).toBeInTheDocument();
-          expect(returnToElement.textContent).toBe(
-            "/?oh_ph_handoff=encoded-handoff",
-          );
+          expect(returnToElement.textContent).toBe("/?utm_source=docs");
         },
         { timeout: 2000 },
       );
