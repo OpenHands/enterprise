@@ -219,6 +219,45 @@ describe("PostHogWrapper", () => {
     expect(window.location.hash).toBe("");
   });
 
+  it("stores consumed structured handoff nonces in a pruned bounded map", async () => {
+    const now = Date.now();
+    localStorage.setItem(
+      "posthog_bootstrap:consumed_nonces",
+      JSON.stringify({
+        expired: now - 60_000,
+        ...Object.fromEntries(
+          Array.from({ length: 105 }, (_, index) => [
+            `existing-${index}`,
+            now + 10_000 + index,
+          ]),
+        ),
+      }),
+    );
+    window.location.hash = `oh_ph_handoff=${encodeHandoff({
+      v: 1,
+      exp: now + 120_000,
+      nonce: "bounded-new",
+      distinct_id: "website-anon-id",
+      session_id: "website-session-id",
+    })}`;
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child");
+
+    const stored = JSON.parse(
+      localStorage.getItem("posthog_bootstrap:consumed_nonces") ?? "{}",
+    );
+    expect(Object.keys(stored)).toHaveLength(100);
+    expect(stored.expired).toBeUndefined();
+    expect(stored["bounded-new"]).toBe(now + 120_000);
+    expect(localStorage.getItem("posthog_bootstrap:bounded-new")).toBeNull();
+  });
+
   it("should initialize PostHog from query handoff and remove only handoff params", async () => {
     const encoded = encodeHandoff({
       v: 1,
