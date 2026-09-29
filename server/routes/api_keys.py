@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -178,6 +178,14 @@ class LlmApiKeyResponse(BaseModel):
 
 class ManagedLlmApiKeyRefreshResponse(BaseModel):
     refreshed: bool
+    # Populated only when the freshly-minted key fails ``verify_key``. Absent
+    # on the happy path (verify succeeds) so a green response stays a boolean.
+    # On failure carries the ``LiteLlmManager.diagnose_state`` output plus a
+    # ``new_key_verifies=false`` marker, so a curl caller sees the smoking gun
+    # in the response body without needing to grep logs. Distinguishes
+    # app-server-side bugs from LiteLLM-side systemic failures (master-key
+    # drift, LiteLLM down, DB unreachable) — see CS-35 hypotheses H4/H5/H6.
+    diagnostics: dict[str, Any] | None = None
 
 
 class ByorPermittedResponse(BaseModel):
@@ -497,11 +505,48 @@ async def refresh_managed_llm_api_key(
         # The store already generated-before-deleted and cleaned up the
         # previous key (best-effort) under a per-org lock, so the route does
         # not delete it again.
+
+        # Verify the freshly-minted key against LiteLLM before returning.
+        # Rotation succeeded in the app-server DB either way — but if the
+        # new key ALSO fails verify, we have caught a LiteLLM-side systemic
+        # failure (master-key drift, DB unreachable, schema mismatch) in
+        # the act. Emit the diagnostic in the response body so a curl caller
+        # sees it, and as a structured log line so support-bundle triage
+        # picks it up without needing to correlate a user report. See CS-35
+        # hypotheses H4/H5/H6.
+        diagnostics: dict[str, Any] | None = None
+        if rotation.new_key is not None:
+            new_key_verifies = await LiteLlmManager.verify_key(
+                rotation.new_key, user_id
+            )
+            if new_key_verifies:
+                logger.info(
+                    'api_keys:managed_refresh:post_verify_ok',
+                    extra={
+                        'user_id': user_id,
+                        'org_id': str(effective_org_id),
+                    },
+                )
+            else:
+                litellm_health = await LiteLlmManager.diagnose_state()
+                diagnostics = {
+                    'new_key_verifies': False,
+                    'litellm_health': litellm_health,
+                }
+                logger.warning(
+                    'api_keys:managed_refresh:post_verify_failed',
+                    extra={
+                        'user_id': user_id,
+                        'org_id': str(effective_org_id),
+                        'diagnostics': diagnostics,
+                    },
+                )
+
         logger.info(
             'Managed LLM API key refresh completed successfully',
             extra={'user_id': user_id, 'org_id': str(effective_org_id)},
         )
-        return ManagedLlmApiKeyRefreshResponse(refreshed=True)
+        return ManagedLlmApiKeyRefreshResponse(refreshed=True, diagnostics=diagnostics)
     except HTTPException:
         raise
     except Exception as e:

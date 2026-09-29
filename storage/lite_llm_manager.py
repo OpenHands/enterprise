@@ -1846,6 +1846,77 @@ class LiteLlmManager:
             return True
 
     @staticmethod
+    async def diagnose_state() -> dict[str, Any]:
+        """Cheap LiteLLM state probe for support-bundle triage.
+
+        Intended to be called only when a rotation just yielded a key that
+        failed ``verify_key`` — the goal is to distinguish LiteLLM-side
+        systemic failures (LiteLLM down, master-key drift, DB unreachable)
+        from app-server-side bugs, without adding a per-request cost to the
+        happy path.
+
+        Never raises. Any probe failure is captured as an ``<probe>_error``
+        field so the caller can log it and continue.
+
+        Returned fields:
+        - ``liveliness_status`` (int) or ``liveliness_error`` (str): unauth
+          probe of ``/health/liveliness`` — coarsest "is LiteLLM up".
+        - ``readiness_status`` (int) or ``readiness_error`` (str): unauth
+          probe of ``/health/readiness`` — includes DB reachability.
+        - ``master_key_health_status`` (int) or ``master_key_health_error``
+          (str): probe of ``/health`` with the configured LiteLLM master
+          key. A 200 means the master key still authenticates against
+          LiteLLM; a 401 is the smoking gun for master-key drift across
+          an upgrade (H5 in CS-35).
+        """
+        out: dict[str, Any] = {}
+        if not LITE_LLM_API_URL:
+            out['config_error'] = 'LITE_LLM_API_URL not configured'
+            return out
+
+        async def _probe(
+            path: str, headers: dict[str, str] | None = None
+        ) -> tuple[int | None, str | None]:
+            try:
+                async with httpx.AsyncClient(
+                    verify=httpx_verify_option(),
+                    timeout=KEY_VERIFICATION_TIMEOUT,
+                ) as client:
+                    r = await client.get(
+                        f'{LITE_LLM_API_URL}{path}', headers=headers or {}
+                    )
+                    return r.status_code, None
+            except Exception as e:
+                # Truncate to avoid unbounded log/response growth on stack traces.
+                return None, f'{type(e).__name__}: {str(e)[:160]}'
+
+        status_code, err = await _probe('/health/liveliness')
+        if status_code is not None:
+            out['liveliness_status'] = status_code
+        else:
+            out['liveliness_error'] = err
+
+        status_code, err = await _probe('/health/readiness')
+        if status_code is not None:
+            out['readiness_status'] = status_code
+        else:
+            out['readiness_error'] = err
+
+        if LITE_LLM_API_KEY:
+            status_code, err = await _probe(
+                '/health',
+                headers={'Authorization': f'Bearer {LITE_LLM_API_KEY}'},
+            )
+            if status_code is not None:
+                out['master_key_health_status'] = status_code
+            else:
+                out['master_key_health_error'] = err
+        else:
+            out['master_key_health_error'] = 'LITE_LLM_API_KEY not configured'
+
+        return out
+
+    @staticmethod
     async def _get_key_info(
         client: httpx.AsyncClient,
         org_id: str,
