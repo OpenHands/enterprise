@@ -1,0 +1,15 @@
+{
+  "P11": {
+    "container_restarts": {
+      "tq-procrastinate-supervised-56f86b-postgres-1": 0,
+      "tq-procrastinate-supervised-56f86b-replica-a-1": 4,
+      "tq-procrastinate-supervised-56f86b-replica-b-1": 2
+    },
+    "observed_seconds": 360,
+    "poison_attempts": 6,
+    "poison_attempts_last_2_min": 2,
+    "recorded_at": "2026-09-29T01:52:38Z",
+    "tick_expected": 36,
+    "tick_occurrences": 36
+  }
+}

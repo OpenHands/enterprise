@@ -1,0 +1,15 @@
+{
+  "P11": {
+    "container_restarts": {
+      "tq-procrastinate-supervised-717371-postgres-1": 0,
+      "tq-procrastinate-supervised-717371-replica-a-1": 3,
+      "tq-procrastinate-supervised-717371-replica-b-1": 1
+    },
+    "observed_seconds": 360,
+    "poison_attempts": 4,
+    "poison_attempts_last_2_min": 0,
+    "recorded_at": "2026-09-29T01:52:44Z",
+    "tick_expected": 36,
+    "tick_occurrences": 36
+  }
+}

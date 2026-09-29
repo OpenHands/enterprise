@@ -180,3 +180,12 @@ Procrastinate's worker stops by design when its database connection fails, and r
 | Blocking code inside `async def`, stall threshold 150 s | 0 of 3 |
 
 The cause is blocking the event loop that sends heartbeats, not async itself or Procrastinate's defaults. Truly async jobs, or sync calls wrapped in `asyncio.to_thread`, are safe. Raising the stall threshold also avoids it, but delays noticing a dead worker by the same amount.
+
+## P11 — poison job (kills its worker every run), supervised workers, 6 min observed
+
+| Variant | Poison attempts | Still retrying at the end | Container restarts | Ticks run |
+|---|---|---|---|---|
+| Uncapped (the docs' stalled-job recipe) | 6, about one a minute | **yes** | 6 | 36 of 36 |
+| Capped: fail the job after 3 attempts (`POC_STALLED_MAX_ATTEMPTS=3`) | 4 (first run plus 3 retries), then `failed` | no | 4 | 36 of 36 |
+
+The documented recipe has no attempt limit, so a job that crashes its worker is retried forever and restarts a worker every minute. With two replicas the schedule survived; with one replica, or several poison jobs, it would stall. Cap it in the retry task: when `job.attempts` reaches N, `finish_job(job, status=FAILED)` instead of `retry_job(job)`.
