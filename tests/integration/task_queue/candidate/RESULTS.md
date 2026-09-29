@@ -195,3 +195,15 @@ Setup findings:
 | P7 rollout, 60 s grace | `drained` |
 
 Conductor needs the application registered in the DBOS Console under the name in the DBOS config (`tq-poc`). Before that, connections were rejected with `application tq-poc not found` (HTTP 400). A live pod logged `Recovering 1 workflows for executor <dead id>` about 60–70 s after the kill, the same behaviour as dbos-relay.
+
+### Compose — two replicas connected to hosted DBOS Conductor (`TQ_CANDIDATE=candidate_conductor`)
+
+| Check | Result (DBOS alone on Compose) |
+|---|---|
+| P1 once per occurrence | Pass (12, no doubles, none missed) |
+| P3 killed container left down | `resumed` by the other replica after 92 s (was `lost`) |
+| P3 killed container restarted | `resumed` after 95 s |
+| P7 10 s grace | `resumed` by the other replica, victim killed at the deadline (was `lost`) |
+| P7 60 s grace | `drained` |
+
+Run after the Kubernetes run finished. Both register executors under the same Conductor application (`tq-poc`), so running them together could dispatch a dead executor's workflows to a peer on the other platform, which uses a different database.
