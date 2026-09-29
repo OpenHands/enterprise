@@ -4,17 +4,17 @@
     "concurrent_second_starts": 0,
     "first_runner": "replica-b",
     "job_seconds": 100,
-    "recorded_at": "2026-09-29T01:30:01Z",
+    "recorded_at": "2026-09-29T01:34:37Z",
     "runs_for_occurrence": [
       [
         "1",
         "replica-b",
-        "2026-09-29 01:27:19.815089+00",
-        "2026-09-29 01:29:00.084725+00",
+        "2026-09-29 01:31:57.18362+00",
+        "2026-09-29 01:33:37.241007+00",
         "replica-b"
       ]
     ],
-    "seconds_observed": 156,
+    "seconds_observed": 155,
     "starts_for_occurrence": 1
   }
 }

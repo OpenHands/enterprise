@@ -151,3 +151,21 @@ look the same. The docs' 10-minute cron would push recovery to about 10 minutes.
 | P7 `rollout restart`, 60 s grace | `drained` |
 
 No occurrence completed twice and the schedule continued in every case. Kubernetes' new pod names change nothing for Procrastinate: recovery keys on the stalled worker's heartbeat, not on its identity.
+
+## P9 — blocking job (100 s blocking sleep, 30 s stall threshold)
+
+| Variant | Runs | Occurrence started twice |
+|---|---|---|
+| `async def` task that blocks the event loop (today's code shape) | 5 | **1 of 5**: re-run starting 40 ms after the first finished |
+| Sync task (`def`, run by Procrastinate in a worker thread) | 5 | 0 of 5 |
+
+A blocked event loop sends no heartbeats. If the stalled-job retry runs on the other replica during the block, it re-queues the job, and it runs again once the loop is free. It is a race, so it's intermittent, but it breaks once-per-occurrence. Blocking jobs must be registered as sync tasks, or made fully async.
+
+## P10 — Postgres restart mid-job
+
+| Variant | Result |
+|---|---|
+| Worker embedded in FastAPI (`candidate/`) | **Fail**: the running job finished, but the worker logged "Side task listener failed … stopping worker" and nothing ran afterwards. The app process stayed up, so nothing restarted it |
+| Supervised (`candidate_supervised/`: exit the process when the worker stops, plus `restart: unless-stopped`) | Pass: both workers exited and were restarted, the job finished once, the schedule continued |
+
+Procrastinate's worker stops by design when its database connection fails, and relies on a supervisor to restart it, as the `procrastinate worker` CLI process does. An embedded worker must exit the process, or it goes silent.

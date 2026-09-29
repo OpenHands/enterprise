@@ -2,16 +2,16 @@
   "P9": {
     "completions_for_occurrence": 1,
     "concurrent_second_starts": 0,
-    "first_runner": "replica-a",
+    "first_runner": "replica-b",
     "job_seconds": 100,
-    "recorded_at": "2026-09-29T01:30:07Z",
+    "recorded_at": "2026-09-29T01:34:37Z",
     "runs_for_occurrence": [
       [
         "1",
-        "replica-a",
-        "2026-09-29 01:27:26.230496+00",
-        "2026-09-29 01:29:06.245738+00",
-        "replica-a"
+        "replica-b",
+        "2026-09-29 01:31:56.648444+00",
+        "2026-09-29 01:33:36.658795+00",
+        "replica-b"
       ]
     ],
     "seconds_observed": 156,

@@ -1,0 +1,18 @@
+{
+  "name": "procrastinate-supervised",
+  "app_services": [
+    "replica-a",
+    "replica-b"
+  ],
+  "job_services": [
+    "replica-a",
+    "replica-b"
+  ],
+  "skew_service": "replica-b",
+  "expected_tables": [
+    "public.procrastinate_events",
+    "public.procrastinate_jobs",
+    "public.procrastinate_periodic_defers",
+    "public.procrastinate_workers"
+  ]
+}

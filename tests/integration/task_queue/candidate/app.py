@@ -25,6 +25,10 @@ CRON = '* * * * *' if INTERVAL == 60 else f'* * * * * */{INTERVAL}'
 # P9 variant: a sync task runs in Procrastinate's worker thread, so blocking work
 # inside it cannot starve the event loop that sends heartbeats.
 SYNC_TASK = os.environ.get('POC_SYNC_TASK', '0').lower() in ('true', '1')
+# P10 variant: the worker stops itself when it loses the database (its LISTEN
+# connection fails). Exit the process so the platform restarts it, as the
+# `procrastinate worker` CLI does; otherwise the app stays up with no worker.
+SUPERVISE = os.environ.get('POC_SUPERVISE', '0').lower() in ('true', '1')
 
 if SYNC_TASK:
 
@@ -64,6 +68,17 @@ async def lifespan(_: FastAPI):
                 stalled_worker_timeout=STALLED_SECONDS,
             )
         )
+        if SUPERVISE:
+
+            def exit_if_stopped(task: asyncio.Task) -> None:
+                if not task.cancelled():
+                    print(
+                        'procrastinate worker stopped; exiting for a restart',
+                        flush=True,
+                    )
+                    os._exit(1)
+
+            worker.add_done_callback(exit_if_stopped)
         yield
         # Cancel = graceful stop: no new jobs, wait for running ones
         # (shutdown_graceful_timeout defaults to None). No timeout here, unlike the
