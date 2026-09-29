@@ -9,10 +9,6 @@ from pydantic import BaseModel, SecretStr
 from openhands.app_server.types import AppMode
 
 
-class TokenResponse(BaseModel):
-    token: str
-
-
 class ProviderType(Enum):
     GITHUB = 'github'
     GITLAB = 'gitlab'

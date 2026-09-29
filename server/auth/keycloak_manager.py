@@ -2,6 +2,8 @@ from keycloak.keycloak_admin import KeycloakAdmin
 from keycloak.keycloak_openid import KeycloakOpenID
 
 from server.auth.constants import (
+    KEYCLOAK_ADMIN_CLIENT_ID,
+    KEYCLOAK_ADMIN_CLIENT_SECRET,
     KEYCLOAK_ADMIN_PASSWORD,
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_CLIENT_SECRET,
@@ -42,10 +44,16 @@ def get_keycloak_admin(external=False) -> KeycloakAdmin:
     if external not in _keycloak_admin_instances:
         keycloak_admin = KeycloakAdmin(
             server_url=KEYCLOAK_SERVER_URL_EXT if external else KEYCLOAK_SERVER_URL,
-            username='admin',
-            password=KEYCLOAK_ADMIN_PASSWORD,
+            username=None if KEYCLOAK_ADMIN_CLIENT_ID else 'admin',
+            password=None if KEYCLOAK_ADMIN_CLIENT_ID else KEYCLOAK_ADMIN_PASSWORD,
             realm_name='master',
-            client_id='admin-cli',
+            user_realm_name='master',
+            client_id=KEYCLOAK_ADMIN_CLIENT_ID or 'admin-cli',
+            client_secret_key=(
+                (KEYCLOAK_ADMIN_CLIENT_SECRET or KEYCLOAK_ADMIN_PASSWORD)
+                if KEYCLOAK_ADMIN_CLIENT_ID
+                else None
+            ),
             verify=True,
             timeout=KEYCLOAK_REQUEST_TIMEOUT,
             max_retries=KEYCLOAK_MAX_RETRIES,

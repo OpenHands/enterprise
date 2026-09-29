@@ -1,10 +1,15 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ProfileActionsMenu } from "#/components/features/settings/profile-actions-menu";
 import { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
 import { I18nKey } from "#/i18n/declaration";
 import { Typography } from "#/ui/typography";
 import ThreeDotsVerticalIcon from "#/icons/three-dots-vertical.svg?react";
+import {
+  settingsListIconActionButtonClassName,
+  settingsListRowClassName,
+} from "#/utils/settings-list-classes";
+import { cn } from "#/utils/utils";
 
 interface ProfileRowProps {
   profile: LlmProfileSummary;
@@ -29,49 +34,58 @@ export function ProfileRow({
 }: ProfileRowProps) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div
       data-testid="profile-row"
-      className="flex items-center justify-between gap-3 px-5 py-4"
+      className={cn(
+        settingsListRowClassName,
+        // Stacked name/model/badge needs more than the shared h-12 row height.
+        "h-auto items-start justify-between gap-3 py-3 sm:items-center",
+      )}
     >
-      <div className="flex flex-col gap-1 min-w-0 flex-1 sm:flex-row sm:items-center sm:gap-3">
-        <Typography.Text
-          className="font-medium text-white truncate min-w-0 max-w-full"
-          title={profile.name}
-        >
-          {profile.name}
-        </Typography.Text>
+      <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+        <div className="flex min-w-0 max-w-full items-center gap-2">
+          <Typography.Text
+            className="min-w-0 truncate font-medium text-white"
+            title={profile.name}
+          >
+            {profile.name}
+          </Typography.Text>
+          {isActive && (
+            <Typography.Text
+              className="shrink-0 whitespace-nowrap rounded-full bg-primary px-2 py-0.5 text-xs font-semibold text-[var(--oh-color-base)]"
+              testId="profile-active-badge"
+            >
+              {t(I18nKey.SETTINGS$PROFILE_ACTIVE_BADGE)}
+            </Typography.Text>
+          )}
+        </div>
         {profile.model ? (
           <Typography.Text
-            className="text-sm text-gray-400 truncate min-w-0 max-w-full"
+            className="min-w-0 max-w-full truncate text-sm text-[var(--oh-muted)]"
             title={profile.model}
           >
             {profile.model}
           </Typography.Text>
         ) : null}
-        {isActive && (
-          <Typography.Text
-            className="text-xs bg-primary text-[#0D0F11] font-semibold rounded-full px-2 py-0.5 whitespace-nowrap self-start sm:self-auto"
-            testId="profile-active-badge"
-          >
-            {t(I18nKey.SETTINGS$PROFILE_ACTIVE_BADGE)}
-          </Typography.Text>
-        )}
       </div>
       {canManage ? (
         <div className="relative shrink-0">
           <button
+            ref={triggerRef}
             type="button"
             onClick={() => setMenuOpen((open) => !open)}
             aria-label={t(I18nKey.SETTINGS$PROFILE_MENU)}
-            className="cursor-pointer text-gray-300 hover:text-white p-2 border border-tertiary rounded-md"
+            className={settingsListIconActionButtonClassName}
             data-testid="profile-menu-trigger"
           >
             <ThreeDotsVerticalIcon width={16} height={16} />
           </button>
           {menuOpen && (
             <ProfileActionsMenu
+              anchorRef={triggerRef}
               onEdit={() => onEdit(profile)}
               onRename={() => onRename(profile)}
               onSetActive={() => onActivate(profile.name)}

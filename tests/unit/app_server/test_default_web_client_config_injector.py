@@ -724,8 +724,8 @@ class TestGetSlackEnabled:
 
     def test_returns_true_when_all_slack_env_vars_are_configured(self):
         """Slack is enabled only when all required env vars are configured."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_slack_enabled,
+        from openhands.app_server.utils.slack_config import (
+            is_slack_configured,
         )
 
         with patch.dict(
@@ -738,12 +738,12 @@ class TestGetSlackEnabled:
             },
             clear=True,
         ):
-            assert _get_slack_enabled() is True
+            assert is_slack_configured() is True
 
     def test_returns_false_when_webhooks_are_disabled(self):
         """Slack stays disabled when the webhook feature flag is off."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_slack_enabled,
+        from openhands.app_server.utils.slack_config import (
+            is_slack_configured,
         )
 
         with patch.dict(
@@ -756,12 +756,12 @@ class TestGetSlackEnabled:
             },
             clear=True,
         ):
-            assert _get_slack_enabled() is False
+            assert is_slack_configured() is False
 
     def test_returns_true_when_webhooks_enabled_is_set_to_1(self):
         """Slack is enabled when SLACK_WEBHOOKS_ENABLED is '1' (older chart format)."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_slack_enabled,
+        from openhands.app_server.utils.slack_config import (
+            is_slack_configured,
         )
 
         with patch.dict(
@@ -774,12 +774,12 @@ class TestGetSlackEnabled:
             },
             clear=True,
         ):
-            assert _get_slack_enabled() is True
+            assert is_slack_configured() is True
 
     def test_returns_false_when_a_required_slack_secret_is_missing(self):
         """Slack stays disabled when one of the required credentials is missing."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_slack_enabled,
+        from openhands.app_server.utils.slack_config import (
+            is_slack_configured,
         )
 
         with patch.dict(
@@ -792,7 +792,7 @@ class TestGetSlackEnabled:
             },
             clear=True,
         ):
-            assert _get_slack_enabled() is False
+            assert is_slack_configured() is False
 
 
 class TestGetEmailEnabled:

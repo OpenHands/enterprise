@@ -158,9 +158,10 @@ describe("ApiKeysManager", () => {
 
     renderComponent();
 
-    // The refresh button is rendered by the active key manager.
+    // The refresh button is rendered by the active key manager. The redesigned
+    // manager renders it as an icon button, so match on its accessible name.
     expect(
-      screen.getByText("SETTINGS$REFRESH_LLM_API_KEY"),
+      screen.getByRole("button", { name: "SETTINGS$REFRESH_LLM_API_KEY" }),
     ).toBeInTheDocument();
     expect(
       screen.queryByText("SETTINGS$LLM_API_KEY_DISABLED_MESSAGE"),

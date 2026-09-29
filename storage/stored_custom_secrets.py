@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, Identity, String
+from sqlalchemy import Boolean, ForeignKey, Identity, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from storage.base import Base
@@ -21,6 +21,11 @@ class StoredCustomSecrets(Base):
     secret_name: Mapped[str] = mapped_column(String, nullable=False)
     secret_value: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str | None] = mapped_column(String, nullable=True)
+    # When True the secret is shared with all members of ``org_id``.
+    # Personal secrets (False) are visible only to ``keycloak_user_id``.
+    is_org_shared: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default='false'
+    )
 
     # Relationships
     org: Mapped['Org | None'] = relationship('Org', back_populates='user_secrets')

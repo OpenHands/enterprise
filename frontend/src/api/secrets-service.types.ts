@@ -6,7 +6,16 @@ export type CustomSecret = {
   description?: string;
 };
 
-export type CustomSecretWithoutValue = Omit<CustomSecret, "value">;
+/** Scope of a custom secret — personal (owned by the user) or organization. */
+export type CustomSecretScope = "personal" | "organization";
+
+export type CustomSecretWithoutValue = Omit<CustomSecret, "value"> & {
+  /** Whether the secret is personal or shared across the organization.
+   * Personal secrets are owned by the current user; organization secrets
+   * are shared org-wide and editable only by admins/owners. The backend
+   * always returns this field in search/list responses. */
+  scope?: CustomSecretScope;
+};
 
 /** Paginated response from GET /api/v1/secrets/search */
 export interface CustomSecretPage {
