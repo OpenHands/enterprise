@@ -23,6 +23,7 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
+import { setSuperAdminSetupStepComplete } from "#/components/features/super-admin/super-admin-setup";
 import { Settings, SettingsSchema, SettingsScope } from "#/types/settings";
 import { extractModelAndProvider } from "#/utils/extract-model-and-provider";
 import {
@@ -623,6 +624,7 @@ export function LlmSettingsScreen({
         if (useOrgHooks) {
           await saveOrgProfile.mutateAsync({ name, request });
           await activateOrgProfile.mutateAsync(name);
+          setSuperAdminSetupStepComplete("add-llm", true);
         } else {
           await saveProfile.mutateAsync({ name, request });
           await activateProfile.mutateAsync(name);

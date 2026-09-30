@@ -1,0 +1,180 @@
+.oh-guided-tour-popover.driver-popover {
+  background: var(--oh-color-base-secondary, #1c1c1c);
+  color: #fff;
+  color-scheme: dark;
+  border: 1px solid var(--oh-border, #333);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
+  min-width: 300px;
+  max-width: 400px;
+  padding: 18px 20px 16px;
+}
+
+.oh-guided-tour-popover .driver-popover-arrow {
+  border-width: 6px;
+}
+
+.oh-guided-tour-popover .driver-popover-arrow::after {
+  content: "";
+  position: absolute;
+  border: 6px solid transparent;
+}
+
+.oh-guided-tour-popover .driver-popover-arrow-side-left {
+  border-left-color: var(--oh-border, #333);
+}
+
+.oh-guided-tour-popover .driver-popover-arrow-side-left::after {
+  top: -6px;
+  left: -7px;
+  border-left-color: var(--oh-color-base-secondary, #1c1c1c);
+}
+
+.oh-guided-tour-popover .driver-popover-arrow-side-right {
+  border-right-color: var(--oh-border, #333);
+}
+
+.oh-guided-tour-popover .driver-popover-arrow-side-right::after {
+  top: -6px;
+  left: -5px;
+  border-right-color: var(--oh-color-base-secondary, #1c1c1c);
+}
+
+.oh-guided-tour-popover .driver-popover-arrow-side-top {
+  border-top-color: var(--oh-border, #333);
+}
+
+.oh-guided-tour-popover .driver-popover-arrow-side-top::after {
+  top: -7px;
+  left: -6px;
+  border-top-color: var(--oh-color-base-secondary, #1c1c1c);
+}
+
+.oh-guided-tour-popover .driver-popover-arrow-side-bottom {
+  border-bottom-color: var(--oh-border, #333);
+}
+
+.oh-guided-tour-popover .driver-popover-arrow-side-bottom::after {
+  top: -5px;
+  left: -6px;
+  border-bottom-color: var(--oh-color-base-secondary, #1c1c1c);
+}
+
+.oh-guided-tour-popover .driver-popover-title {
+  color: #fff;
+  font-size: 17px;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.oh-guided-tour-popover .driver-popover-description {
+  color: var(--oh-muted, #a3a3a3);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.oh-guided-tour-popover .driver-popover-progress-text {
+  color: var(--oh-muted, #a3a3a3);
+  font-size: 12px;
+}
+
+.oh-guided-tour-popover .driver-popover-footer {
+  margin-top: 16px;
+}
+
+.oh-guided-tour-popover .driver-popover-footer button {
+  padding: 8px 14px;
+  font-size: 13px;
+  line-height: 1.3;
+  font-weight: 500;
+  border-radius: 8px;
+  text-shadow: none;
+}
+
+.oh-guided-tour-popover .oh-guided-tour-next,
+.oh-guided-tour-popover .driver-popover-next-btn {
+  background: #fff;
+  color: #111;
+  border: 1px solid #fff;
+}
+
+.oh-guided-tour-popover .oh-guided-tour-next:hover,
+.oh-guided-tour-popover .driver-popover-next-btn:hover {
+  opacity: 0.9;
+}
+
+.oh-guided-tour-popover .oh-guided-tour-prev,
+.oh-guided-tour-popover .driver-popover-prev-btn {
+  background: transparent;
+  color: #fff;
+  border: 1px solid var(--oh-border, #333);
+}
+
+.oh-guided-tour-popover .oh-guided-tour-prev:hover,
+.oh-guided-tour-popover .driver-popover-prev-btn:hover {
+  background: var(--oh-surface-raised, #2a2a2a);
+}
+
+.oh-guided-tour-popover .oh-guided-tour-prev:disabled,
+.oh-guided-tour-popover .driver-popover-prev-btn:disabled {
+  color: var(--oh-muted, #a3a3a3);
+  opacity: 0.5;
+}
+
+.oh-guided-tour-popover .driver-popover-close-btn {
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  font-size: 20px;
+  background: transparent;
+  color: var(--oh-muted, #a3a3a3);
+  border: none;
+  box-shadow: none;
+  outline: none;
+  text-shadow: none;
+}
+
+.oh-guided-tour-popover .driver-popover-close-btn:hover,
+.oh-guided-tour-popover .driver-popover-close-btn:focus {
+  background: transparent;
+  color: #fff;
+  border: none;
+  box-shadow: none;
+  outline: none;
+}
+
+/*
+ * Companion left-nav spotlight. Rendered on document.body so it sits above
+ * the driver.js SVG overlay (z-index 10000) — sticky sidebars create a
+ * stacking context that traps in-place highlights under the overlay.
+ */
+.oh-guided-tour-also-stage {
+  position: fixed;
+  z-index: 10001;
+  box-sizing: border-box;
+  padding: 8px;
+  pointer-events: none;
+  border-radius: 10px;
+}
+
+.oh-guided-tour-also-stage-inner {
+  display: flex !important;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  margin: 0 !important;
+  border-radius: 8px !important;
+  background: var(--oh-color-base, #111) !important;
+  box-shadow: 0 0 0 4px rgb(0 0 0 / 45%);
+  outline: 2px solid #fff;
+  outline-offset: 0;
+  pointer-events: none !important;
+}
+
+/* TEMP: keep mock Setup test harness clickable over driver.js overlay */
+.driver-active [data-testid="setup-test-harness"],
+.driver-active [data-testid="setup-test-harness"] * {
+  pointer-events: auto !important;
+}

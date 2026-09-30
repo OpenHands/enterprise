@@ -4,6 +4,7 @@ import {
   SettingsNavRenderedItem,
 } from "#/hooks/use-settings-nav-items";
 import { useShouldHideOrgSelector } from "#/hooks/use-should-hide-org-selector";
+import { SetupGuideNav } from "#/components/features/setup/getting-started";
 import { SettingsNavHeader } from "./settings-nav-header";
 import { SettingsNavDivider } from "./settings-nav-divider";
 import { SettingsNavLink } from "./settings-nav-link";
@@ -31,6 +32,9 @@ export function SettingsNavItems({
           <OrgSelector />
         </div>
       )}
+      <div className="shrink-0 pr-2.5">
+        <SetupGuideNav onNavigate={onItemClick} />
+      </div>
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-0.5 custom-scrollbar-always">
         {sidebarItems.map((renderedItem, index) => {
           if (renderedItem.type === "header") {

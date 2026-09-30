@@ -9,6 +9,7 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
+import { setSuperAdminSetupStepComplete } from "#/components/features/super-admin/super-admin-setup";
 
 interface CreateOrganizationModalProps {
   contactEmail?: string;
@@ -23,7 +24,8 @@ export function CreateOrganizationModal({
 }: CreateOrganizationModalProps) {
   const { t } = useTranslation();
   const { data } = useOrganizations();
-  const { mutate: createOrganization, isPending } = useCreateOrganization();
+  const { mutateAsync: createOrganization, isPending } =
+    useCreateOrganization();
   const [name, setName] = useState("");
   const [contactName, setContactName] = useState(contactNameProp ?? "");
   const [email, setEmail] = useState(contactEmail ?? "");
@@ -40,7 +42,7 @@ export function CreateOrganizationModal({
     setContactName((current) => current || inferredContactName);
   }, [inferredContactName]);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const trimmedName = name.trim();
     const trimmedContactName = contactName.trim();
     const trimmedEmail = email.trim();
@@ -50,22 +52,20 @@ export function CreateOrganizationModal({
       return;
     }
 
-    createOrganization(
-      {
+    try {
+      // Await create (+ org switch in the mutation) before signaling the tour,
+      // so the next stop can mount on org-defaults for the new org.
+      await createOrganization({
         name: trimmedName,
         contact_name: trimmedContactName,
         contact_email: trimmedEmail,
-      },
-      {
-        onSuccess: () => {
-          displaySuccessToast(t(I18nKey.ORG$CREATE_ORGANIZATION_SUCCESS));
-          onClose();
-        },
-        onError: () => {
-          displayErrorToast(t(I18nKey.ORG$CREATE_ORGANIZATION_ERROR));
-        },
-      },
-    );
+      });
+      displaySuccessToast(t(I18nKey.ORG$CREATE_ORGANIZATION_SUCCESS));
+      setSuperAdminSetupStepComplete("create-org", true);
+      onClose();
+    } catch {
+      displayErrorToast(t(I18nKey.ORG$CREATE_ORGANIZATION_ERROR));
+    }
   };
 
   return (

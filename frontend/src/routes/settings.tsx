@@ -37,6 +37,7 @@ const SAAS_ONLY_PATHS = [
   "/settings/api-keys",
   "/settings/team",
   "/settings/org",
+  "/settings/getting-started",
   "/settings/org-defaults",
   "/settings/org-defaults/condenser",
   "/settings/org-defaults/verification",

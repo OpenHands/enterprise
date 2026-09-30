@@ -137,6 +137,7 @@ export function SuperAdminOrganizations() {
           <BrandButton
             type="button"
             variant="primary"
+            testId="super-admin-create-org"
             startContent={<Plus className="h-4 w-4" />}
             onClick={() => setCreateOpen(true)}
           >

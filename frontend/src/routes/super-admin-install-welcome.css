@@ -1,0 +1,51 @@
+/* Welcome page entrance choreography. */
+
+@keyframes oh-welcome-icon-grow {
+  from {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes oh-welcome-blur-in {
+  from {
+    opacity: 0;
+    filter: blur(12px);
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+.oh-welcome-icon-enter {
+  animation: oh-welcome-icon-grow 720ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.oh-welcome-blur-in {
+  animation: oh-welcome-blur-in 680ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.oh-welcome-blur-in--delay-1 {
+  animation-delay: 280ms;
+}
+
+.oh-welcome-blur-in--delay-2 {
+  animation-delay: 460ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oh-welcome-icon-enter,
+  .oh-welcome-blur-in {
+    animation: none;
+    opacity: 1;
+    filter: none;
+    transform: none;
+  }
+}

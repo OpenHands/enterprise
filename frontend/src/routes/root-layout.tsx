@@ -36,6 +36,9 @@ import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { useAppTitle } from "#/hooks/use-app-title";
 import { useAutoAcceptInvitation } from "#/hooks/use-auto-accept-invitation";
 import { usePostHogIdentify } from "#/hooks/use-posthog-identify";
+import { ProductTourWidget } from "#/components/features/setup/product-tour-widget";
+import { SetupTestHarnessPanel } from "#/components/features/setup/setup-test-harness-panel";
+import { SuperAdminSetupFloatingWidget } from "#/components/features/super-admin/super-admin-setup-guide";
 
 export function ErrorBoundary() {
   const error = useRouteError();
@@ -301,6 +304,13 @@ export default function MainApp() {
           <OnboardingGuard>
             <EmailVerificationGuard>
               <Outlet />
+              {config.data?.app_mode === "saas" && (
+                <>
+                  <SuperAdminSetupFloatingWidget />
+                  <ProductTourWidget />
+                  <SetupTestHarnessPanel />
+                </>
+              )}
             </EmailVerificationGuard>
           </OnboardingGuard>
         </div>
