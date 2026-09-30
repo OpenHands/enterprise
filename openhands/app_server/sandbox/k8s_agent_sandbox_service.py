@@ -686,9 +686,7 @@ class K8sAgentSandboxService(ManagedSandboxService):
                 **get_agent_server_env(),
             },
         }
-        idle_seconds = self.lifecycle.with_overrides(
-            sandbox_spec.lifecycle
-        ).idle_seconds
+        idle_seconds = self.lifecycle.idle_seconds
         if idle_seconds:
             body['env'][RUNTIME_IDLE_TIMEOUT_VARIABLE] = str(idle_seconds)
 

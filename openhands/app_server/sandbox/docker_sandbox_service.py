@@ -485,9 +485,7 @@ class DockerSandboxService(ManagedSandboxService):
         env_vars[WEBHOOK_CALLBACK_VARIABLE] = (
             f'http://host.docker.internal:{self.host_port}/api/v1/webhooks'
         )
-        idle_seconds = self.lifecycle.with_overrides(
-            sandbox_spec.lifecycle
-        ).idle_seconds
+        idle_seconds = self.lifecycle.idle_seconds
         if idle_seconds:
             env_vars[RUNTIME_IDLE_TIMEOUT_VARIABLE] = str(idle_seconds)
         # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and retry

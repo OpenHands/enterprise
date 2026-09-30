@@ -29,14 +29,12 @@ from openhands.app_server.sandbox.sandbox_service import (
     ManagedSandboxServiceInjector,
     SandboxService,
 )
-from openhands.app_server.sandbox.sandbox_spec_service import SandboxSpecService
 from openhands.app_server.sandbox.sandbox_store import (
     lock_stored_sandbox_if_free,
     mark_paused,
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
-from openhands.sdk.utils.paging import page_iterator
 
 _logger = logging.getLogger(__name__)
 
@@ -61,7 +59,7 @@ def _managed_backend() -> ManagedSandboxServiceInjector | None:
 
 @contextlib.asynccontextmanager
 async def _services() -> AsyncIterator[
-    tuple[AsyncSession, SandboxService, SandboxSpecService, httpx.AsyncClient]
+    tuple[AsyncSession, SandboxService, httpx.AsyncClient]
 ]:
     """The services the jobs use, acting for every user.
 
@@ -70,7 +68,6 @@ async def _services() -> AsyncIterator[
     from openhands.app_server.config import (
         get_httpx_client,
         get_sandbox_service,
-        get_sandbox_spec_service,
     )
     from openhands.app_server.services.db_session import get_db_session
 
@@ -79,10 +76,9 @@ async def _services() -> AsyncIterator[
     async with (
         get_db_session(state) as db_session,
         get_sandbox_service(state) as sandbox_service,
-        get_sandbox_spec_service(state) as sandbox_spec_service,
         get_httpx_client(state) as httpx_client,
     ):
-        yield db_session, sandbox_service, sandbox_spec_service, httpx_client
+        yield db_session, sandbox_service, httpx_client
 
 
 @lifecycle.periodic(cron='* * * * *')
@@ -94,17 +90,11 @@ async def sweep(context: JobContext, timestamp: int) -> None:
     backend = _managed_backend()
     if backend is None:
         return
-    async with _services() as (db_session, _, sandbox_spec_service, _):
-        spec_overrides = {
-            spec.id: spec.lifecycle
-            async for spec in page_iterator(sandbox_spec_service.search_sandbox_specs)
-            if spec.lifecycle is not None
-        }
+    async with _services() as (db_session, _, _):
         sandbox_ids = await find_due_sandbox_ids(
             db_session,
             backend.backend,
             backend.lifecycle,
-            spec_overrides,
             now=datetime.now(UTC),
             limit=SWEEP_BATCH_SIZE,
         )
@@ -134,15 +124,14 @@ async def check(sandbox_id: str) -> None:
         return
     async with (
         asyncio.timeout(CHECK_TIMEOUT_SECONDS),
-        _services() as (db_session, sandbox_service, sandbox_spec_service, client),
+        _services() as (db_session, sandbox_service, client),
     ):
         await check_sandbox(
             sandbox_id,
             backend=backend.backend,
-            defaults=backend.lifecycle,
+            settings=backend.lifecycle,
             db_session=db_session,
             sandbox_service=sandbox_service,
-            sandbox_spec_service=sandbox_spec_service,
             httpx_client=client,
             now=datetime.now(UTC),
         )
@@ -152,10 +141,9 @@ async def check_sandbox(
     sandbox_id: str,
     *,
     backend: str,
-    defaults: SandboxLifecycleSettings,
+    settings: SandboxLifecycleSettings,
     db_session: AsyncSession,
     sandbox_service: SandboxService,
-    sandbox_spec_service: SandboxSpecService,
     httpx_client: httpx.AsyncClient,
     now: datetime,
 ) -> Decision | None:
@@ -170,8 +158,6 @@ async def check_sandbox(
 
     sandbox = await sandbox_service.get_sandbox(sandbox_id)
     live_status = sandbox.status if sandbox else SandboxStatus.MISSING
-    spec = await sandbox_spec_service.get_sandbox_spec(row.sandbox_spec_id)
-    settings = defaults.with_overrides(spec.lifecycle if spec else None)
 
     idle_time = None
     if (
