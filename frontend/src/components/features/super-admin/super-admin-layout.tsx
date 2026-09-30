@@ -13,13 +13,14 @@ import { SettingsNavUserMenu } from "#/components/features/settings/settings-nav
 import OpenHandsLogoSidebar from "#/assets/branding/openhands-logo-sidebar.svg?react";
 import CloseIcon from "#/icons/close.svg?react";
 import { useMe } from "#/hooks/query/use-me";
+import { useConfig } from "#/hooks/query/use-config";
 import { I18nKey } from "#/i18n/declaration";
 import { SuperAdminSetupNav } from "#/components/features/super-admin/super-admin-setup-guide";
 import {
   SUPER_ADMIN_NAV_ITEMS,
   SUPER_ADMIN_SETUP_ITEM,
 } from "#/constants/super-admin-nav";
-import { isInstanceSuperAdmin } from "#/utils/org/permissions";
+import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
 import { cn } from "#/utils/utils";
 import { Typography } from "#/ui/typography";
 import {
@@ -105,6 +106,7 @@ export function SuperAdminLayout() {
   const location = useLocation();
   const matches = useMatches();
   const { data: me, isLoading, isPending } = useMe();
+  const { data: config, isLoading: isConfigLoading } = useConfig();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const routeHandles = matches.map(
     (match) =>
@@ -126,11 +128,11 @@ export function SuperAdminLayout() {
   // `useMe` is disabled until SaaS config + an org id are ready. In that
   // idle state `isLoading` is false, so wait on `isPending` too or we bounce
   // Super Admins back to Settings before permissions arrive.
-  if (isLoading || isPending) {
+  if (isLoading || isPending || isConfigLoading) {
     return <main data-testid="super-admin-screen" className="min-h-0 h-full" />;
   }
 
-  if (!isInstanceSuperAdmin(me?.permissions)) {
+  if (!canAccessSuperAdminDashboard(config?.feature_flags, me?.permissions)) {
     return <Navigate to="/settings" replace />;
   }
 

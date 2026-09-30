@@ -41,6 +41,11 @@ class WebClientFeatureFlags(BaseModel):
     enable_onboarding: bool = False
     enable_automations: bool = True
     enable_agent_canvas_banner: bool = False
+    # When false, the web client hides Super Admin entry points and redirects
+    # /super-admin/* to Settings. Defaults to False so the unfinished
+    # Super Admin dashboard stays off in production. Set
+    # ENABLE_SUPER_ADMIN=true (or 1) to show it for instance Super Admins.
+    enable_super_admin: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')

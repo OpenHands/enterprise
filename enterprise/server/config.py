@@ -16,6 +16,7 @@ from server.auth.constants import (
     ENABLE_JIRA,
     ENABLE_JIRA_DC,
     ENABLE_LINEAR,
+    ENABLE_SUPER_ADMIN,
     GITHUB_APP_CLIENT_ID,
     GITHUB_APP_PRIVATE_KEY,
     GITHUB_APP_WEBHOOK_SECRET,
@@ -79,6 +80,7 @@ class SaaSServerConfig(ServerConfig):
     enable_jira_dc = ENABLE_JIRA_DC
     enable_linear = ENABLE_LINEAR
     enable_automations = ENABLE_AUTOMATIONS
+    enable_super_admin = ENABLE_SUPER_ADMIN
     enable_onboarding = os.environ.get('OH_ENABLE_ONBOARDING', 'false') == 'true'
 
     app_slug: None | str = None
@@ -174,6 +176,7 @@ class SaaSServerConfig(ServerConfig):
                 'ENABLE_JIRA_DC': self.enable_jira_dc,
                 'ENABLE_LINEAR': self.enable_linear,
                 'ENABLE_AUTOMATIONS': self.enable_automations,
+                'ENABLE_SUPER_ADMIN': self.enable_super_admin,
                 'DEPLOYMENT_MODE': DEPLOYMENT_MODE,
                 'ENABLE_ONBOARDING': self.enable_onboarding,
             },

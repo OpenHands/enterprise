@@ -46,6 +46,10 @@ export interface WebClientFeatureFlags {
   enable_onboarding: boolean;
   enable_automations?: boolean;
   enable_agent_canvas_banner?: boolean;
+  /** When true, show Super Admin entry points and allow /super-admin/*
+   *  for instance Super Admins. Defaults to false until ENABLE_SUPER_ADMIN
+   *  is set. */
+  enable_super_admin?: boolean;
 }
 
 export interface ACPModelOption {

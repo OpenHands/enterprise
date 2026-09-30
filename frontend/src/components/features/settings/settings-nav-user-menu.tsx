@@ -7,6 +7,7 @@ import { useGitUser } from "#/hooks/query/use-git-user";
 import { useSettings } from "#/hooks/query/use-settings";
 import { useLogout } from "#/hooks/mutation/use-logout";
 import { useMe } from "#/hooks/query/use-me";
+import { useConfig } from "#/hooks/query/use-config";
 import { useAppMode } from "#/hooks/use-app-mode";
 import { UserAvatar } from "#/components/features/sidebar/user-avatar";
 import { ContextMenuListItem } from "#/components/features/context-menu/context-menu-list-item";
@@ -18,7 +19,7 @@ import {
   getSettingsUserMenuItems,
   useSettingsNavItems,
 } from "#/hooks/use-settings-nav-items";
-import { isInstanceSuperAdmin } from "#/utils/org/permissions";
+import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
 import { cn } from "#/utils/utils";
 import {
   dropdownMenuListClassName,
@@ -38,11 +39,15 @@ export function SettingsNavUserMenu() {
   const user = useGitUser();
   const { data: settings } = useSettings();
   const { data: me } = useMe();
+  const { data: config } = useConfig();
   const { mutate: logout } = useLogout();
   const { isSaas } = useAppMode();
   const navigate = useNavigate();
   const accountSettings = getSettingsUserMenuItems(useSettingsNavItems());
-  const showSuperAdmin = isInstanceSuperAdmin(me?.permissions);
+  const showSuperAdmin = canAccessSuperAdminDashboard(
+    config?.feature_flags,
+    me?.permissions,
+  );
   const [isOpen, setIsOpen] = React.useState(false);
   const menuRef = useClickOutsideElement<HTMLDivElement>(() =>
     setIsOpen(false),

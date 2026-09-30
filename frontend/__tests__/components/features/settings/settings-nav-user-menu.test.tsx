@@ -36,6 +36,12 @@ vi.mock("#/hooks/query/use-me", () => ({
   useMe: () => mockMe,
 }));
 
+vi.mock("#/hooks/query/use-config", () => ({
+  useConfig: () => ({
+    data: { feature_flags: { enable_super_admin: true } },
+  }),
+}));
+
 const mockAccountSettings = vi.hoisted(() => ({
   items: [] as Array<{
     type: "item";
