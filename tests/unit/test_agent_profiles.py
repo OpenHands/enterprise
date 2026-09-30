@@ -1245,7 +1245,7 @@ class TestNoWriteBackWithoutMutation:
         valid_id = listing.profiles[0].id
 
         # Simulate schema drift: a stored entry the current model rejects
-        # (name violates min_length) — _skip_invalid_profiles drops it on load.
+        # (name violates min_length); it is hidden on load.
         invalid_id = str(uuid.uuid4())
         org = await _read_org_raw(async_session_maker, org_id)
         blob_before = dict(org.agent_profiles)
