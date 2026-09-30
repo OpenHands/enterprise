@@ -1,4 +1,5 @@
 /* eslint-disable react/jsx-props-no-spreading */
+import type { ReactNode } from "react";
 import { cn } from "#/utils/utils";
 import { DropdownOption } from "./types";
 import {
@@ -18,6 +19,8 @@ interface DropdownMenuProps {
     index: number;
     className?: string;
   }) => object;
+  footer?: ReactNode;
+  onFooterClick?: () => void;
 }
 
 export function DropdownMenu({
@@ -27,20 +30,26 @@ export function DropdownMenu({
   emptyMessage,
   getMenuProps,
   getItemProps,
+  footer,
+  onFooterClick,
 }: DropdownMenuProps) {
   return (
     <div
       className={cn(
-        "absolute z-50 overflow-hidden text-white",
+        "absolute z-50 flex max-h-60 flex-col overflow-hidden text-white",
         "w-full mt-1",
         "bg-tertiary rounded-[6px] context-menu-box-shadow",
         dropdownMenuPanelPaddingClassName,
-        "max-h-60 overflow-auto",
         !isOpen && "hidden",
       )}
     >
       <ul
-        {...getMenuProps({ className: cn("p-0", dropdownMenuListClassName) })}
+        {...getMenuProps({
+          className: cn(
+            "min-h-0 flex-1 overflow-auto p-0",
+            dropdownMenuListClassName,
+          ),
+        })}
       >
         {isOpen && filteredOptions.length === 0 && (
           <li className="px-2 py-2 text-sm text-[var(--oh-muted)] italic">
@@ -66,6 +75,19 @@ export function DropdownMenu({
             </li>
           ))}
       </ul>
+      {isOpen && footer ? (
+        <div
+          className="shrink-0 border-t border-[var(--oh-border)] pt-0.5"
+          onMouseDown={(event) => {
+            // Keep the menu in the same pointer gesture so Downshift does not
+            // treat this as an outside click before the footer action runs.
+            event.preventDefault();
+          }}
+          onClick={onFooterClick}
+        >
+          {footer}
+        </div>
+      ) : null}
     </div>
   );
 }

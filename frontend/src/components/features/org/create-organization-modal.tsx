@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { OrgModal } from "#/components/shared/modals/org-modal";
+import { SettingsInput } from "#/components/features/settings/settings-input";
 import { useCreateOrganization } from "#/hooks/mutation/use-create-organization";
+import { useOrganizations } from "#/hooks/query/use-organizations";
 import { I18nKey } from "#/i18n/declaration";
 import {
   displayErrorToast,
@@ -10,18 +12,33 @@ import {
 
 interface CreateOrganizationModalProps {
   contactEmail?: string;
+  contactName?: string;
   onClose: () => void;
 }
 
 export function CreateOrganizationModal({
   contactEmail,
+  contactName: contactNameProp,
   onClose,
 }: CreateOrganizationModalProps) {
   const { t } = useTranslation();
+  const { data } = useOrganizations();
   const { mutate: createOrganization, isPending } = useCreateOrganization();
   const [name, setName] = useState("");
-  const [contactName, setContactName] = useState("");
+  const [contactName, setContactName] = useState(contactNameProp ?? "");
   const [email, setEmail] = useState(contactEmail ?? "");
+
+  const inferredContactName =
+    contactNameProp?.trim() ||
+    data?.organizations.find((org) => org.is_personal)?.contact_name?.trim() ||
+    "";
+
+  useEffect(() => {
+    if (!inferredContactName) {
+      return;
+    }
+    setContactName((current) => current || inferredContactName);
+  }, [inferredContactName]);
 
   const handleSubmit = () => {
     const trimmedName = name.trim();
@@ -62,26 +79,29 @@ export function CreateOrganizationModal({
       isLoading={isPending}
     >
       <div className="flex flex-col gap-3 w-full">
-        <input
-          data-testid="create-organization-name"
+        <SettingsInput
+          testId="create-organization-name"
+          type="text"
+          label={t(I18nKey.ORG$ORGANIZATION_NAME)}
           value={name}
-          placeholder={t(I18nKey.ORG$ORGANIZATION_NAME)}
-          onChange={(e) => setName(e.target.value)}
-          className="bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt"
+          placeholder={t(I18nKey.ORG$ORGANIZATION_NAME_PLACEHOLDER)}
+          onChange={setName}
         />
-        <input
-          data-testid="create-organization-contact-name"
+        <SettingsInput
+          testId="create-organization-contact-name"
+          type="text"
+          label={t(I18nKey.ORG$CONTACT_NAME)}
           value={contactName}
-          placeholder={t(I18nKey.ORG$CONTACT_NAME)}
-          onChange={(e) => setContactName(e.target.value)}
-          className="bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt"
+          placeholder={t(I18nKey.ORG$CONTACT_NAME_PLACEHOLDER)}
+          onChange={setContactName}
         />
-        <input
-          data-testid="create-organization-contact-email"
+        <SettingsInput
+          testId="create-organization-contact-email"
+          type="email"
+          label={t(I18nKey.ORG$CONTACT_EMAIL)}
           value={email}
-          placeholder={t(I18nKey.ORG$CONTACT_EMAIL)}
-          onChange={(e) => setEmail(e.target.value)}
-          className="bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt"
+          placeholder={t(I18nKey.ORG$CONTACT_EMAIL_PLACEHOLDER)}
+          onChange={setEmail}
         />
       </div>
     </OrgModal>

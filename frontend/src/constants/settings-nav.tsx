@@ -40,20 +40,6 @@ const ICON_SIZE = 16;
 
 export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
   {
-    icon: <Briefcase className="size-4" strokeWidth={2} aria-hidden />,
-    to: "/settings/org",
-    text: "SETTINGS$NAV_ORGANIZATION",
-    subtitle: "SETTINGS$PAGE_ORGANIZATION_SUBLINE",
-    section: "org",
-  },
-  {
-    icon: <Users className="size-4" strokeWidth={2} aria-hidden />,
-    to: "/settings/org-members",
-    text: "SETTINGS$NAV_ORG_MEMBERS",
-    subtitle: "SETTINGS$PAGE_ORG_MEMBERS_SUBLINE",
-    section: "org",
-  },
-  {
     icon: <BarChart2 className="size-4" strokeWidth={2} aria-hidden />,
     to: "/settings/usage-monitoring",
     text: "SETTINGS$NAV_ADMIN_DASHBOARD",
@@ -68,10 +54,10 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "org",
   },
   {
-    icon: <CreditCardIcon width={ICON_SIZE} height={ICON_SIZE} />,
-    to: "/settings/credits",
-    text: "SETTINGS$NAV_CREDITS",
-    subtitle: "SETTINGS$PAGE_CREDITS_SUBLINE",
+    icon: <Users className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/org-members",
+    text: "SETTINGS$NAV_ORG_MEMBERS",
+    subtitle: "SETTINGS$PAGE_ORG_MEMBERS_SUBLINE",
     section: "org",
   },
   {
@@ -93,6 +79,20 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     to: "/settings/org-defaults/verification",
     text: "SETTINGS$NAV_VERIFICATION",
     subtitle: "SETTINGS$PAGE_VERIFICATION_SUBLINE",
+    section: "org",
+  },
+  {
+    icon: <CreditCardIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/settings/credits",
+    text: "SETTINGS$NAV_CREDITS",
+    subtitle: "SETTINGS$PAGE_CREDITS_SUBLINE",
+    section: "org",
+  },
+  {
+    icon: <Briefcase className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/org",
+    text: "SETTINGS$NAV_ORGANIZATION",
+    subtitle: "SETTINGS$PAGE_ORGANIZATION_SUBLINE",
     section: "org",
   },
   {

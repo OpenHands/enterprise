@@ -220,6 +220,7 @@ describe("UserContextMenu", () => {
         item.to !== "/settings/credits" &&
         item.to !== "/settings/usage-monitoring" &&
         item.to !== "/settings/budgets" &&
+        item.to !== "/settings/integrations-hub" &&
         !item.to.startsWith("/settings/org-defaults") &&
         !personalLlmPaths.has(item.to),
     );
@@ -259,6 +260,7 @@ describe("UserContextMenu", () => {
         item.to !== "/settings/org-members" &&
         item.to !== "/settings/org" &&
         item.to !== "/settings/credits" &&
+        item.to !== "/settings/integrations-hub" &&
         true,
     );
 

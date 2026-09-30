@@ -47,6 +47,7 @@ const MOCK_ME: Omit<OrganizationMember, "role" | "org_id"> = {
   llm_base_url: "https://api.openai.com",
   agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
   status: "active",
+  permissions: ["create_organization"],
 };
 
 export const createMockOrganization = (
@@ -120,12 +121,10 @@ export const createMockOrganization = (
 });
 
 // Named mock organizations for test convenience
-export const MOCK_PERSONAL_ORG = createMockOrganization(
-  "1",
-  "Personal Workspace",
-  100,
-  true,
-);
+export const MOCK_PERSONAL_ORG = {
+  ...createMockOrganization("1", "Personal Workspace", 100, true),
+  contact_name: "openhands",
+};
 export const MOCK_TEAM_ORG_ACME = createMockOrganization(
   "2",
   "Acme Corp",
@@ -351,6 +350,11 @@ export const resetOrgMockData = () => {
     orgs.set(org.id, { ...org });
   });
   orgProfilesByOrgId.clear();
+  Object.keys(ORGS_AND_MEMBERS).forEach((orgId) => {
+    if (!(orgId in INITIAL_MOCK_MEMBERS)) {
+      delete ORGS_AND_MEMBERS[orgId];
+    }
+  });
 };
 
 export const resetOrgsAndMembersMockData = () => {
@@ -558,6 +562,44 @@ export const ORG_HANDLERS = [
       items: organizations,
       current_org_id: currentOrgId,
     });
+  }),
+
+  http.post("/api/organizations", async ({ request }) => {
+    const body = (await request.json()) as {
+      name?: string;
+      contact_name?: string;
+      contact_email?: string;
+    };
+    const name = body.name?.trim();
+    const contactName = body.contact_name?.trim();
+    const contactEmail = body.contact_email?.trim();
+
+    if (!name || !contactName || !contactEmail) {
+      return HttpResponse.json(
+        { error: "Name, contact name, and contact email are required" },
+        { status: 400 },
+      );
+    }
+
+    const nameTaken = Array.from(orgs.values()).some(
+      (org) => org.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (nameTaken) {
+      return HttpResponse.json(
+        { error: "Organization name already exists" },
+        { status: 409 },
+      );
+    }
+
+    const orgId = String(Date.now());
+    const org: Organization = {
+      ...createMockOrganization(orgId, name, 0),
+      contact_name: contactName,
+      contact_email: contactEmail,
+    };
+    orgs.set(orgId, org);
+    ORGS_AND_MEMBERS[orgId] = [currentUserMembership(orgId, "owner")];
+    return HttpResponse.json(org, { status: 201 });
   }),
 
   http.patch("/api/organizations/:orgId", async ({ request, params }) => {

@@ -22,6 +22,8 @@ interface DropdownProps {
   className?: string;
   /** When false, the trigger is a select (no typeahead filter). */
   searchable?: boolean;
+  /** Action row pinned under the option list. */
+  footer?: React.ReactNode;
 }
 
 export function Dropdown({
@@ -36,6 +38,7 @@ export function Dropdown({
   testId,
   className,
   searchable = true,
+  footer,
 }: DropdownProps) {
   const [inputValue, setInputValue] = useState(defaultValue?.label ?? "");
   const [searchTerm, setSearchTerm] = useState("");
@@ -55,6 +58,7 @@ export function Dropdown({
     getMenuProps,
     getItemProps,
     getInputProps,
+    closeMenu,
   } = useCombobox({
     items: filteredOptions,
     itemToString: (item) => item?.label ?? "",
@@ -160,6 +164,8 @@ export function Dropdown({
         emptyMessage={emptyMessage}
         getMenuProps={getMenuProps}
         getItemProps={getItemProps}
+        footer={footer}
+        onFooterClick={closeMenu}
       />
     </div>
   );
