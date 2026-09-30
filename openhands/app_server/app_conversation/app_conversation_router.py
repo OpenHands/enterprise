@@ -70,6 +70,7 @@ from openhands.app_server.config import (
     depends_user_context,
     get_app_conversation_service,
 )
+from openhands.app_server.errors import SandboxError
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     SandboxInfo,
@@ -614,11 +615,13 @@ async def update_app_conversation(
     '/{conversation_id}/send-message',
     responses={
         404: {'description': 'Conversation or sandbox not found'},
-        409: {
-            'description': 'Sandbox is not running. Resume it first via POST /sandboxes/{id}/resume'
-        },
         410: {'description': 'Conversation is archived (sandbox no longer exists)'},
-        503: {'description': 'Sandbox is in error state or agent server unavailable'},
+        503: {
+            'description': (
+                'Sandbox is in an error state, could not be brought to a running '
+                'state, or the agent server is unavailable'
+            )
+        },
     },
 )
 async def send_message_to_conversation(
@@ -655,16 +658,16 @@ async def send_message_to_conversation(
 
     **Prerequisites:**
 
-    - The sandbox must be in RUNNING state
-    - If the sandbox is PAUSED, call `POST /api/v1/sandboxes/{sandbox_id}/resume` first
-    - If the sandbox is STARTING, wait for it to reach RUNNING state
+    - A PAUSED sandbox is resumed automatically before the message is delivered.
+    - A STARTING sandbox is awaited until it reaches RUNNING.
+    - The call blocks until the sandbox is RUNNING (up to the resume/start timeout).
 
     **Error responses:**
 
     - 404: Conversation or sandbox not found
-    - 409: Sandbox exists but is not running (PAUSED, STARTING, STOPPING)
     - 410: Conversation is archived (sandbox no longer exists)
-    - 503: Sandbox is in ERROR state or agent server is unavailable
+    - 503: Sandbox is in ERROR state, could not be brought to a RUNNING state
+      (e.g. resume/start timed out), or the agent server is unavailable
 
     Args:
         conversation_id: The UUID of the conversation to send the message to
@@ -689,7 +692,8 @@ async def send_message_to_conversation(
             detail=f'Sandbox not found for conversation {conversation_id}',
         )
 
-    # Check sandbox status - require RUNNING state
+    # Check sandbox status. An archived or errored sandbox cannot accept messages,
+    # but PAUSED/STARTING are transient states we recover from below.
     if sandbox.status == SandboxStatus.MISSING:
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
@@ -703,14 +707,31 @@ async def send_message_to_conversation(
         )
 
     if sandbox.status != SandboxStatus.RUNNING:
-        # Sandbox exists but is not running (PAUSED, STARTING, STOPPING, etc.)
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f'Sandbox is {sandbox.status.value}. '
-                f'Use POST /api/v1/sandboxes/{sandbox.id}/resume to resume it first.'
-            ),
-        )
+        # Sandbox is PAUSED or STARTING. Rather than reject with 409 and require the
+        # caller to resume-then-poll -- a common source of retry-driven 409 log noise
+        # when clients append to an idled conversation -- bring the sandbox to RUNNING
+        # here, mirroring the Slack v1 send path
+        # (integrations/slack/slack_view.py: send_message_to_v1_conversation).
+        #
+        # resume_sandbox is idempotent and state-aware (see PR #422), so a PAUSED
+        # sandbox is resumed while a STARTING one is simply awaited. Re-reading the
+        # sandbox afterwards is required because resume rotates the session API key
+        # and refreshes the exposed URLs used to reach the agent server below.
+        if sandbox.status == SandboxStatus.PAUSED:
+            await sandbox_service.resume_sandbox(sandbox.id)
+        try:
+            sandbox = await sandbox_service.wait_for_sandbox_running(
+                sandbox.id,
+                httpx_client=httpx_client,
+            )
+        except SandboxError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    'Sandbox could not be brought to a running state before '
+                    f'sending the message: {e.detail}'
+                ),
+            ) from e
 
     # Get agent server URL from sandbox
     if not sandbox.exposed_urls:
