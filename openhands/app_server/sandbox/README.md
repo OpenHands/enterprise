@@ -85,14 +85,13 @@ never arrive.
 3600. The ceiling above that is set by the E2B plan — one hour on Hobby, 24
 hours on Pro — and on a self hosted cluster by the operator, so a rejection
 saying `Timeout cannot be greater than 1 hours` is that cluster's configuration
-rather than an E2B limit. On expiry the sandbox pauses rather than being
-destroyed (`on_timeout: pause` with `auto_resume: true`), parking as a memory
-snapshot with its filesystem and processes intact. An interactive session
-self-heals: the browser's next request wakes the sandbox in about 0.3 s and the
-conversation carries on. A headless run has no such request, so it can stall at
-the lease's expiry with nothing to resume it. The fix for a follow-up is to
-renew the lease when the sandbox delivers a webhook — during a headless run
-that is the one signal that tracks actual activity.
+rather than an E2B limit. The lease counts from the last create or resume, and
+activity does not extend it. On expiry the sandbox pauses rather than being
+destroyed (`on_timeout: pause`), parking as a memory snapshot with its
+filesystem and processes intact. It stays paused until `resume_sandbox` runs.
+The frontend calls it when the user opens the conversation or returns to its
+tab. A run still in progress at expiry stops until then, and a headless run
+has no user to resume it.
 
 ## Kubernetes agent-sandbox backend
 
