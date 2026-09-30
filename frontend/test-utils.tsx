@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nextProvider, initReactI18next } from "react-i18next";
@@ -109,14 +110,14 @@ export const selectOrganization = async ({
   }
 
   // Wait for the settings navbar to render (which contains the org selector)
-  await screen.findByTestId("settings-navbar");
+  const navbar = await screen.findByTestId("settings-navbar");
 
-  // Wait for orgs to load and org selector to be present
-  const organizationSelect = await screen.findByTestId("org-selector");
+  // Scope to the mobile navbar — desktop also mounts a selector in the DOM.
+  const organizationSelect = within(navbar).getByTestId("org-selector");
   expect(organizationSelect).toBeInTheDocument();
 
   // Wait until the dropdown trigger is not disabled (orgs have loaded)
-  const trigger = await screen.findByTestId("dropdown-trigger");
+  const trigger = within(navbar).getByTestId("dropdown-trigger");
   await waitFor(() => {
     expect(trigger).not.toBeDisabled();
   });
@@ -133,7 +134,7 @@ export const selectOrganization = async ({
   const expectedDisplayName = targetOrg.is_personal
     ? "Personal Workspace"
     : targetOrg.name;
-  const combobox = screen.getByRole("combobox");
+  const combobox = within(navbar).getByRole("combobox");
   await waitFor(() => {
     expect(combobox).toHaveValue(expectedDisplayName);
   });

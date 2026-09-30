@@ -22,3 +22,13 @@ ONBOARDING_COMPLETED = 'onboarding completed'
 SETTINGS_SAVED = 'settings saved'
 TRAJECTORY_DOWNLOADED = 'trajectory downloaded'
 TEAM_MEMBERS_INVITED = 'team members invited'
+
+# Phase 5 events — integration & product-usage signals that the HubSpot
+# contact sync previously derived from the database. Emitting them here lets
+# PostHog aggregate the same metrics directly off the event stream, so the
+# PostHog HubSpot destination can keep contacts in sync without the cron job.
+API_KEY_CREATED = 'api key created'
+CLI_DEVICE_LINKED = 'cli device linked'
+PULL_REQUEST_CREATED = 'pull request created'
+SLACK_INTEGRATION_ENABLED = 'slack integration enabled'
+JIRA_INTEGRATION_ENABLED = 'jira integration enabled'

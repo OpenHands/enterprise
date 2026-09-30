@@ -1,9 +1,9 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, SecretStr, computed_field
+from pydantic import AfterValidator, BaseModel, Field, SecretStr, computed_field
 
 from openhands.agent_server.models import (
     ImageContent,
@@ -22,6 +22,8 @@ from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
 from openhands.sdk.conversation import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
+    TAG_KEY_PATTERN,
+    TAG_VALUE_MAX_LENGTH,
     ConversationObservabilityMetadata,
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
@@ -50,6 +52,47 @@ ARCHIVE_WORKSPACE_PATH_TAG_KEY = 'archiveworkspacepath'
 # tag-key rule forbids underscores, hence the squashed keys.
 AGENT_PROFILE_ID_TAG_KEY = 'agentprofileid'
 AGENT_PROFILE_REVISION_TAG_KEY = 'agentprofilerevision'
+
+# Tag keys the app server manages itself. Callers can read them but must not set
+# or delete them through the public API.
+RESERVED_TAG_KEYS = frozenset(
+    {
+        ACP_SERVER_TAG_KEY,
+        ARCHIVE_WORKSPACE_PATH_TAG_KEY,
+        AGENT_PROFILE_ID_TAG_KEY,
+        AGENT_PROFILE_REVISION_TAG_KEY,
+    }
+)
+
+
+def _validate_caller_tags(tags: dict[str, str | None]) -> dict[str, str | None]:
+    """Apply the SDK tag rules plus the reserved-key guard to caller-supplied tags.
+
+    Runs as an AfterValidator so malformed values surface as validation errors.
+    """
+    for key, value in tags.items():
+        if not TAG_KEY_PATTERN.fullmatch(key):
+            raise ValueError(
+                f"Tag key '{key}' is invalid: keys must be lowercase alphanumeric"
+            )
+        if key in RESERVED_TAG_KEYS:
+            raise ValueError(
+                f"Tag key '{key}' is managed by the server and cannot be changed"
+            )
+        if value is not None and len(value) > TAG_VALUE_MAX_LENGTH:
+            raise ValueError(
+                f"Tag value for '{key}' exceeds {TAG_VALUE_MAX_LENGTH} characters"
+            )
+    return tags
+
+
+# Caller-supplied tags at conversation start.
+ConversationTagsInput = Annotated[dict[str, str], AfterValidator(_validate_caller_tags)]
+
+# Caller-supplied tag changes on update (merge patch): a None value deletes the key.
+ConversationTagsPatch = Annotated[
+    dict[str, str | None], AfterValidator(_validate_caller_tags)
+]
 
 
 class ConversationTrigger(Enum):
@@ -235,6 +278,30 @@ class AppConversationStartRequest(OpenHandsModel):
     conversation_id: UUID | None = Field(default=None)
     initial_message: SendMessageRequest | None = None
     system_message_suffix: str | None = None
+    system_prompt: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Inline system prompt that replaces OpenHands' built-in static system "
+            'prompt verbatim for this conversation. Per-conversation dynamic '
+            'context (loaded skills, repository context, system_message_suffix, '
+            'secrets, current datetime) is still appended, so this composes with '
+            'system_message_suffix. When agent_type=plan it replaces the built-in '
+            'planning prompt (planning tools and workflow instruction still apply). '
+            'Ignored, with a server-side warning, when the launched agent is an '
+            'ACP agent, which owns its own system prompt.'
+        ),
+    )
+    disabled_skills: list[str] | None = Field(
+        default=None,
+        description=(
+            'Skill names to exclude from this conversation (e.g. bundled '
+            '"Instance" skills that are not needed, to save context tokens). '
+            'Unioned with the deny-lists from user settings and the launched '
+            'agent profile: a skill disabled at any level stays off. Matched by '
+            'exact skill name; unknown names are harmless no-ops.'
+        ),
+    )
     processors: list[EventCallbackProcessor] | None = Field(default=None)
     llm_model: str | None = None
     # One-off launch override: run THIS conversation from a specific Agent
@@ -295,6 +362,16 @@ class AppConversationStartRequest(OpenHandsModel):
         ),
     )
 
+    tags: ConversationTagsInput | None = Field(
+        default=None,
+        description=(
+            'Key-value tags to store on the conversation. Keys must be lowercase '
+            'alphanumeric and values at most 256 characters. Tags are stored on the '
+            'app server and can be queried with the tags__contains search filter. '
+            'Server-managed tag keys are rejected.'
+        ),
+    )
+
 
 class AppConversationUpdateRequest(BaseModel):
     """Request model for updating conversation metadata.
@@ -307,6 +384,15 @@ class AppConversationUpdateRequest(BaseModel):
     selected_repository: str | None = None
     selected_branch: str | None = None
     git_provider: ProviderType | None = None
+    tags: ConversationTagsPatch | None = Field(
+        default=None,
+        description=(
+            'Tag changes applied as a merge patch: each key is set to its value and '
+            'a null value deletes the key. Keys not mentioned are left untouched. '
+            'Keys must be lowercase alphanumeric and values at most 256 characters; '
+            'server-managed tag keys are rejected.'
+        ),
+    )
 
 
 class AppConversationStartTaskStatus(Enum):

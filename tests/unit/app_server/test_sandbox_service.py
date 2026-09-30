@@ -556,17 +556,8 @@ class TestCleanupOldSandboxes:
 
     @pytest.mark.asyncio
     async def test_cleanup_invalid_max_num_sandboxes(self, mock_sandbox_service):
-        """Test cleanup raises ValueError for invalid max_num_sandboxes."""
-        # Test zero
-        with pytest.raises(
-            ValueError, match='max_num_sandboxes must be greater than 0'
-        ):
-            await mock_sandbox_service.pause_old_sandboxes(max_num_sandboxes=0)
-
-        # Test negative
-        with pytest.raises(
-            ValueError, match='max_num_sandboxes must be greater than 0'
-        ):
+        """Test cleanup raises ValueError for a negative max_num_sandboxes."""
+        with pytest.raises(ValueError, match='max_num_sandboxes must not be negative'):
             await mock_sandbox_service.pause_old_sandboxes(max_num_sandboxes=-1)
 
     @pytest.mark.asyncio

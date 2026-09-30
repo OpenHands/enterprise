@@ -12,7 +12,7 @@ export function SetupPaymentModal() {
 
   return (
     <ModalBackdrop>
-      <ModalBody className="border border-tertiary">
+      <ModalBody className="border border-[var(--oh-border)]">
         <OpenHandsLogo width={68} height={46} />
         <div className="flex flex-col gap-2 w-full items-center text-center">
           <h1 className="text-2xl font-bold">

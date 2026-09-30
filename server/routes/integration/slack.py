@@ -2,7 +2,7 @@ import html
 import json
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -10,11 +10,12 @@ from fastapi.responses import (
     RedirectResponse,
 )
 from keycloak.exceptions import KeycloakConnectionError
+from pydantic import BaseModel
 from slack_sdk.errors import SlackApiError
 from slack_sdk.oauth import AuthorizeUrlGenerator
 from slack_sdk.signature import SignatureVerifier
 from slack_sdk.web.async_client import AsyncWebClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from integrations.models import Message, SourceType
 from integrations.slack.slack_errors import SlackError, SlackErrorCode
@@ -22,12 +23,14 @@ from integrations.slack.slack_manager import SlackManager
 from integrations.utils import (
     HOST_URL,
 )
+from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.config import depends_jwt_service
 from openhands.app_server.integrations.service_types import (
     ProviderTimeoutError,
     ProviderType,
 )
 from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.user_auth import get_user_id
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_REALM_NAME,
@@ -46,6 +49,11 @@ from storage.redis import get_redis_client_async
 from storage.slack_team_store import SlackTeamStore
 from storage.slack_user import SlackUser
 from storage.user_store import UserStore
+
+
+class SlackStatusResponse(BaseModel):
+    connected: bool
+
 
 signature_verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
 slack_router = APIRouter(prefix='/slack')
@@ -276,6 +284,15 @@ async def keycloak_callback(
         session.add(slack_user)
         await session.commit()
 
+    # Analytics: slack integration enabled (best-effort, never blocks the response)
+    try:
+        analytics = get_analytics_service()
+        if analytics:
+            ctx = await resolve_analytics_context(keycloak_user_id)
+            analytics.track_slack_integration_enabled(ctx=ctx)
+    except Exception:
+        logger.exception('analytics:slack_integration_enabled:failed')
+
     message = Message(source=SourceType.SLACK, message=payload)
 
     background_tasks.add_task(slack_manager.receive_message, message)
@@ -284,6 +301,22 @@ async def keycloak_callback(
         description='It is now safe to close this tab.',
         status_code=200,
     )
+
+
+@slack_router.get('/status')
+async def get_slack_status(
+    user_id: str = Depends(get_user_id),
+) -> SlackStatusResponse:
+    """Whether the current user has linked their Slack account.
+
+    Lets the settings UI show Slack as connected once the install flow has
+    stored the link. Describes the saved link, not the health of the Slack app.
+    """
+    async with a_session_maker() as session:
+        result = await session.execute(
+            select(SlackUser.id).where(SlackUser.keycloak_user_id == user_id).limit(1)
+        )
+        return SlackStatusResponse(connected=result.first() is not None)
 
 
 @slack_router.post('/on-event')

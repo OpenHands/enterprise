@@ -2,9 +2,11 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import datetime
+from pathlib import Path
 from uuid import UUID
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
@@ -29,13 +31,14 @@ from server.verified_models.verified_model_service import (
 # every model a relationship refers to has been imported.
 from storage.api_key import ApiKey  # noqa: F401
 from storage.billing_session import BillingSession
-from storage.bitbucket_dc_webhook import BitbucketDCWebhook  # noqa: F401
-from storage.bitbucket_webhook import BitbucketWebhook  # noqa: F401
 from storage.conversation_work import ConversationWork
 from storage.daily_conversation_usage import DailyConversationUsage  # noqa: F401
 from storage.device_code import DeviceCode  # noqa: F401
 from storage.feedback import Feedback
 from storage.github_app_installation import GithubAppInstallation
+from storage.oauth_provider import OAuthProvider  # noqa: F401
+from storage.oauth_provider_user import OAuthProviderUser  # noqa: F401
+from storage.oauth_token import OAuthToken  # noqa: F401
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings  # noqa: F401
 from storage.org_budget_threshold import OrgBudgetThreshold  # noqa: F401
@@ -152,6 +155,35 @@ async def async_session_maker(async_engine: AsyncEngine) -> async_sessionmaker:
         bind=async_engine,
         class_=AsyncSession,
         expire_on_commit=False,
+    )
+
+
+@pytest.fixture
+def app_db_session(
+    test_database: postgres_testdb.TestDatabase,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Point the app server's global ``db_session`` injector at this test's database.
+
+    Route tests that let FastAPI resolve ``get_db_session`` reach the injector on
+    the global config rather than a fixture, so it has to be redirected here.
+    """
+    from openhands.app_server.config import get_global_config
+    from openhands.app_server.services.db_session_injector import DbSessionInjector
+
+    server = test_database.server
+    monkeypatch.setattr(
+        get_global_config(),
+        'db_session',
+        DbSessionInjector(
+            persistence_dir=tmp_path,
+            host=server.host,
+            port=server.port,
+            name=test_database.name,
+            user=server.user,
+            password=SecretStr(server.password),
+        ),
     )
 
 

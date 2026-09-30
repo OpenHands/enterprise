@@ -14,6 +14,12 @@ import {
   ConfigureButton,
   ConfigureModal,
 } from "#/components/features/settings/project-management/configure-modal";
+import { Text } from "#/ui/typography";
+import { cn } from "#/utils/utils";
+import { settingsListRowHoverClassName } from "#/utils/settings-list-classes";
+import { formControlTransitionClassName } from "#/utils/form-control-classes";
+import { IntegrationProviderIcon } from "#/components/features/settings/git-settings/integration-provider-icon";
+import { OrgScopeBadge } from "./org-scope-badge";
 
 interface IntegrationRowProps {
   platform: "jira" | "jira-dc" | "linear";
@@ -93,11 +99,11 @@ export function IntegrationRow({
     unlinkMutation.isPending ||
     configureMutation.isPending;
 
-  // Determine if integration is active and workspace exists
+  const workspace = integrationData?.workspace;
+  const isWorkspaceActive = workspace?.status === "active";
   const isIntegrationActive = integrationData?.status === "active";
-  const hasWorkspace = integrationData?.workspace;
+  const hasWorkspace = !!workspace;
 
-  // Determine button text based on integration state
   const buttonText =
     isIntegrationActive && hasWorkspace
       ? t(I18nKey.PROJECT_MANAGEMENT$EDIT_BUTTON_LABEL)
@@ -106,13 +112,23 @@ export function IntegrationRow({
   if (memberEmailMode) {
     return (
       <div
-        className="flex items-center justify-between flex-wrap gap-2"
+        className={cn(
+          "flex items-center justify-between gap-4 px-3 py-3",
+          formControlTransitionClassName,
+          settingsListRowHoverClassName,
+        )}
         data-testid={dataTestId}
       >
-        <span className="font-medium">{platformName}</span>
+        <div className="flex min-w-0 items-center gap-3">
+          <IntegrationProviderIcon provider={platform} />
+          <Text className="min-w-0 truncate text-sm font-medium text-content-2">
+            {platformName}
+          </Text>
+          {isJira && <OrgScopeBadge />}
+        </div>
         {jiraInstanceStatus !== undefined && (
           <span
-            className="text-sm text-gray-400"
+            className="text-sm text-muted"
             data-testid="jira-member-guidance"
           >
             {t(
@@ -128,18 +144,56 @@ export function IntegrationRow({
 
   return (
     <div
-      className="flex items-center justify-between flex-wrap gap-2"
+      className={cn(
+        "flex items-center justify-between gap-4 px-3 py-3",
+        formControlTransitionClassName,
+        settingsListRowHoverClassName,
+      )}
       data-testid={dataTestId}
     >
-      <span className="font-medium">{platformName}</span>
-      <div className="flex items-center gap-6">
-        <ConfigureButton
-          onClick={handleConfigure}
-          isDisabled={isLoading}
-          text={buttonText}
-          data-testid={`${platform}-configure-button`}
-        />
+      <div className="flex min-w-0 items-center gap-3">
+        <IntegrationProviderIcon provider={platform} />
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <Text className="min-w-0 truncate text-sm font-medium text-content-2">
+              {platformName}
+            </Text>
+            {isJira && <OrgScopeBadge />}
+            {/* Describes the saved workspace connection, not webhook health. */}
+            {workspace && (
+              <span
+                data-testid={`${platform}-status-text`}
+                className={cn(
+                  "inline-flex shrink-0 items-center rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap",
+                  isWorkspaceActive
+                    ? "bg-green-500/15 text-green-400"
+                    : "bg-yellow-500/20 text-yellow-400",
+                )}
+              >
+                {t(
+                  isWorkspaceActive
+                    ? I18nKey.STATUS$CONNECTED
+                    : I18nKey.PROJECT_MANAGEMENT$JIRA_DC_STATUS_INACTIVE,
+                )}
+              </span>
+            )}
+          </div>
+          {workspace && (
+            <Text
+              testId={`${platform}-workspace-name`}
+              className="truncate text-xs leading-4 text-[var(--oh-muted)]"
+            >
+              {workspace.name}
+            </Text>
+          )}
+        </div>
       </div>
+      <ConfigureButton
+        onClick={handleConfigure}
+        isDisabled={isLoading}
+        text={buttonText}
+        data-testid={`${platform}-configure-button`}
+      />
       <ConfigureModal
         isOpen={isConfigureModalOpen}
         onClose={() => setConfigureModalOpen(false)}

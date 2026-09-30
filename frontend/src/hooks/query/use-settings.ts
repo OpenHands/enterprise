@@ -107,6 +107,8 @@ const normalizeSettingsResponse = (settings: Partial<Settings>): Settings => {
       settings.sandbox_grouping_strategy ??
       DEFAULT_SETTINGS.sandbox_grouping_strategy,
     default_sandbox_spec_id: settings.default_sandbox_spec_id ?? null,
+    enable_memory_context:
+      settings.enable_memory_context ?? DEFAULT_SETTINGS.enable_memory_context,
   };
 };
 

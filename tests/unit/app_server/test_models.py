@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from openhands.app_server.app_conversation.app_conversation_models import (
     ACP_SERVER_TAG_KEY,
@@ -199,3 +200,61 @@ class TestPluginSpecSourceRedaction:
         plugin_source = dumped['plugins'][0]['source']
         assert 'token' not in plugin_source
         assert '****' in plugin_source
+
+
+class TestConversationTagsRequests:
+    """Caller-supplied ``tags`` on the start and update request models."""
+
+    def test_start_request_accepts_tags(self):
+        # Arrange
+        payload = {'tags': {'environmenturl': 'https://env.example.com/abc'}}
+
+        # Act
+        request = AppConversationStartRequest.model_validate(payload)
+
+        # Assert
+        assert request.tags == {'environmenturl': 'https://env.example.com/abc'}
+
+    @pytest.mark.parametrize(
+        'tags',
+        [
+            pytest.param({'Environment_Url': 'value'}, id='invalid-key'),
+            pytest.param({'environmenturl': 'x' * 257}, id='value-too-long'),
+            pytest.param({'environmenturl': None}, id='null-value'),
+            pytest.param({ACP_SERVER_TAG_KEY: 'codex'}, id='server-managed-key'),
+        ],
+    )
+    def test_start_request_rejects_invalid_tags(self, tags):
+        # Arrange
+        payload = {'tags': tags}
+
+        # Act / Assert
+        with pytest.raises(ValidationError):
+            AppConversationStartRequest.model_validate(payload)
+
+    def test_update_request_accepts_null_to_delete_a_tag(self):
+        # Arrange
+        payload = {'tags': {'environmenturl': 'https://env/b', 'obsolete': None}}
+
+        # Act
+        request = AppConversationUpdateRequest.model_validate(payload)
+
+        # Assert
+        assert request.tags == {'environmenturl': 'https://env/b', 'obsolete': None}
+        assert request.model_fields_set == {'tags'}
+
+    @pytest.mark.parametrize(
+        'tags',
+        [
+            pytest.param({'Environment_Url': None}, id='invalid-key'),
+            pytest.param({'environmenturl': 'x' * 257}, id='value-too-long'),
+            pytest.param({ACP_SERVER_TAG_KEY: None}, id='server-managed-key'),
+        ],
+    )
+    def test_update_request_rejects_invalid_tags(self, tags):
+        # Arrange
+        payload = {'tags': tags}
+
+        # Act / Assert
+        with pytest.raises(ValidationError):
+            AppConversationUpdateRequest.model_validate(payload)

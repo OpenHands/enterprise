@@ -2,7 +2,7 @@
 
 This module tests the SQL implementation of PendingMessageService,
 covering message queuing, retrieval, counting, deletion, and
-conversation_id updates using SQLite as a mock database.
+conversation_id updates against the test database.
 """
 
 from typing import AsyncGenerator

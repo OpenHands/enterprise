@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 from integrations.jira.jira_manager import JIRA_CLOUD_API_URL, JiraManager
 from integrations.models import Message, SourceType
 from integrations.utils import HOST_URL
+from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
@@ -54,9 +55,23 @@ JIRA_TIMEOUT = httpx.Timeout(30.0)
 # Request/Response models
 class JiraWorkspaceCreate(BaseModel):
     workspace_name: str = Field(..., description='Workspace display name')
-    webhook_secret: str = Field(..., description='Webhook secret for verification')
+    webhook_secret: str | None = Field(
+        default=None,
+        description=(
+            'Webhook secret for verification. Required when creating a new '
+            'workspace; optional on update — omit/leave blank to keep the '
+            'stored value.'
+        ),
+    )
     svc_acc_email: str = Field(..., description='Service account email')
-    svc_acc_api_key: str = Field(..., description='Service account API token')
+    svc_acc_api_key: str | None = Field(
+        default=None,
+        description=(
+            'Service account API token. Required when creating a new '
+            'workspace; optional on update — omit/leave blank to keep the '
+            'stored value.'
+        ),
+    )
     is_active: bool = Field(
         default=False,
         description='Indicates if the workspace integration is active',
@@ -82,14 +97,14 @@ class JiraWorkspaceCreate(BaseModel):
     @field_validator('webhook_secret')
     @classmethod
     def validate_webhook_secret(cls, v):
-        if ' ' in v:
+        if v is not None and ' ' in v:
             raise ValueError('webhook_secret cannot contain spaces')
         return v
 
     @field_validator('svc_acc_api_key')
     @classmethod
     def validate_svc_acc_api_key(cls, v):
-        if ' ' in v:
+        if v is not None and ' ' in v:
             raise ValueError('svc_acc_api_key cannot contain spaces')
         return v
 
@@ -115,6 +130,10 @@ class JiraWorkspaceResponse(BaseModel):
     jira_cloud_id: str
     status: str
     editable: bool
+    # Service-account email is non-secret and is returned so the configure form
+    # can pre-fill it when editing. The API token and webhook secret are never
+    # returned.
+    svc_acc_email: str | None = None
     created_at: str
     updated_at: str
 
@@ -269,6 +288,18 @@ async def _handle_workspace_link_creation(
             jira_workspace_id=workspace.id,
         )
 
+    # Analytics: jira integration enabled (best-effort, never blocks the flow)
+    try:
+        analytics = get_analytics_service()
+        if analytics:
+            ctx = await resolve_analytics_context(user_id)
+            analytics.track_jira_integration_enabled(
+                ctx=ctx,
+                workspace_name=target_workspace,
+            )
+    except Exception:
+        logger.exception('analytics:jira_integration_enabled:failed')
+
 
 async def _validate_workspace_update_permissions(user_id: str, target_workspace: str):
     """Validate that user can update the target workspace."""
@@ -299,6 +330,38 @@ async def _validate_workspace_update_permissions(user_id: str, target_workspace:
         )
 
     return workspace
+
+
+async def _resolve_workspace_secrets(
+    user_id: str, workspace_data: JiraWorkspaceCreate
+) -> tuple[str, str]:
+    """Resolve the webhook secret and service-account API token to save.
+
+    Both are required to create a workspace. When editing an existing one,
+    blank inputs keep the stored values so an admin can change the email or
+    active state without re-entering secrets. The permission check runs
+    before anything is decrypted.
+    """
+    webhook_secret = workspace_data.webhook_secret
+    svc_acc_api_key = workspace_data.svc_acc_api_key
+    if webhook_secret and svc_acc_api_key:
+        return webhook_secret, svc_acc_api_key
+
+    existing_workspace = await jira_manager.integration_store.get_workspace_by_name(
+        workspace_data.workspace_name
+    )
+    if not existing_workspace:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='A webhook secret and service account API token are required '
+            'when configuring a new workspace.',
+        )
+    await _validate_workspace_update_permissions(user_id, workspace_data.workspace_name)
+    return (
+        webhook_secret or token_manager.decrypt_text(existing_workspace.webhook_secret),
+        svc_acc_api_key
+        or token_manager.decrypt_text(existing_workspace.svc_acc_api_key),
+    )
 
 
 @jira_integration_router.post('/events')
@@ -443,6 +506,10 @@ async def create_jira_workspace(
                 detail='User ID not found',
             )
 
+        webhook_secret, svc_acc_api_key = await _resolve_workspace_secrets(
+            user_id, workspace_data
+        )
+
         if JIRA_ENABLE_OAUTH:
             state = str(uuid.uuid4())
 
@@ -452,9 +519,9 @@ async def create_jira_workspace(
                 'org_id': str(effective_org_id) if effective_org_id else None,
                 'user_email': user_email,
                 'target_workspace': workspace_data.workspace_name,
-                'webhook_secret': workspace_data.webhook_secret,
+                'webhook_secret': webhook_secret,
                 'svc_acc_email': workspace_data.svc_acc_email,
-                'svc_acc_api_key': workspace_data.svc_acc_api_key,
+                'svc_acc_api_key': svc_acc_api_key,
                 'is_active': workspace_data.is_active,
                 'state': state,
             }
@@ -508,15 +575,11 @@ async def create_jira_workspace(
             await _validate_service_account(
                 jira_cloud_id,
                 workspace_data.svc_acc_email,
-                workspace_data.svc_acc_api_key,
+                svc_acc_api_key,
             )
 
-            encrypted_webhook_secret = token_manager.encrypt_text(
-                workspace_data.webhook_secret
-            )
-            encrypted_svc_acc_api_key = token_manager.encrypt_text(
-                workspace_data.svc_acc_api_key
-            )
+            encrypted_webhook_secret = token_manager.encrypt_text(webhook_secret)
+            encrypted_svc_acc_api_key = token_manager.encrypt_text(svc_acc_api_key)
 
             if not existing_workspace:
                 workspace = await jira_manager.integration_store.create_workspace(
@@ -862,6 +925,7 @@ async def get_current_workspace_link(request: Request):
                 jira_cloud_id=workspace.jira_cloud_id,
                 status=workspace.status,
                 editable=workspace.admin_user_id == user.keycloak_user_id,
+                svc_acc_email=workspace.svc_acc_email,
                 created_at=workspace.created_at.isoformat(),
                 updated_at=workspace.updated_at.isoformat(),
             ),

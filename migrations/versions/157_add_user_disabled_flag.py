@@ -1,13 +1,11 @@
-"""Add an instance-level disabled flag to users.
+"""Preserve the reverted user disabled flag revision.
 
 Revision ID: 157
 Revises: 156
+Create Date: 2026-09-08 00:00:00.000000
 """
 
 from typing import Sequence
-
-import sqlalchemy as sa
-from alembic import op
 
 revision: str = '157'
 down_revision: str | None = '156'
@@ -16,14 +14,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        'user',
-        sa.Column(
-            'is_disabled', sa.Boolean(), nullable=False, server_default=sa.false()
-        ),
-    )
-    op.alter_column('user', 'is_disabled', server_default=None)
+    pass
 
 
 def downgrade() -> None:
-    op.drop_column('user', 'is_disabled')
+    pass
