@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import {
   superAdminService,
   type ProvisionUserRequest,
+  type ProvisionUserResponse,
+  type SuperAdminGroupAction,
 } from "#/api/super-admin-service/super-admin-service.api";
 import { I18nKey } from "#/i18n/declaration";
 import {
@@ -189,6 +191,83 @@ export const useProvisionSuperAdminUser = () => {
       displayErrorToast(
         retrieveAxiosErrorMessage(error) ||
           t(I18nKey.SUPER_ADMIN$PROVISION_USER_ERROR),
+      );
+    },
+  });
+};
+
+export const useProvisionUserToGroups = () => {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: ({
+      orgIds,
+      payload,
+    }: {
+      orgIds: string[];
+      payload: ProvisionUserRequest;
+    }) =>
+      // Provision one organization at a time. The first call creates the
+      // account; later calls attach that same user to the other groups.
+      orgIds.reduce<Promise<ProvisionUserResponse[]>>(
+        (chain, orgId) =>
+          chain.then(async (results) => {
+            const next = await superAdminService.provisionUser({
+              orgId,
+              payload,
+            });
+            return [...results, next];
+          }),
+        Promise.resolve([]),
+      ),
+    onSuccess: (results) => {
+      displaySuccessToast(
+        results.some((result) => result.created)
+          ? t(I18nKey.SUPER_ADMIN$PROVISION_USER_SUCCESS)
+          : t(I18nKey.SUPER_ADMIN$PROVISION_USER_REPROVISIONED),
+      );
+      queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_QUERY_KEYS.users });
+      queryClient.invalidateQueries({
+        queryKey: SUPER_ADMIN_QUERY_KEYS.organizations,
+      });
+    },
+    onError: (error) => {
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error) ||
+          t(I18nKey.SUPER_ADMIN$PROVISION_USER_ERROR),
+      );
+    },
+  });
+};
+
+export const useUpdateSuperAdminUserGroups = () => {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: ({
+      userId,
+      action,
+      orgIds,
+      role,
+    }: {
+      userId: string;
+      action: SuperAdminGroupAction;
+      orgIds: string[];
+      role?: "member" | "admin" | "owner";
+    }) => superAdminService.updateUserGroups({ userId, action, orgIds, role }),
+    onSuccess: () => {
+      displaySuccessToast(t(I18nKey.SUPER_ADMIN$GROUPS_UPDATED));
+      queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_QUERY_KEYS.users });
+      queryClient.invalidateQueries({
+        queryKey: SUPER_ADMIN_QUERY_KEYS.organizations,
+      });
+    },
+    onError: (error) => {
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error) ||
+          t(I18nKey.SUPER_ADMIN$GROUPS_UPDATE_ERROR),
       );
     },
   });

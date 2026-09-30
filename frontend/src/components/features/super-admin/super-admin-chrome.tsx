@@ -5,6 +5,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsInput } from "#/components/features/settings/settings-input";
@@ -13,6 +14,7 @@ import { ContextMenuListItem } from "#/components/features/context-menu/context-
 import { ContextMenu } from "#/ui/context-menu";
 import { Typography } from "#/ui/typography";
 import ThreeDotsVerticalIcon from "#/icons/three-dots-vertical.svg?react";
+import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import {
@@ -281,6 +283,10 @@ export function SuperAdminRowMenu({
 
 const USER_TABLE_CELL_CLASS_NAME = "h-auto min-h-12 py-3 align-top";
 
+function membershipIsSuspended(status: string | null | undefined) {
+  return status === "inactive" || status === "suspended";
+}
+
 export function SuperAdminUserMemberships({
   memberships,
   field,
@@ -290,24 +296,37 @@ export function SuperAdminUserMemberships({
   field: "orgName" | "role";
   onOrgClick?: (orgId: string, orgName: string) => void;
 }) {
+  const { t } = useTranslation();
+
   return (
     <ul className="flex flex-col gap-1">
       {memberships.map((membership) => (
         <li
           key={`${membership.orgId}-${field}`}
-          className={
-            field === "orgName" ? "truncate leading-5" : "leading-5 capitalize"
-          }
+          className={field === "orgName" ? "leading-5" : "leading-5 capitalize"}
         >
-          {field === "orgName" && onOrgClick ? (
-            <button
-              type="button"
-              data-testid={`super-admin-user-org-${membership.orgId}`}
-              className="block max-w-full truncate text-left hover:underline"
-              onClick={() => onOrgClick(membership.orgId, membership.orgName)}
-            >
-              {membership.orgName}
-            </button>
+          {field === "orgName" ? (
+            <span className="flex min-w-0 items-center gap-2">
+              {onOrgClick ? (
+                <button
+                  type="button"
+                  data-testid={`super-admin-user-org-${membership.orgId}`}
+                  className="block max-w-full truncate text-left hover:underline"
+                  onClick={() =>
+                    onOrgClick(membership.orgId, membership.orgName)
+                  }
+                >
+                  {membership.orgName}
+                </button>
+              ) : (
+                <span className="block truncate">{membership.orgName}</span>
+              )}
+              {membershipIsSuspended(membership.status) ? (
+                <span className="shrink-0 text-xs text-[var(--oh-muted)]">
+                  {t(I18nKey.SUPER_ADMIN$MEMBERSHIP_SUSPENDED)}
+                </span>
+              ) : null}
+            </span>
           ) : (
             membership[field]
           )}

@@ -16,6 +16,8 @@ export interface SuperAdminMembership {
   orgId: string;
   orgName: string;
   role: SuperAdminOrgRole;
+  /** Membership row status from the admin API. Inactive means suspended. */
+  status?: string | null;
 }
 
 export interface SuperAdminUserRow {

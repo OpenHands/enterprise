@@ -276,3 +276,96 @@ async def test_remove_user_blocks_last_owner(mock_app, grant_manage_super_admins
             resp = await client.delete(f'/api/admin/users/{user_id}')
 
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_suspends_selected_orgs(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+    user = MagicMock()
+    user.id = user_id
+    user.email = 'alex@acme.example'
+    user.git_user_name = 'Alex'
+
+    org = MagicMock()
+    org.id = uuid.uuid4()
+    org.name = 'Acme'
+    member = MagicMock()
+    member.role_id = 1
+    member.status = 'inactive'
+    role = MagicMock()
+    role.name = 'member'
+    set_status = AsyncMock(return_value=1)
+
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=user),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.set_all_membership_statuses',
+            set_status,
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[(member, org)]),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=role),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/users/{user_id}/groups',
+                json={'action': 'suspend', 'org_ids': [str(org.id)]},
+            )
+
+    assert resp.status_code == 200
+    set_status.assert_awaited_once_with(user_id, 'inactive', [org.id])
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_remove_blocks_last_owner(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+    user = MagicMock()
+    user.id = user_id
+    user.email = 'owner@acme.example'
+    user.git_user_name = 'Owner'
+
+    org = MagicMock()
+    org.id = uuid.uuid4()
+    org.name = 'Acme'
+    member = MagicMock()
+    member.role_id = 1
+    role = MagicMock()
+    role.name = 'owner'
+
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=user),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[(member, org)]),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=role),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberService._is_last_owner',
+            AsyncMock(return_value=True),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/users/{user_id}/groups',
+                json={'action': 'remove', 'org_ids': [str(org.id)]},
+            )
+
+    assert resp.status_code == 409

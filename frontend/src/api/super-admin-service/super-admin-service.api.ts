@@ -30,6 +30,8 @@ export interface SuperAdminApiUser {
   status: "active" | "inactive";
 }
 
+export type SuperAdminGroupAction = "suspend" | "resume" | "remove" | "add";
+
 export interface ProvisionUserRequest {
   email: string;
   password?: string;
@@ -124,6 +126,24 @@ export const superAdminService = {
       user_id: string;
       removed_org_ids: string[];
     }>(`/api/admin/users/${userId}`);
+    return data;
+  },
+
+  updateUserGroups: async ({
+    userId,
+    action,
+    orgIds,
+    role,
+  }: {
+    userId: string;
+    action: SuperAdminGroupAction;
+    orgIds: string[];
+    role?: "member" | "admin" | "owner";
+  }) => {
+    const { data } = await openHands.post<SuperAdminApiUser>(
+      `/api/admin/users/${userId}/groups`,
+      { action, org_ids: orgIds, role },
+    );
     return data;
   },
 

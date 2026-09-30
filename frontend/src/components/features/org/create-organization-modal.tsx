@@ -55,6 +55,8 @@ export function CreateOrganizationModal({
     try {
       // Await create (+ org switch in the mutation) before signaling the tour,
       // so the next stop can mount on org-defaults for the new org.
+      // The create-org API still stores these as contact fields. In the
+      // product they are the organization owner: the first person in the group.
       await createOrganization({
         name: trimmedName,
         contact_name: trimmedContactName,
@@ -90,17 +92,17 @@ export function CreateOrganizationModal({
         <SettingsInput
           testId="create-organization-contact-name"
           type="text"
-          label={t(I18nKey.ORG$CONTACT_NAME)}
+          label={t(I18nKey.ORG$OWNER_NAME)}
           value={contactName}
-          placeholder={t(I18nKey.ORG$CONTACT_NAME_PLACEHOLDER)}
+          placeholder={t(I18nKey.ORG$OWNER_NAME_PLACEHOLDER)}
           onChange={setContactName}
         />
         <SettingsInput
           testId="create-organization-contact-email"
           type="email"
-          label={t(I18nKey.ORG$CONTACT_EMAIL)}
+          label={t(I18nKey.ORG$OWNER_EMAIL)}
           value={email}
-          placeholder={t(I18nKey.ORG$CONTACT_EMAIL_PLACEHOLDER)}
+          placeholder={t(I18nKey.ORG$OWNER_EMAIL_PLACEHOLDER)}
           onChange={setEmail}
         />
       </div>
