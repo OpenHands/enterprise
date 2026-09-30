@@ -266,16 +266,17 @@ export default function MainApp() {
     config.data?.app_mode === "saas" &&
     loginMethodExists;
 
-  // Settings owns its own gutters (aside pl-8 + main pr-[14px]), matching
+  // Settings and Super Admin own their own gutters (aside + main), matching
   // agent-canvas. Other non-home routes keep the legacy md:p-3 shell padding.
-  const isSettingsRoute = pathname.startsWith("/settings");
+  const isFlushChromeRoute =
+    pathname.startsWith("/settings") || pathname.startsWith("/super-admin");
 
   return (
     <div
       data-testid="root-layout"
       className={cn(
         "h-screen lg:min-w-5xl flex flex-col bg-base overflow-hidden",
-        pathname === "/" || isSettingsRoute ? "p-0" : "p-0 md:p-3",
+        pathname === "/" || isFlushChromeRoute ? "p-0" : "p-0 md:p-3",
       )}
     >
       <title>{appTitle}</title>

@@ -8,7 +8,13 @@ import {
   StopIcon,
 } from "#/components/shared/icons/inline-icons";
 import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
-import { AreaChart, KPICard, PieChart } from "./usage-dashboard-widgets";
+import {
+  AreaChart,
+  KPICard,
+  MultiLineChart,
+  PieChart,
+  type ChartSeries,
+} from "./usage-dashboard-widgets";
 import {
   buildExportFilename,
   formatAgentLabel,
@@ -28,8 +34,10 @@ import {
   formControlNativeSelectClassName,
   formControlShellClassName,
 } from "#/utils/form-control-classes";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import {
   settingsListContainerClassName,
+  settingsListScrollFadeFromClassName,
   settingsListTableCellClassName,
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
@@ -43,7 +51,11 @@ const usageNativeSelectClassName = cn(
 
 const usageFilterSelectClassName = formControlNativeSelectClassName;
 
-const usageTableShellClassName = cn(settingsListContainerClassName, "min-w-0");
+const usageTableShellClassName = cn(
+  settingsListContainerClassName,
+  settingsListScrollFadeFromClassName,
+  "min-w-0",
+);
 
 const usageTableHeaderCellClassName = settingsListTableHeaderCellClassName;
 
@@ -103,6 +115,8 @@ export function OverviewTab({
   totalSpend,
   timeWindowLabel,
   chartData,
+  chartSubtitle,
+  compareSeries,
   agentSpendRows,
   agentSpendTotal,
 }: {
@@ -112,9 +126,13 @@ export function OverviewTab({
   totalSpend: string;
   timeWindowLabel: string;
   chartData: ChartPoint[];
+  chartSubtitle?: string;
+  compareSeries?: ChartSeries[];
   agentSpendRows: AgentSpendRow[];
   agentSpendTotal: number;
 }) {
+  const comparing = (compareSeries?.length ?? 0) > 1;
+  const compareDates = chartData.map((point) => point.date);
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-4 gap-4">
@@ -144,17 +162,30 @@ export function OverviewTab({
                 Conversations started per day
               </h2>
               <p className="text-sm text-muted">
-                {timeWindowLabel} · all users
+                {chartSubtitle ?? `${timeWindowLabel} · all users`}
               </p>
             </div>
             <button
               type="button"
               disabled={chartData.length === 0}
               onClick={() => {
-                const csv = rowsToCsv(
-                  ["date", "conversations_started"],
-                  chartData.map((point) => [point.date, point.value]),
-                );
+                const csv = comparing
+                  ? rowsToCsv(
+                      [
+                        "date",
+                        ...(compareSeries ?? []).map((row) => row.label),
+                      ],
+                      compareDates.map((date, index) => [
+                        date,
+                        ...(compareSeries ?? []).map(
+                          (row) => row.values[index] ?? 0,
+                        ),
+                      ]),
+                    )
+                  : rowsToCsv(
+                      ["date", "conversations_started"],
+                      chartData.map((point) => [point.date, point.value]),
+                    );
                 downloadBlob(
                   new Blob([csv], { type: "text/csv;charset=utf-8;" }),
                   buildExportFilename("conversations_per_day"),
@@ -172,7 +203,14 @@ export function OverviewTab({
           <div className="relative min-h-36 flex-1">
             {chartData.length > 0 ? (
               <div className="absolute inset-0">
-                <AreaChart data={chartData} />
+                {comparing ? (
+                  <MultiLineChart
+                    dates={compareDates}
+                    series={compareSeries ?? []}
+                  />
+                ) : (
+                  <AreaChart data={chartData} />
+                )}
               </div>
             ) : (
               <div className="flex h-full min-h-36 items-center justify-center py-8 text-center text-sm text-muted">
@@ -180,6 +218,22 @@ export function OverviewTab({
               </div>
             )}
           </div>
+          {comparing && (
+            <div className="mt-4 flex flex-wrap gap-3">
+              {(compareSeries ?? []).map((row) => (
+                <div
+                  key={row.id}
+                  className="flex items-center gap-2 text-sm text-foreground"
+                >
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: row.color }}
+                  />
+                  {row.label}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex h-full flex-col rounded-lg border border-border-subtle bg-base-secondary p-6">
           <div className="mb-4">
@@ -234,6 +288,7 @@ export function OverviewTab({
 export type ConversationRow = {
   id: string;
   user_email?: string | null;
+  org_name?: string | null;
   total_tokens: number;
   accumulated_cost: number;
   created_at?: string | null;
@@ -327,6 +382,9 @@ export function ConversationsTab({
     onSortOrderChange(DEFAULT_CONVERSATION_SORT_ORDER);
     onSandboxStatusChange(DEFAULT_CONVERSATION_SANDBOX_STATUS);
   };
+  const showOrgColumn =
+    conversationsData?.items.some((row) => Boolean(row.org_name)) === true;
+  const conversationColumnCount = showOrgColumn ? 12 : 11;
 
   return (
     <div className="space-y-4">
@@ -474,11 +532,16 @@ export function ConversationsTab({
       </div>
 
       <div className={usageTableShellClassName}>
-        <div className="overflow-x-auto">
+        <HorizontalScrollFade>
           <table className="w-full min-w-max">
             <thead className={settingsListTableHeadClassName}>
               <tr>
                 <th className={usageTableHeaderCellClassName}>User</th>
+                {showOrgColumn && (
+                  <th className={usageTableHeaderCellClassName}>
+                    Organization
+                  </th>
+                )}
                 <th className={usageTableHeaderCellRightClassName}>Tokens</th>
                 <th className={usageTableHeaderCellRightClassName}>Spend</th>
                 <th className={usageTableHeaderCellClassName}>Duration</th>
@@ -494,7 +557,10 @@ export function ConversationsTab({
             <tbody>
               {conversationsLoading && (
                 <tr>
-                  <td colSpan={11} className={usageTableEmptyCellClassName}>
+                  <td
+                    colSpan={conversationColumnCount}
+                    className={usageTableEmptyCellClassName}
+                  >
                     Loading conversations...
                   </td>
                 </tr>
@@ -502,7 +568,10 @@ export function ConversationsTab({
               {!conversationsLoading &&
                 (conversationsData?.items.length ?? 0) === 0 && (
                   <tr>
-                    <td colSpan={11} className={usageTableEmptyCellClassName}>
+                    <td
+                      colSpan={conversationColumnCount}
+                      className={usageTableEmptyCellClassName}
+                    >
                       No conversations found for this time window.
                     </td>
                   </tr>
@@ -523,6 +592,11 @@ export function ConversationsTab({
                         {conversation.user_email || "-"}
                       </div>
                     </td>
+                    {showOrgColumn && (
+                      <td className={cn(usageTableCellClassName, "text-muted")}>
+                        {conversation.org_name || "-"}
+                      </td>
+                    )}
                     <td
                       className={cn(
                         usageTableCellRightClassName,
@@ -595,7 +669,7 @@ export function ConversationsTab({
               })}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollFade>
         <div className="flex items-center justify-between border-t border-[var(--oh-border)] px-3 py-3">
           <div className="flex items-center gap-2">
             <button
@@ -665,6 +739,7 @@ export type UserUsageRow = {
   user_id: string;
   user_name?: string | null;
   user_email?: string | null;
+  org_name?: string | null;
   conversation_count: number;
   first_conversation_at?: string | null;
   last_conversation_at?: string | null;
@@ -689,14 +764,23 @@ export function UsersTab({
   userUsage?: UserUsageResponse;
   userUsageLoading: boolean;
 }) {
+  const showOrgColumn =
+    userUsage?.items.some((user) => Boolean(user.org_name)) === true;
+  const userColumnCount = showOrgColumn ? 12 : 11;
+
   return (
     <div className="space-y-4">
       <div className={usageTableShellClassName}>
-        <div className="overflow-x-auto">
+        <HorizontalScrollFade>
           <table className="w-full min-w-max">
             <thead className={settingsListTableHeadClassName}>
               <tr>
                 <th className={usageTableHeaderCellClassName}>User</th>
+                {showOrgColumn && (
+                  <th className={usageTableHeaderCellClassName}>
+                    Organization
+                  </th>
+                )}
                 <th className={usageTableHeaderCellRightClassName}>Convos</th>
                 <th className={usageTableHeaderCellClassName}>First convo</th>
                 <th className={usageTableHeaderCellClassName}>Last convo</th>
@@ -718,14 +802,20 @@ export function UsersTab({
             <tbody>
               {userUsageLoading && (
                 <tr>
-                  <td colSpan={11} className={usageTableEmptyCellClassName}>
+                  <td
+                    colSpan={userColumnCount}
+                    className={usageTableEmptyCellClassName}
+                  >
                     Loading user usage...
                   </td>
                 </tr>
               )}
               {!userUsageLoading && (userUsage?.items.length ?? 0) === 0 && (
                 <tr>
-                  <td colSpan={11} className={usageTableEmptyCellClassName}>
+                  <td
+                    colSpan={userColumnCount}
+                    className={usageTableEmptyCellClassName}
+                  >
                     No user usage data available yet.
                   </td>
                 </tr>
@@ -745,6 +835,11 @@ export function UsersTab({
                       {user.user_email || "-"}
                     </div>
                   </td>
+                  {showOrgColumn && (
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
+                      {user.org_name || "-"}
+                    </td>
+                  )}
                   <td
                     className={cn(
                       usageTableCellRightClassName,
@@ -801,7 +896,7 @@ export function UsersTab({
               ))}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollFade>
       </div>
     </div>
   );
@@ -878,7 +973,7 @@ export function ModelsTab({
       </div>
 
       <div className={usageTableShellClassName}>
-        <div className="overflow-x-auto">
+        <HorizontalScrollFade>
           <table className="w-full min-w-max">
             <thead className={settingsListTableHeadClassName}>
               <tr>
@@ -963,7 +1058,7 @@ export function ModelsTab({
               )}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollFade>
       </div>
     </div>
   );

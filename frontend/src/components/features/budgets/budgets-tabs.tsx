@@ -18,6 +18,7 @@ import {
   Toggle,
   UserProgressBar,
 } from "./budgets-components";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { cn } from "#/utils/utils";
 import {
   formControlFieldClassName,
@@ -29,6 +30,7 @@ import {
   settingsListDividerClassName,
   settingsListIconActionButtonClassName,
   settingsListRowClassName,
+  settingsListScrollFadeFromClassName,
   settingsListTableCellClassName,
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
@@ -556,215 +558,218 @@ export function UserOverridesTab({
       <div
         className={cn(
           settingsListContainerClassName,
-          "min-w-0 overflow-x-auto",
+          settingsListScrollFadeFromClassName,
+          "min-w-0",
         )}
       >
-        <table className="w-full min-w-max">
-          <thead className={settingsListTableHeadClassName}>
-            <tr>
-              <th className={settingsListTableHeaderCellClassName}>User</th>
-              <th className={settingsListTableHeaderCellClassName}>Budget</th>
-              <th className={settingsListTableHeaderCellClassName}>Usage</th>
-              <th className={settingsListTableHeaderCellClassName}>Status</th>
-              <th
-                className={cn(
-                  settingsListTableHeaderCellClassName,
-                  "text-right",
-                )}
-              >
-                Actions
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {userRows.map((user) => {
-              const isEditing = editingUserId === user.user_id;
-              const overrideValue = Number(overrideAmount);
-              const canSaveOverride =
-                overrideDisabled ||
-                (!!overrideAmount &&
-                  !Number.isNaN(overrideValue) &&
-                  overrideValue > 0);
-
-              return (
-                <tr
-                  key={user.user_id}
-                  className={settingsListTableRowClassName}
+        <HorizontalScrollFade>
+          <table className="w-full min-w-max">
+            <thead className={settingsListTableHeadClassName}>
+              <tr>
+                <th className={settingsListTableHeaderCellClassName}>User</th>
+                <th className={settingsListTableHeaderCellClassName}>Budget</th>
+                <th className={settingsListTableHeaderCellClassName}>Usage</th>
+                <th className={settingsListTableHeaderCellClassName}>Status</th>
+                <th
+                  className={cn(
+                    settingsListTableHeaderCellClassName,
+                    "text-right",
+                  )}
                 >
-                  <td
-                    className={cn(
-                      settingsListTableCellClassName,
-                      "h-auto py-3",
-                    )}
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {userRows.map((user) => {
+                const isEditing = editingUserId === user.user_id;
+                const overrideValue = Number(overrideAmount);
+                const canSaveOverride =
+                  overrideDisabled ||
+                  (!!overrideAmount &&
+                    !Number.isNaN(overrideValue) &&
+                    overrideValue > 0);
+
+                return (
+                  <tr
+                    key={user.user_id}
+                    className={settingsListTableRowClassName}
                   >
-                    <div>
-                      <div className="text-foreground font-medium">
-                        {user.name}
-                      </div>
-                      <div className="text-sm text-[var(--oh-muted)]">
-                        {user.email || "-"}
-                      </div>
-                    </div>
-                  </td>
-                  <td
-                    className={cn(
-                      settingsListTableCellClassName,
-                      "h-auto py-3",
-                    )}
-                  >
-                    {isEditing ? (
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <div
-                            className={cn(formControlShellClassName, "w-28")}
-                          >
-                            <span
-                              className="ml-3 shrink-0 text-tertiary-alt"
-                              aria-hidden
-                            >
-                              $
-                            </span>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={overrideAmount}
-                              onChange={(event) =>
-                                onOverrideAmountChange(event.target.value)
-                              }
-                              disabled={overrideDisabled}
-                              className={cn(
-                                formControlInlineInputClassName,
-                                "text-white",
-                              )}
-                            />
-                          </div>
-                          <span className="text-xs text-[var(--oh-muted)]">
-                            / month
-                          </span>
-                        </div>
-                        <label className="flex items-center gap-2 text-xs text-muted">
-                          <input
-                            type="checkbox"
-                            checked={overrideDisabled}
-                            onChange={(event) =>
-                              onOverrideDisabledChange(event.target.checked)
-                            }
-                            className="accent-primary"
-                          />
-                          Disable budget for this user
-                        </label>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="text-foreground">
-                          {user.budgetLabel}
-                        </div>
-                        <div className="flex items-center gap-1.5 text-xs text-[var(--oh-muted)]">
-                          {user.is_override && (
-                            <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-                          )}
-                          {user.budgetNote}
-                        </div>
-                      </>
-                    )}
-                  </td>
-                  <td
-                    className={cn(
-                      settingsListTableCellClassName,
-                      "h-auto py-3 min-w-[180px]",
-                    )}
-                  >
-                    {user.hasLimit ? (
+                    <td
+                      className={cn(
+                        settingsListTableCellClassName,
+                        "h-auto py-3",
+                      )}
+                    >
                       <div>
-                        <UserProgressBar
-                          value={user.usage}
-                          max={user.maxUsage}
-                          status={user.statusColor}
-                        />
-                        <div className="mt-1 text-xs text-[var(--oh-muted)]">
+                        <div className="text-foreground font-medium">
+                          {user.name}
+                        </div>
+                        <div className="text-sm text-[var(--oh-muted)]">
+                          {user.email || "-"}
+                        </div>
+                      </div>
+                    </td>
+                    <td
+                      className={cn(
+                        settingsListTableCellClassName,
+                        "h-auto py-3",
+                      )}
+                    >
+                      {isEditing ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <div
+                              className={cn(formControlShellClassName, "w-28")}
+                            >
+                              <span
+                                className="ml-3 shrink-0 text-tertiary-alt"
+                                aria-hidden
+                              >
+                                $
+                              </span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={overrideAmount}
+                                onChange={(event) =>
+                                  onOverrideAmountChange(event.target.value)
+                                }
+                                disabled={overrideDisabled}
+                                className={cn(
+                                  formControlInlineInputClassName,
+                                  "text-white",
+                                )}
+                              />
+                            </div>
+                            <span className="text-xs text-[var(--oh-muted)]">
+                              / month
+                            </span>
+                          </div>
+                          <label className="flex items-center gap-2 text-xs text-muted">
+                            <input
+                              type="checkbox"
+                              checked={overrideDisabled}
+                              onChange={(event) =>
+                                onOverrideDisabledChange(event.target.checked)
+                              }
+                              className="accent-primary"
+                            />
+                            Disable budget for this user
+                          </label>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="text-foreground">
+                            {user.budgetLabel}
+                          </div>
+                          <div className="flex items-center gap-1.5 text-xs text-[var(--oh-muted)]">
+                            {user.is_override && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+                            )}
+                            {user.budgetNote}
+                          </div>
+                        </>
+                      )}
+                    </td>
+                    <td
+                      className={cn(
+                        settingsListTableCellClassName,
+                        "h-auto py-3 min-w-[180px]",
+                      )}
+                    >
+                      {user.hasLimit ? (
+                        <div>
+                          <UserProgressBar
+                            value={user.usage}
+                            max={user.maxUsage}
+                            status={user.statusColor}
+                          />
+                          <div className="mt-1 text-xs text-[var(--oh-muted)]">
+                            {`$${user.usage.toLocaleString("en-US", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })} of $${user.maxUsage.toLocaleString("en-US", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}`}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-sm text-muted">
                           {`$${user.usage.toLocaleString("en-US", {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,
-                          })} of $${user.maxUsage.toLocaleString("en-US", {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          })}`}
+                          })} spent`}
                         </div>
-                      </div>
-                    ) : (
-                      <div className="text-sm text-muted">
-                        {`$${user.usage.toLocaleString("en-US", {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })} spent`}
-                      </div>
-                    )}
-                  </td>
-                  <td
-                    className={cn(
-                      settingsListTableCellClassName,
-                      "h-auto py-3",
-                    )}
-                  >
-                    <StatusPill status={user.status} />
-                  </td>
-                  <td
-                    className={cn(
-                      settingsListTableCellClassName,
-                      "h-auto py-3 text-right",
-                    )}
-                  >
-                    {isEditing ? (
-                      <div className="flex items-center justify-end gap-2">
-                        <BrandButton
-                          type="button"
-                          variant="primary"
-                          onClick={() => onSaveOverride(user.user_id)}
-                          isDisabled={!canSaveOverride || isSavingOverride}
-                        >
-                          Save
-                        </BrandButton>
-                        <BrandButton
-                          type="button"
-                          variant="secondary"
-                          onClick={onCancelEditing}
-                        >
-                          Cancel
-                        </BrandButton>
-                      </div>
-                    ) : (
-                      <div className="ml-auto flex w-fit items-center justify-end gap-0.5">
-                        <button
-                          type="button"
-                          onClick={() => onStartEditing(user)}
-                          aria-label={`Edit budget for ${user.name}`}
-                          className={settingsListIconActionButtonClassName}
-                        >
-                          <EditIcon width={16} height={16} />
-                        </button>
-                        {user.is_override && (
+                      )}
+                    </td>
+                    <td
+                      className={cn(
+                        settingsListTableCellClassName,
+                        "h-auto py-3",
+                      )}
+                    >
+                      <StatusPill status={user.status} />
+                    </td>
+                    <td
+                      className={cn(
+                        settingsListTableCellClassName,
+                        "h-auto py-3 text-right",
+                      )}
+                    >
+                      {isEditing ? (
+                        <div className="flex items-center justify-end gap-2">
+                          <BrandButton
+                            type="button"
+                            variant="primary"
+                            onClick={() => onSaveOverride(user.user_id)}
+                            isDisabled={!canSaveOverride || isSavingOverride}
+                          >
+                            Save
+                          </BrandButton>
+                          <BrandButton
+                            type="button"
+                            variant="secondary"
+                            onClick={onCancelEditing}
+                          >
+                            Cancel
+                          </BrandButton>
+                        </div>
+                      ) : (
+                        <div className="ml-auto flex w-fit items-center justify-end gap-0.5">
                           <button
                             type="button"
-                            onClick={() => onRemoveOverride(user.user_id)}
-                            disabled={isDeletingOverride}
-                            aria-label={`Remove override for ${user.name}`}
-                            className={cn(
-                              settingsListIconActionButtonClassName,
-                              "disabled:opacity-60",
-                            )}
+                            onClick={() => onStartEditing(user)}
+                            aria-label={`Edit budget for ${user.name}`}
+                            className={settingsListIconActionButtonClassName}
                           >
-                            <DeleteIcon width={16} height={16} />
+                            <EditIcon width={16} height={16} />
                           </button>
-                        )}
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                          {user.is_override && (
+                            <button
+                              type="button"
+                              onClick={() => onRemoveOverride(user.user_id)}
+                              disabled={isDeletingOverride}
+                              aria-label={`Remove override for ${user.name}`}
+                              className={cn(
+                                settingsListIconActionButtonClassName,
+                                "disabled:opacity-60",
+                              )}
+                            >
+                              <DeleteIcon width={16} height={16} />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </HorizontalScrollFade>
       </div>
 
       {usersTotal > 0 && (

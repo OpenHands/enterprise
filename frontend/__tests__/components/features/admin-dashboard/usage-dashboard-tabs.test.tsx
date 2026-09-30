@@ -54,6 +54,59 @@ describe("Usage & Monitoring Export CSV buttons", () => {
     expect(text).toBe("date,conversations_started\n2026-07-01,3\n2026-07-02,5");
   });
 
+  it("keeps compare series in the existing chart card", async () => {
+    const downloadBlobSpy = vi
+      .spyOn(utilsModule, "downloadBlob")
+      .mockImplementation(() => {});
+    const user = userEvent.setup();
+
+    render(
+      <OverviewTab
+        usageConversations={10}
+        activeConversations={2}
+        avgCostPerConversation={1.23}
+        totalSpend="$12.30"
+        timeWindowLabel="30D"
+        chartSubtitle="30D · 2 organizations"
+        chartData={[
+          { date: "2026-07-01", value: 8 },
+          { date: "2026-07-02", value: 11 },
+        ]}
+        compareSeries={[
+          {
+            id: "acme",
+            label: "Acme Corp",
+            color: "#7c3aed",
+            values: [3, 5],
+          },
+          {
+            id: "northwind",
+            label: "Northwind",
+            color: "#2563eb",
+            values: [5, 6],
+          },
+        ]}
+        agentSpendRows={[]}
+        agentSpendTotal={0}
+      />,
+    );
+
+    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(2);
+    expect(
+      screen.getByRole("heading", { name: "Conversations started per day" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("30D · 2 organizations")).toBeInTheDocument();
+    expect(screen.getByText("Acme Corp")).toBeInTheDocument();
+    expect(screen.getByText("Northwind")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /export csv/i }));
+    const [blob] = downloadBlobSpy.mock.calls[0];
+    const text = await readBlobAsText(blob);
+    expect(text).toBe(
+      "date,Acme Corp,Northwind\n2026-07-01,3,5\n2026-07-02,5,6",
+    );
+  });
+
   it("disables the Overview Export CSV button when there is no chart data", () => {
     render(
       <OverviewTab

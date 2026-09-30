@@ -1,8 +1,8 @@
 import {
   AppWindow,
-  BarChart2,
   Briefcase,
   DollarSign,
+  LayoutDashboard,
   Shield,
   Users,
 } from "lucide-react";
@@ -34,13 +34,15 @@ export interface SettingsNavItem {
   // Drives both the navigation disable in ``use-settings-nav-items.ts``
   // and the server-side redirect in ``routes/settings.tsx`` from one source.
   disabledByAcp?: boolean;
+  /** Kept for titles/flags but rendered in the account dropdown, not the rail. */
+  menuOnly?: boolean;
 }
 
 const ICON_SIZE = 16;
 
 export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
   {
-    icon: <BarChart2 className="size-4" strokeWidth={2} aria-hidden />,
+    icon: <LayoutDashboard className="size-4" strokeWidth={2} aria-hidden />,
     to: "/settings/usage-monitoring",
     text: "SETTINGS$NAV_ADMIN_DASHBOARD",
     subtitle: "SETTINGS$PAGE_USAGE_MONITORING_SUBLINE",
@@ -175,6 +177,7 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     text: "SETTINGS$NAV_USER",
     subtitle: "SETTINGS$PAGE_USER_SUBLINE",
     section: "user",
+    menuOnly: true,
   },
   {
     icon: <AppWindow className="size-4" strokeWidth={2} aria-hidden />,
@@ -182,6 +185,7 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     text: "SETTINGS$NAV_APPLICATION",
     subtitle: "SETTINGS$PAGE_APPLICATION_SUBLINE",
     section: "user",
+    menuOnly: true,
   },
 ];
 
@@ -237,6 +241,7 @@ export const OSS_NAV_ITEMS: SettingsNavItem[] = [
     to: "/settings/app",
     text: "SETTINGS$NAV_APPLICATION",
     subtitle: "SETTINGS$PAGE_APPLICATION_SUBLINE",
+    menuOnly: true,
   },
   {
     icon: <KeyIcon width={ICON_SIZE} height={ICON_SIZE} />,
