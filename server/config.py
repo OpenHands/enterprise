@@ -80,6 +80,8 @@ class SaaSServerConfig(ServerConfig):
     enable_linear = ENABLE_LINEAR
     enable_automations = ENABLE_AUTOMATIONS
     enable_onboarding = os.environ.get('OH_ENABLE_ONBOARDING', 'false') == 'true'
+    # Test mode configuration - enables test-only API endpoints
+    test_mode = os.environ.get('TEST_MODE', 'false') == 'true'
 
     app_slug: None | str = None
 
