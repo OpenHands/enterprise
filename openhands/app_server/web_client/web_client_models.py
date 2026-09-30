@@ -107,3 +107,4 @@ class WebClientConfig(DiscriminatedUnionMixin):
     # Atlassian OAuth; drives direct-save + manual-webhook UI in the configure
     # flow instead of the OAuth redirect.
     jira_oauth_enabled: bool = True
+    password_auth_enabled: bool = False

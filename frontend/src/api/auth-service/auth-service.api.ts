@@ -42,6 +42,39 @@ class AuthService {
    * Logout user from the application
    * @param appMode The application mode (saas or oss)
    */
+  static async loginWithPassword({
+    email,
+    password,
+  }: {
+    email: string;
+    password: string;
+  }): Promise<void> {
+    await openHands.post("/api/auth/password/login", { email, password });
+  }
+
+  static async inspectPasswordToken(token: string): Promise<{
+    status: "valid" | "expired" | "used" | "invalid";
+    email: string;
+    purpose: "setup" | "reset";
+    expires_at: string | null;
+    minimum_password_length: number;
+  }> {
+    const { data } = await openHands.post("/api/auth/password/inspect", {
+      token,
+    });
+    return data;
+  }
+
+  static async completePasswordToken({
+    token,
+    password,
+  }: {
+    token: string;
+    password: string;
+  }): Promise<void> {
+    await openHands.post("/api/auth/password/complete", { token, password });
+  }
+
   static async logout(appMode: WebClientConfig["app_mode"]): Promise<void> {
     const endpoint =
       appMode === "saas" ? "/api/logout" : "/api/unset-provider-tokens";

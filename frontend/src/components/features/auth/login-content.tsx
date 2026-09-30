@@ -16,6 +16,7 @@ import { displayErrorToast } from "#/utils/custom-toast-handlers";
 import { cn } from "#/utils/utils";
 import { LoginCTA } from "./login-cta";
 import { useAppMode } from "#/hooks/use-app-mode";
+import { PasswordLoginForm } from "./password-login-form";
 
 export interface LoginContentProps {
   githubAuthUrl: string | null;
@@ -26,6 +27,7 @@ export interface LoginContentProps {
   hasDuplicatedEmail?: boolean;
   recaptchaBlocked?: boolean;
   hasInvitation?: boolean;
+  returnTo?: string;
   buildOAuthStateData?: (
     baseStateData: Record<string, string>,
   ) => Record<string, string>;
@@ -40,6 +42,7 @@ export function LoginContent({
   hasDuplicatedEmail = false,
   recaptchaBlocked = false,
   hasInvitation = false,
+  returnTo = "/",
   buildOAuthStateData,
 }: LoginContentProps) {
   const { t } = useTranslation();
@@ -238,10 +241,22 @@ export function LoginContent({
         )}
 
         <div className="flex flex-col items-center gap-3">
-          {noProvidersConfigured ? (
-            <div className="text-center p-4 text-muted-foreground">
-              {t(I18nKey.AUTH$NO_PROVIDERS_CONFIGURED)}
+          {config?.password_auth_enabled && (
+            <PasswordLoginForm returnTo={returnTo} />
+          )}
+          {config?.password_auth_enabled && !noProvidersConfigured && (
+            <div className="flex w-[301.5px] items-center gap-3 text-xs text-muted">
+              <span className="h-px flex-1 bg-tertiary" />
+              {t(I18nKey.AUTH$OR_CONTINUE_WITH)}
+              <span className="h-px flex-1 bg-tertiary" />
             </div>
+          )}
+          {noProvidersConfigured ? (
+            !config?.password_auth_enabled && (
+              <div className="text-center p-4 text-muted-foreground">
+                {t(I18nKey.AUTH$NO_PROVIDERS_CONFIGURED)}
+              </div>
+            )
           ) : (
             <>
               {showGithub && (

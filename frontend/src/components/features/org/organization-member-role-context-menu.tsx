@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import { useTranslation } from "react-i18next";
+import { KeyRound } from "lucide-react";
 import { I18nKey } from "#/i18n/declaration";
 import { ContextMenu } from "#/ui/context-menu";
 import { ContextMenuListItem } from "../context-menu/context-menu-list-item";
@@ -14,6 +15,7 @@ interface OrganizationMemberRoleContextMenuProps {
   onClose: () => void;
   onRoleChange: (role: OrganizationUserRole) => void;
   onRemove?: () => void;
+  onResetPassword?: () => void;
   availableRolesToChangeTo: OrganizationUserRole[];
   /**
    * Trigger element to anchor against. The menu portals to document body with
@@ -26,6 +28,7 @@ export function OrganizationMemberRoleContextMenu({
   onClose,
   onRoleChange,
   onRemove,
+  onResetPassword,
   availableRolesToChangeTo,
   anchorRef,
 }: OrganizationMemberRoleContextMenuProps) {
@@ -101,6 +104,15 @@ export function OrganizationMemberRoleContextMenu({
     onClose();
   };
 
+  const handleResetPasswordClick = (
+    event: React.MouseEvent<HTMLButtonElement>,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onResetPassword?.();
+    onClose();
+  };
+
   if (typeof document === "undefined" || !portalStyle) {
     return null;
   }
@@ -161,15 +173,31 @@ export function OrganizationMemberRoleContextMenu({
             />
           </ContextMenuListItem>
         )}
-        <ContextMenuListItem testId="remove-option" onClick={handleRemoveClick}>
-          <ContextMenuIconText
-            icon={
-              <DeleteIcon width={16} height={16} className="text-red-500" />
-            }
-            text={t(I18nKey.ORG$REMOVE)}
-            className="text-red-500 capitalize"
-          />
-        </ContextMenuListItem>
+        {onResetPassword && (
+          <ContextMenuListItem
+            testId="reset-password-option"
+            onClick={handleResetPasswordClick}
+          >
+            <ContextMenuIconText
+              icon={<KeyRound size={16} />}
+              text={t(I18nKey.ORG$RESET_PASSWORD)}
+            />
+          </ContextMenuListItem>
+        )}
+        {onRemove && (
+          <ContextMenuListItem
+            testId="remove-option"
+            onClick={handleRemoveClick}
+          >
+            <ContextMenuIconText
+              icon={
+                <DeleteIcon width={16} height={16} className="text-red-500" />
+              }
+              text={t(I18nKey.ORG$REMOVE)}
+              className="text-red-500 capitalize"
+            />
+          </ContextMenuListItem>
+        )}
       </ContextMenu>
     </div>,
     document.getElementById("portal-root") || document.body,

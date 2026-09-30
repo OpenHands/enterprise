@@ -37,6 +37,8 @@ export interface OrganizationMember {
   llm_api_key: string;
   agent_settings?: Record<string, unknown>;
   status: "active" | "invited" | "inactive";
+  is_superadmin?: boolean;
+  has_password?: boolean;
 }
 
 export interface OrganizationMembersPage {
@@ -62,6 +64,12 @@ export interface BatchInvitationResult {
   failed: { email: string; error: string }[];
   /** False when the instance has no email provider configured. */
   email_delivery_configured: boolean;
+}
+
+export interface PasswordLinkResponse {
+  url: string;
+  expires_at: string;
+  purpose: "setup" | "reset";
 }
 
 export interface PendingInvitationsPage {

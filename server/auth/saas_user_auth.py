@@ -89,6 +89,8 @@ class SaasUserAuth(UserAuth):
     # Keycloak-coupled path. The dual-cookie middleware tries this cookie
     # before falling back to the old ``keycloak_auth`` chunked cookie.
     oauth_v2_cookie: bool = False
+    password_auth_session: bool = False
+    password_session_version: int | None = None
     # IDP access-token expiry as carried in the v2 cookie payload. Used by
     # ``get_access_token`` to decide whether a refresh is needed, and by the
     # middleware to re-mint the cookie after a refresh.
@@ -612,6 +614,8 @@ class SaasUserAuth(UserAuth):
 
     async def get_access_token(self) -> SecretStr | None:
         logger.debug('saas_user_auth_get_access_token')
+        if self.password_auth_session:
+            return None
         # OAuth v2 cookie sessions resolve the IDP access token from the
         # ``oauth_tokens`` table instead of the Keycloak offline session.
         if self.oauth_v2_cookie:
@@ -1057,6 +1061,20 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
         raise AuthError('OAuth v2 cookie missing user_id')
 
     accepted_tos = decoded.get('accepted_tos')
+    password_auth_session = decoded.get('auth_method') == 'password'
+    password_session_version: int | None = None
+    if password_auth_session:
+        try:
+            password_session_version = int(decoded['session_version'])
+            password_user_id = UUID(user_id)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise AuthError('Invalid password session') from exc
+        from server.services.password_auth_service import PasswordAuthService
+
+        if not await PasswordAuthService.validate_session(
+            password_user_id, password_session_version
+        ):
+            raise AuthError('Password session has expired')
 
     # access_token_expires_at may be None (never expires) or an epoch int.
     ate = decoded.get('access_token_expires_at')
@@ -1091,6 +1109,8 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
         accepted_tos=accepted_tos,
         auth_type=AuthType.COOKIE,
         oauth_v2_cookie=True,
+        password_auth_session=password_auth_session,
+        password_session_version=password_session_version,
         access_token_expires_at=access_token_expires_at,
     )
 

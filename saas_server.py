@@ -67,6 +67,10 @@ from server.routes.org_provider_connections import (  # noqa: E402
 )
 from server.routes.org_secrets import org_secrets_router  # noqa: E402
 from server.routes.orgs import org_router  # noqa: E402
+from server.routes.password_auth import (  # noqa: E402
+    password_admin_router,
+    password_auth_router,
+)
 from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
@@ -116,6 +120,8 @@ base_app.include_router(api_router)  # Add additional route for github auth
 base_app.include_router(oauth_router)  # Add additional route for oauth callback
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
 base_app.include_router(oauth_v2_router)  # Phase 1 OAuth v2 routes (additive)
+base_app.include_router(password_auth_router)
+base_app.include_router(password_admin_router)
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings
 base_app.include_router(
     billing_router

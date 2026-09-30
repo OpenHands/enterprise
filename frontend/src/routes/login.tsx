@@ -17,10 +17,18 @@ interface LocationState {
 export function getSafeReturnTo(searchParams: URLSearchParams): string {
   const destination =
     searchParams.get("returnTo") || searchParams.get("redirect") || "/";
-  if (!destination.startsWith("/") || destination.startsWith("//")) {
+  if (
+    !destination.startsWith("/") ||
+    destination.startsWith("//") ||
+    destination.includes("\\")
+  ) {
     return "/";
   }
-  return destination;
+
+  const baseUrl = new URL("https://openhands.local");
+  return new URL(destination, baseUrl).origin === baseUrl.origin
+    ? destination
+    : "/";
 }
 
 export default function LoginPage() {
@@ -107,6 +115,7 @@ export default function LoginPage() {
           hasDuplicatedEmail={hasDuplicatedEmail}
           recaptchaBlocked={recaptchaBlocked}
           hasInvitation={hasInvitation}
+          returnTo={returnTo}
           buildOAuthStateData={buildOAuthStateData}
         />
       </main>

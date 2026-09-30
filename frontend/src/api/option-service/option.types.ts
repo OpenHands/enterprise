@@ -99,4 +99,5 @@ export interface WebClientConfig {
    *  Atlassian OAuth; drives direct-save + manual-webhook UI in the configure
    *  flow. Absent ⇒ true (OAuth), so SaaS/older backends are unaffected. */
   jira_oauth_enabled?: boolean;
+  password_auth_enabled?: boolean;
 }

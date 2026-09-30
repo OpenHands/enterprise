@@ -7,6 +7,7 @@ import {
   OrganizationMember,
   OrganizationMembersPage,
   OrganizationUserRole,
+  PasswordLinkResponse,
   UpdateOrganizationMemberParams,
 } from "#/types/org";
 import { Settings, MarketplaceRegistration } from "#/types/settings";
@@ -201,6 +202,32 @@ export const organizationService = {
     await openHands.delete(
       `/api/organizations/${orgId}/members/invite/${invitationId}`,
     );
+  },
+
+  reissuePasswordSetupLink: async ({
+    orgId,
+    invitationId,
+  }: {
+    orgId: string;
+    invitationId: number;
+  }) => {
+    const { data } = await openHands.post<PasswordLinkResponse>(
+      `/api/organizations/${orgId}/members/invite/${invitationId}/password-link`,
+    );
+    return data;
+  },
+
+  issuePasswordReset: async ({
+    orgId,
+    userId,
+  }: {
+    orgId: string;
+    userId: string;
+  }) => {
+    const { data } = await openHands.post<PasswordLinkResponse>(
+      `/api/organizations/${orgId}/members/${userId}/password-reset`,
+    );
+    return data;
   },
 
   switchOrganization: async ({ orgId }: { orgId: string }) => {

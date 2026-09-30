@@ -229,6 +229,10 @@ class SetAuthCookieMiddleware:
             '/oauth/device/authorize',
             '/oauth/device/token',
             '/api/v1/web-client/config',
+            '/api/auth/password/status',
+            '/api/auth/password/login',
+            '/api/auth/password/inspect',
+            '/api/auth/password/complete',
             # OAuth providers redirect the user's browser here after an MCP
             # server install consent; the cross-site navigation carries no
             # session cookie and the route validates its single-use state.

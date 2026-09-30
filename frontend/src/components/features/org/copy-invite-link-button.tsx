@@ -5,17 +5,29 @@ import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 
 interface CopyInviteLinkButtonProps {
-  inviteUrl: string;
+  inviteUrl?: string;
+  onRequestInviteUrl?: () => Promise<string>;
 }
 
-export function CopyInviteLinkButton({ inviteUrl }: CopyInviteLinkButtonProps) {
+export function CopyInviteLinkButton({
+  inviteUrl,
+  onRequestInviteUrl,
+}: CopyInviteLinkButtonProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = React.useState(false);
+  const [isLoading, setIsLoading] = React.useState(false);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(inviteUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setIsLoading(true);
+    try {
+      const url = inviteUrl ?? (await onRequestInviteUrl?.());
+      if (!url) return;
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -23,6 +35,7 @@ export function CopyInviteLinkButton({ inviteUrl }: CopyInviteLinkButtonProps) {
       type="button"
       data-testid="copy-invite-link-button"
       onClick={handleCopy}
+      disabled={isLoading}
       className={cn(
         "flex items-center gap-1 text-xs cursor-pointer hover:underline shrink-0",
         copied ? "text-success" : "text-primary",

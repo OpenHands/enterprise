@@ -86,6 +86,8 @@ class InvitationResponse(BaseModel):
         cls,
         invitation: OrgInvitation,
         inviter_email: str | None = None,
+        invite_url: str | None = None,
+        include_default_invite_url: bool = True,
     ) -> 'InvitationResponse':
         """Create an InvitationResponse from an OrgInvitation entity.
 
@@ -111,7 +113,15 @@ class InvitationResponse(BaseModel):
             created_at=invitation.created_at.isoformat(),
             expires_at=invitation.expires_at.isoformat(),
             inviter_email=inviter_email,
-            invite_url=SMTPEmailService.build_invitation_url(invitation.token),
+            invite_url=(
+                invite_url
+                if invite_url is not None
+                else (
+                    SMTPEmailService.build_invitation_url(invitation.token)
+                    if include_default_invite_url
+                    else None
+                )
+            ),
         )
 
 

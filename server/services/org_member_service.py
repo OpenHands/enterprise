@@ -17,6 +17,7 @@ from server.routes.org_models import (
     OrgMemberUpdate,
     RoleNotFoundError,
 )
+from server.services.password_auth_service import PasswordAuthService
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org_member_store import OrgMemberStore
 from storage.role_store import RoleStore
@@ -89,6 +90,7 @@ class OrgMemberService:
             raise RoleNotFoundError(org_member.role_id)
 
         user = await UserStore.get_user_by_id(str(user_id))
+        password_statuses = await PasswordAuthService.get_password_statuses([user_id])
 
         return OrgMemberResponse(
             user_id=str(org_member.user_id),
@@ -97,6 +99,8 @@ class OrgMemberService:
             role=role.name,
             role_rank=role.rank,
             status=org_member.status,
+            is_superadmin=await OrgMemberService._is_superadmin(user_id),
+            has_password=password_statuses.get(user_id, False),
         )
 
     @staticmethod
@@ -142,6 +146,10 @@ class OrgMemberService:
             email_filter=email_filter,
         )
 
+        password_statuses = await PasswordAuthService.get_password_statuses(
+            [member.user_id for member in members]
+        )
+        superadmin_role = await RoleStore.get_role_by_name(ROLE_ADMIN)
         items = []
         for member in members:
             # Access user and role relationships (eagerly loaded)
@@ -156,6 +164,10 @@ class OrgMemberService:
                     role=role.name if role else '',
                     role_rank=role.rank if role else 0,
                     status=member.status,
+                    is_superadmin=bool(
+                        user and superadmin_role and user.role_id == superadmin_role.id
+                    ),
+                    has_password=password_statuses.get(member.user_id, False),
                 )
             )
 
@@ -217,7 +229,8 @@ class OrgMemberService:
         requester_membership = await OrgMemberStore.get_org_member(
             org_id, current_user_id
         )
-        if not requester_membership:
+        requester_is_superadmin = await OrgMemberService._is_superadmin(current_user_id)
+        if not requester_membership and not requester_is_superadmin:
             return False, 'not_a_member'
 
         if str(current_user_id) == str(target_user_id):
@@ -226,15 +239,31 @@ class OrgMemberService:
         target_membership = await OrgMemberStore.get_org_member(org_id, target_user_id)
         if not target_membership:
             return False, 'member_not_found'
+        if (
+            await OrgMemberService._is_superadmin(target_user_id)
+            and not requester_is_superadmin
+        ):
+            return False, 'insufficient_permission'
 
-        requester_role = await RoleStore.get_role_by_id(requester_membership.role_id)
+        requester_role = (
+            await RoleStore.get_role_by_id(requester_membership.role_id)
+            if requester_membership
+            else None
+        )
         target_role = await RoleStore.get_role_by_id(target_membership.role_id)
 
-        if not requester_role or not target_role:
+        if (not requester_role and not requester_is_superadmin) or not target_role:
+            return False, 'role_not_found'
+
+        if requester_is_superadmin:
+            requester_role_name = ROLE_OWNER
+        elif requester_role:
+            requester_role_name = requester_role.name
+        else:
             return False, 'role_not_found'
 
         if not OrgMemberService._can_remove_member(
-            requester_role.name, target_role.name
+            requester_role_name, target_role.name
         ):
             return False, 'insufficient_permission'
 
@@ -310,7 +339,8 @@ class OrgMemberService:
         requester_membership = await OrgMemberStore.get_org_member(
             org_id, current_user_id
         )
-        if not requester_membership:
+        requester_is_superadmin = await OrgMemberService._is_superadmin(current_user_id)
+        if not requester_membership and not requester_is_superadmin:
             raise OrgMemberNotFoundError(str(org_id), str(current_user_id))
 
         if str(current_user_id) == str(target_user_id):
@@ -319,14 +349,31 @@ class OrgMemberService:
         target_membership = await OrgMemberStore.get_org_member(org_id, target_user_id)
         if not target_membership:
             raise OrgMemberNotFoundError(str(org_id), str(target_user_id))
+        if (
+            await OrgMemberService._is_superadmin(target_user_id)
+            and not requester_is_superadmin
+        ):
+            raise InsufficientPermissionError(
+                'Only a superadmin can modify another superadmin'
+            )
 
-        requester_role = await RoleStore.get_role_by_id(requester_membership.role_id)
+        requester_role = (
+            await RoleStore.get_role_by_id(requester_membership.role_id)
+            if requester_membership
+            else None
+        )
         target_role = await RoleStore.get_role_by_id(target_membership.role_id)
 
-        if not requester_role:
+        if not requester_role and not requester_is_superadmin:
+            assert requester_membership is not None
             raise RoleNotFoundError(requester_membership.role_id)
         if not target_role:
             raise RoleNotFoundError(target_membership.role_id)
+
+        password_statuses = await PasswordAuthService.get_password_statuses(
+            [target_user_id]
+        )
+        target_has_password = password_statuses.get(target_user_id, False)
 
         if new_role_name is None:
             user = await UserStore.get_user_by_id(str(target_user_id))
@@ -337,14 +384,23 @@ class OrgMemberService:
                 role=target_role.name,
                 role_rank=target_role.rank,
                 status=target_membership.status,
+                is_superadmin=await OrgMemberService._is_superadmin(target_user_id),
+                has_password=target_has_password,
             )
 
         new_role = await RoleStore.get_role_by_name(new_role_name.lower())
         if not new_role:
             raise InvalidRoleError(new_role_name)
 
+        requester_role_name = (
+            ROLE_OWNER
+            if requester_is_superadmin
+            else requester_role.name
+            if requester_role
+            else ''
+        )
         if not OrgMemberService._can_update_member_role(
-            requester_role.name, target_role.name, new_role.name
+            requester_role_name, target_role.name, new_role.name
         ):
             raise InsufficientPermissionError(
                 'You do not have permission to modify this member'
@@ -372,6 +428,8 @@ class OrgMemberService:
             role=new_role.name,
             role_rank=new_role.rank,
             status=updated_member.status,
+            is_superadmin=await OrgMemberService._is_superadmin(target_user_id),
+            has_password=target_has_password,
         )
 
     @staticmethod
@@ -410,6 +468,14 @@ class OrgMemberService:
             # Admins can remove admins and members (not owners)
             return target_role_name != ROLE_OWNER
         return False
+
+    @staticmethod
+    async def _is_superadmin(user_id: UUID) -> bool:
+        user = await UserStore.get_user_by_id(str(user_id))
+        if user is None or user.role_id is None:
+            return False
+        role = await RoleStore.get_role_by_id(user.role_id)
+        return bool(role and role.name == ROLE_ADMIN)
 
     @staticmethod
     async def _is_last_owner(org_id: UUID, user_id: UUID) -> bool:

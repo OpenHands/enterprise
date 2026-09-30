@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom";
+import type { AxiosError } from "axios";
 import { useTranslation } from "react-i18next";
 import { LoaderCircle, Plus, Search } from "lucide-react";
 import { InviteOrganizationMemberModal } from "#/components/features/org/invite-organization-member-modal";
@@ -7,14 +8,24 @@ import { ConfirmRemoveMemberModal } from "#/components/features/org/confirm-remo
 import { ConfirmUpdateRoleModal } from "#/components/features/org/confirm-update-role-modal";
 import { useOrganizationMembers } from "#/hooks/query/use-organization-members";
 import { useOrganizationMembersCount } from "#/hooks/query/use-organization-members-count";
-import { OrganizationMember, OrganizationUserRole } from "#/types/org";
+import {
+  OrganizationMember,
+  OrganizationUserRole,
+  PasswordLinkResponse,
+} from "#/types/org";
 import { OrganizationMemberListItem } from "#/components/features/org/organization-member-list-item";
 import { PendingInvitationListItem } from "#/components/features/org/pending-invitation-list-item";
+import { PasswordLinkModal } from "#/components/features/org/password-link-modal";
 import { usePendingInvitations } from "#/hooks/query/use-pending-invitations";
 import { useRevokeInvitation } from "#/hooks/mutation/use-revoke-invitation";
 import { useUpdateMemberRole } from "#/hooks/mutation/use-update-member-role";
 import { useRemoveMember } from "#/hooks/mutation/use-remove-member";
+import {
+  useIssuePasswordReset,
+  useReissuePasswordSetupLink,
+} from "#/hooks/mutation/use-password-links";
 import { useMe } from "#/hooks/query/use-me";
+import { useConfig } from "#/hooks/query/use-config";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { rolePermissions } from "#/utils/org/permissions";
 import { I18nKey } from "#/i18n/declaration";
@@ -25,6 +36,8 @@ import { Typography } from "#/ui/typography";
 import { Pagination } from "#/ui/pagination";
 import { useDebounce } from "#/hooks/use-debounce";
 import { cn } from "#/utils/utils";
+import { displayErrorToast } from "#/utils/custom-toast-handlers";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import {
   formControlInlineInputClassName,
   formControlShellClassName,
@@ -74,10 +87,17 @@ function ManageOrganizationMembers() {
   const hasError = membersError || countError;
 
   const { data: user } = useMe();
+  const { data: config } = useConfig();
   const { mutate: updateMemberRole, isPending: isUpdatingRole } =
     useUpdateMemberRole();
   const { mutate: removeMember, isPending: isRemovingMember } =
     useRemoveMember();
+  const issuePasswordReset = useIssuePasswordReset();
+  const reissuePasswordSetupLink = useReissuePasswordSetupLink();
+  const [passwordLink, setPasswordLink] = React.useState<{
+    link: PasswordLinkResponse;
+    email: string;
+  } | null>(null);
   const [inviteModalOpen, setInviteModalOpen] = React.useState(false);
   const [memberToRemove, setMemberToRemove] =
     React.useState<OrganizationMember | null>(null);
@@ -148,10 +168,42 @@ function ManageOrganizationMembers() {
     rolePermissions[currentUserRole],
   );
 
-  const canAssignUserRole = (member: OrganizationMember) =>
+  const isCurrentUserSuperadmin =
+    user?.permissions?.includes("manage_super_admins") ?? false;
+  const canManageMember = (member: OrganizationMember) =>
     user != null &&
-    user?.user_id !== member.user_id &&
-    hasPermission(`change_user_role:${member.role}`);
+    user.user_id !== member.user_id &&
+    (!member.is_superadmin || isCurrentUserSuperadmin);
+  const canAssignUserRole = (member: OrganizationMember) =>
+    canManageMember(member) && hasPermission(`change_user_role:${member.role}`);
+
+  const handlePasswordReset = (member: OrganizationMember) => {
+    issuePasswordReset.mutate(
+      { userId: member.user_id },
+      {
+        onSuccess: (link) =>
+          setPasswordLink({ link, email: member.email ?? "" }),
+        onError: (error) =>
+          displayErrorToast(
+            retrieveAxiosErrorMessage(error) ||
+              t(I18nKey.ORG$PASSWORD_LINK_ERROR),
+          ),
+      },
+    );
+  };
+
+  const requestSetupLink = async (invitationId: number) => {
+    try {
+      const link = await reissuePasswordSetupLink.mutateAsync({ invitationId });
+      return link.url;
+    } catch (error) {
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error as AxiosError) ||
+          t(I18nKey.ORG$PASSWORD_LINK_ERROR),
+      );
+      return "";
+    }
+  };
 
   return (
     <div
@@ -255,12 +307,24 @@ function ManageOrganizationMembers() {
                     email={member.email}
                     role={member.role}
                     status={member.status}
+                    isSuperadmin={member.is_superadmin}
+                    hasPassword={member.has_password}
+                    showPasswordState={config?.password_auth_enabled}
                     hasPermissionToChangeRole={canAssignUserRole(member)}
                     availableRolesToChangeTo={availableRolesToChangeTo}
                     onRoleChange={(role) =>
                       handleRoleSelectionClick(member, role)
                     }
-                    onRemove={() => handleRemoveMember(member)}
+                    onRemove={
+                      canManageMember(member)
+                        ? () => handleRemoveMember(member)
+                        : undefined
+                    }
+                    onResetPassword={
+                      config?.password_auth_enabled && canManageMember(member)
+                        ? () => handlePasswordReset(member)
+                        : undefined
+                    }
                   />
                 </li>
               ))}
@@ -274,6 +338,11 @@ function ManageOrganizationMembers() {
                     isRevoking={isRevokingInvitation}
                     onRevoke={() =>
                       revokeInvitation({ invitationId: invitation.id })
+                    }
+                    onRequestInviteUrl={
+                      config?.password_auth_enabled
+                        ? () => requestSetupLink(invitation.id)
+                        : undefined
                     }
                   />
                 </li>
@@ -319,6 +388,14 @@ function ManageOrganizationMembers() {
           onConfirm={handleConfirmUpdateRole}
           onCancel={() => setMemberToUpdateRole(null)}
           isLoading={isUpdatingRole}
+        />
+      )}
+
+      {passwordLink && (
+        <PasswordLinkModal
+          link={passwordLink.link}
+          email={passwordLink.email}
+          onClose={() => setPasswordLink(null)}
         />
       )}
     </div>

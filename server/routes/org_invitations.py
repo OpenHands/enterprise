@@ -140,15 +140,36 @@ async def create_invitation(
         except Exception:
             logger.exception('analytics:team_members_invited:failed', stack_info=True)
 
-        successful_responses = [
-            await InvitationResponse.from_invitation(inv) for inv in successful
-        ]
+        from server.auth.password_auth import is_password_auth_enabled
+
+        password_auth_enabled = is_password_auth_enabled()
+        successful_responses: list[InvitationResponse] = []
+        for invitation in successful:
+            invite_url = None
+            if password_auth_enabled:
+                from server.routes.password_auth import build_password_link
+                from server.services.password_auth_service import PasswordAuthService
+
+                link = await PasswordAuthService.issue_setup_link_for_invitation(
+                    invitation, UUID(user_id)
+                )
+                if link is not None:
+                    invite_url = build_password_link(request, link.token)
+            successful_responses.append(
+                await InvitationResponse.from_invitation(
+                    invitation,
+                    invite_url=invite_url,
+                    include_default_invite_url=not password_auth_enabled,
+                )
+            )
         return BatchInvitationResponse(
             successful=successful_responses,
             failed=[
                 InvitationFailure(email=email, error=error) for email, error in failed
             ],
-            email_delivery_configured=SMTPEmailService.is_configured(),
+            email_delivery_configured=(
+                SMTPEmailService.is_configured() and not password_auth_enabled
+            ),
         )
 
     except InsufficientPermissionError as e:
@@ -193,10 +214,21 @@ async def list_pending_invitations(
         from storage.org_invitation_store import OrgInvitationStore
 
         invitations = await OrgInvitationStore.get_pending_invitations_for_org(org_id)
-        items = [await InvitationResponse.from_invitation(inv) for inv in invitations]
+        from server.auth.password_auth import is_password_auth_enabled
+
+        password_auth_enabled = is_password_auth_enabled()
+        items = [
+            await InvitationResponse.from_invitation(
+                invitation,
+                include_default_invite_url=not password_auth_enabled,
+            )
+            for invitation in invitations
+        ]
         return PendingInvitationsResponse(
             items=items,
-            email_delivery_configured=SMTPEmailService.is_configured(),
+            email_delivery_configured=(
+                SMTPEmailService.is_configured() and not password_auth_enabled
+            ),
             auto_add_enabled=await _org_auto_adds_users(org_id),
         )
     except HTTPException:
@@ -211,6 +243,56 @@ async def list_pending_invitations(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to list pending invitations',
         )
+
+
+@invitation_router.post('/invite/{invitation_id}/password-link')
+async def reissue_password_setup_link(
+    org_id: UUID,
+    invitation_id: int,
+    request: Request,
+    user_id: str = Depends(require_permission(Permission.INVITE_USER_TO_ORGANIZATION)),
+):
+    from server.auth.password_auth import PasswordAuthError, is_password_auth_enabled
+    from server.routes.password_auth import build_password_link
+    from server.services.password_auth_service import PasswordAuthService
+    from storage.org_invitation import OrgInvitation
+    from storage.org_invitation_store import OrgInvitationStore
+
+    if not is_password_auth_enabled():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Not found')
+    invitation = await OrgInvitationStore.get_invitation_by_id(invitation_id)
+    if invitation is None or invitation.org_id != org_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail='Invitation not found'
+        )
+    if invitation.status != OrgInvitation.STATUS_PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Invitation is no longer pending',
+        )
+    if OrgInvitationStore.is_token_expired(invitation):
+        await OrgInvitationStore.update_invitation_status(
+            invitation.id, OrgInvitation.STATUS_EXPIRED
+        )
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE, detail='Invitation has expired'
+        )
+    try:
+        link = await PasswordAuthService.issue_setup_link_for_invitation(
+            invitation, UUID(user_id)
+        )
+    except PasswordAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    if link is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='This user has already set a password',
+        )
+    return {
+        'url': build_password_link(request, link.token),
+        'expires_at': link.expires_at,
+        'purpose': link.purpose,
+    }
 
 
 async def _org_auto_adds_users(org_id: UUID) -> bool:

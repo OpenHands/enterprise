@@ -266,6 +266,15 @@ async def _resolve_flag(key: str, env_fallback: bool) -> bool:
     return await feature_flag_service.resolve(key)
 
 
+def _password_auth_enabled() -> bool:
+    try:
+        from server.auth.password_auth import is_password_auth_enabled
+
+        return is_password_auth_enabled()
+    except ImportError:
+        return False
+
+
 class DefaultWebClientConfigInjector(WebClientConfigInjector):
     posthog_client_key: str = Field(default_factory=_get_posthog_client_key)
     feature_flags: WebClientFeatureFlags = Field(default_factory=_get_feature_flags)
@@ -367,5 +376,6 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             ),
             jira_oauth_enabled=self.jira_oauth_enabled,
             acp_providers=self.acp_providers,
+            password_auth_enabled=_password_auth_enabled(),
         )
         return result
