@@ -732,6 +732,19 @@ class SQLAppConversationInfoService(AppConversationInfoService):
                 conversation_id,
                 stack_info=True,
             )
+            # Roll back so a failed flush (e.g. a value out of range) does not
+            # leave the reused session in a PendingRollbackError state. Without
+            # this, every subsequent statement on the session raises
+            # immediately, turning a single bad event into a sustained stream
+            # of 500s from the webhook endpoint that never self-heals.
+            try:
+                await self.db_session.rollback()
+            except Exception:
+                logger.exception(
+                    'Failed to roll back session after statistics error for '
+                    'conversation %s',
+                    conversation_id,
+                )
 
     async def update_execution_status(
         self,
