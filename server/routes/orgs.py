@@ -110,7 +110,7 @@ def _reject_org_interactive_login_model(
     Inspects only the incoming diff, so an org edit that does not set the model is
     unaffected.
     """
-    model = (agent_settings_diff or {}).get('llm', {}).get('model')
+    model = ((agent_settings_diff or {}).get('llm') or {}).get('model')
     if is_interactive_login_model(model):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

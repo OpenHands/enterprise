@@ -273,7 +273,9 @@ async def test_store_settings_rejects_legacy_nested_payload_keys(test_client):
 
 
 @pytest.mark.asyncio
-async def test_store_settings_rejects_interactive_login_model(test_client):
+async def test_store_settings_rejects_interactive_login_model(
+    test_client, no_device_login
+):
     # Raw-dict payload so the test itself never constructs such an LLM, which would
     # trigger the device login this rejects.
     response = test_client.post(
@@ -283,14 +285,29 @@ async def test_store_settings_rejects_interactive_login_model(test_client):
 
     assert response.status_code == 400
     assert 'chatgpt/gpt-5-codex' in response.json()['error']
+    # Rejected before the merge builds an SDK LLM, so LiteLLM never tries to log in.
+    assert no_device_login == []
 
 
 @pytest.mark.asyncio
-async def test_store_settings_allows_edit_that_does_not_set_model(test_client):
+async def test_store_settings_allows_edit_that_does_not_set_model(
+    test_client, installed_guard
+):
     # An edit that doesn't set the model must pass even if one is already saved.
-    response = test_client.post('/api/v1/settings', json={'language': 'fr'})
+    store = FileSettingsStore(InMemoryFileStore())
+    await store.store(
+        Settings(
+            agent_settings=OpenHandsAgentSettings(llm=LLM(model='chatgpt/gpt-5-codex'))
+        )
+    )
+    with patch(
+        'openhands.app_server.settings.file_settings_store.FileSettingsStore.get_instance',
+        AsyncMock(return_value=store),
+    ):
+        response = test_client.post('/api/v1/settings', json={'language': 'fr'})
 
     assert response.status_code == 200
+    assert (await store.load()).language == 'fr'
 
 
 @pytest.mark.asyncio

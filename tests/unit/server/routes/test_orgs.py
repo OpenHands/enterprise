@@ -1656,7 +1656,9 @@ async def test_update_org_defaults_settings_rejects_non_default_fields():
 
 
 @pytest.mark.asyncio
-async def test_update_org_defaults_settings_rejects_interactive_login_model():
+async def test_update_org_defaults_settings_rejects_interactive_login_model(
+    no_device_login,
+):
     """An org-default LLM that needs an interactive browser login is rejected 400.
 
     Covers the PATCH route and, by delegation, the legacy ``/llm`` wrapper
@@ -1680,10 +1682,14 @@ async def test_update_org_defaults_settings_rejects_interactive_login_model():
     assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
     assert 'chatgpt/gpt-5-codex' in exc_info.value.detail
     mock_update.assert_not_awaited()
+    # The OrgUpdate validator skips base-URL resolution for this model.
+    assert no_device_login == []
 
 
 @pytest.mark.asyncio
-async def test_update_org_app_settings_rejects_interactive_login_model():
+async def test_update_org_app_settings_rejects_interactive_login_model(
+    no_device_login,
+):
     """POST /api/organizations/app rejects an interactive-login org-default model."""
     update_data = OrgAppSettingsUpdate(
         agent_settings_diff={'llm': {'model': 'github_copilot/gpt-4o'}},
@@ -1703,6 +1709,26 @@ async def test_update_org_app_settings_rejects_interactive_login_model():
     assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
     assert 'github_copilot/gpt-4o' in exc_info.value.detail
     mock_service.update_org_app_settings.assert_not_awaited()
+    assert no_device_login == []
+
+
+@pytest.mark.asyncio
+async def test_update_org_app_settings_allows_null_llm_diff():
+    """An explicit ``llm: None`` in the diff is not an interactive-login model."""
+    update_data = OrgAppSettingsUpdate(agent_settings_diff={'llm': None})
+    mock_service = MagicMock()
+    mock_service.update_org_app_settings = AsyncMock(return_value='updated')
+
+    with patch('server.routes.orgs.authorize_permission', AsyncMock()):
+        result = await update_org_app_settings(
+            update_data=update_data,
+            request=MagicMock(spec=Request),
+            service=mock_service,
+            user_id=TEST_USER_ID,
+        )
+
+    assert result == 'updated'
+    mock_service.update_org_app_settings.assert_awaited_once_with(update_data)
 
 
 @pytest.mark.asyncio

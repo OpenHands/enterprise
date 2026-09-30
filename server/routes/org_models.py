@@ -26,6 +26,7 @@ from openhands.sdk.settings import (
     OpenHandsAgentSettings,
 )
 from server.constants import LITE_LLM_API_URL, canonicalize_bundled_proxy_llm
+from server.utils.litellm_interactive_login_guard import is_interactive_login_model
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.role import Role
@@ -356,6 +357,9 @@ class OrgUpdate(BaseModel):
 
     def _resolve_agent_llm_base_url(self, llm_diff: dict[str, Any]) -> None:
         """Fill provider-default base URLs for sparse LLM diffs when needed."""
+        # Resolving through LiteLLM would start the device login; the route rejects it.
+        if is_interactive_login_model(llm_diff.get('model')):
+            return
         resolved_base_url = resolve_llm_base_url(
             model=llm_diff.get('model'),
             base_url=llm_diff.get('base_url'),
