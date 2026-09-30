@@ -40,6 +40,10 @@ from openhands.app_server.sandbox.e2b_sandbox_service import (
     E2BSandboxService,
 )
 from openhands.app_server.sandbox.e2b_sandbox_spec_service import E2BSandboxSpecInfo
+from openhands.app_server.sandbox.lifecycle.settings import (
+    SandboxLifecycleOverrides,
+    SandboxLifecycleSettings,
+)
 from openhands.app_server.sandbox.preset_sandbox_spec_service import (
     PresetSandboxSpecService,
 )
@@ -222,12 +226,16 @@ def _service(
     init_api_key: str | None = INIT_API_KEY,
     init_timeout_seconds: int = 5,
     resume_retries: int = 3,
+    timeout_seconds: int = 3600,
+    lifecycle: SandboxLifecycleSettings | None = None,
+    spec_lifecycle: SandboxLifecycleOverrides | None = None,
 ) -> E2BSandboxService:
     spec = E2BSandboxSpecInfo(
         id=TEMPLATE,
         command=None,
         working_dir='/workspace/project',
         init_api_key=SecretStr(init_api_key) if init_api_key else None,
+        lifecycle=spec_lifecycle,
     )
     return E2BSandboxService(
         sandbox_spec_service=PresetSandboxSpecService(specs=[spec]),
@@ -236,7 +244,7 @@ def _service(
         db_session=db_session,
         api_key='e2b-api-key',
         domain=DOMAIN,
-        timeout_seconds=3600,
+        timeout_seconds=timeout_seconds,
         max_num_sandboxes=10,
         init_timeout_seconds=init_timeout_seconds,
         init_poll_interval=0,
@@ -245,6 +253,7 @@ def _service(
         api_url='https://api.e2b.example.com',
         web_url=web_url,
         permitted_cors_origins=permitted_cors_origins or [],
+        lifecycle=lifecycle or SandboxLifecycleSettings(),
     )
 
 
@@ -431,6 +440,28 @@ class TestInitHandshake:
         assert env[WORKER_2] == str(WORKER_2_PORT)
         assert env['LLM_API_KEY'] == 'sk-secret'
         assert env['LLM_TIMEOUT'] == '3600'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('spec_lifecycle', 'expected'),
+        [
+            (None, '1200'),
+            (SandboxLifecycleOverrides(idle_seconds=600), '600'),
+            (SandboxLifecycleOverrides(idle_seconds=0), None),
+        ],
+    )
+    async def test_env_caps_terminal_commands_below_the_idle_pause(
+        self, sdk, db_session, spec_lifecycle, expected
+    ):
+        """One long terminal command must not look like an idle sandbox."""
+        agent_server = FakeAgentServer()
+
+        await _service(
+            db_session, httpx_client=agent_server, spec_lifecycle=spec_lifecycle
+        ).start_sandbox()
+
+        env = agent_server.init_post_bodies[0]['env']
+        assert env.get('OH_RUNTIME_IDLE_TIMEOUT_SECONDS') == expected
 
     @pytest.mark.asyncio
     async def test_cors_origins_include_permitted_origins(self, sdk, db_session):
@@ -999,6 +1030,35 @@ class TestLifecycle:
         sdk.connect.assert_awaited_once()
         assert sdk.connect.await_args.args[0] == SANDBOX_ID
         assert sdk.connect.await_args.kwargs['timeout'] == 3600
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('timeout_seconds', 'spec_lifecycle', 'expected'),
+        [
+            # E2B's cap wins until the plan allows a full session.
+            (3600, None, 3600),
+            (86400, None, 43200),
+            (86400, SandboxLifecycleOverrides(max_session_seconds=1800), 1800),
+            (86400, SandboxLifecycleOverrides(max_session_seconds=0), 86400),
+        ],
+    )
+    async def test_e2b_pauses_when_the_max_session_ends(
+        self, sdk, db_session, timeout_seconds, spec_lifecycle, expected
+    ):
+        """E2B's own timer pauses the sandbox even while the worker is down."""
+        sdk.get_info.return_value = _e2b_info(state=SandboxState.PAUSED)
+        sdk.create.return_value = SimpleNamespace(sandbox_id='inew')
+        service = _service(
+            db_session,
+            timeout_seconds=timeout_seconds,
+            spec_lifecycle=spec_lifecycle,
+        )
+
+        await service.resume_sandbox(SANDBOX_ID)
+        await service.start_sandbox()
+
+        assert sdk.connect.await_args.kwargs['timeout'] == expected
+        assert sdk.create.await_args.kwargs['timeout'] == expected
 
     @pytest.mark.asyncio
     async def test_resume_without_a_row_returns_false(self, sdk, db_session):

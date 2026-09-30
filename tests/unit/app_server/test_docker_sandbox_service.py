@@ -36,6 +36,7 @@ from openhands.app_server.sandbox.docker_sandbox_spec_service import (
     _connect_to_docker,
     get_docker_client,
 )
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleOverrides
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     VSCODE,
@@ -150,6 +151,7 @@ def mock_sandbox_spec_service():
     mock_spec.id = 'test-image:latest'
     mock_spec.initial_env = {'TEST_VAR': 'test_value'}
     mock_spec.working_dir = '/workspace'
+    mock_spec.lifecycle = None
     mock_service.get_default_sandbox_spec.return_value = mock_spec
     mock_service.get_sandbox_spec.return_value = mock_spec
     return mock_service
@@ -1033,6 +1035,30 @@ class TestDockerSandboxService:
             == 'http://host.docker.internal:3000/api/keys/llm/managed/current'
         )
         assert LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE not in env_vars
+
+    @pytest.mark.parametrize(
+        ('spec_lifecycle', 'expected'),
+        [
+            (None, '1200'),
+            (SandboxLifecycleOverrides(idle_seconds=600), '600'),
+            (SandboxLifecycleOverrides(idle_seconds=0), None),
+        ],
+    )
+    async def test_start_sandbox_caps_terminal_commands_below_the_idle_pause(
+        self, service, mock_sandbox_spec_service, spec_lifecycle, expected
+    ):
+        """One long terminal command must not look like an idle sandbox."""
+        mock_sandbox_spec_service.get_default_sandbox_spec.return_value.lifecycle = (
+            spec_lifecycle
+        )
+        service.docker_client.containers.run.return_value = MagicMock(
+            status='running', attrs={'Config': {'Env': []}, 'NetworkSettings': {}}
+        )
+
+        await service.start_sandbox()
+
+        env_vars = service.docker_client.containers.run.call_args[1]['environment']
+        assert env_vars.get('OH_RUNTIME_IDLE_TIMEOUT_SECONDS') == expected
 
     async def test_resume_sandbox_from_paused(self, service, store):
         """Test resuming a paused sandbox."""

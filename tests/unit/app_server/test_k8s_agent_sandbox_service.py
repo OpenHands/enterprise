@@ -50,6 +50,7 @@ from openhands.app_server.sandbox.k8s_agent_sandbox_service import (
 from openhands.app_server.sandbox.k8s_agent_sandbox_spec_service import (
     K8sAgentSandboxSpecInfo,
 )
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleOverrides
 from openhands.app_server.sandbox.preset_sandbox_spec_service import (
     PresetSandboxSpecService,
 )
@@ -274,12 +275,14 @@ def _service(
     router_url: str = ROUTER_URL,
     web_url: str | None = WEB_URL,
     webhook_base_url: str | None = None,
+    spec_lifecycle: SandboxLifecycleOverrides | None = None,
 ) -> K8sAgentSandboxService:
     spec = K8sAgentSandboxSpecInfo(
         id=POOL,
         command=None,
         working_dir='/workspace/project',
         init_api_key=SecretStr(init_api_key) if init_api_key else None,
+        lifecycle=spec_lifecycle,
     )
     return K8sAgentSandboxService(
         sandbox_spec_service=PresetSandboxSpecService(specs=[spec]),
@@ -499,6 +502,28 @@ class TestInitHandshake:
         assert env[WORKER_1] == str(WORKER_1_PORT)
         assert env[WORKER_2] == str(WORKER_2_PORT)
         assert env['LLM_API_KEY'] == 'sk-secret'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('spec_lifecycle', 'expected'),
+        [
+            (None, '1200'),
+            (SandboxLifecycleOverrides(idle_seconds=600), '600'),
+            (SandboxLifecycleOverrides(idle_seconds=0), None),
+        ],
+    )
+    async def test_env_caps_terminal_commands_below_the_idle_pause(
+        self, k8s, db_session, spec_lifecycle, expected
+    ):
+        """One long terminal command must not look like an idle sandbox."""
+        agent_server = FakeAgentServer()
+
+        await _service(
+            db_session, k8s, httpx_client=agent_server, spec_lifecycle=spec_lifecycle
+        ).start_sandbox()
+
+        env = agent_server.init_post_bodies[0]['env']
+        assert env.get('OH_RUNTIME_IDLE_TIMEOUT_SECONDS') == expected
 
     @pytest.mark.asyncio
     async def test_webhook_base_url_overrides_the_web_url(self, k8s, db_session):

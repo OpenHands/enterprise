@@ -112,6 +112,7 @@ class DockerHarness:
         spec.id = 'test-image:latest'
         spec.initial_env = {}
         spec.working_dir = '/workspace'
+        spec.lifecycle = None
         spec_service = AsyncMock()
         spec_service.get_default_sandbox_spec.return_value = spec
         spec_service.get_sandbox_spec.return_value = spec
