@@ -11,8 +11,8 @@ App servers still on the previous release insert rows without these columns
 while a deploy rolls out, so each one has a server default. Existing rows read
 as running since the migration.
 
-Revision ID: 174
-Revises: 173
+Revision ID: 175
+Revises: 174
 Create Date: 2026-09-30 00:00:00.000000
 """
 
@@ -21,8 +21,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '174'
-down_revision: str | None = '173'
+revision: str = '175'
+down_revision: str | None = '174'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
