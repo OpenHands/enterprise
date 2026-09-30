@@ -135,6 +135,13 @@ class TestNewOrgDefault:
         assert constants.get_default_llm_model() == 'openai/gpt-5'
         assert constants.get_default_llm_base_url() == 'https://llm.example.com/v1'
 
+    def test_litellm_disabled_is_not_a_bundled_proxy(self, bundled_proxy, monkeypatch):
+        monkeypatch.setattr(constants, 'ENABLE_LEGACY_LITELLM', False)
+        assert constants.uses_bundled_litellm_proxy() is False
+        assert constants.is_bundled_proxy_base_url(PROXY_URL) is False
+        assert not constants.get_default_llm_model().startswith('openhands/')
+        assert constants.get_default_llm_base_url() is None
+
 
 class TestCanonicalizeStoredLLM:
     def test_bundled_proxy_route_uses_public_name_and_keeps_base_url(
