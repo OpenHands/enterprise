@@ -88,6 +88,7 @@ def test_the_jobs_run_on_a_schedule():
     schedules = {
         periodic_task.task.name: periodic_task.cron
         for periodic_task in app.periodic_registry.periodic_tasks.values()
+        if periodic_task.task.name.startswith('worker:')
     }
 
     assert schedules == {

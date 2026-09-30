@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from openhands.agent_server.utils import utc_now
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleOverrides
 
 # Pod security context defaults used when the sandbox spec does not specify
 # run_as_user / run_as_group / fs_group (e.g. plain SandboxSpecInfo from a
@@ -23,6 +24,13 @@ class SandboxSpecInfo(BaseModel):
         default_factory=dict, description='Initial Environment Variables'
     )
     working_dir: str = '/home/openhands/workspace'
+    lifecycle: SandboxLifecycleOverrides | None = Field(
+        default=None,
+        description=(
+            "This spec's own lifecycle settings, where they differ from the "
+            "backend's. Backends that runtime-api manages ignore them."
+        ),
+    )
 
 
 class RemoteSandboxSpecInfo(SandboxSpecInfo):

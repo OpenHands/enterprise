@@ -24,6 +24,7 @@ from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.e2b_sandbox_spec_service import (
     E2BSandboxSpecInfo,
 )
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxService,
     ProviderOutcome,
@@ -40,8 +41,9 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
+    RUNTIME_IDLE_TIMEOUT_VARIABLE,
+    ManagedSandboxServiceInjector,
     SandboxService,
-    SandboxServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.sandbox.sandbox_spec_service import (
@@ -150,6 +152,9 @@ class E2BSandboxService(ManagedSandboxService):
     api_url: str | None = None
     web_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
+    lifecycle: SandboxLifecycleSettings = field(
+        default_factory=SandboxLifecycleSettings
+    )
 
     @property
     def _api_params(self) -> dict[str, Any]:
@@ -225,6 +230,20 @@ class E2BSandboxService(ManagedSandboxService):
         if sandbox_spec is None:
             return E2BSandboxSpecInfo(id=sandbox_spec_id, command=None)
         return _as_e2b_spec(sandbox_spec)
+
+    def _timer_seconds(self, sandbox_spec: E2BSandboxSpecInfo) -> int:
+        """How long E2B lets the sandbox run before it pauses it itself.
+
+        It matches the max session setting, so E2B pauses the sandbox when
+        the app would, even while the worker is down. ``timeout_seconds``
+        caps it, because E2B caps the timer by plan.
+        """
+        max_session_seconds = self.lifecycle.with_overrides(
+            sandbox_spec.lifecycle
+        ).max_session_seconds
+        if not max_session_seconds:
+            return self.timeout_seconds
+        return min(max_session_seconds, self.timeout_seconds)
 
     def _host_url(self, e2b_sandbox_id: str, port: int) -> str:
         """URL of a port exposed by a sandbox.
@@ -436,7 +455,7 @@ class E2BSandboxService(ManagedSandboxService):
         try:
             sandbox = await AsyncSandbox.create(
                 template=sandbox_spec.id,
-                timeout=self.timeout_seconds,
+                timeout=self._timer_seconds(sandbox_spec),
                 metadata=metadata,
                 # The E2B default on timeout is to kill the sandbox. Pausing
                 # parks the conversation as a snapshot instead, until
@@ -603,6 +622,11 @@ class E2BSandboxService(ManagedSandboxService):
                 **get_agent_server_env(),
             },
         }
+        idle_seconds = self.lifecycle.with_overrides(
+            sandbox_spec.lifecycle
+        ).idle_seconds
+        if idle_seconds:
+            body['env'][RUNTIME_IDLE_TIMEOUT_VARIABLE] = str(idle_seconds)
 
         cors_origins = []
         if self.web_url:
@@ -642,12 +666,15 @@ class E2BSandboxService(ManagedSandboxService):
         if info is None:
             return ProviderOutcome.FAILED
         was_paused = info.state == SandboxState.PAUSED
+        timer_seconds = self._timer_seconds(
+            await self._get_spec(stored_sandbox.sandbox_spec_id)
+        )
         for attempt in range(1, self.resume_retries + 1):
             try:
                 # E2B has no resume(); connecting to a paused sandbox resumes
                 # it, and connecting to a running one is a no-op.
                 await AsyncSandbox.connect(
-                    sandbox_id, timeout=self.timeout_seconds, **self._api_params
+                    sandbox_id, timeout=timer_seconds, **self._api_params
                 )
                 if was_paused:
                     return ProviderOutcome.CHANGED
@@ -712,8 +739,10 @@ class E2BSandboxService(ManagedSandboxService):
             ) from exc
 
 
-class E2BSandboxServiceInjector(SandboxServiceInjector):
+class E2BSandboxServiceInjector(ManagedSandboxServiceInjector):
     """Dependency injector for E2B sandbox services."""
+
+    backend: ClassVar[str] = E2B_BACKEND
 
     api_key: str = Field(
         default_factory=lambda: os.getenv('E2B_API_KEY', ''),
@@ -741,10 +770,10 @@ class E2BSandboxServiceInjector(SandboxServiceInjector):
     timeout_seconds: int = Field(
         default=3600,
         description=(
-            'Sandbox lifetime in seconds, measured from the last create or '
-            'resume. On expiry the sandbox is paused rather than killed. The '
-            'ceiling is set by the E2B plan, or by the operator on a self '
-            'hosted cluster.'
+            'The longest E2B may run a sandbox, measured from the last create '
+            'or resume, before it pauses it itself. E2B pauses a sandbox after '
+            'the smaller of this and the max session setting. The ceiling is '
+            'set by the E2B plan, or by the operator on a self hosted cluster.'
         ),
     )
     max_num_sandboxes: int = Field(
@@ -810,4 +839,5 @@ class E2BSandboxServiceInjector(SandboxServiceInjector):
                 resume_retry_interval=self.resume_retry_interval,
                 web_url=config.web_url,
                 permitted_cors_origins=config.permitted_cors_origins,
+                lifecycle=self.lifecycle,
             )

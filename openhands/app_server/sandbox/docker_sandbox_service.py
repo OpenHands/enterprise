@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.docker_sandbox_spec_service import get_docker_client
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxService,
     ProviderOutcome,
@@ -37,10 +38,11 @@ from openhands.app_server.sandbox.sandbox_service import (
     LLM_API_KEY_REFRESH_HEADERS_VALUE,
     LLM_API_KEY_REFRESH_HEADERS_VARIABLE,
     LLM_API_KEY_REFRESH_URL_VARIABLE,
+    RUNTIME_IDLE_TIMEOUT_VARIABLE,
     SESSION_API_KEY_VARIABLE,
     WEBHOOK_CALLBACK_VARIABLE,
+    ManagedSandboxServiceInjector,
     SandboxService,
-    SandboxServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
@@ -132,6 +134,9 @@ class DockerSandboxService(ManagedSandboxService):
     startup_grace_seconds: int = STARTUP_GRACE_SECONDS
     use_host_network: bool = False
     kvm_enabled: bool = False
+    lifecycle: SandboxLifecycleSettings = field(
+        default_factory=SandboxLifecycleSettings
+    )
 
     def _managed_containers_by_name(self) -> dict[str, object]:
         """Every managed container on the host, indexed by name.
@@ -480,6 +485,11 @@ class DockerSandboxService(ManagedSandboxService):
         env_vars[WEBHOOK_CALLBACK_VARIABLE] = (
             f'http://host.docker.internal:{self.host_port}/api/v1/webhooks'
         )
+        idle_seconds = self.lifecycle.with_overrides(
+            sandbox_spec.lifecycle
+        ).idle_seconds
+        if idle_seconds:
+            env_vars[RUNTIME_IDLE_TIMEOUT_VARIABLE] = str(idle_seconds)
         # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and retry
         # in place (#5189). The agent-server GETs the refresh URL and authenticates
         # with this sandbox's session key, passed as an X-Session-API-Key header.
@@ -680,8 +690,10 @@ class DockerSandboxService(ManagedSandboxService):
             ) from exc
 
 
-class DockerSandboxServiceInjector(SandboxServiceInjector):
+class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
     """Dependency injector for docker sandbox services."""
+
+    backend: ClassVar[str] = DOCKER_BACKEND
 
     container_url_pattern: str = Field(
         default='http://localhost:{port}',
@@ -822,4 +834,5 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
                 startup_grace_seconds=self.startup_grace_seconds,
                 use_host_network=self.use_host_network,
                 kvm_enabled=self.kvm_enabled,
+                lifecycle=self.lifecycle,
             )

@@ -31,6 +31,7 @@ from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.k8s_agent_sandbox_spec_service import (
     K8sAgentSandboxSpecInfo,
 )
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxService,
     ProviderOutcome,
@@ -47,8 +48,9 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
+    RUNTIME_IDLE_TIMEOUT_VARIABLE,
+    ManagedSandboxServiceInjector,
     SandboxService,
-    SandboxServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.sandbox.sandbox_spec_service import (
@@ -310,6 +312,9 @@ class K8sAgentSandboxService(ManagedSandboxService):
     web_url: str | None = None
     webhook_base_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
+    lifecycle: SandboxLifecycleSettings = field(
+        default_factory=SandboxLifecycleSettings
+    )
 
     # ------------------------------------------------------------------
     # Info mapping
@@ -681,6 +686,11 @@ class K8sAgentSandboxService(ManagedSandboxService):
                 **get_agent_server_env(),
             },
         }
+        idle_seconds = self.lifecycle.with_overrides(
+            sandbox_spec.lifecycle
+        ).idle_seconds
+        if idle_seconds:
+            body['env'][RUNTIME_IDLE_TIMEOUT_VARIABLE] = str(idle_seconds)
 
         cors_origins = []
         if self.web_url:
@@ -775,8 +785,10 @@ class K8sAgentSandboxService(ManagedSandboxService):
             ) from exc
 
 
-class K8sAgentSandboxServiceInjector(SandboxServiceInjector):
+class K8sAgentSandboxServiceInjector(ManagedSandboxServiceInjector):
     """Dependency injector for k8s agent-sandbox sandbox services."""
+
+    backend: ClassVar[str] = K8S_AGENT_SANDBOX_BACKEND
 
     namespace: str = Field(
         default_factory=lambda: os.getenv('AGENT_SANDBOX_NAMESPACE', 'default'),
@@ -862,6 +874,7 @@ class K8sAgentSandboxServiceInjector(SandboxServiceInjector):
                     web_url=config.web_url,
                     webhook_base_url=self.webhook_base_url,
                     permitted_cors_origins=config.permitted_cors_origins,
+                    lifecycle=self.lifecycle,
                 )
         finally:
             await k8s.close()

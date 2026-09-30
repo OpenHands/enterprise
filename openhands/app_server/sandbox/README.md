@@ -17,8 +17,9 @@ Since agents can do things that may harm your system, they are typically run ins
 - **SandboxSpecService**: Manages sandbox specifications and templates
 - **SandboxRouter**: FastAPI router for sandbox endpoints
 - **sandbox_store**: The sandbox table (`v1_remote_sandbox`), which records who
-  owns each sandbox for every backend, and the helper that scopes reads to the
-  caller.
+  owns each sandbox for every backend and its lifecycle state, and the helper
+  that scopes reads to the caller.
+- **lifecycle**: The rules and background jobs that pause and delete sandboxes.
 
 ## Features
 
@@ -26,6 +27,67 @@ Since agents can do things that may harm your system, they are typically run ins
 - Sandbox lifecycle management (create, start, stop, destroy)
 - Multiple sandbox backend support (Docker, Remote, E2B, Kubernetes agent-sandbox, Local)
 - User-scoped sandbox access control
+
+## Lifecycle
+
+For Docker, E2B and Kubernetes agent-sandbox, the app pauses and deletes
+sandboxes itself. (runtime-api does this for the remote backend, and the
+process backend has no lifecycle.) The background worker applies three rules:
+
+- **Idle.** A running sandbox is paused once its agent has done nothing for
+  `idle_seconds`. The worker reads `idle_time` from the agent server's
+  `GET /server_info`. If the read fails, the worker does nothing.
+- **Max session.** A running sandbox is paused `max_session_seconds` after it
+  last started or resumed, even if its agent is still working.
+- **Delete.** A sandbox is deleted, with its workspace, once it has not run for
+  `delete_after_seconds`.
+
+A sandbox counts as active for a full idle period after it starts or resumes.
+
+| Variable | Default |
+| --- | --- |
+| `OH_SANDBOX_LIFECYCLE_IDLE_SECONDS` | 1200 (20 minutes) |
+| `OH_SANDBOX_LIFECYCLE_MAX_SESSION_SECONDS` | 43200 (12 hours) |
+| `OH_SANDBOX_LIFECYCLE_DELETE_AFTER_SECONDS` | 864000 (10 days) |
+
+The defaults match runtime-api's. A value of 0 turns a rule off.
+
+A sandbox spec can override each rule in its `lifecycle` field, for example
+`OH_SANDBOX_SPEC_SPECS_0_LIFECYCLE_IDLE_SECONDS`. A spec list set through env
+replaces the backend's default specs. It needs `OH_SANDBOX_SPEC_KIND`, and
+each spec needs its other fields too.
+
+What a pause does depends on the backend:
+
+- **Docker** stops the container. Its files stay, and its processes end.
+- **E2B** pauses the microVM, with its memory and processes.
+- **Kubernetes agent-sandbox** suspends the Sandbox. The pod is deleted, and
+  its volume stays.
+
+The agent server gets `OH_RUNTIME_IDLE_TIMEOUT_SECONDS` set to `idle_seconds`,
+so that a long foreground command times out before the sandbox looks idle.
+
+The rules read three columns of the sandbox table: `lifecycle_state`,
+`state_changed_at` and `last_active_at`. Start, resume and pause keep them
+current, and lock the row while they change the sandbox.
+
+### The worker
+
+The worker is a [procrastinate](https://procrastinate.readthedocs.io/) worker
+on the app's own database. Run it as its own process, with the same env as the
+app server:
+
+```bash
+python -m openhands.app_server.worker              # make start-worker
+python -m openhands.app_server.worker healthcheck  # fails without the database or its queue tables
+```
+
+Every minute a sweep job finds the sandboxes that may be due, and queues one
+check job for each. A check locks the sandbox's row, reads the sandbox, and
+applies the rules. It skips a row that a pause, resume or delete holds, and a
+later sweep checks it again. `OH_WORKER_CONCURRENCY` (default 10) sets how many
+jobs run at once. The procrastinate schema is created by the Alembic
+migrations.
 
 ## E2B backend
 
@@ -81,12 +143,14 @@ over a webhook, and unlike the remote runtime backend there is no polling
 fallback. A sandbox started against a localhost app server runs, but its events
 never arrive.
 
-**A sandbox holds a one-hour lease by default.** `timeout_seconds` defaults to
-3600. The ceiling above that is set by the E2B plan — one hour on Hobby, 24
-hours on Pro — and on a self hosted cluster by the operator, so a rejection
-saying `Timeout cannot be greater than 1 hours` is that cluster's configuration
-rather than an E2B limit. The lease counts from the last create or resume, and
-activity does not extend it. On expiry the sandbox pauses rather than being
+**A sandbox holds a one-hour lease by default.** E2B pauses a sandbox itself
+after the smaller of `timeout_seconds` (default 3600) and the max session
+setting, so it pauses on time even while the worker is down. The ceiling on
+`timeout_seconds` is set by the E2B plan — one hour on Hobby, 24 hours on Pro —
+and on a self hosted cluster by the operator, so a rejection saying `Timeout
+cannot be greater than 1 hours` is that cluster's configuration rather than an
+E2B limit. The lease counts from the last create or resume, and activity does
+not extend it. On expiry the sandbox pauses rather than being
 destroyed (`on_timeout: pause`), parking as a memory snapshot with its
 filesystem and processes intact. It stays paused until `resume_sandbox` runs.
 The frontend calls it when the user opens the conversation or returns to its
