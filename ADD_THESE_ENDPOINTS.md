@@ -14,14 +14,26 @@ class BudgetMaintenanceTaskResponse(BaseModel):
 
 ## Add to `server/routes/orgs.py`
 
-Add after line 1455 (after `_rejected_budget_change` function):
+**First, add these imports at the top of the file:**
 
 ```python
-# Add these imports at top of file
+# Add to imports section
 import json
-from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
 
-# Add these two endpoints
+# Add to org_models imports
+from server.routes.org_models import (
+    ...
+    BudgetMaintenanceTaskResponse,  # Add this line
+    ...
+)
+
+# Add to storage imports  
+from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
+```
+
+**Then add these two endpoints** after line 1455 (after `_rejected_budget_change` function):
+
+```python
 
 @org_router.post(
     '/{org_id}/budgets/maintenance',

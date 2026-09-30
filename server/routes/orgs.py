@@ -1,6 +1,5 @@
 import csv
 import io
-import json
 from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
@@ -21,7 +20,6 @@ from server.auth.authorization import (
 )
 from server.auth.org_context import EFFECTIVE_ORG_ID, REJECT_X_ORG_ID_PATH_MISMATCH
 from server.routes.org_models import (
-    BudgetMaintenanceTaskResponse,
     CannotModifySelfError,
     GitOrgAlreadyClaimedError,
     GitOrgClaimRequest,
