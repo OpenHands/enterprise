@@ -1116,37 +1116,55 @@ class TestDockerSandboxService:
         # Verify cleanup was still called
         mock_cleanup.assert_called_once_with(2)
 
-    async def test_pause_sandbox_success(self, service, store):
-        """Test pausing a running sandbox."""
-        # Setup
+    async def test_pause_sandbox_stops_the_container(self, service, store):
+        """Stopping frees the sandbox's memory, where freezing it would not."""
         await store(_stored('oh-test-abc123'))
         mock_container = MagicMock()
         mock_container.status = 'running'
         mock_container.labels = _labels()
         service.docker_client.containers.get.return_value = mock_container
 
-        # Execute
         result = await service.pause_sandbox('oh-test-abc123')
 
-        # Verify
         assert result is True
-        mock_container.pause.assert_called_once()
+        mock_container.stop.assert_called_once_with(timeout=10)
+        mock_container.pause.assert_not_called()
+        mock_container.remove.assert_not_called()
 
-    async def test_pause_sandbox_not_running(self, service, store):
-        """Test pausing a non-running sandbox."""
-        # Setup
+    async def test_pause_sandbox_stops_a_frozen_container(self, service, store):
+        """An earlier release froze containers with docker pause."""
         await store(_stored('oh-test-abc123'))
         mock_container = MagicMock()
         mock_container.status = 'paused'
         mock_container.labels = _labels()
         service.docker_client.containers.get.return_value = mock_container
 
-        # Execute
         result = await service.pause_sandbox('oh-test-abc123')
 
-        # Verify
         assert result is True
-        mock_container.pause.assert_not_called()
+        mock_container.stop.assert_called_once_with(timeout=10)
+
+    async def test_pause_sandbox_already_stopped(self, service, store):
+        await store(_stored('oh-test-abc123'))
+        mock_container = MagicMock()
+        mock_container.status = 'exited'
+        mock_container.labels = _labels()
+        service.docker_client.containers.get.return_value = mock_container
+
+        result = await service.pause_sandbox('oh-test-abc123')
+
+        assert result is True
+        mock_container.stop.assert_not_called()
+
+    async def test_pause_sandbox_daemon_error(self, service, store):
+        await store(_stored('oh-test-abc123'))
+        mock_container = MagicMock()
+        mock_container.status = 'running'
+        mock_container.labels = _labels()
+        mock_container.stop.side_effect = APIError('daemon error')
+        service.docker_client.containers.get.return_value = mock_container
+
+        assert await service.pause_sandbox('oh-test-abc123') is False
 
     async def test_delete_sandbox_success(self, service, store, db_session):
         """Test successful sandbox deletion."""
@@ -1709,7 +1727,7 @@ class TestDockerSandboxServiceOwnership:
 
         # Verify
         assert result is False
-        user_b_container.pause.assert_not_called()
+        user_b_container.stop.assert_not_called()
 
     async def test_resume_rejects_other_users_sandbox(
         self, user_a_service, user_b_container

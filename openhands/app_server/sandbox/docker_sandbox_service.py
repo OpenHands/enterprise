@@ -60,6 +60,7 @@ from openhands.app_server.utils.docker_utils import (
 
 _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
+STOP_TIMEOUT_SECONDS = 10
 
 # Ownership lives in the sandbox table (see `sandbox_store`). These labels tag
 # managed containers so that one with no row can be found.
@@ -604,7 +605,13 @@ class DockerSandboxService(ManagedSandboxService):
     async def _pause_at_provider(
         self, stored_sandbox: StoredSandbox
     ) -> ProviderOutcome:
-        """Freeze the sandbox's container.
+        """Stop the sandbox's container.
+
+        Stopping frees the sandbox's memory, where freezing it would not. The
+        container keeps its filesystem, its port bindings and its environment,
+        and ``_resume_at_provider`` starts it again. Processes the agent left
+        running do not survive, just as on the k8s backend, where a pause
+        deletes the pod.
 
         The key hash is kept. The container has the same key after resume, so
         clearing the hash would not revoke anything.
@@ -613,12 +620,15 @@ class DockerSandboxService(ManagedSandboxService):
         if container is None:
             return ProviderOutcome.FAILED
         try:
-            if container.status in ('paused', 'exited'):
+            if container.status == 'exited':
                 return ProviderOutcome.ALREADY_DONE
-            if container.status != 'running':
+            # A frozen container is one an earlier release paused.
+            if container.status not in ('running', 'paused'):
                 # Starting or dead: there is nothing to pause.
                 return ProviderOutcome.SKIPPED
-            container.pause()
+            # The agent server gets SIGTERM, then SIGKILL after the timeout.
+            # The wait runs off the event loop.
+            await asyncio.to_thread(container.stop, timeout=STOP_TIMEOUT_SECONDS)
         except (NotFound, APIError):
             return ProviderOutcome.FAILED
         return ProviderOutcome.CHANGED
@@ -634,7 +644,7 @@ class DockerSandboxService(ManagedSandboxService):
             return
         try:
             if container.status in ['running', 'paused']:
-                container.stop(timeout=10)
+                container.stop(timeout=STOP_TIMEOUT_SECONDS)
             container.remove()
         except NotFound:
             # Removed under us.
