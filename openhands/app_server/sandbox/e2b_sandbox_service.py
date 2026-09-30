@@ -231,16 +231,14 @@ class E2BSandboxService(ManagedSandboxService):
             return E2BSandboxSpecInfo(id=sandbox_spec_id, command=None)
         return _as_e2b_spec(sandbox_spec)
 
-    def _timer_seconds(self, sandbox_spec: E2BSandboxSpecInfo) -> int:
+    def _timer_seconds(self) -> int:
         """How long E2B lets the sandbox run before it pauses it itself.
 
         It matches the max session setting, so E2B pauses the sandbox when
         the app would, even while the worker is down. ``timeout_seconds``
         caps it, because E2B caps the timer by plan.
         """
-        max_session_seconds = self.lifecycle.with_overrides(
-            sandbox_spec.lifecycle
-        ).max_session_seconds
+        max_session_seconds = self.lifecycle.max_session_seconds
         if not max_session_seconds:
             return self.timeout_seconds
         return min(max_session_seconds, self.timeout_seconds)
@@ -455,7 +453,7 @@ class E2BSandboxService(ManagedSandboxService):
         try:
             sandbox = await AsyncSandbox.create(
                 template=sandbox_spec.id,
-                timeout=self._timer_seconds(sandbox_spec),
+                timeout=self._timer_seconds(),
                 metadata=metadata,
                 # The E2B default on timeout is to kill the sandbox. Pausing
                 # parks the conversation as a snapshot instead, until
@@ -622,9 +620,7 @@ class E2BSandboxService(ManagedSandboxService):
                 **get_agent_server_env(),
             },
         }
-        idle_seconds = self.lifecycle.with_overrides(
-            sandbox_spec.lifecycle
-        ).idle_seconds
+        idle_seconds = self.lifecycle.idle_seconds
         if idle_seconds:
             body['env'][RUNTIME_IDLE_TIMEOUT_VARIABLE] = str(idle_seconds)
 
@@ -666,15 +662,12 @@ class E2BSandboxService(ManagedSandboxService):
         if info is None:
             return ProviderOutcome.FAILED
         was_paused = info.state == SandboxState.PAUSED
-        timer_seconds = self._timer_seconds(
-            await self._get_spec(stored_sandbox.sandbox_spec_id)
-        )
         for attempt in range(1, self.resume_retries + 1):
             try:
                 # E2B has no resume(); connecting to a paused sandbox resumes
                 # it, and connecting to a running one is a no-op.
                 await AsyncSandbox.connect(
-                    sandbox_id, timeout=timer_seconds, **self._api_params
+                    sandbox_id, timeout=self._timer_seconds(), **self._api_params
                 )
                 if was_paused:
                     return ProviderOutcome.CHANGED

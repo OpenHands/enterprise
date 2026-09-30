@@ -477,7 +477,6 @@ class ManagedSandboxServiceInjector(SandboxServiceInjector, ABC):
             "When the app pauses and deletes this backend's sandboxes. "
             'Configure via OH_SANDBOX_LIFECYCLE_IDLE_SECONDS, '
             'OH_SANDBOX_LIFECYCLE_MAX_SESSION_SECONDS and '
-            'OH_SANDBOX_LIFECYCLE_DELETE_AFTER_SECONDS. A sandbox spec can '
-            'override each one.'
+            'OH_SANDBOX_LIFECYCLE_DELETE_AFTER_SECONDS.'
         ),
     )

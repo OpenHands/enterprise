@@ -40,10 +40,7 @@ from openhands.app_server.sandbox.e2b_sandbox_service import (
     E2BSandboxService,
 )
 from openhands.app_server.sandbox.e2b_sandbox_spec_service import E2BSandboxSpecInfo
-from openhands.app_server.sandbox.lifecycle.settings import (
-    SandboxLifecycleOverrides,
-    SandboxLifecycleSettings,
-)
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.preset_sandbox_spec_service import (
     PresetSandboxSpecService,
 )
@@ -228,14 +225,12 @@ def _service(
     resume_retries: int = 3,
     timeout_seconds: int = 3600,
     lifecycle: SandboxLifecycleSettings | None = None,
-    spec_lifecycle: SandboxLifecycleOverrides | None = None,
 ) -> E2BSandboxService:
     spec = E2BSandboxSpecInfo(
         id=TEMPLATE,
         command=None,
         working_dir='/workspace/project',
         init_api_key=SecretStr(init_api_key) if init_api_key else None,
-        lifecycle=spec_lifecycle,
     )
     return E2BSandboxService(
         sandbox_spec_service=PresetSandboxSpecService(specs=[spec]),
@@ -443,21 +438,19 @@ class TestInitHandshake:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ('spec_lifecycle', 'expected'),
-        [
-            (None, '1200'),
-            (SandboxLifecycleOverrides(idle_seconds=600), '600'),
-            (SandboxLifecycleOverrides(idle_seconds=0), None),
-        ],
+        ('idle_seconds', 'expected'),
+        [(1200, '1200'), (0, None)],
     )
     async def test_env_caps_terminal_commands_below_the_idle_pause(
-        self, sdk, db_session, spec_lifecycle, expected
+        self, sdk, db_session, idle_seconds, expected
     ):
         """One long terminal command must not look like an idle sandbox."""
         agent_server = FakeAgentServer()
 
         await _service(
-            db_session, httpx_client=agent_server, spec_lifecycle=spec_lifecycle
+            db_session,
+            httpx_client=agent_server,
+            lifecycle=SandboxLifecycleSettings(idle_seconds=idle_seconds),
         ).start_sandbox()
 
         env = agent_server.init_post_bodies[0]['env']
@@ -1033,17 +1026,16 @@ class TestLifecycle:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ('timeout_seconds', 'spec_lifecycle', 'expected'),
+        ('timeout_seconds', 'max_session_seconds', 'expected'),
         [
             # E2B's cap wins until the plan allows a full session.
-            (3600, None, 3600),
-            (86400, None, 43200),
-            (86400, SandboxLifecycleOverrides(max_session_seconds=1800), 1800),
-            (86400, SandboxLifecycleOverrides(max_session_seconds=0), 86400),
+            (3600, 43200, 3600),
+            (86400, 43200, 43200),
+            (86400, 0, 86400),
         ],
     )
     async def test_e2b_pauses_when_the_max_session_ends(
-        self, sdk, db_session, timeout_seconds, spec_lifecycle, expected
+        self, sdk, db_session, timeout_seconds, max_session_seconds, expected
     ):
         """E2B's own timer pauses the sandbox even while the worker is down."""
         sdk.get_info.return_value = _e2b_info(state=SandboxState.PAUSED)
@@ -1051,7 +1043,7 @@ class TestLifecycle:
         service = _service(
             db_session,
             timeout_seconds=timeout_seconds,
-            spec_lifecycle=spec_lifecycle,
+            lifecycle=SandboxLifecycleSettings(max_session_seconds=max_session_seconds),
         )
 
         await service.resume_sandbox(SANDBOX_ID)

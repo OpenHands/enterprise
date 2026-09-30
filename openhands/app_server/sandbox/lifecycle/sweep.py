@@ -11,10 +11,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import ColumnElement, and_, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from openhands.app_server.sandbox.lifecycle.settings import (
-    SandboxLifecycleOverrides,
-    SandboxLifecycleSettings,
-)
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.sandbox_store import LifecycleState, StoredSandbox
 from openhands.app_server.utils.sql_utils import UtcDateTime
 
@@ -45,32 +42,14 @@ def _due(settings: SandboxLifecycleSettings, now: datetime) -> ColumnElement[boo
 async def find_due_sandbox_ids(
     db_session: AsyncSession,
     backend: str,
-    defaults: SandboxLifecycleSettings,
-    spec_overrides: dict[str, SandboxLifecycleOverrides],
+    settings: SandboxLifecycleSettings,
     now: datetime,
     limit: int,
 ) -> list[str]:
-    """One backend's sandboxes that may be due, longest inactive first.
-
-    A sandbox whose spec has overrides is held to them. Every other sandbox,
-    including one whose spec is no longer configured, gets the defaults.
-    """
-    conditions = [
-        and_(
-            StoredSandbox.sandbox_spec_id == spec_id,
-            _due(defaults.with_overrides(overrides), now),
-        )
-        for spec_id, overrides in spec_overrides.items()
-    ]
-    conditions.append(
-        and_(
-            StoredSandbox.sandbox_spec_id.not_in(list(spec_overrides)),
-            _due(defaults, now),
-        )
-    )
+    """One backend's sandboxes that may be due, longest inactive first."""
     stmt = (
         select(StoredSandbox.id)
-        .where(StoredSandbox.backend == backend, or_(*conditions))
+        .where(StoredSandbox.backend == backend, _due(settings, now))
         .order_by(LAST_RAN_AT)
         .limit(limit)
     )

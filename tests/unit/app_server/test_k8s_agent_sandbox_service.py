@@ -50,7 +50,7 @@ from openhands.app_server.sandbox.k8s_agent_sandbox_service import (
 from openhands.app_server.sandbox.k8s_agent_sandbox_spec_service import (
     K8sAgentSandboxSpecInfo,
 )
-from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleOverrides
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.preset_sandbox_spec_service import (
     PresetSandboxSpecService,
 )
@@ -275,14 +275,13 @@ def _service(
     router_url: str = ROUTER_URL,
     web_url: str | None = WEB_URL,
     webhook_base_url: str | None = None,
-    spec_lifecycle: SandboxLifecycleOverrides | None = None,
+    lifecycle: SandboxLifecycleSettings | None = None,
 ) -> K8sAgentSandboxService:
     spec = K8sAgentSandboxSpecInfo(
         id=POOL,
         command=None,
         working_dir='/workspace/project',
         init_api_key=SecretStr(init_api_key) if init_api_key else None,
-        lifecycle=spec_lifecycle,
     )
     return K8sAgentSandboxService(
         sandbox_spec_service=PresetSandboxSpecService(specs=[spec]),
@@ -297,6 +296,7 @@ def _service(
         poll_interval=0,
         web_url=web_url,
         webhook_base_url=webhook_base_url,
+        lifecycle=lifecycle or SandboxLifecycleSettings(),
     )
 
 
@@ -505,21 +505,20 @@ class TestInitHandshake:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ('spec_lifecycle', 'expected'),
-        [
-            (None, '1200'),
-            (SandboxLifecycleOverrides(idle_seconds=600), '600'),
-            (SandboxLifecycleOverrides(idle_seconds=0), None),
-        ],
+        ('idle_seconds', 'expected'),
+        [(1200, '1200'), (0, None)],
     )
     async def test_env_caps_terminal_commands_below_the_idle_pause(
-        self, k8s, db_session, spec_lifecycle, expected
+        self, k8s, db_session, idle_seconds, expected
     ):
         """One long terminal command must not look like an idle sandbox."""
         agent_server = FakeAgentServer()
 
         await _service(
-            db_session, k8s, httpx_client=agent_server, spec_lifecycle=spec_lifecycle
+            db_session,
+            k8s,
+            httpx_client=agent_server,
+            lifecycle=SandboxLifecycleSettings(idle_seconds=idle_seconds),
         ).start_sandbox()
 
         env = agent_server.init_post_bodies[0]['env']

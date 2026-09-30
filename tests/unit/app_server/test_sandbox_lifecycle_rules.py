@@ -10,10 +10,7 @@ from openhands.app_server.sandbox.lifecycle.rules import (
     Reason,
     decide,
 )
-from openhands.app_server.sandbox.lifecycle.settings import (
-    SandboxLifecycleOverrides,
-    SandboxLifecycleSettings,
-)
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 from openhands.app_server.sandbox.sandbox_store import LifecycleState, StoredSandbox
 
@@ -151,20 +148,6 @@ class TestSettings:
         row = _row(LifecycleState.PAUSED, changed=100 * DAY)
 
         assert _decide(row, PAUSED, settings=settings).action == Action.NOTHING
-
-    def test_a_spec_overrides_only_what_it_sets(self):
-        settings = DEFAULTS.with_overrides(
-            SandboxLifecycleOverrides(max_session_seconds=3600)
-        )
-
-        assert settings == SandboxLifecycleSettings(
-            idle_seconds=DEFAULTS.idle_seconds,
-            max_session_seconds=3600,
-            delete_after_seconds=DEFAULTS.delete_after_seconds,
-        )
-
-    def test_a_spec_without_overrides_gets_the_defaults(self):
-        assert DEFAULTS.with_overrides(None) == DEFAULTS
 
     def test_the_defaults_match_runtime_api(self):
         assert DEFAULTS == SandboxLifecycleSettings(

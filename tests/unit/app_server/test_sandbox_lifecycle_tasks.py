@@ -19,18 +19,11 @@ from openhands.app_server.sandbox.docker_sandbox_service import (
 )
 from openhands.app_server.sandbox.lifecycle import tasks
 from openhands.app_server.sandbox.lifecycle.rules import Action, Reason
-from openhands.app_server.sandbox.lifecycle.settings import (
-    SandboxLifecycleOverrides,
-    SandboxLifecycleSettings,
-)
-from openhands.app_server.sandbox.preset_sandbox_spec_service import (
-    PresetSandboxSpecService,
-)
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.remote_sandbox_service import (
     RemoteSandboxServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
-from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
     LifecycleState,
@@ -111,19 +104,15 @@ async def _check(
     harness,
     db_session,
     agent_server: FakeAgentServer,
-    spec_lifecycle: SandboxLifecycleOverrides | None = None,
+    settings: SandboxLifecycleSettings | None = None,
 ):
     row = harness.row()
-    spec = SandboxSpecInfo(
-        id=row.sandbox_spec_id, command=None, lifecycle=spec_lifecycle
-    )
     return await tasks.check_sandbox(
         harness.sandbox_id,
         backend=row.backend,
-        defaults=SandboxLifecycleSettings(),
+        settings=settings or SandboxLifecycleSettings(),
         db_session=db_session,
         sandbox_service=harness.service(db_session),
-        sandbox_spec_service=PresetSandboxSpecService(specs=[spec]),
         httpx_client=agent_server,  # type: ignore[arg-type]
         now=datetime.now(UTC),
     )
@@ -198,7 +187,7 @@ class TestCheck:
         assert row.last_active_at == added.last_active_at
         assert await _live_status(harness, db_session) == SandboxStatus.RUNNING
 
-    async def test_a_spec_is_held_to_its_own_settings(
+    async def test_the_configured_settings_apply(
         self, harness, db_session, add_sandbox
     ):
         await add_sandbox(LifecycleState.RUNNING, live_paused=False, ago=2 * HOUR)
@@ -207,7 +196,7 @@ class TestCheck:
             harness,
             db_session,
             FakeAgentServer(idle_time=120),
-            spec_lifecycle=SandboxLifecycleOverrides(idle_seconds=60),
+            settings=SandboxLifecycleSettings(idle_seconds=60),
         )
 
         assert decision.action == Action.PAUSE
@@ -296,7 +285,7 @@ class TestSweep:
 
         @contextlib.asynccontextmanager
         async def _services():
-            yield db_session, None, PresetSandboxSpecService(specs=[]), None
+            yield db_session, None, None
 
         with (
             patch.object(

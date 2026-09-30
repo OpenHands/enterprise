@@ -52,11 +52,6 @@ A sandbox counts as active for a full idle period after it starts or resumes.
 
 The defaults match runtime-api's. A value of 0 turns a rule off.
 
-A sandbox spec can override each rule in its `lifecycle` field, for example
-`OH_SANDBOX_SPEC_SPECS_0_LIFECYCLE_IDLE_SECONDS`. A spec list set through env
-replaces the backend's default specs. It needs `OH_SANDBOX_SPEC_KIND`, and
-each spec needs its other fields too.
-
 What a pause does depends on the backend:
 
 - **Docker** stops the container. Its files stay, and its processes end.
