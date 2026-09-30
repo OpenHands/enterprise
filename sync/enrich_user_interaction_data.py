@@ -32,9 +32,16 @@ async def process_pr(pr: OpenhandsPR):
     Process a single PR to enrich its data.
     """
 
+    claimed = await store.claim_pr_for_processing(pr.repo_id, pr.pr_number, MAX_RETRIES)
+    if claimed is None:
+        logger.info(
+            f'Skipping PR #{pr.pr_number} from repo {pr.repo_name}: '
+            'already processed or out of attempts'
+        )
+        return
+
     logger.info(f'Processing PR #{pr.pr_number} from repo {pr.repo_name}')
-    await data_collector.save_full_pr(pr)
-    await store.increment_process_attempts(pr.repo_id, pr.pr_number)
+    await data_collector.save_full_pr(claimed)
 
 
 async def main():
