@@ -12,6 +12,7 @@ from uuid import uuid4
 import pytest
 from fastapi import BackgroundTasks
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.app_server.app_conversation.app_conversation_models import (
@@ -681,6 +682,38 @@ class TestUpdateConversationStatistics:
             stored.completion_tokens == 0
         )  # Should remain unchanged (was 0, None doesn't update)
 
+    @pytest.mark.asyncio
+    async def test_update_statistics_rolls_back_and_reraises_on_failed_write(
+        self, service, async_session, v1_conversation_metadata
+    ):
+        """Callers that swallow the error (the stats event handler and the
+        run-end pull) rely on this method leaving the session usable.
+        """
+        conversation_id, _ = v1_conversation_metadata
+        stats = ConversationStats(
+            usage_to_metrics={
+                'agent': Metrics(
+                    model_name='gpt-4',
+                    accumulated_cost=1.0,
+                    accumulated_token_usage=TokenUsage(
+                        prompt_tokens=2**63, completion_tokens=1
+                    ),
+                )
+            }
+        )
+
+        with pytest.raises(DBAPIError):
+            await service.update_conversation_statistics(conversation_id, stats)
+
+        # Would raise PendingRollbackError without the rollback.
+        await async_session.commit()
+        result = await async_session.execute(
+            select(StoredConversationMetadata).where(
+                StoredConversationMetadata.conversation_id == str(conversation_id)
+            )
+        )
+        assert result.scalar_one().prompt_tokens == 0
+
 
 # ---------------------------------------------------------------------------
 # Tests for process_stats_event
@@ -782,9 +815,9 @@ class TestProcessStatsEvent:
         async_session,
         v1_conversation_metadata,
     ):
-        """A failed stats write must not poison the reused session, leaving
-        every later request to 500 until the process restarts. Guards the
-        rollback in ``process_stats_event``'s error handler.
+        """A failed stats write must not leave the request's session in
+        PendingRollbackError, which would fail the remaining webhook writes
+        and the end-of-request commit.
         """
         conversation_id, _ = v1_conversation_metadata
 
@@ -825,40 +858,6 @@ class TestProcessStatsEvent:
         )
         stored = result.scalar_one()
         assert stored.prompt_tokens == 0
-
-    @pytest.mark.asyncio
-    async def test_process_stats_event_swallows_rollback_failure(
-        self, service, stats_event_with_dict_value
-    ):
-        """If the recovery rollback itself fails, the handler must log and
-        return rather than propagate -- otherwise the error handler becomes a
-        second source of 500s. Guards the inner try/except around the rollback.
-        """
-        conversation_id = uuid4()
-
-        with (
-            patch.object(
-                service,
-                'update_conversation_statistics',
-                side_effect=Exception('write failed'),
-            ),
-            patch.object(
-                service.db_session,
-                'rollback',
-                side_effect=Exception('rollback failed'),
-            ),
-            patch(
-                'openhands.app_server.app_conversation.sql_app_conversation_info_service.logger'
-            ) as mock_logger,
-        ):
-            # Must not raise even though the rollback raises.
-            await service.process_stats_event(
-                stats_event_with_dict_value, conversation_id
-            )
-
-            # Both the original write failure and the rollback failure are
-            # logged rather than propagated.
-            assert mock_logger.exception.call_count == 2
 
     @pytest.mark.asyncio
     async def test_process_stats_event_empty_usage_to_metrics(
@@ -1113,6 +1112,88 @@ class TestRunEndLiveStatsPull:
         mock_info_service.update_conversation_statistics.assert_awaited_once_with(
             conversation_id, pulled_stats
         )
+
+    @pytest.mark.asyncio
+    async def test_on_event_recovers_session_after_bad_stats_write_and_pull(
+        self, service, async_session, v1_conversation_metadata
+    ):
+        """A bad stats snapshot fails both the stats event write and the
+        run-end pull of the same cumulative totals. Neither may leave the
+        request's session needing a rollback, or the end-of-request commit
+        raises PendingRollbackError and the webhook 500s.
+        """
+        from types import SimpleNamespace
+
+        from openhands.app_server.event_callback import webhook_router
+        from openhands.app_server.event_callback.webhook_router import on_event
+
+        conversation_id, _ = v1_conversation_metadata
+        # One past the BIGINT max, so the flush fails with a DataError.
+        overflow_stats = ConversationStats(
+            usage_to_metrics={
+                'agent': Metrics(
+                    model_name='gpt-4',
+                    accumulated_cost=1.0,
+                    accumulated_token_usage=TokenUsage(
+                        prompt_tokens=2**63, completion_tokens=1
+                    ),
+                )
+            }
+        )
+        events = [
+            ConversationStateUpdateEvent(key='stats', value=overflow_stats),
+            ConversationStateUpdateEvent(key='execution_status', value='finished'),
+        ]
+        mock_info = AppConversationInfo(
+            id=conversation_id, sandbox_id='sb1', created_by_user_id=None
+        )
+
+        app_conv_service = AsyncMock()
+        app_conv_service.get_app_conversation.return_value = SimpleNamespace(
+            conversation_url='http://sandbox/api/conversations/abc',
+            session_api_key=None,
+        )
+        service_ctx = MagicMock()
+        service_ctx.__aenter__ = AsyncMock(return_value=app_conv_service)
+        service_ctx.__aexit__ = AsyncMock(return_value=False)
+        http_client = AsyncMock()
+        http_client.get.return_value = MagicMock()
+        client_ctx = MagicMock()
+        client_ctx.__aenter__ = AsyncMock(return_value=http_client)
+        client_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.object(
+                webhook_router, 'get_app_conversation_service', return_value=service_ctx
+            ),
+            patch.object(webhook_router.httpx, 'AsyncClient', return_value=client_ctx),
+            patch.object(webhook_router, 'ConversationInfo') as mock_ci,
+            patch.object(webhook_router, '_track_conversation_terminal'),
+            patch.object(webhook_router, '_run_callbacks_in_bg_and_close'),
+        ):
+            mock_ci.model_validate.return_value = SimpleNamespace(stats=overflow_stats)
+            await on_event(
+                background_tasks=BackgroundTasks(),
+                events=events,
+                conversation_id=conversation_id,
+                app_conversation_info=mock_info,
+                app_conversation_info_service=service,
+                event_service=AsyncMock(),
+            )
+
+        # The run-end pull must have actually attempted the bad write.
+        http_client.get.assert_awaited_once()
+        # Mirrors DbSessionInjector's end-of-request commit.
+        await async_session.commit()
+
+        result = await async_session.execute(
+            select(StoredConversationMetadata).where(
+                StoredConversationMetadata.conversation_id == str(conversation_id)
+            )
+        )
+        stored = result.scalar_one()
+        assert stored.execution_status == 'finished'
+        assert stored.prompt_tokens == 0
 
     @pytest.mark.asyncio
     async def test_on_event_no_pull_while_running(self):
