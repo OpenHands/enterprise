@@ -2778,7 +2778,7 @@ class TestLiveStatusAppConversationService:
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
     )
     @pytest.mark.asyncio
-    async def test_build_request_forwards_only_sub_agents_within_the_parent_tools(
+    async def test_build_request_forwards_every_sub_agent_for_a_selected_tool_set(
         self, mock_definitions
     ):
         runner = AgentDefinition(
@@ -2797,7 +2797,7 @@ class TestLiveStatusAppConversationService:
             )
         )
 
-        assert result.agent_definitions == [runner]
+        assert result.agent_definitions == [runner, researcher]
         assert task_tool_set in result.agent.tools
 
     @patch(

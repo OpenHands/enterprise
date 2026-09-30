@@ -136,7 +136,7 @@ from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings
-from openhands.sdk.subagent import AgentDefinition, get_registered_agent_definitions
+from openhands.sdk.subagent import get_registered_agent_definitions
 from openhands.sdk.tool.defaults import (
     SUB_AGENT_TOOL_NAME,
     SWITCH_LLM_TOOL_NAME,
@@ -163,18 +163,6 @@ _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
 
 def _selects_tool(tools: Sequence[Tool], name: str) -> bool:
     return any(canonical_tool_name(tool.name) == name for tool in tools)
-
-
-def _sub_agents_within(
-    definitions: Sequence[AgentDefinition], tools: Sequence[Tool]
-) -> list[AgentDefinition]:
-    """Keep the sub-agents whose tools the parent agent also has."""
-    parent = {canonical_tool_name(tool.name) for tool in tools}
-    return [
-        definition
-        for definition in definitions
-        if {canonical_tool_name(name) for name in definition.tools} <= parent
-    ]
 
 
 def _resolve_title_llm_profile(user: UserInfo) -> str | None:
@@ -2274,9 +2262,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             register_builtins_agents(enable_browser=True)
             tools = launch_tool_specs(selected_tools, browser_available=True)
             if _selects_tool(tools, SUB_AGENT_TOOL_NAME):
-                agent_definitions = _sub_agents_within(
-                    get_registered_agent_definitions(), tools
-                )
+                agent_definitions = list(get_registered_agent_definitions())
 
         # --- build AgentSettings and create agent ---------------------------
         # When enterprise persistent memory is enabled, stamp load_memory=True
