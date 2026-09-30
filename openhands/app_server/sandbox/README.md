@@ -73,9 +73,10 @@ on the app's own database. Run it as its own process, with the same env as the
 app server:
 
 ```bash
-python -m openhands.app_server.worker              # make start-worker
-python -m openhands.app_server.worker healthcheck  # fails without the database or its queue tables
+python -m openhands.app_server.worker  # make start-worker
 ```
+
+It exits when it cannot reach the database.
 
 Every minute a sweep job finds the sandboxes that may be due, and queues one
 check job for each. A check locks the sandbox's row, reads the sandbox, and
