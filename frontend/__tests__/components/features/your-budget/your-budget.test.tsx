@@ -278,8 +278,9 @@ describe("YourBudget", () => {
       },
     );
 
-    it("should chart the spend of each day in the period", async () => {
-      // Arrange & Act
+    it("should show the date and spend of a day when its bar is hovered", async () => {
+      // Arrange
+      const user = userEvent.setup();
       renderYourBudget(
         createBudget(),
         createUsage({
@@ -290,11 +291,42 @@ describe("YourBudget", () => {
           ],
         }),
       );
+      const chart = await screen.findByTestId("your-budget-daily-chart");
+      const bars = within(chart).getAllByTestId("your-budget-daily-bar");
+
+      // Act
+      await user.hover(bars[1]);
 
       // Assert
+      const tooltip = within(chart).getByTestId("your-budget-daily-tooltip");
+      expect(tooltip).toHaveTextContent("Sep 20");
+      expect(tooltip).toHaveTextContent("$2.00");
+    });
+
+    it("should hide the day's details when the pointer leaves the chart", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      renderYourBudget(
+        createBudget(),
+        createUsage({
+          total_spend: 5,
+          daily_spend: [
+            { date: "2026-09-19", cost: 3 },
+            { date: "2026-09-20", cost: 2 },
+          ],
+        }),
+      );
       const chart = await screen.findByTestId("your-budget-daily-chart");
-      expect(within(chart).getByTitle("Sep 19: $3.00")).toBeInTheDocument();
-      expect(within(chart).getByTitle("Sep 20: $2.00")).toBeInTheDocument();
+      const bars = within(chart).getAllByTestId("your-budget-daily-bar");
+      await user.hover(bars[0]);
+
+      // Act
+      await user.unhover(bars[0]);
+
+      // Assert
+      expect(
+        screen.queryByTestId("your-budget-daily-tooltip"),
+      ).not.toBeInTheDocument();
     });
 
     it.each([
