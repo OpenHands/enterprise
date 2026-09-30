@@ -126,6 +126,32 @@ async def test_task_ignoring_cancellation_is_killed_after_grace(spawn, conninfo)
     assert (status, abort_requested) == ('doing', False)
 
 
+async def test_frozen_job_is_recovered_by_ops_and_completed_by_a_new_worker(
+    spawn, conninfo, tmp_path
+):
+    """The whole path: self-exit, stalled recovery, re-execution."""
+    marker = tmp_path / 'marker'
+    fast = {
+        'HARNESS_MARKER': str(marker),
+        'TASK_QUEUE_HEARTBEAT_INTERVAL_SECONDS': '1',
+        'TASK_QUEUE_STALLED_WORKER_TIMEOUT_SECONDS': '3',
+    }
+    job_id = await _defer(conninfo)
+    frozen = spawn('freeze_once', TASK_QUEUE_LOOP_STALL_TIMEOUT_SECONDS='3', **fast)
+    await _wait_doing(conninfo, job_id, frozen)
+    assert await _exit_code(frozen, 30) == WATCHDOG_EXIT_CODE
+
+    spawn('freeze_once', role='ops', TASK_QUEUE_RECOVERY_INTERVAL_SECONDS='1', **fast)
+    spawn('freeze_once', **fast)
+    for _ in range(300):
+        status = (await _row(conninfo, job_id))[0]
+        if status == 'succeeded':
+            break
+        await asyncio.sleep(0.1)
+    assert status == 'succeeded'
+    assert marker.read_text() == 'froze\ncompleted\n'
+
+
 async def test_original_process_exits_on_its_deadline_after_reassignment(
     spawn, conninfo
 ):

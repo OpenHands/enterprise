@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import socket
 import threading
 import time
 import urllib.error
@@ -170,57 +169,11 @@ class TestEnforcementThread:
         assert time.monotonic() - started < 2
 
 
-class BlackholeProxy:
-    """TCP proxy that can stop forwarding while keeping both sockets open."""
-
-    def __init__(self, target: tuple[str, int]):
-        self._target = target
-        self._listener = socket.create_server(('127.0.0.1', 0))
-        self.port = self._listener.getsockname()[1]
-        self.blackholed = threading.Event()
-        self._sockets: list[socket.socket] = []
-        threading.Thread(target=self._accept, daemon=True).start()
-
-    def _accept(self) -> None:
-        while True:
-            try:
-                client, _ = self._listener.accept()
-            except OSError:
-                return
-            upstream = socket.create_connection(self._target)
-            self._sockets += [client, upstream]
-            for src, dst in ((client, upstream), (upstream, client)):
-                threading.Thread(
-                    target=self._pump, args=(src, dst), daemon=True
-                ).start()
-
-    def _pump(self, src: socket.socket, dst: socket.socket) -> None:
-        while True:
-            try:
-                data = src.recv(65536)
-            except OSError:
-                return
-            if not data:
-                return
-            if not self.blackholed.is_set():
-                dst.sendall(data)
-
-    def close(self) -> None:
-        self._listener.close()
-        for sock in self._sockets:
-            sock.close()
-
-
 class TestBlackholedTelemetryConnection:
     def test_enforcement_exits_while_the_lookup_is_stuck_on_the_socket(
-        self, test_database
+        self, blackhole, live_heartbeat
     ):
-        server = test_database.server
-        proxy = BlackholeProxy((server.host, server.port))
-        conninfo = (
-            f'host=127.0.0.1 port={proxy.port} dbname={test_database.name} '
-            f'user={server.user} password={server.password}'
-        )
+        proxy, conninfo = blackhole
         lookup = QueueRowLookup(conninfo)
         assert lookup('1') == {}  # connection established through the proxy
         proxy.blackholed.set()
@@ -234,17 +187,9 @@ class TestBlackholedTelemetryConnection:
         exited = threading.Event()
         registry = ExecutionRegistry()
         registry.start('job', '1', 0, budget=0.3, grace=0.5)
-        heartbeat = LoopHeartbeat()
-        keep_alive = threading.Event()
-
-        def touch() -> None:
-            while not keep_alive.wait(0.05):
-                heartbeat.touch()
-
-        threading.Thread(target=touch, daemon=True).start()
         watchdog = Watchdog(
             registry,
-            heartbeat,
+            live_heartbeat,
             Telemetry(observed_lookup),
             check_interval=0.05,
             loop_stall_timeout=60,
@@ -252,12 +197,8 @@ class TestBlackholedTelemetryConnection:
             exit_fn=lambda code: exited.set(),
         )
         watchdog.start()
-        try:
-            assert stuck.wait(5), 'overdue report never reached the lookup'
-            assert exited.wait(5)
-        finally:
-            keep_alive.set()
-            proxy.close()
+        assert stuck.wait(5), 'overdue report never reached the lookup'
+        assert exited.wait(5)
 
 
 class TestExecutionMiddleware:

@@ -114,6 +114,16 @@ class Settings:
     loop_stall_timeout: float = 60.0
     # 0 disables the liveness endpoint.
     probe_port: int = 0
+    recovery_interval: float = 60.0
+    recovery_pass_budget: float = 30.0
+    retention_hours: int = 24 * 7
+
+    def __post_init__(self) -> None:
+        if self.update_heartbeat_interval >= self.stalled_worker_timeout:
+            raise ValueError(
+                'The heartbeat interval must be shorter than the stalled worker '
+                'timeout, or healthy workers look stalled.'
+            )
 
     def budget_for(self, task_name: str) -> float:
         from server.task_queue.jobs import JOBS
@@ -159,4 +169,15 @@ class Settings:
                 'TASK_QUEUE_LOOP_STALL_TIMEOUT_SECONDS', 60
             ),
             probe_port=int(os.getenv('TASK_QUEUE_PROBE_PORT', '8080')),
+            update_heartbeat_interval=_positive_int(
+                'TASK_QUEUE_HEARTBEAT_INTERVAL_SECONDS', 10
+            ),
+            stalled_worker_timeout=_positive_int(
+                'TASK_QUEUE_STALLED_WORKER_TIMEOUT_SECONDS', 30
+            ),
+            recovery_interval=_positive_int('TASK_QUEUE_RECOVERY_INTERVAL_SECONDS', 60),
+            recovery_pass_budget=_positive_int(
+                'TASK_QUEUE_RECOVERY_PASS_BUDGET_SECONDS', 30
+            ),
+            retention_hours=_positive_int('TASK_QUEUE_RETENTION_HOURS', 24 * 7),
         )

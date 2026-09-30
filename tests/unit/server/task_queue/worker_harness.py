@@ -10,6 +10,7 @@
 import asyncio
 import os
 import time
+from pathlib import Path
 
 from server.task_queue import worker
 from server.task_queue.jobs import ScheduledJob
@@ -27,7 +28,21 @@ async def swallow_cancel() -> None:
             continue
 
 
-BODIES = {'freeze': freeze, 'swallow_cancel': swallow_cancel}
+async def freeze_once() -> None:
+    """Freeze on the first run; later runs record that they completed."""
+    marker = Path(os.environ['HARNESS_MARKER'])
+    if not marker.exists():
+        marker.write_text('froze\n')
+        time.sleep(3600)
+    with marker.open('a') as out:
+        out.write('completed\n')
+
+
+BODIES = {
+    'freeze': freeze,
+    'freeze_once': freeze_once,
+    'swallow_cancel': swallow_cancel,
+}
 
 if __name__ == '__main__':
     body = BODIES[os.environ['HARNESS_BODY']]

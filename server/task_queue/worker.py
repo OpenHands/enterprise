@@ -24,7 +24,8 @@ from procrastinate.worker import Worker
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.task_queue.app import build_app
-from server.task_queue.config import Settings
+from server.task_queue.config import Role, Settings
+from server.task_queue.maintenance import RecoveryLoop
 from server.task_queue.watchdog import (
     ExecutionRegistry,
     LoopHeartbeat,
@@ -92,6 +93,18 @@ async def run(settings: Settings) -> int:
 
     with contextlib.ExitStack() as threads:
         heartbeat = _start_watchdog(settings, registry, threads)
+        if settings.role is Role.OPS:
+            recovery = RecoveryLoop(
+                settings.conninfo,
+                registry,
+                interval=settings.recovery_interval,
+                stalled_seconds=settings.stalled_worker_timeout,
+                pass_budget=settings.recovery_pass_budget,
+                pass_grace=settings.watchdog_grace,
+                retention_hours=settings.retention_hours,
+            )
+            recovery.start()
+            threads.callback(recovery.stop)
         heartbeat_task = asyncio.create_task(
             heartbeat.run(LOOP_HEARTBEAT_INTERVAL), name='loop-heartbeat'
         )
