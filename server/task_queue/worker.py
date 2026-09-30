@@ -14,15 +14,28 @@ platform restarts it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import signal
 import sys
 
+from procrastinate import App
 from procrastinate.worker import Worker
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.task_queue.app import build_app
 from server.task_queue.config import Settings
+from server.task_queue.watchdog import (
+    ExecutionRegistry,
+    LoopHeartbeat,
+    ProbeServer,
+    QueueRowLookup,
+    Telemetry,
+    Watchdog,
+    execution_middleware,
+)
+
+LOOP_HEARTBEAT_INTERVAL = 1.0
 
 
 def _route_procrastinate_logs() -> None:
@@ -32,7 +45,9 @@ def _route_procrastinate_logs() -> None:
     procrastinate_logger.propagate = False
 
 
-def build_worker(settings: Settings, app) -> Worker:
+def build_worker(
+    settings: Settings, app: App, worker_middleware: list | None = None
+) -> Worker:
     return Worker(
         app=app,
         queues=[settings.role.queue],
@@ -46,43 +61,82 @@ def build_worker(settings: Settings, app) -> Worker:
         # and stalled recovery never picks aborted jobs up again.
         shutdown_graceful_timeout=None,
         install_signal_handlers=False,
+        worker_middleware=worker_middleware,
     )
+
+
+def _start_watchdog(
+    settings: Settings, registry: ExecutionRegistry, stack: contextlib.ExitStack
+) -> LoopHeartbeat:
+    heartbeat = LoopHeartbeat()
+    watchdog = Watchdog(
+        registry,
+        heartbeat,
+        Telemetry(QueueRowLookup(settings.conninfo)),
+        check_interval=settings.watchdog_interval,
+        loop_stall_timeout=settings.loop_stall_timeout,
+    )
+    watchdog.start()
+    stack.callback(watchdog.stop)
+    if settings.probe_port:
+        probe = ProbeServer(settings.probe_port, watchdog)
+        probe.start()
+        stack.callback(probe.stop)
+    return heartbeat
 
 
 async def run(settings: Settings) -> int:
     """Run until stopped; return the process exit code."""
     app = build_app(settings)
+    registry = ExecutionRegistry()
+
+    with contextlib.ExitStack() as threads:
+        heartbeat = _start_watchdog(settings, registry, threads)
+        heartbeat_task = asyncio.create_task(
+            heartbeat.run(LOOP_HEARTBEAT_INTERVAL), name='loop-heartbeat'
+        )
+        try:
+            async with app.open_async():
+                middleware = execution_middleware(
+                    registry, settings.budget_for, settings.watchdog_grace
+                )
+                worker = build_worker(settings, app, [middleware])
+                return await _run_worker(settings, app, worker)
+        finally:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
+
+
+async def _run_worker(settings: Settings, app: App, worker: Worker) -> int:
     requested = asyncio.Event()
 
-    async with app.open_async():
-        worker = build_worker(settings, app)
+    def on_signal(signum: int) -> None:
+        logger.info('task_queue.stop_requested', extra={'signal': signum})
+        requested.set()
+        worker.stop()
 
-        def on_signal(signum: int) -> None:
-            logger.info('task_queue.stop_requested', extra={'signal': signum})
-            requested.set()
-            worker.stop()
-
-        loop = asyncio.get_running_loop()
+    loop = asyncio.get_running_loop()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(signum, on_signal, signum)
+    try:
+        logger.info(
+            'task_queue.worker_starting',
+            extra={
+                'role': settings.role.value,
+                'scheduling_enabled': settings.scheduling_enabled,
+                'scheduled': sorted(
+                    name for name, _ in app.periodic_registry.periodic_tasks
+                ),
+            },
+        )
+        await worker.run()
+    except Exception:
+        logger.exception('task_queue.worker_crashed')
+        return 1
+    finally:
         for signum in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(signum, on_signal, signum)
-        try:
-            logger.info(
-                'task_queue.worker_starting',
-                extra={
-                    'role': settings.role.value,
-                    'scheduling_enabled': settings.scheduling_enabled,
-                    'scheduled': sorted(
-                        name for name, _ in app.periodic_registry.periodic_tasks
-                    ),
-                },
-            )
-            await worker.run()
-        except Exception:
-            logger.exception('task_queue.worker_crashed')
-            return 1
-        finally:
-            for signum in (signal.SIGTERM, signal.SIGINT):
-                loop.remove_signal_handler(signum)
+            loop.remove_signal_handler(signum)
 
     if requested.is_set():
         logger.info('task_queue.worker_stopped')

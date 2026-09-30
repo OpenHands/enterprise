@@ -48,6 +48,10 @@ class ScheduledJob:
     def schedule_env(self) -> str:
         return f'TASK_QUEUE_{self.name.upper()}_SCHEDULE'
 
+    @property
+    def budget_env(self) -> str:
+        return f'TASK_QUEUE_{self.name.upper()}_BUDGET_SECONDS'
+
     def load(self) -> Callable[[], Awaitable[None]]:
         return importlib.import_module(self.module).main
 

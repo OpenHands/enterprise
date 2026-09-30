@@ -105,6 +105,23 @@ class Settings:
     fetch_job_polling_interval: float = 5.0
     pool_timeout: float = 30.0
     listen_notify: bool = True
+    # Per-job time budget, then the grace window G before the watchdog exits
+    # the process. The longest observed normal run is about two minutes.
+    default_budget: float = 600.0
+    budget_overrides: dict[str, float] = field(default_factory=dict)
+    watchdog_grace: float = 60.0
+    watchdog_interval: float = 5.0
+    loop_stall_timeout: float = 60.0
+    # 0 disables the liveness endpoint.
+    probe_port: int = 0
+
+    def budget_for(self, task_name: str) -> float:
+        from server.task_queue.jobs import JOBS
+
+        for job in JOBS:
+            if job.task_name == task_name:
+                return self.budget_overrides.get(job.name, self.default_budget)
+        return self.default_budget
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -130,4 +147,16 @@ class Settings:
             ),
             concurrency=_positive_int('TASK_QUEUE_CONCURRENCY', 1),
             listen_notify=env_flag('TASK_QUEUE_LISTEN_NOTIFY', '1'),
+            default_budget=_positive_int('TASK_QUEUE_DEFAULT_BUDGET_SECONDS', 600),
+            budget_overrides={
+                job.name: float(_positive_int(job.budget_env, 1))
+                for job in JOBS
+                if os.getenv(job.budget_env, '').strip()
+            },
+            watchdog_grace=_positive_int('TASK_QUEUE_WATCHDOG_GRACE_SECONDS', 60),
+            watchdog_interval=_positive_int('TASK_QUEUE_WATCHDOG_INTERVAL_SECONDS', 5),
+            loop_stall_timeout=_positive_int(
+                'TASK_QUEUE_LOOP_STALL_TIMEOUT_SECONDS', 60
+            ),
+            probe_port=int(os.getenv('TASK_QUEUE_PROBE_PORT', '8080')),
         )
