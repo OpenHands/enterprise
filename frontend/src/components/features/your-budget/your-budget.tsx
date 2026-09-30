@@ -273,14 +273,26 @@ function ModelUsageList({
 }: {
   models: OrgMyUsageStats["model_usage"];
 }) {
+  const [hoveredModel, setHoveredModel] = React.useState<string | null>(null);
   const total = models.reduce((sum, model) => sum + model.total_cost, 0);
 
   return (
-    <ul className="flex flex-col gap-3" data-testid="your-budget-models">
+    // Cleared on the list rather than per row so the tooltip does not flicker
+    // while the pointer crosses the gaps between rows.
+    <ul
+      className="flex flex-col gap-3"
+      data-testid="your-budget-models"
+      onMouseLeave={() => setHoveredModel(null)}
+    >
       {models.map((model, index) => {
         const color = AGENT_COLORS[index % AGENT_COLORS.length];
+        const percent = total > 0 ? (model.total_cost / total) * 100 : 0;
         return (
-          <li key={model.model_name} className="flex items-center gap-3">
+          <li
+            key={model.model_name}
+            className="relative flex items-center gap-3"
+            onMouseEnter={() => setHoveredModel(model.model_name)}
+          >
             <span
               className="size-2.5 shrink-0 rounded-sm"
               style={{ backgroundColor: color }}
@@ -292,17 +304,26 @@ function ModelUsageList({
               <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-tertiary">
                 <div
                   className="h-full rounded-full"
-                  style={{
-                    backgroundColor: color,
-                    width:
-                      total > 0 ? `${(model.total_cost / total) * 100}%` : 0,
-                  }}
+                  style={{ backgroundColor: color, width: `${percent}%` }}
                 />
               </div>
             </div>
             <span className="shrink-0 text-sm font-medium text-foreground">
               {formatCost(model.total_cost)}
             </span>
+            {hoveredModel === model.model_name && (
+              <div
+                className="pointer-events-none absolute bottom-full right-0 z-10 mb-2 w-max max-w-xs rounded-lg border border-border-subtle bg-base-secondary px-3 py-2 shadow-lg"
+                data-testid="your-budget-model-tooltip"
+              >
+                <div className="break-all text-sm font-medium text-foreground">
+                  {model.model_name}
+                </div>
+                <div className="mt-0.5 text-xs tabular-nums text-muted">
+                  {`${formatCost(model.total_cost)} · ${percent.toFixed(1)}%`}
+                </div>
+              </div>
+            )}
           </li>
         );
       })}
