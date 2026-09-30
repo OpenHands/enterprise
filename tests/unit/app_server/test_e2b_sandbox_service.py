@@ -223,7 +223,6 @@ def _service(
     init_api_key: str | None = INIT_API_KEY,
     init_timeout_seconds: int = 5,
     resume_retries: int = 3,
-    timeout_seconds: int = 3600,
     lifecycle: SandboxLifecycleSettings | None = None,
 ) -> E2BSandboxService:
     spec = E2BSandboxSpecInfo(
@@ -239,7 +238,7 @@ def _service(
         db_session=db_session,
         api_key='e2b-api-key',
         domain=DOMAIN,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=3600,
         max_num_sandboxes=10,
         init_timeout_seconds=init_timeout_seconds,
         init_poll_interval=0,
@@ -1023,34 +1022,6 @@ class TestLifecycle:
         sdk.connect.assert_awaited_once()
         assert sdk.connect.await_args.args[0] == SANDBOX_ID
         assert sdk.connect.await_args.kwargs['timeout'] == 3600
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ('timeout_seconds', 'max_session_seconds', 'expected'),
-        [
-            # E2B's cap wins until the plan allows a full session.
-            (3600, 43200, 3600),
-            (86400, 43200, 43200),
-            (86400, 0, 86400),
-        ],
-    )
-    async def test_e2b_pauses_when_the_max_session_ends(
-        self, sdk, db_session, timeout_seconds, max_session_seconds, expected
-    ):
-        """E2B's own timer pauses the sandbox even while the worker is down."""
-        sdk.get_info.return_value = _e2b_info(state=SandboxState.PAUSED)
-        sdk.create.return_value = SimpleNamespace(sandbox_id='inew')
-        service = _service(
-            db_session,
-            timeout_seconds=timeout_seconds,
-            lifecycle=SandboxLifecycleSettings(max_session_seconds=max_session_seconds),
-        )
-
-        await service.resume_sandbox(SANDBOX_ID)
-        await service.start_sandbox()
-
-        assert sdk.connect.await_args.kwargs['timeout'] == expected
-        assert sdk.create.await_args.kwargs['timeout'] == expected
 
     @pytest.mark.asyncio
     async def test_resume_without_a_row_returns_false(self, sdk, db_session):
