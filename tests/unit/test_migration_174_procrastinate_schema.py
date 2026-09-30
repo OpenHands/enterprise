@@ -6,8 +6,13 @@ its schema, so these tests pin the two together: the vendored file is what
 set up itself.
 """
 
+import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
+import procrastinate
+import psycopg
+import psycopg.conninfo
 import pytest
 from procrastinate.schema import SchemaManager
 from sqlalchemy import create_engine, text
