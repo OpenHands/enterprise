@@ -8,6 +8,7 @@ import {
 } from "#/types/org";
 import { isInstanceSuperAdmin } from "#/utils/org/permissions";
 import { requestWantsFreshSa } from "./mock-fresh-sa";
+import { registerMockAdminOrg } from "./super-admin-handlers";
 
 /** Sample GitHub orgs for Git Conversation Routing in mock SaaS mode. */
 const MOCK_USER_GIT_ORGS = {
@@ -670,6 +671,12 @@ export const ORG_HANDLERS = [
     };
     orgs.set(orgId, org);
     ORGS_AND_MEMBERS[orgId] = [currentUserMembership(orgId, "owner")];
+    registerMockAdminOrg({
+      id: orgId,
+      name,
+      contact_email: contactEmail,
+      contact_name: contactName,
+    });
     // Switch into the new org so org-defaults / setup tour can continue.
     mockCurrentOrgId = orgId;
     return HttpResponse.json(org, { status: 201 });

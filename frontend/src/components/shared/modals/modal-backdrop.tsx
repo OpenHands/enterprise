@@ -34,7 +34,7 @@ export function ModalBackdrop({
       role="dialog"
       aria-modal="true"
       aria-label={ariaLabel}
-      className="fixed inset-0 flex items-center justify-center z-60"
+      className="fixed inset-0 z-[70] flex items-center justify-center"
     >
       <div
         onClick={handleClick}

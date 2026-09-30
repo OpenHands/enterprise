@@ -250,7 +250,12 @@ export function SuperAdminSetupFloatingWidget() {
     readSuperAdminNux,
     readSuperAdminNux,
   );
-  const [open, setOpen] = useState(true);
+  const isSetupGuidePage = pathname === SUPER_ADMIN_PATHS.setup;
+  // Closed on the setup guide itself, because that page already shows the
+  // checklist. Elsewhere the panel starts open until the user dismisses it.
+  const [open, setOpen] = useState(() => !isSetupGuidePage);
+  const userClosedRef = useRef(false);
+  const suppressOpenAfterTour = useRef(false);
   const [tourStarting, setTourStarting] = useState(false);
   const tourActive = useSyncExternalStore(
     subscribeGuidedTourActive,
@@ -274,9 +279,29 @@ export function SuperAdminSetupFloatingWidget() {
 
   useEffect(() => {
     if (tourActive) {
+      suppressOpenAfterTour.current = true;
       setOpen(false);
+      return;
     }
-  }, [tourActive]);
+    if (isSetupGuidePage) {
+      suppressOpenAfterTour.current = false;
+      setOpen(false);
+      return;
+    }
+    if (suppressOpenAfterTour.current) {
+      suppressOpenAfterTour.current = false;
+      setOpen(false);
+      return;
+    }
+    if (!userClosedRef.current) {
+      setOpen(true);
+    }
+  }, [isSetupGuidePage, tourActive]);
+
+  const setWidgetOpen = (next: boolean) => {
+    userClosedRef.current = !next;
+    setOpen(next);
+  };
 
   const startTour = async (fromStepId?: string) => {
     setTourStarting(true);
@@ -349,7 +374,7 @@ export function SuperAdminSetupFloatingWidget() {
                   "rounded-md border-0 bg-transparent p-0",
                   "text-[var(--oh-muted)] hover:bg-base hover:text-white",
                 )}
-                onClick={() => setOpen(false)}
+                onClick={() => setWidgetOpen(false)}
               >
                 <X className="size-4 shrink-0" strokeWidth={2} aria-hidden />
               </button>
@@ -414,7 +439,7 @@ export function SuperAdminSetupFloatingWidget() {
         data-testid="super-admin-setup-floating-toggle"
         aria-label={t(I18nKey.SUPER_ADMIN$SETUP_GUIDE)}
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setWidgetOpen(!open)}
         className={cn(
           "flex items-center gap-2 rounded-full border border-[var(--oh-border)]",
           "bg-base-secondary px-3.5 py-2 text-sm font-medium text-white",

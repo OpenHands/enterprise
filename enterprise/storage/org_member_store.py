@@ -164,8 +164,15 @@ class OrgMemberStore:
             return True
 
     @staticmethod
-    async def set_all_membership_statuses(user_id: UUID, status: str) -> int:
-        """Set ``status`` on every membership for ``user_id``.
+    async def set_all_membership_statuses(
+        user_id: UUID,
+        status: str,
+        org_ids: list[UUID] | None = None,
+    ) -> int:
+        """Set ``status`` on memberships for ``user_id``.
+
+        ``org_ids`` limits the update to those organizations. When it is
+        omitted, every membership for the user is updated.
 
         Returns the number of membership rows updated.
         """
@@ -176,6 +183,9 @@ class OrgMemberStore:
                 select(OrgMember).filter(OrgMember.user_id == user_id)
             )
             members = list(result.scalars().all())
+            if org_ids is not None:
+                allowed = set(org_ids)
+                members = [member for member in members if member.org_id in allowed]
             for member in members:
                 member.status = status
             await session.commit()

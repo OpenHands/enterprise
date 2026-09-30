@@ -10,11 +10,9 @@ import { useMe } from "#/hooks/query/use-me";
 import {
   useDeleteSuperAdminOrganization,
   useGrantSuperAdmin,
-  useProvisionSuperAdminUser,
-  useRemoveSuperAdminUser,
+  useProvisionUserToGroups,
   useRevokeSuperAdmin,
   useUpdateSuperAdminOrganizationStatus,
-  useUpdateSuperAdminUserStatus,
 } from "#/hooks/mutation/use-super-admin-mutations";
 import {
   useSuperAdminOrganizations,
@@ -40,6 +38,10 @@ import {
   USER_TABLE_CELL_CLASS_NAME,
 } from "./super-admin-chrome";
 import { SuperAdminDashboard } from "./super-admin-dashboard";
+import {
+  SuperAdminOrgChecklist,
+  SuperAdminUserGroupsModal,
+} from "./super-admin-user-groups-modal";
 import { SuperAdminSetupGuide } from "./super-admin-setup-guide";
 import {
   setSuperAdminSetupVisible,
@@ -266,16 +268,15 @@ export function SuperAdminUsers() {
   const [query, setQuery] = useState("");
   const [provisionOpen, setProvisionOpen] = useState(false);
   const [email, setEmail] = useState("");
-  const [orgId, setOrgId] = useState("");
+  const [orgIds, setOrgIds] = useState<string[]>([]);
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<"member" | "admin" | "owner">("member");
   const [provisionResult, setProvisionResult] =
     useState<ProvisionUserResponse | null>(null);
+  const [managedUserId, setManagedUserId] = useState<string | null>(null);
   const { data, isLoading, isError } = useSuperAdminUsers();
   const { data: orgs } = useSuperAdminOrganizations();
-  const provision = useProvisionSuperAdminUser();
-  const updateUserStatus = useUpdateSuperAdminUserStatus();
-  const removeUser = useRemoveSuperAdminUser();
+  const provision = useProvisionUserToGroups();
 
   const users: SuperAdminUserRow[] = useMemo(
     () =>
@@ -285,6 +286,7 @@ export function SuperAdminUsers() {
             orgId: membership.org_id,
             orgName: membership.org_name,
             role: toOrgRole(membership.role),
+            status: membership.status,
           }),
         );
         return {
@@ -320,12 +322,12 @@ export function SuperAdminUsers() {
 
   const handleProvision = () => {
     const trimmedEmail = email.trim();
-    if (!trimmedEmail || !orgId) {
+    if (!trimmedEmail || orgIds.length === 0) {
       return;
     }
     provision.mutate(
       {
-        orgId,
+        orgIds,
         payload: {
           email: trimmedEmail,
           role,
@@ -333,12 +335,14 @@ export function SuperAdminUsers() {
         },
       },
       {
-        onSuccess: (response) => {
+        onSuccess: (responses) => {
           setEmail("");
-          setOrgId("");
+          setOrgIds([]);
           setPassword("");
           setRole("member");
-          setProvisionResult(response);
+          setProvisionResult(
+            responses.find((response) => response.password) ?? responses[0],
+          );
         },
       },
     );
@@ -348,10 +352,12 @@ export function SuperAdminUsers() {
     setProvisionOpen(false);
     setProvisionResult(null);
     setEmail("");
-    setOrgId("");
+    setOrgIds([]);
     setPassword("");
     setRole("member");
   };
+
+  const managedUser = users.find((user) => user.id === managedUserId) ?? null;
 
   const copySecret = async (value: string) => {
     await navigator.clipboard.writeText(value);
@@ -456,30 +462,10 @@ export function SuperAdminUsers() {
                 testId={`super-admin-user-actions-${row.id}`}
                 ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
                 items={[
-                  row.status === "inactive"
-                    ? {
-                        label: t(I18nKey.SUPER_ADMIN$RESUME),
-                        testId: `super-admin-user-resume-${row.id}`,
-                        onSelect: () =>
-                          updateUserStatus.mutate({
-                            userId: row.id,
-                            status: "active",
-                          }),
-                      }
-                    : {
-                        label: t(I18nKey.SUPER_ADMIN$SUSPEND),
-                        testId: `super-admin-user-suspend-${row.id}`,
-                        onSelect: () =>
-                          updateUserStatus.mutate({
-                            userId: row.id,
-                            status: "inactive",
-                          }),
-                      },
                   {
-                    label: t(I18nKey.SUPER_ADMIN$REMOVE),
-                    testId: `super-admin-user-remove-${row.id}`,
-                    destructive: true,
-                    onSelect: () => removeUser.mutate({ userId: row.id }),
+                    label: t(I18nKey.SUPER_ADMIN$MANAGE_GROUPS),
+                    testId: `super-admin-manage-groups-${row.id}`,
+                    onSelect: () => setManagedUserId(row.id),
                   },
                 ]}
               />
@@ -572,26 +558,29 @@ export function SuperAdminUsers() {
                 )}
                 onChange={setPassword}
               />
-              <label className="flex flex-col gap-1.5 text-sm">
+              <div className="flex flex-col gap-1.5 text-sm">
                 <span className="text-[var(--oh-muted)]">
-                  {t(I18nKey.SUPER_ADMIN$PROVISION_ORG)}
+                  {t(I18nKey.SUPER_ADMIN$PROVISION_ORGS)}
                 </span>
-                <select
-                  data-testid="super-admin-provision-org"
-                  className="rounded-lg border border-[var(--oh-border)] bg-[var(--oh-surface)] px-3 py-2 text-foreground"
-                  value={orgId}
-                  onChange={(event) => setOrgId(event.target.value)}
-                >
-                  <option value="">
-                    {t(I18nKey.SUPER_ADMIN$PROVISION_ORG_PLACEHOLDER)}
-                  </option>
-                  {teamOrgs.map((org) => (
-                    <option key={org.id} value={org.id}>
-                      {org.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                <SuperAdminOrgChecklist
+                  items={teamOrgs.map((org) => ({
+                    id: org.id,
+                    label: org.name,
+                  }))}
+                  selectedIds={orgIds}
+                  onToggle={(id) =>
+                    setOrgIds((current) =>
+                      current.includes(id)
+                        ? current.filter((item) => item !== id)
+                        : [...current, id],
+                    )
+                  }
+                  testIdPrefix="super-admin-provision-org"
+                  emptyMessage={t(
+                    I18nKey.SUPER_ADMIN$PROVISION_ORG_PLACEHOLDER,
+                  )}
+                />
+              </div>
               <label className="flex flex-col gap-1.5 text-sm">
                 <span className="text-[var(--oh-muted)]">
                   {t(I18nKey.SUPER_ADMIN$PROVISION_ROLE)}
@@ -613,6 +602,16 @@ export function SuperAdminUsers() {
           )}
         </OrgModal>
       )}
+      {managedUser ? (
+        <SuperAdminUserGroupsModal
+          user={managedUser}
+          organizations={teamOrgs.map((org) => ({
+            id: org.id,
+            name: org.name,
+          }))}
+          onClose={() => setManagedUserId(null)}
+        />
+      ) : null}
     </div>
   );
 }

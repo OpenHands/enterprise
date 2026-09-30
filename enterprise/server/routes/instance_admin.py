@@ -11,9 +11,9 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from server.auth.authorization import Permission, require_permission
-from server.constants import ROLE_OWNER
+from server.constants import ROLE_MEMBER, ROLE_OWNER
 from server.routes.org_models import (
     OrgAuthorizationError,
     OrgDatabaseError,
@@ -96,6 +96,14 @@ class AdminUserStatusUpdate(BaseModel):
     status: UserMembershipStatus
 
 
+class AdminUserGroupsUpdate(BaseModel):
+    """Suspend, resume, remove, or add a user in specific organizations."""
+
+    action: Literal['suspend', 'resume', 'remove', 'add']
+    org_ids: list[UUID] = Field(min_length=1)
+    role: Literal['owner', 'admin', 'member'] | None = None
+
+
 def _display_name(user: User) -> str | None:
     if user.git_user_name and user.git_user_name.strip():
         return user.git_user_name.strip()
@@ -110,6 +118,44 @@ def _derive_user_status(
     if memberships and all(m.status == 'inactive' for m in memberships):
         return 'inactive'
     return 'active'
+
+
+def _plain_llm_api_key(settings: object) -> str:
+    """Read a LiteLLM key off settings without treating mocks as secrets."""
+    agent_settings = getattr(settings, 'agent_settings', None)
+    llm = getattr(agent_settings, 'llm', None)
+    secret = getattr(llm, 'api_key', None)
+    if secret is None or secret == '':
+        return ''
+    if isinstance(secret, SecretStr):
+        return secret.get_secret_value()
+    if isinstance(secret, str):
+        return secret
+    return ''
+
+
+async def _admin_user_response(user: User) -> AdminUserResponse:
+    """Rebuild the admin user payload from current membership rows."""
+    membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user.id)
+    memberships: list[AdminMembershipResponse] = []
+    for org_member, org in membership_pairs:
+        role = await RoleStore.get_role_by_id(org_member.role_id)
+        memberships.append(
+            AdminMembershipResponse(
+                org_id=str(org.id),
+                org_name=org.name,
+                role=role.name if role else 'member',
+                status=org_member.status,
+            )
+        )
+    memberships.sort(key=lambda membership: membership.org_name.lower())
+    return AdminUserResponse(
+        user_id=str(user.id),
+        email=user.email,
+        name=_display_name(user),
+        memberships=memberships,
+        status=_derive_user_status(memberships),
+    )
 
 
 def _org_status(org: Org) -> OrgStatus:
@@ -287,20 +333,6 @@ async def update_admin_user_status(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
-    membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user_id)
-    memberships: list[AdminMembershipResponse] = []
-    for org_member, org in membership_pairs:
-        role = await RoleStore.get_role_by_id(org_member.role_id)
-        memberships.append(
-            AdminMembershipResponse(
-                org_id=str(org.id),
-                org_name=org.name,
-                role=role.name if role else 'member',
-                status=org_member.status,
-            )
-        )
-    memberships.sort(key=lambda m: m.org_name.lower())
-
     logger.info(
         'admin:users:status',
         extra={
@@ -309,13 +341,7 @@ async def update_admin_user_status(
             'status': body.status,
         },
     )
-    return AdminUserResponse(
-        user_id=str(user.id),
-        email=user.email,
-        name=_display_name(user),
-        memberships=memberships,
-        status=_derive_user_status(memberships),
-    )
+    return await _admin_user_response(user)
 
 
 @instance_admin_router.delete(
@@ -378,6 +404,120 @@ async def remove_admin_user_from_orgs(
         'user_id': str(user_id),
         'removed_org_ids': removed,
     }
+
+
+async def _remove_selected_memberships(user: User, org_ids: list[UUID]) -> None:
+    """Remove the user from the selected team orgs, keeping the last owner."""
+    selected = set(org_ids)
+    membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user.id)
+    team_memberships = [
+        (member, org)
+        for member, org in membership_pairs
+        if org.id in selected and org.id != user.id
+    ]
+    blocked: list[str] = []
+    for member, org in team_memberships:
+        role = await RoleStore.get_role_by_id(member.role_id)
+        if role and role.name == ROLE_OWNER:
+            if await OrgMemberService._is_last_owner(org.id, user.id):
+                blocked.append(org.name)
+    if blocked:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                'Cannot remove user: last owner of '
+                + ', '.join(sorted(blocked))
+            ),
+        )
+    for _, org in team_memberships:
+        await OrgMemberStore.remove_user_from_org(org.id, user.id)
+
+
+async def _add_selected_memberships(
+    user: User,
+    org_ids: list[UUID],
+    role_name: str,
+) -> None:
+    """Add the user to each selected org that they are not already in."""
+    role = await RoleStore.get_role_by_name(role_name)
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Role {role_name!r} not found',
+        )
+    for org_id in org_ids:
+        if org_id == user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Cannot add users to a personal workspace',
+            )
+        org = await OrgStore.get_org_by_id(org_id)
+        if org is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Organization not found',
+            )
+        existing = await OrgMemberStore.get_org_member(org_id, user.id)
+        if existing is not None:
+            continue
+        settings = await OrgService.create_litellm_integration(org_id, str(user.id))
+        await OrgMemberStore.add_user_to_org(
+            org_id=org_id,
+            user_id=user.id,
+            role_id=role.id,
+            llm_api_key=_plain_llm_api_key(settings),
+            status='active',
+        )
+
+
+@instance_admin_router.post(
+    '/users/{user_id}/groups',
+    response_model=AdminUserResponse,
+)
+async def update_admin_user_groups(
+    user_id: UUID,
+    body: AdminUserGroupsUpdate,
+    caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
+) -> AdminUserResponse:
+    """Change a user's membership in one or more organizations.
+
+    ``suspend`` and ``resume`` update only the selected org rows.
+    ``remove`` drops those memberships and still refuses to remove the
+    last owner of an organization. ``add`` creates the missing memberships.
+    """
+    user = await UserStore.get_user_by_id(str(user_id))
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
+        )
+
+    if body.action in ('suspend', 'resume'):
+        membership_status = 'inactive' if body.action == 'suspend' else 'active'
+        try:
+            await OrgMemberStore.set_all_membership_statuses(
+                user_id, membership_status, body.org_ids
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+    elif body.action == 'remove':
+        await _remove_selected_memberships(user, body.org_ids)
+    else:
+        await _add_selected_memberships(
+            user, body.org_ids, body.role or ROLE_MEMBER
+        )
+
+    logger.info(
+        'admin:users:groups',
+        extra={
+            'caller_user_id': caller_user_id,
+            'target_user_id': str(user_id),
+            'action': body.action,
+            'org_ids': [str(org_id) for org_id in body.org_ids],
+        },
+    )
+    return await _admin_user_response(user)
 
 
 @instance_admin_router.delete(

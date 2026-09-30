@@ -103,6 +103,16 @@ const FRESH_SA_ADMIN_ORG = {
   status: "active" as const,
 };
 
+const FRESH_SA_SECOND_ORG = {
+  id: "5",
+  name: "Northwind Labs",
+  contact_email: "ops@northwind.example",
+  contact_name: "Ops",
+  member_count: 0,
+  is_personal: false,
+  status: "active" as const,
+};
+
 const FRESH_SA_ADMIN_USER: MockAdminUser = {
   user_id: "99",
   email: "me@acme.org",
@@ -119,7 +129,7 @@ const FRESH_SA_ADMIN_USER: MockAdminUser = {
 };
 
 function applyFreshSaAdminSeed() {
-  adminOrgs = [{ ...FRESH_SA_ADMIN_ORG }];
+  adminOrgs = [{ ...FRESH_SA_ADMIN_ORG }, { ...FRESH_SA_SECOND_ORG }];
   adminUsers = [
     {
       ...FRESH_SA_ADMIN_USER,
@@ -150,6 +160,29 @@ function ensureFreshSaAdminState(request: Request) {
 
 if (import.meta.env.VITE_MOCK_FRESH_SA === "true") {
   applyFreshSaAdminSeed();
+}
+
+export function registerMockAdminOrg(org: {
+  id: string;
+  name: string;
+  contact_email?: string | null;
+  contact_name?: string | null;
+}) {
+  if (adminOrgs.some((row) => row.id === org.id)) {
+    return;
+  }
+  adminOrgs = [
+    ...adminOrgs,
+    {
+      id: org.id,
+      name: org.name,
+      contact_email: org.contact_email ?? "",
+      contact_name: org.contact_name ?? "",
+      member_count: 1,
+      is_personal: false,
+      status: "active" as const,
+    },
+  ];
 }
 
 export const resetSuperAdminMockState = () => {
@@ -320,6 +353,19 @@ export const SUPER_ADMIN_HANDLERS = [
       (user) => user.email?.toLowerCase() === email,
     );
     if (existing) {
+      const already = existing.memberships.some(
+        (membership) => membership.org_id === orgId,
+      );
+      if (!already && org) {
+        existing.memberships.push({
+          org_id: orgId,
+          org_name: org.name,
+          role: body.role ?? "member",
+          status: "active",
+        });
+        org.member_count += 1;
+        existing.status = "active";
+      }
       return HttpResponse.json({
         email,
         password: null,
@@ -328,7 +374,7 @@ export const SUPER_ADMIN_HANDLERS = [
         org_id: orgId,
         role: body.role ?? "member",
         created: false,
-        action: "reprovisioned",
+        action: already ? "reprovisioned" : "added_to_org",
       });
     }
     const userId = `mock-user-${adminUsers.length + 1}`;
@@ -361,6 +407,106 @@ export const SUPER_ADMIN_HANDLERS = [
         action: "created",
       },
       { status: 201 },
+    );
+  }),
+
+  http.post("/api/admin/users/:userId/groups", async ({ params, request }) => {
+    const { userId } = params;
+    const body = (await request.json()) as {
+      action?: "suspend" | "resume" | "remove" | "add";
+      org_ids?: string[];
+      role?: string;
+    };
+    const target = adminUsers.find((user) => user.user_id === userId);
+    if (!target) {
+      return HttpResponse.json({ detail: "User not found" }, { status: 404 });
+    }
+    const orgIds = body.org_ids ?? [];
+    if (orgIds.length === 0) {
+      return HttpResponse.json(
+        { detail: "Select one or more organizations." },
+        { status: 400 },
+      );
+    }
+
+    if (body.action === "suspend" || body.action === "resume") {
+      const status = body.action === "suspend" ? "inactive" : "active";
+      target.memberships = target.memberships.map((membership) =>
+        orgIds.includes(membership.org_id)
+          ? { ...membership, status }
+          : membership,
+      );
+      target.status = target.memberships.every(
+        (membership) => membership.status === "inactive",
+      )
+        ? "inactive"
+        : "active";
+      return HttpResponse.json(target);
+    }
+
+    if (body.action === "remove") {
+      const blocked = orgIds.filter((orgId) => {
+        const membership = target.memberships.find(
+          (row) => row.org_id === orgId && row.role === "owner",
+        );
+        if (!membership) {
+          return false;
+        }
+        return !adminUsers.some(
+          (user) =>
+            user.user_id !== target.user_id &&
+            user.memberships.some(
+              (row) => row.org_id === orgId && row.role === "owner",
+            ),
+        );
+      });
+      if (blocked.length > 0) {
+        const names = blocked.map(
+          (orgId) => adminOrgs.find((org) => org.id === orgId)?.name ?? orgId,
+        );
+        return HttpResponse.json(
+          {
+            detail: `Cannot remove user: last owner of ${names.join(", ")}`,
+          },
+          { status: 409 },
+        );
+      }
+      target.memberships = target.memberships.filter(
+        (membership) => !orgIds.includes(membership.org_id),
+      );
+      adminOrgs = adminOrgs.map((org) =>
+        orgIds.includes(org.id)
+          ? { ...org, member_count: Math.max(0, org.member_count - 1) }
+          : org,
+      );
+      return HttpResponse.json(target);
+    }
+
+    if (body.action === "add") {
+      const role = body.role ?? "member";
+      orgIds.forEach((orgId) => {
+        const already = target.memberships.some(
+          (membership) => membership.org_id === orgId,
+        );
+        const org = adminOrgs.find((row) => row.id === orgId);
+        if (already || !org || org.is_personal) {
+          return;
+        }
+        target.memberships.push({
+          org_id: orgId,
+          org_name: org.name,
+          role,
+          status: "active",
+        });
+        org.member_count += 1;
+      });
+      target.status = "active";
+      return HttpResponse.json(target);
+    }
+
+    return HttpResponse.json(
+      { detail: "Invalid group action" },
+      { status: 400 },
     );
   }),
 ];
