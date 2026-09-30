@@ -10,8 +10,8 @@ gone.
 This mirrors the OSS app-lifespan soft-delete concept; the enterprise deployment
 maintains its own migration chain and therefore needs this parallel migration.
 
-Revision ID: 171
-Revises: 170
+Revision ID: 173
+Revises: 172
 Create Date: 2026-08-13 00:00:00.000000
 """
 
@@ -20,8 +20,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '172'
-down_revision: str | None = '171'
+revision: str = '173'
+down_revision: str | None = '172'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
