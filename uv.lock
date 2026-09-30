@@ -789,21 +789,19 @@ wheels = [
 
 [[package]]
 name = "cloud-sql-python-connector"
-version = "1.22.0"
+version = "1.20.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "aiofiles" },
     { name = "aiohttp" },
     { name = "cryptography" },
     { name = "dnspython" },
     { name = "google-auth" },
-    { name = "googleapis-common-protos" },
-    { name = "grpcio" },
-    { name = "protobuf" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8e/92/8a593c8ca143ce78d2564c3dc73ec55610ddf8d6e04555dd5e5b9d8e3bc8/cloud_sql_python_connector-1.22.0.tar.gz", hash = "sha256:17cab0a669558963abd0121378216ae2b8ee88d11de718072f2ab4b68a97a183", size = 48109, upload-time = "2026-08-18T20:56:28.541Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4b/cd/e54ca42ea4f386571ab99cb363e15d45b2c1228dc6f8120101e6cd6db9e1/cloud_sql_python_connector-1.20.1.tar.gz", hash = "sha256:7e826875c5c284e1dfd872ab81d8c75eb82dd67ad1bbf43b9e74489342765255", size = 44235, upload-time = "2026-03-16T16:53:04.927Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/87/e9/db3db380b3759081cb0547dc9bdd9d4e40524b587a6a59f19bd931239f94/cloud_sql_python_connector-1.22.0-py3-none-any.whl", hash = "sha256:29e7ed0c4266b49eb9027a8dd247a5fe10ef70b91af3ae78dfaf92d848d49acc", size = 54401, upload-time = "2026-08-18T20:56:27.248Z" },
+    { url = "https://files.pythonhosted.org/packages/56/5b/4eaf81d926b65247b3ff9376f71cf3aac287b3d8af1b2a12fd2605fd8534/cloud_sql_python_connector-1.20.1-py3-none-any.whl", hash = "sha256:c00f9d81205eb658fe06f9f353e00646eb3f55d2d86de01dc1222eec1f5f2fc9", size = 50100, upload-time = "2026-03-16T16:53:03.475Z" },
 ]
 
 [[package]]
@@ -3704,7 +3702,7 @@ requires-dist = [
     { name = "binaryornot", specifier = "==0.6.0" },
     { name = "boto3" },
     { name = "browsergym-core", specifier = "==0.13.3" },
-    { name = "cloud-sql-python-connector", specifier = "==1.22.0" },
+    { name = "cloud-sql-python-connector", specifier = "==1.20.1" },
     { name = "coredis", specifier = "==4.24.0" },
     { name = "ddtrace", specifier = "==4.8.2" },
     { name = "deprecated", specifier = "==1.3.1" },
