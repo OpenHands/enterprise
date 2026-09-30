@@ -1,8 +1,11 @@
 """The worker's housekeeping jobs, run by a real worker on this test's Postgres."""
 
+import contextlib
+
 import psycopg
 import pytest
 from procrastinate import PsycopgConnector
+from procrastinate.exceptions import AlreadyEnqueued
 
 from openhands.app_server.worker.app import app
 
@@ -63,8 +66,15 @@ async def _stall(conninfo: dict, label: str, queueing_lock: str) -> int:
 
 async def _run_housekeeping(worker_app, task_name: str) -> None:
     """Run one housekeeping job, and none of the jobs on the record queue."""
-    await worker_app.configure_task(task_name).defer_async(timestamp=0)
+    # The worker's own schedule may have queued one already.
+    with contextlib.suppress(AlreadyEnqueued):
+        await worker_app.configure_task(task_name).defer_async(timestamp=0)
     await _run_worker(worker_app, queues=['default'])
+
+
+async def _run_recorded_jobs(worker_app) -> None:
+    """Run the jobs on the record queue, and none of the housekeeping jobs."""
+    await _run_worker(worker_app, queues=[RECORD_QUEUE])
 
 
 async def _run_worker(worker_app, **options) -> None:
@@ -81,7 +91,7 @@ def test_the_jobs_run_on_a_schedule():
     }
 
     assert schedules == {
-        'worker:retry_stalled_jobs': '*/5 * * * *',
+        'worker:retry_stalled_jobs': '*/10 * * * *',
         'worker:remove_old_jobs': '0 4 * * *',
     }
 
@@ -92,33 +102,41 @@ async def test_a_stalled_job_runs_again(worker_app, conninfo):
     await _run_housekeeping(worker_app, 'worker:retry_stalled_jobs')
 
     assert _status(conninfo, job_id) == 'todo'
-    await _run_worker(worker_app)
+    await _run_recorded_jobs(worker_app)
     assert ran == ['stalled']
     assert _status(conninfo, job_id) == 'succeeded'
 
 
-async def test_a_stalled_job_gives_way_to_a_newer_one(worker_app, conninfo):
+async def test_a_stalled_job_waits_for_a_newer_one(worker_app, conninfo):
     """Both hold the same queueing lock, so both cannot wait in the queue."""
     stalled_id = await _stall(conninfo, 'stalled', queueing_lock='lock-1')
+    other_stalled_id = await _stall(conninfo, 'other', queueing_lock='lock-2')
     newer_id = await record.configure(
         queueing_lock='lock-1', queue=RECORD_QUEUE
     ).defer_async(label='newer')
 
     await _run_housekeeping(worker_app, 'worker:retry_stalled_jobs')
 
-    assert _status(conninfo, stalled_id) == 'failed'
-    await _run_worker(worker_app)
-    assert ran == ['newer']
+    assert _status(conninfo, stalled_id) == 'doing'
+    assert _status(conninfo, other_stalled_id) == 'todo'
+    await _run_recorded_jobs(worker_app)
+    assert sorted(ran) == ['newer', 'other']
     assert _status(conninfo, newer_id) == 'succeeded'
 
+    await _run_housekeeping(worker_app, 'worker:retry_stalled_jobs')
+    await _run_recorded_jobs(worker_app)
 
-async def test_finished_jobs_are_removed_after_a_week(worker_app, conninfo):
+    assert ran[-1] == 'stalled'
+    assert _status(conninfo, stalled_id) == 'succeeded'
+
+
+async def test_finished_jobs_are_removed_after_three_days(worker_app, conninfo):
     old_id = await record.defer_async(label='old')
     recent_id = await record.defer_async(label='recent')
     await _run_worker(worker_app)
     _sql(
         conninfo,
-        "UPDATE procrastinate_events SET at = now() - interval '8 days' "
+        "UPDATE procrastinate_events SET at = now() - interval '4 days' "
         'WHERE job_id = %s',
         old_id,
     )
