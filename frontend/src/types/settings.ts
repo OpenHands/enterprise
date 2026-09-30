@@ -146,6 +146,15 @@ export type MarketplacePluginInfo = {
   marketplace: string; // the marketplace registration name
 };
 
+// A marketplace skill whose name collides with a built-in skill. Enablement is
+// keyed by name, so disabling the built-in also disables the marketplace skill.
+export type SkillNameConflict = {
+  name: string;
+  marketplace: string; // the marketplace registration name
+  source: string; // the marketplace registration source (e.g. github:owner/repo)
+  conflicts_with: string; // source of the built-in skill (e.g. global)
+};
+
 export type SettingsScope = "personal" | "org";
 
 export type MarketplaceRegistration = {
