@@ -39,6 +39,16 @@ const createUsage = (
   ...overrides,
 });
 
+type ModelUsage = OrgMyUsageStats["model_usage"][number];
+
+const createModelUsage = (overrides: Partial<ModelUsage> = {}): ModelUsage => ({
+  model_name: "claude-sonnet-4-5",
+  conversation_count: 1,
+  total_tokens: 0,
+  total_cost: 0,
+  ...overrides,
+});
+
 const renderYourBudget = (
   budget: OrgMyBudget = createBudget(),
   usage: OrgMyUsageStats = createUsage(),
@@ -347,6 +357,68 @@ describe("YourBudget", () => {
       const models = await screen.findByTestId("your-budget-models");
       expect(models).toHaveTextContent("claude-sonnet-4-5");
       expect(models).toHaveTextContent("$142.50");
+    });
+
+    it("should show the name, cost and share of a model when its row is hovered", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      renderYourBudget(
+        createBudget(),
+        createUsage({
+          model_usage: [
+            createModelUsage({ total_cost: 3 }),
+            createModelUsage({ model_name: "claude-opus-4", total_cost: 1 }),
+          ],
+        }),
+      );
+      const models = await screen.findByTestId("your-budget-models");
+      const rows = within(models).getAllByRole("listitem");
+
+      // Act
+      await user.hover(rows[1]);
+
+      // Assert
+      const tooltip = within(models).getByTestId("your-budget-model-tooltip");
+      expect(tooltip).toHaveTextContent("claude-opus-4");
+      expect(tooltip).toHaveTextContent("$1.00 · 25.0%");
+    });
+
+    it("should hide the model's details when the pointer leaves the list", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      renderYourBudget(
+        createBudget(),
+        createUsage({ model_usage: [createModelUsage({ total_cost: 3 })] }),
+      );
+      const models = await screen.findByTestId("your-budget-models");
+      const row = within(models).getByRole("listitem");
+      await user.hover(row);
+
+      // Act
+      await user.unhover(row);
+
+      // Assert
+      expect(
+        screen.queryByTestId("your-budget-model-tooltip"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should report a zero share for a model when nothing was spent", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      renderYourBudget(
+        createBudget(),
+        createUsage({ model_usage: [createModelUsage({ total_cost: 0 })] }),
+      );
+      const models = await screen.findByTestId("your-budget-models");
+
+      // Act
+      await user.hover(within(models).getByRole("listitem"));
+
+      // Assert
+      expect(
+        within(models).getByTestId("your-budget-model-tooltip"),
+      ).toHaveTextContent("$0.00 · 0.0%");
     });
 
     it("should link each recent conversation to its page with its cost", async () => {
