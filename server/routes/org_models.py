@@ -955,6 +955,16 @@ class OrgBudgetUserOverrideUpdate(BaseModel):
         return self
 
 
+class BudgetMaintenanceTaskResponse(BaseModel):
+    """Response for budget maintenance task trigger and polling."""
+
+    task_id: int
+    status: str  # PENDING, WORKING, COMPLETED, ERROR
+    created_at: datetime
+    updated_at: datetime | None = None
+    info: dict[str, Any] | None = None
+
+
 class OrgConversationResponse(BaseModel):
     """Response model for a single conversation in an organization."""
 
