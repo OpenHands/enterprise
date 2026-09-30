@@ -56,10 +56,13 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 )
 from openhands.app_server.sandbox.sandbox_store import (
     K8S_AGENT_SANDBOX_BACKEND,
+    LifecycleState,
     StoredSandbox,
     get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
+    mark_paused,
+    mark_running,
     require_user_id,
     search_stored_sandboxes,
 )
@@ -316,10 +319,16 @@ class K8sAgentSandboxService(SandboxService):
     # Ownership
     # ------------------------------------------------------------------
 
-    async def _get_stored_sandbox(self, sandbox_id: str) -> StoredSandbox | None:
+    async def _get_stored_sandbox(
+        self, sandbox_id: str, for_update: bool = False
+    ) -> StoredSandbox | None:
         """Get a sandbox row, or None when the caller may not see it."""
         return await get_stored_sandbox(
-            self.db_session, self.user_context, K8S_AGENT_SANDBOX_BACKEND, sandbox_id
+            self.db_session,
+            self.user_context,
+            K8S_AGENT_SANDBOX_BACKEND,
+            sandbox_id,
+            for_update=for_update,
         )
 
     # ------------------------------------------------------------------
@@ -553,6 +562,7 @@ class K8sAgentSandboxService(SandboxService):
             session_api_key=SecretStr(session_api_key),
             created_at=utc_now(),
         )
+        mark_running(stored_sandbox)
         try:
             self.db_session.add(stored_sandbox)
             await self.db_session.flush()
@@ -724,7 +734,7 @@ class K8sAgentSandboxService(SandboxService):
         boots dormant again, so the handshake is repeated with the key already
         on the row. A sandbox that is not paused is left as it is.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
         if stored_sandbox is None:
             return False
         claim = await self.k8s.get_claim(sandbox_id)
@@ -734,6 +744,13 @@ class K8sAgentSandboxService(SandboxService):
         if status == SandboxStatus.MISSING:
             return False
         if status != SandboxStatus.PAUSED:
+            # Resuming a sandbox that is already running leaves its row as it
+            # is, unless the row still says paused.
+            if (
+                status == SandboxStatus.RUNNING
+                and stored_sandbox.lifecycle_state != LifecycleState.RUNNING
+            ):
+                mark_running(stored_sandbox)
             return True
 
         # Enforce sandbox limits by cleaning up old sandboxes
@@ -754,6 +771,7 @@ class K8sAgentSandboxService(SandboxService):
             session_api_key,
             allow_initialized=True,
         )
+        mark_running(stored_sandbox)
         return True
 
     async def pause_sandbox(self, sandbox_id: str) -> bool:
@@ -762,7 +780,7 @@ class K8sAgentSandboxService(SandboxService):
         The pod is deleted. The Sandbox, its Service and its volumes stay, so
         the router path and the stored key are the same after a resume.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
         if stored_sandbox is None:
             return False
         claim = await self.k8s.get_claim(sandbox_id)
@@ -773,7 +791,10 @@ class K8sAgentSandboxService(SandboxService):
             raise SandboxError(
                 f'Sandbox {sandbox_id} has no pod yet, so there is nothing to pause'
             )
-        return await self.k8s.set_operating_mode(sandbox_name, 'Suspended')
+        if not await self.k8s.set_operating_mode(sandbox_name, 'Suspended'):
+            return False
+        mark_paused(stored_sandbox)
+        return True
 
     async def delete_sandbox(self, sandbox_id: str) -> bool:
         """Delete a sandbox and its row.
@@ -783,7 +804,7 @@ class K8sAgentSandboxService(SandboxService):
         failed delete raises ``SandboxDeleteRetryError`` and keeps the row, so
         a live sandbox is never reported as gone.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
         if stored_sandbox is None:
             return False
         try:
