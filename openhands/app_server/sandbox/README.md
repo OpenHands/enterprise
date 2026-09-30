@@ -139,14 +139,12 @@ over a webhook, and unlike the remote runtime backend there is no polling
 fallback. A sandbox started against a localhost app server runs, but its events
 never arrive.
 
-**A sandbox holds a one-hour lease by default.** E2B pauses a sandbox itself
-after the smaller of `timeout_seconds` (default 3600) and the max session
-setting, so it pauses on time even while the worker is down. The ceiling on
-`timeout_seconds` is set by the E2B plan — one hour on Hobby, 24 hours on Pro —
-and on a self hosted cluster by the operator, so a rejection saying `Timeout
-cannot be greater than 1 hours` is that cluster's configuration rather than an
-E2B limit. The lease counts from the last create or resume, and activity does
-not extend it. On expiry the sandbox pauses rather than being
+**A sandbox holds a one-hour lease by default.** `timeout_seconds` defaults to
+3600. The ceiling above that is set by the E2B plan — one hour on Hobby, 24
+hours on Pro — and on a self hosted cluster by the operator, so a rejection
+saying `Timeout cannot be greater than 1 hours` is that cluster's configuration
+rather than an E2B limit. The lease counts from the last create or resume, and
+activity does not extend it. On expiry the sandbox pauses rather than being
 destroyed (`on_timeout: pause`), parking as a memory snapshot with its
 filesystem and processes intact. It stays paused until `resume_sandbox` runs.
 The frontend calls it when the user opens the conversation or returns to its

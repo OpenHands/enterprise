@@ -231,18 +231,6 @@ class E2BSandboxService(ManagedSandboxService):
             return E2BSandboxSpecInfo(id=sandbox_spec_id, command=None)
         return _as_e2b_spec(sandbox_spec)
 
-    def _timer_seconds(self) -> int:
-        """How long E2B lets the sandbox run before it pauses it itself.
-
-        It matches the max session setting, so E2B pauses the sandbox when
-        the app would, even while the worker is down. ``timeout_seconds``
-        caps it, because E2B caps the timer by plan.
-        """
-        max_session_seconds = self.lifecycle.max_session_seconds
-        if not max_session_seconds:
-            return self.timeout_seconds
-        return min(max_session_seconds, self.timeout_seconds)
-
     def _host_url(self, e2b_sandbox_id: str, port: int) -> str:
         """URL of a port exposed by a sandbox.
 
@@ -453,7 +441,7 @@ class E2BSandboxService(ManagedSandboxService):
         try:
             sandbox = await AsyncSandbox.create(
                 template=sandbox_spec.id,
-                timeout=self._timer_seconds(),
+                timeout=self.timeout_seconds,
                 metadata=metadata,
                 # The E2B default on timeout is to kill the sandbox. Pausing
                 # parks the conversation as a snapshot instead, until
@@ -667,7 +655,7 @@ class E2BSandboxService(ManagedSandboxService):
                 # E2B has no resume(); connecting to a paused sandbox resumes
                 # it, and connecting to a running one is a no-op.
                 await AsyncSandbox.connect(
-                    sandbox_id, timeout=self._timer_seconds(), **self._api_params
+                    sandbox_id, timeout=self.timeout_seconds, **self._api_params
                 )
                 if was_paused:
                     return ProviderOutcome.CHANGED
@@ -763,10 +751,10 @@ class E2BSandboxServiceInjector(ManagedSandboxServiceInjector):
     timeout_seconds: int = Field(
         default=3600,
         description=(
-            'The longest E2B may run a sandbox, measured from the last create '
-            'or resume, before it pauses it itself. E2B pauses a sandbox after '
-            'the smaller of this and the max session setting. The ceiling is '
-            'set by the E2B plan, or by the operator on a self hosted cluster.'
+            'Sandbox lifetime in seconds, measured from the last create or '
+            'resume. On expiry the sandbox is paused rather than killed. The '
+            'ceiling is set by the E2B plan, or by the operator on a self '
+            'hosted cluster.'
         ),
     )
     max_num_sandboxes: int = Field(
