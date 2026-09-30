@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from procrastinate import App, JobContext, RetryStrategy
 
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.task_queue import watermark
 from server.task_queue.config import MAX_ATTEMPTS
 from server.task_queue.jobs import JOBS, ScheduledJob
 
@@ -35,6 +36,7 @@ class Outcome(str, enum.Enum):
 
     EXECUTED = 'executed'
     SKIPPED_STALE = 'skipped_stale'
+    SKIPPED_WATERMARK = 'skipped_watermark'
     FAILED = 'failed'
 
 
@@ -73,6 +75,12 @@ async def run_occurrence(
     context: JobContext, job: ScheduledJob, timestamp: int
 ) -> Outcome:
     started = time.monotonic()
+    occurrence = datetime.fromtimestamp(timestamp, UTC)
+    connector = context.app.connector
+    mark = await watermark.load(connector, job)
+    if mark is not None and mark.covers(job, occurrence):
+        _log_outcome(job, context, timestamp, Outcome.SKIPPED_WATERMARK, started)
+        return Outcome.SKIPPED_WATERMARK
     if job.skip_superseded and await _superseded(context, job, timestamp):
         _log_outcome(job, context, timestamp, Outcome.SKIPPED_STALE, started)
         return Outcome.SKIPPED_STALE
@@ -82,6 +90,13 @@ async def run_occurrence(
         _log_outcome(job, context, timestamp, Outcome.FAILED, started)
         raise
     _log_outcome(job, context, timestamp, Outcome.EXECUTED, started)
+    try:
+        await watermark.advance(connector, job, occurrence)
+    except Exception:
+        # Advisory: a stale watermark only means this occurrence may run again.
+        logger.exception(
+            'task_queue.watermark_advance_failed', extra={'task_queue_job': job.name}
+        )
     return Outcome.EXECUTED
 
 

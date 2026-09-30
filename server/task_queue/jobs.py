@@ -25,6 +25,10 @@ class ScheduledJob:
     # running or done. True only for scans where a later run covers everything
     # an earlier one would have done.
     skip_superseded: bool
+    # A single watermark is valid only if a later run supersedes an earlier
+    # one: true for catch-up scans over outstanding state, not for
+    # occurrence-specific work. Declared per job so a new job cannot inherit it.
+    single_watermark: bool
 
     @property
     def task_name(self) -> str:
@@ -63,6 +67,7 @@ JOBS: tuple[ScheduledJob, ...] = (
         default_schedule='0 3 * * *',
         module='sync.clean_app_conversation_start_tasks',
         skip_superseded=True,
+        single_watermark=True,
     ),
     ScheduledJob(
         name='clean_proactive_convo_table',
@@ -70,6 +75,7 @@ JOBS: tuple[ScheduledJob, ...] = (
         default_schedule='0 2 * * *',
         module='sync.clean_proactive_convo_table',
         skip_superseded=True,
+        single_watermark=True,
     ),
     ScheduledJob(
         name='enrich_user_interaction_data',
@@ -77,6 +83,7 @@ JOBS: tuple[ScheduledJob, ...] = (
         default_schedule='*/10 * * * *',
         module='sync.enrich_user_interaction_data',
         skip_superseded=False,
+        single_watermark=True,
     ),
 )
 
