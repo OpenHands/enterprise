@@ -1,6 +1,7 @@
 /* eslint-disable i18next/no-literal-string */
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useMutation } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
 import {
   ConversationsTab,
@@ -15,11 +16,19 @@ import {
   formatCost,
   rowsToCsv,
 } from "#/components/features/admin-dashboard/usage-dashboard-utils";
+import { organizationService } from "#/api/organization-service/organization-service.api";
 import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
-import { useSuperAdminUsage } from "#/hooks/query/use-super-admin-usage";
+import {
+  useInvalidateSuperAdminUsage,
+  useSuperAdminUsage,
+} from "#/hooks/query/use-super-admin-usage";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 import { formControlFilterTriggerClassName } from "#/utils/form-control-classes";
+import {
+  displayErrorToast,
+  displaySuccessToast,
+} from "#/utils/custom-toast-handlers";
 
 const TABS = ["overview", "users", "models", "conversations"] as const;
 type TabType = (typeof TABS)[number];
@@ -139,11 +148,13 @@ function filterConversations(
   {
     search,
     status,
+    sandboxStatus,
     sortBy,
     sortOrder,
   }: {
     search: string;
     status: string;
+    sandboxStatus: string;
     sortBy: string;
     sortOrder: string;
   },
@@ -158,7 +169,10 @@ function filterConversations(
     const matchesStatus =
       status.length === 0 ||
       (row.execution_status ?? "").toLowerCase() === status.toLowerCase();
-    return matchesSearch && matchesStatus;
+    const matchesSandbox =
+      sandboxStatus.length === 0 ||
+      (row.sandbox_status ?? "").toLowerCase() === sandboxStatus.toLowerCase();
+    return matchesSearch && matchesStatus && matchesSandbox;
   });
 
   const direction = sortOrder === "asc" ? 1 : -1;
@@ -201,6 +215,7 @@ export function SuperAdminDashboard() {
   const [pendingStop, setPendingStop] = useState<{
     id: string;
     title: string | null;
+    orgId?: string;
   } | null>(null);
 
   const {
@@ -209,6 +224,28 @@ export function SuperAdminDashboard() {
     isLoading: usageLoading,
     isError: usageError,
   } = useSuperAdminUsage({ selectedOrgIds, timeWindow });
+  const invalidateUsage = useInvalidateSuperAdminUsage();
+
+  const stopConversation = useMutation({
+    mutationFn: ({
+      orgId,
+      conversationId,
+    }: {
+      orgId: string;
+      conversationId: string;
+    }) =>
+      organizationService.stopConversation({
+        orgId,
+        conversationId,
+      }),
+    onError: () => {
+      displayErrorToast("Failed to stop conversation");
+    },
+    onSuccess: () => {
+      displaySuccessToast("Conversation stopped");
+      invalidateUsage();
+    },
+  });
   const comparing = selectedOrgIds.length > 0;
   const timeWindowLabel =
     timeWindow === "ytd" ? "YTD" : timeWindow.toUpperCase();
@@ -292,11 +329,13 @@ export function SuperAdminDashboard() {
       filterConversations(conversationRows, {
         search: conversationSearch,
         status: conversationStatus,
+        sandboxStatus: conversationSandboxStatus,
         sortBy: conversationSortBy,
         sortOrder: conversationSortOrder,
       }),
     [
       conversationRows,
+      conversationSandboxStatus,
       conversationSearch,
       conversationSortBy,
       conversationSortOrder,
@@ -355,18 +394,30 @@ export function SuperAdminDashboard() {
     : "Stop this conversation? This will cancel any in-progress agent run.";
 
   const confirmStop = () => {
-    if (!pendingStop) return;
+    if (!pendingStop?.orgId) {
+      displayErrorToast("Failed to stop conversation");
+      setPendingStop(null);
+      return;
+    }
     const conversationId = pendingStop.id;
+    const { orgId } = pendingStop;
     setPendingStop(null);
     setStoppingIds((current) => new Set(current).add(conversationId));
-    window.setTimeout(() => {
-      setStoppingIds((current) => {
-        const next = new Set(current);
-        next.delete(conversationId);
-        return next;
-      });
-      setStoppedIds((current) => new Set(current).add(conversationId));
-    }, 400);
+    stopConversation.mutate(
+      { orgId, conversationId },
+      {
+        onSuccess: () => {
+          setStoppedIds((current) => new Set(current).add(conversationId));
+        },
+        onSettled: () => {
+          setStoppingIds((current) => {
+            const next = new Set(current);
+            next.delete(conversationId);
+            return next;
+          });
+        },
+      },
+    );
   };
 
   const scopeLabel = selectedOrgLabel(selectedOrgIds, orgs, t);
@@ -483,7 +534,7 @@ export function SuperAdminDashboard() {
           conversationPerPage={conversationPerPage}
           conversationTotalPages={conversationTotalPages}
           conversationTotalItems={conversationTotalItems}
-          conversationsLoading={false}
+          conversationsLoading={usageLoading}
           conversationsData={{
             items: pagedConversations,
             total_pages: conversationTotalPages,
