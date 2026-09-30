@@ -24,9 +24,9 @@ from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.e2b_sandbox_spec_service import (
     E2BSandboxSpecInfo,
 )
-from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxService,
+    ManagedSandboxServiceInjector,
     ProviderOutcome,
 )
 from openhands.app_server.sandbox.sandbox_models import (
@@ -41,8 +41,6 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
-    RUNTIME_IDLE_TIMEOUT_VARIABLE,
-    ManagedSandboxServiceInjector,
     SandboxService,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
@@ -141,7 +139,6 @@ class E2BSandboxService(ManagedSandboxService):
     backend: ClassVar[str] = E2B_BACKEND
 
     sandbox_spec_service: SandboxSpecService
-    httpx_client: httpx.AsyncClient
     api_key: str
     domain: str
     timeout_seconds: int
@@ -152,9 +149,6 @@ class E2BSandboxService(ManagedSandboxService):
     api_url: str | None = None
     web_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
-    lifecycle: SandboxLifecycleSettings = field(
-        default_factory=SandboxLifecycleSettings
-    )
 
     @property
     def _api_params(self) -> dict[str, Any]:
@@ -608,9 +602,7 @@ class E2BSandboxService(ManagedSandboxService):
                 **get_agent_server_env(),
             },
         }
-        idle_seconds = self.lifecycle.idle_seconds
-        if idle_seconds:
-            body['env'][RUNTIME_IDLE_TIMEOUT_VARIABLE] = str(idle_seconds)
+        body['env'].update(self._lifecycle_env())
 
         cors_origins = []
         if self.web_url:

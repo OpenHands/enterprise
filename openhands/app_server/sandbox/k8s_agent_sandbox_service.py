@@ -31,9 +31,9 @@ from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.k8s_agent_sandbox_spec_service import (
     K8sAgentSandboxSpecInfo,
 )
-from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxService,
+    ManagedSandboxServiceInjector,
     ProviderOutcome,
 )
 from openhands.app_server.sandbox.sandbox_models import (
@@ -48,8 +48,6 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
-    RUNTIME_IDLE_TIMEOUT_VARIABLE,
-    ManagedSandboxServiceInjector,
     SandboxService,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
@@ -303,7 +301,6 @@ class K8sAgentSandboxService(ManagedSandboxService):
     backend: ClassVar[str] = K8S_AGENT_SANDBOX_BACKEND
 
     sandbox_spec_service: SandboxSpecService
-    httpx_client: httpx.AsyncClient
     k8s: AgentSandboxClient
     router_url: str
     claim_timeout_seconds: int
@@ -312,9 +309,6 @@ class K8sAgentSandboxService(ManagedSandboxService):
     web_url: str | None = None
     webhook_base_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
-    lifecycle: SandboxLifecycleSettings = field(
-        default_factory=SandboxLifecycleSettings
-    )
 
     # ------------------------------------------------------------------
     # Info mapping
@@ -686,9 +680,7 @@ class K8sAgentSandboxService(ManagedSandboxService):
                 **get_agent_server_env(),
             },
         }
-        idle_seconds = self.lifecycle.idle_seconds
-        if idle_seconds:
-            body['env'][RUNTIME_IDLE_TIMEOUT_VARIABLE] = str(idle_seconds)
+        body['env'].update(self._lifecycle_env())
 
         cors_origins = []
         if self.web_url:

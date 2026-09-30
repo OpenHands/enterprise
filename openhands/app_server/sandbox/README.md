@@ -9,6 +9,9 @@ Since agents can do things that may harm your system, they are typically run ins
 ## Key Components
 
 - **SandboxService**: Abstract service for sandbox lifecycle management
+- **ManagedSandboxService**: The base for the Docker, E2B and k8s agent-sandbox
+  services. It owns each sandbox's row, and each backend implements only the
+  provider calls.
 - **DockerSandboxService**: Docker-based sandbox implementation
 - **RemoteSandboxService**: Runtime-API-based sandbox implementation
 - **E2BSandboxService**: E2B microVM-based sandbox implementation
@@ -63,8 +66,9 @@ The agent server gets `OH_RUNTIME_IDLE_TIMEOUT_SECONDS` set to `idle_seconds`,
 so that a long foreground command times out before the sandbox looks idle.
 
 The rules read three columns of the sandbox table: `lifecycle_state`,
-`state_changed_at` and `last_active_at`. Start, resume and pause keep them
-current, and lock the row while they change the sandbox.
+`state_changed_at` and `last_active_at`. `ManagedSandboxService` keeps them
+current. Its resume, pause and delete lock the row, call the backend's
+provider hook, and then update the row.
 
 ### The worker
 
