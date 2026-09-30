@@ -220,12 +220,7 @@ def _run_migrations(server: PostgresServer, database: str) -> None:
     run_alembic(server, database, 'upgrade', 'head')
 
 
-def run_alembic(
-    server: PostgresServer,
-    database: str,
-    *args: str,
-    extra_env: dict[str, str] | None = None,
-) -> None:
+def run_alembic(server: PostgresServer, database: str, *args: str) -> None:
     """Run ``alembic <args>`` against ``database``."""
     # Run alembic out of process: importing ``migrations/env.py`` here would
     # reconfigure logging for the whole pytest session (alembic.ini sets the
@@ -247,8 +242,6 @@ def run_alembic(
         WEB_HOST='',
     )
     env.pop('STRIPE_API_KEY', None)
-    env.pop('TASK_QUEUE_DB_USER', None)
-    env.update(extra_env or {})
 
     result = subprocess.run(
         [sys.executable, '-m', 'alembic', '-c', str(ALEMBIC_INI), *args],

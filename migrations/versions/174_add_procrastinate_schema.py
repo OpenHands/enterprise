@@ -13,9 +13,6 @@ files as new revisions; ``post`` files wait until the rollback window closes.
 
 The script contains ``:`` and ``%``, so it runs on the raw driver cursor with no
 parameters rather than through SQLAlchemy's parameter parsing.
-
-The task queue role's grants live in ``migrations/env.py`` and run on every
-migration, so a role created after this revision was applied still gets them.
 """
 
 import re

@@ -16,7 +16,7 @@ logging.getLogger('sqlalchemy.engine.Engine').setLevel(logging.WARNING)
 
 from alembic import context  # noqa: E402
 from google.cloud.sql.connector import Connector  # noqa: E402
-from sqlalchemy import Connection, Engine, create_engine, text  # noqa: E402
+from sqlalchemy import Engine, create_engine, text  # noqa: E402
 from sqlalchemy.pool import NullPool  # noqa: E402
 
 from openhands.db.ssl import build_db_url_query, build_pg8000_connect_args  # noqa: E402
@@ -47,11 +47,6 @@ CREATE_DATABASE_IF_MISSING = os.getenv(
 ).lower() in ('true', '1')
 # CREATE DATABASE runs from here. Every PostgreSQL server has this database.
 MAINTENANCE_DB_NAME = 'postgres'
-
-# The role the task queue worker connects as (server/task_queue/config.py). It
-# must already exist. It gets DML on the queue tables and nothing else, so a
-# worker cannot change the schema.
-TASK_QUEUE_DB_USER = os.getenv('TASK_QUEUE_DB_USER', '').strip()
 
 logger = logging.getLogger('alembic.env')
 
@@ -122,33 +117,6 @@ def create_database_if_missing() -> None:
             connection.exec_driver_sql(f'CREATE DATABASE {name}')
 
 
-def grant_task_queue_role(connection: Connection) -> None:
-    """Grant TASK_QUEUE_DB_USER DML on every Procrastinate table and sequence.
-
-    Runs after every migration run, not in the revision that creates the tables:
-    the role may be set up after that revision was applied, and later
-    Procrastinate revisions add tables and sequences of their own.
-    """
-    rows = connection.execute(
-        text(
-            'SELECT relkind, quote_ident(relname) FROM pg_class'
-            ' WHERE relnamespace = current_schema()::regnamespace'
-            " AND relkind IN ('r', 'S') AND starts_with(relname, 'procrastinate_')"
-        )
-    ).all()
-    tables = ', '.join(name for kind, name in rows if kind == 'r')
-    sequences = ', '.join(name for kind, name in rows if kind == 'S')
-    role = connection.dialect.identifier_preparer.quote(TASK_QUEUE_DB_USER)
-    if tables:
-        connection.exec_driver_sql(
-            f'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {tables} TO {role}'
-        )
-    if sequences:
-        connection.exec_driver_sql(
-            f'GRANT USAGE, SELECT ON SEQUENCE {sequences} TO {role}'
-        )
-
-
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
@@ -212,8 +180,6 @@ def run_migrations_online() -> None:
 
         with context.begin_transaction():
             context.run_migrations()
-            if TASK_QUEUE_DB_USER:
-                grant_task_queue_role(connection)
 
 
 if context.is_offline_mode():
