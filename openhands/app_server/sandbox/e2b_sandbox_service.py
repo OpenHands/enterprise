@@ -49,10 +49,13 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 )
 from openhands.app_server.sandbox.sandbox_store import (
     E2B_BACKEND,
+    LifecycleState,
     StoredSandbox,
     get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
+    mark_paused,
+    mark_running,
     require_user_id,
     search_stored_sandboxes,
 )
@@ -169,10 +172,16 @@ class E2BSandboxService(SandboxService):
     # Ownership
     # ------------------------------------------------------------------
 
-    async def _get_stored_sandbox(self, sandbox_id: str) -> StoredSandbox | None:
+    async def _get_stored_sandbox(
+        self, sandbox_id: str, for_update: bool = False
+    ) -> StoredSandbox | None:
         """Get a sandbox row, or None when the caller may not see it."""
         return await get_stored_sandbox(
-            self.db_session, self.user_context, E2B_BACKEND, sandbox_id
+            self.db_session,
+            self.user_context,
+            E2B_BACKEND,
+            sandbox_id,
+            for_update=for_update,
         )
 
     async def _get_info(self, e2b_sandbox_id: str) -> E2BSandboxInfo | None:
@@ -481,6 +490,7 @@ class E2BSandboxService(SandboxService):
             session_api_key=SecretStr(session_api_key),
             created_at=utc_now(),
         )
+        mark_running(stored_sandbox)
         try:
             # E2B assigns the id, so the row can only be written after create.
             # A sandbox whose row fails to write is killed with the rest.
@@ -651,9 +661,13 @@ class E2BSandboxService(SandboxService):
         # Enforce sandbox limits by cleaning up old sandboxes
         await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
 
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
         if stored_sandbox is None:
             return False
+        info = await self._get_info(sandbox_id)
+        if info is None:
+            return False
+        was_paused = info.state == SandboxState.PAUSED
         for attempt in range(1, self.resume_retries + 1):
             try:
                 # E2B has no resume(); connecting to a paused sandbox resumes
@@ -661,6 +675,13 @@ class E2BSandboxService(SandboxService):
                 await AsyncSandbox.connect(
                     sandbox_id, timeout=self.timeout_seconds, **self._api_params
                 )
+                # Resuming a sandbox that is already running leaves its row
+                # as it is, unless the row still says paused.
+                if (
+                    was_paused
+                    or stored_sandbox.lifecycle_state != LifecycleState.RUNNING
+                ):
+                    mark_running(stored_sandbox)
                 return True
             except AuthenticationException as exc:
                 raise _auth_error(exc) from exc
@@ -684,23 +705,25 @@ class E2BSandboxService(SandboxService):
         The stored key is kept, because the sandbox resumes holding the same
         key (see ``resume_sandbox``).
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
         if stored_sandbox is None:
             return False
         info = await self._get_info(sandbox_id)
         if info is None:
             return False
-        if info.state == SandboxState.PAUSED:
-            return True
-        try:
-            # A False result means the sandbox was already paused, which the
-            # caller asked for either way.
-            await AsyncSandbox.pause(sandbox_id, **self._api_params)
-        except AuthenticationException as exc:
-            raise _auth_error(exc) from exc
-        except SandboxException:
-            _logger.exception(f'Error pausing sandbox {sandbox_id}', stack_info=True)
-            return False
+        if info.state != SandboxState.PAUSED:
+            try:
+                # A False result means the sandbox was already paused, which
+                # the caller asked for either way.
+                await AsyncSandbox.pause(sandbox_id, **self._api_params)
+            except AuthenticationException as exc:
+                raise _auth_error(exc) from exc
+            except SandboxException:
+                _logger.exception(
+                    f'Error pausing sandbox {sandbox_id}', stack_info=True
+                )
+                return False
+        mark_paused(stored_sandbox)
         return True
 
     async def delete_sandbox(self, sandbox_id: str) -> bool:
@@ -710,7 +733,7 @@ class E2BSandboxService(SandboxService):
         see it. A transient E2B failure raises ``SandboxDeleteRetryError`` and
         keeps the row, so a live sandbox is never reported as gone.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
         if stored_sandbox is None:
             return False
         try:

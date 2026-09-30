@@ -44,10 +44,13 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 )
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
+    LifecycleState,
     StoredSandbox,
     get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
+    mark_paused,
+    mark_running,
     require_user_id,
     search_stored_sandboxes,
 )
@@ -130,10 +133,16 @@ class DockerSandboxService(SandboxService):
     use_host_network: bool = False
     kvm_enabled: bool = False
 
-    async def _get_stored_sandbox(self, sandbox_id: str) -> StoredSandbox | None:
+    async def _get_stored_sandbox(
+        self, sandbox_id: str, for_update: bool = False
+    ) -> StoredSandbox | None:
         """Get a sandbox row, or None when the caller may not see it."""
         return await get_stored_sandbox(
-            self.db_session, self.user_context, DOCKER_BACKEND, sandbox_id
+            self.db_session,
+            self.user_context,
+            DOCKER_BACKEND,
+            sandbox_id,
+            for_update=for_update,
         )
 
     def _managed_containers_by_name(self) -> dict[str, object]:
@@ -527,6 +536,7 @@ class DockerSandboxService(SandboxService):
             session_api_key_hash=hash_session_api_key(session_api_key),
             created_at=utc_now(),
         )
+        mark_running(stored_sandbox)
         self.db_session.add(stored_sandbox)
         await self.db_session.flush()
 
@@ -596,7 +606,7 @@ class DockerSandboxService(SandboxService):
         # Enforce sandbox limits by cleaning up old sandboxes
         await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
 
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
         if stored_sandbox is None:
             return False
         container = self._get_container(sandbox_id)
@@ -608,9 +618,14 @@ class DockerSandboxService(SandboxService):
                 container.unpause()
             elif container.status == 'exited':
                 container.start()
-            return True
+            elif stored_sandbox.lifecycle_state == LifecycleState.RUNNING:
+                # Resuming a sandbox that is already running leaves its row
+                # as it is.
+                return True
         except (NotFound, APIError):
             return False
+        mark_running(stored_sandbox)
+        return True
 
     async def pause_sandbox(self, sandbox_id: str) -> bool:
         """Pause a running sandbox.
@@ -618,7 +633,7 @@ class DockerSandboxService(SandboxService):
         The key hash is kept. The container has the same key after resume, so
         clearing the hash would not revoke anything.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
         if stored_sandbox is None:
             return False
         container = self._get_container(sandbox_id)
@@ -628,9 +643,13 @@ class DockerSandboxService(SandboxService):
         try:
             if container.status == 'running':
                 container.pause()
-            return True
+            elif container.status not in ('paused', 'exited'):
+                # Starting or dead: there is nothing to pause.
+                return True
         except (NotFound, APIError):
             return False
+        mark_paused(stored_sandbox)
+        return True
 
     async def delete_sandbox(self, sandbox_id: str) -> bool:
         """Delete a sandbox and its row.
@@ -643,7 +662,7 @@ class DockerSandboxService(SandboxService):
         ``SandboxDeleteRetryError`` and keeps the row, so a container that is
         still running is never reported as gone.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
         if stored_sandbox is None:
             return False
 
