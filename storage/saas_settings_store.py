@@ -20,6 +20,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
 )
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import resolve_agent_profile
+from openhands.sdk.tool.defaults import RETIRED_TOOL_SWITCHES
 from server.auth.token_manager import TokenManager
 from server.constants import (
     LITE_LLM_API_URL,
@@ -410,6 +411,12 @@ class SaasSettingsStore(SettingsStore):
         org_agent_settings = OrgStore.get_agent_settings_from_org(org)
         member_agent_settings_diff = dict(org_member.agent_settings_diff)
         member_agent_settings_diff.pop('mcp_config', None)
+        # Unversioned legacy rows stored `[]` meaning the standard set.
+        if (
+            'schema_version' not in member_agent_settings_diff
+            and member_agent_settings_diff.get('tools') == []
+        ):
+            del member_agent_settings_diff['tools']
         member_mcp_config = org_member.effective_mcp_config
 
         kwargs = {
@@ -846,8 +853,8 @@ class SaasSettingsStore(SettingsStore):
 
             member_mcp_config = org_member.effective_mcp_config
             member_agent_settings_diff = dict(org_member.agent_settings_diff)
-            for private_key in MEMBER_PRIVATE_AGENT_KEYS:
-                member_agent_settings_diff.pop(private_key, None)
+            for stale_key in (*MEMBER_PRIVATE_AGENT_KEYS, *RETIRED_TOOL_SWITCHES):
+                member_agent_settings_diff.pop(stale_key, None)
             # Single assignment so SQLAlchemy tracks the JSON column change.
             org_member.agent_settings_diff = deep_merge(
                 member_agent_settings_diff,

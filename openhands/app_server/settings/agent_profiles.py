@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Final, TypeAlias
+from typing import Any, Final, Self, TypeAlias
 from uuid import UUID
 
 from pydantic import (
@@ -37,7 +37,6 @@ from pydantic import (
     PrivateAttr,
     SerializationInfo,
     field_serializer,
-    field_validator,
     model_validator,
 )
 
@@ -89,30 +88,11 @@ class AgentProfiles(BaseModel):
 
     # ── Validation ─────────────────────────────────────────────────
 
-    @field_validator('profiles', mode='before')
-    @classmethod
-    def _skip_invalid_profiles(cls, value: Any) -> Any:
-        """Best-effort per-profile load: skip entries that fail to validate.
-
-        Guards against schema drift — one stored profile going invalid after an
-        SDK upgrade must not fail the whole ``Settings`` load. Delegates parsing
-        to the SDK's :func:`validate_agent_profile` (never re-validated here).
-        """
-        if not isinstance(value, dict):
-            return value
-        valid: dict[str, Any] = {}
-        for key, raw in value.items():
-            try:
-                valid[key] = validate_agent_profile(raw)
-            except Exception as exc:  # noqa: BLE001 - schema drift is non-fatal
-                logger.warning('Skipping invalid agent profile %r: %s', key, exc)
-        return valid
-
     @model_validator(mode='wrap')
     @classmethod
     def _keep_unreadable_profiles(
-        cls, data: Any, handler: ModelWrapValidatorHandler[AgentProfiles]
-    ) -> AgentProfiles:
+        cls, data: Any, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
         unreadable: dict[str, Any] = {}
         if isinstance(data, dict) and isinstance(data.get('profiles'), dict):
             readable: dict[str, Any] = {}
@@ -148,6 +128,12 @@ class AgentProfiles(BaseModel):
             if profile.name == name:
                 return pid, profile
         return None
+
+    def _name_taken_by_unreadable(self, name: str) -> bool:
+        return any(
+            isinstance(raw, dict) and raw.get('name') == name
+            for raw in self._unreadable_profiles.values()
+        )
 
     # ── AgentProfileStoreProtocol ──────────────────────────────────
 
@@ -196,12 +182,14 @@ class AgentProfiles(BaseModel):
         boundary regardless (parity with ``org.llm_profiles``).
         """
         pid = str(profile.id)
-        if (
-            max_profiles is not None
-            and pid not in self.profiles
-            and len(self.profiles) >= max_profiles
-        ):
-            raise ProfileLimitExceeded(f'Profile limit reached ({max_profiles}).')
+        if pid not in self.profiles:
+            if self._name_taken_by_unreadable(profile.name):
+                raise FileExistsError(f'Agent profile {profile.name!r} already exists')
+            if (
+                max_profiles is not None
+                and len(self.profiles) + len(self._unreadable_profiles) >= max_profiles
+            ):
+                raise ProfileLimitExceeded(f'Profile limit reached ({max_profiles}).')
         self.profiles[pid] = profile
 
     def load(self, name: str) -> _AgentProfile:
@@ -227,7 +215,9 @@ class AgentProfiles(BaseModel):
             raise FileNotFoundError(f'Agent profile {old_name!r} not found')
         if old_name == new_name:
             return
-        if self._entry_for_name(new_name) is not None:
+        if self._entry_for_name(new_name) is not None or self._name_taken_by_unreadable(
+            new_name
+        ):
             raise FileExistsError(f'Agent profile {new_name!r} already exists')
         pid, profile = entry
         # Preserve the id (and thus the slot + active pointer): rename is a

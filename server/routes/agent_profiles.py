@@ -298,6 +298,11 @@ async def save_agent_profile(
                     'Delete a profile before saving a new one.'
                 ),
             )
+        except FileExistsError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Agent profile '{name}' already exists",
+            )
 
     logger.info("Saved agent profile '%s' for org %s", name, effective_org_id)
     return AgentProfileMutationResponse(

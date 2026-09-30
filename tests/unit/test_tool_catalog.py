@@ -28,8 +28,6 @@ async def test_catalog_skips_usability_probes(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_catalog_lists_registered_tools():
-    import openhands.agent_server.tool_router  # noqa: F401
-
     names = {t['name'] for t in (await get_tool_catalog(user_id='user'))['tools']}
 
     assert {'terminal', 'file_editor', 'task_tool_set', 'switch_llm'} <= names

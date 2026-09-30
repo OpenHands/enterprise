@@ -15,7 +15,6 @@ os.environ['SERVE_FRONTEND'] = 'false'
 from fastapi import Request, status  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 
-import openhands.agent_server.tool_router  # noqa: E402, F401
 from openhands.app_server.app import app as base_app  # noqa: E402
 from openhands.app_server.middleware import (  # noqa: E402
     CacheControlMiddleware,

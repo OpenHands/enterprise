@@ -142,6 +142,50 @@ class TestAgentProfilesContainer:
         )
         assert store.list_summaries() == []
 
+    @staticmethod
+    def _with_unreadable(name: str) -> AgentProfiles:
+        return AgentProfiles.model_validate(
+            {
+                'profiles': {
+                    str(uuid.uuid4()): {
+                        'name': name,
+                        'agent_kind': 'openhands',
+                        'schema_version': 99,
+                    }
+                }
+            }
+        )
+
+    def test_save_rejects_the_name_of_an_unreadable_profile(self):
+        store = self._with_unreadable('future')
+        with pytest.raises(FileExistsError):
+            save_profile_preserving_identity(
+                store, OpenHandsAgentProfile(name='future', llm_profile_ref='gpt')
+            )
+
+    def test_rename_rejects_the_name_of_an_unreadable_profile(self):
+        store = self._with_unreadable('future')
+        save_profile_preserving_identity(
+            store, OpenHandsAgentProfile(name='a', llm_profile_ref='gpt')
+        )
+        with pytest.raises(FileExistsError):
+            store.rename('a', 'future')
+
+    def test_limit_counts_unreadable_profiles(self):
+        from openhands.sdk.profiles import ProfileLimitExceeded
+
+        store = self._with_unreadable('future')
+        for i in range(MAX_AGENT_PROFILES - 1):
+            save_profile_preserving_identity(
+                store, OpenHandsAgentProfile(name=f'p{i}', llm_profile_ref='gpt')
+            )
+        with pytest.raises(ProfileLimitExceeded):
+            save_profile_preserving_identity(
+                store,
+                OpenHandsAgentProfile(name='over', llm_profile_ref='gpt'),
+                max_profiles=MAX_AGENT_PROFILES,
+            )
+
 
 def test_load_agent_profiles_defaults_empty_and_degrades():
     org = MagicMock(spec=Org)
