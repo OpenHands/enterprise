@@ -450,9 +450,9 @@ class E2BSandboxService(SandboxService):
                 timeout=self.timeout_seconds,
                 metadata=metadata,
                 # The E2B default on timeout is to kill the sandbox. Pausing
-                # parks an idle conversation as a snapshot instead, and
-                # auto_resume wakes it on the next inbound request.
-                lifecycle={'on_timeout': 'pause', 'auto_resume': True},
+                # parks the conversation as a snapshot instead, until
+                # resume_sandbox wakes it.
+                lifecycle={'on_timeout': 'pause'},
                 **self._api_params,
             )
         except AuthenticationException as exc:
@@ -681,9 +681,8 @@ class E2BSandboxService(SandboxService):
     async def pause_sandbox(self, sandbox_id: str) -> bool:
         """Pause a running sandbox.
 
-        The stored key is kept. ``auto_resume`` wakes the sandbox on the next
-        inbound request without going through ``resume_sandbox``, so the key
-        has to keep resolving.
+        The stored key is kept, because the sandbox resumes holding the same
+        key (see ``resume_sandbox``).
         """
         stored_sandbox = await self._get_stored_sandbox(sandbox_id)
         if stored_sandbox is None:
