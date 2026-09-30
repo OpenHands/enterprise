@@ -59,8 +59,8 @@ class StoredSandbox(Base):
 
     ``lifecycle_state``, ``state_changed_at`` and ``last_active_at`` record
     when a sandbox last started, resumed or paused, and when its agent was last
-    seen working. Every backend except remote keeps them current through
-    ``mark_running`` and ``mark_paused``. runtime-api tracks its own.
+    seen working. ``ManagedSandboxService`` keeps them current for every
+    backend except remote. runtime-api tracks its own.
     """
 
     __tablename__ = 'v1_remote_sandbox'

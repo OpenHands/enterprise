@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from posixpath import dirname
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, ClassVar
 
 import aiohttp
 import base62
@@ -26,12 +26,14 @@ from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
 from kubernetes_asyncio.client import ApiException
 from kubernetes_asyncio.config import ConfigException
 from pydantic import Field, SecretStr
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.k8s_agent_sandbox_spec_service import (
     K8sAgentSandboxSpecInfo,
+)
+from openhands.app_server.sandbox.managed_sandbox_service import (
+    ManagedSandboxService,
+    ProviderOutcome,
 )
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
@@ -56,18 +58,13 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 )
 from openhands.app_server.sandbox.sandbox_store import (
     K8S_AGENT_SANDBOX_BACKEND,
-    LifecycleState,
     StoredSandbox,
-    get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
-    mark_paused,
-    mark_running,
     require_user_id,
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.user.user_context import UserContext
 
 _logger = logging.getLogger(__name__)
 
@@ -280,7 +277,7 @@ class AgentSandboxClient:
 
 
 @dataclass
-class K8sAgentSandboxService(SandboxService):
+class K8sAgentSandboxService(ManagedSandboxService):
     """Sandbox service backed by kubernetes-sigs/agent-sandbox warm pools.
 
     The operator creates a SandboxTemplate and a SandboxWarmPool ahead of time.
@@ -301,35 +298,18 @@ class K8sAgentSandboxService(SandboxService):
     links, so the template passes it in as ``OH_VSCODE_BASE_PATH``.
     """
 
+    backend: ClassVar[str] = K8S_AGENT_SANDBOX_BACKEND
+
     sandbox_spec_service: SandboxSpecService
-    user_context: UserContext
     httpx_client: httpx.AsyncClient
-    db_session: AsyncSession
     k8s: AgentSandboxClient
     router_url: str
-    max_num_sandboxes: int
     claim_timeout_seconds: int
     init_timeout_seconds: int
     poll_interval: float
     web_url: str | None = None
     webhook_base_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
-
-    # ------------------------------------------------------------------
-    # Ownership
-    # ------------------------------------------------------------------
-
-    async def _get_stored_sandbox(
-        self, sandbox_id: str, for_update: bool = False
-    ) -> StoredSandbox | None:
-        """Get a sandbox row, or None when the caller may not see it."""
-        return await get_stored_sandbox(
-            self.db_session,
-            self.user_context,
-            K8S_AGENT_SANDBOX_BACKEND,
-            sandbox_id,
-            for_update=for_update,
-        )
 
     # ------------------------------------------------------------------
     # Info mapping
@@ -553,16 +533,13 @@ class K8sAgentSandboxService(SandboxService):
         )
 
         session_api_key = base62.encodebytes(os.urandom(32))
-        stored_sandbox = StoredSandbox(
+        stored_sandbox = self._new_stored_sandbox(
             id=claim_name,
-            backend=K8S_AGENT_SANDBOX_BACKEND,
             created_by_user_id=user_id,
             sandbox_spec_id=sandbox_spec.id,
             session_api_key_hash=hash_session_api_key(session_api_key),
             session_api_key=SecretStr(session_api_key),
-            created_at=utc_now(),
         )
-        mark_running(stored_sandbox)
         try:
             self.db_session.add(stored_sandbox)
             await self.db_session.flush()
@@ -727,41 +704,32 @@ class K8sAgentSandboxService(SandboxService):
 
         return body
 
-    async def resume_sandbox(self, sandbox_id: str) -> bool:
-        """Resume a paused sandbox.
+    async def _resume_at_provider(
+        self, stored_sandbox: StoredSandbox
+    ) -> ProviderOutcome:
+        """Resume the Sandbox, then repeat the handshake.
 
         The Sandbox gets a new pod on the same volumes, and its agent server
         boots dormant again, so the handshake is repeated with the key already
-        on the row. A sandbox that is not paused is left as it is.
+        on the row.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
-        if stored_sandbox is None:
-            return False
-        claim = await self.k8s.get_claim(sandbox_id)
+        claim = await self.k8s.get_claim(stored_sandbox.id)
         if claim is None:
-            return False
+            return ProviderOutcome.FAILED
         status = _claim_status(claim)
         if status == SandboxStatus.MISSING:
-            return False
+            return ProviderOutcome.FAILED
+        if status == SandboxStatus.RUNNING:
+            return ProviderOutcome.ALREADY_DONE
         if status != SandboxStatus.PAUSED:
-            # Resuming a sandbox that is already running leaves its row as it
-            # is, unless the row still says paused.
-            if (
-                status == SandboxStatus.RUNNING
-                and stored_sandbox.lifecycle_state != LifecycleState.RUNNING
-            ):
-                mark_running(stored_sandbox)
-            return True
-
-        # Enforce sandbox limits by cleaning up old sandboxes
-        await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
+            return ProviderOutcome.SKIPPED
 
         sandbox_name = _sandbox_name(claim)
         session_api_key = self._raw_key(stored_sandbox)
         if sandbox_name is None or session_api_key is None:
-            return False
+            return ProviderOutcome.FAILED
         if not await self.k8s.set_operating_mode(sandbox_name, 'Running'):
-            return False
+            return ProviderOutcome.FAILED
         # The claim reports the suspension only once the Sandbox is not ready,
         # so this wait cannot pass on the pod from before the pause.
         await self.k8s.wait_for_sandbox(sandbox_name, self.claim_timeout_seconds)
@@ -771,51 +739,40 @@ class K8sAgentSandboxService(SandboxService):
             session_api_key,
             allow_initialized=True,
         )
-        mark_running(stored_sandbox)
-        return True
+        return ProviderOutcome.CHANGED
 
-    async def pause_sandbox(self, sandbox_id: str) -> bool:
-        """Pause a running sandbox by suspending it.
+    async def _pause_at_provider(
+        self, stored_sandbox: StoredSandbox
+    ) -> ProviderOutcome:
+        """Suspend the Sandbox.
 
         The pod is deleted. The Sandbox, its Service and its volumes stay, so
         the router path and the stored key are the same after a resume.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
-        if stored_sandbox is None:
-            return False
-        claim = await self.k8s.get_claim(sandbox_id)
+        claim = await self.k8s.get_claim(stored_sandbox.id)
         if claim is None or _claim_status(claim) == SandboxStatus.MISSING:
-            return False
+            return ProviderOutcome.FAILED
         sandbox_name = _sandbox_name(claim)
         if sandbox_name is None:
             raise SandboxError(
-                f'Sandbox {sandbox_id} has no pod yet, so there is nothing to pause'
+                f'Sandbox {stored_sandbox.id} has no pod yet, so there is nothing '
+                'to pause'
             )
         if not await self.k8s.set_operating_mode(sandbox_name, 'Suspended'):
-            return False
-        mark_paused(stored_sandbox)
-        return True
+            return ProviderOutcome.FAILED
+        return ProviderOutcome.CHANGED
 
-    async def delete_sandbox(self, sandbox_id: str) -> bool:
-        """Delete a sandbox and its row.
-
-        Deleting the claim deletes its Sandbox, pod and volumes. Returns False
-        only when there is no such sandbox or the caller may not see it. A
-        failed delete raises ``SandboxDeleteRetryError`` and keeps the row, so
-        a live sandbox is never reported as gone.
-        """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
-        if stored_sandbox is None:
-            return False
+    async def _delete_at_provider(self, stored_sandbox: StoredSandbox) -> None:
+        """Delete the claim, which deletes its Sandbox, pod and volumes."""
         try:
-            await self.k8s.delete_claim(sandbox_id)
+            await self.k8s.delete_claim(stored_sandbox.id)
         except SandboxError as exc:
-            _logger.exception(f'Error deleting sandbox {sandbox_id}', stack_info=True)
+            _logger.exception(
+                f'Error deleting sandbox {stored_sandbox.id}', stack_info=True
+            )
             raise SandboxDeleteRetryError(
-                f'Could not complete delete for sandbox {sandbox_id}: {exc}'
+                f'Could not complete delete for sandbox {stored_sandbox.id}: {exc}'
             ) from exc
-        await self.db_session.delete(stored_sandbox)
-        return True
 
 
 class K8sAgentSandboxServiceInjector(SandboxServiceInjector):
