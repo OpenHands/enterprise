@@ -323,7 +323,7 @@ class TestStartSandbox:
         kwargs = sdk.create.await_args.kwargs
         assert kwargs['template'] == TEMPLATE
         assert kwargs['timeout'] == 3600
-        assert kwargs['lifecycle'] == {'on_timeout': 'pause', 'auto_resume': True}
+        assert kwargs['lifecycle'] == {'on_timeout': 'pause'}
 
     @pytest.mark.asyncio
     async def test_connection_options_passed_explicitly(self, sdk, db_session):

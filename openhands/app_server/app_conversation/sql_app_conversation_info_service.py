@@ -544,6 +544,23 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             stats: ConversationStats object containing usage_to_metrics data from stats event
             event_timestamp: Timestamp of the stats event (UTC if naive)
         """
+        try:
+            await self._update_conversation_statistics(
+                conversation_id, stats, event_timestamp
+            )
+        except Exception:
+            # Roll back so a failed flush doesn't leave this request's session in
+            # PendingRollbackError, which fails the remaining webhook writes and
+            # the end-of-request commit (a 500).
+            await self.db_session.rollback()
+            raise
+
+    async def _update_conversation_statistics(
+        self,
+        conversation_id: UUID,
+        stats: ConversationStats,
+        event_timestamp: datetime | None,
+    ) -> None:
         usage_to_metrics = stats.usage_to_metrics
         if not usage_to_metrics:
             logger.debug(
