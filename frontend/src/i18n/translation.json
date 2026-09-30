@@ -4980,6 +4980,23 @@
     "uk": "API ключі",
     "ca": "Claus d'API"
   },
+  "SETTINGS$NAV_AGENT_PROFILES": {
+    "en": "Agent profiles",
+    "ja": "エージェントプロファイル",
+    "zh-CN": "代理配置文件",
+    "zh-TW": "代理設定檔",
+    "ko-KR": "에이전트 프로필",
+    "no": "Agentprofiler",
+    "it": "Profili agente",
+    "pt": "Perfis de agente",
+    "es": "Perfiles de agente",
+    "ar": "ملفات تعريف الوكيل",
+    "fr": "Profils d'agent",
+    "tr": "Ajan profilleri",
+    "de": "Agentenprofile",
+    "uk": "Профілі агента",
+    "ca": "Perfils d'agent"
+  },
   "SETTINGS$NAV_ORGANIZATION": {
     "en": "Organization",
     "ja": "組織",
@@ -5115,6 +5132,23 @@
     "de": "Wählen Sie zwischen dem integrierten OpenHands-Agenten und einem externen ACP-Subprozess.",
     "uk": "Оберіть між вбудованим агентом OpenHands і зовнішнім підпроцесом ACP.",
     "ca": "Tria entre l'agent OpenHands integrat i un subprocés ACP extern."
+  },
+  "SETTINGS$PAGE_AGENT_PROFILES_SUBLINE": {
+    "en": "Create and manage reusable agent setups.",
+    "ja": "再利用可能なエージェント設定を作成・管理します。",
+    "zh-CN": "创建和管理可重用的代理设置。",
+    "zh-TW": "建立與管理可重複使用的代理設定。",
+    "ko-KR": "재사용 가능한 에이전트 설정을 만들고 관리합니다.",
+    "no": "Opprett og administrer gjenbrukbare agentoppsett.",
+    "it": "Crea e gestisci configurazioni di agente riutilizzabili.",
+    "pt": "Crie e gerencie configurações de agente reutilizáveis.",
+    "es": "Crea y gestiona configuraciones de agente reutilizables.",
+    "ar": "أنشئ وأدر إعدادات الوكيل القابلة لإعادة الاستخدام.",
+    "fr": "Créez et gérez des configurations d'agent réutilisables.",
+    "tr": "Yeniden kullanılabilir ajan kurulumları oluşturun ve yönetin.",
+    "de": "Erstellen und verwalten Sie wiederverwendbare Agenten-Setups.",
+    "uk": "Створюйте та керуйте багаторазовими налаштуваннями агента.",
+    "ca": "Crea i gestiona configuracions d'agent reutilitzables."
   },
   "SETTINGS$PAGE_LLM_SUBLINE": {
     "en": "Model, API key, and options for the agent.",
@@ -27878,6 +27912,23 @@
     "ca": "Desat. Deixa-ho en blanc per conservar el testimoni actual",
     "tr": "Kaydedildi. Geçerli belirteci korumak için boş bırakın",
     "uk": "Збережено. Залиште порожнім, щоб зберегти поточний токен"
+  },
+  "PROJECT_MANAGEMENT$WEBHOOK_SECRET_SAVED_PLACEHOLDER": {
+    "en": "Saved — leave blank to keep the current secret",
+    "ja": "保存済み。現在のシークレットを保持するには空欄のままにしてください",
+    "zh-CN": "已保存；留空以保留当前秘密",
+    "zh-TW": "已儲存；留空以保留目前秘密",
+    "ko-KR": "저장됨. 현재 비밀을 유지하려면 비워 두세요.",
+    "no": "Lagret. La stå tomt for å beholde gjeldende hemmelighet",
+    "ar": "تم الحفظ. اتركه فارغًا للاحتفاظ بالسر الحالي",
+    "de": "Gespeichert. Leer lassen, um das aktuelle Geheimnis beizubehalten",
+    "fr": "Enregistré. Laissez vide pour conserver le secret actuel",
+    "it": "Salvato. Lascia vuoto per mantenere il segreto attuale",
+    "pt": "Salvo. Deixe em branco para manter o segredo atual",
+    "es": "Guardado. Déjalo en blanco para conservar el secreto actual",
+    "ca": "Desat. Deixa-ho en blanc per conservar el secret actual",
+    "tr": "Kaydedildi. Geçerli sırrı korumak için boş bırakın",
+    "uk": "Збережено. Залиште порожнім, щоб зберегти поточний секрет"
   },
   "PROJECT_MANAGEMENT$JIRA_DC_REMOVE_ADMIN_TOKEN_LABEL": {
     "en": "Jira admin PAT",

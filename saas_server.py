@@ -86,6 +86,9 @@ from server.sharing.shared_conversation_router import (  # noqa: E402
 from server.sharing.shared_event_router import (  # noqa: E402
     router as shared_event_router,
 )
+from server.utils.litellm_interactive_login_guard import (  # noqa: E402
+    install_litellm_interactive_login_guard,
+)
 from server.verified_models.verified_model_router import (  # noqa: E402
     api_router as verified_models_router,
 )
@@ -97,6 +100,12 @@ directory = os.getenv('FRONTEND_DIRECTORY', './frontend/build')
 canvas_directory = os.getenv(
     'AGENT_CANVAS_DIRECTORY', os.path.join(directory, 'canvas')
 )
+
+
+# A server must never launch LiteLLM's interactive device login (chatgpt/
+# github_copilot). Any request that validates agent settings referencing such a
+# model would otherwise block the worker for ~15 min (OpenHands/enterprise#565).
+install_litellm_interactive_login_guard()
 
 
 @base_app.get('/saas')

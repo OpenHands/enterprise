@@ -1,10 +1,13 @@
 /* eslint-disable i18next/no-literal-string */
 import React, { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import i18next from "i18next";
 import { isAxiosError } from "axios";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { useDebounce } from "#/hooks/use-debounce";
+import { I18nKey } from "#/i18n/declaration";
+import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import { BUDGET_TABS, BudgetTab, USERS_PER_PAGE } from "./budgets-constants";
 import {
   DefaultBudgetsTab,
@@ -92,6 +95,7 @@ export function Budgets() {
         orgId: organizationId!,
         payload,
       }),
+    onSuccess: () => displaySuccessToast(i18next.t(I18nKey.SETTINGS$SAVED)),
     onSettled: () =>
       queryClient.invalidateQueries({
         queryKey: ["organizations", "budgets", organizationId],
@@ -109,6 +113,7 @@ export function Budgets() {
         payload: params.payload,
       }),
     onSuccess: (_, variables) => {
+      displaySuccessToast(i18next.t(I18nKey.SETTINGS$SAVED));
       setEditingUserId((current) =>
         current === variables.userId ? null : current,
       );
@@ -125,6 +130,7 @@ export function Budgets() {
         orgId: organizationId!,
         userId,
       }),
+    onSuccess: () => displaySuccessToast(i18next.t(I18nKey.SETTINGS$SAVED)),
     onSettled: () =>
       queryClient.invalidateQueries({
         queryKey: ["organizations", "budgets", organizationId],

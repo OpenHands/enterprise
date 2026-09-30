@@ -82,6 +82,15 @@ def enqueue_budget_tasks(batch_size: int = BATCH_SIZE) -> int:
 
 
 def main() -> None:
+    # Guard against LiteLLM's interactive device login on this headless entrypoint
+    # (OpenHands/enterprise#565); run_maintenance_tasks.main() installs it too, but
+    # this keeps the protection local to the entrypoint and is idempotent.
+    from server.utils.litellm_interactive_login_guard import (
+        install_litellm_interactive_login_guard,
+    )
+
+    install_litellm_interactive_login_guard()
+
     total = enqueue_budget_tasks()
     if total:
         logger.info('Enqueued org budget maintenance tasks', extra={'orgs': total})
