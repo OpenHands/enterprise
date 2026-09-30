@@ -144,11 +144,13 @@ class TestWorkerRole:
     def worker_role(
         self, test_database: postgres_testdb.TestDatabase
     ) -> Iterator[tuple[str, str]]:
-        role = f'tq_worker_{uuid.uuid4().hex[:12]}'
+        # Not a plain identifier, so the grants only work if the role is quoted.
+        role = f'TQ-worker {uuid.uuid4().hex[:12]}'
+        quoted = f'"{role}"'
         password = uuid.uuid4().hex
         server = test_database.server
         postgres_testdb._run_admin_sql(
-            server, f"CREATE ROLE {role} LOGIN PASSWORD '{password}'"
+            server, f"CREATE ROLE {quoted} LOGIN PASSWORD '{password}'"
         )
         try:
             yield role, password
@@ -157,25 +159,24 @@ class TestWorkerRole:
             engine = postgres_testdb._admin_engine(server, test_database.name)
             try:
                 with engine.connect() as conn:
-                    conn.execute(text(f'DROP OWNED BY {role} CASCADE'))
+                    conn.execute(text(f'DROP OWNED BY {quoted} CASCADE'))
             finally:
                 engine.dispose()
-            postgres_testdb._run_admin_sql(server, f'DROP ROLE {role}')
+            postgres_testdb._run_admin_sql(server, f'DROP ROLE {quoted}')
 
     @pytest.fixture
     def worker_conninfo(
         self, test_database: postgres_testdb.TestDatabase, worker_role
     ) -> str:
+        # The test database is already at head, so this run applies no revision:
+        # the role is granted even though it did not exist when 174 ran.
         role, password = worker_role
-        postgres_testdb.run_alembic(
-            test_database.server, test_database.name, 'downgrade', '173'
-        )
         postgres_testdb.run_alembic(
             test_database.server,
             test_database.name,
             'upgrade',
             'head',
-            extra_env={'TASK_QUEUE_DB_ROLE': role},
+            extra_env={'TASK_QUEUE_DB_USER': role},
         )
         return _conninfo(
             test_database.server, test_database.name, user=role, password=password
@@ -210,17 +211,46 @@ class TestWorkerRole:
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     conn.execute(ddl)
 
-    def test_rejects_role_name_that_is_not_an_identifier(
+    def test_grants_procrastinate_objects_added_after_174(
+        self, engine: Engine, test_database: postgres_testdb.TestDatabase, worker_role
+    ):
+        role, _ = worker_role
+        with engine.begin() as conn:
+            conn.execute(text('CREATE TABLE procrastinate_probe (id bigserial)'))
+
+        postgres_testdb.run_alembic(
+            test_database.server,
+            test_database.name,
+            'upgrade',
+            'head',
+            extra_env={'TASK_QUEUE_DB_USER': role},
+        )
+
+        with engine.connect() as conn:
+            # A comma-separated privilege list is true if any one is held.
+            granted = (
+                conn.execute(
+                    text(
+                        "SELECT bool_and(has_table_privilege(:role, 'procrastinate_probe', p))"
+                        " FROM unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']) p"
+                        ' UNION ALL SELECT has_sequence_privilege('
+                        ":role, 'procrastinate_probe_id_seq', 'USAGE')"
+                    ),
+                    {'role': role},
+                )
+                .scalars()
+                .all()
+            )
+        assert granted == [True, True]
+
+    def test_migration_fails_when_the_role_does_not_exist(
         self, test_database: postgres_testdb.TestDatabase
     ):
-        postgres_testdb.run_alembic(
-            test_database.server, test_database.name, 'downgrade', '173'
-        )
         with pytest.raises(postgres_testdb.PostgresUnavailableError):
             postgres_testdb.run_alembic(
                 test_database.server,
                 test_database.name,
                 'upgrade',
                 'head',
-                extra_env={'TASK_QUEUE_DB_ROLE': 'x; DROP TABLE org'},
+                extra_env={'TASK_QUEUE_DB_USER': f'missing_{uuid.uuid4().hex[:12]}'},
             )

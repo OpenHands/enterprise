@@ -14,12 +14,10 @@ files as new revisions; ``post`` files wait until the rollback window closes.
 The script contains ``:`` and ``%``, so it runs on the raw driver cursor with no
 parameters rather than through SQLAlchemy's parameter parsing.
 
-``TASK_QUEUE_DB_ROLE`` names the role the task queue workers connect as. When
-set, it is granted DML on the queue tables and nothing else, so workers cannot
-change the schema. It must already exist.
+The task queue role's grants live in ``migrations/env.py`` and run on every
+migration, so a role created after this revision was applied still gets them.
 """
 
-import os
 import re
 from pathlib import Path
 from typing import Sequence
@@ -40,7 +38,6 @@ TABLES = (
     'procrastinate_periodic_defers',
     'procrastinate_events',
 )
-ROLE_NAME_RE = re.compile(r'^[a-z_][a-z0-9_]*$')
 
 
 def _run_script(sql: str) -> None:
@@ -51,23 +48,8 @@ def _run_script(sql: str) -> None:
         cursor.close()
 
 
-def _grant_worker_role(role: str) -> None:
-    if not ROLE_NAME_RE.match(role):
-        raise ValueError(f'TASK_QUEUE_DB_ROLE is not a plain role name: {role!r}')
-    tables = ', '.join(TABLES)
-    _run_script(
-        f'GRANT SELECT, INSERT, UPDATE, DELETE ON {tables} TO {role};\n'
-        'GRANT USAGE, SELECT ON SEQUENCE procrastinate_jobs_id_seq, '
-        'procrastinate_periodic_defers_id_seq, procrastinate_events_id_seq, '
-        f'procrastinate_workers_id_seq TO {role};\n'
-    )
-
-
 def upgrade() -> None:
     _run_script(SCHEMA_SQL.read_text())
-    role = os.getenv('TASK_QUEUE_DB_ROLE', '').strip()
-    if role:
-        _grant_worker_role(role)
 
 
 def downgrade() -> None:

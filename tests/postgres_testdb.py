@@ -247,7 +247,7 @@ def run_alembic(
         WEB_HOST='',
     )
     env.pop('STRIPE_API_KEY', None)
-    env.pop('TASK_QUEUE_DB_ROLE', None)
+    env.pop('TASK_QUEUE_DB_USER', None)
     env.update(extra_env or {})
 
     result = subprocess.run(
