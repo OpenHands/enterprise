@@ -236,29 +236,48 @@ function BudgetSummary({ budget }: { budget: OrgMyBudget }) {
 }
 
 function DailySpendChart({ days }: { days: OrgMyUsageStats["daily_spend"] }) {
+  const [hoveredDate, setHoveredDate] = React.useState<string | null>(null);
   const maxCost = Math.max(...days.map((day) => day.cost), 0);
   const labelEvery = Math.ceil(days.length / 7);
 
   return (
+    // Cleared on the chart rather than per bar so the tooltip does not flicker
+    // while the pointer crosses the gaps between bars.
     <div
       className={cn(
         "flex h-40 items-end",
         days.length > 31 ? "gap-px" : "gap-1",
       )}
       data-testid="your-budget-daily-chart"
+      onMouseLeave={() => setHoveredDate(null)}
     >
       {days.map((day, index) => (
         <div
           key={day.date}
           className="flex h-full min-w-0 flex-1 flex-col justify-end gap-1"
-          title={`${formatShortDate(day.date)}: ${formatCost(day.cost)}`}
+          data-testid="your-budget-daily-bar"
+          onMouseEnter={() => setHoveredDate(day.date)}
         >
           <div
-            className="min-h-[2px] w-full rounded-t bg-primary"
+            className="relative min-h-[2px] w-full rounded-t bg-primary"
             style={{
               height: maxCost > 0 ? `${(day.cost / maxCost) * 100}%` : 0,
             }}
-          />
+          >
+            {hoveredDate === day.date && (
+              <div
+                className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 -translate-x-1/2 whitespace-nowrap rounded-lg border border-border-subtle bg-base-secondary px-3 py-2 shadow-lg"
+                data-testid="your-budget-daily-tooltip"
+              >
+                <div className="text-sm font-medium text-foreground">
+                  {formatShortDate(day.date)}
+                </div>
+                <div className="mt-0.5 text-xs tabular-nums text-muted">
+                  {formatCost(day.cost)}
+                </div>
+              </div>
+            )}
+          </div>
           <span className="h-4 whitespace-nowrap text-[10px] text-muted">
             {index % labelEvery === 0 ? formatShortDate(day.date) : ""}
           </span>
