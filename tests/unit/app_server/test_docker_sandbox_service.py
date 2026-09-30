@@ -1263,6 +1263,53 @@ class TestDockerSandboxService:
         assert isinstance(port, int)
         assert 1024 <= port <= 65535
 
+    def test_find_unused_port_skips_reserved_ports(self, service):
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.socket'
+        ) as socket_module:
+            sock = socket_module.socket.return_value.__enter__.return_value
+            sock.getsockname.side_effect = [('0.0.0.0', 40001), ('0.0.0.0', 40002)]
+
+            assert service._find_unused_port({40001}) == 40002
+
+    def test_find_unused_port_gives_up_when_every_port_is_reserved(self, service):
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.socket'
+        ) as socket_module:
+            sock = socket_module.socket.return_value.__enter__.return_value
+            sock.getsockname.return_value = ('0.0.0.0', 40001)
+
+            with pytest.raises(SandboxError, match='free host port'):
+                service._find_unused_port({40001})
+
+    def test_reserved_host_ports_include_stopped_containers(self, service):
+        """A stopped container binds its ports again when it starts."""
+
+        def _container(name: str, status: str, port_bindings: dict | None):
+            container = MagicMock()
+            container.name = name
+            container.status = status
+            container.attrs = {'HostConfig': {'PortBindings': port_bindings}}
+            return container
+
+        service.docker_client.containers.list.return_value = [
+            _container(
+                'oh-test-stopped',
+                'exited',
+                {
+                    '8000/tcp': [{'HostIp': '', 'HostPort': '40001'}],
+                    # Docker picks this one itself on each start.
+                    '8001/tcp': [{'HostIp': '', 'HostPort': ''}],
+                },
+            ),
+            _container(
+                'oh-test-running', 'running', {'8000/tcp': [{'HostPort': '40002'}]}
+            ),
+            _container('oh-test-host-network', 'running', None),
+        ]
+
+        assert service._reserved_host_ports() == {40001, 40002}
+
     def test_docker_status_to_sandbox_status(self, service):
         """Test Docker status to SandboxStatus conversion."""
         # Test all mappings
@@ -1520,6 +1567,40 @@ class TestDockerSandboxServiceOwnership:
         pause.assert_not_called()
         admin_service.docker_client.containers.run.assert_not_called()
         assert (await db_session.execute(select(StoredSandbox))).first() is None
+
+    @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
+    @patch('os.urandom')
+    async def test_start_sandbox_skips_ports_a_stopped_sandbox_will_bind(
+        self, mock_urandom, mock_encodebytes, service, mock_running_container
+    ):
+        mock_urandom.side_effect = [b'container_id', b'session_key']
+        mock_encodebytes.side_effect = ['test_container_id', 'test_session_key']
+        service.user_context.get_user_id.return_value = OWNER_ID
+        stopped = MagicMock()
+        stopped.name = 'oh-test-stopped'
+        stopped.status = 'exited'
+        stopped.attrs = {
+            'HostConfig': {'PortBindings': {'8000/tcp': [{'HostPort': '40001'}]}}
+        }
+        service.docker_client.containers.list.return_value = [stopped]
+        service.docker_client.containers.run.return_value = mock_running_container
+
+        with (
+            patch(
+                'openhands.app_server.sandbox.docker_sandbox_service.socket'
+            ) as socket_module,
+            patch.object(service, 'pause_old_sandboxes', return_value=[]),
+        ):
+            sock = socket_module.socket.return_value.__enter__.return_value
+            sock.getsockname.side_effect = [
+                ('0.0.0.0', 40001),
+                ('0.0.0.0', 40002),
+                ('0.0.0.0', 40003),
+            ]
+            await service.start_sandbox()
+
+        ports = service.docker_client.containers.run.call_args[1]['ports']
+        assert ports == {8000: 40002, 8001: 40003}
 
     @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
     @patch('os.urandom')
