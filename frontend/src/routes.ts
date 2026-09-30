@@ -42,7 +42,11 @@ export default [
       route("mcp", "routes/mcp-settings.tsx"),
       route("skills", "routes/skills-settings.tsx"),
       route("user", "routes/user-settings.tsx"),
-      route("integrations", "routes/git-settings.tsx"),
+      route("integrations", "routes/integrations.tsx"),
+      route("integrations-hub", "routes/integrations-redirect.tsx"),
+      route("integrations-hub/*", "routes/integrations-redirect.tsx", {
+        id: "routes/settings-integrations-hub-redirect",
+      }),
       route("app", "routes/app-settings.tsx"),
       route("billing", "routes/billing.tsx"),
       route("credits", "routes/credits.tsx"),
